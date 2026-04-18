@@ -1,0 +1,14 @@
+[package]
+name = "quadraui"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform UI primitives with native Windows, Linux, macOS, and TUI rendering backends"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JDonaghy/vimcode"
+publish = false
+
+[lib]
+
+[dependencies]
+
+[dev-dependencies]
