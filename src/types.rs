@@ -197,11 +197,23 @@ pub enum SelectionMode {
 }
 
 /// Optional visual decoration applied to a row beyond its text colour.
+///
+/// Backends map each variant to an appropriate visual treatment. For row
+/// widgets like `TreeView`, `Header` typically gets a distinct background
+/// (section-header styling); `Muted` dims the foreground; `Error` /
+/// `Warning` override the foreground with theme error/warning colours;
+/// `Modified` implies italic but otherwise normal colouring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Decoration {
-    /// Rendered with default foreground.
+    /// Rendered with default foreground and background.
     #[default]
     Normal,
+    /// Section-header styling: distinct (typically darker or accent) background,
+    /// often with bold text. Use for rows that group others rather than
+    /// represent a leaf entity. Row tree-hierarchy status (`is_expanded`
+    /// Some vs. None) is orthogonal: not all branches are headers, and a
+    /// leaf row can be a header.
+    Header,
     /// Dimmed (e.g. gitignored file, stale git log entry).
     Muted,
     /// Red / error-toned (e.g. lint error, merge conflict).
