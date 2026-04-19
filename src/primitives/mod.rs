@@ -5,4 +5,5 @@
 //! implement rendering and input handling against these types.
 
 pub mod form;
+pub mod palette;
 pub mod tree;

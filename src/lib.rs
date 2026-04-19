@@ -16,6 +16,7 @@ pub mod primitives;
 pub mod types;
 
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
+pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
@@ -173,6 +174,61 @@ mod tests {
         for event in &events {
             let json = serde_json::to_string(event).unwrap();
             let back: FormEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
+    }
+
+    #[test]
+    fn palette_roundtrip_serde() {
+        let palette = Palette {
+            id: WidgetId::new("cmd-palette"),
+            title: "Commands".to_string(),
+            query: "open".to_string(),
+            query_cursor: 4,
+            items: vec![
+                PaletteItem {
+                    text: StyledText::plain("Open File"),
+                    detail: Some(StyledText::plain("Ctrl+O")),
+                    icon: None,
+                    match_positions: vec![0, 1, 2, 3],
+                },
+                PaletteItem {
+                    text: StyledText::plain("Open Recent"),
+                    detail: None,
+                    icon: None,
+                    match_positions: vec![0, 1, 2, 3],
+                },
+            ],
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 42,
+            has_focus: true,
+        };
+        let json = serde_json::to_string(&palette).unwrap();
+        let back: Palette = serde_json::from_str(&json).unwrap();
+        assert_eq!(palette, back);
+    }
+
+    #[test]
+    fn palette_event_roundtrip_serde() {
+        let events = vec![
+            PaletteEvent::QueryChanged {
+                value: "foo".to_string(),
+            },
+            PaletteEvent::SelectionChanged { idx: 3 },
+            PaletteEvent::ItemConfirmed { idx: 0 },
+            PaletteEvent::Closed,
+            PaletteEvent::KeyPressed {
+                key: "Ctrl+P".to_string(),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                },
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: PaletteEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(event, &back);
         }
     }
