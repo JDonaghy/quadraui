@@ -66,15 +66,27 @@ pub enum FieldKind {
     Toggle { value: bool },
     /// Single-line text input. `value` is the current text. Typing
     /// modifies it; emits `FormEvent::TextInputChanged` on every keystroke
-    /// and `FormEvent::TextInputCommitted` on Enter. Cursor position is
-    /// a primitive-owned detail; `value` is the authoritative content.
+    /// and `FormEvent::TextInputCommitted` on Enter.
     ///
-    /// A later primitive extension will carry cursor position,
-    /// selection anchor, and scroll offset for long text.
+    /// `cursor` is a byte offset into `value`. When `Some(n)`, backends
+    /// render a cursor at that position; when `None`, the field is
+    /// displayed read-only (no cursor). The app is responsible for
+    /// updating `cursor` as the user types / moves — the primitive does
+    /// not do its own input handling.
+    ///
+    /// `selection_anchor` is a byte offset into `value`. When `Some(n)`
+    /// and `n != cursor`, backends render the range between `anchor` and
+    /// `cursor` with a selection highlight. `None` means no selection.
+    ///
+    /// Scroll offset for long text is a later primitive extension.
     TextInput {
         value: String,
         #[serde(default)]
         placeholder: String,
+        #[serde(default)]
+        cursor: Option<usize>,
+        #[serde(default)]
+        selection_anchor: Option<usize>,
     },
     /// A clickable button. `label` on the containing field is also used
     /// as the button caption. Emits `FormEvent::ButtonClicked`.

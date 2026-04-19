@@ -121,6 +121,8 @@ mod tests {
                     kind: FieldKind::TextInput {
                         value: "4".to_string(),
                         placeholder: "2".to_string(),
+                        cursor: Some(1),
+                        selection_anchor: None,
                     },
                     hint: StyledText::plain("Number of spaces per tab"),
                     disabled: false,
@@ -172,6 +174,48 @@ mod tests {
             let json = serde_json::to_string(event).unwrap();
             let back: FormEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(event, &back);
+        }
+    }
+
+    #[test]
+    fn text_input_cursor_and_selection_serde() {
+        // Round-trip a TextInput variant with explicit cursor + selection state.
+        let field = FormField {
+            id: WidgetId::new("name"),
+            label: StyledText::plain("Name"),
+            kind: FieldKind::TextInput {
+                value: "hello world".to_string(),
+                placeholder: String::new(),
+                cursor: Some(5),
+                selection_anchor: Some(0),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+
+        // Legacy shape without cursor/selection_anchor also deserializes
+        // (new fields default to None) — ensures the extension is
+        // backward-compatible with pre-A.3d serialised forms.
+        let legacy = r#"{
+            "id": "legacy",
+            "label": {"spans":[{"text":"Legacy","fg":null,"bg":null}]},
+            "kind": {"TextInput": {"value": "x"}},
+            "hint": {"spans":[]}
+        }"#;
+        let parsed: FormField = serde_json::from_str(legacy).unwrap();
+        match parsed.kind {
+            FieldKind::TextInput {
+                cursor,
+                selection_anchor,
+                ..
+            } => {
+                assert_eq!(cursor, None);
+                assert_eq!(selection_anchor, None);
+            }
+            other => panic!("unexpected kind: {:?}", other),
         }
     }
 }
