@@ -15,6 +15,7 @@
 pub mod primitives;
 pub mod types;
 
+pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
@@ -93,5 +94,84 @@ mod tests {
         let json = serde_json::to_string(&tree).unwrap();
         let back: TreeView = serde_json::from_str(&json).unwrap();
         assert_eq!(tree, back);
+    }
+
+    #[test]
+    fn form_roundtrip_serde() {
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("header"),
+                    label: StyledText::plain("Editor"),
+                    kind: FieldKind::Label,
+                    hint: StyledText::default(),
+                    disabled: false,
+                },
+                FormField {
+                    id: WidgetId::new("line-numbers"),
+                    label: StyledText::plain("Show line numbers"),
+                    kind: FieldKind::Toggle { value: true },
+                    hint: StyledText::default(),
+                    disabled: false,
+                },
+                FormField {
+                    id: WidgetId::new("tabstop"),
+                    label: StyledText::plain("Tab width"),
+                    kind: FieldKind::TextInput {
+                        value: "4".to_string(),
+                        placeholder: "2".to_string(),
+                    },
+                    hint: StyledText::plain("Number of spaces per tab"),
+                    disabled: false,
+                },
+                FormField {
+                    id: WidgetId::new("save"),
+                    label: StyledText::plain("Save settings"),
+                    kind: FieldKind::Button,
+                    hint: StyledText::default(),
+                    disabled: false,
+                },
+            ],
+            focused_field: Some(WidgetId::new("line-numbers")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let json = serde_json::to_string(&form).unwrap();
+        let back: Form = serde_json::from_str(&json).unwrap();
+        assert_eq!(form, back);
+    }
+
+    #[test]
+    fn form_event_roundtrip_serde() {
+        let events = vec![
+            FormEvent::ToggleChanged {
+                id: WidgetId::new("line-numbers"),
+                value: false,
+            },
+            FormEvent::TextInputChanged {
+                id: WidgetId::new("tabstop"),
+                value: "8".to_string(),
+            },
+            FormEvent::TextInputCommitted {
+                id: WidgetId::new("tabstop"),
+                value: "8".to_string(),
+            },
+            FormEvent::FocusChanged {
+                id: WidgetId::new("save"),
+            },
+            FormEvent::ButtonClicked {
+                id: WidgetId::new("save"),
+            },
+            FormEvent::KeyPressed {
+                key: "Escape".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: FormEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
     }
 }
