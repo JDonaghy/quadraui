@@ -16,6 +16,7 @@ pub mod primitives;
 pub mod types;
 
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
+pub use primitives::list::{ListItem, ListView, ListViewEvent};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
@@ -176,6 +177,34 @@ mod tests {
             let back: FormEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(event, &back);
         }
+    }
+
+    #[test]
+    fn list_view_roundtrip_serde() {
+        let list = ListView {
+            id: WidgetId::new("quickfix"),
+            title: Some(StyledText::plain("QUICKFIX (3 items)")),
+            items: vec![
+                ListItem {
+                    text: StyledText::plain("src/main.rs:12: unused variable"),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::Warning,
+                },
+                ListItem {
+                    text: StyledText::plain("src/lib.rs:4: missing import"),
+                    icon: None,
+                    detail: Some(StyledText::plain("E0425")),
+                    decoration: Decoration::Error,
+                },
+            ],
+            selected_idx: 1,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let json = serde_json::to_string(&list).unwrap();
+        let back: ListView = serde_json::from_str(&json).unwrap();
+        assert_eq!(list, back);
     }
 
     #[test]
