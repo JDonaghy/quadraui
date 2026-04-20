@@ -19,6 +19,7 @@ pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::list::{ListItem, ListView, ListViewEvent};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
 pub use primitives::status_bar::{StatusBar, StatusBarEvent, StatusBarHitRegion, StatusBarSegment};
+pub use primitives::tab_bar::{TabBar, TabBarEvent, TabBarSegment, TabItem};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
@@ -349,6 +350,79 @@ mod tests {
             Some("right")
         );
         assert_eq!(bar.resolve_click(15, 30), None); // gap between segments
+    }
+
+    #[test]
+    fn tab_bar_roundtrip_serde() {
+        use primitives::tab_bar::{TabBarSegment, TabItem};
+        let bar = TabBar {
+            id: WidgetId::new("group-0-tabs"),
+            tabs: vec![
+                TabItem {
+                    label: " 1: main.rs ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                },
+                TabItem {
+                    label: " 2: lib.rs ".to_string(),
+                    is_active: false,
+                    is_dirty: true,
+                    is_preview: false,
+                },
+                TabItem {
+                    label: " 3: render.rs ".to_string(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: true,
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: vec![
+                TabBarSegment {
+                    text: "2 of 5 ".to_string(),
+                    width_cells: 7,
+                    id: None,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    text: " ← ".to_string(),
+                    width_cells: 3,
+                    id: Some(WidgetId::new("tab:diff_prev")),
+                    is_active: false,
+                },
+                TabBarSegment {
+                    text: " … ".to_string(),
+                    width_cells: 3,
+                    id: Some(WidgetId::new("tab:action_menu")),
+                    is_active: false,
+                },
+            ],
+            active_accent: Some(Color::rgb(100, 200, 255)),
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: TabBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    #[test]
+    fn tab_bar_event_roundtrip_serde() {
+        let events = vec![
+            TabBarEvent::TabActivated { index: 2 },
+            TabBarEvent::TabClosed { index: 0 },
+            TabBarEvent::ButtonClicked {
+                id: WidgetId::new("tab:split_right"),
+            },
+            TabBarEvent::KeyPressed {
+                key: "F1".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: TabBarEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
     }
 
     #[test]
