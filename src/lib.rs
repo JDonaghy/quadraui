@@ -18,6 +18,7 @@ pub mod types;
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::list::{ListItem, ListView, ListViewEvent};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
+pub use primitives::status_bar::{StatusBar, StatusBarEvent, StatusBarHitRegion, StatusBarSegment};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
@@ -260,6 +261,94 @@ mod tests {
             let back: PaletteEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(event, &back);
         }
+    }
+
+    #[test]
+    fn status_bar_roundtrip_serde() {
+        use primitives::status_bar::StatusBarSegment;
+        let bar = StatusBar {
+            id: WidgetId::new("editor-status"),
+            left_segments: vec![
+                StatusBarSegment {
+                    text: " NORMAL ".to_string(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(30, 30, 30),
+                    bold: true,
+                    action_id: None,
+                },
+                StatusBarSegment {
+                    text: " main.rs".to_string(),
+                    fg: Color::rgb(200, 200, 200),
+                    bg: Color::rgb(30, 30, 30),
+                    bold: true,
+                    action_id: None,
+                },
+            ],
+            right_segments: vec![
+                StatusBarSegment {
+                    text: " rust ".to_string(),
+                    fg: Color::rgb(200, 200, 200),
+                    bg: Color::rgb(30, 30, 30),
+                    bold: false,
+                    action_id: Some(WidgetId::new("status:change_language")),
+                },
+                StatusBarSegment {
+                    text: " Ln 12, Col 4 ".to_string(),
+                    fg: Color::rgb(200, 200, 200),
+                    bg: Color::rgb(30, 30, 30),
+                    bold: false,
+                    action_id: Some(WidgetId::new("status:goto_line")),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: StatusBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    #[test]
+    fn status_bar_hit_regions() {
+        use primitives::status_bar::StatusBarSegment;
+        // Bar width 30: left " LEFT " (6 chars, clickable "left") +
+        // right " R " (3 chars, clickable "right") right-aligned at col 27.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![StatusBarSegment {
+                text: " LEFT ".to_string(),
+                fg: Color::rgb(0, 0, 0),
+                bg: Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: Some(WidgetId::new("left")),
+            }],
+            right_segments: vec![StatusBarSegment {
+                text: " R ".to_string(),
+                fg: Color::rgb(0, 0, 0),
+                bg: Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: Some(WidgetId::new("right")),
+            }],
+        };
+        let regions = bar.hit_regions(30);
+        assert_eq!(regions.len(), 2);
+        // Left starts at col 0, width 6
+        assert_eq!(regions[0].col, 0);
+        assert_eq!(regions[0].width, 6);
+        assert_eq!(regions[0].id.as_str(), "left");
+        // Right starts at col 27, width 3
+        assert_eq!(regions[1].col, 27);
+        assert_eq!(regions[1].width, 3);
+        assert_eq!(regions[1].id.as_str(), "right");
+
+        // Click resolution
+        assert_eq!(
+            bar.resolve_click(3, 30).as_ref().map(|w| w.as_str()),
+            Some("left")
+        );
+        assert_eq!(
+            bar.resolve_click(28, 30).as_ref().map(|w| w.as_str()),
+            Some("right")
+        );
+        assert_eq!(bar.resolve_click(15, 30), None); // gap between segments
     }
 
     #[test]

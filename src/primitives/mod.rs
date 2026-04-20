@@ -7,4 +7,5 @@
 pub mod form;
 pub mod list;
 pub mod palette;
+pub mod status_bar;
 pub mod tree;
