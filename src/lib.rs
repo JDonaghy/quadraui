@@ -22,6 +22,7 @@ pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
 pub use primitives::status_bar::{StatusBar, StatusBarEvent, StatusBarHitRegion, StatusBarSegment};
 pub use primitives::tab_bar::{TabBar, TabBarEvent, TabBarSegment, TabItem};
 pub use primitives::terminal::{Terminal, TerminalCell, TerminalEvent};
+pub use primitives::text_display::{TextDisplay, TextDisplayEvent, TextDisplayLine};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
@@ -352,6 +353,89 @@ mod tests {
             Some("right")
         );
         assert_eq!(bar.resolve_click(15, 30), None); // gap between segments
+    }
+
+    #[test]
+    fn text_display_append_and_cap() {
+        use primitives::text_display::TextDisplayLine;
+        let mut td = TextDisplay::new(WidgetId::new("logs"));
+        td.set_max_lines(3);
+
+        let mk = |text: &str| TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        };
+
+        td.append_line(mk("a"));
+        td.append_line(mk("b"));
+        td.append_line(mk("c"));
+        assert_eq!(td.lines.len(), 3);
+
+        // Fourth append evicts the oldest.
+        td.append_line(mk("d"));
+        assert_eq!(td.lines.len(), 3);
+        assert_eq!(td.lines.first().unwrap().spans[0].text, "b");
+        assert_eq!(td.lines.last().unwrap().spans[0].text, "d");
+
+        // Lower the cap → trims oldest.
+        td.set_max_lines(2);
+        assert_eq!(td.lines.len(), 2);
+        assert_eq!(td.lines.first().unwrap().spans[0].text, "c");
+
+        td.clear();
+        assert_eq!(td.lines.len(), 0);
+        assert_eq!(td.scroll_offset, 0);
+    }
+
+    #[test]
+    fn text_display_roundtrip_serde() {
+        use primitives::text_display::TextDisplayLine;
+        let td = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![
+                TextDisplayLine {
+                    spans: vec![StyledSpan::plain("hello")],
+                    decoration: Decoration::Normal,
+                    timestamp: Some("12:00:00".to_string()),
+                },
+                TextDisplayLine {
+                    spans: vec![
+                        StyledSpan::plain("error: "),
+                        StyledSpan::with_fg("not found", Color::rgb(255, 80, 80)),
+                    ],
+                    decoration: Decoration::Error,
+                    timestamp: None,
+                },
+            ],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 1000,
+            has_focus: true,
+        };
+        let json = serde_json::to_string(&td).unwrap();
+        let back: TextDisplay = serde_json::from_str(&json).unwrap();
+        assert_eq!(td, back);
+    }
+
+    #[test]
+    fn text_display_event_roundtrip_serde() {
+        let events = vec![
+            TextDisplayEvent::Scrolled { new_offset: 42 },
+            TextDisplayEvent::AutoScrollToggled { enabled: false },
+            TextDisplayEvent::Copied {
+                text: "selected line".to_string(),
+            },
+            TextDisplayEvent::KeyPressed {
+                key: "G".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: TextDisplayEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
     }
 
     #[test]
