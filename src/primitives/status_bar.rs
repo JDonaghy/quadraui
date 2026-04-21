@@ -110,4 +110,106 @@ impl StatusBar {
         }
         None
     }
+
+    /// Compute how many leading right segments to drop so the visible right
+    /// half fits in `bar_width` after reserving the left segments and a
+    /// `min_gap` (in chars) between the two halves. Returns the start index
+    /// into `right_segments` — render `&right_segments[start..]`.
+    ///
+    /// Convention: `right_segments` is ordered least-important first,
+    /// most-important last. Backends drop from the front (low priority) so
+    /// the rightmost (highest-priority) segment, e.g. cursor position, is
+    /// always preserved.
+    ///
+    /// Char-count based — appropriate for the TUI backend. GTK does its own
+    /// pixel-width fit using Pango measurement.
+    pub fn fit_right_start_chars(&self, bar_width: usize, min_gap: usize) -> usize {
+        if self.right_segments.is_empty() {
+            return 0;
+        }
+        let left_w: usize = self
+            .left_segments
+            .iter()
+            .map(|s| s.text.chars().count())
+            .sum();
+        let widths: Vec<usize> = self
+            .right_segments
+            .iter()
+            .map(|s| s.text.chars().count())
+            .collect();
+        let total: usize = widths.iter().sum();
+        if left_w + min_gap + total <= bar_width {
+            return 0;
+        }
+        let max_right = bar_width.saturating_sub(left_w + min_gap);
+        let mut remaining = total;
+        let last = widths.len() - 1;
+        for (i, w) in widths.iter().enumerate() {
+            if remaining <= max_right {
+                return i;
+            }
+            // Always preserve the last (highest-priority) segment, even if
+            // it alone overflows — better to clip one segment than to render
+            // an empty right half.
+            if i == last {
+                return i;
+            }
+            remaining -= w;
+        }
+        last
+    }
+
+    /// Like `hit_regions` but skips segments dropped by `fit_right_start_chars`.
+    /// Use when the visible right half may have been narrowed.
+    pub fn hit_regions_fit_chars(
+        &self,
+        bar_width: usize,
+        min_gap: usize,
+    ) -> Vec<StatusBarHitRegion> {
+        let start = self.fit_right_start_chars(bar_width, min_gap);
+        let mut regions = Vec::new();
+        let mut col: u16 = 0;
+        for seg in &self.left_segments {
+            let w = seg.text.chars().count() as u16;
+            if let Some(id) = &seg.action_id {
+                regions.push(StatusBarHitRegion {
+                    col,
+                    width: w,
+                    id: id.clone(),
+                });
+            }
+            col += w;
+        }
+        let visible_right = &self.right_segments[start..];
+        let right_width: usize = visible_right.iter().map(|s| s.text.chars().count()).sum();
+        let mut col = bar_width.saturating_sub(right_width) as u16;
+        for seg in visible_right {
+            let w = seg.text.chars().count() as u16;
+            if let Some(id) = &seg.action_id {
+                regions.push(StatusBarHitRegion {
+                    col,
+                    width: w,
+                    id: id.clone(),
+                });
+            }
+            col += w;
+        }
+        regions
+    }
+
+    /// Like `resolve_click` but uses `hit_regions_fit_chars` so clicks on
+    /// dropped (invisible) segments don't trigger spurious actions.
+    pub fn resolve_click_fit_chars(
+        &self,
+        click_col: u16,
+        bar_width: usize,
+        min_gap: usize,
+    ) -> Option<WidgetId> {
+        for region in self.hit_regions_fit_chars(bar_width, min_gap) {
+            if click_col >= region.col && click_col < region.col + region.width {
+                return Some(region.id);
+            }
+        }
+        None
+    }
 }

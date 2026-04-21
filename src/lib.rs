@@ -356,6 +356,95 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_fit_right_start_chars() {
+        use primitives::status_bar::StatusBarSegment;
+        let mk = |text: &str, id: &str| StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(0, 0, 0),
+            bg: Color::rgb(0, 0, 0),
+            bold: false,
+            action_id: Some(WidgetId::new(id)),
+        };
+        // Left 5 chars, right = 4 low-priority (lo0..lo3) + cursor (always kept).
+        // Right segments total: 3+3+3+3+11 = 23 chars
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![mk(" LEFT", "left")],
+            right_segments: vec![
+                mk(" a ", "lo0"),
+                mk(" b ", "lo1"),
+                mk(" c ", "lo2"),
+                mk(" d ", "lo3"),
+                mk(" Ln 1,Col 1", "cursor"),
+            ],
+        };
+
+        // Plenty of room (left 5 + gap 2 + right 23 = 30 <= 40) → nothing dropped.
+        assert_eq!(bar.fit_right_start_chars(40, 2), 0);
+
+        // Exact fit (30) → still 0 dropped.
+        assert_eq!(bar.fit_right_start_chars(30, 2), 0);
+
+        // bar_width 29: need max_right = 29 - 5 - 2 = 22. Total 23 > 22, drop lo0 (3).
+        // After dropping lo0, remaining = 20 <= 22, keep rest.
+        assert_eq!(bar.fit_right_start_chars(29, 2), 1);
+
+        // bar_width 20: max_right = 13. Must drop lo0(3), lo1(3), lo2(3), lo3(3)
+        // → remaining = 11 <= 13. Keep only cursor.
+        assert_eq!(bar.fit_right_start_chars(20, 2), 4);
+
+        // Tiny bar: left(5)+gap(2)=7 already >= bar. max_right=0. Even cursor
+        // (11) doesn't fit — but we always keep the last segment.
+        assert_eq!(bar.fit_right_start_chars(5, 2), 4);
+
+        // Empty right side.
+        let empty_right = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![mk(" X", "x")],
+            right_segments: vec![],
+        };
+        assert_eq!(empty_right.fit_right_start_chars(10, 2), 0);
+    }
+
+    #[test]
+    fn status_bar_resolve_click_fit_chars_skips_dropped() {
+        use primitives::status_bar::StatusBarSegment;
+        let mk = |text: &str, id: &str| StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(0, 0, 0),
+            bg: Color::rgb(0, 0, 0),
+            bold: false,
+            action_id: Some(WidgetId::new(id)),
+        };
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![mk(" L ", "left")],
+            right_segments: vec![mk(" drop ", "drop"), mk(" keep ", "keep")],
+        };
+
+        // bar_width 20 fits both on the right (3+12=15 <= 20-0=20 with gap 2): left_w=3, gap=2, total_r=12, 3+2+12=17 <= 20.
+        // No drop; keep starts at col 14 (20-6), drop at col 8 (20-12).
+        assert_eq!(
+            bar.resolve_click_fit_chars(10, 20, 2)
+                .as_ref()
+                .map(|w| w.as_str()),
+            Some("drop")
+        );
+
+        // Narrow bar: 3 + 2 + 12 = 17 > 15. Drop " drop " (6). Remaining " keep " (6) fits (3+2+6=11<=15).
+        // Now visible right: just "keep" at col 15-6=9.
+        // Click at col 10 → hits "keep".
+        assert_eq!(
+            bar.resolve_click_fit_chars(10, 15, 2)
+                .as_ref()
+                .map(|w| w.as_str()),
+            Some("keep")
+        );
+        // Click at col 3 (where "drop" used to be) → no segment.
+        assert_eq!(bar.resolve_click_fit_chars(3, 15, 2), None);
+    }
+
+    #[test]
     fn text_display_append_and_cap() {
         use primitives::text_display::TextDisplayLine;
         let mut td = TextDisplay::new(WidgetId::new("logs"));
