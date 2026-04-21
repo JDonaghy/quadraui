@@ -43,167 +43,16 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color as RatColor, Modifier, Style};
 use ratatui::Terminal;
 
-use quadraui::{Color, StatusBar, StatusBarSegment, TabBar, TabBarSegment, TabItem, WidgetId};
+use quadraui::{Color, StatusBar, TabBar};
 
-// ─── App state ───────────────────────────────────────────────────────────────
-
-/// All persistent state lives here. Each frame:
-/// 1. We build quadraui primitives FROM this state.
-/// 2. We render the primitives.
-/// 3. Events MUTATE this state.
-struct AppState {
-    tabs: Vec<String>,
-    active_tab: usize,
-    /// Authoritative tab scroll offset. The `TabBar` primitive's
-    /// `scroll_offset` field is the *input* per frame — this field is
-    /// where we store the value the backend computed and wrote back via
-    /// the `TabBar` contract.
-    tab_scroll_offset: usize,
-    /// Which clickable status-bar segment currently has keyboard focus
-    /// (highlighted by underline). Tab cycles through the visible right
-    /// segments.
-    focused_status_idx: usize,
-    /// Last action triggered, shown in the status message.
-    last_message: String,
-}
-
-impl AppState {
-    fn new() -> Self {
-        Self {
-            tabs: vec![
-                "main.rs".into(),
-                "lib.rs".into(),
-                "Cargo.toml".into(),
-                "README.md".into(),
-                "tests.rs".into(),
-            ],
-            active_tab: 0,
-            tab_scroll_offset: 0,
-            focused_status_idx: 0,
-            last_message: "ready".into(),
-        }
-    }
-
-    fn next_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
-        }
-    }
-    fn prev_tab(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
-        }
-    }
-    fn open_tab(&mut self) {
-        let n = self.tabs.len() + 1;
-        self.tabs.push(format!("scratch-{n}.txt"));
-        self.active_tab = self.tabs.len() - 1;
-    }
-    fn close_active(&mut self) {
-        if self.tabs.len() > 1 {
-            self.tabs.remove(self.active_tab);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            }
-        }
-    }
-}
-
-// ─── Primitive builders (state → primitive) ──────────────────────────────────
-
-fn build_tab_bar(state: &AppState) -> TabBar {
-    let tabs = state
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, name)| TabItem {
-            label: format!(" {}: {} ", i + 1, name),
-            is_active: i == state.active_tab,
-            is_dirty: false,
-            is_preview: false,
-        })
-        .collect();
-    TabBar {
-        id: WidgetId::new("tabs:editor"),
-        tabs,
-        scroll_offset: state.tab_scroll_offset,
-        right_segments: vec![TabBarSegment {
-            text: " + ".into(),
-            width_cells: 3,
-            id: Some(WidgetId::new("tab:new")),
-            is_active: false,
-        }],
-        active_accent: Some(Color::rgb(80, 160, 240)),
-    }
-}
-
-fn build_status_bar(state: &AppState, focused_id: Option<&str>) -> StatusBar {
-    let bar_fg = Color::rgb(220, 220, 220);
-    let bar_bg = Color::rgb(40, 40, 60);
-    let mode_fg = Color::rgb(80, 200, 120);
-
-    let make = |text: String, action: Option<&str>| StatusBarSegment {
-        text,
-        fg: bar_fg,
-        bg: bar_bg,
-        bold: false,
-        action_id: action.map(WidgetId::new),
-    };
-
-    let left = vec![
-        StatusBarSegment {
-            text: " DEMO ".into(),
-            fg: mode_fg,
-            bg: bar_bg,
-            bold: true,
-            action_id: None,
-        },
-        make(
-            format!(
-                " {} ",
-                state
-                    .tabs
-                    .get(state.active_tab)
-                    .cloned()
-                    .unwrap_or_default()
-            ),
-            None,
-        ),
-    ];
-
-    // Right segments — built least-important first, most-important last.
-    // `fit_right_start` drops from the front when the bar is narrow,
-    // so cursor position (the rightmost segment) always stays visible.
-    // See StatusBar's "Backend contract" rustdoc.
-    let mut right = vec![
-        make(format!(" {} ", state.last_message), Some("status:dismiss")),
-        make(" UTF-8 ".into(), Some("status:encoding")),
-        make(" LF ".into(), Some("status:line_ending")),
-        make(
-            format!(" Tab {} ", state.active_tab + 1),
-            Some("status:goto"),
-        ),
-        make(" rust ".into(), Some("status:language")),
-    ];
-
-    // Mark the focused segment by toggling bold (a backend's per-frame
-    // interaction state — passed alongside the primitive, not inside it).
-    if let Some(fid) = focused_id {
-        for seg in &mut right {
-            if let Some(ref id) = seg.action_id {
-                if id.as_str() == fid {
-                    seg.bold = true;
-                }
-            }
-        }
-    }
-
-    StatusBar {
-        id: WidgetId::new("status:editor"),
-        left_segments: left,
-        right_segments: right,
-    }
-}
+// Shared backend-agnostic app code (AppState, build_tab_bar,
+// build_status_bar, focused_segment_id, handle_status_action).
+// The whole point of this demo is that what's left in this file IS
+// the backend code — anything common with `gtk_demo.rs` lives in
+// `examples/common/mod.rs`.
+#[path = "common/mod.rs"]
+mod common;
+use common::{build_status_bar, build_tab_bar, focused_segment_id, handle_status_action, AppState};
 
 // ─── Backend (primitive → ratatui buffer) ────────────────────────────────────
 
@@ -354,32 +203,6 @@ fn draw_status_bar(buf: &mut Buffer, area: Rect, bar: &StatusBar) {
     }
 }
 
-// ─── Event handling (event → state mutation) ─────────────────────────────────
-
-fn focused_segment_id(state: &AppState) -> Option<String> {
-    let bar = build_status_bar(state, None);
-    let interactive: Vec<&StatusBarSegment> = bar
-        .right_segments
-        .iter()
-        .filter(|s| s.action_id.is_some())
-        .collect();
-    interactive
-        .get(state.focused_status_idx)
-        .and_then(|s| s.action_id.as_ref())
-        .map(|id| id.as_str().to_string())
-}
-
-fn handle_status_action(state: &mut AppState, id: &str) {
-    state.last_message = match id {
-        "status:dismiss" => "dismissed".into(),
-        "status:encoding" => "encoding picker (mock)".into(),
-        "status:line_ending" => "line-ending picker (mock)".into(),
-        "status:goto" => format!("go-to-tab picker (active = {})", state.active_tab + 1),
-        "status:language" => "language picker (mock)".into(),
-        _ => format!("unknown action: {}", id),
-    };
-}
-
 // ─── Main loop ───────────────────────────────────────────────────────────────
 
 fn main() -> io::Result<()> {
@@ -411,28 +234,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut AppState) 
                     KeyCode::Left => state.prev_tab(),
                     KeyCode::Char('n') => state.open_tab(),
                     KeyCode::Char('x') => state.close_active(),
-                    KeyCode::Tab => {
-                        // Cycle through visible interactive status segments.
-                        let count = build_status_bar(state, None)
-                            .right_segments
-                            .iter()
-                            .filter(|s| s.action_id.is_some())
-                            .count();
-                        if count > 0 {
-                            state.focused_status_idx = (state.focused_status_idx + 1) % count;
-                        }
-                    }
-                    KeyCode::BackTab => {
-                        let count = build_status_bar(state, None)
-                            .right_segments
-                            .iter()
-                            .filter(|s| s.action_id.is_some())
-                            .count();
-                        if count > 0 {
-                            state.focused_status_idx =
-                                (state.focused_status_idx + count - 1) % count;
-                        }
-                    }
+                    KeyCode::Tab => state.cycle_status_focus(1),
+                    KeyCode::BackTab => state.cycle_status_focus(-1),
                     KeyCode::Enter => {
                         if let Some(id) = focused_segment_id(state) {
                             handle_status_action(state, &id);

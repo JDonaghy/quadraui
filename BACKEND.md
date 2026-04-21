@@ -249,6 +249,13 @@ exercises the contracts. Two runnable examples ship with the crate,
 demonstrating the **same demo app** in two different rendering
 backends — proving the app side is fully backend-agnostic.
 
+**Shared structure:** the two demos share their app code via
+`examples/common/mod.rs` (~240 lines: `AppState`, `build_tab_bar`,
+`build_status_bar`, event-dispatch helpers). Each demo is then ~350-450
+lines of pure backend code. Side-by-side `diff tui_demo.rs gtk_demo.rs`
+shows exactly what differs between two backends rendering the same
+declarative UI — that's the abstraction quadraui exists to provide.
+
 ### `examples/tui_demo.rs` — TUI / ratatui (~350 lines)
 
 ```bash
