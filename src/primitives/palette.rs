@@ -11,6 +11,24 @@
 //! (right-side file preview) and tree structures (symbol picker with
 //! expandable rows) are later primitive extensions; apps with those
 //! needs fall back to their legacy rendering until the extensions land.
+//!
+//! # Backend contract
+//!
+//! **Declarative + modal.** Render as an overlay on top of the rest of
+//! the UI (highest z-order); intercept ALL mouse and keyboard events
+//! when open. Render the `query` text input at the top, then
+//! `items[scroll_offset..]` below. Click on item → emit
+//! `PaletteEvent::ItemActivated { idx }`. Printable keys append to
+//! query → emit `QueryChanged`. `j`/`k`/arrows move `selected_idx`,
+//! Enter activates, Escape emits `Cancelled`.
+//!
+//! **Click intercept is mandatory.** If the backend lets clicks fall
+//! through to the editor / underlying UI when the palette is open,
+//! users will accidentally interact with hidden widgets — a class of
+//! bug we hit in vimcode's Win-GUI port (see
+//! `docs/NATIVE_GUI_LESSONS.md` §10). For each click handler in your
+//! backend, the very first check should be "is a palette / dialog
+//! open? If yes, route here instead."
 
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};

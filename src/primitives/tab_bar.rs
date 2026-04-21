@@ -15,6 +15,60 @@
 //! plugin readiness, but vimcode's click path still resolves through the
 //! existing engine-side `TabBarClickTarget` enum. `TabBarEvent` exists
 //! for a later stage where plugin-defined tab bars use event-driven clicks.
+//!
+//! # Backend contract
+//!
+//! **`TabBar` has measurement-dependent state and a non-trivial backend
+//! contract.** Skipping any step makes the active tab land off-screen
+//! after layout changes (window resize, new file open, scroll-to). This
+//! is the bug class we hit hardest in vimcode (issue #158, 5 commits to
+//! find the right architecture).
+//!
+//! Per paint, the backend MUST:
+//!
+//! 1. **Measure each tab in its native unit.** Char counts for TUI, Pango
+//!    pixel widths for GTK, DirectWrite for Win-GUI, Core Text for macOS.
+//!    The measurement must include the tab's full visual width — label
+//!    text *plus* any padding, close-button area, and inter-tab gap that
+//!    the rendering will draw. Pre-compute into a `Vec<usize>` since
+//!    you'll need it twice (once for the fit calculation, once for the
+//!    paint loop).
+//!
+//! 2. **Compute the correct scroll offset** by calling
+//!    [`TabBar::fit_active_scroll_offset`] with `(active_idx, tab_count,
+//!    available_width, |i| measured[i])`. `available_width` and the
+//!    measurer's return type must use the same unit.
+//!
+//! 3. **Write the result back to wherever the app stores `scroll_offset`.**
+//!    The `bar.scroll_offset` field on the primitive itself is the *input*
+//!    for this paint; the app holds the canonical value. Provide a setter
+//!    that returns whether the value changed.
+//!
+//! 4. **If the offset changed, repaint with the corrected state.** This
+//!    handles the case where last frame's offset was stale (window just
+//!    resized, etc.). Two patterns work:
+//!    - **TUI / Win-GUI** (loop-driven backends): the next loop iteration
+//!      naturally redraws — set a "needs redraw" flag and continue.
+//!    - **GTK / event-driven backends without mid-draw mutability**: do a
+//!      *second paint inline within the same draw callback* (overdraw the
+//!      same Cairo context). `idle_add` / queued draws are unreliable
+//!      during continuous resize events.
+//!
+//! 5. **Use `bar.scroll_offset` (the input value) for the paint loop's
+//!    starting tab index.** The corrected offset only matters for the
+//!    next paint cycle; this paint shows what the engine state currently
+//!    says.
+//!
+//! Skipping step 1 (using a generic char width estimate) under-estimates
+//! per-tab width by ~4 cells in pixel-rendering backends — the active
+//! tab gets clipped on the right edge.
+//!
+//! Skipping step 4 leaves the active tab off-screen until *some other*
+//! event triggers a paint — what looks like a sticky bug to the user.
+//!
+//! See vimcode's `src/gtk/quadraui_gtk.rs::draw_tab_bar` and
+//! `src/gtk/mod.rs::set_draw_func` for the GTK reference implementation,
+//! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};

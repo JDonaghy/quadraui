@@ -11,6 +11,25 @@
 //! palette indices — vimcode resolves vt100 palette colors through the
 //! active theme before populating the cell grid, so the primitive is
 //! palette-agnostic.
+//!
+//! # Backend contract
+//!
+//! **Purely declarative.** Iterate `cells[row][col]` and rasterise each
+//! cell at its grid position. Per-cell `bold` / `italic` / `underline`
+//! flags map to the backend's font/attr system. The `selected` /
+//! `is_cursor` / `is_find_match` overlays use theme colours; backends
+//! typically invert fg/bg for cursor cells and apply a colour
+//! highlight for selection / find matches.
+//!
+//! Mouse interaction (selection drag, click-to-position) and keyboard
+//! input (forward to PTY) live **outside** the primitive — they're the
+//! app/backend's responsibility. The primitive is a paint snapshot,
+//! not an interactive widget.
+//!
+//! For high-FPS terminals (60+ fps), backends may compare consecutive
+//! `Terminal` snapshots and only repaint changed cells. Reference
+//! implementations currently repaint the whole grid each frame — fine
+//! for typical workloads, optimise when profiling shows it's hot.
 
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};

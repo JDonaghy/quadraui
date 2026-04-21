@@ -7,6 +7,14 @@
 //! right primitive for "flat list of rows rendered into a panel":
 //! quickfix lists, symbol lists, reference lists, log panes, buffer
 //! switchers (when not rendered as a modal), diagnostics lists.
+//!
+//! # Backend contract
+//!
+//! **Purely declarative** — render the optional `title` then
+//! `items[scroll_offset..]` until the viewport fills. Click on row →
+//! emit `ListViewEvent::ItemActivated { idx }`. Keyboard `j`/`k`/`Enter`
+//! emit the corresponding events. The app updates `selected_idx` and
+//! `scroll_offset` for the next frame.
 
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};

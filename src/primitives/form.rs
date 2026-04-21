@@ -16,6 +16,26 @@
 //! Keyboard navigation between fields is backend-driven: Tab / Shift-Tab
 //! moves focus forward/backward; arrow keys within a field are handled
 //! by that field's kind-specific logic.
+//!
+//! # Backend contract
+//!
+//! **Mostly declarative.** Render fields top-to-bottom from
+//! `fields[scroll_offset..]`. Per-field rendering depends on `FieldKind`:
+//!
+//! - `Toggle` — checkbox / switch UI; click flips value, emit
+//!   `FormEvent::ToggleChanged`.
+//! - `TextInput` — render text + cursor + selection; route printable
+//!   keys to text mutation, emit `FormEvent::TextInputChanged` per
+//!   keystroke and `TextInputCommitted` on Enter.
+//! - `Button` — render label, click emits `FormEvent::ButtonClicked`.
+//! - `Label` — non-interactive header / divider.
+//!
+//! Tab / Shift-Tab move `focused_field` forward/backward through
+//! interactive fields (skip `Label`); emit `FormEvent::FocusChanged
+//! { id }`. The *app* updates `focused_field` on the next frame.
+//!
+//! No measurement-dependent state — fields are uniform-height per
+//! backend.
 
 use crate::types::{Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};

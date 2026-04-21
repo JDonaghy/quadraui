@@ -12,6 +12,21 @@
 //! Click resolution is per-backend — TUI computes from cell-row arithmetic,
 //! GTK from pixel-row arithmetic. The primitive itself carries no layout
 //! calculation; it's a declarative list.
+//!
+//! # Backend contract
+//!
+//! **Declarative + per-frame interaction state passed alongside.** Render
+//! the `top_items` from the top of the strip, then the `bottom_items`
+//! pinned to the bottom. Click on item → emit
+//! `ActivityBarEvent::ItemClicked { id }`.
+//!
+//! Hover state (which item the mouse is currently over for tooltip
+//! affordance) is **per-frame, backend-owned** — the primitive does NOT
+//! carry it. Backends pass `hovered_idx: Option<usize>` to their own
+//! `draw_activity_bar` function. Same pattern as `TabBar`'s
+//! `hovered_close_tab`. Rule: **state that's only knowable by the
+//! backend (cursor position, focus-within, scroll momentum) lives
+//! beside the primitive, not inside it.**
 
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};

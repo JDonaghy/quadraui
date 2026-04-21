@@ -7,6 +7,23 @@
 //! tree structure of its own. This keeps the data model plain and
 //! plugin-friendly while letting apps control exactly which rows are
 //! visible at any given frame.
+//!
+//! # Backend contract
+//!
+//! **Purely declarative** — render `rows[scroll_offset..]` until the
+//! viewport is full. Click → row index → emit `TreeEvent::RowActivated`
+//! with the row's `path`. Keyboard navigation (`j`/`k`/`h`/`l`/`Enter`)
+//! emits the corresponding event; the *app* updates `selected_path` and
+//! `scroll_offset` for the next frame.
+//!
+//! No measurement-dependent state — backends pick a uniform row height
+//! (often `line_height` for leaves, `line_height * 1.4` for branches in
+//! GUI backends, exactly `1` cell for TUI). Per-backend row cadence is
+//! allowed; the primitive only constrains data shape.
+//!
+//! Apps that need "scroll selection into view" do it themselves by
+//! adjusting `scroll_offset` based on the selected row's flat index and
+//! the viewport row count.
 
 use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,

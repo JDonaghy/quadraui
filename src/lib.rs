@@ -2,15 +2,75 @@
 //!
 //! Cross-platform UI primitives for keyboard-driven desktop and terminal apps.
 //!
-//! Targets four rendering backends — Windows (Direct2D + DirectWrite),
-//! Linux (GTK4 + Cairo + Pango), macOS (Core Graphics + Core Text, v1.x),
-//! and TUI (ratatui + crossterm) — with a single declarative API.
+//! Targets four rendering backends with a single declarative API:
+//! - **Windows** (Direct2D + DirectWrite) — `windows-rs`
+//! - **Linux** (GTK4 + Cairo + Pango) — `gtk4`
+//! - **macOS** (Core Graphics + Core Text) — *planned, v1.x*
+//! - **TUI** (ratatui + crossterm) — works everywhere as a fallback
 //!
-//! See `docs/UI_CRATE_DESIGN.md` in the vimcode repository for the full
-//! design, resolved decisions, and plugin-friendly invariants.
+//! ## What's in the box
 //!
-//! **Status:** Phase A.1a — `TreeView` primitive defined; TUI backend
-//! landing next within this stage; GTK (A.1b) and Win-GUI (A.1c) follow.
+//! Nine primitives, each declarative + serde-friendly so apps and Lua
+//! plugins can describe UI as data:
+//!
+//! | Primitive | Use for |
+//! |-----------|---------|
+//! | [`TreeView`] | File explorers, source-control panels, hierarchical lists |
+//! | [`ListView`] | Quickfix, search results, flat selectable lists |
+//! | [`Form`] | Settings panels, config editors |
+//! | [`Palette`] | Command palettes, fuzzy pickers |
+//! | [`StatusBar`] | Mode/file/cursor strips, footer bars |
+//! | [`TabBar`] | Editor tabs, document tabs |
+//! | [`ActivityBar`] | Vertical icon strips (VSCode-style) |
+//! | [`Terminal`] | Cell grids for terminal emulators |
+//! | [`TextDisplay`] | Streaming logs, AI chat output |
+//!
+//! ## How it works
+//!
+//! Apps build primitive descriptions from their own state. Backends consume
+//! the descriptions and rasterise them. Events flow back as `*Event` enums
+//! that reference primitives by [`WidgetId`] (owned strings — plugin-safe,
+//! no `&'static str`).
+//!
+//! ```ignore
+//! // App (your code) — state-driven, declarative:
+//! let bar = quadraui::StatusBar {
+//!     id: WidgetId::new("status:editor"),
+//!     left_segments: vec![mode_segment(), filename_segment()],
+//!     right_segments: vec![lsp_segment(), cursor_segment()],
+//! };
+//!
+//! // Backend (yours or one of the existing ones) — measure + paint:
+//! draw_status_bar(cr, &bar, &theme);
+//! ```
+//!
+//! ## Documentation
+//!
+//! - **`README.md`** (in this crate) — quick start, primitive guide.
+//! - **`BACKEND.md`** *(coming soon)* — implementing a new render backend:
+//!   measurer-parameterised algorithms, two-pass paint, post-draw apply.
+//! - **`docs/UI_CRATE_DESIGN.md`** (in the vimcode repo) — full design
+//!   rationale and the §10 plugin invariants every primitive must honour.
+//!
+//! ## Status
+//!
+//! Pre-1.0 (`v0.1.x`). API will stabilise before publishing to crates.io.
+//! All nine primitives shipped; the TUI and GTK backends are battle-tested
+//! by vimcode (5000+ tests), the Win-GUI backend ships SC + explorer panel
+//! migrations and is queued for tab/status/activity bar parity. macOS is
+//! v1.x.
+//!
+//! ## Plugin invariants (briefly)
+//!
+//! From `docs/UI_CRATE_DESIGN.md` §10 — applies to every primitive:
+//! 1. [`WidgetId`] is owned (`String`) — not `&'static str`.
+//! 2. Events are plain data — no Rust closures.
+//! 3. Primitives implement `Serialize + Deserialize` — Lua tables map via JSON.
+//! 4. WidgetIds are namespaced (e.g. `"plugin:my-ext:send"`).
+//! 5. No global event handlers — every event references a `WidgetId`.
+//! 6. Primitives don't borrow app state — owned data or explicit `'a`.
+//!
+//! Verify all six when adding a new primitive or extending an existing one.
 
 pub mod primitives;
 pub mod types;

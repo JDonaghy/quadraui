@@ -11,6 +11,48 @@
 //! `StatusBarEvent::SegmentClicked { id }`. Apps map the `WidgetId`
 //! back to their own action dispatch (see vimcode's
 //! `render::status_action_id` / `StatusAction::from_id`).
+//!
+//! # Backend contract
+//!
+//! **`StatusBar` has narrow-bar handling that backends MUST implement
+//! correctly** or the right segments overlap / touch / overflow the left
+//! segments on narrow widths (issue #159). A purely declarative paint
+//! that just renders all segments left-aligned and all segments right-
+//! aligned looks fine on wide bars and ugly-to-broken on narrow ones.
+//!
+//! Per paint, the backend MUST:
+//!
+//! 1. **Decide which right segments fit** by calling
+//!    [`StatusBar::fit_right_start`] with the bar's available width,
+//!    a minimum gap (e.g. 2 cells / 16 px), and a measurement closure
+//!    in the backend's native unit. Returns the index where rendering
+//!    of right segments should *start* — segments at indices below it
+//!    are dropped to fit.
+//!
+//! 2. **Render only the visible slice** — `&right_segments[start..]` —
+//!    right-aligned. Segments before `start` must NOT be drawn.
+//!
+//! 3. **Skip dropped segments in click handlers.** Use
+//!    [`StatusBar::resolve_click_fit_chars`] (TUI) or compute hit
+//!    regions only for visible segments (GTK / Win-GUI, where draw_func
+//!    populates per-segment hit zones inline). Otherwise clicks on
+//!    columns where dropped segments *used to be* will trigger their
+//!    actions even though the user can't see them.
+//!
+//! Convention for app-side priority: **`right_segments` is built
+//! least-important first, most-important (e.g. cursor position) last.**
+//! `fit_right_start` drops from the front, so the rightmost (highest-
+//! priority) segments stay visible at the right edge of the bar.
+//!
+//! Skipping step 1 + 2 makes narrow bars look like `BARMODE filenameSpaces:`
+//! (touching, no gap) or worse (right segments overdrawing left in TUI).
+//!
+//! Skipping step 3 means clicking blank space at the left of the right
+//! group can trigger random toggles — confusing and undebuggable.
+//!
+//! See vimcode's `src/gtk/quadraui_gtk.rs::draw_status_bar` and
+//! `src/tui_main/quadraui_tui.rs::draw_status_bar` for reference
+//! implementations.
 
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};

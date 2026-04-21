@@ -15,6 +15,27 @@
 //! functions and optimised partial-repaint paths land when the first
 //! consumer (kubectl logs viewer #145, LSP trace viewer, etc.) needs
 //! them.
+//!
+//! # Backend contract
+//!
+//! **Declarative + auto-scroll convention.** Render
+//! `lines[scroll_offset..]` from top to bottom of the viewport. Each
+//! `TextDisplayLine` carries pre-styled spans + an optional `decoration`
+//! (info / warn / error tint) + an optional `timestamp`. Backends paint
+//! the spans, optionally tint the row by decoration, optionally render
+//! the timestamp prefix in a dim style.
+//!
+//! **Auto-scroll handling**: when `auto_scroll == true`, the backend
+//! ignores `scroll_offset` and pins the view to the bottom (newest
+//! lines). When the user scrolls up, the backend (or the app on its
+//! behalf) sets `auto_scroll = false` and respects `scroll_offset`
+//! until the user scrolls back to the bottom.
+//!
+//! **Performance**: for high-volume streams, backends may diff only the
+//! newly-appended lines (the primitive is append-only — `append_line` /
+//! `clear` / cap-eviction are the only mutations) and repaint just the
+//! affected rows. Reference implementations land with the first
+//! consumer.
 
 use crate::types::{Decoration, Modifiers, StyledSpan, WidgetId};
 use serde::{Deserialize, Serialize};
