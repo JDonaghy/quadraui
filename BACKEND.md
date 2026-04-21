@@ -242,42 +242,78 @@ filled inside `set_draw_func` and read inside the click controller.
 rustdoc — skipping it is a backend bug class documented in
 `NATIVE_GUI_LESSONS.md` §10.
 
-## 5. Minimal backend walkthrough
+## 5. Minimal backend walkthroughs
 
 The best way to grok the patterns is to read a working backend that
-exercises the contracts. `examples/tui_demo.rs` is ~350 lines of
-ratatui code and demonstrates:
+exercises the contracts. Two runnable examples ship with the crate,
+demonstrating the **same demo app** in two different rendering
+backends — proving the app side is fully backend-agnostic.
 
-- **Building primitives from app state** — `build_tab_bar(state)` and
-  `build_status_bar(state, focused_id)`.
-- **TabBar contract** — `draw_tab_bar` returns the corrected
-  `scroll_offset`, the main loop compares to app state, runs pass 2
-  if it changed.
-- **StatusBar contract** — `draw_status_bar` calls
-  `fit_right_start_chars(width, MIN_GAP_CELLS=2)` and only renders
-  the visible slice. The example doesn't dispatch clicks to status
-  segments because it's keyboard-only, but the pattern is identical:
-  `bar.resolve_click_fit_chars(col, width, gap)` returns the
-  `WidgetId` of the clicked segment (or `None` for misses or
-  dropped segments).
-- **Event flow** — Tab cycles `focused_status_idx`, Enter calls
-  `handle_status_action(&id)`, the action mutates state, next paint
-  reflects it.
-- **No hidden state** — every paint rebuilds primitives from
-  `AppState`. No retained widget references.
-
-To run it:
+### `examples/tui_demo.rs` — TUI / ratatui (~350 lines)
 
 ```bash
 cargo run --example tui_demo
 ```
 
-(needs the `ratatui` and `crossterm` dev-dependencies, already
-configured in `Cargo.toml`.)
+Cell-unit measurement (TUI is the easy case — units match the
+engine's defaults). Demonstrates:
 
-Read it once start-to-finish before implementing your own backend.
-The structure transfers near-verbatim to GTK / Direct2D / Core
-Graphics / wgpu — only the `draw_*` internals change.
+- **Building primitives from app state** — `build_tab_bar(state)` /
+  `build_status_bar(state, focused_id)`.
+- **TabBar contract** — `draw_tab_bar` measures each tab in cells,
+  calls `fit_active_scroll_offset`, returns the corrected offset.
+  Main loop compares to app state, runs pass 2 if it changed.
+- **StatusBar contract** — `draw_status_bar` calls
+  `fit_right_start_chars(width, 2-cell gap)` and renders only the
+  visible slice.
+- **Event flow** — Tab cycles `focused_status_idx`, Enter dispatches
+  via `handle_status_action(&id)`, state mutation reflected on next
+  frame.
+- **No hidden state** — every paint rebuilds primitives from
+  `AppState`. No retained widget references.
+
+### `examples/gtk_demo.rs` — GTK4 / Cairo + Pango (~430 lines)
+
+```bash
+cargo run --example gtk_demo --features gtk-example
+```
+
+(Requires GTK4 development libraries — `libgtk-4-dev` on Debian /
+Ubuntu, `gtk4-devel` on Fedora, `gtk4` on Homebrew. Off by default
+so `cargo build` works on platforms without them.)
+
+Pixel-unit measurement (the harder case — every backend other than
+TUI needs this pattern). Same demo app as `tui_demo.rs`, with the
+**identical AppState struct, identical primitive builders**, and a
+GTK-flavoured backend layer. Demonstrates everything the TUI demo
+does, plus:
+
+- **Pango pixel measurer** — each tab's full slot width is
+  `tab_pad + label_pixels + close_pixels + tab_pad + outer_gap`
+  (~6 chars-equivalent of overhead per tab; this is the under-
+  estimation that motivated lesson §12 in NATIVE_GUI_LESSONS.md).
+- **Two-pass paint inline within `set_draw_func`** — pass 1 paints,
+  the post-paint apply mutates app state via `RefCell::borrow_mut`
+  after dropping the immutable borrow, pass 2 overdraws the same
+  Cairo context. **No `idle_add`** — the deferred-callback approach
+  is unreliable during continuous resize (drag the window narrow
+  while many tabs are open to see this matter).
+- **Per-frame interaction state passed alongside the primitive** —
+  the focused status segment's bold styling is computed from a
+  separate `focused_id` parameter, not stored on the primitive
+  struct.
+
+The hint row at the bottom shows `[pass-2 fired]` when the demo's
+last paint triggered a second pass — flip the flag on/off by
+resizing the window or opening/closing tabs.
+
+### Read both before implementing a new backend
+
+Comparing the two demos side-by-side is the fastest way to see
+which parts are app code (identical) and which are backend code
+(different). The structure transfers near-verbatim to Direct2D /
+Core Graphics / wgpu / browser canvas — only the `draw_*`
+internals change.
 
 ## 6. Backend-implementer checklist
 

@@ -52,9 +52,12 @@
 //!   algorithms, per-primitive contracts), two-pass paint pattern,
 //!   click-intercept hierarchy, implementer checklist.
 //! - **`examples/tui_demo.rs`** — runnable ratatui example that
-//!   exercises the TabBar + StatusBar contracts end-to-end. Read after
-//!   `BACKEND.md` for the working version of the patterns.
-//!   `cargo run --example tui_demo`.
+//!   exercises the TabBar + StatusBar contracts end-to-end (cell
+//!   units). `cargo run --example tui_demo`.
+//! - **`examples/gtk_demo.rs`** — same demo rendered with GTK4 +
+//!   Cairo + Pango (pixel units, two-pass paint). Requires the
+//!   `gtk-example` feature: `cargo run --example gtk_demo
+//!   --features gtk-example`.
 //! - **`docs/UI_CRATE_DESIGN.md`** — full design rationale and the §10
 //!   plugin invariants every primitive must honour.
 //! - **`docs/DECISIONS.md`** — running log of API decisions

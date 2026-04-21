@@ -9,16 +9,32 @@ publish = false
 
 [lib]
 
+[features]
+# Pulls in gtk4 + pangocairo so `cargo run --example gtk_demo` works.
+# Off by default so `cargo build` / `cargo test` work on platforms
+# without GTK4 development libraries (Windows, headless macOS, etc.).
+# Enable with `cargo run --example gtk_demo --features gtk-example`.
+gtk-example = ["dep:gtk4", "dep:pangocairo"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+# Optional — only pulled in when `gtk-example` feature is enabled.
+gtk4 = { version = "0.7", features = ["v4_10"], optional = true }
+pangocairo = { version = "0.18", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
 # For runnable examples that demonstrate the TUI backend pattern.
-# Examples: `cargo run --example tui_demo`
+# `cargo run --example tui_demo` works out of the box (no feature gate
+# needed — both crates are pure Rust).
 ratatui = "0.29"
 crossterm = "0.29"
 
 [[example]]
 name = "tui_demo"
 path = "examples/tui_demo.rs"
+
+[[example]]
+name = "gtk_demo"
+path = "examples/gtk_demo.rs"
+required-features = ["gtk-example"]

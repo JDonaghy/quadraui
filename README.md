@@ -200,16 +200,22 @@ The short version:
    "Backend contract" rustdoc section first.
 4. Translate clicks/keys/mouse-events into `*Event` enums for your app.
 
-A runnable example lives in this crate:
+Two runnable examples ship with the crate — same demo app rendered
+two ways:
 
 ```bash
 cargo run --example tui_demo
+cargo run --example gtk_demo --features gtk-example   # needs libgtk-4-dev
 ```
 
-It's ~350 lines of ratatui code that exercises both the `TabBar`
-contract (measure → fit → correct → repaint) and the `StatusBar`
-contract (fit → render-slice → click-skip). Read it alongside
-`BACKEND.md` for the patterns in working form.
+Both exercise the `TabBar` contract (measure → fit → correct →
+repaint) and the `StatusBar` contract (fit → render-slice →
+click-skip). The TUI version is the easy case (cell units = engine
+defaults); the GTK version shows the **pixel-unit measurer pattern**
+that every non-TUI backend needs. The app code (state struct,
+primitive builders, event handlers) is identical between the two —
+only the `draw_*` internals differ. Read both alongside `BACKEND.md`
+for the patterns in working form.
 
 Production backends live in the [vimcode] repository:
 
