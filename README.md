@@ -184,16 +184,34 @@ backend was before the contract was discovered. Read the rustdoc.
 
 ## Implementing a new backend
 
-A `BACKEND.md` covering this in depth is coming. The short version:
+See **[`BACKEND.md`](BACKEND.md)** for the full guide: mental model,
+the three contracts every backend must honour, the two-pass paint
+pattern for backends without mid-draw mutability, click-intercept
+hierarchy, and a checklist to run through when standing up a new
+backend.
+
+The short version:
 
 1. Pick your render API (GPU, GUI toolkit, terminal, etc.).
 2. For each primitive your app uses, write a `draw_<primitive>(target,
    primitive, theme)` function that renders the declarative struct.
 3. For primitives with backend contracts (`StatusBar`, `TabBar`),
-   wire the contract into your paint cycle.
+   wire the contract into your paint cycle. Read each primitive's
+   "Backend contract" rustdoc section first.
 4. Translate clicks/keys/mouse-events into `*Event` enums for your app.
 
-Reference implementations live in the vimcode repo:
+A runnable example lives in this crate:
+
+```bash
+cargo run --example tui_demo
+```
+
+It's ~350 lines of ratatui code that exercises both the `TabBar`
+contract (measure → fit → correct → repaint) and the `StatusBar`
+contract (fit → render-slice → click-skip). Read it alongside
+`BACKEND.md` for the patterns in working form.
+
+Production backends live in the [vimcode] repository:
 
 - `src/tui_main/quadraui_tui.rs` — TUI (ratatui)
 - `src/gtk/quadraui_gtk.rs` — GTK4 (Cairo + Pango)
@@ -202,6 +220,8 @@ Reference implementations live in the vimcode repo:
 vimcode itself is the largest known consumer of quadraui (~16,000
 lines of editor logic, 5000+ tests). Both `*_to_*` adapter naming
 and the per-primitive `draw_*` shape are stable patterns to copy.
+
+[vimcode]: https://github.com/JDonaghy/vimcode
 
 ## Status
 
@@ -226,7 +246,10 @@ MIT OR Apache-2.0 (matches vimcode).
 
 - [vimcode](https://github.com/JDonaghy/vimcode) — the reference
   consumer; quadraui is extracted from vimcode's UI layer.
-- vimcode's `docs/UI_CRATE_DESIGN.md` — full design doc, plugin
+- `docs/UI_CRATE_DESIGN.md` (in this crate) — full design doc, plugin
   invariants, decision history.
-- vimcode's `docs/NATIVE_GUI_LESSONS.md` §12-14 — patterns and
-  pitfalls discovered while shipping multi-backend support.
+- `docs/DECISIONS.md` (in this crate) — running log of which
+  primitives shipped, which deferred, and why this shape vs that one.
+- vimcode's `docs/NATIVE_GUI_LESSONS.md` §12-14 — cross-backend
+  bug patterns discovered shipping vimcode's three backends. Will
+  migrate into `BACKEND.md` here as that doc lands.

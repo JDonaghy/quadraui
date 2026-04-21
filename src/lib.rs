@@ -47,10 +47,18 @@
 //! ## Documentation
 //!
 //! - **`README.md`** (in this crate) — quick start, primitive guide.
-//! - **`BACKEND.md`** *(coming soon)* — implementing a new render backend:
-//!   measurer-parameterised algorithms, two-pass paint, post-draw apply.
-//! - **`docs/UI_CRATE_DESIGN.md`** (in the vimcode repo) — full design
-//!   rationale and the §10 plugin invariants every primitive must honour.
+//! - **`BACKEND.md`** — implementing a new render backend: mental
+//!   model, the three contracts (owned data, measurer-parameterised
+//!   algorithms, per-primitive contracts), two-pass paint pattern,
+//!   click-intercept hierarchy, implementer checklist.
+//! - **`examples/tui_demo.rs`** — runnable ratatui example that
+//!   exercises the TabBar + StatusBar contracts end-to-end. Read after
+//!   `BACKEND.md` for the working version of the patterns.
+//!   `cargo run --example tui_demo`.
+//! - **`docs/UI_CRATE_DESIGN.md`** — full design rationale and the §10
+//!   plugin invariants every primitive must honour.
+//! - **`docs/DECISIONS.md`** — running log of API decisions
+//!   (which primitives, why this shape, what was deferred).
 //!
 //! ## Status
 //!
