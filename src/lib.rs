@@ -21,6 +21,7 @@ pub use primitives::list::{ListItem, ListView, ListViewEvent};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
 pub use primitives::status_bar::{StatusBar, StatusBarEvent, StatusBarHitRegion, StatusBarSegment};
 pub use primitives::tab_bar::{TabBar, TabBarEvent, TabBarSegment, TabItem};
+pub use primitives::terminal::{Terminal, TerminalCell, TerminalEvent};
 pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
@@ -351,6 +352,76 @@ mod tests {
             Some("right")
         );
         assert_eq!(bar.resolve_click(15, 30), None); // gap between segments
+    }
+
+    #[test]
+    fn terminal_roundtrip_serde() {
+        use primitives::terminal::TerminalCell;
+        let term = Terminal {
+            id: WidgetId::new("terminal-0"),
+            cells: vec![
+                vec![
+                    TerminalCell {
+                        ch: '$',
+                        fg: Color::rgb(200, 200, 200),
+                        bg: Color::rgb(20, 20, 20),
+                        bold: true,
+                        italic: false,
+                        underline: false,
+                        selected: false,
+                        is_cursor: false,
+                        is_find_match: false,
+                        is_find_active: false,
+                    },
+                    TerminalCell {
+                        ch: ' ',
+                        fg: Color::rgb(200, 200, 200),
+                        bg: Color::rgb(20, 20, 20),
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        selected: false,
+                        is_cursor: true,
+                        is_find_match: false,
+                        is_find_active: false,
+                    },
+                ],
+                vec![TerminalCell {
+                    ch: 'm',
+                    fg: Color::rgb(255, 100, 50),
+                    bg: Color::rgb(20, 20, 20),
+                    bold: false,
+                    italic: false,
+                    underline: true,
+                    selected: true,
+                    is_cursor: false,
+                    is_find_match: true,
+                    is_find_active: false,
+                }],
+            ],
+        };
+        let json = serde_json::to_string(&term).unwrap();
+        let back: Terminal = serde_json::from_str(&json).unwrap();
+        assert_eq!(term, back);
+    }
+
+    #[test]
+    fn terminal_event_roundtrip_serde() {
+        let events = vec![
+            TerminalEvent::KeyPressed {
+                key: "a".to_string(),
+                modifiers: Modifiers::default(),
+            },
+            TerminalEvent::SelectStart { row: 5, col: 10 },
+            TerminalEvent::SelectExtend { row: 6, col: 20 },
+            TerminalEvent::SelectEnd,
+            TerminalEvent::Scroll { delta: -3 },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: TerminalEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
     }
 
     #[test]
