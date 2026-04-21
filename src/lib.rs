@@ -407,6 +407,64 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_fit_right_start_generic_pixel_measurer() {
+        // Proves the fit algorithm is unit-agnostic: a backend can supply
+        // its own measurer (e.g. Pango pixel widths for GTK) and the same
+        // drop-by-priority logic applies. Each char here = 10 "px".
+        use primitives::status_bar::StatusBarSegment;
+        let mk = |text: &str, id: &str| StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(0, 0, 0),
+            bg: Color::rgb(0, 0, 0),
+            bold: false,
+            action_id: Some(WidgetId::new(id)),
+        };
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![mk("LL", "left")], // 20 px
+            right_segments: vec![
+                mk("aaa", "lo"),    // 30 px (lowest priority)
+                mk("bbbb", "mid"),  // 40 px
+                mk("cursor", "hi"), // 60 px (highest priority)
+            ],
+        };
+        let measure_px = |seg: &StatusBarSegment| seg.text.chars().count() * 10;
+
+        // 200 px: 20 + 16 (gap) + 130 = 166 <= 200, no drop.
+        assert_eq!(bar.fit_right_start(200, 16, measure_px), 0);
+
+        // 150 px: 20 + 16 + 130 = 166 > 150. Drop "aaa" (30): 20+16+100=136 <= 150.
+        assert_eq!(bar.fit_right_start(150, 16, measure_px), 1);
+
+        // 100 px: drop "aaa" (30) + "bbbb" (40), keep "cursor": 20+16+60=96 <= 100.
+        assert_eq!(bar.fit_right_start(100, 16, measure_px), 2);
+
+        // 30 px: even cursor doesn't fit alone, but algorithm always keeps last.
+        assert_eq!(bar.fit_right_start(30, 16, measure_px), 2);
+
+        // Bold-aware: a measurer that adds 5 px for bold segments yields a
+        // different fit. Verifies the closure can vary by segment style.
+        let bold = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![StatusBarSegment {
+                text: "BOLD".to_string(),
+                fg: Color::rgb(0, 0, 0),
+                bg: Color::rgb(0, 0, 0),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![mk("xx", "a"), mk("yy", "b")],
+        };
+        let measure_with_bold =
+            |seg: &StatusBarSegment| seg.text.chars().count() * 10 + if seg.bold { 5 } else { 0 };
+        // Left: 4*10 + 5 (bold) = 45. Right total: 20 + 20 = 40. Gap 5.
+        // 45 + 5 + 40 = 90 <= 90 → no drop.
+        assert_eq!(bold.fit_right_start(90, 5, measure_with_bold), 0);
+        // 89: drop one — first ("xx").
+        assert_eq!(bold.fit_right_start(89, 5, measure_with_bold), 1);
+    }
+
+    #[test]
     fn status_bar_resolve_click_fit_chars_skips_dropped() {
         use primitives::status_bar::StatusBarSegment;
         let mk = |text: &str, id: &str| StatusBarSegment {

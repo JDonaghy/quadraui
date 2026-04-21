@@ -113,30 +113,38 @@ impl StatusBar {
 
     /// Compute how many leading right segments to drop so the visible right
     /// half fits in `bar_width` after reserving the left segments and a
-    /// `min_gap` (in chars) between the two halves. Returns the start index
-    /// into `right_segments` — render `&right_segments[start..]`.
+    /// `min_gap` between the two halves. Returns the start index into
+    /// `right_segments` — render `&right_segments[start..]`.
     ///
     /// Convention: `right_segments` is ordered least-important first,
     /// most-important last. Backends drop from the front (low priority) so
     /// the rightmost (highest-priority) segment, e.g. cursor position, is
     /// always preserved.
     ///
-    /// Char-count based — appropriate for the TUI backend. GTK does its own
-    /// pixel-width fit using Pango measurement.
-    pub fn fit_right_start_chars(&self, bar_width: usize, min_gap: usize) -> usize {
+    /// Generic over the unit system: `measure` returns the width of a
+    /// segment, `bar_width` and `min_gap` use the same unit. Each backend
+    /// supplies its native measurer:
+    ///
+    /// - TUI passes `|seg| seg.text.chars().count()` (cells).
+    /// - GTK passes a Pango closure that handles bold (pixels).
+    /// - Win-GUI / macOS pass DirectWrite / Core Text measurers (pixels).
+    ///
+    /// The closure receives a full [`StatusBarSegment`] (not just the text)
+    /// so backends can vary measurement based on `bold` and any future
+    /// styling fields without API churn.
+    ///
+    /// The drop *policy* is shared across all backends so a fix or tweak
+    /// here applies uniformly. Per-unit backends pick `min_gap` to suit
+    /// their measurement (e.g. 2 cells / 16 px).
+    pub fn fit_right_start<F>(&self, bar_width: usize, min_gap: usize, measure: F) -> usize
+    where
+        F: Fn(&StatusBarSegment) -> usize,
+    {
         if self.right_segments.is_empty() {
             return 0;
         }
-        let left_w: usize = self
-            .left_segments
-            .iter()
-            .map(|s| s.text.chars().count())
-            .sum();
-        let widths: Vec<usize> = self
-            .right_segments
-            .iter()
-            .map(|s| s.text.chars().count())
-            .collect();
+        let left_w: usize = self.left_segments.iter().map(&measure).sum();
+        let widths: Vec<usize> = self.right_segments.iter().map(&measure).collect();
         let total: usize = widths.iter().sum();
         if left_w + min_gap + total <= bar_width {
             return 0;
@@ -157,6 +165,12 @@ impl StatusBar {
             remaining -= w;
         }
         last
+    }
+
+    /// Convenience wrapper around [`fit_right_start`] for char-cell backends
+    /// (TUI). Same algorithm, with `measure = |seg| seg.text.chars().count()`.
+    pub fn fit_right_start_chars(&self, bar_width: usize, min_gap: usize) -> usize {
+        self.fit_right_start(bar_width, min_gap, |seg| seg.text.chars().count())
     }
 
     /// Like `hit_regions` but skips segments dropped by `fit_right_start_chars`.
