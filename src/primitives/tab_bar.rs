@@ -76,6 +76,72 @@ pub struct TabBarSegment {
     pub is_active: bool,
 }
 
+impl TabBar {
+    /// Find the smallest scroll offset such that the tab at `active` is
+    /// visible inside `available_width`, given a per-tab measurement
+    /// function. Returns the index of the first tab to render.
+    ///
+    /// Generic over the unit system: `measure(i)` and `available_width`
+    /// must use the same units. Each backend supplies its native measurer:
+    ///
+    /// - TUI passes char-cell counts.
+    /// - GTK passes Pango pixel widths (label + tab padding + close button).
+    /// - Win-GUI / macOS pass DirectWrite / Core Text pixel widths.
+    ///
+    /// This is the unit-agnostic counterpart to vimcode's
+    /// `Engine::ensure_active_tab_visible` (which is hardcoded to char
+    /// units suited for TUI). Backends with non-char rendering MUST use
+    /// this helper instead of the engine algorithm — otherwise the
+    /// engine's per-tab width estimate will mismatch actual rendering and
+    /// the active tab can land off-screen.
+    ///
+    /// **Algorithm**: try offset 0 first (maximises visible tabs). If
+    /// `active` doesn't fit there, walk backwards from `active`,
+    /// accumulating widths, and return the smallest offset where it
+    /// still fits. Mirrors the engine's algorithm bit-for-bit so the
+    /// behavioural contract is identical across backends.
+    pub fn fit_active_scroll_offset<F>(
+        active: usize,
+        tab_count: usize,
+        available_width: usize,
+        measure: F,
+    ) -> usize
+    where
+        F: Fn(usize) -> usize,
+    {
+        if tab_count == 0 || active >= tab_count {
+            return 0;
+        }
+        // How many fit starting from offset 0?
+        let mut used = 0;
+        let mut from_zero = 0;
+        for i in 0..tab_count {
+            let w = measure(i);
+            if used + w > available_width {
+                break;
+            }
+            used += w;
+            from_zero += 1;
+        }
+        if active < from_zero {
+            return 0;
+        }
+        // Walk backwards from active to find the smallest offset where
+        // active still fits at the right edge.
+        let mut used = 0;
+        let mut best_offset = active;
+        for i in (0..=active).rev() {
+            let w = measure(i);
+            if used + w > available_width {
+                break;
+            }
+            used += w;
+            best_offset = i;
+        }
+        best_offset
+    }
+}
+
 /// Events a `TabBar` emits back to the app. Currently unused by vimcode
 /// (click path goes through the engine's `TabBarClickTarget` enum), but
 /// defined for plugin invariants §10 — plugin-declared tab bars will

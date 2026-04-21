@@ -763,6 +763,44 @@ mod tests {
     }
 
     #[test]
+    fn tab_bar_fit_active_scroll_offset() {
+        // 10 tabs, each measures 100 units. Width 250 fits 2 full tabs.
+        let measure = |_i: usize| 100usize;
+
+        // Active 0 fits at offset 0.
+        assert_eq!(TabBar::fit_active_scroll_offset(0, 10, 250, measure), 0);
+        // Active 1 fits at offset 0 (tabs 0,1 fit in 250).
+        assert_eq!(TabBar::fit_active_scroll_offset(1, 10, 250, measure), 0);
+        // Active 2 doesn't fit at offset 0; walk back from 2 → tabs 1,2 fit in 250 → offset 1.
+        assert_eq!(TabBar::fit_active_scroll_offset(2, 10, 250, measure), 1);
+        // Active 9 (last) → tabs 8,9 fit → offset 8.
+        assert_eq!(TabBar::fit_active_scroll_offset(9, 10, 250, measure), 8);
+
+        // Variable widths: GTK-like scenario where each tab has ~50 units of
+        // padding overhead the engine's char-based estimate would miss.
+        let varied = [60, 80, 70, 90, 100, 50, 120, 75, 65, 85];
+        let measure_varied = |i: usize| varied[i];
+        // Width 200, active 9 (last). Walk back: 85+65=150, +75=225 > 200 → break.
+        // best_offset stays at 8 (only tabs 8,9 fit).
+        assert_eq!(
+            TabBar::fit_active_scroll_offset(9, 10, 200, measure_varied),
+            8
+        );
+
+        // Edge case: tab wider than width → keep that tab as the only visible one.
+        // Active 5 (width 50) at width 30. Walk back from 5: tw=50 > 30 → break.
+        // best_offset stays at 5 (initial). Renders tab 5 alone, clipped on right.
+        assert_eq!(
+            TabBar::fit_active_scroll_offset(5, 10, 30, measure_varied),
+            5
+        );
+
+        // Edge cases: empty + out-of-bounds active.
+        assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
+        assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    #[test]
     fn tab_bar_event_roundtrip_serde() {
         let events = vec![
             TabBarEvent::TabActivated { index: 2 },
