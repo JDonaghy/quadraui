@@ -15,6 +15,7 @@
 pub mod primitives;
 pub mod types;
 
+pub use primitives::activity_bar::{ActivityBar, ActivityBarEvent, ActivityItem};
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::list::{ListItem, ListView, ListViewEvent};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
@@ -350,6 +351,60 @@ mod tests {
             Some("right")
         );
         assert_eq!(bar.resolve_click(15, 30), None); // gap between segments
+    }
+
+    #[test]
+    fn activity_bar_roundtrip_serde() {
+        use primitives::activity_bar::ActivityItem;
+        let bar = ActivityBar {
+            id: WidgetId::new("main-activity-bar"),
+            top_items: vec![
+                ActivityItem {
+                    id: WidgetId::new("activity:explorer"),
+                    icon: "\u{f07c}".to_string(),
+                    tooltip: "Explorer".to_string(),
+                    is_active: true,
+                    is_keyboard_selected: false,
+                },
+                ActivityItem {
+                    id: WidgetId::new("activity:search"),
+                    icon: "\u{f422}".to_string(),
+                    tooltip: "Search".to_string(),
+                    is_active: false,
+                    is_keyboard_selected: true,
+                },
+            ],
+            bottom_items: vec![ActivityItem {
+                id: WidgetId::new("activity:settings"),
+                icon: "\u{f013}".to_string(),
+                tooltip: "Settings".to_string(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            active_accent: Some(Color::rgb(120, 180, 255)),
+            selection_bg: Some(Color::rgb(80, 80, 80)),
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: ActivityBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    #[test]
+    fn activity_bar_event_roundtrip_serde() {
+        let events = vec![
+            ActivityBarEvent::ItemClicked {
+                id: WidgetId::new("activity:git"),
+            },
+            ActivityBarEvent::KeyPressed {
+                key: "Escape".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: ActivityBarEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
     }
 
     #[test]
