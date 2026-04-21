@@ -214,7 +214,126 @@ The two-pass pattern only applies to primitives with the contract-C
 "measure-then-correct" requirement. For purely declarative primitives,
 a single paint per state change is enough.
 
-## 4. Click intercept hierarchy
+## 4. Backend operation reference
+
+Side-by-side mapping of the operations every backend needs. If you
+already know your target API, this table is enough to translate
+patterns directly. If you don't, find your target's column and treat
+it as a checklist of "things to learn first."
+
+The TUI and GTK columns mirror what you'll find in `examples/tui_demo.rs`
+and `examples/gtk_demo.rs`. The Win-GUI column reflects the production
+Win-GUI backend in vimcode (`src/win_gui/quadraui_win.rs`); macOS is
+the planned shape based on Core Graphics + Core Text idioms.
+
+### Measure text width (the core of contract B)
+
+| Backend | Code | Returns |
+|---------|------|---------|
+| **TUI** (ratatui) | `text.chars().count()` | cells (`usize`) |
+| **GTK** (Pango) | `layout.set_text(text); layout.pixel_size().0 as usize` | pixels (`usize`) |
+| **Win-GUI** (DirectWrite) | `dw.create_text_layout(text, format, w, h)?.GetMetrics()?.widthIncludingTrailingWhitespace as usize` | DIPs (`usize`) |
+| **macOS** (Core Text) | `let line = CTLineCreateWithAttributedString(astr); CTLineGetTypographicBounds(line, ...).width as usize` | points (`usize`) |
+
+The unit doesn't matter to quadraui — pass the same unit to
+`available_width` and the closure return type matches. Mix-ups
+between backends are impossible because each backend supplies its own
+measurer; mix-ups *within* one backend (using cells in one place and
+pixels in another) are the bug class to watch for.
+
+### Fill rectangle in a colour
+
+| Backend | Code |
+|---------|------|
+| **TUI** | `for x in area.x..area.x + area.width { buf.cell_mut(...).set_style(Style::default().bg(rat_color(c))); }` |
+| **GTK** | `cr.set_source_rgb(r, g, b); cr.rectangle(x, y, w, h); cr.fill().ok();` |
+| **Win-GUI** | `let brush = rt.CreateSolidColorBrush(&color, None)?; rt.FillRectangle(&D2D_RECT_F { left: x, top: y, right: x+w, bottom: y+h }, &brush);` |
+| **macOS** | `CGContextSetRGBFillColor(ctx, r, g, b, 1.0); CGContextFillRect(ctx, CGRectMake(x, y, w, h));` |
+
+### Draw text at a position
+
+| Backend | Code |
+|---------|------|
+| **TUI** | `for ch in text.chars() { buf.cell_mut(pos).set_char(ch); pos.x += 1; }` |
+| **GTK** | `layout.set_text(text); cr.move_to(x, y); pangocairo::functions::show_layout(cr, &layout);` |
+| **Win-GUI** | `rt.DrawTextLayout(D2D_POINT_2F { x, y }, &text_layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);` |
+| **macOS** | `let line = CTLineCreateWithAttributedString(astr); CGContextSetTextPosition(ctx, x, y); CTLineDraw(line, ctx);` |
+
+### Apply bold to text
+
+| Backend | Code |
+|---------|------|
+| **TUI** | `style.add_modifier(Modifier::BOLD)` |
+| **GTK** | `let attrs = pango::AttrList::new(); attrs.insert(pango::AttrInt::new_weight(Weight::Bold)); layout.set_attributes(Some(&attrs));` |
+| **Win-GUI** | Configure a separate `IDWriteTextFormat` with `DWRITE_FONT_WEIGHT_BOLD`; use that format for the bold span. |
+| **macOS** | Use a separate `CTFont` with `kCTFontBoldTrait` set; reference it in the `NSAttributedString`'s font attribute. |
+
+### Clip to rectangle (popups, dialogs)
+
+| Backend | Code |
+|---------|------|
+| **TUI** | Implicit — write only inside the rect's `(x, y)` range. No clip API. |
+| **GTK** | `cr.save().ok(); cr.rectangle(x, y, w, h); cr.clip(); /* draw */ cr.restore().ok();` |
+| **Win-GUI** | `rt.PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE); /* draw */ rt.PopAxisAlignedClip();` |
+| **macOS** | `CGContextSaveGState(ctx); CGContextClipToRect(ctx, rect); /* draw */ CGContextRestoreGState(ctx);` |
+
+Clipping is **mandatory** for popup primitives (`Palette`, dialog,
+context menu) — without it, long text bleeds past popup borders.
+
+### Schedule another paint (the two-pass trigger)
+
+| Backend | Code |
+|---------|------|
+| **TUI** | Just call `terminal.draw(...)` again in the same loop iteration. The next event-loop tick redraws unconditionally. |
+| **GTK** | Inline within the same `set_draw_func` callback — `do_paint(); apply_state(); if changed { do_paint(); }`. Do **not** use `glib::idle_add_local_once` (starves under continuous events). |
+| **Win-GUI** | `InvalidateRect(hwnd, None, false);` — schedules a `WM_PAINT` for the next message-pump iteration. Reliable because Win32 always processes pending paints before idling. |
+| **macOS** | `view.setNeedsDisplay(true);` (AppKit) or `view.setNeedsDisplay()` (UIKit) — schedules a redraw for the next run-loop pass. |
+
+### Receive a key event
+
+| Backend | Code |
+|---------|------|
+| **TUI** | `match event::read()? { Event::Key(k) => match k.code { KeyCode::Char('q') => ..., KeyCode::Left => ..., } }` |
+| **GTK** | `let kc = EventControllerKey::new(); kc.connect_key_pressed(\|_, key, _, _\| match key { gdk::Key::Left => ..., gdk::Key::q => ..., });` |
+| **Win-GUI** | `WM_KEYDOWN` with `wparam` = virtual key code (`VK_LEFT`, etc.); `WM_CHAR` with character. Translate via your own dispatch table. |
+| **macOS** | `keyDown(_:)` on `NSResponder` (AppKit) or `pressesBegan(_:with:)` (UIKit). |
+
+### Receive a resize event (and read viewport size)
+
+| Backend | Code |
+|---------|------|
+| **TUI** | `Event::Resize(w, h)` from crossterm; or read `terminal.size()?` at the start of each frame. |
+| **GTK** | The `width`/`height` parameters passed to `set_draw_func` reflect the current size. |
+| **Win-GUI** | `WM_SIZE` with `lparam`'s low/high words = new client width/height. Read via `LOWORD(lparam)` / `HIWORD(lparam)`. |
+| **macOS** | `viewDidLayoutSubviews()` (UIKit) or override `setFrame(_:)` (AppKit); read `bounds`. |
+
+### Receive a mouse click (with coordinates)
+
+| Backend | Code |
+|---------|------|
+| **TUI** | `Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, .. })` |
+| **GTK** | `GestureClick::new()` with `connect_pressed(\|gesture, n_press, x, y\| ...)` |
+| **Win-GUI** | `WM_LBUTTONDOWN` with `LOWORD(lparam)` / `HIWORD(lparam)` for client-area pixel coords. |
+| **macOS** | `mouseDown(with event:)`; coords via `event.locationInWindow` then `convert(_:from:)`. |
+
+### Notes on the table
+
+- **The patterns themselves don't change between rows.** Only the API
+  surface does. Once you've internalised "measure → fit → write back
+  → repaint if changed" from one backend's example, you can transcribe
+  it to any other column.
+- **All four backends fundamentally do the same thing** — measure
+  geometry, fill rectangles, draw text, route events. Differences are
+  cosmetic (call shapes, type names, retained-vs-immediate tradeoffs).
+- **The TUI column is the easy case** — char cells, no font metrics
+  to wrangle, integer arithmetic. Read the TUI demo first to fix the
+  pattern in your head, then translate to your target.
+- **For Win-GUI specifically**: `windows-rs` is verbose but
+  mechanical. The `unsafe` blocks are unavoidable for Win32 / D2D
+  calls; isolate them in narrow helpers and the surface that touches
+  quadraui primitives stays safe.
+
+## 5. Click intercept hierarchy
 
 When the user clicks anywhere, your backend must check potential
 targets **in z-order, top-to-bottom**, and route to the first match.
@@ -242,7 +361,7 @@ filled inside `set_draw_func` and read inside the click controller.
 rustdoc — skipping it is a backend bug class documented in
 `NATIVE_GUI_LESSONS.md` §10.
 
-## 5. Minimal backend walkthroughs
+## 6. Minimal backend walkthroughs
 
 The best way to grok the patterns is to read a working backend that
 exercises the contracts. Two runnable examples ship with the crate,
@@ -322,7 +441,7 @@ which parts are app code (identical) and which are backend code
 Core Graphics / wgpu / browser canvas — only the `draw_*`
 internals change.
 
-## 6. Backend-implementer checklist
+## 7. Backend-implementer checklist
 
 Run through this when you stand up a new backend. Each item is
 "implement and test it works"; missing one is a bug class waiting
@@ -387,7 +506,7 @@ for a smoke test.
       what would normally be a button — the click must be eaten by
       the palette, not the button.
 
-## 7. When to extend quadraui itself
+## 8. When to extend quadraui itself
 
 You'll inevitably want a primitive that doesn't exist yet. Options
 in increasing scope:
@@ -422,7 +541,7 @@ When in doubt, look at `quadraui/docs/DECISIONS.md` for the
 existing rationale on which primitives shipped, which were deferred,
 and why. Add to that log when adding new ones.
 
-## 8. Reference implementations
+## 9. Reference implementations
 
 Three production backends live in the [vimcode] repository:
 
