@@ -261,7 +261,8 @@ pub enum KeyBinding {
     // ...the universal ones — renders natively per platform
 
     /// Literal, no platform substitution. Used for app-specific bindings.
-    Literal(String), // Vim-style, e.g. `<C-S-t>`
+    /// Parser accepts two formats — see "Input formats for Literal" below.
+    Literal(String),
 }
 ```
 
@@ -276,7 +277,45 @@ pub enum KeyBinding {
   `AcceleratorScope::Mode`. No more `handle_vscode_key` vs
   `handle_normal_key` branching — the backend picks the right scope.
 
-Registration API (draft):
+### Input formats for `Literal` (Decision 5 = C)
+
+The parser accepts **both** vim-style and plus-style strings. Which
+one to parse is detected from the first character — `<` means
+vim-style, anything else means plus-style. Internal representation
+after parse is the same `Modifiers + Key` tuple; apps never care
+which format the string came in as.
+
+| Example | Style | Notes |
+|---|---|---|
+| `<C-S-t>` | Vim | `C` = Ctrl, `S` = Shift, `A` = Alt, `D`/`M` = Cmd/Super |
+| `<C-A-Left>` | Vim | Named keys inside brackets |
+| `Ctrl+Shift+T` | Plus | Case-insensitive modifiers |
+| `Cmd+Shift+K` | Plus | `Cmd` renders as `⌘` on macOS, `Ctrl` elsewhere |
+| `Alt+F4` | Plus | Named keys work unadorned |
+
+**Recommended convention for new quadraui apps:** plus-style
+(`Ctrl+Shift+T`). Matches what OS-native menus, tooltips, and docs
+show users; what Postman / k8s / SQL-client audiences expect.
+
+**Vim-native apps** (vimcode, potential vim-workflow extensions) may
+stay on vim-style; zero migration cost and the convention is internal
+to those codebases. The parser supports both indefinitely.
+
+**Canonical rendering** (what `render_accelerator(acc)` returns for
+display in menus, tooltips, palette entries, help overlays) is
+**always** platform-appropriate: `⌘⇧T` on macOS, `Ctrl+Shift+T` on
+Win/Linux/TUI — regardless of which input format the app used.
+Input format ≠ render format.
+
+**Case sensitivity:**
+
+- Modifier names (`Ctrl`/`ctrl`/`CTRL`, `C`, `cmd`/`Cmd`/`CMD`) are
+  case-insensitive on input.
+- Key character is lowercased internally (`T` → `t`) so `Ctrl+T` and
+  `Ctrl+t` parse to the same binding. Shift-T on a keyboard requires
+  writing `Shift+T` explicitly (or `<S-t>`).
+
+### Registration API (draft)
 
 ```rust
 impl<B: Backend> App<B> {
@@ -581,20 +620,38 @@ pre-optimise; profile after B.5 if necessary.
 3. **Scope of Phase B.1** — is "ship UiEvent + poll_events alongside
    existing code" the smallest viable first PR? Or should we pair
    it with B.2's pilot feature?
-   ⬜ pending
+   ✅ **RESOLVED 2026-04-22: A (B.1 ships scaffolding alone).** Pure
+   additive types + trait skeleton + empty impls. Reviewer focus on
+   the shape of the trait/enum, undistracted by a feature migration.
+   B.2 lands as a separate PR that uses the scaffolding for real.
 
 4. **Pilot feature for B.2** — terminal maximize is the current
    candidate (painful, contained, measurable). Any reason to pick a
    different one?
-   ⬜ pending
+   ✅ **RESOLVED 2026-04-22: A (terminal maximize).** Fresh pain =
+   clear win narrative; moderate surface exercises the key
+   `Accelerator::Global` + `UiEvent::Accelerator` + `register_accelerator`
+   path without prematurely forcing the §6.4 focus design. Target:
+   ~-60 LOC net after deleting duplicate key dispatch in three
+   backends.
 
 5. **`Accelerator::Literal(String)` format** — stick with Vim-style
    `<C-S-t>` or switch to a platform-agnostic `"Ctrl+Shift+T"`? Vim
    style is already used throughout vimcode; carries over cleanly.
-   ⬜ pending
+   ✅ **RESOLVED 2026-04-22: C (accept both, parser auto-detects).**
+   First character determines dispatch (`<` = vim, otherwise plus).
+   Zero migration cost for vimcode; Postman/k8s/SQL-client audiences
+   get the format they expect. See §3 "Input formats for Literal"
+   for the full convention.
 
-Once these are answered, the first PR is small (~200 LOC — types +
-empty trait impls returning empty event vecs) and unblocks B.2.
+---
+
+### All decisions resolved — next step is code
+
+With all five resolved, the first PR (Phase B.1) is small
+(~200 LOC — `UiEvent` + `Accelerator` + `Backend` trait skeleton,
+empty impls per backend, no feature migration). B.2 lands as a
+separate PR migrating terminal maximize; target -60 LOC net.
 
 ---
 
