@@ -1090,6 +1090,109 @@ lower-commitment alternative. (a) is fine if the spike code is
 considered too entangled with the diagnostic harness to extract
 cleanly.
 
+### B.2 implementation notes (2026-04-22) — engine-owned registry
+
+When B.2 was implemented, the "backend owns the event loop" shape
+from §11 Q3 proved more invasive than the maximize pilot justified.
+The final shape is **engine-owned registry, backend lookup-on-demand**.
+Same user-visible B.1 types (`Accelerator`, `UiEvent`,
+`KeyBinding`, `parse_key_binding`); same deletion of per-backend
+`matches_*_key` checks for the migrated keybinding; smaller blast
+radius to vimcode's three event loops.
+
+**What changed from §11 Q3:**
+
+§11 described a full event-loop swap: backend owns crossterm /
+GTK signals / WndProc, drains via `poll_events()`, emits typed
+`UiEvent`s for everything, apps consume in a `for ev in
+backend.poll_events()` loop. For B.2 with exactly one accelerator
+to migrate, that meant translating every crossterm mouse + paste +
+focus event into a faithful `UiEvent` variant and back-translating
+`UiEvent::KeyPressed` to vimcode's existing `(key_name, unicode,
+ctrl)` shape for all the keys *not* yet migrated — ~400 lines of
+back-translation code to light up one accelerator.
+
+The simpler shape implemented in B.2:
+
+```rust
+// Engine (src/core/engine/mod.rs)
+pub struct RegisteredAccelerator { acc, parsed }
+pub struct UiEventContext { terminal_cols, terminal_max_rows }
+impl Engine {
+    pub fn register_accelerator(&mut self, acc: Accelerator);
+    pub fn unregister_accelerator(&mut self, id: &AcceleratorId);
+    pub fn match_accelerator(&self, ctrl, shift, alt, key_char, is_tab, is_space, is_escape) -> Option<AcceleratorId>;
+    pub fn handle_ui_event(&mut self, ev: UiEvent, ctx: UiEventContext);
+    pub fn register_default_accelerators(&mut self);  // called from Engine::new()
+}
+```
+
+At each backend's existing key-handler site, the `matches_*_key`
+check becomes an `engine.match_accelerator(...)` lookup; on match,
+the backend fills a `UiEventContext` (terminal cols + max-rows in
+native units) and calls `engine.handle_ui_event(...)`. The engine
+owns the flip-and-resize sequence; backends keep their native
+viewport math because it genuinely differs (TUI: cells; GTK/Win-GUI:
+`floor(px/lh)`).
+
+**What this buys:**
+
+- **One registry, three backends.** Adding the second accelerator
+  in B.4 costs exactly one line (`register_accelerator(...)` in
+  `register_default_accelerators`) + one arm in `handle_ui_event`.
+  No new `matches_*_key` literal in any backend.
+- **Zero event-loop disruption.** TUI's `event_loop`, GTK's Relm4
+  dispatcher, and Win-GUI's WndProc all stay exactly as they are.
+  The migration sits inside existing key-handler blocks.
+- **No back-translation cost.** Keys that aren't registered
+  accelerators flow through legacy paths unchanged. No
+  `UiEvent::KeyPressed → (key_name, unicode, ctrl)` shim.
+
+**What it defers:**
+
+- **Full backend-owned event loops** (§11 Q3's recommendation).
+  Real payoff is in B.4 when accelerator count grows; B.2's one
+  accelerator doesn't justify the rewrite cost. Each stack of
+  `engine.match_accelerator(...)` calls across the three backends
+  could still migrate to `backend.poll_events()` later, and the
+  engine-owned registry is the natural home for that logic.
+- **`Backend` trait impls for vimcode's own backends.** There are
+  no `TuiBackend` / `GtkBackend` / `WinBackend` structs in vimcode
+  after B.2. The trait from B.1 is exercised by the spike (and
+  available to Postman / future consumers); vimcode uses the
+  engine-owned helpers directly. When B.5 kicks off the Postman
+  validation app it'll write its own `PostmanTuiBackend` etc.,
+  which is when the trait's value proposition lands.
+- **Live rebinding.** `register_accelerator` replaces prior
+  entries by id (tested), but there's no hook on settings reload
+  yet. Rebinding requires restart. B.4+ can add a
+  `Engine::rebuild_accelerators()` hook alongside
+  `rebuild_user_keymaps()`.
+
+**Five sites migrated:**
+
+| File | Before | After |
+|---|---|---|
+| `src/tui_main/mod.rs:2888` (terminal-panel key intercept) | `matches_tui_key(&pk.toggle_terminal_maximize, ...)` + 8-line flip+resize | `engine.match_accelerator(...)` + `engine.handle_ui_event(...)` |
+| `src/tui_main/mod.rs:3586` (EngineAction dispatch arm) | 9-line flip+resize sequence | `engine.handle_ui_event(...)` |
+| `src/gtk/mod.rs:1386` (EventControllerKey closure) | `matches_gtk_key(&pk.toggle_terminal_maximize, ...)` | `engine.match_accelerator(...)` + `sender.input(Msg::ToggleTerminalMaximize)` |
+| `src/gtk/mod.rs:7219` (`Msg::ToggleTerminalMaximize` handler) | 14-line flip+resize sequence | `engine.handle_ui_event(...)` |
+| `src/win_gui/mod.rs:1832` (WndProc cascade) | `if ctrl && shift && !alt && key.key_name == "t"` + inline flip+resize | `engine.match_accelerator(...)` + `engine.handle_ui_event(...)` |
+| `src/win_gui/mod.rs:4586` + `:6178` (EngineAction handlers) | 15 + 10 line flip+resize sequences | `engine.handle_ui_event(...)` at both |
+
+**LOC delta:** +339 / -74 across 6 files. Net +265 for one
+accelerator. The payoff shows up at accelerator #2: each new
+registered binding adds ~1 line per backend (just the `match` arm on
+`AcceleratorId` if backends dispatch per-id, or zero lines if the
+backend routes all matched accelerators through a single
+`Msg::DispatchAccelerator`).
+
+**Integration tests:** `tests/accelerator_registry.rs` — 10 tests
+covering default registration, match positive/negative, case
+insensitivity, idempotent toggle, unknown-accelerator no-op,
+re-register-same-id replaces, unregister removes, scope filtering
+(non-Global rejected).
+
 ### What §11 explicitly does NOT decide
 
 - **Focus model.** Per §6.4, deferred. B.2 only uses `Accelerator::Global`,
