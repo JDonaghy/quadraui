@@ -668,3 +668,347 @@ separate PR migrating terminal maximize; target -60 LOC net.
 - Issues #47 (macOS backend), #139 (TreeTable), #143 (Form fields),
   #146 (plugin UI API), #147 (bundled Postman extension — likely
   subsumed by #169)
+
+---
+
+## 11. Phase B.2 implementation notes — terminal-maximize pilot
+
+**Status:** Sketched 2026-04-22 (pre-code), grounded in a read of the
+three current backend dispatch paths. Five questions called out by
+`PLAN.md` §"Phase B.2 starting notes". Answers below; each cites
+specific file:line references where the existing code is the
+load-bearing constraint.
+
+The plan: the terminal-maximize migration is a **near-total
+recreation** of the existing `pk.toggle_terminal_maximize` keybinding
+plumbing in B.1's `Backend` trait shape — same behaviour, new path.
+It is intentionally narrow (one accelerator) so the trait shape is
+stress-tested without the noise of a multi-key feature.
+
+### Existing dispatch path (the thing being replaced)
+
+For reference — this is what each backend does today for `Ctrl+Shift+T`:
+
+| Backend | Native event arrives | Translation | Match site | Engine call |
+|---|---|---|---|---|
+| TUI | `crossterm::event::read` at `src/tui_main/mod.rs:1608` (poll at `:1429`) | `translate_key` at `:4131` (KeyCode → key_name + modifiers); `matches_tui_key` at `:143` | **Two sites**: early intercept at `:2888` (terminal-panel context); `EngineAction::ToggleTerminalMaximize` arm at `:3586` (editor context, via `engine.handle_key` return) | `engine.toggle_terminal_maximize()` (`:2892` and `:3590`); `terminal_target_maximize_rows_tui()` at `:116`; `terminal_resize`/`terminal_new_tab` |
+| GTK | GTK4 `EventControllerKey` (Capture phase) `connect_key_pressed` closure at `src/gtk/mod.rs:1213` | `matches_gtk_key` at `:1386` (key + GDK modifier mask vs `pk.toggle_terminal_maximize`) | One funnel for the editor DA: closure at `:1386` calls `sender.input(Msg::ToggleTerminalMaximize)` (variant decl at `:629`) | `App::update` arm at `:7219` calls `App::terminal_target_maximize_rows()` then `engine.toggle_terminal_maximize()` then `terminal_resize`/`terminal_new_tab` |
+| Win-GUI | `WM_KEYDOWN` in `wnd_proc_inner` at `src/win_gui/mod.rs:868` (delegates to `on_key_down` at `:1791`) | `translate_vk` at `:1797` produces `Key { key_name }`; modifiers from three `GetKeyState` calls at `:1793-1795` | Inline cascade in `on_key_down`: `if ctrl && shift && !alt && (key.key_name == "t" || "T")` at `:1832` | `state.engine.toggle_terminal_maximize()` at `:1843`; `win_gui_terminal_target_maximize_rows()` at `:1640`; `terminal_resize`/`terminal_new_tab`; `InvalidateRect` |
+
+Total duplication: 3 backends × (key match + size compute + engine
+call + repaint trigger) ≈ ~80 LOC of native-event plumbing for one
+keybinding. Plus the TUI's *internal* duplication (sites `:2888` and
+`:3586` both compute `terminal_target_maximize_rows_tui` + dispatch).
+
+That cluster is what B.2 deletes (and replaces with one
+`register_accelerator` call per backend + one `Engine::handle_ui_event`
+arm matching `Accelerator("terminal.toggle_maximize", _)`).
+
+---
+
+### Q1 — `TuiBackend` struct shape
+
+**Recommendation:** the backend owns the ratatui `Terminal` end-to-end.
+Apps never see a raw `Frame<'_>`; they call `backend.begin_frame()` /
+`backend.draw_*(...)` / `backend.end_frame()` in Backend-trait order.
+
+The constraint: ratatui's `Frame<'_>` is only obtainable inside the
+closure passed to `terminal.draw(|frame| ...)`, and its lifetime is
+tied to that closure. There is no way to store a `Frame` on the
+backend struct across method calls. So the backend must either:
+
+- **(A) Defer draws** — `draw_*` methods paint into a frame-scoped
+  `ratatui::buffer::Buffer` owned by the backend; `end_frame` runs
+  `terminal.draw(|f| f.buffer_mut().merge(taken_buffer))`.
+- **(B) Closure-pattern API** — extra trait method
+  `with_frame(&mut self, f: impl FnOnce(&mut Self))` that opens a
+  ratatui draw context. App code becomes
+  `backend.with_frame(|b| { b.draw_tree(...); ... })` instead of
+  `begin_frame` / draw / `end_frame`. Violates the §4 trait shape.
+
+Pick **(A)**. Trait stays clean; deferred buffer is cheap (one
+`Buffer::empty(viewport)` per frame, all painting is mutation). Same
+pattern works for GTK (Cairo `Context` from `connect_draw` is
+similarly closure-scoped) and Win-GUI (Direct2D render target is
+already long-lived, no constraint).
+
+Concrete struct:
+
+```rust
+pub struct TuiBackend {
+    terminal: ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    accelerators: Vec<Accelerator>,    // small N; linear scan is fine
+    event_queue: VecDeque<UiEvent>,
+    current_buffer: Option<ratatui::buffer::Buffer>,  // Some between begin/end_frame
+    services: TuiServices,             // clipboard, etc.
+    // Modifier-aware key naming (parity with src/tui_main/mod.rs:4131).
+    keyboard_enhanced: bool,
+}
+```
+
+`begin_frame(viewport)`: allocate `current_buffer` sized to viewport.
+`draw_tree(rect, tree)` etc.: paint into `self.current_buffer.as_mut().unwrap()` via the existing `quadraui_tui::draw_tree` free functions (which already accept a `&mut Buffer` after the A.1a pattern; verify this when implementing).
+`end_frame()`: take the buffer, run `self.terminal.draw(|f| { let b = f.buffer_mut(); /* merge taken into b */ })`.
+
+### Q2 — Native event → `UiEvent` translation algorithm
+
+**TUI** — `TuiBackend::poll_events`:
+
+1. While `crossterm::event::poll(Duration::ZERO).unwrap_or(false)`:
+2. Drain one `crossterm::event::Event` via `event::read()`.
+3. Translate by variant:
+   - `Event::Key(k)` → reuse the existing `translate_key` algorithm
+     (`src/tui_main/mod.rs:4131`), which produces
+     `(key_name: String, unicode: Option<char>, ctrl: bool)`. Build a
+     `Key` enum (per §2 type) + `Modifiers` from this.
+   - `Event::Mouse(m)` → `UiEvent::MouseDown` / `MouseUp` / `MouseMoved`
+     / `Scroll` with `widget: None` for B.2 (hit-testing comes in B.3
+     when `Panel` exists). Position via `Point { x: m.column, y: m.row }`.
+   - `Event::Resize(c, r)` → `UiEvent::WindowResized { viewport: ... }`.
+   - `Event::Paste(s)` → `UiEvent::ClipboardPaste(s)`.
+   - `Event::FocusGained`/`FocusLost` → `UiEvent::WindowFocused(_)`.
+4. For key events, **before** emitting `UiEvent::KeyPressed`, check
+   the accelerator registry. First-match-wins:
+   - For each `Accelerator { binding, scope: Global, id }` in
+     `self.accelerators`, ask `binding.matches(&key_name, modifiers)`
+     (helper exists in B.1's `Accelerator` impl, line refs in
+     `quadraui/src/accelerator.rs`). If true → emit
+     `UiEvent::Accelerator(id.clone(), modifiers)` and skip the
+     `UiEvent::KeyPressed` for this event.
+   - For `Widget` and `Mode` scopes: defer to B.3 / B.4. In B.2 the
+     registry only ever holds `Global` accelerators, so the algorithm
+     above is exhaustive.
+5. Push translated `UiEvent` onto `self.event_queue`.
+6. After the drain loop, return `self.event_queue.drain(..).collect()`.
+
+**Algorithm rationale:** "first-match-wins, scope-filtered" mirrors
+how editors universally resolve keymap conflicts. Walking the
+registry every key press is O(N) where N is the registered count
+(maximize alone = 1; full vimcode under B.4 = ~30); a Vec scan
+beats a HashMap for that range. If N grows past ~50, swap to a
+two-level dispatch (modifier → Vec) — but premature for B.2.
+
+**GTK** — `GtkBackend::poll_events` is a queue-drain only (events
+arrive via `EventControllerKey` callbacks, not by polling — see Q4).
+Translation happens *inside* the callback before push. Same accelerator
+match logic as TUI; same fall-through to `UiEvent::KeyPressed` if
+unmatched.
+
+**Win-GUI** — same shape as GTK: translation happens inside
+`wnd_proc_inner` (`src/win_gui/mod.rs:832`) before push to the
+`WinBackend.event_queue`. See Q5.
+
+### Q3 — Main-loop integration
+
+**Recommendation:** keep the existing main-loop structure in each
+backend; replace the inner native-event dispatch with
+`backend.poll_events()` → `engine.handle_ui_event(ev)`. Minimum-diff,
+preserves all the surrounding machinery (LSP polling, frame-rate
+limiting, terminal-panel polling, idle hooks).
+
+**TUI** (`src/tui_main/mod.rs:1022` `event_loop`):
+
+- Currently: `event::poll` at `:1429`, then `event::read` at `:1608`,
+  then dispatch through `matches_tui_key` (early-intercepts) or
+  `engine.handle_key` at `:3564`.
+- After B.2: keep the structure. **Add** `let ui_events =
+  backend.poll_events();` near the top of each loop iteration. **For
+  each ui_event**, call `engine.handle_ui_event(ev)` — `Engine`
+  dispatches `Accelerator("terminal.toggle_maximize", _)` to
+  `engine.toggle_terminal_maximize()` etc. **Delete** the early
+  intercept at `:2888-2899` (the `matches_tui_key(&pk.toggle_terminal_maximize, …)`
+  block) and the `EngineAction::ToggleTerminalMaximize` arm at
+  `:3586-3596`. Other keys still flow through the legacy
+  `event::read` → `translate_key` → `engine.handle_key` path —
+  coexistence per §5 Phase B.1's contract.
+- The viewport-rows computation (`terminal_target_maximize_rows_tui`
+  at `:116`) moves into the `Engine::handle_ui_event` arm itself —
+  it's pure, takes no terminal-specific args other than the screen
+  height which is on `Viewport`. Engine grows a small wrapper that
+  reads `viewport.height_rows` from cached state, builds the
+  `PanelChromeDesc`, and calls the existing
+  `toggle_terminal_maximize` + `terminal_resize` chain.
+
+**GTK** (`src/gtk/mod.rs` Relm4 main loop):
+
+- Relm4 owns the GLib loop; we don't touch it directly. App.update
+  drains the backend on every Msg cycle (see Q4 for the wake-up
+  path). The `Msg::ToggleTerminalMaximize` arm at `:7219` stays
+  initially as the dispatch target of `Engine::handle_ui_event`; the
+  caller chain becomes:
+  - `EventControllerKey` closure at `:1386` translates +
+    accelerator-matches → pushes `UiEvent::Accelerator(...)` to
+    `backend.event_queue` → fires `sender.input(Msg::PollUiEvents)`.
+  - `Msg::PollUiEvents` arm: `for ev in backend.poll_events() {
+    engine.handle_ui_event(ev); }`. (This Msg variant is added in
+    B.2; in B.4 it absorbs all the per-widget `Msg::*Key` variants.)
+  - `engine.handle_ui_event` for the maximize accelerator computes
+    target rows via the engine wrapper (same as TUI) and calls
+    `toggle_terminal_maximize` etc. directly — bypassing the
+    `Msg::ToggleTerminalMaximize` arm. We can then delete that arm
+    and `Msg::ToggleTerminalMaximize` in the same PR.
+- The `App::terminal_target_maximize_rows()` GTK helper currently
+  reads DA pixel height + `cached_line_height` (line refs in
+  `src/gtk/mod.rs` per the existing helper). Under B.2, the engine
+  needs that info — so the GTK Relm4 wrapper passes
+  `Viewport { width_px, height_px, line_height_px, char_width_px }`
+  on `WindowResized` events, and `Engine` caches the latest viewport
+  to use inside `handle_ui_event`. This is a small change with
+  reusable value (other accelerators in B.4 will need viewport too).
+
+**Win-GUI** (`src/win_gui/mod.rs:726-732` message pump):
+
+- Pump unchanged. **After** `DispatchMessageW` returns at `:731`,
+  drain: `for ev in backend.poll_events() { engine.handle_ui_event(ev); }`.
+  WndProc's job (Q5) is to push, not dispatch. This keeps event
+  handling on the main thread between message-pump iterations and
+  matches the natural Win32 pattern.
+- The maximize arm at `:1832-1853` collapses to: `if ctrl && shift &&
+  !alt && key.key_name == "t" { backend.push_accelerator_match("terminal.toggle_maximize", mods); return true; }`,
+  which is what `WinBackend::translate_and_push` does for any
+  registered accelerator. Specific `if ctrl && shift && key == "t"`
+  string disappears.
+
+### Q4 — GTK event ownership: where does the queue live?
+
+**Recommendation: side-channel queue + Relm4 wake-up Msg.** Concretely:
+
+- `GtkBackend` owns `Rc<RefCell<VecDeque<UiEvent>>>` plus
+  `Rc<RefCell<Vec<Accelerator>>>` (the registry).
+- Each `EventControllerKey` closure (the editor DA at
+  `src/gtk/mod.rs:1213` is the primary one; see also six per-widget
+  controllers at `:2075` Settings, `:2145` Ex, `:2759` Debug, `:2818`
+  Sc, `:2874` Ext, `:2921` ExtPanel, `:3155` AI) clones both `Rc`s at
+  `init_widgets` time, alongside the existing `sender` clone.
+- When a key arrives: closure runs `backend_match(key, modifier,
+  &accelerators)`; on match, pushes
+  `UiEvent::Accelerator(id, mods)` to `event_queue` and calls
+  `sender.input(Msg::PollUiEvents)`.
+- On no match: pushes `UiEvent::KeyPressed { key, modifiers, repeat:
+  false }` and same `sender.input(Msg::PollUiEvents)`.
+- `App::update` arm `Msg::PollUiEvents`:
+  `for ev in self.backend.poll_events() { self.engine.borrow_mut().handle_ui_event(ev); }`.
+
+**Why side-channel + sender-wake, not `Msg::UiEvent(UiEvent)` directly:**
+direct `Msg::UiEvent` looked attractive but breaks ordering when two
+keys arrive in close succession — Relm4 may interleave Msg arrivals
+with other events, and we want strict FIFO across all sources (key,
+mouse, paste). A single queue + wake-up Msg gives strict FIFO; the
+Msg payload doesn't matter (carries nothing).
+
+**Why not a Relm4 sub-component:** Relm4 components have their own
+update + view; `GtkBackend` has no view (it draws via the existing
+DA `connect_draw` callbacks) and no Msg-cycle of its own. Wrapping
+it as a sub-component is overhead without benefit. Side-channel is
+the right primitive — it just lives next to App, not inside Relm4.
+
+**`backend.poll_events()` impl on GTK:** drains the `Rc<RefCell<VecDeque>>`
+into a `Vec`. Trivial.
+
+**Edge case — drop ordering at App teardown:** the queue's Rc clones
+in closures must drop before App. Relm4 takes care of this naturally
+when the App component is dropped (controllers are removed first).
+Verify when implementing.
+
+### Q5 — Win-GUI WndProc → `WinBackend` queue hookup
+
+**Recommendation: WndProc translates inline (option (b) from PLAN.md
+§"Phase B.2 starting notes" Q5).** WndProc pushes a fully-translated
+`UiEvent` to `WinBackend.event_queue`; `poll_events` just drains.
+
+**Why inline beats deferred:**
+
+- Modifier state must be read at the moment of the key event via
+  `GetKeyState` (`src/win_gui/mod.rs:1793-1795`). Deferring to
+  `poll_events` means `GetKeyState` returns the *current* modifier
+  state, not the state at the moment of `WM_KEYDOWN`. Possible to
+  capture-and-store in a "raw event" struct, but that's just inline
+  translation with extra boxing.
+- The existing `translate_vk` at `:1797` already produces the
+  canonical `Key { key_name }` we need. Reusing it in WndProc costs
+  nothing.
+- `state.line_height` (`:307`) and `state.engine` are accessible via
+  `APP.with(|app| ...)` inside WndProc (line refs across the file).
+  A future `WinBackend` lives on `state` next to `engine`; same
+  access.
+- Inline is symmetric with how GTK handles it (Q4) — both push-based
+  GUI backends do translation in the native callback; only the pull-
+  based TUI does it in `poll_events`.
+
+**Concrete WndProc rewrite for the maximize key (replaces
+`:1832-1853`):**
+
+```rust
+if let Some((id, mods)) = state.backend.match_key_to_accelerator(&key) {
+    state.backend.push(UiEvent::Accelerator(id, mods));
+    InvalidateRect(state.hwnd, None, false);
+    return LRESULT(0);
+}
+// fall through to UiEvent::KeyPressed push, plus legacy on_key_down
+// dispatch for keys not yet migrated to UiEvent
+state.backend.push(UiEvent::KeyPressed { key, modifiers: mods, repeat: false });
+```
+
+**Drain site:** in the message pump at `:726-732`, after
+`DispatchMessageW(&msg)`:
+
+```rust
+APP.with(|app| {
+    let mut state = app.borrow_mut();
+    let events = state.backend.poll_events();
+    for ev in events {
+        state.engine.handle_ui_event(ev);
+    }
+});
+```
+
+This adds one `APP.with` per pump iteration. Cheap; `GetMessageW`
+blocks in normal paint cycles anyway.
+
+**Why not keep WndProc dispatching directly to engine (skip the
+queue):** breaks the `Backend::poll_events` trait contract. Apps that
+want to inspect or filter events before dispatch (e.g. recording for
+replay per §2 invariants, or a future reduced-input mode) need the
+queue as a chokepoint. Cost of one VecDeque push per event is
+negligible.
+
+---
+
+### Recommended next step after §11 lands — TUI-only spike
+
+Worth considering **before** going broad on B.2: implement
+`impl Backend for TuiBackend` end-to-end for the maximize accelerator
+*alone*, and verify it runs in-tree without integrating with vimcode's
+main `event_loop` yet (e.g. via a tiny standalone example in
+`quadraui/examples/maximize_pilot.rs`). Goals:
+
+1. Validate Q1 (the deferred-buffer pattern actually works with
+   ratatui's `Frame` API).
+2. Validate Q2's accelerator-match algorithm against real crossterm
+   key events including the `keyboard_enhanced` path.
+3. Iterate §11 if any of the above answers turn out wrong, *before*
+   replicating the pattern to GTK and Win-GUI.
+
+Cost: ~half-day. Reduces "big bang" risk for the GTK + Win-GUI parts,
+which are harder to iterate on (both require running GUI builds).
+
+The pattern would be: tiny binary that opens a TUI surface, registers
+one accelerator (`"toggle_maximize"` → `<C-S-t>`), runs the event
+loop, prints "MAXIMIZED" on each `Accelerator` event. ~50-80 LOC,
+disposable after B.2 ships. Optional but recommended.
+
+### What §11 explicitly does NOT decide
+
+- **Focus model.** Per §6.4, deferred. B.2 only uses `Accelerator::Global`,
+  which doesn't need focus. Widget/Mode scope arrive in B.3+ with
+  the focus design.
+- **`Backend` trait method for hit-testing.** Mouse events for B.2
+  carry `widget: None`. Real hit-testing arrives with `Panel` in B.3.
+- **`Engine::handle_ui_event` dispatch shape.** B.2 has exactly one
+  arm (`Accelerator("terminal.toggle_maximize", _)`). The
+  match-statement-vs-HashMap question is premature with N=1.
+- **What happens to `EngineAction::ToggleTerminalMaximize`.** Likely
+  deleted after B.2 since the new path doesn't need it; verify
+  during implementation that no other code references it.
+- **Lua plugin API shape for accelerator registration.** Out of scope;
+  separate proposal before plugin authors get access.
