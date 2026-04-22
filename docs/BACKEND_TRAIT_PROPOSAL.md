@@ -291,10 +291,18 @@ impl<B: Backend> App<B> {
 
 ```rust
 pub trait Backend {
+    // ── Frame + viewport ────────────────────────────────────────
     /// Viewport geometry in native units. Caller converts to rows
     /// via `viewport.rows_at(line_height)` etc.
     fn viewport(&self) -> Viewport;
 
+    /// Begin a frame. Backends may set up render target, clear, etc.
+    fn begin_frame(&mut self, viewport: Viewport);
+
+    /// Flush to screen.
+    fn end_frame(&mut self);
+
+    // ── Events + keybindings ────────────────────────────────────
     /// Poll all queued native events. Returns a fully-translated
     /// `Vec<UiEvent>` ready for app dispatch. Never blocks.
     fn poll_events(&mut self) -> Vec<UiEvent>;
@@ -304,23 +312,40 @@ pub trait Backend {
     /// to busy-poll.
     fn wait_events(&mut self, timeout: Duration) -> Vec<UiEvent>;
 
-    /// Begin a frame. Backends may set up render target, clear, etc.
-    fn begin_frame(&mut self);
-
-    /// Draw a primitive or layout within a given rect. The `Rect`
-    /// comes from the app's layout pass — backend just rasterises.
-    fn draw_primitive(&mut self, rect: Rect, primitive: &AnyPrimitive);
-
-    /// Flush to screen.
-    fn end_frame(&mut self);
-
-    /// Platform services (clipboard, file dialog, notifications, …).
-    fn services(&self) -> &dyn PlatformServices;
-
     /// Register an accelerator with the backend's native keybinding
     /// system. Backend stores it and emits `UiEvent::Accelerator`
     /// when matched.
     fn register_accelerator(&mut self, acc: &Accelerator);
+
+    // ── Platform services ───────────────────────────────────────
+    /// Clipboard, file dialogs, notifications, open-url, platform name.
+    fn services(&self) -> &dyn PlatformServices;
+
+    // ── Drawing — one method per primitive (Decision 2 = B) ────
+    // Implementations are thin wrappers around the backend crate's
+    // internal draw functions, e.g.:
+    //
+    //   impl Backend for WinBackend {
+    //       fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
+    //           quadraui_win::draw_tree(self.ctx(), tree,
+    //                                   self.theme(), rect);
+    //       }
+    //       // ... same pattern for the other primitives
+    //   }
+    //
+    // Adding a primitive is a breaking change to this trait. That's
+    // intentional: the "which backends need this?" conversation
+    // happens at trait-update time, not as a runtime panic from a
+    // defaulted method.
+    fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
+    fn draw_list(&mut self, rect: Rect, list: &ListView);
+    fn draw_form(&mut self, rect: Rect, form: &Form);
+    fn draw_palette(&mut self, rect: Rect, palette: &Palette);
+    fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar);
+    fn draw_tab_bar(&mut self, rect: Rect, bar: &TabBar);
+    fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar);
+    fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
+    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
 }
 
 pub trait PlatformServices {
@@ -333,12 +358,28 @@ pub trait PlatformServices {
 }
 ```
 
-**`AnyPrimitive`** is an enum wrapping every primitive type so a single
-`draw_primitive` can dispatch. Alternative: per-primitive methods
-(`draw_tree`, `draw_list`, …). Per-primitive is more verbose but gives
-better type safety; `AnyPrimitive` is cleaner for plugin-declared UI.
-**Decision deferred to implementation** — we'll try `AnyPrimitive`
-first; if the match-dispatch becomes a pain point, split.
+### How apps use this
+
+The per-method shape lets app render code be **fully backend-generic**:
+
+```rust
+fn render_sidebar<B: Backend>(backend: &mut B, tree: &TreeView, rect: Rect) {
+    backend.draw_tree(rect, tree);
+}
+```
+
+One codebase, runs on every backend. No `#[cfg(...)]` gates sprinkled through app code selecting between `quadraui_gtk::draw_tree` vs `quadraui_tui::draw_tree` vs `quadraui_win::draw_tree`.
+
+Plugins and apps that want **backend-specific** rendering (e.g. a bespoke primitive defined outside quadraui) still call the free function directly — the quadraui backend crates expose both the trait impl and the underlying `pub fn draw_tree(...)`, so neither path is walled off.
+
+### Why not `AnyPrimitive` enum dispatch
+
+An alternative design — a single `fn draw_primitive(&mut self, rect: Rect, p: &AnyPrimitive)` with `AnyPrimitive` being an enum of every primitive variant — was considered and rejected. Reasons:
+
+1. Adding a primitive still requires work in every backend (a new match arm, same as a new trait method), but changes become **runtime panics via unhandled arms**, not compile errors.
+2. The `AnyPrimitive` enum ossifies every primitive's public shape into one bulky type and brings `'a` lifetime parameters everywhere the enum flows.
+3. Violates `quadraui/docs/DECISIONS.md` D-001 principle: "one primitive per UX concept, not per algebraic reduction." `AnyPrimitive` is the reduction.
+4. The speculative benefit — "plugins can pass heterogeneous primitive lists through one call" — has no concrete use case today and can be added later as `AnyPrimitive` + a single `draw_primitive` method alongside the per-method ones if a real need appears.
 
 ---
 
@@ -423,11 +464,12 @@ files are uniformly thin: `Backend` trait impl + `draw_primitive` +
 
 ### 6.1 `AnyPrimitive` vs per-primitive trait methods
 
-`fn draw_primitive(&mut self, rect: Rect, p: &AnyPrimitive)` is
-cleaner for plugin UI but loses static dispatch. Alternative is
-`fn draw_tree`, `fn draw_list`, … with a default impl that panics
-("not implemented") so backends opt in. **Defer to implementation
-— try `AnyPrimitive` first.**
+✅ **RESOLVED 2026-04-22.** Per-primitive methods, explicit impls
+required. Backend implementations are thin wrappers around each
+backend crate's internal `pub fn draw_*` free functions — apps
+benefit from `<B: Backend>` generics without app-side `cfg` gates.
+See §4 for the updated trait shape and rejection rationale for
+`AnyPrimitive` enum dispatch.
 
 ### 6.2 Where does layout computation live?
 
@@ -525,16 +567,31 @@ pre-optimise; profile after B.5 if necessary.
 ## 9. Decisions needed before code starts
 
 1. **Confirm the overall shape** — does this capture what we want?
+   ✅ **RESOLVED 2026-04-22: A (ship all three abstractions together,
+   phased migration per §5).** `UiEvent` + `Accelerator` + `Backend`
+   are interlocking; splitting them would produce half-abstractions.
+   Phase-by-phase risk control lives in §5, not in the decision count.
+
 2. **`AnyPrimitive` vs per-method draw?** (§6.1)
+   ✅ **RESOLVED 2026-04-22: B (per-method, explicit impls required).**
+   Trait impls are thin wrappers around each backend crate's internal
+   `pub fn draw_*` free functions. App code uses `<B: Backend>`
+   generics without app-side `cfg` gates. See §4 for the trait shape.
+
 3. **Scope of Phase B.1** — is "ship UiEvent + poll_events alongside
    existing code" the smallest viable first PR? Or should we pair
    it with B.2's pilot feature?
+   ⬜ pending
+
 4. **Pilot feature for B.2** — terminal maximize is the current
    candidate (painful, contained, measurable). Any reason to pick a
    different one?
+   ⬜ pending
+
 5. **`Accelerator::Literal(String)` format** — stick with Vim-style
    `<C-S-t>` or switch to a platform-agnostic `"Ctrl+Shift+T"`? Vim
    style is already used throughout vimcode; carries over cleanly.
+   ⬜ pending
 
 Once these are answered, the first PR is small (~200 LOC — types +
 empty trait impls returning empty event vecs) and unblocks B.2.
