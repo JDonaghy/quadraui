@@ -138,13 +138,61 @@ pub enum UiEvent {
 
 **Invariants:**
 
-- `UiEvent` is `Debug + Clone` (for logging, replay, testing).
+**Trait bounds** — `UiEvent` must implement:
+
+- `Debug` — dev-facing formatting for panic messages and log output
+- `Clone` — explicit copy when an app wants to preserve the event
+  beyond its single-handler lifetime (e.g. recording for replay)
+- `PartialEq` — equality checks in tests (`assert_eq!(got, expected)`)
+- `Serialize + Deserialize` — JSON / IPC / replay-file round-trip,
+  required for the Lua plugin boundary
+
+`Send` is implied by the "no lifetimes beyond `'static`" rule below, so
+events can be moved to another thread. `Sync` is **not** required —
+events flow one-way through the dispatch loop; there's no cross-thread
+sharing of a single event. `Eq` is also **not** required because
+nested value types may include floats (which don't implement `Eq`
+because of NaN); `PartialEq` is strictly weaker and sufficient for
+the testing use case.
+
+**Data shape:**
+
 - **No closures, no lifetimes beyond `'static`** — identical discipline
-  as primitive data. A plugin can receive a `UiEvent` over JSON.
+  as primitive data (§10 of `UI_CRATE_DESIGN.md`). A `UiEvent` is
+  inert, owned data; it never borrows from its producer, never carries
+  a callback, never depends on the backend's internal state. This is
+  what makes it serialisable, thread-transferable, and plugin-friendly.
 - Mouse events carry `Option<WidgetId>` because the backend does
-  hit-testing **before** emitting — so apps can dispatch on widget
-  identity, not screen coordinates.
-- `Modifiers` is the existing `quadraui::types::Modifiers`.
+  hit-testing **before** emitting — apps dispatch on widget identity,
+  not screen coordinates. `None` means the click landed outside any
+  declared widget (e.g. on the editor content area or background).
+- `Modifiers` is the existing `quadraui::types::Modifiers` — no
+  per-event-type fork.
+
+**Lifecycle — events are discarded by default:**
+
+The trait bounds above enable *optional* preservation; they do not
+mandate it. The normal path is:
+
+```rust
+for ev in backend.poll_events() {
+    handle(&mut engine, ev);  // ev is consumed, then dropped
+}
+// at end of loop every event is gone — Rust's deterministic drop
+```
+
+Events are moved into `handle`; when `handle` returns they fall out
+of scope and their memory is freed immediately. No GC, no log write,
+no clone, no allocation beyond the `Vec` returned by `poll_events`.
+
+An app that wants to preserve events (recording for replay, logging
+for debugging, forwarding to another thread) must **explicitly** do
+so — typically via `.clone()` before dispatch, or by pushing a
+serialised copy onto a recorder. The invariants guarantee that every
+such preservation path *can* work; they do not automatically do it.
+This matters for performance (hot-path event dispatch allocates
+nothing by default) and for reasoning about side effects (no hidden
+retention or accidental aliasing).
 
 ---
 
