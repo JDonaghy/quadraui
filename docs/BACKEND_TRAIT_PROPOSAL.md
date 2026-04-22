@@ -194,6 +194,35 @@ This matters for performance (hot-path event dispatch allocates
 nothing by default) and for reasoning about side effects (no hidden
 retention or accidental aliasing).
 
+**Event routing — hit-test vs focus:**
+
+A clean boundary apps rely on: **mouse events route by hit-test at
+cursor position; keyboard events route by focus.** The dispatcher
+never conflates them.
+
+| Event class | Routed by | Why |
+|---|---|---|
+| `MouseDown` / `MouseUp` / `MouseMoved` / `MouseEntered` / `MouseLeft` / `DoubleClick` / **`Scroll`** | Hit-test at cursor position | The user is *pointing at* something — they mean that thing, regardless of where the keyboard focus happens to be. |
+| `KeyPressed` / `CharTyped` | Focus | The user has declared "this is where I'm typing." |
+| `Accelerator` | `AcceleratorScope` field (see §3) | Keybindings can be scoped narrower than focus (per-mode, per-widget) or broader (global). |
+| `WindowResized` / `WindowClose` / `WindowFocused` / `DpiChanged` | Application-global | Platform-level, not user-targeted. |
+| `FilesDropped` | Hit-test at drop position | Same rationale as mouse — user dropped there. |
+| `ClipboardPaste` | Focus | Paste goes to whichever text-input has focus. |
+
+The practical consequence — and the one users notice first if we get
+it wrong: **scroll-wheel events dispatch to the widget under the
+cursor, regardless of keyboard focus.** Hover over a sidebar list,
+spin the wheel, list scrolls — even if the editor has keyboard focus.
+This matches native behaviour on Win32, Cocoa, and GTK. Getting this
+wrong produces "the scroll wheel only works on the focused widget"
+bugs that are instantly recognisable as non-native.
+
+Backends do the hit-test **before emitting** and set `widget:
+Option<WidgetId>` in every mouse variant. Apps dispatch on the widget
+ID without consulting their own focus state. `None` widget means the
+cursor was over non-widget area (bare editor content, empty
+background); apps handle those via `position` if meaningful.
+
 ---
 
 ## 3. `Accelerator` — declarative cross-platform keybindings
@@ -420,10 +449,33 @@ single-window.
 
 ### 6.4 How do we handle focus?
 
-Focus-within semantics (which widget gets keyboard input) is its own
-sub-design. Backends know native focus; primitives declare
-focusability; apps manage focus transitions. Worth its own
-proposal doc before Phase B.3.
+Focus is a **keyboard-only** concern — the event-routing table in §2
+makes this explicit. Mouse events (including scroll) route by
+hit-test at cursor position, not by focus. Focus only determines who
+receives `KeyPressed` / `CharTyped`, and factors into `Accelerator`
+when scope is `Widget` or `Mode`.
+
+The focus *model* itself still needs a dedicated design pass:
+
+- **Transitions** — does focus move on click, on Tab, on
+  app-directed `set_focus(id)`, or all three?
+- **Destruction** — what happens when the focused widget is removed?
+  Fall back to parent? To an app-designated default?
+- **Declaration** — do primitives explicitly opt in to being
+  focusable, or is it implicit?
+- **Modal interaction** — a `Dialog` opens while a text input has
+  focus; what happens on close? Stack-like focus history?
+- **Native focus bridging** — on GTK each `DrawingArea` has its own
+  native focus; on Win32 the top-level HWND has focus and we
+  simulate per-widget focus in-app. The quadraui focus model needs
+  to abstract over this without leaking.
+
+None of these block Phase B.1 (types + `poll_events` alongside native
+dispatch). The terminal-maximize pilot in B.2 uses
+`Accelerator::Global` scope only, so focus isn't required for that
+migration. The focus model will want its own proposal doc before
+Phase B.3, since `Panel` / `Tabs` / `Dialog` need focus transition
+rules to be useful.
 
 ### 6.5 Text input / IME
 
