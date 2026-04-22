@@ -997,6 +997,99 @@ one accelerator (`"toggle_maximize"` → `<C-S-t>`), runs the event
 loop, prints "MAXIMIZED" on each `Accelerator` event. ~50-80 LOC,
 disposable after B.2 ships. Optional but recommended.
 
+### Spike findings (2026-04-22) — TUI accelerator caveats
+
+The recommended TUI spike was implemented at
+`quadraui/examples/maximize_pilot_tui.rs` (commits `ed2e8a9` +
+`f775d06` on branch `quadraui-spike-tui-maximize`). The spike is a
+single-file `impl Backend for TuiBackend` that registers exactly the
+maximize accelerator, paints a status bar via the deferred-buffer
+pattern, and toggles state on each fire.
+
+**What it validated:**
+
+1. **Q1 deferred-buffer pattern works.** Owned `Buffer` in
+   `current_buffer: Option<Buffer>`, allocated in `begin_frame`,
+   manual cell-copy into `f.buffer_mut()` inside `terminal.draw` in
+   `end_frame`. Renders cleanly. Note that `Buffer::merge` was
+   sidestepped in favour of an explicit cell loop — equal-area
+   constraints on the merge API made the manual copy more robust for
+   the spike. B.2 can revisit if there's a perf reason.
+2. **Q2 algorithm is sound.** First-match-wins against the registered
+   accelerators with `parse_key_binding` cached at registration time
+   matches correctly *when the input arrives correctly*. The match
+   logic itself is not the bottleneck.
+3. **Trait shape is implementable end-to-end** without extension
+   traits. All 9 `draw_*` methods + `register_accelerator` +
+   `poll_events` + `wait_events` + `services` + lifecycle methods
+   compile and behave as expected.
+
+**What it surfaced — and §11 did not predict:**
+
+TUI accelerator dispatch is at the mercy of a three-layer stack
+*outside* the Backend trait's control:
+
+| Layer | Behaviour | Outcome |
+|---|---|---|
+| **Terminal emulator** | gnome-terminal, iTerm intercept `Ctrl+Shift+T` for "new tab" | App never sees the keystroke |
+| **Multiplexer (tmux, screen)** | tmux strips Shift bit unless `extended-keys on` is configured | Spike reported `Last key: Ctrl+t` (Shift dropped) inside tmux on alacritty |
+| **Kitty enhancement protocol** | Only kitty/foot/recent-alacritty/wezterm/ghostty/recent-iTerm support `DISAMBIGUATE_ESCAPE_CODES` | Older terminals silently ignore the push |
+
+Vimcode TUI today already pushes the same enhancement flags (see
+`src/tui_main/mod.rs:931-938`), so this is a **pre-existing
+limitation** of the TUI binding `pk.toggle_terminal_maximize`, not a
+B.2 regression. Users who run vimcode TUI inside tmux on alacritty
+have *never* been able to use `Ctrl+Shift+T` for terminal maximize;
+the spike just made the failure mode visible.
+
+**Implications for B.2:**
+
+- **Algorithm is fine — proceed with B.2.** The accelerator-match
+  code in vimcode's `TuiBackend` will work correctly for any input
+  the terminal stack delivers intact.
+- **Default bindings should be chosen for lowest-common-denominator
+  TUI environments.** Function keys (`F11`), single-modifier chords
+  (`Ctrl+Space`), or leader-key sequences (vim-style `<leader>tm`)
+  survive the most stack configurations. `Ctrl+Shift+<letter>` is
+  fragile.
+- **Settings.toml should remain authoritative.** Apps must let users
+  rebind any accelerator that doesn't survive their specific
+  terminal stack. The B.2 trait API already supports this — users
+  just override the `KeyBinding` of any registered `Accelerator`.
+- **Document the failure modes for users.** TUI section of the
+  vimcode README should call out tmux's `extended-keys on` config
+  and gnome-terminal's preferences → shortcuts override pattern.
+  This is product-doc work, not architecture work.
+- **B.2 does NOT need a "fallback binding" mechanism in quadraui
+  itself.** Letting apps register multiple accelerators with the
+  same `id` is a thinkable feature (try `<C-S-t>`, fall back to
+  `<F11>`), but it's solving a layer-cake problem at the wrong
+  layer. The right layer is app config + user-facing docs.
+
+**The spike branch.** `quadraui-spike-tui-maximize` carries the
+working TuiBackend impl + diagnostic harness (commits `ed2e8a9` +
+`f775d06`). Three reasonable dispositions, choose at B.2 kickoff:
+
+- (a) **Discard.** Lessons captured in this section; commits stay in
+  reflog if needed. Cleanest.
+- (b) **Squash + keep as reference example.** Single commit landing
+  `quadraui/examples/maximize_pilot_tui.rs` to develop. Small
+  ongoing maintenance cost (must compile against future Backend
+  trait changes); high pedagogical value for the next backend
+  implementer (e.g. macOS Phase C).
+- (c) **Promote.** Move `TuiBackend` from the example into
+  `quadraui::tui::TuiBackend`, drop the diagnostic harness, use it
+  as B.2's starting code. Skips re-writing what already works;
+  forces an early decision on whether quadraui ships per-backend
+  modules vs separate sub-crates (currently neither; just one
+  crate).
+
+Recommendation: (c) is the most diff-efficient path to B.2 if there's
+no architectural objection to a `quadraui::tui` module. (b) is a
+lower-commitment alternative. (a) is fine if the spike code is
+considered too entangled with the diagnostic harness to extract
+cleanly.
+
 ### What §11 explicitly does NOT decide
 
 - **Focus model.** Per §6.4, deferred. B.2 only uses `Accelerator::Global`,
