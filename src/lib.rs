@@ -86,6 +86,14 @@
 pub mod primitives;
 pub mod types;
 
+// ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
+// See quadraui/docs/BACKEND_TRAIT_PROPOSAL.md for design. These modules add
+// the unified cross-backend surface alongside the existing per-backend
+// free-function draw pattern; no migration yet (that's Phase B.2).
+pub mod accelerator;
+pub mod backend;
+pub mod event;
+
 pub use primitives::activity_bar::{ActivityBar, ActivityBarEvent, ActivityItem};
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::list::{ListItem, ListView, ListViewEvent};
@@ -98,6 +106,17 @@ pub use primitives::tree::{TreeEvent, TreeRow, TreeView};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
     TreeStyle, WidgetId,
+};
+
+// Phase B.1 re-exports.
+pub use accelerator::{
+    parse_key_binding, render_accelerator, render_binding, Accelerator, AcceleratorId,
+    AcceleratorScope, KeyBinding, ParsedBinding, Platform,
+};
+pub use backend::{Backend, Clipboard, FileDialogOptions, Notification, PlatformServices};
+pub use event::{
+    BackendNativeEvent, ButtonMask, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent,
+    Viewport,
 };
 
 /// Crate version, sourced from `Cargo.toml`.
