@@ -8,6 +8,8 @@ pub mod activity_bar;
 pub mod form;
 pub mod list;
 pub mod palette;
+pub mod progress;
+pub mod spinner;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod terminal;
