@@ -117,6 +117,7 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
     VisibleListItem,
 };
+pub use primitives::modal::{Modal, ModalEvent, ModalHit, ModalLayout};
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
     VisiblePaletteItem,
@@ -942,6 +943,66 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── Modal primitive tests ─────────────────────────────────────────
+
+    #[test]
+    fn modal_layout_centers_content() {
+        let m = Modal {
+            id: WidgetId::new("m"),
+            content_width: 400,
+            content_height: 300,
+            backdrop_color: None,
+            dismiss_on_backdrop: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = m.layout(viewport);
+        assert_eq!(layout.backdrop_bounds, viewport);
+        // Centered: x = (800 - 400)/2 = 200; y = (600 - 300)/2 = 150
+        assert_eq!(layout.content_bounds.x, 200.0);
+        assert_eq!(layout.content_bounds.y, 150.0);
+        assert_eq!(layout.content_bounds.width, 400.0);
+        assert_eq!(layout.content_bounds.height, 300.0);
+    }
+
+    #[test]
+    fn modal_hit_test_content_vs_backdrop() {
+        let m = Modal {
+            id: WidgetId::new("m"),
+            content_width: 200,
+            content_height: 100,
+            backdrop_color: None,
+            dismiss_on_backdrop: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let layout = m.layout(viewport);
+        // Click inside content.
+        match layout.hit_test(200.0, 150.0) {
+            ModalHit::Content(id) => assert_eq!(id.as_str(), "m"),
+            _ => panic!("expected Content hit"),
+        }
+        // Click on backdrop.
+        match layout.hit_test(10.0, 10.0) {
+            ModalHit::Backdrop(id) => assert_eq!(id.as_str(), "m"),
+            _ => panic!("expected Backdrop hit"),
+        }
+    }
+
+    #[test]
+    fn modal_content_clamped_to_viewport() {
+        // Requested size bigger than viewport — content should clamp.
+        let m = Modal {
+            id: WidgetId::new("m"),
+            content_width: 2000,
+            content_height: 2000,
+            backdrop_color: None,
+            dismiss_on_backdrop: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let layout = m.layout(viewport);
+        assert_eq!(layout.content_bounds.width, 400.0);
+        assert_eq!(layout.content_bounds.height, 300.0);
     }
 
     // ── Split primitive tests ─────────────────────────────────────────
