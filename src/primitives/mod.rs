@@ -14,6 +14,7 @@ pub mod palette;
 pub mod panel;
 pub mod progress;
 pub mod spinner;
+pub mod split;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod terminal;

@@ -128,6 +128,9 @@ pub use primitives::progress::{
     ProgressBar, ProgressBarEvent, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
 pub use primitives::spinner::{Spinner, SpinnerEvent, SpinnerHit, SpinnerLayout, SpinnerMeasure};
+pub use primitives::split::{
+    Split, SplitDirection, SplitEvent, SplitHit, SplitLayout, SplitMeasure,
+};
 pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
@@ -939,6 +942,87 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── Split primitive tests ─────────────────────────────────────────
+
+    #[test]
+    fn split_layout_horizontal_even() {
+        let s = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 202.0, 100.0);
+        let layout = s.layout(bounds, SplitMeasure::new(2.0));
+        // available = 200, first = 100, second = 100.
+        assert_eq!(layout.first_bounds.width, 100.0);
+        assert_eq!(layout.divider_bounds.x, 100.0);
+        assert_eq!(layout.divider_bounds.width, 2.0);
+        assert_eq!(layout.second_bounds.x, 102.0);
+        assert_eq!(layout.second_bounds.width, 100.0);
+    }
+
+    #[test]
+    fn split_layout_vertical_with_min() {
+        let s = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Vertical,
+            ratio: 0.1, // too small; clamped up to first_min
+            first_min: 30.0,
+            second_min: 20.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 100.0, 101.0);
+        let layout = s.layout(bounds, SplitMeasure::new(1.0));
+        // available = 100. Raw first = 10; clamped to first_min = 30.
+        assert_eq!(layout.first_bounds.height, 30.0);
+        assert_eq!(layout.second_bounds.height, 70.0);
+        assert_eq!(layout.divider_bounds.y, 30.0);
+    }
+
+    #[test]
+    fn split_hit_test_regions() {
+        let s = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let layout = s.layout(bounds, SplitMeasure::new(2.0));
+        // Click in first pane.
+        match layout.hit_test(50.0, 50.0) {
+            SplitHit::FirstPane(id) => assert_eq!(id.as_str(), "s"),
+            _ => panic!(),
+        }
+        // Click on divider (x = 99.0..101.0).
+        match layout.hit_test(99.5, 50.0) {
+            SplitHit::Divider(id) => assert_eq!(id.as_str(), "s"),
+            _ => panic!(),
+        }
+        // Click in second pane.
+        match layout.hit_test(150.0, 50.0) {
+            SplitHit::SecondPane(id) => assert_eq!(id.as_str(), "s"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn split_layout_resolved_ratio() {
+        let s = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.0, // would collapse first pane
+            first_min: 50.0,
+            second_min: 0.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 201.0, 100.0);
+        let layout = s.layout(bounds, SplitMeasure::new(1.0));
+        // first_size clamped to 50; resolved_ratio = 50/200 = 0.25.
+        assert!((layout.resolved_ratio - 0.25).abs() < 0.001);
     }
 
     // ── Panel primitive tests ─────────────────────────────────────────
