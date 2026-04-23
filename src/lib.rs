@@ -121,6 +121,9 @@ pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
     VisiblePaletteItem,
 };
+pub use primitives::panel::{
+    Panel, PanelAction, PanelEvent, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
+};
 pub use primitives::progress::{
     ProgressBar, ProgressBarEvent, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
@@ -936,6 +939,115 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── Panel primitive tests ─────────────────────────────────────────
+
+    fn mk_panel_action(id: &str, icon: char) -> PanelAction {
+        PanelAction {
+            id: WidgetId::new(id),
+            icon: icon.to_string(),
+            tooltip: String::new(),
+            is_active: false,
+        }
+    }
+
+    #[test]
+    fn panel_layout_with_title_and_actions() {
+        let p = Panel {
+            id: WidgetId::new("terminal"),
+            title: Some(StyledText::plain("Terminal")),
+            actions: vec![
+                mk_panel_action("term:split", '+'),
+                mk_panel_action("term:max", '□'),
+                mk_panel_action("term:close", '×'),
+            ],
+            accent: None,
+            collapsed: false,
+        };
+        let bounds = Rect::new(0.0, 0.0, 400.0, 200.0);
+        let layout = p.layout(bounds, PanelMeasure::new(24.0));
+        assert!(layout.title_bar_bounds.is_some());
+        let tb = layout.title_bar_bounds.unwrap();
+        assert_eq!(tb.height, 24.0);
+        // Actions right-aligned: close (last in actions) at rightmost.
+        assert_eq!(layout.visible_actions.len(), 3);
+        assert_eq!(layout.visible_actions[0].id.as_str(), "term:split");
+        // Rightmost action is first in iteration (right-to-left placement).
+        assert_eq!(
+            layout.visible_actions[0].bounds.x + layout.visible_actions[0].bounds.width,
+            400.0
+        );
+        // Content region below title bar.
+        assert_eq!(layout.content_bounds.y, 24.0);
+        assert_eq!(layout.content_bounds.height, 200.0 - 24.0);
+    }
+
+    #[test]
+    fn panel_layout_no_title() {
+        let p = Panel {
+            id: WidgetId::new("p"),
+            title: None,
+            actions: vec![],
+            accent: None,
+            collapsed: false,
+        };
+        let bounds = Rect::new(10.0, 20.0, 300.0, 100.0);
+        let layout = p.layout(bounds, PanelMeasure::new(24.0));
+        assert!(layout.title_bar_bounds.is_none());
+        // Content fills the full panel.
+        assert_eq!(layout.content_bounds.y, 20.0);
+        assert_eq!(layout.content_bounds.height, 100.0);
+    }
+
+    #[test]
+    fn panel_layout_collapsed() {
+        let p = Panel {
+            id: WidgetId::new("p"),
+            title: Some(StyledText::plain("Collapsed")),
+            actions: vec![],
+            accent: None,
+            collapsed: true,
+        };
+        let bounds = Rect::new(0.0, 0.0, 200.0, 150.0);
+        let layout = p.layout(bounds, PanelMeasure::new(20.0));
+        // Title bar still rendered; content region has zero size.
+        assert!(layout.title_bar_bounds.is_some());
+        assert_eq!(layout.content_bounds.width, 0.0);
+        assert_eq!(layout.content_bounds.height, 0.0);
+    }
+
+    #[test]
+    fn panel_layout_hit_test_dispatches_correctly() {
+        let p = Panel {
+            id: WidgetId::new("p"),
+            title: Some(StyledText::plain("T")),
+            actions: vec![mk_panel_action("close", '×')],
+            accent: None,
+            collapsed: false,
+        };
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let layout = p.layout(bounds, PanelMeasure::new(20.0));
+        // Click on the close button (rightmost in title bar).
+        let close = &layout.visible_actions[0];
+        let cx = close.bounds.x + close.bounds.width / 2.0;
+        let cy = close.bounds.y + close.bounds.height / 2.0;
+        match layout.hit_test(cx, cy) {
+            PanelHit::Action(id) => assert_eq!(id.as_str(), "close"),
+            _ => panic!("expected Action(close)"),
+        }
+        // Click on title bar body.
+        match layout.hit_test(20.0, 10.0) {
+            PanelHit::TitleBar(id) => assert_eq!(id.as_str(), "p"),
+            _ => panic!("expected TitleBar"),
+        }
+        // Click on content region.
+        match layout.hit_test(100.0, 50.0) {
+            PanelHit::Content(id) => assert_eq!(id.as_str(), "p"),
+            _ => panic!("expected Content"),
+        }
+        // Click outside.
+        assert_eq!(layout.hit_test(500.0, 500.0), PanelHit::Outside);
     }
 
     // ── Dialog primitive tests ────────────────────────────────────────

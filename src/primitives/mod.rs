@@ -11,6 +11,7 @@ pub mod dialog;
 pub mod form;
 pub mod list;
 pub mod palette;
+pub mod panel;
 pub mod progress;
 pub mod spinner;
 pub mod status_bar;
