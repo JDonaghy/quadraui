@@ -934,6 +934,80 @@ mod tests {
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
     }
 
+    // ── Form field primitive tests (#143 Slider/ColorPicker/Dropdown) ─
+
+    #[test]
+    fn form_slider_field_serde() {
+        let field = FormField {
+            id: WidgetId::new("font-size"),
+            label: StyledText::plain("Font size"),
+            kind: FieldKind::Slider {
+                value: 14.0,
+                min: 8.0,
+                max: 32.0,
+                step: 1.0,
+            },
+            hint: StyledText::plain("Editor font size in px"),
+            disabled: false,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_color_picker_field_serde() {
+        let field = FormField {
+            id: WidgetId::new("accent"),
+            label: StyledText::plain("Accent colour"),
+            kind: FieldKind::ColorPicker {
+                value: Color::rgb(0x78, 0xb4, 0xff),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_dropdown_field_serde() {
+        let field = FormField {
+            id: WidgetId::new("theme"),
+            label: StyledText::plain("Theme"),
+            kind: FieldKind::Dropdown {
+                options: vec![
+                    StyledText::plain("One Dark"),
+                    StyledText::plain("Solarized Light"),
+                    StyledText::plain("Monokai"),
+                ],
+                selected_idx: 0,
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_slider_legacy_deserialize_with_default_step() {
+        // A client might omit `step` — it defaults to 1.0 via serde.
+        let json = r#"{
+            "id": "x",
+            "label": {"spans":[{"text":"X","fg":null,"bg":null}]},
+            "kind": {"Slider": {"value": 5.0, "min": 0.0, "max": 10.0}},
+            "hint": {"spans":[]}
+        }"#;
+        let field: FormField = serde_json::from_str(json).unwrap();
+        match field.kind {
+            FieldKind::Slider { step, .. } => assert_eq!(step, 1.0),
+            _ => panic!("expected Slider"),
+        }
+    }
+
     // ── Completions primitive tests (D6) ──────────────────────────────
 
     fn make_completion(label: &str, kind: CompletionKind) -> CompletionItem {

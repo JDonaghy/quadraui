@@ -42,7 +42,12 @@ use crate::types::{Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `Form` widget.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Note: `Eq` is not derivable because `FieldKind::Slider` carries
+/// `f32` values. Apps should not put `Form` into hash maps or use
+/// struct equality for state diffing — compare field IDs and
+/// individual values instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Form {
     pub id: WidgetId,
     pub fields: Vec<FormField>,
@@ -59,7 +64,7 @@ pub struct Form {
 }
 
 /// One row in a `Form`: a label + an input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FormField {
     pub id: WidgetId,
     /// Rendered to the left of the field. Omit (empty spans) for rows
@@ -76,7 +81,7 @@ pub struct FormField {
 }
 
 /// The input variant carried by a `FormField`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FieldKind {
     /// A bold/sectioned header row. Not interactive; used to group
     /// related fields. The field's `label` carries the header text;
@@ -115,6 +120,43 @@ pub enum FieldKind {
     /// Read-only display of a value computed elsewhere. Text-only; no
     /// events. Used for "current version: 0.10.0" style rows.
     ReadOnly { value: StyledText },
+    /// Numeric slider bounded by `min`..=`max` with increment `step`.
+    /// `value` is the current setting. Click-and-drag on the track
+    /// updates value; arrow keys step by `step`; Home/End jump to
+    /// bounds. Emits `FormEvent::SliderChanged` per adjustment.
+    ///
+    /// Use for tab width, font size multiplier, cursor-blink rate,
+    /// anything with a natural numeric domain and a reasonable range.
+    Slider {
+        value: f32,
+        min: f32,
+        max: f32,
+        #[serde(default = "slider_default_step")]
+        step: f32,
+    },
+    /// Colour picker. `value` is the current selection. Click opens an
+    /// app-provided palette / hex-input popup (the Form primitive
+    /// doesn't render the popup itself — apps handle that). Emits
+    /// `FormEvent::ColorChanged` when the user picks a new value.
+    ///
+    /// Use for theme customisation, highlight-group overrides, chart
+    /// colour assignments.
+    ColorPicker { value: crate::Color },
+    /// Single-choice selection from a fixed list. `options` is the
+    /// display list; `selected_idx` is the current choice.
+    /// Click / Enter opens the dropdown; arrows select; Enter confirms.
+    /// Emits `FormEvent::DropdownChanged` on commit.
+    ///
+    /// Use for enum-style settings (theme selection, cursor style,
+    /// line-ending preference, language server choice).
+    Dropdown {
+        options: Vec<StyledText>,
+        selected_idx: usize,
+    },
+}
+
+fn slider_default_step() -> f32 {
+    1.0
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -246,7 +288,7 @@ impl Form {
 }
 
 /// Events a `Form` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FormEvent {
     /// A `Toggle` field's value changed.
     ToggleChanged { id: WidgetId, value: bool },
@@ -255,6 +297,12 @@ pub enum FormEvent {
     TextInputChanged { id: WidgetId, value: String },
     /// A `TextInput` received Enter while focused.
     TextInputCommitted { id: WidgetId, value: String },
+    /// A `Slider` field's value changed (drag, arrow key, Home/End).
+    SliderChanged { id: WidgetId, value: f32 },
+    /// A `ColorPicker` field produced a new colour.
+    ColorChanged { id: WidgetId, value: crate::Color },
+    /// A `Dropdown` field committed a new selection.
+    DropdownChanged { id: WidgetId, selected_idx: usize },
     /// Keyboard focus moved to a different field.
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.
