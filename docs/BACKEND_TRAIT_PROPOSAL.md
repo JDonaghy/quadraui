@@ -541,17 +541,19 @@ hit-test at cursor position, not by focus. Focus only determines who
 receives `KeyPressed` / `CharTyped`, and factors into `Accelerator`
 when scope is `Widget` or `Mode`.
 
-The focus *model* itself still needs a dedicated design pass:
+**📝 PROPOSAL PENDING — see §9 D7 (five sub-decisions D7a–D7e).**
 
-- **Transitions** — does focus move on click, on Tab, on
+The focus *model* needs to decide five things:
+
+- **D7a Transitions** — does focus move on click, on Tab, on
   app-directed `set_focus(id)`, or all three?
-- **Destruction** — what happens when the focused widget is removed?
+- **D7b Destruction** — what happens when the focused widget is removed?
   Fall back to parent? To an app-designated default?
-- **Declaration** — do primitives explicitly opt in to being
+- **D7c Declaration** — do primitives explicitly opt in to being
   focusable, or is it implicit?
-- **Modal interaction** — a `Dialog` opens while a text input has
+- **D7d Modal interaction** — a `Dialog` opens while a text input has
   focus; what happens on close? Stack-like focus history?
-- **Native focus bridging** — on GTK each `DrawingArea` has its own
+- **D7e Native focus bridging** — on GTK each `DrawingArea` has its own
   native focus; on Win32 the top-level HWND has focus and we
   simulate per-widget focus in-app. The quadraui focus model needs
   to abstract over this without leaking.
@@ -716,17 +718,172 @@ pre-optimise; profile after B.5 if necessary.
    (IME) remain open. §6.3 (multi-window) is a v1.x concern, not
    blocking. §6.6 (performance) is profile-after-B.5.
 
+7. **Focus model (§6.4)** — five interlocking sub-questions. The
+   focus model is the last design blocker before Phase B.3 layout
+   primitives can land, because `Panel` / `Tabs` / `Dialog` /
+   `MenuBar` / `Modal` all depend on focus semantics for their
+   keyboard behaviour. Presented as five separate sub-decisions
+   (D7a–D7e) so each can be picked independently.
+
+   📝 **PROPOSED 2026-04-23, awaiting resolution.** Current
+   recommendations below; each sub-decision can be accepted or
+   redirected.
+
+   ---
+
+   #### D7a — Transitions: how does focus move?
+
+   - **A.** Click, Tab, and programmatic `set_focus(id)` — all three.
+   - **B.** Click only; Tab is app-implemented.
+   - **C.** Programmatic only; app owns all focus state.
+
+   **Recommendation: A.** All three funnel through a single
+   `set_focus(id)` path — primitives don't need to know how focus
+   got here, only that they received or lost it. Click is
+   universal; Tab is the accessibility baseline; programmatic is
+   needed for dialog-open / palette-first-result / after-action
+   focus moves. Backend handles click-to-focus by emitting
+   `set_focus` on hit-test; Tab walks a focus-order registry;
+   apps call `set_focus` directly.
+
+   ---
+
+   #### D7b — Destruction: what happens when the focused widget disappears?
+
+   - **A.** Fall back to parent widget (walk up the tree).
+   - **B.** Fall back to an app-designated default (app registers
+     "when nothing else is focused, focus this").
+   - **C.** Focus becomes `None`; next Tab/click re-establishes.
+
+   **Recommendation: B + C hybrid.** If the app registered a
+   default (`backend.set_default_focus(id)`), restore to it; else
+   focus becomes `None` and re-establishes on the next input.
+   A alone (parent walk) requires a parent-pointer tree quadraui
+   primitives don't maintain — primitives are declarative trees
+   rebuilt per frame, not retained widgets. B alone is fragile
+   (app forgets to register → permanent null focus). C alone
+   breaks the keyboard flow when a dialog closes.
+
+   Implementation: `Backend` owns `focused_id: Option<WidgetId>`
+   and `default_focus_id: Option<WidgetId>`. Each frame, if
+   `focused_id` isn't in the current primitive tree, fall back to
+   `default_focus_id` or `None`.
+
+   ---
+
+   #### D7c — Declaration: opt-in or opt-out focusable?
+
+   - **A.** All primitives focusable by default; opt out via field.
+   - **B.** Each primitive carries a `focusable: bool` field; apps
+     set it per-instance.
+   - **C.** Focusability is a property of the primitive *type* —
+     `TextInput` / `ListView` / `TreeView` / `Palette` / `Form` /
+     `Editor` are always focusable; `Toast` / `Tooltip` /
+     `Separator` / `StatusBar` / `ActivityBar` never are. `Dialog`
+     is focusable when open (modal semantics override).
+
+   **Recommendation: C.** Aligns with plugin-invariant hygiene
+   (§10) — smaller serde payload, no "what happens if a Toast
+   has `focusable=true`?" foot-gun. A requires every primitive
+   author to remember opt-out. B adds a field that's the same
+   value for 95% of primitives (noise). C encodes knowledge
+   once, in the type.
+
+   Open sub-case: `ListView` *rows* — focusable as a whole, not
+   per-row. Row selection is separate from focus. Same for
+   `TreeView`.
+
+   ---
+
+   #### D7d — Modal interaction: Dialog opens, what happens on close?
+
+   - **A.** Stack-based focus history: backend pushes `focused_id`
+     on modal open, pops on close.
+   - **B.** Apps are responsible for restoring focus manually on
+     dialog close.
+   - **C.** No modal-specific behaviour — `Dialog` is just another
+     focusable primitive.
+
+   **Recommendation: A.** This is the obvious-correct UX (every
+   OS does this). B puts the burden on every app author who opens
+   a dialog to remember restoration — high defect rate, and
+   indistinguishable from a forgotten case until a user notices.
+   C is wrong: modal is load-bearing UX, not cosmetic.
+
+   Implementation: `Backend` owns a focus stack `Vec<WidgetId>`.
+   `push_modal_focus()` / `pop_modal_focus()` are backend-owned
+   methods primitives can trigger; apps don't touch the stack.
+   Close via Esc or Enter pops automatically. Nested modals work
+   by depth of stack.
+
+   ---
+
+   #### D7e — Native focus bridging: how does quadraui focus relate to OS focus?
+
+   - **A.** Simulate in-app focus entirely; ignore native focus
+     system. Backend gives its own top-level widget native focus
+     once at startup; after that, nothing talks to the native
+     focus API.
+   - **B.** Map quadraui focus 1:1 to native focus. GTK: focus
+     the parent `DrawingArea`. Win32: mostly no-op (single HWND).
+     macOS: drive NSResponder chain. TUI: no-op (no native focus).
+   - **C.** Hybrid: native focus for the top-level window;
+     simulate within. TUI no-op inside; GTK/Win32/macOS focus
+     the app's single drawing surface, then simulate widget
+     focus inside it.
+
+   **Recommendation: C.** This is implicitly what today's code
+   does; formalising it makes the contract explicit. A loses
+   native conventions (e.g. Alt+Tab on Windows returning focus
+   to the app needs something to focus; losing OS-level focus
+   means the app stops receiving keyboard input). B is
+   impossible for TUI (no native focus model) and awkward for
+   GTK (one `DrawingArea` per quadraui widget would require
+   rebuilding the existing scene-as-custom-paint model).
+
+   C works everywhere: native focus lives at the top-level; the
+   `Backend::focus_surface()` is what the OS considers "has
+   keyboard focus." Inside that surface, `focused_id` routes
+   which widget gets `KeyPressed` / `CharTyped`.
+
+   ---
+
+   #### What lands when D7a–D7e are resolved
+
+   - `Backend::focused_id()` / `set_focus(id)` / `set_default_focus(id)`
+     methods.
+   - `UiEvent::FocusGained(WidgetId)` / `UiEvent::FocusLost(WidgetId)`.
+   - Backend-owned focus stack for modal push/pop.
+   - Each primitive's type documented as focusable (always / never /
+     modal-conditional) in its crate docstring.
+   - Tab-order registry on `Backend` — apps register focusable
+     widgets; backend walks on Tab / Shift+Tab.
+   - `Accelerator` scope `Widget(id)` and `Mode(mode_id)` now
+     dispatchable (previously stub).
+
+   #### What this unblocks
+
+   Phase B.3 can start once D7a–D7e are resolved (or at minimum
+   D7a + D7c + D7d, since D7b and D7e are implementation details
+   that don't affect primitive shape). `Panel` / `Tabs` / `Modal`
+   / `Dialog` / `MenuBar` all need to know focusability rules to
+   define their keyboard behaviour coherently.
+
 ---
 
 ### All decisions resolved — next step is code
 
-With all six resolved, the layout-axis structural fix unblocks
-Phase B.3 (layout primitives). #178 and #179 land as part of the
-B.3 wave — `TabBar::layout()` becomes the reference implementation
-for the new `Layout`-returning shape. Existing primitives
-(`StatusBar`, `TreeView`, `ListView`, `Form`, `Palette`,
-`ActivityBar`) gain `layout()` methods incrementally as their
-backends are touched, not all at once.
+With D1–D6 resolved and D7 proposed, the design-axis blockers for
+Phase B.3 are down to one multi-part decision. Once D7 resolves:
+- `TabBar::layout()` + `TabBarLayout::hit_test()` lands first (closes
+  #179; reference implementation for the D6 layout-returning shape).
+- B.3 layout primitives (`Panel` / `Split` / `Tabs` / `Stack` /
+  `MenuBar` / `Modal` / `Dialog`) follow, all built on the Layout +
+  focus contract.
+- Existing primitives (`StatusBar`, `TreeView`, `ListView`, `Form`,
+  `Palette`, `ActivityBar`, `TextDisplay`) gain `layout()` methods
+  incrementally.
+- Once the readiness gate (PLAN.md) is clear, the TUI rewrite starts.
 
 ---
 
