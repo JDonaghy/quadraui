@@ -366,11 +366,14 @@ impl TabBar {
     /// # Overflow policy (v1)
     ///
     /// - **Right segments:** kept together as one block. If the block
-    ///   would consume more than half the bar width, it's dropped
-    ///   entirely (all or nothing). Priority-drop per-segment (like
-    ///   `StatusBar::fit_right_start`) is a planned iteration — tab-bar
-    ///   segments tend to be either a small action cluster or nothing,
-    ///   so per-segment priority ranks aren't yet useful.
+    ///   would literally not fit inside the bar (`total > bar_width`),
+    ///   it's dropped entirely (all or nothing). Otherwise it renders,
+    ///   even if it leaves little room for tabs — matches pre-D6
+    ///   behaviour in vimcode's TUI / GTK / Win-GUI backends. Priority-
+    ///   drop per-segment (like `StatusBar::fit_right_start`) is a
+    ///   planned iteration — tab-bar segments tend to be either a small
+    ///   action cluster or nothing, so per-segment priority ranks
+    ///   aren't yet useful.
     /// - **Tabs:** when the full set doesn't fit, `scroll_offset` is
     ///   chosen to keep the active tab visible (delegates to
     ///   [`Self::fit_active_scroll_offset`]). Scroll arrows appear on
@@ -415,12 +418,12 @@ impl TabBar {
             };
         }
 
-        // ── Right segments: all or nothing (v1 policy) ─────────────────
+        // ── Right segments: render if they fit in the bar at all ──────
         let seg_widths: Vec<f32> = (0..self.right_segments.len())
             .map(|i| measure_segment(i).width)
             .collect();
         let total_seg_width: f32 = seg_widths.iter().sum();
-        let segs_fit = !self.right_segments.is_empty() && total_seg_width <= bar_width * 0.5;
+        let segs_fit = !self.right_segments.is_empty() && total_seg_width <= bar_width;
         let right_area_width = if segs_fit { total_seg_width } else { 0.0 };
 
         // ── Tabs ───────────────────────────────────────────────────────

@@ -1156,9 +1156,9 @@ mod tests {
             }],
             active_accent: None,
         };
-        // Bar 100 wide. Segment is 60 wide; that's > half (50) → drop.
+        // Bar 50 wide. Segment is 60 wide; literally doesn't fit → drop.
         let layout = bar.layout(
-            100.0,
+            50.0,
             2.0,
             2.0,
             |_| TabMeasure::new(10.0, 1.0),
@@ -1169,6 +1169,17 @@ mod tests {
         for (_, hit) in &layout.hit_regions {
             assert!(!matches!(hit, TabBarHit::RightSegment(_)));
         }
+
+        // But a segment that fits, even narrowly, renders. 60 ≤ 100 → keep.
+        let bar2 = bar.clone();
+        let layout2 = bar2.layout(
+            100.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(60.0),
+        );
+        assert_eq!(layout2.visible_segments.len(), 1);
     }
 
     #[test]
