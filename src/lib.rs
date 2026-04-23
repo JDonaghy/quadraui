@@ -107,8 +107,8 @@ pub use primitives::context_menu::{
     ContextMenuLayout, VisibleContextMenuItem,
 };
 pub use primitives::dialog::{
-    Dialog, DialogButton, DialogEvent, DialogHit, DialogLayout, DialogMeasure, DialogSeverity,
-    VisibleDialogButton,
+    Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
+    DialogSeverity, VisibleDialogButton,
 };
 pub use primitives::form::{
     FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit, FormLayout, VisibleFormField,
@@ -1314,12 +1314,14 @@ mod tests {
             buttons: vec![cancel, ok],
             severity: Some(DialogSeverity::Question),
             vertical_buttons: false,
+            input: None,
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let measure = DialogMeasure {
             width: 400.0,
             title_height: 24.0,
             body_height: 40.0,
+            input_height: 0.0,
             button_row_height: 32.0,
             button_width: 80.0,
             button_gap: 8.0,
@@ -1355,12 +1357,14 @@ mod tests {
             ],
             severity: None,
             vertical_buttons: true,
+            input: None,
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let measure = DialogMeasure {
             width: 300.0,
             title_height: 20.0,
             body_height: 0.0,
+            input_height: 0.0,
             button_row_height: 90.0,
             button_width: 280.0,
             button_gap: 0.0,
@@ -1389,12 +1393,14 @@ mod tests {
             ],
             severity: None,
             vertical_buttons: false,
+            input: None,
         };
         let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
         let measure = DialogMeasure {
             width: 200.0,
             title_height: 20.0,
             body_height: 20.0,
+            input_height: 0.0,
             button_row_height: 20.0,
             button_width: 60.0,
             button_gap: 10.0,
@@ -1419,6 +1425,45 @@ mod tests {
     }
 
     #[test]
+    fn dialog_with_input_field_layout() {
+        // Rename-style dialog: title + short body + input + buttons.
+        let ok = mk_dialog_button("ok", "OK");
+        let cancel = mk_dialog_button("cancel", "Cancel");
+        let d = Dialog {
+            id: WidgetId::new("rename"),
+            title: StyledText::plain("Rename"),
+            body: StyledText::plain("New name:"),
+            buttons: vec![cancel, ok],
+            severity: None,
+            vertical_buttons: false,
+            input: Some(DialogInput {
+                value: "old_name.rs".to_string(),
+                placeholder: String::new(),
+                cursor: Some(11),
+            }),
+        };
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let measure = DialogMeasure {
+            width: 200.0,
+            title_height: 20.0,
+            body_height: 20.0,
+            input_height: 24.0,
+            button_row_height: 20.0,
+            button_width: 60.0,
+            button_gap: 10.0,
+            padding: 10.0,
+        };
+        let layout = d.layout(viewport, measure);
+        assert!(layout.input_bounds.is_some());
+        let ib = layout.input_bounds.unwrap();
+        // Input sits between body and buttons.
+        assert_eq!(ib.y, layout.body_bounds.y + layout.body_bounds.height);
+        assert_eq!(ib.height, 24.0);
+        // Buttons pushed down by input_height.
+        assert_eq!(layout.button_row_bounds.y, ib.y + ib.height);
+    }
+
+    #[test]
     fn dialog_default_and_cancel_resolution() {
         let mut ok = mk_dialog_button("ok", "OK");
         ok.is_default = true;
@@ -1431,6 +1476,7 @@ mod tests {
             buttons: vec![cancel, ok],
             severity: None,
             vertical_buttons: false,
+            input: None,
         };
         assert_eq!(d.default_button_id().unwrap().as_str(), "ok");
         assert_eq!(d.cancel_button_id().unwrap().as_str(), "cancel");

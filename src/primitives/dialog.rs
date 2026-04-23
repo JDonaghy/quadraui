@@ -35,6 +35,25 @@ pub struct Dialog {
     /// false, buttons are horizontal, right-aligned.
     #[serde(default)]
     pub vertical_buttons: bool,
+    /// Optional single-line text input rendered between body and
+    /// buttons. Used for rename prompts, input-required confirms.
+    /// Apps own the value; the primitive echoes back typed chars via
+    /// `DialogEvent::InputChanged`.
+    #[serde(default)]
+    pub input: Option<DialogInput>,
+}
+
+/// Text input embedded in a dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogInput {
+    /// Current input value.
+    pub value: String,
+    /// Placeholder text shown when `value` is empty.
+    #[serde(default)]
+    pub placeholder: String,
+    /// Cursor byte offset. `None` renders the input without a cursor.
+    #[serde(default)]
+    pub cursor: Option<usize>,
 }
 
 /// Severity of a `Dialog`.
@@ -71,6 +90,11 @@ pub struct DialogButton {
 pub enum DialogEvent {
     /// User clicked a button (or activated via Enter / Escape mapping).
     ButtonClicked { id: WidgetId },
+    /// The input field's value changed. Fires per keystroke.
+    InputChanged { value: String },
+    /// User pressed Enter inside the input field — apps typically
+    /// treat this like clicking the default button.
+    InputCommitted { value: String },
     /// Dialog dismissed without a specific button (click-outside
     /// where the app allows it). Prefer `ButtonClicked` with the
     /// cancel button when possible.
@@ -91,6 +115,8 @@ pub struct DialogMeasure {
     pub title_height: f32,
     /// Height of the body content.
     pub body_height: f32,
+    /// Height reserved for the input row (0 when dialog has no input).
+    pub input_height: f32,
     /// Height reserved for the button row.
     pub button_row_height: f32,
     /// Width of each button (uniform, for simplicity).
@@ -103,7 +129,11 @@ pub struct DialogMeasure {
 
 impl DialogMeasure {
     pub fn total_height(&self) -> f32 {
-        self.title_height + self.body_height + self.button_row_height + self.padding * 2.0
+        self.title_height
+            + self.body_height
+            + self.input_height
+            + self.button_row_height
+            + self.padding * 2.0
     }
 }
 
@@ -136,6 +166,9 @@ pub struct DialogLayout {
     pub title_bounds: Option<Rect>,
     /// Body content bounds.
     pub body_bounds: Rect,
+    /// Text-input row bounds (if the dialog has an input and
+    /// `measure.input_height > 0`).
+    pub input_bounds: Option<Rect>,
     /// Button row bounds.
     pub button_row_bounds: Rect,
     pub visible_buttons: Vec<VisibleDialogButton>,
@@ -197,6 +230,14 @@ impl Dialog {
         let body_bounds = Rect::new(content_x, cursor_y, content_w, measure.body_height);
         cursor_y += measure.body_height;
 
+        let input_bounds = if self.input.is_some() && measure.input_height > 0.0 {
+            let b = Rect::new(content_x, cursor_y, content_w, measure.input_height);
+            cursor_y += measure.input_height;
+            Some(b)
+        } else {
+            None
+        };
+
         let button_row_bounds =
             Rect::new(content_x, cursor_y, content_w, measure.button_row_height);
 
@@ -241,6 +282,7 @@ impl Dialog {
             bounds,
             title_bounds,
             body_bounds,
+            input_bounds,
             button_row_bounds,
             visible_buttons,
             hit_regions,
