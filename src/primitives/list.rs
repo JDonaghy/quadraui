@@ -33,6 +33,14 @@ pub struct ListView {
     pub scroll_offset: usize,
     #[serde(default)]
     pub has_focus: bool,
+    /// When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list
+    /// and inset items by 1 cell on each side. Title (if present)
+    /// renders as an overlay on the top border (`╭─ Title ─╮`) instead
+    /// of as a separate header strip. Used by modal-style overlays
+    /// (tab switcher, file picker). Default `false` matches the flat
+    /// header+rows layout used by quickfix and other inline panels.
+    #[serde(default)]
+    pub bordered: bool,
 }
 
 /// One row in a `ListView`.
@@ -155,16 +163,45 @@ impl ListView {
         let mut visible_items: Vec<VisibleListItem> = Vec::new();
         let mut hit_regions: Vec<(Rect, ListViewHit)> = Vec::new();
 
+        // Border insets: 1 cell on each side and at top + bottom when
+        // `bordered` is set. The title (if present) renders as an
+        // overlay on the top border, so it does not consume an extra
+        // row in bordered mode.
+        let (inset_x, inset_y, item_w, items_h_max) = if self.bordered {
+            let iw = (viewport_width - 2.0).max(0.0);
+            let ih = (viewport_height - 2.0).max(0.0);
+            (1.0, 1.0, iw, ih)
+        } else {
+            (0.0, 0.0, viewport_width, viewport_height)
+        };
+
         // Title row (if present and reserved a height).
         let title_bounds = if self.title.is_some() && title_height > 0.0 {
-            let title_h = title_height.min(viewport_height);
-            let bounds = Rect::new(0.0, 0.0, viewport_width, title_h);
-            hit_regions.push((bounds, ListViewHit::Title));
-            Some(bounds)
+            if self.bordered {
+                // Overlay on top border at y=0; full viewport width so
+                // backends can paint the border + title together.
+                let title_h = title_height.min(viewport_height);
+                let bounds = Rect::new(0.0, 0.0, viewport_width, title_h);
+                hit_regions.push((bounds, ListViewHit::Title));
+                Some(bounds)
+            } else {
+                let title_h = title_height.min(viewport_height);
+                let bounds = Rect::new(0.0, 0.0, viewport_width, title_h);
+                hit_regions.push((bounds, ListViewHit::Title));
+                Some(bounds)
+            }
         } else {
             None
         };
-        let items_y_start = title_bounds.map(|b| b.y + b.height).unwrap_or(0.0);
+
+        // Items y starts after the title in flat mode, or after the
+        // top-border inset in bordered mode (the title overlays the
+        // border, not a separate row).
+        let items_y_start = if self.bordered {
+            inset_y
+        } else {
+            title_bounds.map(|b| b.y + b.height).unwrap_or(0.0)
+        };
 
         // Clamp scroll_offset.
         let resolved_scroll_offset = if self.items.is_empty() {
@@ -173,18 +210,24 @@ impl ListView {
             self.scroll_offset.min(self.items.len() - 1)
         };
 
+        let items_y_end = if self.bordered {
+            inset_y + items_h_max
+        } else {
+            viewport_height
+        };
+
         let mut y = items_y_start;
         for i in resolved_scroll_offset..self.items.len() {
-            if y >= viewport_height {
+            if y >= items_y_end {
                 break;
             }
             let m = measure_item(i);
-            let remaining = viewport_height - y;
+            let remaining = items_y_end - y;
             let height = m.height.min(remaining).max(0.0);
             if height <= 0.0 {
                 break;
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
+            let bounds = Rect::new(inset_x, y, item_w, height);
             visible_items.push(VisibleListItem {
                 item_idx: i,
                 bounds,

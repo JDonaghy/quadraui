@@ -355,6 +355,7 @@ mod tests {
             selected_idx: 1,
             scroll_offset: 0,
             has_focus: true,
+            bordered: false,
         };
         let json = serde_json::to_string(&list).unwrap();
         let back: ListView = serde_json::from_str(&json).unwrap();
@@ -2656,6 +2657,7 @@ mod tests {
             selected_idx: selected,
             scroll_offset: scroll,
             has_focus: true,
+            bordered: false,
         }
     }
 
@@ -2754,6 +2756,48 @@ mod tests {
         // Hit-test lands on correct row with fractional coords.
         assert_eq!(layout.hit_test(100.0, 29.0), ListViewHit::Item(0));
         assert_eq!(layout.hit_test(100.0, 39.0), ListViewHit::Item(1));
+    }
+
+    #[test]
+    fn list_view_layout_bordered_insets_items() {
+        // Bordered: items inset by 1 cell on each side, viewport
+        // height reduced by 2 (top + bottom border rows). Title (when
+        // present) overlays the top border, so item area starts at y=1.
+        let mut list = make_list(
+            Some("Open Tabs"),
+            (0..3).map(|i| make_list_item(&format!("tab{i}"))).collect(),
+            0,
+            0,
+        );
+        list.bordered = true;
+        let layout = list.layout(20.0, 6.0, 1.0, |_| ListItemMeasure::new(1.0));
+        // Title overlay covers the full top border row (y=0).
+        let tb = layout.title_bounds.unwrap();
+        assert_eq!(tb.y, 0.0);
+        assert_eq!(tb.width, 20.0);
+        // Items inset by 1 cell horizontally, start at y=1.
+        let i0 = layout.visible_items[0].bounds;
+        assert_eq!(i0.x, 1.0);
+        assert_eq!(i0.y, 1.0);
+        assert_eq!(i0.width, 18.0);
+        // Bottom row (y=5) is reserved for the border — only 3 item
+        // rows fit between y=1 and y=5 (inclusive of y=4).
+        assert!(layout.visible_items.iter().all(|v| v.bounds.y < 5.0));
+    }
+
+    #[test]
+    fn list_view_layout_bordered_no_title_starts_at_one() {
+        let mut list = make_list(
+            None,
+            (0..3).map(|i| make_list_item(&format!("r{i}"))).collect(),
+            0,
+            0,
+        );
+        list.bordered = true;
+        let layout = list.layout(10.0, 6.0, 0.0, |_| ListItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_none());
+        // Without title, items still start at y=1 (top border).
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
     }
 
     // ── D6 TreeView layout API tests ──────────────────────────────────
