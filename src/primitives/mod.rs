@@ -15,4 +15,5 @@ pub mod tab_bar;
 pub mod terminal;
 pub mod text_display;
 pub mod toast;
+pub mod tooltip;
 pub mod tree;

@@ -132,6 +132,10 @@ pub use primitives::toast::{
     ToastAction, ToastCorner, ToastEvent, ToastHit, ToastItem, ToastMeasure, ToastSeverity,
     ToastStack, ToastStackLayout, VisibleToast,
 };
+pub use primitives::tooltip::{
+    ResolvedPlacement, Tooltip, TooltipEvent, TooltipHit, TooltipLayout, TooltipMeasure,
+    TooltipPlacement,
+};
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
@@ -920,6 +924,89 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── Tooltip primitive tests (D6 shape) ────────────────────────────
+
+    #[test]
+    fn tooltip_layout_prefers_bottom_when_room() {
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hello".to_string(),
+            placement: TooltipPlacement::Bottom,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(100.0, 50.0, 40.0, 20.0);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(60.0, 16.0), 4.0);
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Bottom);
+        // Bottom placement: y = anchor.y + anchor.height + margin = 50 + 20 + 4 = 74
+        assert_eq!(layout.bounds.y, 74.0);
+        // Centered horizontally on anchor: x = 100 + (40 - 60)/2 = 90
+        assert_eq!(layout.bounds.x, 90.0);
+    }
+
+    #[test]
+    fn tooltip_layout_flips_to_opposite_when_overflow() {
+        // Anchor near bottom of viewport — preferred Bottom would overflow.
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hello".to_string(),
+            placement: TooltipPlacement::Bottom,
+            bg: None,
+            fg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 100.0);
+        let anchor = Rect::new(100.0, 80.0, 40.0, 16.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(60.0, 16.0), 4.0);
+        // Bottom would put tooltip at y=80+16+4=100 which exceeds viewport_height 100.
+        // Flip to Top.
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Top);
+        // Top: y = anchor.y - margin - vh = 80 - 4 - 16 = 60
+        assert_eq!(layout.bounds.y, 60.0);
+    }
+
+    #[test]
+    fn tooltip_layout_clamped_when_neither_fits() {
+        // Tiny viewport, anchor in middle — both Top and Bottom overflow
+        // (viewport is shorter than anchor + margin + tooltip).
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "…".to_string(),
+            placement: TooltipPlacement::Bottom,
+            bg: None,
+            fg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let anchor = Rect::new(10.0, 10.0, 20.0, 10.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(40.0, 20.0), 4.0);
+        // Preferred (Bottom) clamped: y would be 10+10+4=24; tooltip_h=20 →
+        // bottom edge at 44, > viewport 30. Doesn't fit. Try Top: y = 10-4-20=-14 → doesn't fit.
+        // Clamp preferred (Bottom): y clamped to viewport.height - vh = 30 - 20 = 10.
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Bottom);
+        assert!(layout.bounds.y <= 10.0);
+    }
+
+    #[test]
+    fn tooltip_layout_hit_test() {
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hover".to_string(),
+            placement: TooltipPlacement::Right,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(100.0, 100.0, 20.0, 20.0);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 400.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(80.0, 16.0), 4.0);
+        let center_x = layout.bounds.x + 10.0;
+        let center_y = layout.bounds.y + 5.0;
+        match layout.hit_test(center_x, center_y, &t.id) {
+            TooltipHit::Body(id) => assert_eq!(id.as_str(), "tip"),
+            _ => panic!(),
+        }
+        assert_eq!(layout.hit_test(0.0, 0.0, &t.id), TooltipHit::Empty);
     }
 
     // ── Spinner + ProgressBar primitive tests (D6, #142) ──────────────
