@@ -98,7 +98,10 @@ pub use primitives::activity_bar::{ActivityBar, ActivityBarEvent, ActivityItem};
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::list::{ListItem, ListView, ListViewEvent};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
-pub use primitives::status_bar::{StatusBar, StatusBarEvent, StatusBarHitRegion, StatusBarSegment};
+pub use primitives::status_bar::{
+    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
+    StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
+};
 pub use primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabBarSegment, TabItem,
     TabMeasure, VisibleSegment, VisibleTab,
@@ -891,6 +894,184 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 StatusBar layout API tests ─────────────────────────────────
+
+    fn make_status_seg(
+        text: &str,
+        id: Option<&str>,
+        bold: bool,
+    ) -> primitives::status_bar::StatusBarSegment {
+        primitives::status_bar::StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(255, 255, 255),
+            bg: Color::rgb(30, 30, 30),
+            bold,
+            action_id: id.map(WidgetId::new),
+        }
+    }
+
+    #[test]
+    fn status_bar_layout_empty() {
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![],
+            right_segments: vec![],
+        };
+        let layout = bar.layout(30.0, 1.0, 2.0, |_| StatusSegmentMeasure::new(0.0));
+        assert_eq!(layout.visible_segments.len(), 0);
+        assert_eq!(layout.hit_regions.len(), 0);
+        assert_eq!(layout.resolved_right_start, 0);
+        assert_eq!(layout.hit_test(5.0, 0.5), StatusBarHit::Empty);
+    }
+
+    #[test]
+    fn status_bar_layout_left_only() {
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![
+                make_status_seg(" NORMAL ", None, true),
+                make_status_seg(" main.rs", Some("filename"), false),
+            ],
+            right_segments: vec![],
+        };
+        let layout = bar.layout(50.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        assert_eq!(layout.visible_segments.len(), 2);
+        assert_eq!(layout.visible_segments[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_segments[0].bounds.width, 8.0); // " NORMAL "
+        assert_eq!(layout.visible_segments[0].side, StatusSegmentSide::Left);
+        assert!(!layout.visible_segments[0].clickable);
+        assert_eq!(layout.visible_segments[1].bounds.x, 8.0);
+        assert_eq!(layout.visible_segments[1].side, StatusSegmentSide::Left);
+        assert!(layout.visible_segments[1].clickable);
+
+        // Click on non-clickable → Empty. Click on clickable → the id.
+        assert_eq!(layout.hit_test(3.0, 0.5), StatusBarHit::Empty);
+        match layout.hit_test(10.0, 0.5) {
+            StatusBarHit::Segment(id) => assert_eq!(id.as_str(), "filename"),
+            other => panic!("expected Segment(filename), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_bar_layout_right_aligned() {
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg(" NORMAL", None, true)],
+            right_segments: vec![
+                make_status_seg(" rust ", Some("lang"), false),
+                make_status_seg(" Ln 1,Col 1 ", Some("cursor"), false),
+            ],
+        };
+        // Bar 40 chars. Right segs total 18; left 7; gap min 2. 7+2+18=27<=40.
+        // No drop. Right starts at 40 - 18 = 22.
+        let layout = bar.layout(40.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        assert_eq!(layout.resolved_right_start, 0);
+        assert_eq!(layout.visible_segments.len(), 3);
+        // Right side starts at bar_width - total_visible_right = 40 - 18 = 22
+        let lang = &layout.visible_segments[1];
+        assert_eq!(lang.side, StatusSegmentSide::Right);
+        assert_eq!(lang.bounds.x, 22.0);
+        assert_eq!(lang.bounds.width, 6.0);
+        let cursor = &layout.visible_segments[2];
+        assert_eq!(cursor.bounds.x, 28.0);
+
+        // Hit-test the right-side cursor segment.
+        match layout.hit_test(30.0, 0.5) {
+            StatusBarHit::Segment(id) => assert_eq!(id.as_str(), "cursor"),
+            other => panic!("expected Segment(cursor), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_bar_layout_priority_drop() {
+        // Right segments ordered least-important first. A narrow bar should
+        // drop the low-priority ones and preserve the cursor segment.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg(" LEFT", None, false)],
+            right_segments: vec![
+                make_status_seg(" a ", Some("lo0"), false),            // 3
+                make_status_seg(" b ", Some("lo1"), false),            // 3
+                make_status_seg(" c ", Some("lo2"), false),            // 3
+                make_status_seg(" Ln 1,Col 1", Some("cursor"), false), // 11
+            ],
+        };
+        // bar=20, left=5, gap=2 → max_right=13. Sum=20 > 13. Drop lo0 (3).
+        // Remaining 17 > 13. Drop lo1. Remaining 14 > 13. Drop lo2. Remaining 11 ≤ 13.
+        // resolved_right_start = 3 (cursor only).
+        let layout = bar.layout(20.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        assert_eq!(layout.resolved_right_start, 3);
+        // Visible: 1 left + 1 right = 2
+        assert_eq!(layout.visible_segments.len(), 2);
+        let surviving_right = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Right)
+            .unwrap();
+        assert_eq!(surviving_right.segment_idx, 3);
+        assert_eq!(surviving_right.bounds.width, 11.0);
+
+        // Hit-test the dropped-segment columns: no action fires.
+        assert_eq!(layout.hit_test(7.0, 0.5), StatusBarHit::Empty);
+    }
+
+    #[test]
+    fn status_bar_layout_pixel_units_fractional() {
+        // Native-style measurement: fractional pixel widths, proportional
+        // font. Proves the unit-agnostic contract (north-star goal).
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg("NORMAL", None, true)],
+            right_segments: vec![make_status_seg("Ln 1,Col 1", Some("cursor"), false)],
+        };
+        // Non-uniform widths — pretend each char is ~7.3 px average, bold +5.
+        let measure = |seg: &StatusBarSegment| {
+            let w = seg.text.chars().count() as f32 * 7.3 + if seg.bold { 5.0 } else { 0.0 };
+            StatusSegmentMeasure::new(w)
+        };
+        let layout = bar.layout(400.0, 22.0, 16.0, measure);
+        assert_eq!(layout.resolved_right_start, 0);
+        assert_eq!(layout.visible_segments.len(), 2);
+        assert_eq!(layout.visible_segments[0].side, StatusSegmentSide::Left);
+        assert_eq!(layout.visible_segments[0].bounds.x, 0.0);
+        assert!((layout.visible_segments[0].bounds.width - (6.0 * 7.3 + 5.0)).abs() < 0.01);
+        // Right segment right-aligned.
+        let right = &layout.visible_segments[1];
+        let right_w = 10.0 * 7.3;
+        assert!((right.bounds.x - (400.0 - right_w)).abs() < 0.01);
+    }
+
+    #[test]
+    fn status_bar_layout_always_keeps_last_right_segment() {
+        // Even if the last (highest-priority) segment alone doesn't fit,
+        // the layout keeps it rather than rendering an empty right half.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg("LEFT_MORE", None, false)],
+            right_segments: vec![make_status_seg("cursor_info", Some("cursor"), false)],
+        };
+        // bar=10, left=9, gap=2 → max_right=0 (well, negative → clamped to 0).
+        // Single segment, alone overflow → keep it anyway.
+        let layout = bar.layout(10.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        assert_eq!(layout.resolved_right_start, 0);
+        let r = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Right);
+        assert!(
+            r.is_some(),
+            "last segment should survive even when too wide"
+        );
     }
 
     // ── D6 layout API tests (per-primitive Layout + hit_test) ────────────

@@ -54,6 +54,7 @@
 //! `src/tui_main/quadraui_tui.rs::draw_status_bar` for reference
 //! implementations.
 
+use crate::event::Rect;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -267,5 +268,211 @@ impl StatusBar {
             }
         }
         None
+    }
+}
+
+// ── D6 Layout API ───────────────────────────────────────────────────────────
+//
+// Per Decision D6 in `docs/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
+// fully-resolved `Layout` structs; backends rasterise verbatim. Second
+// primitive to gain the new shape after `TabBar` — see that file for the
+// established template.
+
+/// Per-segment measurement supplied by the backend's layout caller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StatusSegmentMeasure {
+    pub width: f32,
+}
+
+impl StatusSegmentMeasure {
+    pub fn new(width: f32) -> Self {
+        Self { width }
+    }
+}
+
+/// Which side of the bar a resolved segment belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusSegmentSide {
+    Left,
+    Right,
+}
+
+/// Resolved position of one visible status-bar segment after layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleStatusSegment {
+    /// Index into `left_segments` (when `side == Left`) or
+    /// `right_segments` (when `side == Right`).
+    pub segment_idx: usize,
+    pub side: StatusSegmentSide,
+    pub bounds: Rect,
+    /// `true` iff the segment has an `action_id`.
+    pub clickable: bool,
+}
+
+/// Classification of a hit-test result on a status bar. Unlike
+/// [`TabBarHit`](super::tab_bar::TabBarHit) the status bar has a single
+/// interactive variant: a segment was clicked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusBarHit {
+    /// Click landed on a clickable segment — carries its `action_id`.
+    Segment(WidgetId),
+    /// Click landed on a non-clickable segment or in the gap.
+    Empty,
+}
+
+/// Fully-resolved status-bar layout. Backends iterate `visible_segments`
+/// for painting and call [`Self::hit_test`] for clicks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusBarLayout {
+    /// Total bar width in the measurer's unit.
+    pub bar_width: f32,
+    /// Total bar height in the measurer's unit.
+    pub bar_height: f32,
+    /// All visible segments, left-side first (in their natural order),
+    /// then the visible right-side segments (in their natural order).
+    pub visible_segments: Vec<VisibleStatusSegment>,
+    /// Ordered hit-region list. Non-clickable segments don't appear here;
+    /// use [`Self::hit_test`] rather than walking this directly.
+    pub hit_regions: Vec<(Rect, StatusBarHit)>,
+    /// Index into `right_segments` at which rendering actually started —
+    /// everything before this index was dropped by priority-drop. `0`
+    /// means all right segments survived.
+    pub resolved_right_start: usize,
+}
+
+impl StatusBarLayout {
+    /// Test which clickable segment (if any) contains point `(x, y)`.
+    /// Returns `StatusBarHit::Empty` when no region matches.
+    pub fn hit_test(&self, x: f32, y: f32) -> StatusBarHit {
+        for (rect, hit) in &self.hit_regions {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return hit.clone();
+            }
+        }
+        StatusBarHit::Empty
+    }
+}
+
+impl StatusBar {
+    /// Compute the full rendering + hit-test layout for this status bar.
+    ///
+    /// Per D6: layout decisions live here; backends consume the returned
+    /// `StatusBarLayout` verbatim. The priority-drop policy for
+    /// overflowing right segments is the same one as
+    /// [`Self::fit_right_start`] — this method calls it internally.
+    ///
+    /// # Arguments
+    ///
+    /// - `bar_width`, `bar_height` — bar dimensions in the measurer's unit.
+    /// - `min_gap` — minimum gap between the left group and the right
+    ///   group. Right segments are dropped from the front (least important)
+    ///   until they fit, preserving the gap. Typical values: `2` cells
+    ///   (TUI), `16` pixels (native).
+    /// - `measure(seg)` — returns a `StatusSegmentMeasure` for the segment.
+    ///   Receives the full `StatusBarSegment` so measurers can vary by
+    ///   `bold` or other style flags.
+    ///
+    /// All numeric arguments share the same unit; the primitive itself is
+    /// unit-agnostic. See [`quadraui::TabBar::layout`] for TUI/pixel
+    /// examples.
+    pub fn layout<F>(
+        &self,
+        bar_width: f32,
+        bar_height: f32,
+        min_gap: f32,
+        measure: F,
+    ) -> StatusBarLayout
+    where
+        F: Fn(&StatusBarSegment) -> StatusSegmentMeasure,
+    {
+        let mut visible_segments: Vec<VisibleStatusSegment> = Vec::new();
+        let mut hit_regions: Vec<(Rect, StatusBarHit)> = Vec::new();
+
+        // ── Left segments, left-to-right from column 0 ─────────────────
+        let mut cursor = 0.0_f32;
+        for (i, seg) in self.left_segments.iter().enumerate() {
+            let w = measure(seg).width;
+            let bounds = Rect::new(cursor, 0.0, w, bar_height);
+            let clickable = seg.action_id.is_some();
+            visible_segments.push(VisibleStatusSegment {
+                segment_idx: i,
+                side: StatusSegmentSide::Left,
+                bounds,
+                clickable,
+            });
+            if let Some(id) = &seg.action_id {
+                hit_regions.push((bounds, StatusBarHit::Segment(id.clone())));
+            }
+            cursor += w;
+        }
+        let left_w = cursor;
+
+        // ── Right segments: priority-drop so they fit ─────────────────
+        //
+        // Mirrors `fit_right_start` but stays in f32 to avoid rounding
+        // artefacts when widths are fractional (proportional fonts).
+        let right_widths: Vec<f32> = self
+            .right_segments
+            .iter()
+            .map(|s| measure(s).width)
+            .collect();
+        let total_right: f32 = right_widths.iter().sum();
+        let max_right = (bar_width - left_w - min_gap).max(0.0);
+
+        let resolved_right_start =
+            if self.right_segments.is_empty() || total_right <= max_right + f32::EPSILON {
+                0
+            } else {
+                let last = right_widths.len() - 1;
+                let mut remaining = total_right;
+                let mut found = last;
+                for (i, w) in right_widths.iter().enumerate() {
+                    if remaining <= max_right + f32::EPSILON {
+                        found = i;
+                        break;
+                    }
+                    // Always keep the last (highest-priority) segment, even if
+                    // it alone overflows — better to clip one segment than to
+                    // render an empty right half.
+                    if i == last {
+                        found = i;
+                        break;
+                    }
+                    remaining -= w;
+                }
+                found
+            };
+
+        // Right segments right-aligned inside `bar_width`. Rendered in the
+        // natural `right_segments[start..]` order; first visible segment
+        // is leftmost of the right group.
+        let visible_right = &self.right_segments[resolved_right_start..];
+        let visible_right_widths = &right_widths[resolved_right_start..];
+        let total_visible: f32 = visible_right_widths.iter().sum();
+        let mut cursor = (bar_width - total_visible).max(0.0);
+        for (offset, seg) in visible_right.iter().enumerate() {
+            let seg_idx = resolved_right_start + offset;
+            let w = visible_right_widths[offset];
+            let bounds = Rect::new(cursor, 0.0, w, bar_height);
+            let clickable = seg.action_id.is_some();
+            visible_segments.push(VisibleStatusSegment {
+                segment_idx: seg_idx,
+                side: StatusSegmentSide::Right,
+                bounds,
+                clickable,
+            });
+            if let Some(id) = &seg.action_id {
+                hit_regions.push((bounds, StatusBarHit::Segment(id.clone())));
+            }
+            cursor += w;
+        }
+
+        StatusBarLayout {
+            bar_width,
+            bar_height,
+            visible_segments,
+            hit_regions,
+            resolved_right_start,
+        }
     }
 }
