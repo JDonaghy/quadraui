@@ -117,7 +117,9 @@ pub use primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabBarSegment, TabItem,
     TabMeasure, VisibleSegment, VisibleTab,
 };
-pub use primitives::terminal::{Terminal, TerminalCell, TerminalEvent};
+pub use primitives::terminal::{
+    Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,
+};
 pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
     TextDisplayLineMeasure, VisibleTextDisplayLine,
@@ -910,6 +912,83 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 Terminal layout API tests ──────────────────────────────────
+
+    fn make_term(rows: usize, cols: usize) -> Terminal {
+        let cell = primitives::terminal::TerminalCell {
+            ch: ' ',
+            fg: Color::rgb(200, 200, 200),
+            bg: Color::rgb(20, 20, 20),
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        };
+        Terminal {
+            id: WidgetId::new("term"),
+            cells: (0..rows).map(|_| vec![cell.clone(); cols]).collect(),
+        }
+    }
+
+    #[test]
+    fn terminal_layout_tui_cells() {
+        let term = make_term(24, 80);
+        let layout = term.layout(80.0, 24.0, 1.0, 1.0);
+        assert_eq!(layout.grid_rows, 24);
+        assert_eq!(layout.grid_cols, 80);
+        // Click at (5, 3) → cell (row=3, col=5).
+        match layout.hit_test(5.5, 3.5) {
+            TerminalHit::Cell { row, col } => {
+                assert_eq!(row, 3);
+                assert_eq!(col, 5);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn terminal_layout_pixel_cells() {
+        // Native: 800x600 viewport, 8 px × 16 px cells = 100 cols × 37 rows.
+        let term = make_term(37, 100);
+        let layout = term.layout(800.0, 600.0, 8.0, 16.0);
+        assert_eq!(layout.grid_cols, 100);
+        assert_eq!(layout.grid_rows, 37); // 600/16 = 37.5 → 37
+                                          // Click at (160, 48) → col=20, row=3.
+        match layout.hit_test(160.0, 48.0) {
+            TerminalHit::Cell { row, col } => {
+                assert_eq!(col, 20);
+                assert_eq!(row, 3);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn terminal_layout_hit_test_outside() {
+        let term = make_term(10, 20);
+        let layout = term.layout(20.0, 10.0, 1.0, 1.0);
+        assert_eq!(layout.hit_test(-1.0, 5.0), TerminalHit::Empty);
+        assert_eq!(layout.hit_test(5.0, -1.0), TerminalHit::Empty);
+        assert_eq!(layout.hit_test(100.0, 5.0), TerminalHit::Empty);
+    }
+
+    #[test]
+    fn terminal_layout_cell_bounds() {
+        let term = make_term(10, 20);
+        let layout = term.layout(20.0, 10.0, 1.0, 1.0);
+        let r = layout.cell_bounds(3, 5).unwrap();
+        assert_eq!(r.x, 5.0);
+        assert_eq!(r.y, 3.0);
+        assert_eq!(r.width, 1.0);
+        assert_eq!(r.height, 1.0);
+        // Out of range → None.
+        assert!(layout.cell_bounds(99, 0).is_none());
+        assert!(layout.cell_bounds(0, 99).is_none());
     }
 
     // ── D6 TextDisplay layout API tests ───────────────────────────────
