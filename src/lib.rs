@@ -96,7 +96,10 @@ pub mod event;
 
 pub use primitives::activity_bar::{ActivityBar, ActivityBarEvent, ActivityItem};
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
-pub use primitives::list::{ListItem, ListView, ListViewEvent};
+pub use primitives::list::{
+    ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
+    VisibleListItem,
+};
 pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
 pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
@@ -896,6 +899,130 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 ListView layout API tests ──────────────────────────────────
+
+    fn make_list_item(text: &str) -> primitives::list::ListItem {
+        primitives::list::ListItem {
+            text: StyledText::plain(text),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn make_list(
+        title: Option<&str>,
+        items: Vec<primitives::list::ListItem>,
+        selected: usize,
+        scroll: usize,
+    ) -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: title.map(StyledText::plain),
+            items,
+            selected_idx: selected,
+            scroll_offset: scroll,
+            has_focus: true,
+        }
+    }
+
+    #[test]
+    fn list_view_layout_empty() {
+        let list = make_list(None, vec![], 0, 0);
+        let layout = list.layout(40.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
+        assert_eq!(layout.visible_items.len(), 0);
+        assert!(layout.title_bounds.is_none());
+        assert_eq!(layout.hit_test(5.0, 5.0), ListViewHit::Empty);
+    }
+
+    #[test]
+    fn list_view_layout_title_reserves_first_row() {
+        let list = make_list(
+            Some("QUICKFIX"),
+            (0..3)
+                .map(|i| make_list_item(&format!("item{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = list.layout(40.0, 10.0, 1.0, |_| ListItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_some());
+        let tb = layout.title_bounds.unwrap();
+        assert_eq!(tb.y, 0.0);
+        assert_eq!(tb.height, 1.0);
+        // Items start at y=1 (after title).
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+        assert_eq!(layout.visible_items[0].item_idx, 0);
+        // Click on title → ListViewHit::Title.
+        assert_eq!(layout.hit_test(10.0, 0.5), ListViewHit::Title);
+        // Click on first item row.
+        assert_eq!(layout.hit_test(10.0, 1.5), ListViewHit::Item(0));
+    }
+
+    #[test]
+    fn list_view_layout_no_title_starts_at_zero() {
+        let list = make_list(
+            None,
+            (0..2).map(|i| make_list_item(&format!("i{i}"))).collect(),
+            0,
+            0,
+        );
+        let layout = list.layout(40.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_none());
+        assert_eq!(layout.visible_items[0].bounds.y, 0.0);
+        assert_eq!(layout.hit_test(10.0, 0.5), ListViewHit::Item(0));
+    }
+
+    #[test]
+    fn list_view_layout_scroll_offset_skips_items_not_title() {
+        let list = make_list(
+            Some("HEADER"),
+            (0..5).map(|i| make_list_item(&format!("i{i}"))).collect(),
+            0,
+            2, // skip first 2 items
+        );
+        let layout = list.layout(40.0, 10.0, 1.0, |_| ListItemMeasure::new(1.0));
+        // Title still pinned at top.
+        assert_eq!(layout.title_bounds.unwrap().y, 0.0);
+        // First visible item is items[2].
+        assert_eq!(layout.visible_items[0].item_idx, 2);
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+
+    #[test]
+    fn list_view_layout_viewport_overflow_clips_last() {
+        let list = make_list(
+            None,
+            (0..10).map(|i| make_list_item(&format!("i{i}"))).collect(),
+            0,
+            0,
+        );
+        // 10 items × 2.0; viewport 5.0 → 3 rows fit (last clipped to 1.0).
+        let layout = list.layout(40.0, 5.0, 0.0, |_| ListItemMeasure::new(2.0));
+        assert_eq!(layout.visible_items.len(), 3);
+        assert_eq!(layout.visible_items[2].bounds.height, 1.0);
+    }
+
+    #[test]
+    fn list_view_layout_pixel_units_with_title() {
+        // GTK-style: title row 20 px, items 18.5 px each.
+        let list = make_list(
+            Some("DIAGNOSTICS"),
+            (0..5).map(|i| make_list_item(&format!("d{i}"))).collect(),
+            0,
+            0,
+        );
+        let layout = list.layout(300.0, 100.0, 20.0, |_| ListItemMeasure::new(18.5));
+        let tb = layout.title_bounds.unwrap();
+        assert_eq!(tb.height, 20.0);
+        // First item starts at y=20.
+        assert_eq!(layout.visible_items[0].bounds.y, 20.0);
+        assert_eq!(layout.visible_items[0].bounds.height, 18.5);
+        // Hit-test lands on correct row with fractional coords.
+        assert_eq!(layout.hit_test(100.0, 29.0), ListViewHit::Item(0));
+        assert_eq!(layout.hit_test(100.0, 39.0), ListViewHit::Item(1));
     }
 
     // ── D6 TreeView layout API tests ──────────────────────────────────
