@@ -94,7 +94,10 @@ pub mod accelerator;
 pub mod backend;
 pub mod event;
 
-pub use primitives::activity_bar::{ActivityBar, ActivityBarEvent, ActivityItem};
+pub use primitives::activity_bar::{
+    ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityItem, ActivitySide,
+    VisibleActivityItem,
+};
 pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
@@ -899,6 +902,152 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 ActivityBar layout API tests ───────────────────────────────
+
+    fn make_activity_item(id: &str, icon: char) -> primitives::activity_bar::ActivityItem {
+        primitives::activity_bar::ActivityItem {
+            id: WidgetId::new(id),
+            icon: icon.to_string(),
+            tooltip: String::new(),
+            is_active: false,
+            is_keyboard_selected: false,
+        }
+    }
+
+    #[test]
+    fn activity_bar_layout_empty() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+        };
+        let layout = bar.layout(3.0, 20.0, 1.0);
+        assert_eq!(layout.visible_items.len(), 0);
+        assert_eq!(layout.hit_test(1.0, 5.0), ActivityBarHit::Empty);
+    }
+
+    #[test]
+    fn activity_bar_layout_top_only() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![
+                make_activity_item("activity:explorer", 'E'),
+                make_activity_item("activity:search", 'S'),
+            ],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+        };
+        let layout = bar.layout(3.0, 10.0, 1.0);
+        assert_eq!(layout.visible_items.len(), 2);
+        assert_eq!(layout.visible_items[0].side, ActivitySide::Top);
+        assert_eq!(layout.visible_items[0].bounds.y, 0.0);
+        assert_eq!(layout.visible_items[1].bounds.y, 1.0);
+        match layout.hit_test(1.0, 0.5) {
+            ActivityBarHit::Item(id) => assert_eq!(id.as_str(), "activity:explorer"),
+            _ => panic!("expected explorer hit"),
+        }
+    }
+
+    #[test]
+    fn activity_bar_layout_bottom_pinned() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+        };
+        // Viewport 10, items 1 each. Top at y=0, bottom at y=9.
+        let layout = bar.layout(3.0, 10.0, 1.0);
+        assert_eq!(layout.visible_items.len(), 2);
+        let top = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Top)
+            .unwrap();
+        let bot = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Bottom)
+            .unwrap();
+        assert_eq!(top.bounds.y, 0.0);
+        assert_eq!(bot.bounds.y, 9.0);
+        // Click near top → explorer. Click near bottom → settings.
+        match layout.hit_test(1.0, 0.5) {
+            ActivityBarHit::Item(id) => assert_eq!(id.as_str(), "activity:explorer"),
+            _ => panic!(),
+        }
+        match layout.hit_test(1.0, 9.5) {
+            ActivityBarHit::Item(id) => assert_eq!(id.as_str(), "activity:settings"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn activity_bar_layout_bottom_wins_on_collision() {
+        // 5 top items + 3 bottom items, item_height=1, viewport=6.
+        // Bottom reserves [3, 6). Top stops at y=3 → only 3 top items fit.
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: (0..5)
+                .map(|i| make_activity_item(&format!("top:{i}"), 'T'))
+                .collect(),
+            bottom_items: (0..3)
+                .map(|i| make_activity_item(&format!("bot:{i}"), 'B'))
+                .collect(),
+            active_accent: None,
+            selection_bg: None,
+        };
+        let layout = bar.layout(3.0, 6.0, 1.0);
+        let top_count = layout
+            .visible_items
+            .iter()
+            .filter(|v| v.side == ActivitySide::Top)
+            .count();
+        let bot_count = layout
+            .visible_items
+            .iter()
+            .filter(|v| v.side == ActivitySide::Bottom)
+            .count();
+        assert_eq!(bot_count, 3, "all bottom items visible");
+        assert_eq!(
+            top_count, 3,
+            "top truncated to fit above bottom reserved area"
+        );
+    }
+
+    #[test]
+    fn activity_bar_layout_pixel_units() {
+        // GTK-style: 48 px item height, 200 px strip.
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: (0..3)
+                .map(|i| make_activity_item(&format!("top:{i}"), 'T'))
+                .collect(),
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+        };
+        let layout = bar.layout(48.0, 200.0, 48.0);
+        // Top items at y = 0, 48, 96. Settings at y = 200 - 48 = 152.
+        let top0 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Top && v.item_idx == 0)
+            .unwrap();
+        assert_eq!(top0.bounds.y, 0.0);
+        assert_eq!(top0.bounds.height, 48.0);
+        let bot0 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Bottom)
+            .unwrap();
+        assert_eq!(bot0.bounds.y, 152.0);
     }
 
     // ── D6 ListView layout API tests ──────────────────────────────────
