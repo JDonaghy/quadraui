@@ -422,80 +422,89 @@ An alternative design — a single `fn draw_primitive(&mut self, rect: Rect, p: 
 
 ---
 
-## 5. Migration — gradual, coexist-first
+## 5. Migration — backend-by-backend rewrite
 
-**Non-negotiable:** this must not break vimcode or block unrelated
-feature work. Every stage is a short-lived branch + PR to `develop`.
+**Strategy (revised 2026-04-23):** The earlier "coexistence, not
+switch" rule has been replaced by a **backend-by-backend rewrite**
+strategy. vimcode has no external users yet, so extended per-backend
+breakage during the rewrite is acceptable. D6 (primitives return
+`Layout`, backends rasterise verbatim) makes half-migration loud at
+the type level rather than silent — weakening the original reason
+for coexistence. See `PLAN.md` §"Architectural focus" for the
+north-star statement.
 
-### Phase B.1 — `UiEvent` enum + `Backend::poll_events` alongside existing dispatch
+### Phase B.1 ✅ — `UiEvent` + `Accelerator` + `Backend` trait scaffolding
 
-Add the types in `quadraui/src/` but don't force anyone to use them.
-Each backend implements `poll_events` returning a translation of its
-existing native events. Vimcode's `Engine` grows a single
-`handle_ui_event(UiEvent)` entry point that dispatches to existing
-methods — thin wrapper, no behaviour change.
+Shipped 2026-04-22, PR #170 at `06dec4a`. Pure additive types in
+`quadraui/src/{event,accelerator,backend}.rs`. No vimcode runtime
+change.
 
-At the end of B.1: both dispatch paths work. Vimcode's main loops in
-`tui_main/mod.rs` / `gtk/mod.rs` / `win_gui/mod.rs` can optionally
-call `backend.poll_events()` and route through `handle_ui_event`, or
-keep the existing native-event paths. **Coexistence, not switch.**
+### Phase B.2 ✅ — terminal-maximize accelerator pilot
 
-### Phase B.2 — `Accelerator` type + one pilot feature
+Shipped 2026-04-22, Session 321. Engine-owned accelerator registry.
+Six call sites migrated across TUI/GTK/Win-GUI. §11 of this doc
+captures the spike findings and why the final shape is engine-owned
+rather than backend-owned.
 
-Ship `Accelerator` + `register_accelerator` on `Backend`. Pick one
-vimcode feature — **terminal maximize is the obvious candidate** —
-and migrate its keybinding from the per-backend `matches_*_key`
-checks to an `Accelerator`. All three backends translate their
-native event → `UiEvent::Accelerator("toggle_terminal_maximize", …)`.
-Vimcode handles it once.
+### Phase B.3 — Ready-state quadraui (all primitives, all with `layout()`)
 
-**Success criterion:** 3 backends' worth of keybinding plumbing for
-maximize collapses to 1 call to `register_accelerator` + 1 match arm
-on `UiEvent::Accelerator`. Measure LOC delta.
+Build every primitive vimcode needs, each with a D6-shape `layout()`
+method. This is the "quadraui readiness gate" in `PLAN.md`. End of
+B.3: quadraui has a stable contract; **nothing in vimcode has been
+rewritten yet** (the old code continues to work, or not, depending
+on which pre-existing bugs show up — no effort spent fixing them
+mid-B.3).
 
-### Phase B.3 — Layout primitives (`Panel`, `Split`, `Tabs`, `Stack`, `MenuBar`, `Modal`, `Dialog`)
+Work items (in rough order):
+- `TabBar::layout()` + `TabBarLayout::hit_test()` first — reference
+  implementation for the D6 shape, closes #179.
+- Existing primitives gain `layout()`: `StatusBar`, `TreeView`,
+  `ListView`, `ActivityBar`, `Form`, `Palette`, `TextDisplay`.
+- New layout primitives: `Panel`, `Split`, `Tabs`, `Stack`,
+  `MenuBar`, `Modal`, `Dialog` (per D7 focus model — #6.4).
+- New primitives vimcode's surface needs: `ContextMenu`,
+  `Completions`, `Tooltip`, `Toast` (#141), `Spinner` +
+  `ProgressBar` (#142), form field primitives (#143).
+- `Backend` trait reshaped to `draw_*(&Layout)` throughout.
+- `TextEditor` / `BufferView` — see PLAN.md TBD note (may stay
+  engine-owned for TUI; revisit at GTK rewrite).
 
-Ship the §4.1 primitives from `UI_CRATE_DESIGN.md`. These are the
-ones the Postman-class app (#169) actually needs. Each primitive
-declares its own hit-regions; `draw_primitive` stores them; the
-backend's `poll_events` reads them for click dispatch. `UiEvent`
-grows new primitive-specific variants.
+### Phase B.4 — TUI rewrite (first backend)
 
-**The terminal maximize scrollbar-on-top bug (#167)** would be
-naturally fixed here: `Panel` owns z-order; `Maximized` is a property
-of the panel that hides everything behind it, including scrollbars,
-without each backend needing to suppress them individually.
+First backend rewrite. TUI is the smallest surface, no native
+deps, fastest iteration cycle. vimcode-tui is rewritten from scratch
+on top of the finalized quadraui. Discovers any remaining quadraui
+abstraction gaps at the lowest cost — gaps feed back into quadraui
+and forward to the GTK / Win-GUI / macOS rewrites.
 
-### Phase B.4 — Migrate vimcode subsystems
+**During B.4, vimcode-gtk and vimcode-win are broken or
+inconsistent.** That's fine — no external users. The old `src/gtk/`
+and `src/win_gui/` trees stay in place, untouched, while B.4 proceeds.
 
-Once the trait is proven on one feature (B.2) and the layout
-primitives exist (B.3), start migrating vimcode subsystems one at
-a time. Candidates roughly in order of pain-to-benefit ratio:
+### Phase B.5 — GTK rewrite (second backend)
 
-1. Terminal maximize + sidebar visibility + menu bar toggle
-   (stateful-chrome cluster)
-2. Editor group splits (`Split` primitive consumer)
-3. All modals and dialogs (`Dialog` primitive)
-4. Status bar click targets (already using `StatusAction`; adapt)
-5. Command palette (already the closest; adapt)
-6. Text editor (Phase A.9, un-deferred — biggest, last)
+Second backend rewrite. Primary Linux backend; the TUI-proven
+contract should transfer cleanly. Any gaps surfaced here feed back
+into quadraui and forward to Win-GUI and macOS.
 
-Each migration is its own PR. The old dispatch code stays until the
-migration is complete; removal of native event handlers is the final
-PR per subsystem.
+### Phase B.6 — Win-GUI rewrite (third backend)
 
-### Phase B.5 — Postman-class app (#169) starts
+Third backend rewrite. Third opinion on the contract. Most
+abstraction gaps should already be fixed by this stage.
 
-With the trait + enough primitives in place, scaffold `postman-clone/`
-as a workspace member and start shipping screens. This is when the
-abstraction proves itself.
+### Phase B.7 — macOS native backend (fourth backend)
 
-### Phase B.6 — Remove vestigial per-backend dispatch
+Fourth backend. Core Graphics + Core Text. Intentionally last: by
+this point the contract is tight and lessons are encoded, so a
+fresh native backend drops in clean instead of adding the fifth
+simultaneous complexity cost.
 
-Once every vimcode subsystem uses `UiEvent`, the native-event paths
-in TUI/GTK/Win-GUI can be deleted. At this point the three backend
-files are uniformly thin: `Backend` trait impl + `draw_primitive` +
-`poll_events` + services.
+### Phase B.8 — Postman-class validation app (#169)
+
+With four vimcode backends proving quadraui, scaffold the
+Postman-class app as a separate workspace member. This is the "does
+quadraui serve an app other than vimcode?" test. Issues #145 (k8s
+dashboard) and #46 (SQL client) follow.
 
 ---
 
@@ -541,9 +550,14 @@ hit-test at cursor position, not by focus. Focus only determines who
 receives `KeyPressed` / `CharTyped`, and factors into `Accelerator`
 when scope is `Widget` or `Mode`.
 
-**📝 PROPOSAL PENDING — see §9 D7 (five sub-decisions D7a–D7e).**
+✅ **RESOLVED 2026-04-23 — see §9 D7 for the five sub-decisions
+D7a–D7e, all accepted as recommended.** In short: click + Tab +
+programmatic transitions; destruction falls back to app-designated
+default else null; focusability is a property of the primitive
+type; modal interactions use a backend-owned focus stack; native
+focus stays at the top-level with in-app simulation below.
 
-The focus *model* needs to decide five things:
+The focus *model* resolved five things:
 
 - **D7a Transitions** — does focus move on click, on Tab, on
   app-directed `set_focus(id)`, or all three?
@@ -725,9 +739,12 @@ pre-optimise; profile after B.5 if necessary.
    keyboard behaviour. Presented as five separate sub-decisions
    (D7a–D7e) so each can be picked independently.
 
-   📝 **PROPOSED 2026-04-23, awaiting resolution.** Current
-   recommendations below; each sub-decision can be accepted or
-   redirected.
+   ✅ **RESOLVED 2026-04-23 — all five sub-decisions accepted as
+   recommended.** Picks: D7a = A, D7b = B+C hybrid, D7c = C,
+   D7d = A, D7e = C. Rationale under each sub-decision below is
+   authoritative; may iterate once implementation reveals edge
+   cases (noted by user at resolution time — edge-case iteration
+   is expected, not a sign the top-level shape is wrong).
 
    ---
 
@@ -873,17 +890,28 @@ pre-optimise; profile after B.5 if necessary.
 
 ### All decisions resolved — next step is code
 
-With D1–D6 resolved and D7 proposed, the design-axis blockers for
-Phase B.3 are down to one multi-part decision. Once D7 resolves:
-- `TabBar::layout()` + `TabBarLayout::hit_test()` lands first (closes
-  #179; reference implementation for the D6 layout-returning shape).
-- B.3 layout primitives (`Panel` / `Split` / `Tabs` / `Stack` /
-  `MenuBar` / `Modal` / `Dialog`) follow, all built on the Layout +
-  focus contract.
-- Existing primitives (`StatusBar`, `TreeView`, `ListView`, `Form`,
-  `Palette`, `ActivityBar`, `TextDisplay`) gain `layout()` methods
-  incrementally.
-- Once the readiness gate (PLAN.md) is clear, the TUI rewrite starts.
+With D1–D7 all resolved, there are no remaining design-axis
+blockers for Phase B.3 (ready-state quadraui). Code work proceeds:
+- `TabBar::layout()` + `TabBarLayout::hit_test()` lands first
+  (reference implementation for D6, closes #179).
+- `Backend` trait reshape to `draw_*(&Layout)` follows mechanically
+  as each primitive gains `layout()`.
+- Focus-model surface (`Backend::focused_id`, `set_focus`,
+  `set_default_focus`, focus-stack push/pop, `UiEvent::FocusGained`
+  / `FocusLost`) lands alongside the first primitive that needs it
+  (likely `Panel` or `Modal`).
+- New layout primitives (`Panel`, `Split`, `Tabs`, `Stack`,
+  `MenuBar`, `Modal`, `Dialog`) follow, all built on Layout + focus.
+- Remaining primitives (`StatusBar`, `TreeView`, `ListView`, `Form`,
+  `Palette`, `ActivityBar`, `TextDisplay`, `ContextMenu`,
+  `Completions`, `Tooltip`, `Toast`, `Spinner`, `ProgressBar`, form
+  fields) gain `layout()` incrementally.
+- Once the readiness gate (PLAN.md) is clear, **Phase B.4 (TUI
+  rewrite)** starts. Backend-by-backend rewrite sequence lives in §5.
+
+Iteration expected on D7 sub-decisions as implementation hits edge
+cases — this is the accepted risk of picking focus semantics without
+having built a primitive that exercises them yet.
 
 ---
 
