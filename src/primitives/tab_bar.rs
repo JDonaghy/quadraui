@@ -480,11 +480,7 @@ impl TabBar {
         let mut body_regions: Vec<(Rect, TabBarHit)> = Vec::new();
         let mut cursor_x = tab_start_x;
 
-        for (i, tm) in tab_measures
-            .iter()
-            .enumerate()
-            .skip(resolved_scroll_offset)
-        {
+        for (i, tm) in tab_measures.iter().enumerate().skip(resolved_scroll_offset) {
             let tm = *tm;
             if cursor_x + tm.total_width > tab_end_x + f32::EPSILON {
                 break;
