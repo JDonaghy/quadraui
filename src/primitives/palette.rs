@@ -30,6 +30,7 @@
 //! backend, the very first check should be "is a palette / dialog
 //! open? If yes, route here instead."
 
+use crate::event::Rect;
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +81,164 @@ pub struct PaletteItem {
     /// text. Empty means "no fuzzy-match highlighting".
     #[serde(default)]
     pub match_positions: Vec<usize>,
+}
+
+// ── D6 Layout API ───────────────────────────────────────────────────────────
+//
+// Per Decision D6: primitives return fully-resolved `Layout` structs.
+// Sixth primitive on the new shape. Palette has three vertical regions:
+// title (optional chrome), query input, then the items list. The title
+// and query heights are caller-supplied; item positions come out of the
+// measurer closure.
+
+/// Per-item measurement for a palette result row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaletteItemMeasure {
+    pub height: f32,
+}
+
+impl PaletteItemMeasure {
+    pub fn new(height: f32) -> Self {
+        Self { height }
+    }
+}
+
+/// Resolved position of one visible palette item.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisiblePaletteItem {
+    /// Index into `Palette.items`.
+    pub item_idx: usize,
+    pub bounds: Rect,
+}
+
+/// Classification of a hit-test result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteHit {
+    /// Click landed on the title chrome row (typically no-op).
+    Title,
+    /// Click landed on the query input row. Apps typically focus the
+    /// query and may use the local x-offset (click_x - query_bounds.x)
+    /// to place the caret; the primitive doesn't resolve that in v1.
+    Query,
+    /// Click landed on an item row.
+    Item(usize),
+    /// Click landed outside any region.
+    Empty,
+}
+
+/// Fully-resolved palette layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaletteLayout {
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    /// Present iff title_height > 0.
+    pub title_bounds: Option<Rect>,
+    /// Present iff query_height > 0 (query input is optional but
+    /// typically present).
+    pub query_bounds: Option<Rect>,
+    pub visible_items: Vec<VisiblePaletteItem>,
+    pub hit_regions: Vec<(Rect, PaletteHit)>,
+    /// Scroll offset actually used, clamped to `[0, items.len())`.
+    pub resolved_scroll_offset: usize,
+}
+
+impl PaletteLayout {
+    pub fn hit_test(&self, x: f32, y: f32) -> PaletteHit {
+        for (rect, hit) in &self.hit_regions {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return hit.clone();
+            }
+        }
+        PaletteHit::Empty
+    }
+}
+
+impl Palette {
+    /// Compute the full rendering + hit-test layout.
+    ///
+    /// # Arguments
+    ///
+    /// - `viewport_width`, `viewport_height` — modal overlay area.
+    /// - `title_height` — rows reserved for the title header. Pass 0.0
+    ///   to omit.
+    /// - `query_height` — rows reserved for the query input. Pass 0.0
+    ///   to omit (unusual — palettes normally show the input).
+    /// - `measure_item(i)` — height for item `i`.
+    pub fn layout<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        title_height: f32,
+        query_height: f32,
+        measure_item: F,
+    ) -> PaletteLayout
+    where
+        F: Fn(usize) -> PaletteItemMeasure,
+    {
+        let mut visible_items: Vec<VisiblePaletteItem> = Vec::new();
+        let mut hit_regions: Vec<(Rect, PaletteHit)> = Vec::new();
+
+        let mut y = 0.0_f32;
+
+        // Title row (optional).
+        let title_bounds = if title_height > 0.0 && y < viewport_height {
+            let h = title_height.min(viewport_height - y);
+            let bounds = Rect::new(0.0, y, viewport_width, h);
+            hit_regions.push((bounds, PaletteHit::Title));
+            y += h;
+            Some(bounds)
+        } else {
+            None
+        };
+
+        // Query input row (optional but usually present).
+        let query_bounds = if query_height > 0.0 && y < viewport_height {
+            let h = query_height.min(viewport_height - y);
+            let bounds = Rect::new(0.0, y, viewport_width, h);
+            hit_regions.push((bounds, PaletteHit::Query));
+            y += h;
+            Some(bounds)
+        } else {
+            None
+        };
+
+        // Clamp scroll_offset.
+        let resolved_scroll_offset = if self.items.is_empty() {
+            0
+        } else {
+            self.scroll_offset.min(self.items.len() - 1)
+        };
+
+        // Items list.
+        for i in resolved_scroll_offset..self.items.len() {
+            if y >= viewport_height {
+                break;
+            }
+            let m = measure_item(i);
+            let remaining = viewport_height - y;
+            let height = m.height.min(remaining).max(0.0);
+            if height <= 0.0 {
+                break;
+            }
+            let bounds = Rect::new(0.0, y, viewport_width, height);
+            visible_items.push(VisiblePaletteItem {
+                item_idx: i,
+                bounds,
+            });
+            hit_regions.push((bounds, PaletteHit::Item(i)));
+            y += m.height;
+        }
+
+        PaletteLayout {
+            viewport_width,
+            viewport_height,
+            title_bounds,
+            query_bounds,
+            visible_items,
+            hit_regions,
+            resolved_scroll_offset,
+        }
+    }
 }
 
 /// Events a `Palette` emits back to the app.

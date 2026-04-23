@@ -103,7 +103,10 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
     VisibleListItem,
 };
-pub use primitives::palette::{Palette, PaletteEvent, PaletteItem};
+pub use primitives::palette::{
+    Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
+    VisiblePaletteItem,
+};
 pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
@@ -902,6 +905,116 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 Palette layout API tests ───────────────────────────────────
+
+    fn make_palette_item(text: &str) -> primitives::palette::PaletteItem {
+        primitives::palette::PaletteItem {
+            text: StyledText::plain(text),
+            detail: None,
+            icon: None,
+            match_positions: vec![],
+        }
+    }
+
+    fn make_palette(
+        title: &str,
+        query: &str,
+        items: Vec<primitives::palette::PaletteItem>,
+        selected: usize,
+        scroll: usize,
+    ) -> Palette {
+        Palette {
+            id: WidgetId::new("p"),
+            title: title.to_string(),
+            query: query.to_string(),
+            query_cursor: 0,
+            items,
+            selected_idx: selected,
+            scroll_offset: scroll,
+            total_count: 0,
+            has_focus: true,
+        }
+    }
+
+    #[test]
+    fn palette_layout_empty() {
+        let p = make_palette("Commands", "", vec![], 0, 0);
+        let layout = p.layout(40.0, 20.0, 0.0, 0.0, |_| PaletteItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_none());
+        assert!(layout.query_bounds.is_none());
+        assert_eq!(layout.visible_items.len(), 0);
+        assert_eq!(layout.hit_test(10.0, 5.0), PaletteHit::Empty);
+    }
+
+    #[test]
+    fn palette_layout_stacks_title_query_items() {
+        let p = make_palette(
+            "Commands",
+            "open",
+            (0..3)
+                .map(|i| make_palette_item(&format!("cmd{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = p.layout(40.0, 10.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        // Title at y=0 (h=1), query at y=1 (h=1), items at y=2,3,4.
+        assert_eq!(layout.title_bounds.unwrap().y, 0.0);
+        assert_eq!(layout.query_bounds.unwrap().y, 1.0);
+        assert_eq!(layout.visible_items[0].bounds.y, 2.0);
+        assert_eq!(layout.visible_items[2].bounds.y, 4.0);
+        // Hit-tests.
+        assert_eq!(layout.hit_test(10.0, 0.5), PaletteHit::Title);
+        assert_eq!(layout.hit_test(10.0, 1.5), PaletteHit::Query);
+        assert_eq!(layout.hit_test(10.0, 2.5), PaletteHit::Item(0));
+    }
+
+    #[test]
+    fn palette_layout_no_title_query_only() {
+        let p = make_palette("", "", vec![make_palette_item("a")], 0, 0);
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_none());
+        assert_eq!(layout.query_bounds.unwrap().y, 0.0);
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+
+    #[test]
+    fn palette_layout_scroll_offset_skips_items() {
+        let p = make_palette(
+            "",
+            "",
+            (0..5)
+                .map(|i| make_palette_item(&format!("i{i}")))
+                .collect(),
+            0,
+            2,
+        );
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        // Query at y=0, items from offset 2.
+        assert_eq!(layout.visible_items[0].item_idx, 2);
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+
+    #[test]
+    fn palette_layout_pixel_units() {
+        // GTK-style: 32 px title, 40 px query, 24 px item rows.
+        let p = make_palette(
+            "Commands",
+            "",
+            (0..3)
+                .map(|i| make_palette_item(&format!("c{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = p.layout(400.0, 300.0, 32.0, 40.0, |_| PaletteItemMeasure::new(24.0));
+        assert_eq!(layout.title_bounds.unwrap().height, 32.0);
+        assert_eq!(layout.query_bounds.unwrap().y, 32.0);
+        assert_eq!(layout.query_bounds.unwrap().height, 40.0);
+        assert_eq!(layout.visible_items[0].bounds.y, 72.0);
+        assert_eq!(layout.visible_items[0].bounds.height, 24.0);
     }
 
     // ── D6 ActivityBar layout API tests ───────────────────────────────
