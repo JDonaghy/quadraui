@@ -98,6 +98,10 @@ pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityItem, ActivitySide,
     VisibleActivityItem,
 };
+pub use primitives::context_menu::{
+    ContextMenu, ContextMenuEvent, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
+    ContextMenuLayout, VisibleContextMenuItem,
+};
 pub use primitives::form::{
     FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit, FormLayout, VisibleFormField,
 };
@@ -924,6 +928,112 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── ContextMenu primitive tests (D6) ──────────────────────────────
+
+    fn cm_action(id: &str, label: &str) -> ContextMenuItem {
+        ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(label),
+            detail: None,
+            disabled: false,
+        }
+    }
+
+    fn cm_separator() -> ContextMenuItem {
+        ContextMenuItem {
+            id: None,
+            label: StyledText::default(),
+            detail: None,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn context_menu_layout_flat() {
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![
+                cm_action("cut", "Cut"),
+                cm_action("copy", "Copy"),
+                cm_separator(),
+                cm_action("paste", "Paste"),
+            ],
+            selected_idx: 0,
+            bg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(100.0, 100.0, viewport, 160.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 100.0);
+        assert_eq!(layout.bounds.y, 100.0);
+        assert_eq!(layout.bounds.width, 160.0);
+        assert_eq!(layout.bounds.height, 80.0); // 4 × 20
+        assert_eq!(layout.visible_items.len(), 4);
+        // Separator at index 2 is visually present, non-clickable.
+        assert!(layout.visible_items[2].is_separator);
+        assert!(!layout.visible_items[2].clickable);
+        // Hit-test on Copy (2nd item, y=120..140).
+        match layout.hit_test(120.0, 125.0) {
+            ContextMenuHit::Item(id) => assert_eq!(id.as_str(), "copy"),
+            _ => panic!("expected Item(copy)"),
+        }
+        // Hit-test on separator (y=140..160) → Inert.
+        assert_eq!(layout.hit_test(120.0, 150.0), ContextMenuHit::Inert);
+        // Hit-test far outside → Empty.
+        assert_eq!(layout.hit_test(500.0, 500.0), ContextMenuHit::Empty);
+    }
+
+    #[test]
+    fn context_menu_layout_shifts_left_when_overflow() {
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("a", "A")],
+            selected_idx: 0,
+            bg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        // Anchor at x=180, menu_width=100 → right edge would be 280 > 200.
+        let layout = menu.layout(180.0, 50.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 100.0); // 200 - 100 = 100
+    }
+
+    #[test]
+    fn context_menu_layout_shifts_up_when_overflow() {
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("a", "A"), cm_action("b", "B")],
+            selected_idx: 0,
+            bg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
+        // Anchor at y=80, 2 items × 20 = 40, bottom would be 120 > 100.
+        let layout = menu.layout(10.0, 80.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.y, 60.0); // 100 - 40
+    }
+
+    #[test]
+    fn context_menu_layout_disabled_items_inert() {
+        let mut menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("delete", "Delete")],
+            selected_idx: 0,
+            bg: None,
+        };
+        menu.items[0].disabled = true;
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(10.0, 10.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert!(!layout.visible_items[0].clickable);
+        // Click on disabled item → Inert, not Item.
+        assert_eq!(layout.hit_test(50.0, 15.0), ContextMenuHit::Inert);
     }
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
