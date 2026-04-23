@@ -124,6 +124,10 @@ pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
     TextDisplayLineMeasure, VisibleTextDisplayLine,
 };
+pub use primitives::toast::{
+    ToastAction, ToastCorner, ToastEvent, ToastHit, ToastItem, ToastMeasure, ToastSeverity,
+    ToastStack, ToastStackLayout, VisibleToast,
+};
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
@@ -912,6 +916,136 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── Toast primitive tests (D6 shape, new B.3 primitive) ───────────
+
+    fn make_toast(id: &str, title: &str) -> ToastItem {
+        ToastItem {
+            id: WidgetId::new(id),
+            title: title.to_string(),
+            body: String::new(),
+            severity: ToastSeverity::Info,
+            action: None,
+            accent: None,
+        }
+    }
+
+    fn make_toast_stack(corner: ToastCorner, toasts: Vec<ToastItem>) -> ToastStack {
+        ToastStack {
+            id: WidgetId::new("toasts"),
+            corner,
+            toasts,
+        }
+    }
+
+    #[test]
+    fn toast_layout_empty() {
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![]);
+        let layout = stack.layout(800.0, 600.0, 16.0, 8.0, |_| ToastMeasure::new(300.0, 64.0));
+        assert_eq!(layout.visible_toasts.len(), 0);
+        assert_eq!(layout.hit_test(100.0, 100.0), ToastHit::Empty);
+    }
+
+    #[test]
+    fn toast_layout_bottom_right_newest_at_bottom() {
+        let stack = make_toast_stack(
+            ToastCorner::BottomRight,
+            vec![
+                make_toast("first", "First"),
+                make_toast("second", "Second"),
+                make_toast("third", "Third"),
+            ],
+        );
+        let layout = stack.layout(800.0, 600.0, 16.0, 8.0, |_| ToastMeasure::new(300.0, 64.0));
+        assert_eq!(layout.visible_toasts.len(), 3);
+        // Newest (idx=2, "third") pinned at the bottom.
+        let newest = &layout.visible_toasts[0];
+        assert_eq!(newest.toast_idx, 2);
+        assert_eq!(newest.id.as_str(), "third");
+        // Newest bottom = viewport_height (600) - margin (16) - toast_height (64) = 520
+        assert_eq!(newest.bounds.y, 520.0);
+        // Right-aligned: x = 800 - 16 - 300 = 484
+        assert_eq!(newest.bounds.x, 484.0);
+        // Second-newest above with gap.
+        assert_eq!(layout.visible_toasts[1].id.as_str(), "second");
+        assert_eq!(layout.visible_toasts[1].bounds.y, 520.0 - 8.0 - 64.0);
+    }
+
+    #[test]
+    fn toast_layout_top_left_newest_at_top() {
+        let stack = make_toast_stack(
+            ToastCorner::TopLeft,
+            vec![make_toast("a", "A"), make_toast("b", "B")],
+        );
+        let layout = stack.layout(800.0, 600.0, 10.0, 5.0, |_| ToastMeasure::new(200.0, 50.0));
+        assert_eq!(layout.visible_toasts.len(), 2);
+        // Iteration is oldest-first for top corners.
+        let first = &layout.visible_toasts[0];
+        assert_eq!(first.id.as_str(), "a");
+        assert_eq!(first.bounds.x, 10.0);
+        assert_eq!(first.bounds.y, 10.0);
+        let second = &layout.visible_toasts[1];
+        assert_eq!(second.bounds.y, 10.0 + 50.0 + 5.0);
+    }
+
+    #[test]
+    fn toast_layout_action_and_dismiss_regions() {
+        let mut toast = make_toast("t1", "Build failed");
+        toast.action = Some(ToastAction {
+            id: WidgetId::new("open_log"),
+            label: "Open log".to_string(),
+        });
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![toast]);
+        let layout = stack.layout(800.0, 600.0, 16.0, 8.0, |_| ToastMeasure {
+            width: 300.0,
+            height: 64.0,
+            dismiss_width: 24.0,
+            action_width: 80.0,
+        });
+        let v = &layout.visible_toasts[0];
+        assert!(v.dismiss_bounds.is_some());
+        assert!(v.action_bounds.is_some());
+        let db = v.dismiss_bounds.unwrap();
+        let ab = v.action_bounds.unwrap();
+        // Dismiss at trailing edge.
+        assert_eq!(db.x + db.width, v.bounds.x + v.bounds.width);
+        // Action left of dismiss.
+        assert_eq!(ab.x + ab.width, db.x);
+
+        // Hit-test on dismiss.
+        match layout.hit_test(db.x + 5.0, db.y + 10.0) {
+            ToastHit::Dismiss(id) => assert_eq!(id.as_str(), "t1"),
+            _ => panic!("expected Dismiss hit"),
+        }
+        // Hit-test on action.
+        match layout.hit_test(ab.x + 5.0, ab.y + 10.0) {
+            ToastHit::Action(id) => assert_eq!(id.as_str(), "open_log"),
+            _ => panic!("expected Action hit"),
+        }
+        // Hit-test on body (left part of toast, not on action/dismiss).
+        match layout.hit_test(v.bounds.x + 5.0, v.bounds.y + 10.0) {
+            ToastHit::Body(id) => assert_eq!(id.as_str(), "t1"),
+            _ => panic!("expected Body hit"),
+        }
+    }
+
+    #[test]
+    fn toast_layout_stack_clips_when_out_of_room() {
+        // 5 toasts of 64px each, but viewport only has 200 px from margin
+        // to top. Should render as many as fit.
+        let stack = make_toast_stack(
+            ToastCorner::BottomRight,
+            (0..5)
+                .map(|i| make_toast(&format!("t{i}"), &format!("T{i}")))
+                .collect(),
+        );
+        let layout = stack.layout(800.0, 200.0, 10.0, 8.0, |_| ToastMeasure::new(300.0, 64.0));
+        // Bottom stack. Newest at y = 200 - 10 - 64 = 126. Each subsequent
+        // goes up 64+8=72. Next: 126-72=54. Next: 54-72=-18 (would be off-top).
+        // So only 2-3 fit. Specifically we break when y_cursor <= 0.
+        assert!(layout.visible_toasts.len() >= 2);
+        assert!(layout.visible_toasts.len() <= 3);
     }
 
     // ── D6 Terminal layout API tests ──────────────────────────────────
