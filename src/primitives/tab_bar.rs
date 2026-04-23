@@ -70,6 +70,7 @@
 //! `src/gtk/mod.rs::set_draw_func` for the GTK reference implementation,
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
+use crate::event::Rect;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -193,6 +194,364 @@ impl TabBar {
             best_offset = i;
         }
         best_offset
+    }
+}
+
+// ── D6 Layout API ───────────────────────────────────────────────────────────
+//
+// Per Decision D6 in `docs/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
+// fully-resolved `Layout` structs; backends rasterise verbatim. A backend
+// that fails to consume a field (e.g. doesn't iterate `visible_tabs`)
+// produces visibly broken output on its own platform — not silent
+// divergence on the next one. Tab-bar layout is the reference
+// implementation of this pattern (closes #179).
+//
+// All coordinates are in the backend's native unit (char cells for TUI,
+// pixels for GTK / Win-GUI / macOS). The primitive is unit-agnostic: the
+// caller supplies measurements and the same unit comes back in the
+// returned `Rect`s.
+
+/// Per-tab measurement supplied by the backend's layout caller.
+///
+/// `total_width` is the tab's full visual width (label + padding + close
+/// button + inter-tab gap). `close_width` is the width of the close-button
+/// hit region at the right end of the tab; `0.0` means the tab has no
+/// close button (e.g. a pinned tab).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabMeasure {
+    pub total_width: f32,
+    pub close_width: f32,
+}
+
+impl TabMeasure {
+    pub fn new(total_width: f32, close_width: f32) -> Self {
+        Self {
+            total_width,
+            close_width,
+        }
+    }
+}
+
+/// Per-segment measurement supplied by the backend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SegmentMeasure {
+    pub width: f32,
+}
+
+impl SegmentMeasure {
+    pub fn new(width: f32) -> Self {
+        Self { width }
+    }
+}
+
+/// Resolved position of one visible tab after layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleTab {
+    /// Index into the original `TabBar.tabs` Vec.
+    pub tab_idx: usize,
+    /// Full tab rectangle (includes close-button area).
+    pub bounds: Rect,
+    /// Close-button sub-rectangle, if the tab has one.
+    pub close_bounds: Option<Rect>,
+}
+
+/// Resolved position of one visible right-aligned segment after layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleSegment {
+    /// Index into the original `TabBar.right_segments` Vec.
+    pub segment_idx: usize,
+    pub bounds: Rect,
+    /// `true` iff the segment has an `id` (is clickable).
+    pub clickable: bool,
+}
+
+/// Classification of a hit-test result. Produced by
+/// [`TabBarLayout::hit_test`]; backends translate native mouse events
+/// into one of these variants.
+///
+/// Variant order in `hit_regions` is from most-specific to least: close
+/// buttons before tab bodies, scroll arrows and segments are disjoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabBarHit {
+    /// Click landed on a tab body (not its close button). Index is into
+    /// `TabBar.tabs`.
+    Tab(usize),
+    /// Click landed on a tab's close button. Index is into `TabBar.tabs`.
+    TabClose(usize),
+    /// Click landed on the scroll-left affordance.
+    ScrollLeft,
+    /// Click landed on the scroll-right affordance.
+    ScrollRight,
+    /// Click landed on a right-aligned clickable segment.
+    RightSegment(WidgetId),
+    /// Click landed in dead space — no action.
+    Empty,
+}
+
+/// Fully-resolved tab-bar layout. Backends iterate `visible_tabs` /
+/// `visible_segments` for painting; call [`Self::hit_test`] for clicks.
+///
+/// # Writing `resolved_scroll_offset` back
+///
+/// When a frame paints with a stale `TabBar.scroll_offset` (e.g. after a
+/// window resize or a jump to a tab that wasn't previously visible), the
+/// layout corrects it. The backend should write `resolved_scroll_offset`
+/// back to the app's stored scroll state so the next frame starts
+/// coherent. See `TabBar::layout` docs for the two-pass-paint pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabBarLayout {
+    /// Total bar width in the measurer's unit (copied from input).
+    pub bar_width: f32,
+    /// Total bar height in the measurer's unit (copied from input).
+    pub bar_height: f32,
+    /// Tabs that made it onto the bar, left-to-right as drawn.
+    pub visible_tabs: Vec<VisibleTab>,
+    /// Right-aligned segments that fit, drawn left-to-right starting from
+    /// their resolved left edge.
+    pub visible_segments: Vec<VisibleSegment>,
+    /// Left scroll-arrow rectangle, present iff `resolved_scroll_offset > 0`
+    /// and `scroll_arrow_width > 0.0`.
+    pub scroll_left: Option<Rect>,
+    /// Right scroll-arrow rectangle, present iff tabs extend beyond the
+    /// visible area and `scroll_arrow_width > 0.0`.
+    pub scroll_right: Option<Rect>,
+    /// Ordered hit-region list. `hit_test` walks this from the start and
+    /// returns the first containing region. More-specific regions (close
+    /// buttons) come before containing regions (tab bodies).
+    pub hit_regions: Vec<(Rect, TabBarHit)>,
+    /// Scroll offset actually used. May differ from `TabBar.scroll_offset`
+    /// if the input was stale.
+    pub resolved_scroll_offset: usize,
+}
+
+impl TabBarLayout {
+    /// Test which clickable region (if any) contains point `(x, y)`.
+    /// Returns `TabBarHit::Empty` when no region matches.
+    pub fn hit_test(&self, x: f32, y: f32) -> TabBarHit {
+        for (rect, hit) in &self.hit_regions {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return hit.clone();
+            }
+        }
+        TabBarHit::Empty
+    }
+}
+
+impl TabBar {
+    /// Compute the full rendering + hit-test layout for this tab bar.
+    ///
+    /// Per D6: layout decisions live here; backends consume the returned
+    /// `TabBarLayout` verbatim (iterate `visible_tabs` /
+    /// `visible_segments` for painting; call `hit_test` for clicks).
+    /// Backends do not make their own decisions about overflow, scroll
+    /// offset, segment drop, or close-button position.
+    ///
+    /// # Arguments
+    ///
+    /// - `bar_width`, `bar_height` — bar dimensions in the measurer's
+    ///   unit.
+    /// - `scroll_arrow_width` — reserved width for each scroll arrow
+    ///   when tabs overflow. Pass `0.0` to disable scroll arrows; tabs
+    ///   that don't fit are then simply clipped off the right without
+    ///   any visual indicator.
+    /// - `measure_tab(i)` — returns total + close widths for tab `i`.
+    /// - `measure_segment(i)` — returns width for right-segment `i`.
+    ///
+    /// All arguments share the same unit; the primitive itself is
+    /// unit-agnostic. For TUI pass char-cell counts (e.g.
+    /// `measure_tab(i) = TabMeasure::new(label.chars().count() as f32,
+    /// 1.0)`); for GTK / Win-GUI / macOS pass pixel widths from Pango /
+    /// DirectWrite / Core Text.
+    ///
+    /// # Overflow policy (v1)
+    ///
+    /// - **Right segments:** kept together as one block. If the block
+    ///   would consume more than half the bar width, it's dropped
+    ///   entirely (all or nothing). Priority-drop per-segment (like
+    ///   `StatusBar::fit_right_start`) is a planned iteration — tab-bar
+    ///   segments tend to be either a small action cluster or nothing,
+    ///   so per-segment priority ranks aren't yet useful.
+    /// - **Tabs:** when the full set doesn't fit, `scroll_offset` is
+    ///   chosen to keep the active tab visible (delegates to
+    ///   [`Self::fit_active_scroll_offset`]). Scroll arrows appear on
+    ///   the sides that have hidden content.
+    /// - **Close buttons:** always positioned at the right end of their
+    ///   tab. Backends supply `close_width` per-tab; a value of `0.0`
+    ///   suppresses the close button.
+    ///
+    /// # Two-pass-paint pattern (GTK / event-driven backends)
+    ///
+    /// If `resolved_scroll_offset != self.scroll_offset`, the current
+    /// paint reflects the layout's correction; write
+    /// `resolved_scroll_offset` back to the app's stored value and
+    /// invalidate or repaint. GTK must do the second paint inline (see
+    /// `PLAN.md` lesson on `idle_add_local_once` unreliability).
+    pub fn layout<F1, F2>(
+        &self,
+        bar_width: f32,
+        bar_height: f32,
+        scroll_arrow_width: f32,
+        measure_tab: F1,
+        measure_segment: F2,
+    ) -> TabBarLayout
+    where
+        F1: Fn(usize) -> TabMeasure,
+        F2: Fn(usize) -> SegmentMeasure,
+    {
+        let mut visible_tabs: Vec<VisibleTab> = Vec::new();
+        let mut visible_segments: Vec<VisibleSegment> = Vec::new();
+        let mut hit_regions: Vec<(Rect, TabBarHit)> = Vec::new();
+
+        if self.tabs.is_empty() && self.right_segments.is_empty() {
+            return TabBarLayout {
+                bar_width,
+                bar_height,
+                visible_tabs,
+                visible_segments,
+                scroll_left: None,
+                scroll_right: None,
+                hit_regions,
+                resolved_scroll_offset: 0,
+            };
+        }
+
+        // ── Right segments: all or nothing (v1 policy) ─────────────────
+        let seg_widths: Vec<f32> = (0..self.right_segments.len())
+            .map(|i| measure_segment(i).width)
+            .collect();
+        let total_seg_width: f32 = seg_widths.iter().sum();
+        let segs_fit = !self.right_segments.is_empty() && total_seg_width <= bar_width * 0.5;
+        let right_area_width = if segs_fit { total_seg_width } else { 0.0 };
+
+        // ── Tabs ───────────────────────────────────────────────────────
+        let tab_measures: Vec<TabMeasure> = (0..self.tabs.len()).map(&measure_tab).collect();
+        let total_tab_width: f32 = tab_measures.iter().map(|m| m.total_width).sum();
+        let tab_area_no_scroll = (bar_width - right_area_width).max(0.0);
+        let active_idx = self.tabs.iter().position(|t| t.is_active).unwrap_or(0);
+
+        let (resolved_scroll_offset, tab_start_x, tab_end_x, needs_left, needs_right) =
+            if self.tabs.is_empty() {
+                (0usize, 0.0, tab_area_no_scroll, false, false)
+            } else if total_tab_width <= tab_area_no_scroll + f32::EPSILON
+                || scroll_arrow_width <= 0.0
+            {
+                // Everything fits, or scroll is disabled (tabs just clip).
+                (0usize, 0.0, tab_area_no_scroll, false, false)
+            } else {
+                // Need scroll arrows. Reserve space for two; even if only one
+                // ends up shown, the reserved width keeps `fit_active_scroll_offset`
+                // honest.
+                let tab_area_with_scroll = (tab_area_no_scroll - 2.0 * scroll_arrow_width).max(0.0);
+                let avail_usize = tab_area_with_scroll as usize;
+                let scroll_offset =
+                    Self::fit_active_scroll_offset(active_idx, self.tabs.len(), avail_usize, |i| {
+                        tab_measures[i].total_width.ceil() as usize
+                    });
+                let sum_from_offset: f32 = tab_measures[scroll_offset..]
+                    .iter()
+                    .map(|m| m.total_width)
+                    .sum();
+                let needs_right = sum_from_offset > tab_area_with_scroll + f32::EPSILON;
+                let needs_left = scroll_offset > 0;
+                let tab_start = scroll_arrow_width;
+                (
+                    scroll_offset,
+                    tab_start,
+                    tab_start + tab_area_with_scroll,
+                    needs_left,
+                    needs_right,
+                )
+            };
+
+        // ── Left scroll arrow ──────────────────────────────────────────
+        let scroll_left = if needs_left {
+            let r = Rect::new(0.0, 0.0, scroll_arrow_width, bar_height);
+            hit_regions.push((r, TabBarHit::ScrollLeft));
+            Some(r)
+        } else {
+            None
+        };
+
+        // ── Visible tabs ───────────────────────────────────────────────
+        let mut close_regions: Vec<(Rect, TabBarHit)> = Vec::new();
+        let mut body_regions: Vec<(Rect, TabBarHit)> = Vec::new();
+        let mut cursor_x = tab_start_x;
+
+        for (i, tm) in tab_measures
+            .iter()
+            .enumerate()
+            .skip(resolved_scroll_offset)
+        {
+            let tm = *tm;
+            if cursor_x + tm.total_width > tab_end_x + f32::EPSILON {
+                break;
+            }
+            let bounds = Rect::new(cursor_x, 0.0, tm.total_width, bar_height);
+            let close_bounds = if tm.close_width > 0.0 && tm.close_width <= tm.total_width {
+                Some(Rect::new(
+                    cursor_x + tm.total_width - tm.close_width,
+                    0.0,
+                    tm.close_width,
+                    bar_height,
+                ))
+            } else {
+                None
+            };
+            visible_tabs.push(VisibleTab {
+                tab_idx: i,
+                bounds,
+                close_bounds,
+            });
+            if let Some(cb) = close_bounds {
+                close_regions.push((cb, TabBarHit::TabClose(i)));
+            }
+            body_regions.push((bounds, TabBarHit::Tab(i)));
+            cursor_x += tm.total_width;
+        }
+
+        // Close regions must come before body regions so `hit_test` returns
+        // the more-specific close hit when the pointer is on the × glyph.
+        hit_regions.extend(close_regions);
+        hit_regions.extend(body_regions);
+
+        // ── Right scroll arrow ─────────────────────────────────────────
+        let scroll_right = if needs_right {
+            let r = Rect::new(tab_end_x, 0.0, scroll_arrow_width, bar_height);
+            hit_regions.push((r, TabBarHit::ScrollRight));
+            Some(r)
+        } else {
+            None
+        };
+
+        // ── Right-aligned segments ─────────────────────────────────────
+        if segs_fit {
+            let mut seg_x = bar_width - right_area_width;
+            for (i, seg) in self.right_segments.iter().enumerate() {
+                let w = seg_widths[i];
+                let bounds = Rect::new(seg_x, 0.0, w, bar_height);
+                let clickable = seg.id.is_some();
+                visible_segments.push(VisibleSegment {
+                    segment_idx: i,
+                    bounds,
+                    clickable,
+                });
+                if let Some(id) = &seg.id {
+                    hit_regions.push((bounds, TabBarHit::RightSegment(id.clone())));
+                }
+                seg_x += w;
+            }
+        }
+
+        TabBarLayout {
+            bar_width,
+            bar_height,
+            visible_tabs,
+            visible_segments,
+            scroll_left,
+            scroll_right,
+            hit_regions,
+            resolved_scroll_offset,
+        }
     }
 }
 
