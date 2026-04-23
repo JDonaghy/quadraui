@@ -16,16 +16,23 @@
 //! render a box with the content at the resolved position.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a tooltip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tooltip {
     pub id: WidgetId,
-    /// Tooltip text. Single-line for most cases; backends wrap if
-    /// `max_width` is narrower than the natural width.
+    /// Tooltip text. May be multi-line (`\n`-separated); backends render
+    /// each line in sequence. Plain text path — for per-character
+    /// colour, set `styled` instead.
     pub text: String,
+    /// Single-line styled override. When `Some`, backends render the
+    /// span sequence on one line instead of the plain `text`. Used by
+    /// consumers that need sub-string colouring (e.g. LSP signature
+    /// help, where the active parameter is highlighted).
+    #[serde(default)]
+    pub styled: Option<StyledText>,
     /// Preferred placement relative to the anchor.
     #[serde(default)]
     pub placement: TooltipPlacement,
