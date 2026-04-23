@@ -7,6 +7,7 @@
 pub mod activity_bar;
 pub mod completions;
 pub mod context_menu;
+pub mod dialog;
 pub mod form;
 pub mod list;
 pub mod palette;
