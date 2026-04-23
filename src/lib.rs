@@ -98,6 +98,10 @@ pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityItem, ActivitySide,
     VisibleActivityItem,
 };
+pub use primitives::completions::{
+    CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsEvent,
+    CompletionsHit, CompletionsLayout, CompletionsPlacement, VisibleCompletion,
+};
 pub use primitives::context_menu::{
     ContextMenu, ContextMenuEvent, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
     ContextMenuLayout, VisibleContextMenuItem,
@@ -928,6 +932,107 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── Completions primitive tests (D6) ──────────────────────────────
+
+    fn make_completion(label: &str, kind: CompletionKind) -> CompletionItem {
+        CompletionItem {
+            label: StyledText::plain(label),
+            detail: None,
+            documentation: None,
+            kind,
+            icon: None,
+        }
+    }
+
+    #[test]
+    fn completions_layout_below_cursor() {
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: vec![
+                make_completion("fn main", CompletionKind::Function),
+                make_completion("fn map", CompletionKind::Function),
+                make_completion("Vec", CompletionKind::Struct),
+            ],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = c.layout(100.0, 50.0, 18.0, viewport, 300.0, 200.0, |_| {
+            CompletionItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.placement, CompletionsPlacement::Below);
+        assert_eq!(layout.bounds.x, 100.0);
+        // Popup y = cursor_y + line_height = 50 + 18 = 68
+        assert_eq!(layout.bounds.y, 68.0);
+        assert_eq!(layout.visible_items.len(), 3);
+        assert_eq!(layout.visible_items[0].bounds.y, 68.0);
+        // Click on 2nd item.
+        match layout.hit_test(150.0, 90.0) {
+            CompletionsHit::Item(idx) => assert_eq!(idx, 1),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn completions_layout_flips_above_when_below_overflows() {
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: (0..5)
+                .map(|i| make_completion(&format!("x{i}"), CompletionKind::Variable))
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        // Cursor near the bottom of a small viewport.
+        let viewport = Rect::new(0.0, 0.0, 800.0, 150.0);
+        // Cursor at y=120, line_height=18 → below_y = 138, need 100 px (5 × 20)
+        // → bottom edge = 238, > 150 viewport. Flip above.
+        let layout = c.layout(100.0, 120.0, 18.0, viewport, 300.0, 200.0, |_| {
+            CompletionItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.placement, CompletionsPlacement::Above);
+        // Above: y = cursor - content_h = 120 - 100 = 20
+        assert_eq!(layout.bounds.y, 20.0);
+    }
+
+    #[test]
+    fn completions_layout_shifts_left_when_right_overflows() {
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: vec![make_completion("item", CompletionKind::Text)],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 400.0, 600.0);
+        // Cursor near right edge — popup_width 300, cursor_x 200 → right would be 500 > 400.
+        let layout = c.layout(200.0, 50.0, 18.0, viewport, 300.0, 200.0, |_| {
+            CompletionItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 100.0); // 400 - 300
+    }
+
+    #[test]
+    fn completions_layout_scroll_offset_applies() {
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: (0..10)
+                .map(|i| make_completion(&format!("x{i}"), CompletionKind::Variable))
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 5,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = c.layout(0.0, 0.0, 18.0, viewport, 200.0, 200.0, |_| {
+            CompletionItemMeasure::new(20.0)
+        });
+        // Visible items start at index 5.
+        assert_eq!(layout.visible_items[0].item_idx, 5);
     }
 
     // ── ContextMenu primitive tests (D6) ──────────────────────────────
