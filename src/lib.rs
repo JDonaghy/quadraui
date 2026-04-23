@@ -118,7 +118,10 @@ pub use primitives::tab_bar::{
     TabMeasure, VisibleSegment, VisibleTab,
 };
 pub use primitives::terminal::{Terminal, TerminalCell, TerminalEvent};
-pub use primitives::text_display::{TextDisplay, TextDisplayEvent, TextDisplayLine};
+pub use primitives::text_display::{
+    TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
+    TextDisplayLineMeasure, VisibleTextDisplayLine,
+};
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
@@ -907,6 +910,105 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 TextDisplay layout API tests ───────────────────────────────
+
+    fn make_td_line(text: &str) -> primitives::text_display::TextDisplayLine {
+        primitives::text_display::TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn make_td(
+        lines: Vec<primitives::text_display::TextDisplayLine>,
+        scroll: usize,
+        auto: bool,
+    ) -> TextDisplay {
+        TextDisplay {
+            id: WidgetId::new("td"),
+            lines,
+            scroll_offset: scroll,
+            auto_scroll: auto,
+            max_lines: 0,
+            has_focus: true,
+        }
+    }
+
+    #[test]
+    fn text_display_layout_empty() {
+        let td = make_td(vec![], 0, true);
+        let layout = td.layout(40.0, 10.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert_eq!(layout.visible_lines.len(), 0);
+        assert_eq!(layout.hit_test(5.0, 5.0), TextDisplayHit::Empty);
+    }
+
+    #[test]
+    fn text_display_layout_manual_scroll() {
+        let td = make_td(
+            (0..10).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            3,
+            false,
+        );
+        let layout = td.layout(40.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        // scroll_offset honoured verbatim; 5 lines visible from offset 3.
+        assert_eq!(layout.resolved_scroll_offset, 3);
+        assert_eq!(layout.visible_lines.len(), 5);
+        assert_eq!(layout.visible_lines[0].line_idx, 3);
+    }
+
+    #[test]
+    fn text_display_layout_auto_scroll_pins_bottom() {
+        // 10 lines, viewport fits 5 lines, auto_scroll true. Layout
+        // should pick offset 5 so lines 5..10 are visible — ignoring
+        // whatever scroll_offset was in the primitive.
+        let td = make_td(
+            (0..10).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            0, // stored scroll_offset overridden by auto-scroll
+            true,
+        );
+        let layout = td.layout(40.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 5);
+        assert_eq!(layout.visible_lines.len(), 5);
+        assert_eq!(layout.visible_lines[0].line_idx, 5);
+        assert_eq!(layout.visible_lines[4].line_idx, 9);
+    }
+
+    #[test]
+    fn text_display_layout_auto_scroll_short_stream() {
+        // Only 3 lines, viewport fits 5. Auto-scroll pins bottom but
+        // there's nothing to scroll past — offset should stay at 0.
+        let td = make_td(
+            (0..3).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            0,
+            true,
+        );
+        let layout = td.layout(40.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 0);
+        assert_eq!(layout.visible_lines.len(), 3);
+    }
+
+    #[test]
+    fn text_display_layout_wrap_heights() {
+        // Simulate wrap: line 0 wraps to 3 rows, line 1 fits in 1 row,
+        // line 2 wraps to 2 rows. Viewport 5 rows. Lines 0 + 1 take
+        // rows 0..4; line 2 starts at y=4 and clips to 1 row.
+        let td = make_td(
+            (0..3).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            0,
+            false,
+        );
+        let heights = [3.0, 1.0, 2.0];
+        let layout = td.layout(40.0, 5.0, |i| TextDisplayLineMeasure::new(heights[i]));
+        assert_eq!(layout.visible_lines.len(), 3);
+        assert_eq!(layout.visible_lines[0].bounds.height, 3.0);
+        assert_eq!(layout.visible_lines[1].bounds.y, 3.0);
+        assert_eq!(layout.visible_lines[1].bounds.height, 1.0);
+        // Third line clipped to the remaining 1 row of viewport.
+        assert_eq!(layout.visible_lines[2].bounds.y, 4.0);
+        assert_eq!(layout.visible_lines[2].bounds.height, 1.0);
     }
 
     // ── D6 Form layout API tests ──────────────────────────────────────

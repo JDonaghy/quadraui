@@ -37,6 +37,7 @@
 //! affected rows. Reference implementations land with the first
 //! consumer.
 
+use crate::event::Rect;
 use crate::types::{Decoration, Modifiers, StyledSpan, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +84,162 @@ pub struct TextDisplayLine {
     /// Optional timestamp prefix (e.g. `"12:34:56"`) rendered before spans.
     #[serde(default)]
     pub timestamp: Option<String>,
+}
+
+// ── D6 Layout API ───────────────────────────────────────────────────────────
+//
+// Per Decision D6: primitives return fully-resolved `Layout` structs.
+// Eighth primitive on the new shape. TextDisplay is a vertical stack
+// of log lines, with auto-scroll support: when `auto_scroll` is true,
+// the layout pins to the bottom (newest lines visible) regardless of
+// the input `scroll_offset`. The backend doesn't need to compute this
+// itself — `resolved_scroll_offset` is correct either way.
+
+/// Per-line measurement supplied by the backend. Single-line displays
+/// usually have a uniform `height`, but wrap-enabled backends can vary
+/// it (e.g. a long line that wraps onto 3 visual rows returns `3.0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextDisplayLineMeasure {
+    pub height: f32,
+}
+
+impl TextDisplayLineMeasure {
+    pub fn new(height: f32) -> Self {
+        Self { height }
+    }
+}
+
+/// Resolved position of one visible text-display line after layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleTextDisplayLine {
+    /// Index into `TextDisplay.lines`.
+    pub line_idx: usize,
+    pub bounds: Rect,
+}
+
+/// Classification of a hit-test result. Clicks on log lines usually
+/// start a text-selection or copy action; the primitive reports which
+/// line was hit and the backend decides what to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextDisplayHit {
+    Line(usize),
+    Empty,
+}
+
+/// Fully-resolved text-display layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDisplayLayout {
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub visible_lines: Vec<VisibleTextDisplayLine>,
+    pub hit_regions: Vec<(Rect, TextDisplayHit)>,
+    /// Scroll offset actually used. When `auto_scroll` is true, this is
+    /// chosen so the last line is visible; otherwise it's the input
+    /// `scroll_offset` clamped to `[0, lines.len())`. Backends should
+    /// write this back to the app's stored value so auto-scroll state
+    /// is coherent across frames.
+    pub resolved_scroll_offset: usize,
+}
+
+impl TextDisplayLayout {
+    pub fn hit_test(&self, x: f32, y: f32) -> TextDisplayHit {
+        for (rect, hit) in &self.hit_regions {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return hit.clone();
+            }
+        }
+        TextDisplayHit::Empty
+    }
+}
+
+impl TextDisplay {
+    /// Compute the full rendering + hit-test layout for this display.
+    ///
+    /// # Auto-scroll
+    ///
+    /// When `self.auto_scroll == true`, the layout chooses the
+    /// smallest `resolved_scroll_offset` such that the last line is
+    /// still visible — overriding the stored `scroll_offset`. When
+    /// `auto_scroll == false`, `scroll_offset` is used as-is (clamped).
+    ///
+    /// # Arguments
+    ///
+    /// - `viewport_width`, `viewport_height` — display area.
+    /// - `measure_line(i)` — height for line `i`. Most backends use a
+    ///   uniform height; wrap-enabled renderers return the wrapped-line
+    ///   row count × base height.
+    pub fn layout<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        measure_line: F,
+    ) -> TextDisplayLayout
+    where
+        F: Fn(usize) -> TextDisplayLineMeasure,
+    {
+        let mut visible_lines: Vec<VisibleTextDisplayLine> = Vec::new();
+        let mut hit_regions: Vec<(Rect, TextDisplayHit)> = Vec::new();
+
+        if self.lines.is_empty() || viewport_height <= 0.0 {
+            return TextDisplayLayout {
+                viewport_width,
+                viewport_height,
+                visible_lines,
+                hit_regions,
+                resolved_scroll_offset: 0,
+            };
+        }
+
+        // Decide the starting offset.
+        let resolved_scroll_offset = if self.auto_scroll {
+            // Walk backwards from the last line accumulating heights
+            // until we've filled (or would overflow) the viewport.
+            let mut used = 0.0_f32;
+            let mut offset = self.lines.len();
+            while offset > 0 {
+                let cand = offset - 1;
+                let h = measure_line(cand).height;
+                if used + h > viewport_height + f32::EPSILON {
+                    // One more line past the top → walking back further
+                    // overshoots. Stop here.
+                    break;
+                }
+                used += h;
+                offset = cand;
+            }
+            offset
+        } else {
+            self.scroll_offset.min(self.lines.len() - 1)
+        };
+
+        let mut y = 0.0_f32;
+        for i in resolved_scroll_offset..self.lines.len() {
+            if y >= viewport_height {
+                break;
+            }
+            let m = measure_line(i);
+            let remaining = viewport_height - y;
+            let height = m.height.min(remaining).max(0.0);
+            if height <= 0.0 {
+                break;
+            }
+            let bounds = Rect::new(0.0, y, viewport_width, height);
+            visible_lines.push(VisibleTextDisplayLine {
+                line_idx: i,
+                bounds,
+            });
+            hit_regions.push((bounds, TextDisplayHit::Line(i)));
+            y += m.height;
+        }
+
+        TextDisplayLayout {
+            viewport_width,
+            viewport_height,
+            visible_lines,
+            hit_regions,
+            resolved_scroll_offset,
+        }
+    }
 }
 
 /// Events a `TextDisplay` emits back to the app.
