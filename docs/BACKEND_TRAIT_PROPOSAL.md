@@ -512,13 +512,18 @@ See §4 for the updated trait shape and rejection rationale for
 
 ### 6.2 Where does layout computation live?
 
-Today `build_screen_layout` in vimcode's `render.rs` is the layout
-pass. Under the new model, that's ambiguous: is layout an app
-concern or a quadraui concern? Proposal: layout is a **pure function
-in quadraui** (`quadraui::layout::compute(root: &Layout, viewport)
--> LayoutResult`), and apps declare their layout description. Apps
-can still do custom layout for complex cases — the primitive layout
-is just a convenience.
+✅ **RESOLVED 2026-04-22: A (primitives return fully-resolved
+`Layout`; backends rasterise verbatim).** Each primitive grows a
+`layout(viewport, measure) -> Layout` method that resolves
+positions, hit regions, scroll state, overflow chevrons. The
+`Backend` trait's `draw_*` methods take `&Layout`, not `&Primitive`.
+Wrong consumption produces visibly broken output (no tabs drawn at
+all), not silent platform-specific divergence. Closes the structural
+gap that produced #178 / #179. See §9 D6 for the three options
+considered, why A won, and what lands when applied. The earlier
+proposal here (`quadraui::layout::compute(root: &Layout, viewport)
+-> LayoutResult` as a single global pass) is superseded — layout
+is per-primitive, not a single tree-walk.
 
 ### 6.3 What about multi-window?
 
@@ -644,14 +649,84 @@ pre-optimise; profile after B.5 if necessary.
    get the format they expect. See §3 "Input formats for Literal"
    for the full convention.
 
+6. **Where does layout computation live? (§6.2)** What can a
+   primitive's contract *require* of its rasteriser, vs. what does
+   it merely *offer*? Today, primitives expose helpers
+   (`fit_active_scroll_offset`, `fit_right_start_chars`) that
+   backends may or may not call — producing silent divergence
+   (#179 tab overflow, #178 font fallback) where the same bug
+   recurs in N-1 backends after being fixed in 1.
+
+   ✅ **RESOLVED 2026-04-22: A (primitives return fully-resolved
+   `Layout`; backends rasterise verbatim).**
+
+   **The three options considered:**
+   - **A.** Each primitive grows `Primitive::layout(viewport, measure)
+     -> Layout` returning positions, hit regions, scroll state,
+     overflow chevrons. Backend trait shape moves from
+     `draw_tab_bar(&TabBar)` to `draw_tab_bar(&TabBarLayout)`.
+     Backend can't deviate — wrong consumption produces visibly
+     broken output, not a silent slip on the next platform.
+   - **B.** Behavioural primitives own state — introduce dedicated
+     primitives for cross-backend guarantees (`ScrollableTabBar`
+     owning offset + scroll buttons, alongside the existing
+     `TabBar`). New behavioural guarantee → new primitive type.
+     Backend trait shape unchanged.
+   - **C.** Augment existing primitives with required fields
+     (`overflow_indicator`, `glyph_fallback`). Backends MUST honour —
+     but enforcement is by convention, not by the type system.
+
+   **Why A:**
+   - D-001 ("one primitive per UX concept") cuts against B —
+     overflow is a *layout-policy* property of one UX concept, not
+     a separate concept. B inflates the catalog
+     (`ScrollableTabBar`, `ScrollableTextDisplay`, `ScrollableList`,
+     …) for what is structurally one question.
+   - C doesn't actually force the backend — it can still ignore
+     the new field. Same failure mode as today.
+   - A makes wrong rendering loud: a backend that fails to iterate
+     `layout.visible_tabs` draws no tabs. Failure is detectable in
+     a single-backend smoke test; it can't slip to platform N.
+   - Operationalises §6's existing sentence ("backend never makes
+     layout decisions beyond intrinsic sizing") — today aspirational
+     discipline; under A it's a type-level contract.
+   - Generic-over-measurer pattern (`fit_*`) extends naturally —
+     `layout()` takes the measure closure each backend already
+     knows how to supply.
+
+   **What lands when applied:**
+   - `TabBar::layout()` + `TabBarLayout::hit_test()` (closes #179).
+   - `StatusBar::layout()` (existing `fit_right_start_chars`
+     migrates into it).
+   - `Backend` trait `draw_*` methods take `&Layout` not
+     `&Primitive`; §4 / §6 trait sketch updated accordingly.
+   - Existing backend `draw_tab_bar` / `draw_status_bar` collapse
+     to "iterate layout, rasterise" (~−100 LOC per backend).
+   - All future primitives ship with `layout()` from day one.
+   - §6.4 (focus) becomes adjacent — focus regions probably live
+     on the layout struct too.
+
+   **Scope.** Phase B.3 (layout primitives — `Panel`, `Split`,
+   `Tabs`, `Stack`, `MenuBar`, `Modal`, `Dialog`) needs this
+   resolved before it can land. Without it, B.3 ships container
+   primitives without knowing whether *they* also expose
+   `layout()`. By symmetry with A, they do.
+
+   **What this does NOT decide.** §6.4 (focus model) and §6.5
+   (IME) remain open. §6.3 (multi-window) is a v1.x concern, not
+   blocking. §6.6 (performance) is profile-after-B.5.
+
 ---
 
 ### All decisions resolved — next step is code
 
-With all five resolved, the first PR (Phase B.1) is small
-(~200 LOC — `UiEvent` + `Accelerator` + `Backend` trait skeleton,
-empty impls per backend, no feature migration). B.2 lands as a
-separate PR migrating terminal maximize; target -60 LOC net.
+With all six resolved, the layout-axis structural fix unblocks
+Phase B.3 (layout primitives). #178 and #179 land as part of the
+B.3 wave — `TabBar::layout()` becomes the reference implementation
+for the new `Layout`-returning shape. Existing primitives
+(`StatusBar`, `TreeView`, `ListView`, `Form`, `Palette`,
+`ActivityBar`) gain `layout()` methods incrementally as their
+backends are touched, not all at once.
 
 ---
 
