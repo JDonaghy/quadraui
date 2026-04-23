@@ -117,6 +117,10 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
     VisibleListItem,
 };
+pub use primitives::menu_bar::{
+    MenuBar, MenuBarEvent, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
+    VisibleMenuBarItem,
+};
 pub use primitives::modal::{Modal, ModalEvent, ModalHit, ModalLayout};
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
@@ -943,6 +947,96 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── MenuBar primitive tests ───────────────────────────────────────
+
+    fn mk_menu_item(id: &str, label: &str) -> MenuBarItem {
+        MenuBarItem {
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn menu_bar_layout_flat_items() {
+        let bar = MenuBar {
+            id: WidgetId::new("mb"),
+            items: vec![
+                mk_menu_item("file", "&File"),
+                mk_menu_item("edit", "&Edit"),
+                mk_menu_item("view", "&View"),
+            ],
+            open_item: None,
+            focused_item: None,
+        };
+        let bounds = Rect::new(0.0, 0.0, 800.0, 20.0);
+        let layout = bar.layout(bounds, |_| MenuBarItemMeasure::new(60.0));
+        assert_eq!(layout.visible_items.len(), 3);
+        assert_eq!(layout.visible_items[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_items[1].bounds.x, 60.0);
+        assert_eq!(layout.visible_items[2].bounds.x, 120.0);
+        // Click on Edit.
+        match layout.hit_test(70.0, 10.0) {
+            MenuBarHit::Item(1) => {}
+            other => panic!("expected Item(1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn menu_bar_alt_target_resolution() {
+        let bar = MenuBar {
+            id: WidgetId::new("mb"),
+            items: vec![
+                mk_menu_item("file", "&File"),
+                mk_menu_item("edit", "&Edit"),
+                mk_menu_item("view", "&View"),
+            ],
+            open_item: None,
+            focused_item: None,
+        };
+        assert_eq!(bar.find_alt_target('f'), Some(0));
+        assert_eq!(bar.find_alt_target('E'), Some(1));
+        assert_eq!(bar.find_alt_target('v'), Some(2));
+        assert_eq!(bar.find_alt_target('x'), None);
+    }
+
+    #[test]
+    fn menu_bar_disabled_items_not_clickable() {
+        let bar = MenuBar {
+            id: WidgetId::new("mb"),
+            items: vec![
+                mk_menu_item("file", "&File"),
+                MenuBarItem {
+                    id: WidgetId::new("tools"),
+                    label: "&Tools".to_string(),
+                    disabled: true,
+                },
+            ],
+            open_item: None,
+            focused_item: None,
+        };
+        let bounds = Rect::new(0.0, 0.0, 800.0, 20.0);
+        let layout = bar.layout(bounds, |_| MenuBarItemMeasure::new(60.0));
+        assert!(!layout.visible_items[1].clickable);
+        // Click on the disabled Tools item → Bar (not Item).
+        assert_eq!(layout.hit_test(70.0, 10.0), MenuBarHit::Bar);
+        // Alt+t skips disabled.
+        assert_eq!(bar.find_alt_target('t'), None);
+    }
+
+    #[test]
+    fn menu_bar_click_outside() {
+        let bar = MenuBar {
+            id: WidgetId::new("mb"),
+            items: vec![mk_menu_item("file", "File")],
+            open_item: None,
+            focused_item: None,
+        };
+        let bounds = Rect::new(0.0, 0.0, 200.0, 20.0);
+        let layout = bar.layout(bounds, |_| MenuBarItemMeasure::new(50.0));
+        assert_eq!(layout.hit_test(100.0, 50.0), MenuBarHit::Outside);
     }
 
     // ── Modal primitive tests ─────────────────────────────────────────

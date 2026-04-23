@@ -10,6 +10,7 @@ pub mod context_menu;
 pub mod dialog;
 pub mod form;
 pub mod list;
+pub mod menu_bar;
 pub mod modal;
 pub mod palette;
 pub mod panel;
