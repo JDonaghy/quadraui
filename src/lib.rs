@@ -98,7 +98,9 @@ pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityItem, ActivitySide,
     VisibleActivityItem,
 };
-pub use primitives::form::{FieldKind, Form, FormEvent, FormField};
+pub use primitives::form::{
+    FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit, FormLayout, VisibleFormField,
+};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
     VisibleListItem,
@@ -905,6 +907,121 @@ mod tests {
         // Edge cases: empty + out-of-bounds active.
         assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
         assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 Form layout API tests ──────────────────────────────────────
+
+    fn make_form_field(id: &str, label: &str, kind: FieldKind) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain(label),
+            kind,
+            hint: StyledText::default(),
+            disabled: false,
+        }
+    }
+
+    fn make_form(fields: Vec<FormField>, scroll: usize) -> Form {
+        Form {
+            id: WidgetId::new("f"),
+            fields,
+            focused_field: None,
+            scroll_offset: scroll,
+            has_focus: true,
+        }
+    }
+
+    #[test]
+    fn form_layout_empty() {
+        let f = make_form(vec![], 0);
+        let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields.len(), 0);
+        assert_eq!(layout.hit_test(5.0, 5.0), FormHit::Empty);
+    }
+
+    #[test]
+    fn form_layout_stacks_fields() {
+        let f = make_form(
+            vec![
+                make_form_field("header", "Editor", FieldKind::Label),
+                make_form_field("toggle1", "Line numbers", FieldKind::Toggle { value: true }),
+                make_form_field("btn", "Save", FieldKind::Button),
+            ],
+            0,
+        );
+        let layout = f.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields.len(), 3);
+        assert_eq!(layout.visible_fields[0].bounds.y, 0.0);
+        assert_eq!(layout.visible_fields[1].bounds.y, 1.0);
+        assert_eq!(layout.visible_fields[2].bounds.y, 2.0);
+        match layout.hit_test(10.0, 1.5) {
+            FormHit::Field(id) => assert_eq!(id.as_str(), "toggle1"),
+            _ => panic!("expected Field(toggle1)"),
+        }
+    }
+
+    #[test]
+    fn form_layout_hit_carries_widget_id_not_index() {
+        // Adding fields in arbitrary order — hit_test returns the id,
+        // not the flat index, so apps don't care about ordering.
+        let f = make_form(
+            vec![
+                make_form_field("zebra", "Zebra", FieldKind::Button),
+                make_form_field("alpha", "Alpha", FieldKind::Button),
+            ],
+            0,
+        );
+        let layout = f.layout(40.0, 5.0, |_| FormFieldMeasure::new(1.0));
+        match layout.hit_test(10.0, 0.5) {
+            FormHit::Field(id) => assert_eq!(id.as_str(), "zebra"),
+            _ => panic!(),
+        }
+        match layout.hit_test(10.0, 1.5) {
+            FormHit::Field(id) => assert_eq!(id.as_str(), "alpha"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn form_layout_scroll_offset_skips() {
+        let f = make_form(
+            (0..5)
+                .map(|i| make_form_field(&format!("f{i}"), &format!("F{i}"), FieldKind::Button))
+                .collect(),
+            2,
+        );
+        let layout = f.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields[0].field_idx, 2);
+        assert_eq!(layout.visible_fields[0].id.as_str(), "f2");
+    }
+
+    #[test]
+    fn form_layout_varying_heights_by_kind() {
+        // Fields with hints are taller; Label rows can be shorter.
+        let fields = vec![
+            make_form_field("hdr", "Header", FieldKind::Label),
+            make_form_field(
+                "txt",
+                "Name",
+                FieldKind::TextInput {
+                    value: "John".to_string(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    selection_anchor: None,
+                },
+            ),
+        ];
+        let f = make_form(fields.clone(), 0);
+        let layout = f.layout(40.0, 10.0, |i| {
+            // Pretend TextInput fields are 2 rows tall (room for hint), Label is 1.
+            match fields[i].kind {
+                FieldKind::TextInput { .. } => FormFieldMeasure::new(2.0),
+                _ => FormFieldMeasure::new(1.0),
+            }
+        });
+        assert_eq!(layout.visible_fields[0].bounds.height, 1.0);
+        assert_eq!(layout.visible_fields[1].bounds.y, 1.0);
+        assert_eq!(layout.visible_fields[1].bounds.height, 2.0);
     }
 
     // ── D6 Palette layout API tests ───────────────────────────────────

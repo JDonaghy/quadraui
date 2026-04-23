@@ -37,6 +37,7 @@
 //! No measurement-dependent state — fields are uniform-height per
 //! backend.
 
+use crate::event::Rect;
 use crate::types::{Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,134 @@ pub enum FieldKind {
     /// Read-only display of a value computed elsewhere. Text-only; no
     /// events. Used for "current version: 0.10.0" style rows.
     ReadOnly { value: StyledText },
+}
+
+// ── D6 Layout API ───────────────────────────────────────────────────────────
+//
+// Per Decision D6: primitives return fully-resolved `Layout` structs.
+// Seventh primitive on the new shape. Form is structurally a vertical
+// stack of fields — same geometry as TreeView. The FieldKind distinction
+// (Toggle / TextInput / Button / Label / ReadOnly) is about rendering,
+// not layout, so it stays backend-owned: the layout just places rows.
+
+/// Per-field measurement supplied by the backend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FormFieldMeasure {
+    pub height: f32,
+}
+
+impl FormFieldMeasure {
+    pub fn new(height: f32) -> Self {
+        Self { height }
+    }
+}
+
+/// Resolved position of one visible form field after layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisibleFormField {
+    /// Index into `Form.fields`.
+    pub field_idx: usize,
+    /// Clone of the field's `WidgetId` for click routing without a
+    /// re-index into the primitive.
+    pub id: WidgetId,
+    pub bounds: Rect,
+}
+
+/// Classification of a hit-test result. Carries the field's `WidgetId`
+/// so apps can dispatch via the same ID plumbing their event handlers
+/// use — no secondary indirection through `fields[i].id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormHit {
+    /// Click landed on a field row.
+    Field(WidgetId),
+    /// Click landed outside any field.
+    Empty,
+}
+
+/// Fully-resolved form layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormLayout {
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub visible_fields: Vec<VisibleFormField>,
+    pub hit_regions: Vec<(Rect, FormHit)>,
+    /// Scroll offset actually used, clamped to `[0, fields.len())`.
+    pub resolved_scroll_offset: usize,
+}
+
+impl FormLayout {
+    pub fn hit_test(&self, x: f32, y: f32) -> FormHit {
+        for (rect, hit) in &self.hit_regions {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return hit.clone();
+            }
+        }
+        FormHit::Empty
+    }
+}
+
+impl Form {
+    /// Compute the full rendering + hit-test layout for this form.
+    ///
+    /// # Arguments
+    ///
+    /// - `viewport_width`, `viewport_height` — form area dimensions.
+    /// - `measure_field(i)` — height for field `i`. Backends vary
+    ///   height by `FieldKind` (e.g. `Label` may be shorter than
+    ///   `TextInput`; fields with non-empty `hint` may be taller).
+    ///
+    /// # Row clipping
+    ///
+    /// The last visible field's `bounds.height` is clipped to what fits
+    /// in the viewport (same semantics as `TreeView::layout`).
+    pub fn layout<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        measure_field: F,
+    ) -> FormLayout
+    where
+        F: Fn(usize) -> FormFieldMeasure,
+    {
+        let mut visible_fields: Vec<VisibleFormField> = Vec::new();
+        let mut hit_regions: Vec<(Rect, FormHit)> = Vec::new();
+
+        let resolved_scroll_offset = if self.fields.is_empty() {
+            0
+        } else {
+            self.scroll_offset.min(self.fields.len() - 1)
+        };
+
+        let mut y = 0.0_f32;
+        for i in resolved_scroll_offset..self.fields.len() {
+            if y >= viewport_height {
+                break;
+            }
+            let m = measure_field(i);
+            let remaining = viewport_height - y;
+            let height = m.height.min(remaining).max(0.0);
+            if height <= 0.0 {
+                break;
+            }
+            let bounds = Rect::new(0.0, y, viewport_width, height);
+            let id = self.fields[i].id.clone();
+            visible_fields.push(VisibleFormField {
+                field_idx: i,
+                id: id.clone(),
+                bounds,
+            });
+            hit_regions.push((bounds, FormHit::Field(id)));
+            y += m.height;
+        }
+
+        FormLayout {
+            viewport_width,
+            viewport_height,
+            visible_fields,
+            hit_regions,
+            resolved_scroll_offset,
+        }
+    }
 }
 
 /// Events a `Form` emits back to the app.
