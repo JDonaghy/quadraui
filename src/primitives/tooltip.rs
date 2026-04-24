@@ -25,14 +25,16 @@ pub struct Tooltip {
     pub id: WidgetId,
     /// Tooltip text. May be multi-line (`\n`-separated); backends render
     /// each line in sequence. Plain text path — for per-character
-    /// colour, set `styled` instead.
+    /// colour, set `styled_lines` instead.
     pub text: String,
-    /// Single-line styled override. When `Some`, backends render the
-    /// span sequence on one line instead of the plain `text`. Used by
-    /// consumers that need sub-string colouring (e.g. LSP signature
-    /// help, where the active parameter is highlighted).
+    /// Multi-line styled override. When `Some`, backends render each
+    /// `StyledText` as a separate row in sequence (with per-span fg/bg)
+    /// instead of using the plain `text`. Single-line consumers (e.g.
+    /// LSP signature help with one highlighted parameter) wrap their
+    /// styled line in a 1-element vec; multi-line consumers (e.g.
+    /// inline diff peek) supply one entry per row.
     #[serde(default)]
-    pub styled: Option<StyledText>,
+    pub styled_lines: Option<Vec<StyledText>>,
     /// Preferred placement relative to the anchor.
     #[serde(default)]
     pub placement: TooltipPlacement,

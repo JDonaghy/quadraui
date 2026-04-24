@@ -1772,7 +1772,7 @@ mod tests {
             id: WidgetId::new("tip"),
             text: "Hello".to_string(),
             placement: TooltipPlacement::Bottom,
-            styled: None,
+            styled_lines: None,
             bg: None,
             fg: None,
         };
@@ -1793,7 +1793,7 @@ mod tests {
             id: WidgetId::new("tip"),
             text: "Hello".to_string(),
             placement: TooltipPlacement::Bottom,
-            styled: None,
+            styled_lines: None,
             bg: None,
             fg: None,
         };
@@ -1815,7 +1815,7 @@ mod tests {
             id: WidgetId::new("tip"),
             text: "…".to_string(),
             placement: TooltipPlacement::Bottom,
-            styled: None,
+            styled_lines: None,
             bg: None,
             fg: None,
         };
@@ -1835,7 +1835,7 @@ mod tests {
             id: WidgetId::new("tip"),
             text: "Hover".to_string(),
             placement: TooltipPlacement::Right,
-            styled: None,
+            styled_lines: None,
             bg: None,
             fg: None,
         };
