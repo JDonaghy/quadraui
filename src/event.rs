@@ -290,6 +290,20 @@ pub enum UiEvent {
     },
     ClipboardPaste(String),
 
+    // ── Cross-primitive scroll event ──────────────────────────────────
+    /// A scrollbar drag or click resolved to a new offset. Generic
+    /// over widget type — the `widget` field carries whatever
+    /// `WidgetId` the app used when calling
+    /// [`crate::DragState::begin`] with
+    /// [`crate::DragTarget::ScrollbarY`]. Apps dispatch on `widget`
+    /// and apply `new_offset` to the corresponding scroll-state
+    /// field (palette `scroll_offset`, tree `scroll_top`, etc.).
+    /// Replaces the old per-primitive `ScrollOffsetChanged` variants.
+    ScrollOffsetChanged {
+        widget: WidgetId,
+        new_offset: usize,
+    },
+
     // ── Primitive-specific events bubble up by WidgetId ───────────────
     Tree(WidgetId, TreeEvent),
     List(WidgetId, ListViewEvent),

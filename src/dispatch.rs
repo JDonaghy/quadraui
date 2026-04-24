@@ -195,11 +195,12 @@ pub fn dispatch_mouse_down(
 
 /// Translate a mouse-move event. When no drag is in progress, emits a
 /// plain [`UiEvent::MouseMoved`]. When a [`DragTarget::ScrollbarY`]
-/// drag is active, additionally emits the primitive-specific
-/// drag-update event (currently [`PaletteEvent::ScrollOffsetChanged`])
-/// with the derived scroll offset. The app's dispatch matches on the
-/// event and updates its state; it doesn't need to know the track
-/// geometry itself because this function does the translation.
+/// drag is active, additionally emits a generic
+/// [`UiEvent::ScrollOffsetChanged { widget, new_offset }`] with the
+/// derived scroll offset. The app's dispatch matches on the event
+/// (and switches on `widget` to route to the right scroll-state
+/// field) without needing the track geometry — this function owns
+/// the translation.
 ///
 /// # How the offset is computed
 ///
@@ -228,14 +229,24 @@ pub fn dispatch_mouse_drag(
     }) = drag.target()
     {
         if *track_length > 0.0 && *total_items > 0 {
-            let rel = (position.y - *track_start) / *track_length;
+            // Scroll math accounts for the thumb occupying part of the
+            // track. The thumb's height is `visible/total * track`;
+            // the mouse can only drive the thumb through the remaining
+            // `effective_track = track - thumb` before the thumb hits
+            // the bottom. Without this adjustment the mouse feels
+            // ~track/(track - thumb) times faster than the thumb itself,
+            // which users perceive as laggy drag.
+            let thumb_ratio = (*visible_rows as f32 / *total_items as f32).min(1.0);
+            let thumb_length = (*track_length * thumb_ratio).max(1.0);
+            let effective_track = (*track_length - thumb_length).max(1.0);
+            let rel = (position.y - *track_start) / effective_track;
             let clamped = rel.clamp(0.0, 1.0);
             let max_scroll = total_items.saturating_sub(*visible_rows);
             let new_offset = (clamped * max_scroll as f32).round() as usize;
-            events.push(UiEvent::Palette(
-                widget.clone(),
-                PaletteEvent::ScrollOffsetChanged { new_offset },
-            ));
+            events.push(UiEvent::ScrollOffsetChanged {
+                widget: widget.clone(),
+                new_offset,
+            });
         }
     }
 
@@ -432,25 +443,25 @@ mod tests {
 
     #[test]
     fn dispatch_mouse_drag_with_scrollbar_emits_scroll_offset_changed() {
-        // Track from y=100 for 200 units; 50 items; visible_rows = 200
-        // means max_scroll = 0 → any drag should clamp to 0. That's a
-        // degenerate case. Use a smaller track to get a real offset.
+        // Track 80 units from y=100; 100 items, viewport shows 20.
+        // thumb_ratio = 20/100 = 0.2 → thumb_length = 16
+        // effective_track = 64; max_scroll = 80
+        // Mouse at y=100+32 (halfway through effective_track) → offset 40.
         let mut drag = DragState::new();
         drag.begin(DragTarget::ScrollbarY {
             widget: id("picker"),
             track_start: 100.0,
-            track_length: 20.0,
-            visible_rows: 20, // max_scroll = 40
-            total_items: 60,
+            track_length: 80.0,
+            visible_rows: 20,
+            total_items: 100,
         });
-        // Halfway down the track: y = 110. Ratio = 0.5 → offset = 20.
-        let events = dispatch_mouse_drag(&drag, pt(500.0, 110.0), buttons_mask_left());
+        let events = dispatch_mouse_drag(&drag, pt(500.0, 132.0), buttons_mask_left());
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
         match &events[1] {
-            UiEvent::Palette(wid, PaletteEvent::ScrollOffsetChanged { new_offset }) => {
-                assert_eq!(wid, &id("picker"));
-                assert_eq!(*new_offset, 20);
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => {
+                assert_eq!(widget, &id("picker"));
+                assert_eq!(*new_offset, 40);
             }
             other => panic!("expected ScrollOffsetChanged, got {:?}", other),
         }
@@ -458,27 +469,28 @@ mod tests {
 
     #[test]
     fn dispatch_mouse_drag_clamps_above_and_below_track() {
+        // Same geometry as above: max_scroll = 80, effective_track = 64.
         let mut drag = DragState::new();
         drag.begin(DragTarget::ScrollbarY {
             widget: id("p"),
             track_start: 100.0,
-            track_length: 20.0,
+            track_length: 80.0,
             visible_rows: 20,
-            total_items: 60,
+            total_items: 100,
         });
         // Above track: offset = 0.
         let events = dispatch_mouse_drag(&drag, pt(0.0, 50.0), buttons_mask_left());
         match &events[1] {
-            UiEvent::Palette(_, PaletteEvent::ScrollOffsetChanged { new_offset }) => {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => {
                 assert_eq!(*new_offset, 0);
             }
             _ => panic!(),
         }
-        // Below track: clamped to max_scroll = 40.
+        // Below effective track: clamped to max_scroll = 80.
         let events = dispatch_mouse_drag(&drag, pt(0.0, 500.0), buttons_mask_left());
         match &events[1] {
-            UiEvent::Palette(_, PaletteEvent::ScrollOffsetChanged { new_offset }) => {
-                assert_eq!(*new_offset, 40);
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => {
+                assert_eq!(*new_offset, 80);
             }
             _ => panic!(),
         }
