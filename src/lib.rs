@@ -94,6 +94,13 @@ pub mod accelerator;
 pub mod backend;
 pub mod event;
 
+// ── Phase B.4: cross-backend event routing ──────────────────────────────────
+// ModalStack + dispatch free functions. Backends hold one ModalStack and
+// call into dispatch to translate raw mouse events into Vec<UiEvent>
+// without each backend reimplementing modal-precedence / backdrop-dismiss.
+pub mod dispatch;
+pub mod modal_stack;
+
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityItem, ActivitySide,
     VisibleActivityItem,
@@ -177,6 +184,10 @@ pub use event::{
     BackendNativeEvent, ButtonMask, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent,
     Viewport,
 };
+
+// Phase B.4 re-exports.
+pub use dispatch::dispatch_mouse_down;
+pub use modal_stack::{ModalEntry, ModalStack};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

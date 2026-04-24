@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::event::{Rect, UiEvent, Viewport};
+use crate::modal_stack::ModalStack;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
     TextDisplay, TreeView,
@@ -44,6 +45,16 @@ pub trait Backend {
 
     /// Remove a previously-registered accelerator.
     fn unregister_accelerator(&mut self, id: &AcceleratorId);
+
+    // ─── Modal-overlay tracking ────────────────────────────────────────
+    /// Mutable handle to the backend's modal stack. Apps push when a
+    /// palette / dialog / context-menu opens and pop when it closes;
+    /// quadraui's dispatcher consults the stack so events inside an
+    /// open modal can't fall through to widgets behind it.
+    ///
+    /// See [`ModalStack`] and [`crate::dispatch::dispatch_mouse_down`]
+    /// for the routing contract.
+    fn modal_stack_mut(&mut self) -> &mut ModalStack;
 
     // ─── Platform services ─────────────────────────────────────────────
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
