@@ -186,7 +186,9 @@ pub use event::{
 };
 
 // Phase B.4 re-exports.
-pub use dispatch::dispatch_mouse_down;
+pub use dispatch::{
+    dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, DragState, DragTarget,
+};
 pub use modal_stack::{ModalEntry, ModalStack};
 
 /// Crate version, sourced from `Cargo.toml`.

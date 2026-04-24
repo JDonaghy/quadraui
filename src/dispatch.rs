@@ -31,7 +31,84 @@
 use crate::event::{MouseButton, Point, UiEvent};
 use crate::modal_stack::ModalStack;
 use crate::primitives::palette::PaletteEvent;
+use crate::types::WidgetId;
 use crate::Modifiers;
+
+// ─── Drag state ─────────────────────────────────────────────────────────────
+
+/// What's being dragged, if anything. Backends hold one [`DragState`]
+/// (typically on the same struct that owns the [`ModalStack`]) and
+/// update it from the click / drag / release handlers via
+/// [`DragState::begin`] / [`DragState::end`]. The dispatch functions
+/// below consult it to decide which primitive-specific event to emit.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DragTarget {
+    /// A vertical scrollbar drag. `track_start` and `track_length`
+    /// are in the backend's native units (pixels for GTK; cells for
+    /// TUI) and define the track region the thumb can traverse.
+    /// `visible_rows` and `total_items` are counts in rows, so the
+    /// dispatcher can compute `max_scroll = total - visible` without
+    /// assuming the coordinate system. The dispatcher maps a drag
+    /// point's y to a scroll offset via linear interpolation:
+    ///
+    /// ```text
+    /// rel    = (y - track_start) / track_length   (clamped 0..=1)
+    /// offset = round(rel * max_scroll)
+    /// ```
+    ScrollbarY {
+        /// Which widget's scrollbar is being dragged. Used to route
+        /// the resulting event back to the right primitive.
+        widget: WidgetId,
+        /// Track top in the backend's native y-coordinate.
+        track_start: f32,
+        /// Track length in the backend's native units. Must be > 0.
+        track_length: f32,
+        /// Number of items currently fitting inside the scroll
+        /// viewport. Determines `max_scroll = total.saturating_sub(visible)`.
+        visible_rows: usize,
+        /// Total number of items in the scrolled list.
+        total_items: usize,
+    },
+}
+
+/// One drag in progress, or none. Backends hold one instance; call
+/// [`Self::begin`] on mouse-down over a draggable region and
+/// [`Self::end`] on mouse-up. The dispatch functions here read it to
+/// decide whether a mouse-move should produce a drag-update event.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DragState {
+    current: Option<DragTarget>,
+}
+
+impl DragState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start tracking a drag. Overwrites any previous state —
+    /// backends are expected to call [`Self::end`] on mouse-up before
+    /// beginning the next drag, but overwriting is the safer default
+    /// than panicking (spurious duplicate begins do happen in
+    /// gesture-heavy paths).
+    pub fn begin(&mut self, target: DragTarget) {
+        self.current = Some(target);
+    }
+
+    /// Clear the drag. No-op if nothing is in progress.
+    pub fn end(&mut self) {
+        self.current = None;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.current.is_some()
+    }
+
+    pub fn target(&self) -> Option<&DragTarget> {
+        self.current.as_ref()
+    }
+}
+
+// ─── Dispatch functions ─────────────────────────────────────────────────────
 
 /// Translate a raw mouse-down event into a `Vec<UiEvent>`, consulting
 /// the modal stack first.
@@ -113,6 +190,75 @@ pub fn dispatch_mouse_down(
         button,
         position,
         modifiers,
+    }]
+}
+
+/// Translate a mouse-move event. When no drag is in progress, emits a
+/// plain [`UiEvent::MouseMoved`]. When a [`DragTarget::ScrollbarY`]
+/// drag is active, additionally emits the primitive-specific
+/// drag-update event (currently [`PaletteEvent::ScrollOffsetChanged`])
+/// with the derived scroll offset. The app's dispatch matches on the
+/// event and updates its state; it doesn't need to know the track
+/// geometry itself because this function does the translation.
+///
+/// # How the offset is computed
+///
+/// `ratio = ((point.y - track_start) / track_length).clamp(0, 1)`
+/// `new_offset = round(ratio * max_scroll)` where
+/// `max_scroll = total_items.saturating_sub(visible_rows)` and
+/// `visible_rows = track_length as usize` (one row per unit of track).
+///
+/// This mirrors the math TUI already uses in `mouse.rs`'s
+/// `dragging_picker_sb` branch, extended to f32 so it works for
+/// pixel-unit backends (GTK, macOS) as well as cell-unit backends
+/// (TUI).
+pub fn dispatch_mouse_drag(
+    drag: &DragState,
+    position: Point,
+    buttons: crate::event::ButtonMask,
+) -> Vec<UiEvent> {
+    let mut events = vec![UiEvent::MouseMoved { position, buttons }];
+
+    if let Some(DragTarget::ScrollbarY {
+        widget,
+        track_start,
+        track_length,
+        visible_rows,
+        total_items,
+    }) = drag.target()
+    {
+        if *track_length > 0.0 && *total_items > 0 {
+            let rel = (position.y - *track_start) / *track_length;
+            let clamped = rel.clamp(0.0, 1.0);
+            let max_scroll = total_items.saturating_sub(*visible_rows);
+            let new_offset = (clamped * max_scroll as f32).round() as usize;
+            events.push(UiEvent::Palette(
+                widget.clone(),
+                PaletteEvent::ScrollOffsetChanged { new_offset },
+            ));
+        }
+    }
+
+    events
+}
+
+/// Translate a mouse-up event. Always emits [`UiEvent::MouseUp`] and
+/// clears any active drag state. If the click landed inside a modal,
+/// the `MouseUp` carries the modal's `widget` id — matching
+/// [`dispatch_mouse_down`]'s precedence — so apps can treat a drag
+/// that crosses the modal boundary atomically.
+pub fn dispatch_mouse_up(
+    stack: &ModalStack,
+    drag: &mut DragState,
+    position: Point,
+    button: MouseButton,
+) -> Vec<UiEvent> {
+    drag.end();
+    let widget = stack.hit_test(position).cloned();
+    vec![UiEvent::MouseUp {
+        widget,
+        button,
+        position,
     }]
 }
 
@@ -241,6 +387,144 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             UiEvent::MouseDown { widget, .. } => {
+                assert_eq!(widget.as_ref().unwrap(), &id("palette"));
+            }
+            _ => panic!(),
+        }
+    }
+
+    // ── Drag tests ────────────────────────────────────────────────────
+
+    fn buttons_mask_left() -> crate::event::ButtonMask {
+        crate::event::ButtonMask {
+            left: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn drag_state_begin_and_end() {
+        let mut drag = DragState::new();
+        assert!(!drag.is_active());
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("picker"),
+            track_start: 100.0,
+            track_length: 200.0,
+            visible_rows: 10,
+            total_items: 50,
+        });
+        assert!(drag.is_active());
+        match drag.target().unwrap() {
+            DragTarget::ScrollbarY { widget, .. } => assert_eq!(widget, &id("picker")),
+        }
+        drag.end();
+        assert!(!drag.is_active());
+        assert!(drag.target().is_none());
+    }
+
+    #[test]
+    fn dispatch_mouse_drag_without_drag_emits_only_moved() {
+        let drag = DragState::new();
+        let events = dispatch_mouse_drag(&drag, pt(50.0, 50.0), buttons_mask_left());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
+    }
+
+    #[test]
+    fn dispatch_mouse_drag_with_scrollbar_emits_scroll_offset_changed() {
+        // Track from y=100 for 200 units; 50 items; visible_rows = 200
+        // means max_scroll = 0 → any drag should clamp to 0. That's a
+        // degenerate case. Use a smaller track to get a real offset.
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("picker"),
+            track_start: 100.0,
+            track_length: 20.0,
+            visible_rows: 20, // max_scroll = 40
+            total_items: 60,
+        });
+        // Halfway down the track: y = 110. Ratio = 0.5 → offset = 20.
+        let events = dispatch_mouse_drag(&drag, pt(500.0, 110.0), buttons_mask_left());
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
+        match &events[1] {
+            UiEvent::Palette(wid, PaletteEvent::ScrollOffsetChanged { new_offset }) => {
+                assert_eq!(wid, &id("picker"));
+                assert_eq!(*new_offset, 20);
+            }
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_mouse_drag_clamps_above_and_below_track() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("p"),
+            track_start: 100.0,
+            track_length: 20.0,
+            visible_rows: 20,
+            total_items: 60,
+        });
+        // Above track: offset = 0.
+        let events = dispatch_mouse_drag(&drag, pt(0.0, 50.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::Palette(_, PaletteEvent::ScrollOffsetChanged { new_offset }) => {
+                assert_eq!(*new_offset, 0);
+            }
+            _ => panic!(),
+        }
+        // Below track: clamped to max_scroll = 40.
+        let events = dispatch_mouse_drag(&drag, pt(0.0, 500.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::Palette(_, PaletteEvent::ScrollOffsetChanged { new_offset }) => {
+                assert_eq!(*new_offset, 40);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn dispatch_mouse_drag_with_zero_track_does_not_crash_or_emit() {
+        // Pathological input — no track. Should emit only MouseMoved.
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("p"),
+            track_start: 0.0,
+            track_length: 0.0,
+            visible_rows: 10,
+            total_items: 100,
+        });
+        let events = dispatch_mouse_drag(&drag, pt(0.0, 0.0), buttons_mask_left());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
+    }
+
+    #[test]
+    fn dispatch_mouse_up_clears_drag_state() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("p"),
+            track_start: 0.0,
+            track_length: 10.0,
+            visible_rows: 10,
+            total_items: 20,
+        });
+        let stack = ModalStack::new();
+        let events = dispatch_mouse_up(&stack, &mut drag, pt(5.0, 5.0), MouseButton::Left);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], UiEvent::MouseUp { .. }));
+        assert!(!drag.is_active());
+    }
+
+    #[test]
+    fn dispatch_mouse_up_carries_modal_widget_if_over() {
+        let mut stack = ModalStack::new();
+        stack.push(id("palette"), rect(0.0, 0.0, 100.0, 100.0));
+        let mut drag = DragState::new();
+        let events = dispatch_mouse_up(&stack, &mut drag, pt(50.0, 50.0), MouseButton::Left);
+        match &events[0] {
+            UiEvent::MouseUp { widget, .. } => {
                 assert_eq!(widget.as_ref().unwrap(), &id("palette"));
             }
             _ => panic!(),

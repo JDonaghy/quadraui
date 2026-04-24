@@ -252,6 +252,11 @@ pub enum PaletteEvent {
     ItemConfirmed { idx: usize },
     /// Palette was dismissed (Escape, click outside, etc.).
     Closed,
+    /// Scrollbar was clicked or dragged. `new_offset` is the row index
+    /// the app should apply to `Palette::scroll_offset`. Derived by
+    /// `quadraui::dispatch::dispatch_mouse_drag` from the drag state's
+    /// track geometry; apps simply store the value.
+    ScrollOffsetChanged { new_offset: usize },
     /// A key was pressed while the palette had focus and the primitive
     /// did not consume it. App may interpret it (e.g. `Ctrl+P` cycles
     /// a history ring).
