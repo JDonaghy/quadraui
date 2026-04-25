@@ -139,6 +139,11 @@ pub use primitives::panel::{
 pub use primitives::progress::{
     ProgressBar, ProgressBarEvent, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
+pub use primitives::rich_text_popup::{
+    PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupEvent,
+    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, TextSelection,
+    VisibleRichTextLine,
+};
 pub use primitives::spinner::{Spinner, SpinnerEvent, SpinnerHit, SpinnerLayout, SpinnerMeasure};
 pub use primitives::split::{
     Split, SplitDirection, SplitEvent, SplitHit, SplitLayout, SplitMeasure,
@@ -1903,6 +1908,156 @@ mod tests {
             _ => panic!(),
         }
         assert_eq!(layout.hit_test(0.0, 0.0, &t.id), TooltipHit::Empty);
+    }
+
+    // ── RichTextPopup primitive tests (#214) ─────────────────────────────
+
+    fn make_rich_popup(lines: usize, max_visible: usize, scroll: usize) -> RichTextPopup {
+        let line_text: Vec<String> = (0..lines).map(|i| format!("line {i:02}")).collect();
+        let lines_styled: Vec<StyledText> = line_text
+            .iter()
+            .map(|s| StyledText::plain(s.clone()))
+            .collect();
+        RichTextPopup {
+            id: WidgetId::new("hover"),
+            lines: lines_styled,
+            line_text,
+            line_scales: Vec::new(),
+            scroll_top: scroll,
+            max_visible_rows: max_visible,
+            has_focus: false,
+            selection: None,
+            links: Vec::new(),
+            focused_link: None,
+            placement: PopupPlacement::Above,
+            padding: 1.0,
+            fg: None,
+            bg: None,
+        }
+    }
+
+    #[test]
+    fn rich_text_popup_layout_visible_lines_window() {
+        let p = make_rich_popup(30, 10, 5);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            10.0,
+            100.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 1.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // Visible window starts at scroll_top=5 and shows 10 rows (capped by total).
+        assert_eq!(layout.visible_lines.len(), 10);
+        assert_eq!(layout.visible_lines[0].line_idx, 5);
+        assert_eq!(layout.visible_lines[9].line_idx, 14);
+        assert_eq!(layout.resolved_scroll_offset, 5);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_clamps_scroll_past_end() {
+        // 30 lines, 10 visible at a time → max scroll is 20.
+        // Asking for scroll=999 should clamp.
+        let p = make_rich_popup(30, 10, 999);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            0.0,
+            0.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 1.0),
+            |_, s, e| (e - s) as f32,
+        );
+        assert_eq!(layout.resolved_scroll_offset, 20);
+        assert_eq!(layout.visible_lines.first().unwrap().line_idx, 20);
+        assert_eq!(layout.visible_lines.last().unwrap().line_idx, 29);
+    }
+
+    #[test]
+    fn rich_text_popup_scrollbar_present_when_overflow() {
+        let p = make_rich_popup(50, 10, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            0.0,
+            0.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 1.0),
+            |_, s, e| (e - s) as f32,
+        );
+        let sb = layout.scrollbar.expect("scrollbar should exist");
+        // Thumb size proportional to visible/total = 10/50 = 1/5 of track.
+        assert!(sb.thumb.height > 0.0);
+        assert!(sb.thumb.height < sb.track.height);
+        // No scrollbar when content fits.
+        let p2 = make_rich_popup(5, 10, 0);
+        let layout2 = p2.layout(
+            0.0,
+            0.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 1.0),
+            |_, s, e| (e - s) as f32,
+        );
+        assert!(layout2.scrollbar.is_none());
+    }
+
+    #[test]
+    fn rich_text_popup_link_hit_regions_for_visible_lines() {
+        let mut p = make_rich_popup(20, 10, 5);
+        // Add a link on visible line 7 (visible_lines[2]).
+        p.links.push(RichTextLink {
+            line: 7,
+            start_byte: 5,
+            end_byte: 10,
+            url: "https://example.com".to_string(),
+        });
+        // Add a link on hidden line 2 (above scroll_top=5).
+        p.links.push(RichTextLink {
+            line: 2,
+            start_byte: 0,
+            end_byte: 4,
+            url: "off-screen".to_string(),
+        });
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            10.0,
+            100.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 1.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // Only the visible link gets a hit region.
+        assert_eq!(layout.link_hit_regions.len(), 1);
+        let (_, idx) = &layout.link_hit_regions[0];
+        assert_eq!(*idx, 0);
+    }
+
+    #[test]
+    fn text_selection_contains_single_and_multi_line() {
+        let single = TextSelection {
+            start_line: 3,
+            start_col: 5,
+            end_line: 3,
+            end_col: 10,
+        };
+        assert!(single.contains(3, 5));
+        assert!(single.contains(3, 9));
+        assert!(!single.contains(3, 10));
+        assert!(!single.contains(2, 5));
+        assert!(!single.contains(4, 5));
+
+        let multi = TextSelection {
+            start_line: 2,
+            start_col: 4,
+            end_line: 5,
+            end_col: 3,
+        };
+        assert!(!multi.contains(2, 3));
+        assert!(multi.contains(2, 4));
+        assert!(multi.contains(3, 0));
+        assert!(multi.contains(4, 100));
+        assert!(multi.contains(5, 0));
+        assert!(multi.contains(5, 2));
+        assert!(!multi.contains(5, 3));
+        assert!(!multi.contains(6, 0));
     }
 
     // ── Spinner + ProgressBar primitive tests (D6, #142) ──────────────
