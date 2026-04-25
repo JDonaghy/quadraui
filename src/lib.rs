@@ -1843,6 +1843,47 @@ mod tests {
     }
 
     #[test]
+    fn tooltip_layout_does_not_panic_when_wider_than_viewport() {
+        // Regression for #213: when content width exceeds viewport width
+        // the legacy clamp produced max < min and `f32::clamp` panicked.
+        // The fix pins the tooltip to the viewport edge.
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Very wide".to_string(),
+            placement: TooltipPlacement::Top,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
+        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+        // Content much wider than viewport (300 vs 100).
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(300.0, 16.0), 4.0);
+        // Pinned to viewport.x rather than panicking; bounds carries the
+        // requested size so the consumer can see the overflow.
+        assert_eq!(layout.bounds.x, 0.0);
+        assert_eq!(layout.bounds.width, 300.0);
+    }
+
+    #[test]
+    fn tooltip_layout_does_not_panic_when_taller_than_viewport() {
+        // Symmetric case for the y-axis.
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Very tall".to_string(),
+            placement: TooltipPlacement::Left,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
+        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(50.0, 500.0), 4.0);
+        assert_eq!(layout.bounds.y, 0.0);
+        assert_eq!(layout.bounds.height, 500.0);
+    }
+
+    #[test]
     fn tooltip_layout_hit_test() {
         let t = Tooltip {
             id: WidgetId::new("tip"),

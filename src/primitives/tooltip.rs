@@ -198,9 +198,18 @@ impl Tooltip {
                 if fits(ox, oy) {
                     (ox, oy, opposite)
                 } else {
-                    // Fall back to preferred, clamped to viewport.
-                    let cx = px.clamp(viewport.x, viewport.x + viewport.width - vw);
-                    let cy = py.clamp(viewport.y, viewport.y + viewport.height - vh);
+                    // Fall back to preferred, clamped to viewport. Guard
+                    // against `vw > viewport.width` / `vh > viewport.height`
+                    // — without `.max(viewport.x)` the clamp's max would be
+                    // less than its min and `f32::clamp` panics. When the
+                    // tooltip is too big to fit, pin it to the viewport
+                    // edge and let it overflow on the far side rather than
+                    // crash; the consumer is responsible for choosing a
+                    // sensible width if overflow is undesirable.
+                    let max_x = (viewport.x + viewport.width - vw).max(viewport.x);
+                    let max_y = (viewport.y + viewport.height - vh).max(viewport.y);
+                    let cx = px.clamp(viewport.x, max_x);
+                    let cy = py.clamp(viewport.y, max_y);
                     (cx, cy, self.placement)
                 }
             }
