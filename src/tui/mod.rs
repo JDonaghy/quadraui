@@ -27,6 +27,7 @@ mod list;
 mod palette;
 mod status_bar;
 mod tab_bar;
+mod text_display;
 mod tooltip;
 mod tree;
 
@@ -37,6 +38,7 @@ pub use list::draw_list;
 pub use palette::draw_palette;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR};
+pub use text_display::draw_text_display;
 pub use tooltip::draw_tooltip;
 pub use tree::draw_tree;
 
