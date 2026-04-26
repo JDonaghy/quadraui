@@ -85,11 +85,7 @@ pub async fn list_resources(kind: ResourceKind, namespace: &str) -> Result<Vec<R
             collect_items(list.items, |d| {
                 let st = d.status.as_ref();
                 let ready = st.and_then(|s| s.ready_replicas).unwrap_or(0);
-                let desired = d
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.replicas)
-                    .unwrap_or_default();
+                let desired = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or_default();
                 format!("{ready}/{desired}")
             })
         }
@@ -115,9 +111,7 @@ pub async fn list_resources(kind: ResourceKind, namespace: &str) -> Result<Vec<R
             let api: Api<Secret> = Api::namespaced(client, namespace);
             let list = api.list(&ListParams::default()).await?;
             collect_items(list.items, |s| {
-                s.type_
-                    .clone()
-                    .unwrap_or_else(|| "Opaque".to_string())
+                s.type_.clone().unwrap_or_else(|| "Opaque".to_string())
             })
         }
     }
@@ -137,9 +131,7 @@ where
     let mut rows: Vec<ResourceItem> = items
         .into_iter()
         .map(|obj| {
-            let name = obj
-                .meta_name()
-                .unwrap_or_else(|| "<no-name>".to_string());
+            let name = obj.meta_name().unwrap_or_else(|| "<no-name>".to_string());
             let age = obj
                 .meta_creation()
                 .map(|ts| format_age(now.signed_duration_since(ts.0)))

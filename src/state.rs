@@ -42,10 +42,7 @@ impl AppState {
         } else {
             namespaces
         };
-        let current_ns = namespaces
-            .iter()
-            .position(|n| n == "default")
-            .unwrap_or(0);
+        let current_ns = namespaces.iter().position(|n| n == "default").unwrap_or(0);
         Self {
             context,
             namespaces,

@@ -7,7 +7,8 @@
 //! convert as needed when drawing.
 
 use quadraui::{
-    Color, Decoration, ListItem, ListView, Rect, StatusBar, StatusBarSegment, StyledSpan,
+    Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, Decoration, ListItem, ListView,
+    Rect, StatusBar, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide, StyledSpan,
     StyledText, TextDisplay, TextDisplayLine, WidgetId,
 };
 
@@ -176,21 +177,27 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
     }
 }
 
-/// Build the bordered `ListView` primitive for an open picker. Items
-/// are filtered by the picker's current query before building, so
-/// the visible rows match what the user typed in. The `* ` prefix
-/// marks the row that's "current" in the app (the namespace or kind
-/// the app is on now).
-pub fn build_picker(picker: &Picker, current_orig_idx: Option<usize>) -> ListView {
+/// Build the [`ContextMenu`] primitive for an open picker. Items are
+/// filtered by the picker's current query, with a `* ` prefix marking
+/// the row that's "current" in the app (the namespace or kind the app
+/// is on now). Placement is `Above` so the menu pops up over its
+/// status-bar trigger like a real dropdown — the rasteriser auto-flips
+/// to `Below` if the viewport is too short above.
+///
+/// Item ids are `picker:{orig_idx}` so the click handler can decode
+/// which original index the user activated, even after query filtering
+/// reorders the visible rows.
+pub fn build_picker_menu(picker: &Picker, current_orig_idx: Option<usize>) -> ContextMenu {
     let visible = picker.visible_indices();
-    let items: Vec<ListItem> = visible
+    let items: Vec<ContextMenuItem> = visible
         .iter()
         .map(|&orig| {
             let name = &picker.items[orig];
             let is_current = current_orig_idx == Some(orig);
             let prefix = if is_current { "* " } else { "  " };
-            ListItem {
-                text: StyledText {
+            ContextMenuItem {
+                id: Some(WidgetId::new(format!("picker:{orig}"))),
+                label: StyledText {
                     spans: vec![StyledSpan {
                         text: format!("{prefix}{name}"),
                         fg: None,
@@ -200,46 +207,31 @@ pub fn build_picker(picker: &Picker, current_orig_idx: Option<usize>) -> ListVie
                         underline: false,
                     }],
                 },
-                icon: None,
                 detail: None,
-                decoration: Decoration::Normal,
+                disabled: false,
             }
         })
         .collect();
-    let title_text = if picker.query.is_empty() {
-        picker.title.clone()
-    } else {
-        format!("{}— {}", picker.title, picker.query)
-    };
-    ListView {
+    ContextMenu {
         id: WidgetId::new("picker"),
-        title: Some(StyledText {
-            spans: vec![StyledSpan {
-                text: title_text,
-                fg: Some(Color::rgb(160, 200, 240)),
-                bg: None,
-                bold: true,
-                italic: false,
-                underline: false,
-            }],
-        }),
         items,
         selected_idx: picker.selected,
-        scroll_offset: 0,
-        has_focus: true,
-        bordered: true,
+        bg: None,
+        placement: ContextMenuPlacement::Above,
     }
 }
 
-/// Compute the centered bounds of an open picker in the given viewport.
-/// Result is in the same f32 unit as the viewport (cells for TUI,
-/// pixels for GTK). Both backends call this so paint and click
-/// hit-test agree on geometry.
-///
-/// For TUI, `cell_unit` should be 1.0; for GTK, callers pass a
-/// `(char_width, line_height)` pair so the picker still displays at a
-/// readable size in pixels.
-pub fn picker_bounds(picker: &Picker, viewport: Rect, cell_w: f32, cell_h: f32) -> Rect {
+/// Decode a picker `ContextMenuHit::Item` id (e.g. `"picker:7"`) back
+/// to the original item index. Returns `None` for ids that aren't
+/// picker rows.
+pub fn decode_picker_hit_id(id: &str) -> Option<usize> {
+    id.strip_prefix("picker:").and_then(|s| s.parse().ok())
+}
+
+/// Width of the picker dropdown menu in the viewport's unit (cells for
+/// TUI, pixels for GTK). Sized to fit the longest label + 4 cells of
+/// breathing room (matching the old `picker_bounds` heuristic).
+pub fn picker_menu_width(picker: &Picker, viewport: Rect, cell_w: f32) -> f32 {
     let max_label = picker
         .items
         .iter()
@@ -247,17 +239,50 @@ pub fn picker_bounds(picker: &Picker, viewport: Rect, cell_w: f32, cell_h: f32) 
         .max()
         .unwrap_or(20)
         .max(20);
-    // 4 cells of breathing room: 2 borders + 2 padding.
+    // 4 cells: 2 borders + 2 padding.
     let w_cells = (max_label + 4) as f32;
-    let w_px = (w_cells * cell_w).min(viewport.width - 4.0 * cell_w);
-    // +2 rows for top/bottom border.
-    let h_rows = (picker.items.len() as f32 + 2.0)
-        .min((viewport.height - 4.0 * cell_h) / cell_h)
-        .max(3.0);
-    let h_px = h_rows * cell_h;
-    let x = viewport.x + (viewport.width - w_px) / 2.0;
-    let y = viewport.y + (viewport.height - h_px) / 2.0;
-    Rect::new(x, y, w_px, h_px)
+    (w_cells * cell_w).min(viewport.width - 4.0 * cell_w)
+}
+
+/// Anchor rect for the open picker — the status-bar segment that
+/// triggered it. Returns coordinates in the viewport's unit (cells for
+/// TUI, pixels for GTK), assuming the status bar sits at the bottom
+/// row of `viewport` with height `cell_h`.
+///
+/// Returns `None` if no picker is open or the status-bar segment
+/// couldn't be located (shouldn't happen — `build_status_bar` always
+/// emits the namespace and kind segments).
+pub fn picker_anchor(state: &AppState, viewport: Rect, cell_w: f32, cell_h: f32) -> Option<Rect> {
+    let purpose = state.picker.as_ref()?.purpose;
+    let target = match purpose {
+        PickerPurpose::Namespace => "status:namespace",
+        PickerPurpose::ResourceKind => "status:kind",
+    };
+    let bar = build_status_bar(state);
+    let bar_y = viewport.y + viewport.height - cell_h;
+    let layout = bar.layout(viewport.width, cell_h, 2.0 * cell_w, |seg| {
+        StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cell_w)
+    });
+    for vis in &layout.visible_segments {
+        let seg = match vis.side {
+            StatusSegmentSide::Left => &bar.left_segments[vis.segment_idx],
+            StatusSegmentSide::Right => &bar.right_segments[vis.segment_idx],
+        };
+        if seg
+            .action_id
+            .as_ref()
+            .map(|id| id.as_str() == target)
+            .unwrap_or(false)
+        {
+            return Some(Rect::new(
+                vis.bounds.x + viewport.x,
+                bar_y,
+                vis.bounds.width,
+                cell_h,
+            ));
+        }
+    }
+    None
 }
 
 /// Pre-selected row index when opening a picker — so the `* ` marker

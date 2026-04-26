@@ -34,8 +34,8 @@ pub use action::{apply_action, refresh_resources, Action};
 pub use k8s::{current_context_name, list_namespaces, list_resources, ResourceItem};
 pub use state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
 pub use view::{
-    build_list, build_picker, build_status_bar, build_yaml_view, picker_bounds,
-    picker_current_index, status_color,
+    build_list, build_picker_menu, build_status_bar, build_yaml_view, decode_picker_hit_id,
+    picker_anchor, picker_current_index, picker_menu_width, status_color,
 };
 
 /// Install the rustls crypto provider — must be called once per
