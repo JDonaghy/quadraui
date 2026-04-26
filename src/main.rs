@@ -277,18 +277,7 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
     draw_list(cr, &layout, 0.0, 0.0, list_w, body_h, line_h, &list);
 
     // ── YAML pane ──────────────────────────────────────────────
-    draw_yaml(
-        cr,
-        &layout,
-        list_w,
-        0.0,
-        w - list_w,
-        body_h,
-        line_h,
-        state.yaml_for_selected(),
-        state.yaml_scroll,
-        state.focus == Focus::Yaml,
-    );
+    draw_yaml(cr, &layout, list_w, 0.0, w - list_w, body_h, line_h, state);
 
     // ── Status bar ─────────────────────────────────────────────
     let bar = build_status_bar(state);
@@ -314,7 +303,6 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn draw_list(
     cr: &Cairo,
     layout: &pango::Layout,
@@ -328,6 +316,9 @@ fn draw_list(
     quadraui::gtk::draw_list(cr, layout, x, y, w, h, list, &theme(), line_h, false);
 }
 
+/// Draw the YAML pane: bespoke title row + delegated `TextDisplay`
+/// body. Title stays in the binary because it depends on focus state
+/// and shouldn't scroll with the body.
 #[allow(clippy::too_many_arguments)]
 fn draw_yaml(
     cr: &Cairo,
@@ -337,16 +328,15 @@ fn draw_yaml(
     w: f64,
     h: f64,
     line_h: f64,
-    yaml: &str,
-    scroll: usize,
-    has_focus: bool,
+    state: &AppState,
 ) {
-    // Pane background.
-    set_color(cr, Color::rgb(16, 18, 24));
-    cr.rectangle(x, y, w, h);
-    let _ = cr.fill();
+    let pane_bg = Color::rgb(16, 18, 24);
+    let has_focus = state.focus == Focus::Yaml;
 
-    // Title row.
+    // Title row: bespoke (focus-dependent string, doesn't scroll).
+    set_color(cr, pane_bg);
+    cr.rectangle(x, y, w, line_h);
+    let _ = cr.fill();
     let title_color = if has_focus {
         Color::rgb(255, 220, 140)
     } else {
@@ -357,36 +347,23 @@ fn draw_yaml(
     cr.move_to(x + 6.0, y);
     pangocairo::functions::show_layout(cr, layout);
 
-    // YAML body — naive key:value heuristic.
-    let mut row_y = y + line_h;
-    for line in yaml.lines().skip(scroll) {
-        if row_y + line_h > y + h {
-            break;
-        }
-        let trimmed = line.trim_start();
-        if let Some(colon) = trimmed.find(':') {
-            let indent = line.len() - trimmed.len();
-            let key = &line[..indent + colon];
-            let value = &line[indent + colon..];
-            // Key in blue.
-            set_color(cr, Color::rgb(140, 200, 240));
-            layout.set_text(key);
-            cr.move_to(x + 6.0, row_y);
-            pangocairo::functions::show_layout(cr, layout);
-            let (key_w, _) = layout.pixel_size();
-            // Value in default fg.
-            set_color(cr, Color::rgb(200, 200, 200));
-            layout.set_text(value);
-            cr.move_to(x + 6.0 + key_w as f64, row_y);
-            pangocairo::functions::show_layout(cr, layout);
-        } else {
-            set_color(cr, Color::rgb(200, 200, 200));
-            layout.set_text(line);
-            cr.move_to(x + 6.0, row_y);
-            pangocairo::functions::show_layout(cr, layout);
-        }
-        row_y += line_h;
-    }
+    // Body: delegated.
+    let display = kubeui_core::build_yaml_view(state);
+    let yaml_theme = quadraui::Theme {
+        background: pane_bg,
+        ..theme()
+    };
+    quadraui::gtk::draw_text_display(
+        cr,
+        layout,
+        x + 6.0,
+        y + line_h,
+        w - 6.0,
+        h - line_h,
+        &display,
+        &yaml_theme,
+        line_h,
+    );
 }
 
 /// Theme used for the public quadraui rasterisers. kubeui's palette is
