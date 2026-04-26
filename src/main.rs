@@ -23,7 +23,7 @@ use kubeui_core::{
     apply_action, build_list, build_picker, build_status_bar, picker_bounds, picker_current_index,
     Action, AppState, Focus,
 };
-use quadraui::{Color, ListView, StyledText};
+use quadraui::{Color, ListView};
 
 const APP_ID: &str = "io.github.jdonaghy.kubeui-gtk";
 const UI_FONT: &str = "Monospace 11";
@@ -314,6 +314,7 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn draw_list(
     cr: &Cairo,
     layout: &pango::Layout,
@@ -324,45 +325,7 @@ fn draw_list(
     line_h: f64,
     list: &ListView,
 ) {
-    // Pane background (slightly darker than window bg).
-    set_color(cr, Color::rgb(22, 25, 35));
-    cr.rectangle(x, y, w, h);
-    let _ = cr.fill();
-
-    // Title row.
-    let mut row_y = y;
-    if let Some(title) = list.title.as_ref() {
-        draw_styled_text(cr, layout, x + 6.0, row_y, title, Color::rgb(160, 200, 240));
-        row_y += line_h;
-    }
-
-    // Items.
-    for (i, item) in list.items.iter().enumerate() {
-        if row_y + line_h > y + h {
-            break;
-        }
-        let is_sel = i == list.selected_idx;
-        if is_sel {
-            set_color(cr, Color::rgb(50, 60, 90));
-            cr.rectangle(x, row_y, w, line_h);
-            let _ = cr.fill();
-        }
-        draw_styled_text(
-            cr,
-            layout,
-            x + 6.0,
-            row_y,
-            &item.text,
-            Color::rgb(220, 220, 220),
-        );
-        // Right-aligned detail.
-        if let Some(detail) = item.detail.as_ref() {
-            let detail_w = measure_styled(layout, detail);
-            let dx = (x + w) - detail_w - 8.0;
-            draw_styled_text(cr, layout, dx, row_y, detail, Color::rgb(180, 180, 180));
-        }
-        row_y += line_h;
-    }
+    quadraui::gtk::draw_list(cr, layout, x, y, w, h, list, &theme(), line_h, false);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -427,12 +390,22 @@ fn draw_yaml(
 }
 
 /// Theme used for the public quadraui rasterisers. kubeui's palette is
-/// hardcoded; the only field consumed today is the fallback fill colour
-/// `quadraui::gtk::draw_status_bar` uses when its bar has no segments.
+/// hardcoded; this maps the relevant subset to `quadraui::Theme` fields
+/// so the public `draw_*` rasterisers paint with kubeui's colours.
 fn theme() -> quadraui::Theme {
     quadraui::Theme {
-        background: Color::rgb(40, 40, 60),
+        // List/pane background.
+        background: Color::rgb(22, 25, 35),
         foreground: Color::rgb(220, 220, 220),
+        surface_fg: Color::rgb(220, 220, 220),
+        // Selected row in the resource list.
+        selected_bg: Color::rgb(50, 60, 90),
+        // Right-aligned detail / dim text.
+        muted_fg: Color::rgb(180, 180, 180),
+        // Header (kubeui list title row); no flat strip in current UI but
+        // align with the muted blue title that the legacy renderer used.
+        header_bg: Color::rgb(22, 25, 35),
+        header_fg: Color::rgb(160, 200, 240),
         ..quadraui::Theme::default()
     }
 }
@@ -500,32 +473,5 @@ fn draw_picker(
             pangocairo::functions::show_layout(cr, layout);
         }
         row_y += line_h;
-    }
-}
-
-// ─── Pango helpers ──────────────────────────────────────────────────────────
-
-fn measure_styled(layout: &pango::Layout, st: &StyledText) -> f64 {
-    let total: String = st.spans.iter().map(|s| s.text.as_str()).collect();
-    layout.set_text(&total);
-    layout.pixel_size().0 as f64
-}
-
-fn draw_styled_text(
-    cr: &Cairo,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    st: &StyledText,
-    default_fg: Color,
-) {
-    let mut cx = x;
-    for span in &st.spans {
-        let fg = span.fg.unwrap_or(default_fg);
-        set_color(cr, fg);
-        layout.set_text(&span.text);
-        cr.move_to(cx, y);
-        pangocairo::functions::show_layout(cr, layout);
-        cx += layout.pixel_size().0 as f64;
     }
 }
