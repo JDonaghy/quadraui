@@ -379,7 +379,7 @@ mod tests {
         // get the column index in cells (NOT byte offsets — `▶` takes 1
         // cell but 3 bytes when collected into a String).
         let f_col = (0..20)
-            .find(|&x| buf[(x, 3u16)].symbol().chars().next() == Some('f'))
+            .find(|&x| buf[(x, 3u16)].symbol().starts_with('f'))
             .expect("expected 'f' painted in row 3");
         let fg0 = buf[(f_col, 3u16)].fg;
         assert_eq!(fg0, ratatui::style::Color::Rgb(99, 99, 99));

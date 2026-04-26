@@ -31,6 +31,48 @@ pub struct ContextMenu {
     /// Background colour override. `None` = theme default.
     #[serde(default)]
     pub bg: Option<Color>,
+    /// How to position the menu relative to the anchor point. Default
+    /// `AnchorPoint` (right-click conventions: anchor IS the click
+    /// position; menu shifts up/left to fit but doesn't flip
+    /// directionality). `Below` / `Above` enable dropdown-style
+    /// auto-flip placement.
+    #[serde(default)]
+    pub placement: ContextMenuPlacement,
+}
+
+/// Preferred placement of a `ContextMenu` relative to its anchor.
+///
+/// `AnchorPoint` is the right-click default: the anchor IS the cursor
+/// position. The menu's top-left corner aligns with the anchor; the
+/// menu shifts up/left to keep the box inside the viewport but never
+/// flips directionality.
+///
+/// `Below` and `Above` enable dropdown-style placement: the anchor is
+/// the trigger element (e.g. a button), and the menu opens above or
+/// below it. The layout auto-flips to the opposite side if the
+/// preferred direction would overflow the viewport — same behaviour as
+/// [`super::tooltip::TooltipPlacement`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ContextMenuPlacement {
+    /// Right-click default: anchor is the cursor position. No flipping.
+    #[default]
+    AnchorPoint,
+    /// Open below the anchor (e.g. dropdown attached to a top-row
+    /// button). Auto-flips to above if it would overflow the bottom.
+    Below,
+    /// Open above the anchor (e.g. dropdown attached to a bottom-row
+    /// button — kubeui's namespace picker). Auto-flips to below if it
+    /// would overflow the top.
+    Above,
+}
+
+/// Resolved placement after the layout decided whether to flip the
+/// preferred [`ContextMenuPlacement`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedContextMenuPlacement {
+    AnchorPoint,
+    Below,
+    Above,
 }
 
 /// One entry in a `ContextMenu`.
@@ -120,6 +162,11 @@ pub struct ContextMenuLayout {
     pub bounds: Rect,
     pub visible_items: Vec<VisibleContextMenuItem>,
     pub hit_regions: Vec<(Rect, ContextMenuHit)>,
+    /// Placement actually used. For `AnchorPoint` always
+    /// `ResolvedContextMenuPlacement::AnchorPoint`; for `Below` / `Above`
+    /// reports whether the layout flipped to the opposite direction
+    /// when the preferred side would have overflowed.
+    pub resolved_placement: ResolvedContextMenuPlacement,
 }
 
 impl ContextMenuLayout {
@@ -173,23 +220,106 @@ impl ContextMenu {
     where
         F: Fn(usize) -> ContextMenuItemMeasure,
     {
+        self.layout_at(
+            Rect::new(anchor_x, anchor_y, 0.0, 0.0),
+            viewport,
+            menu_width,
+            measure_item,
+        )
+    }
+
+    /// Anchor-rect variant of [`Self::layout`]. The anchor is a
+    /// rectangle (typically the trigger button's bounds) instead of a
+    /// single point — required for `Below` / `Above` placement so the
+    /// menu can sit flush against the trigger's bottom or top edge.
+    /// For `AnchorPoint` placement only `anchor.x` and `anchor.y` are
+    /// used (top-left of the rect).
+    pub fn layout_at<F>(
+        &self,
+        anchor: Rect,
+        viewport: Rect,
+        menu_width: f32,
+        measure_item: F,
+    ) -> ContextMenuLayout
+    where
+        F: Fn(usize) -> ContextMenuItemMeasure,
+    {
         let measures: Vec<ContextMenuItemMeasure> =
             (0..self.items.len()).map(&measure_item).collect();
         let total_height: f32 = measures.iter().map(|m| m.height).sum();
 
-        // Position the menu.
-        let x = if anchor_x + menu_width > viewport.x + viewport.width {
+        // Horizontal positioning (same for all placement modes): align
+        // the menu's left edge with the anchor's left edge, but shift
+        // left if the menu would overflow the viewport's right side.
+        let x = if anchor.x + menu_width > viewport.x + viewport.width {
             (viewport.x + viewport.width - menu_width).max(viewport.x)
         } else {
-            anchor_x.max(viewport.x)
-        };
-        let y = if anchor_y + total_height > viewport.y + viewport.height {
-            (viewport.y + viewport.height - total_height).max(viewport.y)
-        } else {
-            anchor_y.max(viewport.y)
+            anchor.x.max(viewport.x)
         };
 
-        let clipped_height = total_height.min(viewport.y + viewport.height - y);
+        // Vertical positioning depends on placement mode.
+        let viewport_top = viewport.y;
+        let viewport_bottom = viewport.y + viewport.height;
+        let (y, resolved_placement) = match self.placement {
+            ContextMenuPlacement::AnchorPoint => {
+                // Right-click default: anchor IS the click point;
+                // menu top-left aligns with anchor; shift up to fit if
+                // the menu would overflow the viewport bottom.
+                let y_pref = anchor.y;
+                let y = if y_pref + total_height > viewport_bottom {
+                    (viewport_bottom - total_height).max(viewport_top)
+                } else {
+                    y_pref.max(viewport_top)
+                };
+                (y, ResolvedContextMenuPlacement::AnchorPoint)
+            }
+            ContextMenuPlacement::Below => {
+                // Dropdown opens below the trigger. Menu's top is at
+                // the trigger's bottom edge. Auto-flip to Above if it
+                // would overflow the viewport bottom AND there's more
+                // room above than below.
+                let space_below = viewport_bottom - (anchor.y + anchor.height);
+                let space_above = anchor.y - viewport_top;
+                if total_height > space_below && space_above > space_below {
+                    // Flip to Above.
+                    let y_pref = anchor.y - total_height;
+                    let y = y_pref.max(viewport_top);
+                    (y, ResolvedContextMenuPlacement::Above)
+                } else {
+                    let y_pref = anchor.y + anchor.height;
+                    let y = if y_pref + total_height > viewport_bottom {
+                        (viewport_bottom - total_height).max(viewport_top)
+                    } else {
+                        y_pref.max(viewport_top)
+                    };
+                    (y, ResolvedContextMenuPlacement::Below)
+                }
+            }
+            ContextMenuPlacement::Above => {
+                // Dropdown opens above the trigger (kubeui's status-bar
+                // segment). Menu's bottom is at the trigger's top edge.
+                // Auto-flip to Below if it would overflow the viewport
+                // top AND there's more room below than above.
+                let space_below = viewport_bottom - (anchor.y + anchor.height);
+                let space_above = anchor.y - viewport_top;
+                if total_height > space_above && space_below > space_above {
+                    // Flip to Below.
+                    let y_pref = anchor.y + anchor.height;
+                    let y = if y_pref + total_height > viewport_bottom {
+                        (viewport_bottom - total_height).max(viewport_top)
+                    } else {
+                        y_pref.max(viewport_top)
+                    };
+                    (y, ResolvedContextMenuPlacement::Below)
+                } else {
+                    let y_pref = anchor.y - total_height;
+                    let y = y_pref.max(viewport_top);
+                    (y, ResolvedContextMenuPlacement::Above)
+                }
+            }
+        };
+
+        let clipped_height = total_height.min(viewport_bottom - y);
         let bounds = Rect::new(x, y, menu_width, clipped_height);
 
         let mut visible_items: Vec<VisibleContextMenuItem> = Vec::new();
@@ -229,6 +359,7 @@ impl ContextMenu {
             bounds,
             visible_items,
             hit_regions,
+            resolved_placement,
         }
     }
 }

@@ -160,6 +160,7 @@ mod tests {
             ],
             selected_idx: 0,
             bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
         }
     }
 
