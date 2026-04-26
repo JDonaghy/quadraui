@@ -27,7 +27,7 @@ use kubeui_core::{
     apply_action, build_list, build_picker, build_status_bar, picker_bounds, picker_current_index,
     Action, AppState, Focus,
 };
-use quadraui::{Color, ListView, StatusBar, StyledText};
+use quadraui::{Color, ListView, StyledText};
 
 // ─── Backend (primitive → ratatui buffer) ───────────────────────────────────
 
@@ -73,12 +73,9 @@ fn draw_list(buf: &mut Buffer, area: Rect, list: &ListView) {
     }
 
     let title_height: f32 = if list.title.is_some() { 1.0 } else { 0.0 };
-    let layout = list.layout(
-        area.width as f32,
-        area.height as f32,
-        title_height,
-        |_| ListItemMeasure::new(1.0),
-    );
+    let layout = list.layout(area.width as f32, area.height as f32, title_height, |_| {
+        ListItemMeasure::new(1.0)
+    });
 
     if let (Some(title), Some(tb)) = (list.title.as_ref(), layout.title_bounds) {
         put_styled(
@@ -94,11 +91,7 @@ fn draw_list(buf: &mut Buffer, area: Rect, list: &ListView) {
     for vis in &layout.visible_items {
         let item = &list.items[vis.item_idx];
         let is_sel = vis.item_idx == list.selected_idx;
-        let row_bg = if is_sel {
-            Color::rgb(50, 60, 90)
-        } else {
-            bg
-        };
+        let row_bg = if is_sel { Color::rgb(50, 60, 90) } else { bg };
         let row_y = area.y + vis.bounds.y as u16;
         for x in area.x..area.x + area.width {
             if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, row_y)) {
@@ -166,8 +159,8 @@ fn draw_yaml(buf: &mut Buffer, area: Rect, yaml: &str, scroll: usize, has_focus:
             put_text(buf, inner.x, row_y, key, key_fg, bg, false);
             let value_x = inner.x.saturating_add(key.chars().count() as u16);
             let value = &line[indent + colon..];
-            let max_w = (inner.width as usize)
-                .saturating_sub(value_x.saturating_sub(inner.x) as usize);
+            let max_w =
+                (inner.width as usize).saturating_sub(value_x.saturating_sub(inner.x) as usize);
             let value_clip: String = value.chars().take(max_w).collect();
             put_text(buf, value_x, row_y, &value_clip, fg, bg, false);
         } else {
@@ -178,30 +171,13 @@ fn draw_yaml(buf: &mut Buffer, area: Rect, yaml: &str, scroll: usize, has_focus:
     }
 }
 
-fn draw_status_bar(buf: &mut Buffer, area: Rect, bar: &StatusBar) {
-    let bar_bg = Color::rgb(40, 40, 60);
-    for x in area.x..area.x + area.width {
-        if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, area.y)) {
-            cell.set_char(' ');
-            cell.set_style(Style::default().bg(rat_color(bar_bg)));
-        }
-    }
-    let mut x = area.x;
-    for seg in &bar.left_segments {
-        let w = seg.text.chars().count() as u16;
-        put_text(buf, x, area.y, &seg.text, seg.fg, seg.bg, seg.bold);
-        x = x.saturating_add(w);
-    }
-    let right_w: u16 = bar
-        .right_segments
-        .iter()
-        .map(|s| s.text.chars().count() as u16)
-        .sum();
-    let mut rx = area.x + area.width.saturating_sub(right_w);
-    for seg in &bar.right_segments {
-        let w = seg.text.chars().count() as u16;
-        put_text(buf, rx, area.y, &seg.text, seg.fg, seg.bg, seg.bold);
-        rx = rx.saturating_add(w);
+/// Theme used for the public quadraui rasterisers. kubeui's palette is
+/// hardcoded; the relevant fields are the fallback fill colours each
+/// rasteriser falls back on when its primitive has no opinion.
+fn theme() -> quadraui::Theme {
+    quadraui::Theme {
+        background: Color::rgb(40, 40, 60),
+        foreground: Color::rgb(220, 220, 220),
     }
 }
 
@@ -242,9 +218,7 @@ fn draw_picker(buf: &mut Buffer, area: Rect, list: &ListView) {
             c.set_char(ch_top);
             c.set_style(style_b);
         }
-        if let Some(c) =
-            buf.cell_mut(ratatui::layout::Position::new(area.x + x, area.y + h - 1))
-        {
+        if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(area.x + x, area.y + h - 1)) {
             c.set_char(ch_bot);
             c.set_style(style_b);
         }
@@ -254,9 +228,7 @@ fn draw_picker(buf: &mut Buffer, area: Rect, list: &ListView) {
             c.set_char('│');
             c.set_style(style_b);
         }
-        if let Some(c) =
-            buf.cell_mut(ratatui::layout::Position::new(area.x + w - 1, area.y + y))
-        {
+        if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(area.x + w - 1, area.y + y)) {
             c.set_char('│');
             c.set_style(style_b);
         }
@@ -433,10 +405,18 @@ fn run(
                 state.focus == Focus::Yaml,
             );
             let bar = build_status_bar(state);
-            draw_status_bar(frame.buffer_mut(), status_area, &bar);
+            let bar_layout = bar.layout(status_area.width as f32, 1.0, 2.0, |seg| {
+                quadraui::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+            });
+            quadraui::tui::draw_status_bar(
+                frame.buffer_mut(),
+                status_area,
+                &bar,
+                &bar_layout,
+                &theme(),
+            );
             if let Some(picker) = state.picker.as_ref() {
-                let viewport =
-                    quadraui::Rect::new(0.0, 0.0, area.width as f32, area.height as f32);
+                let viewport = quadraui::Rect::new(0.0, 0.0, area.width as f32, area.height as f32);
                 let pb = picker_bounds(picker, viewport, 1.0, 1.0);
                 let pb_rect = Rect {
                     x: pb.x as u16,
@@ -453,7 +433,10 @@ fn run(
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }
-        let term_size = terminal.size().map(|s| (s.width, s.height)).unwrap_or((80, 24));
+        let term_size = terminal
+            .size()
+            .map(|s| (s.width, s.height))
+            .unwrap_or((80, 24));
         match event::read()? {
             Event::Key(key) => {
                 for action in key_to_actions(state, key.code) {

@@ -11,7 +11,7 @@ name = "kubeui"
 path = "src/main.rs"
 
 [dependencies]
-quadraui = { path = "../quadraui" }
+quadraui = { path = "../quadraui", features = ["tui"] }
 kubeui-core = { path = "../kubeui-core" }
 
 # Async runtime — owned here so the reducer's k8s `block_on` calls
