@@ -433,6 +433,7 @@ fn theme() -> quadraui::Theme {
     quadraui::Theme {
         background: Color::rgb(40, 40, 60),
         foreground: Color::rgb(220, 220, 220),
+        ..quadraui::Theme::default()
     }
 }
 
