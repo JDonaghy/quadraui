@@ -11,7 +11,7 @@ name = "kubeui-gtk"
 path = "src/main.rs"
 
 [dependencies]
-quadraui = { path = "../quadraui" }
+quadraui = { path = "../quadraui", features = ["gtk"] }
 kubeui-core = { path = "../kubeui-core" }
 
 # Same Tokio + anyhow as TUI binary; runtime is owned here so the

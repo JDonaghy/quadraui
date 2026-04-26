@@ -17,15 +17,13 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::pango;
 use gtk4::prelude::*;
-use gtk4::{
-    Application, ApplicationWindow, DrawingArea, EventControllerKey, GestureClick,
-};
+use gtk4::{Application, ApplicationWindow, DrawingArea, EventControllerKey, GestureClick};
 
 use kubeui_core::{
-    apply_action, build_list, build_picker, build_status_bar, picker_bounds,
-    picker_current_index, Action, AppState, Focus,
+    apply_action, build_list, build_picker, build_status_bar, picker_bounds, picker_current_index,
+    Action, AppState, Focus,
 };
-use quadraui::{Color, ListView, StatusBar, StyledText};
+use quadraui::{Color, ListView, StyledText};
 
 const APP_ID: &str = "io.github.jdonaghy.kubeui-gtk";
 const UI_FONT: &str = "Monospace 11";
@@ -134,12 +132,8 @@ fn build_ui(app: &Application, state: Rc<RefCell<AppState>>, rt: Rc<tokio::runti
             let actions = {
                 let s = state.borrow();
                 let widget = da.upcast_ref::<gtk4::Widget>();
-                let viewport = quadraui::Rect::new(
-                    0.0,
-                    0.0,
-                    widget.width() as f32,
-                    widget.height() as f32,
-                );
+                let viewport =
+                    quadraui::Rect::new(0.0, 0.0, widget.width() as f32, widget.height() as f32);
                 let metrics = font_metrics(&da);
                 click_to_actions(&s, viewport, metrics, x, y)
             };
@@ -214,8 +208,7 @@ fn click_to_actions(
         let pb = picker_bounds(picker, viewport, metrics.char_w, metrics.line_h);
         let xf = x as f32;
         let yf = y as f32;
-        let inside =
-            xf >= pb.x && xf < pb.x + pb.width && yf >= pb.y && yf < pb.y + pb.height;
+        let inside = xf >= pb.x && xf < pb.x + pb.width && yf >= pb.y && yf < pb.y + pb.height;
         if !inside {
             return vec![Action::PickerCancel];
         }
@@ -299,7 +292,7 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
 
     // ── Status bar ─────────────────────────────────────────────
     let bar = build_status_bar(state);
-    draw_status_bar(cr, &layout, 0.0, h - line_h, w, line_h, &bar);
+    quadraui::gtk::draw_status_bar(cr, &layout, 0.0, h - line_h, w, line_h, &bar, &theme());
 
     // ── Picker overlay (optional) ──────────────────────────────
     if let Some(picker) = state.picker.as_ref() {
@@ -354,7 +347,14 @@ fn draw_list(
             cr.rectangle(x, row_y, w, line_h);
             let _ = cr.fill();
         }
-        draw_styled_text(cr, layout, x + 6.0, row_y, &item.text, Color::rgb(220, 220, 220));
+        draw_styled_text(
+            cr,
+            layout,
+            x + 6.0,
+            row_y,
+            &item.text,
+            Color::rgb(220, 220, 220),
+        );
         // Right-aligned detail.
         if let Some(detail) = item.detail.as_ref() {
             let detail_w = measure_styled(layout, detail);
@@ -426,52 +426,13 @@ fn draw_yaml(
     }
 }
 
-fn draw_status_bar(
-    cr: &Cairo,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    bar: &StatusBar,
-) {
-    set_color(cr, Color::rgb(40, 40, 60));
-    cr.rectangle(x, y, w, h);
-    let _ = cr.fill();
-
-    // Left segments left-aligned.
-    let mut cx = x;
-    for seg in &bar.left_segments {
-        set_color(cr, seg.bg);
-        layout.set_text(&seg.text);
-        let (sw, _) = layout.pixel_size();
-        cr.rectangle(cx, y, sw as f64, h);
-        let _ = cr.fill();
-        set_color(cr, seg.fg);
-        cr.move_to(cx, y);
-        pangocairo::functions::show_layout(cr, layout);
-        cx += sw as f64;
-    }
-
-    // Right segments right-aligned.
-    let mut total_right_w = 0.0;
-    let mut right_widths = Vec::with_capacity(bar.right_segments.len());
-    for seg in &bar.right_segments {
-        layout.set_text(&seg.text);
-        let (sw, _) = layout.pixel_size();
-        right_widths.push(sw as f64);
-        total_right_w += sw as f64;
-    }
-    let mut rx = x + w - total_right_w;
-    for (seg, sw) in bar.right_segments.iter().zip(right_widths) {
-        set_color(cr, seg.bg);
-        cr.rectangle(rx, y, sw, h);
-        let _ = cr.fill();
-        set_color(cr, seg.fg);
-        layout.set_text(&seg.text);
-        cr.move_to(rx, y);
-        pangocairo::functions::show_layout(cr, layout);
-        rx += sw;
+/// Theme used for the public quadraui rasterisers. kubeui's palette is
+/// hardcoded; the only field consumed today is the fallback fill colour
+/// `quadraui::gtk::draw_status_bar` uses when its bar has no segments.
+fn theme() -> quadraui::Theme {
+    quadraui::Theme {
+        background: Color::rgb(40, 40, 60),
+        foreground: Color::rgb(220, 220, 220),
     }
 }
 
