@@ -250,11 +250,7 @@ impl RichTextPopupLayout {
         }
         // Link?
         for (rect, idx) in &self.link_hit_regions {
-            if x >= rect.x
-                && x < rect.x + rect.width
-                && y >= rect.y
-                && y < rect.y + rect.height
-            {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
                 return RichTextPopupHit::Link(*idx);
             }
         }

@@ -308,9 +308,7 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            UiEvent::MouseDown {
-                widget, button, ..
-            } => {
+            UiEvent::MouseDown { widget, button, .. } => {
                 assert_eq!(widget.as_ref().unwrap(), &id("palette"));
                 assert_eq!(*button, MouseButton::Left);
             }
