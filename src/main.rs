@@ -20,14 +20,13 @@ use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, DrawingArea, EventControllerKey, GestureClick};
 
 use kubeui_core::{
-    apply_action, build_list, build_picker, build_status_bar, picker_bounds, picker_current_index,
-    Action, AppState, Focus,
+    apply_action, build_list, build_picker_menu, build_status_bar, decode_picker_hit_id,
+    picker_anchor, picker_current_index, picker_menu_width, Action, AppState, Focus,
 };
-use quadraui::{Color, ListView};
+use quadraui::{Color, ContextMenuHit, ContextMenuItemMeasure, ListView};
 
 const APP_ID: &str = "io.github.jdonaghy.kubeui-gtk";
 const UI_FONT: &str = "Monospace 11";
-const PICKER_FONT: &str = "Monospace 12";
 
 fn main() -> anyhow::Result<()> {
     kubeui_core::install_crypto_provider()?;
@@ -203,22 +202,30 @@ fn click_to_actions(
     x: f64,
     y: f64,
 ) -> Vec<Action> {
-    // Picker (modal) takes precedence.
+    // Picker (dropdown) takes precedence. Hit-test the live menu layout
+    // so click resolution stays in lock-step with paint.
     if let Some(picker) = state.picker.as_ref() {
-        let pb = picker_bounds(picker, viewport, metrics.char_w, metrics.line_h);
-        let xf = x as f32;
-        let yf = y as f32;
-        let inside = xf >= pb.x && xf < pb.x + pb.width && yf >= pb.y && yf < pb.y + pb.height;
-        if !inside {
+        let Some(anchor) = picker_anchor(state, viewport, metrics.char_w, metrics.line_h) else {
             return vec![Action::PickerCancel];
+        };
+        let menu = build_picker_menu(picker, picker_current_index(state, picker.purpose));
+        let menu_w = picker_menu_width(picker, viewport, metrics.char_w);
+        let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+            ContextMenuItemMeasure::new(metrics.line_h)
+        });
+        match menu_layout.hit_test(x as f32, y as f32) {
+            ContextMenuHit::Item(id) => {
+                if let Some(orig) = decode_picker_hit_id(id.as_str()) {
+                    let visible = picker.visible_indices();
+                    if let Some(visible_idx) = visible.iter().position(|&o| o == orig) {
+                        return vec![Action::PickerSelectVisible(visible_idx)];
+                    }
+                }
+                return vec![];
+            }
+            ContextMenuHit::Inert => return vec![],
+            ContextMenuHit::Empty => return vec![Action::PickerCancel],
         }
-        // Title overlays row 0; items live on rows 1..h-1 of line height.
-        let inner_y = (yf - pb.y) as f64;
-        if inner_y > metrics.line_h as f64 && inner_y < pb.height as f64 - metrics.line_h as f64 {
-            let row = ((inner_y - metrics.line_h as f64) / metrics.line_h as f64) as usize;
-            return vec![Action::PickerSelectVisible(row)];
-        }
-        return vec![];
     }
 
     // Status bar lives on the last `line_h` row.
@@ -286,19 +293,15 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
     // ── Picker overlay (optional) ──────────────────────────────
     if let Some(picker) = state.picker.as_ref() {
         let viewport = quadraui::Rect::new(0.0, 0.0, w as f32, h as f32);
-        let pb = picker_bounds(picker, viewport, metrics.char_w, metrics.line_h);
-        let current = picker_current_index(state, picker.purpose);
-        let view = build_picker(picker, current);
-        draw_picker(
-            cr,
-            &layout,
-            pb.x as f64,
-            pb.y as f64,
-            pb.width as f64,
-            pb.height as f64,
-            line_h,
-            &view,
-        );
+        if let Some(anchor) = picker_anchor(state, viewport, metrics.char_w, metrics.line_h) {
+            let current = picker_current_index(state, picker.purpose);
+            let menu = build_picker_menu(picker, current);
+            let menu_w = picker_menu_width(picker, viewport, metrics.char_w);
+            let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+                ContextMenuItemMeasure::new(metrics.line_h)
+            });
+            quadraui::gtk::draw_context_menu(cr, &layout, &menu, &menu_layout, line_h, &theme());
+        }
     }
 }
 
@@ -384,71 +387,5 @@ fn theme() -> quadraui::Theme {
         header_bg: Color::rgb(22, 25, 35),
         header_fg: Color::rgb(160, 200, 240),
         ..quadraui::Theme::default()
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_picker(
-    cr: &Cairo,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    line_h: f64,
-    list: &ListView,
-) {
-    // Backdrop (modal-ish — slight inset shadow effect via darker bg).
-    set_color(cr, Color::rgb(28, 32, 44));
-    cr.rectangle(x, y, w, h);
-    let _ = cr.fill();
-
-    // Border (single line).
-    set_color(cr, Color::rgb(120, 160, 200));
-    cr.set_line_width(1.0);
-    cr.rectangle(x + 0.5, y + 0.5, w - 1.0, h - 1.0);
-    let _ = cr.stroke();
-
-    // Title overlay on top border.
-    if let Some(title) = list.title.as_ref() {
-        if let Some(span) = title.spans.first() {
-            // Background under the title text so it cuts the border.
-            layout.set_text(&format!(" {} ", span.text));
-            let (tw, _) = layout.pixel_size();
-            set_color(cr, Color::rgb(28, 32, 44));
-            cr.rectangle(x + 8.0, y - 1.0, tw as f64, line_h);
-            let _ = cr.fill();
-            set_color(cr, Color::rgb(120, 160, 200));
-            cr.move_to(x + 8.0, y);
-            // Picker title slightly larger for visual hierarchy.
-            let bigger = pango::FontDescription::from_string(PICKER_FONT);
-            layout.set_font_description(Some(&bigger));
-            layout.set_text(&format!(" {} ", span.text));
-            pangocairo::functions::show_layout(cr, layout);
-            // Restore default font.
-            let normal = pango::FontDescription::from_string(UI_FONT);
-            layout.set_font_description(Some(&normal));
-        }
-    }
-
-    // Items.
-    let mut row_y = y + line_h;
-    for (i, item) in list.items.iter().enumerate() {
-        if row_y + line_h > y + h - line_h {
-            break;
-        }
-        let is_sel = i == list.selected_idx;
-        if is_sel {
-            set_color(cr, Color::rgb(60, 80, 120));
-            cr.rectangle(x + 1.0, row_y, w - 2.0, line_h);
-            let _ = cr.fill();
-        }
-        if let Some(span) = item.text.spans.first() {
-            set_color(cr, Color::rgb(220, 220, 220));
-            layout.set_text(&span.text);
-            cr.move_to(x + 12.0, row_y);
-            pangocairo::functions::show_layout(cr, layout);
-        }
-        row_y += line_h;
     }
 }
