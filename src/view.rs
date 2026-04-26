@@ -8,7 +8,7 @@
 
 use quadraui::{
     Color, Decoration, ListItem, ListView, Rect, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, WidgetId,
+    StyledText, TextDisplay, TextDisplayLine, WidgetId,
 };
 
 use crate::state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
@@ -119,6 +119,60 @@ pub fn build_status_bar(state: &AppState) -> StatusBar {
         id: WidgetId::new("status"),
         left_segments: left,
         right_segments: right,
+    }
+}
+
+/// Build the `TextDisplay` primitive for the YAML pane.
+///
+/// Each YAML line becomes a `TextDisplayLine` with two styled spans:
+/// the `key:` prefix in `key_fg` and the trailing value in the default
+/// `fg`. Lines without a `:` render plainly in the default `fg`.
+/// `scroll_offset` is forwarded so backends can clamp it via the
+/// primitive's layout.
+///
+/// The pane title (e.g. `" YAML"` / `" YAML  ◀ j/k"`) stays bespoke
+/// in each binary because it's a single-row decoration that depends
+/// on app focus state and shouldn't scroll with the body.
+pub fn build_yaml_view(state: &AppState) -> TextDisplay {
+    let key_fg = Color::rgb(140, 200, 240);
+    let lines: Vec<TextDisplayLine> = state
+        .yaml_for_selected()
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            let spans = if let Some(colon) = trimmed.find(':') {
+                let key = &line[..indent + colon];
+                let value = &line[indent + colon..];
+                vec![
+                    StyledSpan {
+                        text: key.to_string(),
+                        fg: Some(key_fg),
+                        bg: None,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                    },
+                    StyledSpan::plain(value),
+                ]
+            } else {
+                vec![StyledSpan::plain(line)]
+            };
+            TextDisplayLine {
+                spans,
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }
+        })
+        .collect();
+    TextDisplay {
+        id: WidgetId::new("yaml"),
+        lines,
+        scroll_offset: state.yaml_scroll,
+        // App owns scroll explicitly; auto-scroll is for log tails.
+        auto_scroll: false,
+        max_lines: 0,
+        has_focus: matches!(state.focus, Focus::Yaml),
     }
 }
 
