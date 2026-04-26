@@ -27,7 +27,7 @@ use kubeui_core::{
     apply_action, build_list, build_picker, build_status_bar, picker_bounds, picker_current_index,
     Action, AppState, Focus,
 };
-use quadraui::{Color, ListView, StyledText};
+use quadraui::{Color, ListView};
 
 // ─── Backend (primitive → ratatui buffer) ───────────────────────────────────
 
@@ -50,69 +50,8 @@ fn put_text(buf: &mut Buffer, x: u16, y: u16, text: &str, fg: Color, bg: Color, 
     }
 }
 
-fn put_styled(buf: &mut Buffer, x: u16, y: u16, st: &StyledText, default_fg: Color, bg: Color) {
-    let mut cx = x;
-    for span in &st.spans {
-        let fg = span.fg.unwrap_or(default_fg);
-        put_text(buf, cx, y, &span.text, fg, bg, span.bold);
-        cx = cx.saturating_add(span.text.chars().count() as u16);
-    }
-}
-
 fn draw_list(buf: &mut Buffer, area: Rect, list: &ListView) {
-    use quadraui::ListItemMeasure;
-
-    let bg = Color::rgb(20, 22, 30);
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().bg(rat_color(bg)));
-            }
-        }
-    }
-
-    let title_height: f32 = if list.title.is_some() { 1.0 } else { 0.0 };
-    let layout = list.layout(area.width as f32, area.height as f32, title_height, |_| {
-        ListItemMeasure::new(1.0)
-    });
-
-    if let (Some(title), Some(tb)) = (list.title.as_ref(), layout.title_bounds) {
-        put_styled(
-            buf,
-            area.x + tb.x as u16,
-            area.y + tb.y as u16,
-            title,
-            Color::rgb(200, 200, 200),
-            bg,
-        );
-    }
-
-    for vis in &layout.visible_items {
-        let item = &list.items[vis.item_idx];
-        let is_sel = vis.item_idx == list.selected_idx;
-        let row_bg = if is_sel { Color::rgb(50, 60, 90) } else { bg };
-        let row_y = area.y + vis.bounds.y as u16;
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, row_y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().bg(rat_color(row_bg)));
-            }
-        }
-        put_styled(
-            buf,
-            area.x + vis.bounds.x as u16,
-            row_y,
-            &item.text,
-            Color::rgb(220, 220, 220),
-            row_bg,
-        );
-        if let Some(detail) = item.detail.as_ref() {
-            let detail_w: usize = detail.spans.iter().map(|s| s.text.chars().count()).sum();
-            let dx = (area.x + area.width).saturating_sub(detail_w as u16 + 1);
-            put_styled(buf, dx, row_y, detail, Color::rgb(180, 180, 180), row_bg);
-        }
-    }
+    quadraui::tui::draw_list(buf, area, list, &theme(), false);
 }
 
 fn draw_yaml(buf: &mut Buffer, area: Rect, yaml: &str, scroll: usize, has_focus: bool) {
@@ -172,12 +111,22 @@ fn draw_yaml(buf: &mut Buffer, area: Rect, yaml: &str, scroll: usize, has_focus:
 }
 
 /// Theme used for the public quadraui rasterisers. kubeui's palette is
-/// hardcoded; the relevant fields are the fallback fill colours each
-/// rasteriser falls back on when its primitive has no opinion.
+/// hardcoded; this maps the relevant subset to `quadraui::Theme` fields
+/// so the public `draw_*` rasterisers paint with kubeui's colours.
 fn theme() -> quadraui::Theme {
     quadraui::Theme {
-        background: Color::rgb(40, 40, 60),
+        // List background — also fallback for empty StatusBar (rare).
+        background: Color::rgb(20, 22, 30),
         foreground: Color::rgb(220, 220, 220),
+        // Selected row in the resource list.
+        selected_bg: Color::rgb(50, 60, 90),
+        // Detail-column dim text.
+        muted_fg: Color::rgb(180, 180, 180),
+        // Bordered surfaces (picker modal).
+        surface_bg: Color::rgb(28, 32, 44),
+        surface_fg: Color::rgb(220, 220, 220),
+        border_fg: Color::rgb(120, 160, 200),
+        title_fg: Color::rgb(120, 160, 200),
         ..quadraui::Theme::default()
     }
 }
