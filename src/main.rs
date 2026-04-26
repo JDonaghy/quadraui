@@ -24,10 +24,10 @@ use ratatui::style::{Color as RatColor, Modifier, Style};
 use ratatui::Terminal;
 
 use kubeui_core::{
-    apply_action, build_list, build_picker, build_status_bar, picker_bounds, picker_current_index,
-    Action, AppState, Focus,
+    apply_action, build_list, build_picker_menu, build_status_bar, decode_picker_hit_id,
+    picker_anchor, picker_current_index, picker_menu_width, Action, AppState, Focus,
 };
-use quadraui::{Color, ListView};
+use quadraui::{Color, ContextMenuHit, ContextMenuItemMeasure, ListView};
 
 // ─── Backend (primitive → ratatui buffer) ───────────────────────────────────
 
@@ -119,91 +119,6 @@ fn theme() -> quadraui::Theme {
     }
 }
 
-fn draw_picker(buf: &mut Buffer, area: Rect, list: &ListView) {
-    let bg = Color::rgb(28, 32, 44);
-    let border = Color::rgb(120, 160, 200);
-
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().bg(rat_color(bg)));
-            }
-        }
-    }
-    let h = area.height;
-    let w = area.width;
-    if h < 2 || w < 2 {
-        return;
-    }
-    let style_b = Style::default().fg(rat_color(border)).bg(rat_color(bg));
-    for x in 0..w {
-        let ch_top = if x == 0 {
-            '╭'
-        } else if x == w - 1 {
-            '╮'
-        } else {
-            '─'
-        };
-        let ch_bot = if x == 0 {
-            '╰'
-        } else if x == w - 1 {
-            '╯'
-        } else {
-            '─'
-        };
-        if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(area.x + x, area.y)) {
-            c.set_char(ch_top);
-            c.set_style(style_b);
-        }
-        if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(area.x + x, area.y + h - 1)) {
-            c.set_char(ch_bot);
-            c.set_style(style_b);
-        }
-    }
-    for y in 1..h - 1 {
-        if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(area.x, area.y + y)) {
-            c.set_char('│');
-            c.set_style(style_b);
-        }
-        if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(area.x + w - 1, area.y + y)) {
-            c.set_char('│');
-            c.set_style(style_b);
-        }
-    }
-    if let Some(title) = list.title.as_ref() {
-        if let Some(span) = title.spans.first() {
-            let tx = area.x + 2;
-            put_text(buf, tx, area.y, &span.text, border, bg, true);
-        }
-    }
-    for (i, item) in list.items.iter().enumerate() {
-        let row_y = area.y + 1 + i as u16;
-        if row_y >= area.y + h - 1 {
-            break;
-        }
-        let is_sel = i == list.selected_idx;
-        let row_bg = if is_sel { Color::rgb(60, 80, 120) } else { bg };
-        for x in (area.x + 1)..(area.x + w - 1) {
-            if let Some(c) = buf.cell_mut(ratatui::layout::Position::new(x, row_y)) {
-                c.set_char(' ');
-                c.set_style(Style::default().bg(rat_color(row_bg)));
-            }
-        }
-        if let Some(span) = item.text.spans.first() {
-            put_text(
-                buf,
-                area.x + 2,
-                row_y,
-                &span.text,
-                Color::rgb(220, 220, 220),
-                row_bg,
-                span.bold,
-            );
-        }
-    }
-}
-
 // ─── Event translation (crossterm → kubeui_core::Action) ─────────────────────
 
 /// Translate a single crossterm key event into one or more `Action`s.
@@ -248,22 +163,31 @@ fn click_to_actions(
     let (term_w, term_h) = terminal_size;
     let viewport = quadraui::Rect::new(0.0, 0.0, term_w as f32, term_h as f32);
 
-    // Picker (modal): click on row → select + commit; click outside → dismiss.
+    // Picker (dropdown over status bar): click on row → select + commit;
+    // click outside → dismiss. The menu hit-test handles bounds + per-row
+    // resolution; we decode the row id back to its visible index.
     if let Some(picker) = state.picker.as_ref() {
-        let pb = picker_bounds(picker, viewport, 1.0, 1.0);
-        let inside = (col as f32) >= pb.x
-            && (col as f32) < pb.x + pb.width
-            && (row as f32) >= pb.y
-            && (row as f32) < pb.y + pb.height;
-        if !inside {
+        let Some(anchor) = picker_anchor(state, viewport, 1.0, 1.0) else {
             return vec![Action::PickerCancel];
+        };
+        let menu = build_picker_menu(picker, picker_current_index(state, picker.purpose));
+        let menu_w = picker_menu_width(picker, viewport, 1.0);
+        let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+        match menu_layout.hit_test(col as f32, row as f32) {
+            ContextMenuHit::Item(id) => {
+                if let Some(orig) = decode_picker_hit_id(id.as_str()) {
+                    let visible = picker.visible_indices();
+                    if let Some(visible_idx) = visible.iter().position(|&o| o == orig) {
+                        return vec![Action::PickerSelectVisible(visible_idx)];
+                    }
+                }
+                return vec![];
+            }
+            ContextMenuHit::Inert => return vec![],
+            ContextMenuHit::Empty => return vec![Action::PickerCancel],
         }
-        let inner_row = row.saturating_sub(pb.y as u16);
-        if inner_row > 0 && inner_row < pb.height as u16 - 1 {
-            let visible_idx = (inner_row - 1) as usize;
-            return vec![Action::PickerSelectVisible(visible_idx)];
-        }
-        return vec![];
     }
 
     // Status bar: bottom row only.
@@ -349,16 +273,20 @@ fn run(
             );
             if let Some(picker) = state.picker.as_ref() {
                 let viewport = quadraui::Rect::new(0.0, 0.0, area.width as f32, area.height as f32);
-                let pb = picker_bounds(picker, viewport, 1.0, 1.0);
-                let pb_rect = Rect {
-                    x: pb.x as u16,
-                    y: pb.y as u16,
-                    width: pb.width as u16,
-                    height: pb.height as u16,
-                };
-                let current = picker_current_index(state, picker.purpose);
-                let view = build_picker(picker, current);
-                draw_picker(frame.buffer_mut(), pb_rect, &view);
+                if let Some(anchor) = picker_anchor(state, viewport, 1.0, 1.0) {
+                    let current = picker_current_index(state, picker.purpose);
+                    let menu = build_picker_menu(picker, current);
+                    let menu_w = picker_menu_width(picker, viewport, 1.0);
+                    let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+                        ContextMenuItemMeasure::new(1.0)
+                    });
+                    quadraui::tui::draw_context_menu(
+                        frame.buffer_mut(),
+                        &menu,
+                        &menu_layout,
+                        &theme(),
+                    );
+                }
             }
         })?;
 
