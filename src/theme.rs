@@ -58,6 +58,31 @@ pub struct Theme {
     /// Window / panel separator colour. Used by `TabBar` for the
     /// close-button `×` on inactive tabs.
     pub separator: Color,
+
+    // ── ListView pilot (#223 slice 3) ──────────────────────────────────
+    /// Background fill for surfaces drawn with a border (e.g. a
+    /// bordered `ListView` modal). Distinct from `background` because
+    /// modal-style panels typically tint slightly off the editor bg.
+    pub surface_bg: Color,
+    /// Default text colour on `surface_bg`.
+    pub surface_fg: Color,
+    /// Background of the selected row in a `ListView`.
+    pub selected_bg: Color,
+    /// Border-glyph colour for bordered surfaces.
+    pub border_fg: Color,
+    /// Title text colour drawn over a top border (bordered `ListView`).
+    pub title_fg: Color,
+    /// Background of a flat (non-bordered) header strip.
+    pub header_bg: Color,
+    /// Foreground of a flat (non-bordered) header strip.
+    pub header_fg: Color,
+    /// Dim / muted foreground for less-important text (line numbers,
+    /// detail columns, `Decoration::Muted`).
+    pub muted_fg: Color,
+    /// Error / `Decoration::Error` foreground.
+    pub error_fg: Color,
+    /// Warning / `Decoration::Warning` foreground.
+    pub warning_fg: Color,
 }
 
 impl Default for Theme {
@@ -67,6 +92,7 @@ impl Default for Theme {
     fn default() -> Self {
         let bg = Color::rgb(20, 22, 30);
         let fg = Color::rgb(220, 220, 220);
+        let muted = Color::rgb(120, 122, 135);
         Self {
             background: bg,
             foreground: fg,
@@ -77,6 +103,16 @@ impl Default for Theme {
             tab_preview_active_fg: Color::rgb(180, 180, 200),
             tab_preview_inactive_fg: Color::rgb(110, 110, 125),
             separator: Color::rgb(60, 62, 72),
+            surface_bg: Color::rgb(28, 32, 44),
+            surface_fg: fg,
+            selected_bg: Color::rgb(50, 60, 90),
+            border_fg: Color::rgb(120, 160, 200),
+            title_fg: Color::rgb(180, 200, 230),
+            header_bg: Color::rgb(40, 44, 56),
+            header_fg: fg,
+            muted_fg: muted,
+            error_fg: Color::rgb(220, 80, 80),
+            warning_fg: Color::rgb(220, 180, 80),
         }
     }
 }

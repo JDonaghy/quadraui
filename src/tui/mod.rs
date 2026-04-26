@@ -15,13 +15,16 @@
 //! primitive at a time. StatusBar is the pilot.
 
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::{Color as RatatuiColor, Modifier};
 
-use crate::types::Color;
+use crate::types::{Color, Decoration, StyledText};
 
+mod list;
 mod status_bar;
 mod tab_bar;
 
+pub use list::draw_list;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR};
 
@@ -68,6 +71,51 @@ fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, b
             cont.underline_color = RatatuiColor::Reset;
         }
     }
+}
+
+/// Convert a `quadraui::Color` to a ratatui palette colour, with `qc` as
+/// the short name internal modules use (mirrors vimcode's tui rasteriser
+/// helper of the same name).
+fn qc(c: Color) -> RatatuiColor {
+    ratatui_color(c)
+}
+
+/// Draw a [`StyledText`] onto `buf` starting at `(area.x + start_col,
+/// y)`, returning the column past the last drawn character. Honors the
+/// caller's `decoration` as a final colour override (e.g. `Muted` dims
+/// every span that didn't already specify its own `fg`). Used by the
+/// list / form / palette rasterisers.
+#[allow(clippy::too_many_arguments)]
+fn draw_styled_text(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    start_col: usize,
+    text: &StyledText,
+    default_fg: RatatuiColor,
+    bg: RatatuiColor,
+    decoration: Decoration,
+    dim_fg: RatatuiColor,
+) -> usize {
+    let mut col = start_col;
+    for span in &text.spans {
+        let span_fg = if let Some(c) = span.fg {
+            qc(c)
+        } else if matches!(decoration, Decoration::Muted) {
+            dim_fg
+        } else {
+            default_fg
+        };
+        let span_bg = span.bg.map(qc).unwrap_or(bg);
+        for ch in span.text.chars() {
+            if col >= area.width as usize {
+                return col;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, span_fg, span_bg);
+            col += 1;
+        }
+    }
+    col
 }
 
 /// Set a buffer cell with explicit modifier + optional underline colour.

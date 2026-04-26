@@ -24,9 +24,11 @@ use gtk4::pango;
 
 use crate::types::Color;
 
+mod list;
 mod status_bar;
 mod tab_bar;
 
+pub use list::draw_list;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TabBarHits};
 
