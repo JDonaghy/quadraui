@@ -1,0 +1,25 @@
+[package]
+name = "kubeui"
+version = "0.1.0"
+edition = "2021"
+description = "TUI Kubernetes dashboard built on quadraui (kubeui-core consumer)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "kubeui"
+path = "src/main.rs"
+
+[dependencies]
+quadraui = { path = "../quadraui" }
+kubeui-core = { path = "../kubeui-core" }
+
+# Async runtime — owned here so the reducer's k8s `block_on` calls
+# happen on this binary's runtime.
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
+
+anyhow = "1.0"
+
+# TUI backend
+ratatui = "0.29"
+crossterm = "0.29"
