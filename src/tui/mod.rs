@@ -21,11 +21,13 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 use crate::types::{Color, Decoration, StyledText};
 
 mod list;
+mod palette;
 mod status_bar;
 mod tab_bar;
 mod tree;
 
 pub use list::draw_list;
+pub use palette::draw_palette;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR};
 pub use tree::draw_tree;

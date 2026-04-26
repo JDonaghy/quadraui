@@ -83,6 +83,15 @@ pub struct Theme {
     pub error_fg: Color,
     /// Warning / `Decoration::Warning` foreground.
     pub warning_fg: Color,
+
+    // ── Palette pilot (#223 slice 5) ───────────────────────────────────
+    /// Query-input text colour and cursor block fg in a `Palette`
+    /// modal. Distinct from `surface_fg` — the query line is
+    /// emphasised, item rows are not.
+    pub query_fg: Color,
+    /// Per-character highlight colour for fuzzy-match positions in
+    /// `Palette` items.
+    pub match_fg: Color,
 }
 
 impl Default for Theme {
@@ -113,6 +122,8 @@ impl Default for Theme {
             muted_fg: muted,
             error_fg: Color::rgb(220, 80, 80),
             warning_fg: Color::rgb(220, 180, 80),
+            query_fg: fg,
+            match_fg: Color::rgb(255, 200, 80),
         }
     }
 }
