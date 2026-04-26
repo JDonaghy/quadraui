@@ -3664,6 +3664,51 @@ mod tests {
     }
 
     #[test]
+    fn tab_bar_layout_no_arrows_honours_caller_scroll_offset() {
+        // When `scroll_arrow_width = 0.0` the primitive defers scroll to the
+        // caller — vimcode's TUI computes scroll via
+        // `Engine::ensure_active_tab_visible` and writes it to
+        // `bar.scroll_offset`. Regression for "newly-opened tabs invisible
+        // in TUI when the bar overflows" — without this, the layout
+        // collapsed to `resolved_scroll_offset = 0` and clipped the
+        // active (rightmost) tab.
+        let tabs: Vec<_> = (0..10)
+            .map(|i| make_tab(&format!("t{i}"), i == 9))
+            .collect();
+        let mut bar = make_bar(tabs);
+        // Caller has already computed: show tabs starting at 7 so 7,8,9 fit.
+        bar.scroll_offset = 7;
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            0.0, // no arrows
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.resolved_scroll_offset, 7);
+        assert_eq!(layout.visible_tabs.len(), 3);
+        assert_eq!(layout.visible_tabs[0].tab_idx, 7);
+        assert_eq!(layout.visible_tabs[2].tab_idx, 9);
+    }
+
+    #[test]
+    fn tab_bar_layout_no_arrows_clamps_oversize_scroll_offset() {
+        // Caller-supplied scroll_offset is clamped to a valid index so a
+        // stale value (e.g. tab count just shrank) can't push out of range.
+        let tabs: Vec<_> = (0..3).map(|i| make_tab(&format!("t{i}"), false)).collect();
+        let mut bar = make_bar(tabs);
+        bar.scroll_offset = 99;
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            0.0,
+            |_| TabMeasure::new(50.0, 1.0), // each tab way oversized so overflow path fires
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.resolved_scroll_offset, 2); // tabs.len() - 1
+    }
+
+    #[test]
     fn tab_bar_layout_no_close_button_when_close_width_zero() {
         // A pinned / preview tab style — backend passes close_width = 0
         // to suppress the close button.

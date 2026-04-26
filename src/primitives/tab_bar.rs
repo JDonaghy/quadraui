@@ -435,11 +435,19 @@ impl TabBar {
         let (resolved_scroll_offset, tab_start_x, tab_end_x, needs_left, needs_right) =
             if self.tabs.is_empty() {
                 (0usize, 0.0, tab_area_no_scroll, false, false)
-            } else if total_tab_width <= tab_area_no_scroll + f32::EPSILON
-                || scroll_arrow_width <= 0.0
-            {
-                // Everything fits, or scroll is disabled (tabs just clip).
+            } else if total_tab_width <= tab_area_no_scroll + f32::EPSILON {
+                // Everything fits — no scroll, no arrows.
                 (0usize, 0.0, tab_area_no_scroll, false, false)
+            } else if scroll_arrow_width <= 0.0 {
+                // Scroll arrows disabled: the **caller** owns scroll
+                // (e.g. vimcode's TUI computes a scroll offset via
+                // `Engine::ensure_active_tab_visible` and stores it
+                // on `bar.scroll_offset`). Honour that value so the
+                // active tab actually appears, instead of clipping
+                // from index 0 and dropping it. Clamp to a valid
+                // index so callers can't push out-of-range values.
+                let offset = self.scroll_offset.min(self.tabs.len().saturating_sub(1));
+                (offset, 0.0, tab_area_no_scroll, false, false)
             } else {
                 // Need scroll arrows. Reserve space for two; even if only one
                 // ends up shown, the reserved width keeps `fit_active_scroll_offset`
