@@ -20,12 +20,14 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::{Color, Decoration, StyledText};
 
+mod form;
 mod list;
 mod palette;
 mod status_bar;
 mod tab_bar;
 mod tree;
 
+pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
 pub use status_bar::draw_status_bar;

@@ -92,6 +92,12 @@ pub struct Theme {
     /// Per-character highlight colour for fuzzy-match positions in
     /// `Palette` items.
     pub match_fg: Color,
+
+    // ── Form pilot (#223 slice 6) ──────────────────────────────────────
+    /// Accent foreground used by `Form` for active-state visual cues
+    /// (toggle "[x]" when on, slider filled track, button frame when
+    /// focused). Typically the editor cursor / caret colour.
+    pub accent_fg: Color,
 }
 
 impl Default for Theme {
@@ -124,6 +130,7 @@ impl Default for Theme {
             warning_fg: Color::rgb(220, 180, 80),
             query_fg: fg,
             match_fg: Color::rgb(255, 200, 80),
+            accent_fg: Color::rgb(140, 200, 240),
         }
     }
 }

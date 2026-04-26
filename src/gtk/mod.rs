@@ -24,12 +24,14 @@ use gtk4::pango;
 
 use crate::types::Color;
 
+mod form;
 mod list;
 mod palette;
 mod status_bar;
 mod tab_bar;
 mod tree;
 
+pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
 pub use status_bar::draw_status_bar;
