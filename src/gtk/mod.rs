@@ -25,8 +25,10 @@ use gtk4::pango;
 use crate::types::Color;
 
 mod status_bar;
+mod tab_bar;
 
 pub use status_bar::draw_status_bar;
+pub use tab_bar::{draw_tab_bar, TabBarHits};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports

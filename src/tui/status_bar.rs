@@ -158,6 +158,7 @@ mod tests {
         let theme = Theme {
             background: Color::rgb(1, 2, 3),
             foreground: Color::rgb(255, 255, 255),
+            ..Theme::default()
         };
         draw_status_bar(&mut buf, Rect::new(0, 0, 10, 1), &bar, &layout, &theme);
 

@@ -25,15 +25,39 @@ use serde::{Deserialize, Serialize};
 /// are required so every rasteriser has a reasonable fallback for
 /// regions a primitive doesn't fully cover (e.g. the `StatusBar`
 /// background fill when no segments are present).
+///
+/// **Field set is incremental.** Each migrated primitive adds the
+/// fields it needs. The `Default` impl keeps a coherent dark palette
+/// so apps can spread `..Default::default()` after specifying the
+/// fields they care about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
+    // ── StatusBar pilot (#223 slice 1) ─────────────────────────────────
     /// Default surface background. Used as a fallback fill when the
     /// primitive has no opinion (e.g. an empty `StatusBar`).
     pub background: Color,
     /// Default surface foreground. Available for primitives that need
-    /// a generic text colour; not yet consumed by `StatusBar` (every
-    /// segment carries its own `fg`).
+    /// a generic text colour; consumed by `TabBar` for the dirty-tab
+    /// `●` glyph.
     pub foreground: Color,
+
+    // ── TabBar pilot (#223 slice 2) ────────────────────────────────────
+    /// Tab bar row background — also reused by inactive tab rows.
+    pub tab_bar_bg: Color,
+    /// Active tab background.
+    pub tab_active_bg: Color,
+    /// Active tab text colour.
+    pub tab_active_fg: Color,
+    /// Inactive tab text colour. Also used for right-segment text when
+    /// the segment isn't `is_active`.
+    pub tab_inactive_fg: Color,
+    /// Active *preview* tab text colour (italicised in TUI).
+    pub tab_preview_active_fg: Color,
+    /// Inactive *preview* tab text colour.
+    pub tab_preview_inactive_fg: Color,
+    /// Window / panel separator colour. Used by `TabBar` for the
+    /// close-button `×` on inactive tabs.
+    pub separator: Color,
 }
 
 impl Default for Theme {
@@ -41,9 +65,18 @@ impl Default for Theme {
     /// when an app forgets to populate the theme. Apps almost always
     /// override this.
     fn default() -> Self {
+        let bg = Color::rgb(20, 22, 30);
+        let fg = Color::rgb(220, 220, 220);
         Self {
-            background: Color::rgb(20, 22, 30),
-            foreground: Color::rgb(220, 220, 220),
+            background: bg,
+            foreground: fg,
+            tab_bar_bg: bg,
+            tab_active_bg: Color::rgb(40, 44, 56),
+            tab_active_fg: fg,
+            tab_inactive_fg: Color::rgb(140, 140, 150),
+            tab_preview_active_fg: Color::rgb(180, 180, 200),
+            tab_preview_inactive_fg: Color::rgb(110, 110, 125),
+            separator: Color::rgb(60, 62, 72),
         }
     }
 }

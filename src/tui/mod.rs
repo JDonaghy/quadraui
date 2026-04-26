@@ -15,13 +15,15 @@
 //! primitive at a time. StatusBar is the pilot.
 
 use ratatui::buffer::Buffer;
-use ratatui::style::Color as RatatuiColor;
+use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::Color;
 
 mod status_bar;
+mod tab_bar;
 
 pub use status_bar::draw_status_bar;
+pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the
@@ -39,7 +41,53 @@ fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: Ra
     if x < area.x + area.width && y < area.y + area.height {
         let cell = &mut buf[(x, y)];
         cell.set_char(ch).set_fg(fg).set_bg(bg);
-        cell.modifier = ratatui::style::Modifier::empty();
+        cell.modifier = Modifier::empty();
         cell.underline_color = RatatuiColor::Reset;
+    }
+}
+
+/// Set a buffer cell with a 2-cell-wide character (e.g. Nerd Font glyph),
+/// resetting the trailing cell so ratatui's diff algorithm doesn't emit a
+/// stray character on top of the wide glyph's second column. Mirrors
+/// `vimcode::tui_main::set_cell_wide`.
+fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: RatatuiColor) {
+    let area = buf.area;
+    if x < area.x + area.width && y < area.y + area.height {
+        let mut s = String::with_capacity(4);
+        s.push(ch);
+        let cell = &mut buf[(x, y)];
+        cell.set_symbol(&s).set_fg(fg).set_bg(bg);
+        cell.modifier = Modifier::empty();
+        cell.underline_color = RatatuiColor::Reset;
+        if x + 1 < area.x + area.width {
+            // Wide-char continuation cell: empty symbol tells ratatui this
+            // half is the trailing column of a double-width glyph.
+            let cont = &mut buf[(x + 1, y)];
+            cont.set_symbol("").set_fg(fg).set_bg(bg);
+            cont.modifier = Modifier::empty();
+            cont.underline_color = RatatuiColor::Reset;
+        }
+    }
+}
+
+/// Set a buffer cell with explicit modifier + optional underline colour.
+/// Used by [`tab_bar::draw_tab_bar`] for the active-tab accent underline.
+#[allow(clippy::too_many_arguments)]
+fn set_cell_styled(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    ch: char,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+    modifier: Modifier,
+    underline_color: Option<RatatuiColor>,
+) {
+    let area = buf.area;
+    if x < area.x + area.width && y < area.y + area.height {
+        let cell = &mut buf[(x, y)];
+        cell.set_char(ch).set_fg(fg).set_bg(bg);
+        cell.modifier = modifier;
+        cell.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
     }
 }
