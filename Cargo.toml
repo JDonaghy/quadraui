@@ -1,0 +1,24 @@
+[package]
+name = "kubeui-gtk"
+version = "0.1.0"
+edition = "2021"
+description = "GTK4 Kubernetes dashboard built on quadraui (kubeui-core consumer)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "kubeui-gtk"
+path = "src/main.rs"
+
+[dependencies]
+quadraui = { path = "../quadraui" }
+kubeui-core = { path = "../kubeui-core" }
+
+# Same Tokio + anyhow as TUI binary; runtime is owned here so the
+# reducer's k8s `block_on` calls happen on this binary's runtime.
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
+anyhow = "1.0"
+
+# GTK + Pango/Cairo for rasterisation. Same versions as vimcode.
+gtk4 = { version = "0.7", features = ["v4_10"] }
+pangocairo = "0.18"
