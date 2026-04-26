@@ -98,6 +98,16 @@ pub struct Theme {
     /// (toggle "[x]" when on, slider filled track, button frame when
     /// focused). Typically the editor cursor / caret colour.
     pub accent_fg: Color,
+
+    // ── Tooltip pilot (#223 slice 7) ───────────────────────────────────
+    /// Background fill for `Tooltip` popups (LSP hover, signature help,
+    /// diff peek). Distinct from `surface_bg` so apps can tint hover
+    /// popups differently from modal lists.
+    pub hover_bg: Color,
+    /// Default text colour for `Tooltip` popups.
+    pub hover_fg: Color,
+    /// Border-glyph / stroke colour for `Tooltip` popups.
+    pub hover_border: Color,
 }
 
 impl Default for Theme {
@@ -131,6 +141,9 @@ impl Default for Theme {
             query_fg: fg,
             match_fg: Color::rgb(255, 200, 80),
             accent_fg: Color::rgb(140, 200, 240),
+            hover_bg: Color::rgb(36, 40, 52),
+            hover_fg: fg,
+            hover_border: Color::rgb(120, 140, 175),
         }
     }
 }
