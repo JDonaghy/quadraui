@@ -54,60 +54,48 @@ fn draw_list(buf: &mut Buffer, area: Rect, list: &ListView) {
     quadraui::tui::draw_list(buf, area, list, &theme(), false);
 }
 
-fn draw_yaml(buf: &mut Buffer, area: Rect, yaml: &str, scroll: usize, has_focus: bool) {
+/// Draw the YAML pane: bespoke title row + delegated `TextDisplay`
+/// body. Title stays in the binary because it depends on focus state
+/// and shouldn't scroll with the body.
+fn draw_yaml(buf: &mut Buffer, area: Rect, state: &AppState) {
     let bg = Color::rgb(16, 18, 24);
-    let fg = Color::rgb(200, 200, 200);
     let key_fg = Color::rgb(140, 200, 240);
+    let has_focus = state.focus == Focus::Yaml;
     let title_fg = if has_focus {
         Color::rgb(255, 220, 140)
     } else {
         key_fg
     };
 
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().bg(rat_color(bg)));
-            }
-        }
-    }
     if area.height == 0 || area.width == 0 {
         return;
     }
+
+    // Title row: bespoke, doesn't scroll.
     let header = if has_focus { " YAML  ◀ j/k" } else { " YAML" };
+    for x in area.x..area.x + area.width {
+        if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, area.y)) {
+            cell.set_char(' ');
+            cell.set_style(Style::default().bg(rat_color(bg)));
+        }
+    }
     put_text(buf, area.x, area.y, header, title_fg, bg, true);
 
-    let inner = Rect {
+    // Body: delegated to `quadraui::tui::draw_text_display`. Use a
+    // YAML-pane-specific theme so the body bg is the slightly-darker
+    // (16, 18, 24) instead of the unified theme bg.
+    let body = Rect {
         x: area.x,
         y: area.y + 1,
         width: area.width,
         height: area.height.saturating_sub(1),
     };
-    for (row_off, line) in yaml
-        .lines()
-        .skip(scroll)
-        .take(inner.height as usize)
-        .enumerate()
-    {
-        let row_y = inner.y + row_off as u16;
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
-        if let Some(colon) = trimmed.find(':') {
-            let key = &line[..indent + colon];
-            put_text(buf, inner.x, row_y, key, key_fg, bg, false);
-            let value_x = inner.x.saturating_add(key.chars().count() as u16);
-            let value = &line[indent + colon..];
-            let max_w =
-                (inner.width as usize).saturating_sub(value_x.saturating_sub(inner.x) as usize);
-            let value_clip: String = value.chars().take(max_w).collect();
-            put_text(buf, value_x, row_y, &value_clip, fg, bg, false);
-        } else {
-            let max_w = inner.width as usize;
-            let line_clip: String = line.chars().take(max_w).collect();
-            put_text(buf, inner.x, row_y, &line_clip, fg, bg, false);
-        }
-    }
+    let display = kubeui_core::build_yaml_view(state);
+    let yaml_theme = quadraui::Theme {
+        background: bg,
+        ..theme()
+    };
+    quadraui::tui::draw_text_display(buf, body, &display, &yaml_theme);
 }
 
 /// Theme used for the public quadraui rasterisers. kubeui's palette is
@@ -347,13 +335,7 @@ fn run(
             };
             let list = build_list(state);
             draw_list(frame.buffer_mut(), list_area, &list);
-            draw_yaml(
-                frame.buffer_mut(),
-                yaml_area,
-                state.yaml_for_selected(),
-                state.yaml_scroll,
-                state.focus == Focus::Yaml,
-            );
+            draw_yaml(frame.buffer_mut(), yaml_area, state);
             let bar = build_status_bar(state);
             let bar_layout = bar.layout(status_area.width as f32, 1.0, 2.0, |seg| {
                 quadraui::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
