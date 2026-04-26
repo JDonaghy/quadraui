@@ -20,6 +20,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::{Color, Decoration, StyledText};
 
+mod context_menu;
 mod dialog;
 mod form;
 mod list;
@@ -29,6 +30,7 @@ mod tab_bar;
 mod tooltip;
 mod tree;
 
+pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use form::draw_form;
 pub use list::draw_list;
