@@ -108,6 +108,12 @@ pub struct Theme {
     pub hover_fg: Color,
     /// Border-glyph / stroke colour for `Tooltip` popups.
     pub hover_border: Color,
+
+    // ── Dialog pilot (#223 slice 8) ────────────────────────────────────
+    /// Background of the input field in a `Dialog` (e.g. the rename
+    /// prompt's text entry). Distinct from `surface_bg` so the input
+    /// reads as a separate sub-region.
+    pub input_bg: Color,
 }
 
 impl Default for Theme {
@@ -144,6 +150,7 @@ impl Default for Theme {
             hover_bg: Color::rgb(36, 40, 52),
             hover_fg: fg,
             hover_border: Color::rgb(120, 140, 175),
+            input_bg: Color::rgb(48, 52, 64),
         }
     }
 }

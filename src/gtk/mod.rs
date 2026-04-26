@@ -24,6 +24,7 @@ use gtk4::pango;
 
 use crate::types::Color;
 
+mod dialog;
 mod form;
 mod list;
 mod palette;
@@ -32,6 +33,7 @@ mod tab_bar;
 mod tooltip;
 mod tree;
 
+pub use dialog::draw_dialog;
 pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
