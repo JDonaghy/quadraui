@@ -27,10 +27,12 @@ use crate::types::Color;
 mod list;
 mod status_bar;
 mod tab_bar;
+mod tree;
 
 pub use list::draw_list;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TabBarHits};
+pub use tree::draw_tree;
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports

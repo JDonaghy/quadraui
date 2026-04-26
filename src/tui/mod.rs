@@ -23,10 +23,12 @@ use crate::types::{Color, Decoration, StyledText};
 mod list;
 mod status_bar;
 mod tab_bar;
+mod tree;
 
 pub use list::draw_list;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR};
+pub use tree::draw_tree;
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the
