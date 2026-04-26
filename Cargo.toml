@@ -10,29 +10,34 @@ publish = false
 [lib]
 
 [features]
-# Pulls in gtk4 + pangocairo so `cargo run --example gtk_demo` works.
-# Off by default so `cargo build` / `cargo test` work on platforms
-# without GTK4 development libraries (Windows, headless macOS, etc.).
-# Enable with `cargo run --example gtk_demo --features gtk-example`.
-gtk-example = ["dep:gtk4", "dep:pangocairo"]
+# Public TUI rasterisers in `quadraui::tui`. Pulls in ratatui.
+tui = ["dep:ratatui"]
+
+# Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
+gtk = ["dep:gtk4", "dep:pangocairo"]
+
+# Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
+# keeps working. The example doesn't import `quadraui::gtk` itself, but the
+# feature pulls in the GTK deps the example needs.
+gtk-example = ["gtk"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-# Optional — only pulled in when `gtk-example` feature is enabled.
+# Optional — pulled in by the `gtk` / `gtk-example` features.
 gtk4 = { version = "0.7", features = ["v4_10"], optional = true }
 pangocairo = { version = "0.18", optional = true }
+# Optional — pulled in by the `tui` feature.
+ratatui = { version = "0.29", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
 # For runnable examples that demonstrate the TUI backend pattern.
-# `cargo run --example tui_demo` works out of the box (no feature gate
-# needed — both crates are pure Rust).
-ratatui = "0.29"
 crossterm = "0.29"
 
 [[example]]
 name = "tui_demo"
 path = "examples/tui_demo.rs"
+required-features = ["tui"]
 
 [[example]]
 name = "gtk_demo"

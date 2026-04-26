@@ -84,7 +84,18 @@
 //! Verify all six when adding a new primitive or extending an existing one.
 
 pub mod primitives;
+pub mod theme;
 pub mod types;
+
+// ── Per-backend rasterisers (#223) ──────────────────────────────────────────
+// Public `draw_*` rasterisers, gated behind feature flags so apps that only
+// consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode
+// (`src/tui_main/quadraui_tui.rs`, `src/gtk/quadraui_gtk.rs`) one primitive
+// at a time so external apps stop reimplementing the same draw functions.
+#[cfg(feature = "gtk")]
+pub mod gtk;
+#[cfg(feature = "tui")]
+pub mod tui;
 
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
 // See quadraui/docs/BACKEND_TRAIT_PROPOSAL.md for design. These modules add
@@ -174,6 +185,7 @@ pub use primitives::tooltip::{
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
+pub use theme::Theme;
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
     TreeStyle, WidgetId,
