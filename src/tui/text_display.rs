@@ -49,14 +49,42 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
         }
     }
 
-    let layout = display.layout(area.width as f32, area.height as f32, |_| {
+    // Optional title row at the top. Body shrinks by one row when present.
+    let body = if let Some(ref title) = display.title {
+        let row_y = area.y;
+        let mut col = 0u16;
+        for span in &title.spans {
+            let span_fg = span.fg.map(ratatui_color).unwrap_or(fg);
+            let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
+            for ch in span.text.chars() {
+                if col >= area.width {
+                    break;
+                }
+                set_cell(buf, area.x + col, row_y, ch, span_fg, span_bg);
+                col += 1;
+            }
+        }
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        }
+    } else {
+        area
+    };
+    if body.height == 0 {
+        return;
+    }
+
+    let layout = display.layout(body.width as f32, body.height as f32, |_| {
         TextDisplayLineMeasure::new(1.0)
     });
 
     for vis in &layout.visible_lines {
         let line = &display.lines[vis.line_idx];
-        let row_y = area.y + vis.bounds.y.round() as u16;
-        if row_y >= area.y + area.height {
+        let row_y = body.y + vis.bounds.y.round() as u16;
+        if row_y >= body.y + body.height {
             break;
         }
 
@@ -72,14 +100,14 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
         // Timestamp prefix (if present).
         if let Some(ref ts) = line.timestamp {
             for ch in ts.chars() {
-                if col >= area.width {
+                if col >= body.width {
                     break;
                 }
-                set_cell(buf, area.x + col, row_y, ch, muted, bg);
+                set_cell(buf, body.x + col, row_y, ch, muted, bg);
                 col += 1;
             }
-            if col < area.width {
-                set_cell(buf, area.x + col, row_y, ' ', muted, bg);
+            if col < body.width {
+                set_cell(buf, body.x + col, row_y, ' ', muted, bg);
                 col += 1;
             }
         }
@@ -89,10 +117,10 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
             let span_fg = span.fg.map(ratatui_color).unwrap_or(line_fg);
             let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
             for ch in span.text.chars() {
-                if col >= area.width {
+                if col >= body.width {
                     break;
                 }
-                set_cell(buf, area.x + col, row_y, ch, span_fg, span_bg);
+                set_cell(buf, body.x + col, row_y, ch, span_fg, span_bg);
                 col += 1;
             }
         }
@@ -127,6 +155,7 @@ mod tests {
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
+            title: None,
         };
         draw_text_display(
             &mut buf,
@@ -166,6 +195,7 @@ mod tests {
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
+            title: None,
         };
         draw_text_display(
             &mut buf,
@@ -188,6 +218,7 @@ mod tests {
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
+            title: None,
         };
         draw_text_display(
             &mut buf,
@@ -214,6 +245,7 @@ mod tests {
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
+            title: None,
         };
         draw_text_display(&mut buf, Rect::new(0, 0, 0, 5), &display, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');

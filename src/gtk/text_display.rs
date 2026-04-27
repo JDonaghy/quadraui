@@ -48,14 +48,36 @@ pub fn draw_text_display(
 
     layout.set_attributes(None);
 
-    let display_layout = display.layout(w as f32, h as f32, |_| {
+    // Optional title row at the top. Body shrinks by `line_height` when
+    // present.
+    let (body_y, body_h) = if let Some(ref title) = display.title {
+        let mut cursor_x = x;
+        for span in &title.spans {
+            let span_fg = span.fg.map(cairo_rgb).unwrap_or(fg);
+            cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
+            layout.set_text(&span.text);
+            layout.set_attributes(None);
+            cr.move_to(cursor_x, y);
+            pcfn::show_layout(cr, layout);
+            let (sw, _) = layout.pixel_size();
+            cursor_x += sw as f64;
+        }
+        (y + line_height, (h - line_height).max(0.0))
+    } else {
+        (y, h)
+    };
+    if body_h <= 0.0 {
+        return;
+    }
+
+    let display_layout = display.layout(w as f32, body_h as f32, |_| {
         TextDisplayLineMeasure::new(line_height as f32)
     });
 
     for vis in &display_layout.visible_lines {
         let line = &display.lines[vis.line_idx];
-        let row_y = y + vis.bounds.y as f64;
-        if row_y + line_height > y + h {
+        let row_y = body_y + vis.bounds.y as f64;
+        if row_y + line_height > body_y + body_h {
             break;
         }
 

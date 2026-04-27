@@ -38,7 +38,7 @@
 //! consumer.
 
 use crate::event::Rect;
-use crate::types::{Decoration, Modifiers, StyledSpan, WidgetId};
+use crate::types::{Decoration, Modifiers, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `TextDisplay`.
@@ -66,6 +66,12 @@ pub struct TextDisplay {
     pub max_lines: usize,
     #[serde(default)]
     pub has_focus: bool,
+    /// Optional title row painted above the body. The body's visible
+    /// height shrinks by one row when present; spans render as-is so
+    /// callers control colour/bold/etc. Backends consume this directly
+    /// — no bespoke title painter needed.
+    #[serde(default)]
+    pub title: Option<StyledText>,
 }
 
 fn default_auto_scroll() -> bool {
@@ -269,6 +275,7 @@ impl TextDisplay {
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
+            title: None,
         }
     }
 

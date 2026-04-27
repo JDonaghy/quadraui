@@ -739,6 +739,7 @@ mod tests {
             auto_scroll: false,
             max_lines: 1000,
             has_focus: true,
+            title: None,
         };
         let json = serde_json::to_string(&td).unwrap();
         let back: TextDisplay = serde_json::from_str(&json).unwrap();
@@ -2485,6 +2486,7 @@ mod tests {
             auto_scroll: auto,
             max_lines: 0,
             has_focus: true,
+            title: None,
         }
     }
 
