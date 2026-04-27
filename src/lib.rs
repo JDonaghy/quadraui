@@ -26,12 +26,14 @@
 
 pub mod action;
 pub mod k8s;
+pub mod shell;
 pub mod state;
 pub mod view;
 
 // Re-exports — everything backends commonly touch is one path away.
 pub use action::{apply_action, refresh_resources, Action};
 pub use k8s::{current_context_name, list_namespaces, list_resources, ResourceItem};
+pub use shell::{bootstrap_state, resolve_click, theme};
 pub use state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
 pub use view::{
     build_list, build_picker_menu, build_status_bar, build_yaml_view, decode_picker_hit_id,

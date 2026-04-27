@@ -136,6 +136,7 @@ pub fn build_status_bar(state: &AppState) -> StatusBar {
 /// on app focus state and shouldn't scroll with the body.
 pub fn build_yaml_view(state: &AppState) -> TextDisplay {
     let key_fg = Color::rgb(140, 200, 240);
+    let has_focus = matches!(state.focus, Focus::Yaml);
     let lines: Vec<TextDisplayLine> = state
         .yaml_for_selected()
         .lines()
@@ -166,6 +167,12 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
             }
         })
         .collect();
+    let title_text = if has_focus { " YAML  ◀ j/k" } else { " YAML" };
+    let title_fg = if has_focus {
+        Color::rgb(255, 220, 140)
+    } else {
+        key_fg
+    };
     TextDisplay {
         id: WidgetId::new("yaml"),
         lines,
@@ -173,7 +180,17 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
         // App owns scroll explicitly; auto-scroll is for log tails.
         auto_scroll: false,
         max_lines: 0,
-        has_focus: matches!(state.focus, Focus::Yaml),
+        has_focus,
+        title: Some(StyledText {
+            spans: vec![StyledSpan {
+                text: title_text.to_string(),
+                fg: Some(title_fg),
+                bg: None,
+                bold: true,
+                italic: false,
+                underline: false,
+            }],
+        }),
     }
 }
 
