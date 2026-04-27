@@ -68,6 +68,16 @@ pub enum DragTarget {
         visible_rows: usize,
         /// Total number of items in the scrolled list.
         total_items: usize,
+        /// Where on the thumb the cursor was at click-down time, as
+        /// the cursor's offset from the thumb's top in the backend's
+        /// native units. The dispatcher subtracts this from
+        /// `position.y` before computing `rel`, so the cursor stays
+        /// at the same relative spot on the thumb during the drag —
+        /// the standard "thumb doesn't jump when you grab it" UX
+        /// every native scrollbar provides. Set to `0.0` for clicks
+        /// on the track *outside* the thumb (jump-to-position
+        /// behavior — the thumb hops so its top lands at the cursor).
+        grab_offset: f32,
     },
 }
 
@@ -226,6 +236,7 @@ pub fn dispatch_mouse_drag(
         track_length,
         visible_rows,
         total_items,
+        grab_offset,
     }) = drag.target()
     {
         if *track_length > 0.0 && *total_items > 0 {
@@ -236,10 +247,15 @@ pub fn dispatch_mouse_drag(
             // the bottom. Without this adjustment the mouse feels
             // ~track/(track - thumb) times faster than the thumb itself,
             // which users perceive as laggy drag.
+            //
+            // `grab_offset` tracks where on the thumb the cursor was at
+            // click-down. Subtracting it before the rel calc keeps the
+            // cursor at the same relative spot on the thumb during the
+            // drag — the "thumb doesn't jump when you grab it" UX.
             let thumb_ratio = (*visible_rows as f32 / *total_items as f32).min(1.0);
             let thumb_length = (*track_length * thumb_ratio).max(1.0);
             let effective_track = (*track_length - thumb_length).max(1.0);
-            let rel = (position.y - *track_start) / effective_track;
+            let rel = (position.y - *track_start - *grab_offset) / effective_track;
             let clamped = rel.clamp(0.0, 1.0);
             let max_scroll = total_items.saturating_sub(*visible_rows);
             let new_offset = (clamped * max_scroll as f32).round() as usize;
@@ -421,6 +437,7 @@ mod tests {
             track_length: 200.0,
             visible_rows: 10,
             total_items: 50,
+            grab_offset: 0.0,
         });
         assert!(drag.is_active());
         match drag.target().unwrap() {
@@ -452,6 +469,7 @@ mod tests {
             track_length: 80.0,
             visible_rows: 20,
             total_items: 100,
+            grab_offset: 0.0,
         });
         let events = dispatch_mouse_drag(&drag, pt(500.0, 132.0), buttons_mask_left());
         assert_eq!(events.len(), 2);
@@ -475,6 +493,7 @@ mod tests {
             track_length: 80.0,
             visible_rows: 20,
             total_items: 100,
+            grab_offset: 0.0,
         });
         // Above track: offset = 0.
         let events = dispatch_mouse_drag(&drag, pt(0.0, 50.0), buttons_mask_left());
@@ -504,6 +523,7 @@ mod tests {
             track_length: 0.0,
             visible_rows: 10,
             total_items: 100,
+            grab_offset: 0.0,
         });
         let events = dispatch_mouse_drag(&drag, pt(0.0, 0.0), buttons_mask_left());
         assert_eq!(events.len(), 1);
@@ -519,12 +539,36 @@ mod tests {
             track_length: 10.0,
             visible_rows: 10,
             total_items: 20,
+            grab_offset: 0.0,
         });
         let stack = ModalStack::new();
         let events = dispatch_mouse_up(&stack, &mut drag, pt(5.0, 5.0), MouseButton::Left);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], UiEvent::MouseUp { .. }));
         assert!(!drag.is_active());
+    }
+
+    #[test]
+    fn dispatch_mouse_drag_with_grab_offset_keeps_thumb_relative_to_cursor() {
+        // Same geometry as the basic test: track 80 from y=100, viewport 20,
+        // total 100 → effective_track 64, max_scroll 80. With grab_offset=8
+        // the cursor at y=140 sits 8 units below the thumb's top, so the
+        // math sees effective y=132 → rel=32/64=0.5 → offset 40 (matches
+        // the no-grab base test where cursor was at y=132 directly).
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("p"),
+            track_start: 100.0,
+            track_length: 80.0,
+            visible_rows: 20,
+            total_items: 100,
+            grab_offset: 8.0,
+        });
+        let events = dispatch_mouse_drag(&drag, pt(500.0, 140.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 40),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
     }
 
     #[test]
