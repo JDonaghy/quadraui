@@ -1,10 +1,10 @@
 //! kubeui-gtk — GTK4 Kubernetes dashboard.
 //!
 //! Counterpart to the TUI binary. Both shells share `kubeui-core` for
-//! state, k8s client, view-builders, and the action reducer; what
-//! differs here is the rasteriser (Cairo + Pango instead of a
-//! ratatui buffer) and the event source (GTK signals instead of
-//! crossterm events).
+//! state, k8s client, view-builders, theme, click resolution, and the
+//! action reducer; what differs here is the rasteriser (Cairo + Pango
+//! instead of a ratatui buffer) and the event source (GTK signals
+//! instead of crossterm events).
 //!
 //! A new feature lives in `kubeui-core::Action` + `apply_action`;
 //! both backends pick it up the moment they bind input to it.
@@ -20,10 +20,11 @@ use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, DrawingArea, EventControllerKey, GestureClick};
 
 use kubeui_core::{
-    apply_action, build_list, build_picker_menu, build_status_bar, decode_picker_hit_id,
-    picker_anchor, picker_current_index, picker_menu_width, Action, AppState, Focus,
+    apply_action, bootstrap_state, build_list, build_picker_menu, build_status_bar,
+    build_yaml_view, picker_anchor, picker_current_index, picker_menu_width, resolve_click, theme,
+    Action, AppState,
 };
-use quadraui::{Color, ContextMenuHit, ContextMenuItemMeasure, ListView};
+use quadraui::{Color, ContextMenuItemMeasure};
 
 const APP_ID: &str = "io.github.jdonaghy.kubeui-gtk";
 const UI_FONT: &str = "Monospace 11";
@@ -31,26 +32,9 @@ const UI_FONT: &str = "Monospace 11";
 fn main() -> anyhow::Result<()> {
     kubeui_core::install_crypto_provider()?;
     let rt = Rc::new(tokio::runtime::Runtime::new()?);
-
-    // Bootstrap k8s state on the main thread before we hand off to
-    // GTK — keeps the first frame already populated with the right
-    // namespace list. Same pattern as the TUI binary's main().
-    let context = rt
-        .block_on(kubeui_core::current_context_name())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    let (namespaces, ns_status) = match rt.block_on(kubeui_core::list_namespaces()) {
-        Ok(ns) => (ns, String::new()),
-        Err(e) => (Vec::new(), format!("Namespace list failed: {e}")),
-    };
-    let ns_count = namespaces.len();
-
-    let mut state = AppState::new(context, namespaces);
-    state.status = if ns_count > 0 {
-        format!("Found {ns_count} namespaces. Press r to load.")
-    } else {
-        ns_status
-    };
-    let state = Rc::new(RefCell::new(state));
+    // Bootstrap on the main thread before handing off to GTK so the
+    // first frame is already populated. Same pattern as the TUI binary.
+    let state = Rc::new(RefCell::new(bootstrap_state(&rt)));
 
     let app = Application::builder().application_id(APP_ID).build();
     {
@@ -134,7 +118,14 @@ fn build_ui(app: &Application, state: Rc<RefCell<AppState>>, rt: Rc<tokio::runti
                 let viewport =
                     quadraui::Rect::new(0.0, 0.0, widget.width() as f32, widget.height() as f32);
                 let metrics = font_metrics(&da);
-                click_to_actions(&s, viewport, metrics, x, y)
+                resolve_click(
+                    &s,
+                    viewport,
+                    x as f32,
+                    y as f32,
+                    metrics.char_w,
+                    metrics.line_h,
+                )
             };
             for a in actions {
                 let mut s = state.borrow_mut();
@@ -195,53 +186,6 @@ fn key_to_actions(state: &AppState, key: gdk::Key) -> Vec<Action> {
     }
 }
 
-fn click_to_actions(
-    state: &AppState,
-    viewport: quadraui::Rect,
-    metrics: FontMetrics,
-    x: f64,
-    y: f64,
-) -> Vec<Action> {
-    // Picker (dropdown) takes precedence. Hit-test the live menu layout
-    // so click resolution stays in lock-step with paint.
-    if let Some(picker) = state.picker.as_ref() {
-        let Some(anchor) = picker_anchor(state, viewport, metrics.char_w, metrics.line_h) else {
-            return vec![Action::PickerCancel];
-        };
-        let menu = build_picker_menu(picker, picker_current_index(state, picker.purpose));
-        let menu_w = picker_menu_width(picker, viewport, metrics.char_w);
-        let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
-            ContextMenuItemMeasure::new(metrics.line_h)
-        });
-        match menu_layout.hit_test(x as f32, y as f32) {
-            ContextMenuHit::Item(id) => {
-                if let Some(orig) = decode_picker_hit_id(id.as_str()) {
-                    let visible = picker.visible_indices();
-                    if let Some(visible_idx) = visible.iter().position(|&o| o == orig) {
-                        return vec![Action::PickerSelectVisible(visible_idx)];
-                    }
-                }
-                return vec![];
-            }
-            ContextMenuHit::Inert => return vec![],
-            ContextMenuHit::Empty => return vec![Action::PickerCancel],
-        }
-    }
-
-    // Status bar lives on the last `line_h` row.
-    let status_top = viewport.height - metrics.line_h;
-    if y as f32 >= status_top {
-        let bar = build_status_bar(state);
-        // `resolve_click` works in cells; convert pixel x → cell col.
-        let col = (x / metrics.char_w as f64) as u16;
-        let cols = (viewport.width / metrics.char_w) as usize;
-        if let Some(id) = bar.resolve_click(col, cols) {
-            return vec![Action::StatusBarSegmentClicked(id)];
-        }
-    }
-    vec![]
-}
-
 // ─── Cairo rasterisation ────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -259,13 +203,14 @@ fn font_metrics(da: &DrawingArea) -> FontMetrics {
     FontMetrics { char_w, line_h }
 }
 
-fn set_color(cr: &Cairo, c: Color) {
-    cr.set_source_rgb(c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0);
-}
-
 fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
     // Background.
-    set_color(cr, Color::rgb(20, 22, 30));
+    let bg = theme().background;
+    cr.set_source_rgb(
+        bg.r as f64 / 255.0,
+        bg.g as f64 / 255.0,
+        bg.b as f64 / 255.0,
+    );
     cr.rectangle(0.0, 0.0, w, h);
     let _ = cr.fill();
 
@@ -281,10 +226,36 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
 
     // ── Resource list pane ──────────────────────────────────────
     let list = build_list(state);
-    draw_list(cr, &layout, 0.0, 0.0, list_w, body_h, line_h, &list);
+    quadraui::gtk::draw_list(
+        cr,
+        &layout,
+        0.0,
+        0.0,
+        list_w,
+        body_h,
+        &list,
+        &theme(),
+        line_h,
+        false,
+    );
 
     // ── YAML pane ──────────────────────────────────────────────
-    draw_yaml(cr, &layout, list_w, 0.0, w - list_w, body_h, line_h, state);
+    let yaml = build_yaml_view(state);
+    let yaml_theme = quadraui::Theme {
+        background: Color::rgb(16, 18, 24),
+        ..theme()
+    };
+    quadraui::gtk::draw_text_display(
+        cr,
+        &layout,
+        list_w,
+        0.0,
+        w - list_w,
+        body_h,
+        &yaml,
+        &yaml_theme,
+        line_h,
+    );
 
     // ── Status bar ─────────────────────────────────────────────
     let bar = build_status_bar(state);
@@ -302,90 +273,5 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
             });
             quadraui::gtk::draw_context_menu(cr, &layout, &menu, &menu_layout, line_h, &theme());
         }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_list(
-    cr: &Cairo,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    line_h: f64,
-    list: &ListView,
-) {
-    quadraui::gtk::draw_list(cr, layout, x, y, w, h, list, &theme(), line_h, false);
-}
-
-/// Draw the YAML pane: bespoke title row + delegated `TextDisplay`
-/// body. Title stays in the binary because it depends on focus state
-/// and shouldn't scroll with the body.
-#[allow(clippy::too_many_arguments)]
-fn draw_yaml(
-    cr: &Cairo,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    line_h: f64,
-    state: &AppState,
-) {
-    let pane_bg = Color::rgb(16, 18, 24);
-    let has_focus = state.focus == Focus::Yaml;
-
-    // Title row: bespoke (focus-dependent string, doesn't scroll).
-    set_color(cr, pane_bg);
-    cr.rectangle(x, y, w, line_h);
-    let _ = cr.fill();
-    let title_color = if has_focus {
-        Color::rgb(255, 220, 140)
-    } else {
-        Color::rgb(140, 200, 240)
-    };
-    set_color(cr, title_color);
-    layout.set_text(if has_focus { " YAML  ◀ j/k" } else { " YAML" });
-    cr.move_to(x + 6.0, y);
-    pangocairo::functions::show_layout(cr, layout);
-
-    // Body: delegated.
-    let display = kubeui_core::build_yaml_view(state);
-    let yaml_theme = quadraui::Theme {
-        background: pane_bg,
-        ..theme()
-    };
-    quadraui::gtk::draw_text_display(
-        cr,
-        layout,
-        x + 6.0,
-        y + line_h,
-        w - 6.0,
-        h - line_h,
-        &display,
-        &yaml_theme,
-        line_h,
-    );
-}
-
-/// Theme used for the public quadraui rasterisers. kubeui's palette is
-/// hardcoded; this maps the relevant subset to `quadraui::Theme` fields
-/// so the public `draw_*` rasterisers paint with kubeui's colours.
-fn theme() -> quadraui::Theme {
-    quadraui::Theme {
-        // List/pane background.
-        background: Color::rgb(22, 25, 35),
-        foreground: Color::rgb(220, 220, 220),
-        surface_fg: Color::rgb(220, 220, 220),
-        // Selected row in the resource list.
-        selected_bg: Color::rgb(50, 60, 90),
-        // Right-aligned detail / dim text.
-        muted_fg: Color::rgb(180, 180, 180),
-        // Header (kubeui list title row); no flat strip in current UI but
-        // align with the muted blue title that the legacy renderer used.
-        header_bg: Color::rgb(22, 25, 35),
-        header_fg: Color::rgb(160, 200, 240),
-        ..quadraui::Theme::default()
     }
 }
