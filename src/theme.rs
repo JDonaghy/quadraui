@@ -114,6 +114,17 @@ pub struct Theme {
     /// prompt's text entry). Distinct from `surface_bg` so the input
     /// reads as a separate sub-region.
     pub input_bg: Color,
+
+    // ── ActivityBar / Terminal lift (B5c.5) ────────────────────────────
+    /// Foreground for inactive entries in dim-out-when-not-focused
+    /// chrome (activity-bar inactive icons, similar surfaces). Distinct
+    /// from `muted_fg` because activity-bar icons typically use the
+    /// status-bar's inactive colour, not the line-number / detail tone.
+    pub inactive_fg: Color,
+    /// Selection-region background. Used by the `Terminal` rasteriser
+    /// to highlight selected cells. Distinct from `selected_bg` (which
+    /// is the listview row highlight).
+    pub selection_bg: Color,
 }
 
 impl Default for Theme {
@@ -151,6 +162,8 @@ impl Default for Theme {
             hover_fg: fg,
             hover_border: Color::rgb(120, 140, 175),
             input_bg: Color::rgb(48, 52, 64),
+            inactive_fg: Color::rgb(120, 122, 135),
+            selection_bg: Color::rgb(60, 80, 120),
         }
     }
 }

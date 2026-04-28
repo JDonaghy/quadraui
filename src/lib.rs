@@ -113,8 +113,8 @@ pub mod dispatch;
 pub mod modal_stack;
 
 pub use primitives::activity_bar::{
-    ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityItem, ActivitySide,
-    VisibleActivityItem,
+    ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
+    ActivityItem, ActivitySide, VisibleActivityItem,
 };
 pub use primitives::completions::{
     CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsEvent,

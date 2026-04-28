@@ -109,6 +109,19 @@ pub enum ActivityBarHit {
     Empty,
 }
 
+/// Per-row hit region produced by the rasteriser, carrying the
+/// item's `WidgetId` and tooltip alongside the painted vertical
+/// span. Apps that need both click routing AND hover tooltips (e.g.
+/// vimcode's GTK activity bar with `connect_query_tooltip`) read
+/// from this list rather than re-resolving via the layout.
+#[derive(Debug, Clone)]
+pub struct ActivityBarRowHit {
+    pub y_start: f64,
+    pub y_end: f64,
+    pub id: WidgetId,
+    pub tooltip: String,
+}
+
 /// Fully-resolved activity-bar layout. Backends iterate `visible_items`
 /// for painting and call [`Self::hit_test`] for clicks.
 #[derive(Debug, Clone, PartialEq)]

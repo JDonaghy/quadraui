@@ -50,6 +50,19 @@ impl Color {
         };
         Some(Self { r, g, b, a })
     }
+
+    /// Linearly interpolate each channel toward white by `amount`
+    /// (clamped to `[0.0, 1.0]`). Used by primitives that derive a
+    /// hover/highlight tint from a base background colour.
+    pub fn lighten(self, amount: f64) -> Self {
+        let f = amount.clamp(0.0, 1.0);
+        Self {
+            r: (self.r as f64 + (255.0 - self.r as f64) * f) as u8,
+            g: (self.g as f64 + (255.0 - self.g as f64) * f) as u8,
+            b: (self.b as f64 + (255.0 - self.b as f64) * f) as u8,
+            a: self.a,
+        }
+    }
 }
 
 /// A contiguous run of text sharing a single style.

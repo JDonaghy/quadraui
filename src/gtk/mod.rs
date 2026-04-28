@@ -24,6 +24,7 @@ use gtk4::pango;
 
 use crate::types::Color;
 
+mod activity_bar;
 mod context_menu;
 mod dialog;
 mod form;
@@ -31,11 +32,13 @@ mod list;
 mod palette;
 mod status_bar;
 mod tab_bar;
+mod terminal;
 mod text_display;
 mod tooltip;
 mod tree;
 
 pub use crate::primitives::tab_bar::TabBarHits;
+pub use activity_bar::{draw_activity_bar, ACTIVITY_ROW_PX};
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use form::draw_form;
@@ -43,6 +46,7 @@ pub use list::draw_list;
 pub use palette::draw_palette;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
+pub use terminal::draw_terminal_cells;
 pub use text_display::draw_text_display;
 pub use tooltip::draw_tooltip;
 pub use tree::draw_tree;

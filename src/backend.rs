@@ -12,10 +12,9 @@ use std::time::Duration;
 
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
-use crate::primitives::activity_bar::ActivityBarLayout;
+use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
-use crate::primitives::terminal::TerminalLayout;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
     TextDisplay, TreeView,
@@ -109,8 +108,19 @@ pub trait Backend {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
-    fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar, layout: &ActivityBarLayout);
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal, layout: &TerminalLayout);
+    /// Draw an activity bar. `hovered_idx` carries per-frame hover
+    /// state so the rasteriser can paint a tint on the hovered row.
+    /// Returns per-row hit regions for click + tooltip dispatch.
+    fn draw_activity_bar(
+        &mut self,
+        rect: Rect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
+    ) -> Vec<ActivityBarRowHit>;
+    /// Draw a terminal cell grid. No hit-region data is returned;
+    /// terminal selection is driven by mouse drag against cell
+    /// dimensions, which the app already tracks.
+    fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
     /// Draw a `TextDisplay` (streaming-text panel — log viewer, output
     /// pane, YAML view, etc). No hit-region data is returned;
     /// `TextDisplay` itself is non-interactive (selection / scroll
