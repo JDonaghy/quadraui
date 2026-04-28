@@ -1,13 +1,27 @@
 # Backend implementation guide
 
 How to implement [`quadraui::Backend`] for a new platform.
-**Two reference backends ship today**: `TuiBackend`
-(`src/tui_main/backend.rs`, Phase B.4) for terminals via crossterm,
-and `GtkBackend` (`src/gtk/backend.rs`, Phase B.5) for desktop via
-GTK4. After reading this you should be able to drop in a fresh
-`WinBackend` / `MacBackend` / `AndroidBackend` and have it work
-end-to-end against the same generic `paint::<B>` and event-loop
-code that runs against the existing two.
+**Two reference backends exist today**:
+
+- **`TuiBackend`** (`src/tui_main/backend.rs`, Phase B.4) — terminals
+  via crossterm. **Fully consuming the trait**: every native event
+  flows through `wait_events`; click dispatch goes through
+  `dispatch_mouse_*`; accelerator registry drives keybindings;
+  generic `paint::<B>` paths drive the quickfix panel and other
+  cross-backend primitives.
+- **`GtkBackend`** (`src/gtk/backend.rs`, Phase B.5) — desktop via
+  GTK4. **Plumbing in place; runtime migration tracked at vimcode
+  issue #249.** The trait surface, the `Rc<RefCell<VecDeque<UiEvent>>>`
+  event queue, the GDK→`UiEvent` translation helpers, the
+  accelerator registry, and `is_modal_open()` are all wired up. But
+  the running GTK app still routes events / clicks / keys through
+  Relm4 `Msg::*` flow — only the quickfix panel actually consumes
+  the trait. The B.5b stages in #249 finish the runtime port.
+
+After reading this guide and the existing TUI implementation you
+should be able to drop in a fresh `WinBackend` / `MacBackend` /
+`AndroidBackend` end-to-end. **Don't model your impl on `GtkBackend`
+yet** — its runtime side is mid-migration.
 
 This doc is descriptive: the architectural rationale (why the trait
 looks the way it does, what gets normalised vs. left native) lives in
@@ -29,12 +43,13 @@ struct GtkBackend {
 }
 ```
 
-GTK signal callbacks (mouse, key, resize) clone the queue handle into
-their captures and `events.borrow_mut().push_back(translated_event)`.
-`wait_events` drains the queue. The TUI backend stays
-greppable end-to-end (its synchronous `event_loop()` reads as a
-single match statement); GTK backend hides the callback fragmentation
-behind one queue. Same trait, same consumer code.
+The intended pattern is: signal callbacks clone the queue handle
+into their captures and `events.borrow_mut().push_back(translated_event)`;
+`wait_events` drains the queue. **GtkBackend ships the API but the
+producer wiring is B.5b stage 1 work** (issue #249). When that lands,
+the GTK runtime fragments behind one queue and the TUI's
+synchronous `event_loop()` stays greppable end-to-end — same trait,
+same consumer code.
 
 **Forward-compatibility:** every callback-driven backend (Cocoa
 delegate methods, Android NDK ALooper, Win32 WindowProc, web JS event
