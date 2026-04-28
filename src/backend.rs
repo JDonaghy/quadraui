@@ -14,7 +14,7 @@ use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarLayout;
 use crate::primitives::status_bar::StatusBarHitRegion;
-use crate::primitives::tab_bar::TabBarLayout;
+use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::terminal::TerminalLayout;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::{
@@ -99,7 +99,17 @@ pub trait Backend {
     /// carrying an `action_id`. Caller dispatches clicks against the
     /// returned list.
     fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar) -> Vec<StatusBarHitRegion>;
-    fn draw_tab_bar(&mut self, rect: Rect, bar: &TabBar, layout: &TabBarLayout);
+    /// Draw a tab bar. `hovered_close_tab` carries per-frame hover
+    /// state so the rasteriser can paint a hover background behind the
+    /// hovered tab's close glyph (the primitive itself carries no
+    /// mouse state). Returns [`TabBarHits`] for click dispatch +
+    /// scroll-offset reconciliation.
+    fn draw_tab_bar(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarHits;
     fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar, layout: &ActivityBarLayout);
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal, layout: &TerminalLayout);
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay, layout: &TextDisplayLayout);

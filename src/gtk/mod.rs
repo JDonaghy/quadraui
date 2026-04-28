@@ -35,13 +35,14 @@ mod text_display;
 mod tooltip;
 mod tree;
 
+pub use crate::primitives::tab_bar::TabBarHits;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
 pub use status_bar::draw_status_bar;
-pub use tab_bar::{draw_tab_bar, TabBarHits};
+pub use tab_bar::draw_tab_bar;
 pub use text_display::draw_text_display;
 pub use tooltip::draw_tooltip;
 pub use tree::draw_tree;

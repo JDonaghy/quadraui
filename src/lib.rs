@@ -164,8 +164,8 @@ pub use primitives::status_bar::{
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
 pub use primitives::tab_bar::{
-    SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabBarSegment, TabItem,
-    TabMeasure, VisibleSegment, VisibleTab,
+    SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits, TabBarLayout, TabBarSegment,
+    TabItem, TabMeasure, VisibleSegment, VisibleTab,
 };
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,

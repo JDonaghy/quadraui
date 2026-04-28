@@ -15,35 +15,8 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
-use crate::primitives::tab_bar::TabBar;
+use crate::primitives::tab_bar::{TabBar, TabBarHits};
 use crate::theme::Theme;
-
-/// Pre-frame interaction-state output from [`draw_tab_bar`]. All
-/// positions are in target-surface coordinates (the `width` /
-/// `y_offset` arguments are absolute).
-///
-/// Apps consume this to dispatch clicks. Tabs before the
-/// scroll offset get a `(0.0, 0.0)` sentinel slot so indices in
-/// `slot_positions` line up with `bar.tabs`.
-#[derive(Debug, Default, Clone)]
-pub struct TabBarHits {
-    /// `[(start_x, end_x)]` per tab index. Tabs before
-    /// `bar.scroll_offset` have zero-width sentinels.
-    pub slot_positions: Vec<(f64, f64)>,
-    /// `[(start_x, end_x)]` per right-segment index, in the order the
-    /// segments were declared.
-    pub right_segment_bounds: Vec<(f64, f64)>,
-    /// Tab-bar content width in **character columns** (computed from a
-    /// 15-char sample's Pango width). Useful for engines that decide
-    /// per-tab budgets in cell units.
-    pub available_cols: usize,
-    /// Scroll offset that would make the active tab visible *given
-    /// this frame's actual pixel widths*. Caller compares to
-    /// `bar.scroll_offset` and triggers a repaint if they differ —
-    /// this corrects for the engine's char-based width estimate
-    /// undershooting Pango pixel widths (~4 chars per tab).
-    pub correct_scroll_offset: usize,
-}
 
 /// Per-tab padding (left + right) inside the tab background fill.
 const TAB_PAD: f64 = 14.0;

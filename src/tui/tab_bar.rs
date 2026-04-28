@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
 use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide};
-use crate::primitives::tab_bar::{TabBar, TabBarLayout};
+use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout};
 use crate::theme::Theme;
 
 /// Close-button glyph rendered on each tab. `×` (U+00D7 MULTIPLICATION
@@ -59,9 +59,9 @@ pub fn draw_tab_bar(
     bar: &TabBar,
     layout: &TabBarLayout,
     theme: &Theme,
-) -> usize {
+) -> TabBarHits {
     if area.width == 0 || area.height == 0 {
-        return 0;
+        return TabBarHits::default();
     }
 
     let bar_bg = ratatui_color(theme.tab_bar_bg);
@@ -83,11 +83,13 @@ pub fn draw_tab_bar(
     };
 
     // ── Right-aligned segments (from layout) ───────────────────────────
+    let mut right_segment_bounds: Vec<(f64, f64)> = Vec::with_capacity(bar.right_segments.len());
     for vs in &layout.visible_segments {
         let seg = &bar.right_segments[vs.segment_idx];
         let fg = if seg.is_active { btn_fg_active } else { btn_fg };
         let bx = area.x + vs.bounds.x.round() as u16;
         let seg_end = bx + seg.width_cells;
+        right_segment_bounds.push((bx as f64, seg_end as f64));
         let mut cx = bx;
         for ch in seg.text.chars() {
             if cx >= seg_end {
@@ -119,9 +121,15 @@ pub fn draw_tab_bar(
     let preview_inactive_fg = ratatui_color(theme.tab_preview_inactive_fg);
     let separator = ratatui_color(theme.separator);
 
+    let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
+    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
+        slot_positions.push((0.0, 0.0));
+    }
     for vt in &layout.visible_tabs {
         let tab = &bar.tabs[vt.tab_idx];
         let tab_x = area.x + vt.bounds.x.round() as u16;
+        let tab_w = vt.bounds.width.round() as u16;
+        slot_positions.push((tab_x as f64, (tab_x + tab_w) as f64));
 
         let (fg, bg) = match (tab.is_active, tab.is_preview) {
             (true, true) => (preview_active_fg, active_bg),
@@ -191,7 +199,13 @@ pub fn draw_tab_bar(
         }
     }
 
-    tab_content_width
+    TabBarHits {
+        slot_positions,
+        right_segment_bounds,
+        available_cols: tab_content_width,
+        // TUI's char-based fit is exact; no correction needed.
+        correct_scroll_offset: bar.scroll_offset,
+    }
 }
 
 #[cfg(test)]
@@ -265,14 +279,14 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
         let bar = make_bar(0);
         let layout = bar.layout(30.0, 1.0, 0.0, measure_tab, |_| SegmentMeasure::new(0.0));
-        let content_w = draw_tab_bar(
+        let hits = draw_tab_bar(
             &mut buf,
             Rect::new(0, 0, 30, 1),
             &bar,
             &layout,
             &Theme::default(),
         );
-        assert_eq!(content_w, 30);
+        assert_eq!(hits.available_cols, 30);
     }
 
     #[test]
@@ -302,14 +316,18 @@ mod tests {
             |_| TabMeasure::new(5.0, 0.0),
             |_| SegmentMeasure::new(3.0),
         );
-        let content_w = draw_tab_bar(
+        let hits = draw_tab_bar(
             &mut buf,
             Rect::new(0, 0, 30, 1),
             &bar,
             &layout,
             &Theme::default(),
         );
-        assert_eq!(content_w, 27);
+        assert_eq!(hits.available_cols, 27);
+        // Right-segment bounds: 1 segment "[+]" 3 cells wide ending at col 30.
+        assert_eq!(hits.right_segment_bounds.len(), 1);
+        let (start, end) = hits.right_segment_bounds[0];
+        assert_eq!((start, end), (27.0, 30.0));
     }
 
     #[test]
@@ -317,14 +335,15 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         let bar = make_bar(0);
         let layout = bar.layout(10.0, 1.0, 0.0, measure_tab, |_| SegmentMeasure::new(0.0));
-        // Zero-width area: function must return 0 without panicking.
-        let content_w = draw_tab_bar(
+        // Zero-width area: function must return defaults without panicking.
+        let hits = draw_tab_bar(
             &mut buf,
             Rect::new(0, 0, 0, 1),
             &bar,
             &layout,
             &Theme::default(),
         );
-        assert_eq!(content_w, 0);
+        assert_eq!(hits.available_cols, 0);
+        assert!(hits.slot_positions.is_empty());
     }
 }

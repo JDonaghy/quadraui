@@ -337,6 +337,30 @@ impl TabBarLayout {
     }
 }
 
+/// Per-frame interaction-state output from a tab-bar rasteriser. All
+/// positions are in target-surface coordinates.
+///
+/// Apps consume this to dispatch clicks. Tabs before the
+/// scroll offset get a `(0.0, 0.0)` sentinel slot so indices in
+/// `slot_positions` line up with `bar.tabs`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TabBarHits {
+    /// `[(start_x, end_x)]` per tab index. Tabs before
+    /// `bar.scroll_offset` have zero-width sentinels.
+    pub slot_positions: Vec<(f64, f64)>,
+    /// `[(start_x, end_x)]` per right-segment index, in the order the
+    /// segments were declared.
+    pub right_segment_bounds: Vec<(f64, f64)>,
+    /// Tab-bar content width in **character columns** (computed from a
+    /// 15-char sample's Pango width). Useful for engines that decide
+    /// per-tab budgets in cell units.
+    pub available_cols: usize,
+    /// Scroll offset that would make the active tab visible *given
+    /// this frame's actual measurements*. Caller compares to
+    /// `bar.scroll_offset` and triggers a repaint if they differ.
+    pub correct_scroll_offset: usize,
+}
+
 impl TabBar {
     /// Compute the full rendering + hit-test layout for this tab bar.
     ///
