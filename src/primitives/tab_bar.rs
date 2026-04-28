@@ -610,3 +610,123 @@ pub enum TabBarEvent {
     /// keyboard focus) but kept for shape parity.
     KeyPressed { key: String, modifiers: Modifiers },
 }
+
+#[cfg(test)]
+mod hit_test_diff_tests {
+    use super::*;
+
+    fn make_diff_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs:group"),
+            tabs: vec![
+                TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                },
+                TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                },
+            ],
+            right_segments: vec![
+                // change_label = "1 of 5", text = " 1 of 5" = 7 chars
+                TabBarSegment {
+                    id: None,
+                    text: " 1 of 5".into(),
+                    width_cells: 7,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    id: Some(WidgetId::new("tab:diff_prev")),
+                    text: " a".into(),
+                    width_cells: 3,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    id: Some(WidgetId::new("tab:diff_next")),
+                    text: " b".into(),
+                    width_cells: 3,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    id: Some(WidgetId::new("tab:diff_toggle")),
+                    text: " c".into(),
+                    width_cells: 3,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    id: Some(WidgetId::new("tab:split_right")),
+                    text: " d".into(),
+                    width_cells: 3,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    id: Some(WidgetId::new("tab:split_down")),
+                    text: " e ".into(),
+                    width_cells: 3,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    id: Some(WidgetId::new("tab:action_menu")),
+                    text: " f ".into(),
+                    width_cells: 3,
+                    is_active: false,
+                },
+            ],
+            active_accent: None,
+            scroll_offset: 0,
+        }
+    }
+
+    #[test]
+    fn diff_buttons_resolve_to_correct_widget_ids() {
+        let bar = make_diff_bar();
+        let bar_width = 80.0_f32;
+        let tab_widths = [9_usize, 8];
+        let layout = bar.layout(
+            bar_width,
+            1.0,
+            0.0,
+            |i| TabMeasure::new(tab_widths[i] as f32, 2.0),
+            |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+        );
+
+        // right_area = 7 + 3*6 = 25; segs start at 80 - 25 = 55.
+        // change_label: 55..62, diff_prev: 62..65, diff_next: 65..68,
+        // diff_toggle: 68..71, split_right: 71..74, split_down: 74..77,
+        // action_menu: 77..80.
+        for (col, expected) in [
+            (62, "tab:diff_prev"),
+            (64, "tab:diff_prev"),
+            (65, "tab:diff_next"),
+            (67, "tab:diff_next"),
+            (68, "tab:diff_toggle"),
+            (70, "tab:diff_toggle"),
+            (71, "tab:split_right"),
+            (74, "tab:split_down"),
+            (77, "tab:action_menu"),
+        ] {
+            let hit = layout.hit_test(col as f32, 0.0);
+            match hit {
+                TabBarHit::RightSegment(id) => {
+                    assert_eq!(
+                        id.as_str(),
+                        expected,
+                        "click at col {col} expected {expected}, got {id:?}"
+                    );
+                }
+                other => panic!("click at col {col} expected RightSegment({expected}), got {other:?}"),
+            }
+        }
+
+        // Click on change_label (col 56) should be Empty (no id).
+        match layout.hit_test(56.0, 0.0) {
+            TabBarHit::Empty => {}
+            other => panic!("click at col 56 (change_label) expected Empty, got {other:?}"),
+        }
+    }
+}
