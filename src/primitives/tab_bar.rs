@@ -341,13 +341,19 @@ impl TabBarLayout {
 /// positions are in target-surface coordinates.
 ///
 /// Apps consume this to dispatch clicks. Tabs before the
-/// scroll offset get a `(0.0, 0.0)` sentinel slot so indices in
-/// `slot_positions` line up with `bar.tabs`.
+/// scroll offset get sentinel entries so indices in `slot_positions`
+/// / `close_bounds` line up with `bar.tabs`.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TabBarHits {
     /// `[(start_x, end_x)]` per tab index. Tabs before
-    /// `bar.scroll_offset` have zero-width sentinels.
+    /// `bar.scroll_offset` have zero-width `(0.0, 0.0)` sentinels.
     pub slot_positions: Vec<(f64, f64)>,
+    /// `[Some((start_x, end_x))]` for each visible tab's close-button
+    /// hit zone, or `None` for tabs without a close button (and
+    /// sentinels for tabs before the scroll offset). Indexed by tab
+    /// index in `bar.tabs` so callers don't recompute close geometry
+    /// — the rasteriser knows the exact placement and reports it.
+    pub close_bounds: Vec<Option<(f64, f64)>>,
     /// `[(start_x, end_x)]` per right-segment index, in the order the
     /// segments were declared.
     pub right_segment_bounds: Vec<(f64, f64)>,

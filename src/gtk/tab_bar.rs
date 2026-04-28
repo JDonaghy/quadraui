@@ -119,8 +119,10 @@ pub fn draw_tab_bar(
 
     // ── Tabs paint loop ──────────────────────────────────────────────
     let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
+    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
     for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
         slot_positions.push((0.0, 0.0));
+        close_bounds.push(None);
     }
 
     let mut x = 0.0_f64;
@@ -139,6 +141,11 @@ pub fn draw_tab_bar(
             break;
         }
         slot_positions.push((x, x + slot_w));
+        // Close-button hit zone matches the rendered glyph's pad-extended
+        // box (the rounded hover-bg rect). See `close_x` below.
+        let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
+        let close_pad = 2.0;
+        close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
 
         // Tab background.
         let bg_col = if tab.is_active {
@@ -274,6 +281,7 @@ pub fn draw_tab_bar(
 
     TabBarHits {
         slot_positions,
+        close_bounds,
         right_segment_bounds,
         available_cols,
         correct_scroll_offset,

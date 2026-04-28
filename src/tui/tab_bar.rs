@@ -122,14 +122,21 @@ pub fn draw_tab_bar(
     let separator = ratatui_color(theme.separator);
 
     let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
+    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
     for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
         slot_positions.push((0.0, 0.0));
+        close_bounds.push(None);
     }
     for vt in &layout.visible_tabs {
         let tab = &bar.tabs[vt.tab_idx];
         let tab_x = area.x + vt.bounds.x.round() as u16;
         let tab_w = vt.bounds.width.round() as u16;
         slot_positions.push((tab_x as f64, (tab_x + tab_w) as f64));
+        // Layout carries close_bounds in primitive (cell) coords; offset by area.x.
+        close_bounds.push(vt.close_bounds.map(|cb| {
+            let cx = area.x as f64 + cb.x as f64;
+            (cx, cx + cb.width as f64)
+        }));
 
         let (fg, bg) = match (tab.is_active, tab.is_preview) {
             (true, true) => (preview_active_fg, active_bg),
@@ -201,6 +208,7 @@ pub fn draw_tab_bar(
 
     TabBarHits {
         slot_positions,
+        close_bounds,
         right_segment_bounds,
         available_cols: tab_content_width,
         // TUI's char-based fit is exact; no correction needed.
