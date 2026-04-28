@@ -1,15 +1,47 @@
 # Backend implementation guide
 
-How to implement [`quadraui::Backend`] for a new platform, using
-vimcode's `TuiBackend` as the reference. After reading this you should
-be able to drop in a fresh `GtkBackend` / `WinBackend` / `MacBackend`
-and have it work end-to-end against the same generic `paint::<B>` and
-event-loop code that runs against `TuiBackend`.
+How to implement [`quadraui::Backend`] for a new platform.
+**Two reference backends ship today**: `TuiBackend`
+(`src/tui_main/backend.rs`, Phase B.4) for terminals via crossterm,
+and `GtkBackend` (`src/gtk/backend.rs`, Phase B.5) for desktop via
+GTK4. After reading this you should be able to drop in a fresh
+`WinBackend` / `MacBackend` / `AndroidBackend` and have it work
+end-to-end against the same generic `paint::<B>` and event-loop
+code that runs against the existing two.
 
 This doc is descriptive: the architectural rationale (why the trait
 looks the way it does, what gets normalised vs. left native) lives in
 `BACKEND_TRAIT_PROPOSAL.md`. Read that first if you're writing a
 backend from scratch.
+
+## Event-loop shape: poll-driven trait, queue adapter for callback-driven backends
+
+The trait is **poll-driven**: backends implement
+[`Backend::wait_events`] / [`Backend::poll_events`] returning
+`Vec<UiEvent>`. TUI's crossterm fits this naturally — it has a
+synchronous poll API. Callback-driven backends (GTK, Win32 partial,
+Cocoa, Android, web) use the **option A event queue** adapter:
+
+```rust
+struct GtkBackend {
+    events: Rc<RefCell<VecDeque<UiEvent>>>,
+    // ...
+}
+```
+
+GTK signal callbacks (mouse, key, resize) clone the queue handle into
+their captures and `events.borrow_mut().push_back(translated_event)`.
+`wait_events` drains the queue. The TUI backend stays
+greppable end-to-end (its synchronous `event_loop()` reads as a
+single match statement); GTK backend hides the callback fragmentation
+behind one queue. Same trait, same consumer code.
+
+**Forward-compatibility:** every callback-driven backend (Cocoa
+delegate methods, Android NDK ALooper, Win32 WindowProc, web JS event
+listeners) uses the same queue pattern. macOS may need its
+`NSApplication.run()` started on the main thread with delegate
+methods pushing to a `Mutex<VecDeque<UiEvent>>`; web pushes from
+JS event listeners and drives paint from `requestAnimationFrame`.
 
 ## What the backend owns
 
