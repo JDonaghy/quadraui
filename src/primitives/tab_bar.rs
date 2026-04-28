@@ -719,7 +719,9 @@ mod hit_test_diff_tests {
                         "click at col {col} expected {expected}, got {id:?}"
                     );
                 }
-                other => panic!("click at col {col} expected RightSegment({expected}), got {other:?}"),
+                other => {
+                    panic!("click at col {col} expected RightSegment({expected}), got {other:?}")
+                }
             }
         }
 
