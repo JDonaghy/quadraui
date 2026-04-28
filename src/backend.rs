@@ -12,6 +12,11 @@ use std::time::Duration;
 
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
+use crate::primitives::activity_bar::ActivityBarLayout;
+use crate::primitives::status_bar::StatusBarLayout;
+use crate::primitives::tab_bar::TabBarLayout;
+use crate::primitives::terminal::TerminalLayout;
+use crate::primitives::text_display::TextDisplayLayout;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
     TextDisplay, TreeView,
@@ -79,11 +84,16 @@ pub trait Backend {
     fn draw_list(&mut self, rect: Rect, list: &ListView);
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
-    fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar);
-    fn draw_tab_bar(&mut self, rect: Rect, bar: &TabBar);
-    fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar);
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
-    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
+
+    // Layout-passthrough primitives (per BACKEND_TRAIT_PROPOSAL.md
+    // §6.2). The app pre-computes the primitive's `*Layout` so the
+    // backend rasteriser doesn't have to re-run layout — both fed to
+    // the trait method here.
+    fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar, layout: &StatusBarLayout);
+    fn draw_tab_bar(&mut self, rect: Rect, bar: &TabBar, layout: &TabBarLayout);
+    fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar, layout: &ActivityBarLayout);
+    fn draw_terminal(&mut self, rect: Rect, term: &Terminal, layout: &TerminalLayout);
+    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay, layout: &TextDisplayLayout);
 }
 
 /// Platform services the backend exposes to apps: clipboard, file dialogs,
