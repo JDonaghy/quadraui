@@ -13,8 +13,11 @@ use std::time::Duration;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
+use crate::primitives::tooltip::{Tooltip, TooltipLayout};
+use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
     TextDisplay, TreeView,
@@ -126,6 +129,22 @@ pub trait Backend {
     /// `TextDisplay` itself is non-interactive (selection / scroll
     /// happen at the panel chrome level, not at the line/span level).
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
+
+    /// Draw a [`Tooltip`] popup at its caller-resolved layout. The
+    /// caller computes anchor + viewport + content measurement and
+    /// asks `tooltip.layout(...)` for the bounds. Tooltips are
+    /// non-interactive — no hit data returned.
+    fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout);
+
+    /// Draw a [`ContextMenu`] popup at its caller-resolved layout.
+    /// Returns the per-clickable-item hit rectangles + their
+    /// `WidgetId`s so the caller's click handler can resolve mouse
+    /// events without re-running layout.
+    fn draw_context_menu(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+    ) -> Vec<(Rect, WidgetId)>;
 }
 
 /// Platform services the backend exposes to apps: clipboard, file dialogs,
