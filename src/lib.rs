@@ -112,6 +112,12 @@ pub mod event;
 pub mod dispatch;
 pub mod modal_stack;
 
+// ── Phase B.5e: runner-crate API ────────────────────────────────────────────
+// AppLogic trait + Reaction enum that per-backend `run<A: AppLogic>(app)`
+// runners (in `quadraui::tui::run`, `quadraui::gtk::run`) drive against.
+// See `docs/BACKEND_SETUP_AUDIT.md` (#260) for design rationale.
+pub mod runner;
+
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityItem, ActivitySide, VisibleActivityItem,
@@ -207,6 +213,7 @@ pub use dispatch::{
     dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, DragState, DragTarget,
 };
 pub use modal_stack::{ModalEntry, ModalStack};
+pub use runner::{AppLogic, Reaction};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
