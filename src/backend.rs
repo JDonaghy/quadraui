@@ -16,7 +16,6 @@ use crate::primitives::activity_bar::ActivityBarLayout;
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::terminal::TerminalLayout;
-use crate::primitives::text_display::TextDisplayLayout;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
     TextDisplay, TreeView,
@@ -112,7 +111,11 @@ pub trait Backend {
     ) -> TabBarHits;
     fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar, layout: &ActivityBarLayout);
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal, layout: &TerminalLayout);
-    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay, layout: &TextDisplayLayout);
+    /// Draw a `TextDisplay` (streaming-text panel — log viewer, output
+    /// pane, YAML view, etc). No hit-region data is returned;
+    /// `TextDisplay` itself is non-interactive (selection / scroll
+    /// happen at the panel chrome level, not at the line/span level).
+    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
 }
 
 /// Platform services the backend exposes to apps: clipboard, file dialogs,
