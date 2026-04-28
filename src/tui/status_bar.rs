@@ -12,10 +12,15 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusSegmentSide};
+use crate::primitives::status_bar::{
+    StatusBar, StatusBarHitRegion, StatusBarLayout, StatusSegmentSide,
+};
 use crate::theme::Theme;
 
-/// Draw a [`StatusBar`] into `area` on `buf`.
+/// Draw a [`StatusBar`] into `area` on `buf`. Returns hit regions in
+/// **bar-local cell coordinates** (relative to `area.x`) for each
+/// segment carrying an `action_id`. Caller dispatches clicks against
+/// the returned list.
 ///
 /// The bar is filled with the first segment's `bg` (so the bar looks
 /// continuous even when gaps exist between left and right halves).
@@ -40,9 +45,9 @@ pub fn draw_status_bar(
     bar: &StatusBar,
     layout: &StatusBarLayout,
     theme: &Theme,
-) {
+) -> Vec<StatusBarHitRegion> {
     if area.width == 0 || area.height == 0 {
-        return;
+        return Vec::new();
     }
     let y = area.y;
 
@@ -56,6 +61,7 @@ pub fn draw_status_bar(
         set_cell(buf, area.x + col, y, ' ', fill_bg, fill_bg);
     }
 
+    let mut regions: Vec<StatusBarHitRegion> = Vec::new();
     for vs in &layout.visible_segments {
         let seg = match vs.side {
             StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
@@ -78,7 +84,16 @@ pub fn draw_status_bar(
             }
             cx += 1;
         }
+
+        if let Some(ref id) = seg.action_id {
+            regions.push(StatusBarHitRegion {
+                col: (vs.bounds.x.round() as i64).clamp(0, u16::MAX as i64) as u16,
+                width: (vs.bounds.width.round() as i64).clamp(0, u16::MAX as i64) as u16,
+                id: id.clone(),
+            });
+        }
     }
+    regions
 }
 
 #[cfg(test)]
@@ -211,9 +226,9 @@ mod tests {
         let layout = bar.layout(10.0, 1.0, 2.0, |seg| {
             StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         });
-        // Zero-width area: function must return without panicking and
-        // without touching the buffer.
-        draw_status_bar(
+        // Zero-width area: function must return without panicking, without
+        // touching the buffer, and with an empty hit-region list.
+        let regions = draw_status_bar(
             &mut buf,
             Rect::new(0, 0, 0, 1),
             &bar,
@@ -221,5 +236,50 @@ mod tests {
             &Theme::default(),
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn returns_hit_regions_for_action_segments() {
+        // Bar with an action_id'd segment in the middle of the left half.
+        let bar = StatusBar {
+            id: WidgetId::new("test-bar"),
+            left_segments: vec![
+                StatusBarSegment {
+                    text: "AAA".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: None,
+                },
+                StatusBarSegment {
+                    text: "BBBB".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: Some(WidgetId::new("middle-action")),
+                },
+            ],
+            right_segments: vec![],
+        };
+        let layout = bar.layout(20.0, 1.0, 0.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let regions = draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+        );
+
+        // One region for the segment with action_id.
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].id.as_str(), "middle-action");
+        // Region is in bar-local cell coords: starts after "AAA" (col 3)
+        // and is 4 cells wide ("BBBB").
+        assert_eq!(regions[0].col, 3);
+        assert_eq!(regions[0].width, 4);
     }
 }

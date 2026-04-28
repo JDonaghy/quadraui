@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarLayout;
-use crate::primitives::status_bar::StatusBarLayout;
+use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarLayout;
 use crate::primitives::terminal::TerminalLayout;
 use crate::primitives::text_display::TextDisplayLayout;
@@ -86,10 +86,19 @@ pub trait Backend {
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 
     // Layout-passthrough primitives (per BACKEND_TRAIT_PROPOSAL.md
-    // §6.2). The app pre-computes the primitive's `*Layout` so the
-    // backend rasteriser doesn't have to re-run layout — both fed to
-    // the trait method here.
-    fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar, layout: &StatusBarLayout);
+    // §6.2). Each backend computes the primitive's layout internally
+    // using its native measurer (cells for TUI, Pango / DirectWrite /
+    // Core Text pixels for the others) — apps don't have access to
+    // those handles, so layout precomputation can't live caller-side.
+    //
+    // Methods that produce hit-region data (clickable segments,
+    // close-button rects, link rects) return it directly so callers
+    // route clicks against the same data the rasteriser used to paint.
+    /// Draw a status bar. Returns hit regions in **bar-local
+    /// coordinates** (relative to `rect.x` / `rect.y`) for each segment
+    /// carrying an `action_id`. Caller dispatches clicks against the
+    /// returned list.
+    fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar) -> Vec<StatusBarHitRegion>;
     fn draw_tab_bar(&mut self, rect: Rect, bar: &TabBar, layout: &TabBarLayout);
     fn draw_activity_bar(&mut self, rect: Rect, bar: &ActivityBar, layout: &ActivityBarLayout);
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal, layout: &TerminalLayout);
