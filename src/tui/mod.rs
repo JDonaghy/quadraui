@@ -20,24 +20,29 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::{Color, Decoration, StyledText};
 
+pub mod backend;
 mod context_menu;
 mod dialog;
+pub mod events;
 mod form;
 mod list;
 mod palette;
+pub mod services;
 mod status_bar;
 mod tab_bar;
 mod text_display;
 mod tooltip;
 mod tree;
 
+pub use backend::TuiBackend;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
+pub use services::TuiPlatformServices;
 pub use status_bar::draw_status_bar;
-pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR};
+pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR, TAB_CLOSE_COLS};
 pub use text_display::draw_text_display;
 pub use tooltip::draw_tooltip;
 pub use tree::draw_tree;

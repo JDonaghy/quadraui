@@ -20,6 +20,12 @@ use crate::theme::Theme;
 /// font we've encountered.
 pub const TAB_CLOSE_CHAR: char = '×';
 
+/// Cell width reserved per tab for the close-button + trailing
+/// separator. Apps that build a [`crate::TabMeasure`] for tab-bar
+/// layout pass this as the `close_width` so the layout reserves the
+/// right amount of trailing space.
+pub const TAB_CLOSE_COLS: u16 = 2;
+
 /// Narrow hardcoded set of Private Use Area glyphs that render as 2
 /// cells in terminals and therefore need [`set_cell_wide`]. The wide-glyph
 /// predicate is empirical — extend this list as new wide Nerd Font
