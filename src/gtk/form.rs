@@ -232,3 +232,92 @@ pub fn draw_form(
 
     layout.set_attributes(None);
 }
+
+/// Settings panel chrome: a 2-row strip with a header row and a search
+/// input row, designed to sit immediately above a [`Form`] body.
+///
+/// Total chrome height = `2 * line_height` pixels — the first
+/// `line_height` is the header (`header_bg` / `header_fg`), the second
+/// is the search input (full-width tinted `selected_bg` when `active`,
+/// otherwise the panel `tab_bar_bg`). Layout from left to right inside
+/// the search row: ` /  ` prefix in `muted_fg`, then either `query` (in
+/// `foreground`) or `placeholder` (in `muted_fg`) when the query is
+/// empty + inactive. A 1.5px-wide `accent_fg` cursor follows the query
+/// when `active`.
+///
+/// Chrome only — the form body and any scrollbar layered below are
+/// painted separately by the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_settings_chrome(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    line_height: f64,
+    header_text: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+    theme: &Theme,
+) {
+    if w <= 0.0 || line_height <= 0.0 {
+        return;
+    }
+
+    let bg = cairo_rgb(theme.tab_bar_bg);
+    let hdr_bg = cairo_rgb(theme.header_bg);
+    let hdr_fg = cairo_rgb(theme.header_fg);
+    let fg = cairo_rgb(theme.foreground);
+    let dim = cairo_rgb(theme.muted_fg);
+    let sel = cairo_rgb(theme.selected_bg);
+    let accent = cairo_rgb(theme.accent_fg);
+
+    layout.set_attributes(None);
+
+    // Row 0: header bar.
+    cr.set_source_rgb(hdr_bg.0, hdr_bg.1, hdr_bg.2);
+    cr.rectangle(x, y, w, line_height);
+    cr.fill().ok();
+    cr.set_source_rgb(hdr_fg.0, hdr_fg.1, hdr_fg.2);
+    layout.set_text(header_text);
+    let (_, header_lh) = layout.pixel_size();
+    cr.move_to(x + 2.0, y + (line_height - header_lh as f64) / 2.0);
+    pcfn::show_layout(cr, layout);
+
+    // Row 1: search input.
+    let search_y = y + line_height;
+    let (sb_r, sb_g, sb_b) = if active { sel } else { bg };
+    cr.set_source_rgb(sb_r, sb_g, sb_b);
+    cr.rectangle(x, search_y, w, line_height);
+    cr.fill().ok();
+
+    let prefix = " /  ";
+    cr.set_source_rgb(dim.0, dim.1, dim.2);
+    layout.set_text(prefix);
+    let (prefix_w, _) = layout.pixel_size();
+    cr.move_to(x + 2.0, search_y + (line_height - header_lh as f64) / 2.0);
+    pcfn::show_layout(cr, layout);
+
+    let q_x = x + 2.0 + prefix_w as f64;
+    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+    let (text, color) = if show_placeholder {
+        (placeholder, dim)
+    } else if query.is_empty() {
+        (query, dim)
+    } else {
+        (query, fg)
+    };
+    cr.set_source_rgb(color.0, color.1, color.2);
+    layout.set_text(text);
+    let (q_w, _) = layout.pixel_size();
+    cr.move_to(q_x, search_y + (line_height - header_lh as f64) / 2.0);
+    pcfn::show_layout(cr, layout);
+
+    if active {
+        let cur_x = q_x + if query.is_empty() { 0.0 } else { q_w as f64 };
+        cr.set_source_rgb(accent.0, accent.1, accent.2);
+        cr.rectangle(cur_x, search_y + 2.0, 1.5, line_height - 4.0);
+        cr.fill().ok();
+    }
+}

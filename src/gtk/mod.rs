@@ -50,7 +50,7 @@ pub use backend::GtkBackend;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use find_replace::draw_find_replace;
-pub use form::draw_form;
+pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
 pub use palette::draw_palette;
 pub use rich_text_popup::{

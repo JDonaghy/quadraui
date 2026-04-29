@@ -309,6 +309,95 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
     }
 }
 
+/// Settings panel chrome: a 2-row strip with a header row and a search
+/// input row, designed to sit immediately above a [`Form`] body.
+///
+/// `area` must be at least 2 rows tall — the first row is the header
+/// (`header_bg` / `header_fg`), the second row is the search input
+/// (full-width tinted `selected_bg` when `active`, otherwise the panel
+/// `tab_bar_bg`). Layout from left to right inside the search row:
+/// ` `, `/`, ` `, then either `query` (in `foreground`) or `placeholder`
+/// (in `muted_fg`) when the query is empty. A 1-cell `█` cursor in
+/// `accent_fg` follows the query when `active`.
+///
+/// Chrome only — the form body and any scrollbar layered below are
+/// painted separately by the caller.
+pub fn draw_settings_chrome(
+    buf: &mut Buffer,
+    area: Rect,
+    header_text: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+    theme: &Theme,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let panel_bg = ratatui_color(theme.tab_bar_bg);
+    let header_bg = ratatui_color(theme.header_bg);
+    let header_fg = ratatui_color(theme.header_fg);
+    let foreground = ratatui_color(theme.foreground);
+    let muted_fg = ratatui_color(theme.muted_fg);
+    let selected_bg = ratatui_color(theme.selected_bg);
+    let accent_fg = ratatui_color(theme.accent_fg);
+
+    // Row 0: header.
+    let header_y = area.y;
+    for x in area.x..area.x + area.width {
+        set_cell(buf, x, header_y, ' ', header_fg, header_bg);
+    }
+    let mut x = area.x;
+    for ch in header_text.chars() {
+        if x >= area.x + area.width {
+            break;
+        }
+        set_cell(buf, x, header_y, ch, header_fg, header_bg);
+        x += 1;
+    }
+
+    if area.height < 2 {
+        return;
+    }
+
+    // Row 1: search input.
+    let search_y = area.y + 1;
+    let row_bg = if active { selected_bg } else { panel_bg };
+    for x in area.x..area.x + area.width {
+        set_cell(buf, x, search_y, ' ', foreground, row_bg);
+    }
+
+    let mut x = area.x;
+    set_cell(buf, x, search_y, ' ', muted_fg, row_bg);
+    x += 1;
+    if x < area.x + area.width {
+        set_cell(buf, x, search_y, '/', muted_fg, row_bg);
+        x += 1;
+    }
+    if x < area.x + area.width {
+        set_cell(buf, x, search_y, ' ', muted_fg, row_bg);
+        x += 1;
+    }
+
+    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+    let (text, fg) = if show_placeholder {
+        (placeholder, muted_fg)
+    } else {
+        (query, foreground)
+    };
+    for ch in text.chars() {
+        if x >= area.x + area.width {
+            break;
+        }
+        set_cell(buf, x, search_y, ch, fg, row_bg);
+        x += 1;
+    }
+
+    if active && x < area.x + area.width {
+        set_cell(buf, x, search_y, '█', accent_fg, row_bg);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
