@@ -30,6 +30,7 @@ mod dialog;
 mod form;
 mod list;
 mod palette;
+mod rich_text_popup;
 mod status_bar;
 mod tab_bar;
 mod terminal;
@@ -44,6 +45,9 @@ pub use dialog::draw_dialog;
 pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
+pub use rich_text_popup::{
+    draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
+};
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
 pub use terminal::draw_terminal_cells;

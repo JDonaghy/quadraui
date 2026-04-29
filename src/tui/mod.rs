@@ -21,12 +21,14 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 use crate::types::{Color, Decoration, StyledText};
 
 pub mod backend;
+mod completions;
 mod context_menu;
 mod dialog;
 pub mod events;
 mod form;
 mod list;
 mod palette;
+mod rich_text_popup;
 mod run;
 pub mod services;
 mod status_bar;
@@ -36,11 +38,13 @@ mod tooltip;
 mod tree;
 
 pub use backend::TuiBackend;
+pub use completions::draw_completions;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use form::draw_form;
 pub use list::draw_list;
 pub use palette::draw_palette;
+pub use rich_text_popup::draw_rich_text_popup;
 pub use run::run;
 pub use services::TuiPlatformServices;
 pub use status_bar::draw_status_bar;

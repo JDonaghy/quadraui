@@ -125,6 +125,23 @@ pub struct Theme {
     /// to highlight selected cells. Distinct from `selected_bg` (which
     /// is the listview row highlight).
     pub selection_bg: Color,
+
+    // ── RichTextPopup / Completions lift (#266) ────────────────────────
+    /// Link / focus accent foreground. Used by `RichTextPopup` for the
+    /// focused-popup border colour and the scrollbar thumb when the
+    /// popup has keyboard focus. Typically the editor's markdown link
+    /// colour.
+    pub link_fg: Color,
+    /// Background fill for the `Completions` popup (and similar typeahead
+    /// menus). Distinct from `surface_bg` so apps can tint completion
+    /// menus differently from modal lists.
+    pub completion_bg: Color,
+    /// Default text colour for completion items.
+    pub completion_fg: Color,
+    /// Border-glyph / stroke colour for completion popup chrome.
+    pub completion_border: Color,
+    /// Background of the selected row in a completion popup.
+    pub completion_selected_bg: Color,
 }
 
 impl Default for Theme {
@@ -164,6 +181,11 @@ impl Default for Theme {
             input_bg: Color::rgb(48, 52, 64),
             inactive_fg: Color::rgb(120, 122, 135),
             selection_bg: Color::rgb(60, 80, 120),
+            link_fg: Color::rgb(110, 175, 230),
+            completion_bg: Color::rgb(36, 40, 52),
+            completion_fg: fg,
+            completion_border: Color::rgb(120, 140, 175),
+            completion_selected_bg: Color::rgb(50, 60, 90),
         }
     }
 }
