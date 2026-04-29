@@ -5,6 +5,10 @@ Cross-platform UI primitives for keyboard-driven desktop and terminal apps.
 One declarative API renders to four backends: Windows (Direct2D), Linux
 (GTK4 + Cairo), macOS (Core Graphics, planned), and TUI (ratatui).
 
+> **Mental model:** Ratatui's drawing API + Elm-style app architecture
+> + a `Backend` trait so the same `AppLogic` runs in a terminal or a
+> window.
+
 ## What problem this solves
 
 You're writing a keyboard-driven app — an editor, a database client, a
