@@ -134,6 +134,10 @@ pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
     DialogSeverity, VisibleDialogButton,
 };
+pub use primitives::find_replace::{
+    compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
+    FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
+};
 pub use primitives::form::{
     FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit, FormLayout, VisibleFormField,
 };

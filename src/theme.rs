@@ -142,6 +142,14 @@ pub struct Theme {
     pub completion_border: Color,
     /// Background of the selected row in a completion popup.
     pub completion_selected_bg: Color,
+
+    // ── FindReplace lift (#271) ────────────────────────────────────────
+    /// Accent background used for "this toggle button is on" states
+    /// (e.g. case-sensitive / regex / preserve-case toggles in the
+    /// find-replace overlay). Typically the editor's tab-active-accent
+    /// colour. Distinct from `selected_bg` (list highlight) and
+    /// `accent_fg` (text-cursor accent).
+    pub accent_bg: Color,
 }
 
 impl Default for Theme {
@@ -186,6 +194,7 @@ impl Default for Theme {
             completion_fg: fg,
             completion_border: Color::rgb(120, 140, 175),
             completion_selected_bg: Color::rgb(50, 60, 90),
+            accent_bg: Color::rgb(80, 160, 240),
         }
     }
 }
