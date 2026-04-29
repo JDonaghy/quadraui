@@ -25,12 +25,15 @@ use gtk4::pango;
 use crate::types::Color;
 
 mod activity_bar;
+pub mod backend;
 mod context_menu;
 mod dialog;
+pub mod events;
 mod form;
 mod list;
 mod palette;
 mod rich_text_popup;
+pub mod services;
 mod status_bar;
 mod tab_bar;
 mod terminal;
@@ -40,6 +43,7 @@ mod tree;
 
 pub use crate::primitives::tab_bar::TabBarHits;
 pub use activity_bar::{draw_activity_bar, ACTIVITY_ROW_PX};
+pub use backend::GtkBackend;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use form::draw_form;
