@@ -35,6 +35,7 @@ mod list;
 mod palette;
 mod rich_text_popup;
 mod run;
+mod scrollbar;
 pub mod services;
 mod status_bar;
 mod tab_bar;
@@ -56,6 +57,7 @@ pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
 pub use run::run;
+pub use scrollbar::draw_scrollbar;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
 pub use terminal::draw_terminal_cells;

@@ -17,6 +17,7 @@ pub mod palette;
 pub mod panel;
 pub mod progress;
 pub mod rich_text_popup;
+pub mod scrollbar;
 pub mod spinner;
 pub mod split;
 pub mod status_bar;

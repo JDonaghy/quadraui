@@ -150,6 +150,17 @@ pub struct Theme {
     /// colour. Distinct from `selected_bg` (list highlight) and
     /// `accent_fg` (text-cursor accent).
     pub accent_bg: Color,
+
+    // ── Scrollbar lift (#277) ──────────────────────────────────────────
+    /// Track colour for `Scrollbar`. The TUI rasteriser draws this on
+    /// the entire track (typically a dim shade visible against the
+    /// editor background); the GTK rasteriser uses it with a low alpha
+    /// for the overlay-style track on the right/bottom of the editor.
+    pub scrollbar_track: Color,
+    /// Thumb colour for `Scrollbar`. Both rasterisers use this for the
+    /// thumb glyph / rectangle, with backend-specific brightness
+    /// modulation when the scrollbar is hovered or being dragged.
+    pub scrollbar_thumb: Color,
 }
 
 impl Default for Theme {
@@ -195,6 +206,8 @@ impl Default for Theme {
             completion_border: Color::rgb(120, 140, 175),
             completion_selected_bg: Color::rgb(50, 60, 90),
             accent_bg: Color::rgb(80, 160, 240),
+            scrollbar_track: Color::rgb(40, 44, 56),
+            scrollbar_thumb: Color::rgb(110, 115, 130),
         }
     }
 }
