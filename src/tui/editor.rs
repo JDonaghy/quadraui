@@ -155,7 +155,14 @@ pub fn draw_editor(
                 };
                 set_cell(buf, gx, screen_y, ch, fg, line_bg);
             }
-            // Diagnostic gutter icon (overwrite leftmost gutter char).
+            // Diagnostic gutter icon. When `has_breakpoints` is true,
+            // skip the BP column (col 0) so the BP marker stays visible
+            // — paint the dot at col `bp_offset`. Without a BP column
+            // the dot keeps overwriting the leftmost gutter char (the
+            // pre-#283 behaviour). Same shift applies to the lightbulb
+            // fallback so code-action affordances don't displace BPs
+            // either. (#283)
+            let diag_x = area.x + bp_offset as u16;
             if let Some(severity) = editor.diagnostic_gutter.get(&line.line_idx) {
                 let (diag_ch, diag_color) = match severity {
                     DiagnosticSeverity::Error => ('●', qc(theme.diagnostic_error)),
@@ -163,14 +170,14 @@ pub fn draw_editor(
                     DiagnosticSeverity::Information => ('●', qc(theme.diagnostic_info)),
                     DiagnosticSeverity::Hint => ('●', qc(theme.diagnostic_hint)),
                 };
-                set_cell(buf, area.x, screen_y, diag_ch, diag_color, line_bg);
+                set_cell(buf, diag_x, screen_y, diag_ch, diag_color, line_bg);
             } else if !line.is_wrap_continuation
                 && editor.code_action_lines.contains(&line.line_idx)
                 && editor.lightbulb_glyph != '\0'
             {
                 set_cell(
                     buf,
-                    area.x,
+                    diag_x,
                     screen_y,
                     editor.lightbulb_glyph,
                     qc(theme.lightbulb),
