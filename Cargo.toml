@@ -40,6 +40,11 @@ path = "examples/tui_demo.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_app"
+path = "examples/tui_app.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "gtk_demo"
 path = "examples/gtk_demo.rs"
 required-features = ["gtk-example"]
