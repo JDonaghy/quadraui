@@ -149,6 +149,7 @@ pub use primitives::menu_bar::{
     MenuBar, MenuBarEvent, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
     VisibleMenuBarItem,
 };
+pub use primitives::message_list::{MessageList, MessageRow};
 pub use primitives::modal::{Modal, ModalEvent, ModalHit, ModalLayout};
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,

@@ -12,6 +12,7 @@ pub mod find_replace;
 pub mod form;
 pub mod list;
 pub mod menu_bar;
+pub mod message_list;
 pub mod modal;
 pub mod palette;
 pub mod panel;
