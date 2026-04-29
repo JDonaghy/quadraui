@@ -8,6 +8,7 @@ pub mod activity_bar;
 pub mod completions;
 pub mod context_menu;
 pub mod dialog;
+pub mod editor;
 pub mod find_replace;
 pub mod form;
 pub mod list;

@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 /// fields it needs. The `Default` impl keeps a coherent dark palette
 /// so apps can spread `..Default::default()` after specifying the
 /// fields they care about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
     // ── StatusBar pilot (#223 slice 1) ─────────────────────────────────
     /// Default surface background. Used as a fallback fill when the
@@ -161,6 +161,89 @@ pub struct Theme {
     /// thumb glyph / rectangle, with backend-specific brightness
     /// modulation when the scrollbar is hovered or being dragged.
     pub scrollbar_thumb: Color,
+
+    // ── Editor lift (#276 Phase C Stage 1) ─────────────────────────────
+    // Backgrounds.
+    /// Slightly tinted background of the focused editor window when
+    /// multiple windows are visible. Distinct from `background` so the
+    /// active pane is visually distinguishable. Vimcode's
+    /// `RenderedWindow.show_active_bg` selects between this and
+    /// `background`.
+    pub editor_active_background: Color,
+    /// Background tint of the cursor's current line when the
+    /// `cursorline` setting is on. Lower priority than diff backgrounds
+    /// and the DAP-stopped highlight.
+    pub cursorline_bg: Color,
+    /// Background highlight of the line where the DAP adapter is
+    /// currently stopped. Highest priority — overrides cursorline +
+    /// diff backgrounds.
+    pub dap_stopped_bg: Color,
+    /// Background tint applied at colorcolumn positions
+    /// (`settings.colorcolumn`).
+    pub colorcolumn_bg: Color,
+
+    // Diff backgrounds (two-way `:diffthis` mode).
+    pub diff_added_bg: Color,
+    pub diff_removed_bg: Color,
+    /// Background of synthetic alignment-padding rows (no buffer
+    /// content) inserted to keep diff panes line-aligned.
+    pub diff_padding_bg: Color,
+
+    // Gutter line numbers.
+    /// Foreground of inactive line numbers in the gutter.
+    pub line_number_fg: Color,
+    /// Foreground of the line number on the cursor's current line.
+    pub line_number_active_fg: Color,
+
+    // Diagnostic foregrounds (drive squiggle / underline + gutter icon).
+    pub diagnostic_error: Color,
+    pub diagnostic_warning: Color,
+    pub diagnostic_info: Color,
+    pub diagnostic_hint: Color,
+
+    // Git diff gutter markers.
+    pub git_added: Color,
+    pub git_modified: Color,
+    pub git_deleted: Color,
+
+    // Code-action lightbulb + spell-checker.
+    /// Foreground of the code-action lightbulb gutter glyph.
+    pub lightbulb: Color,
+    /// Foreground of the spell-checker underline.
+    pub spell_error: Color,
+
+    // Cursor / selection / yank flash.
+    /// Editor cursor base colour. TUI inverts fg/bg at the cell using
+    /// this; GTK paints a rect with `cursor_normal_alpha`.
+    pub cursor: Color,
+    /// Alpha (0.0..1.0) applied to the GTK cursor rectangle in Normal
+    /// mode. TUI ignores (no alpha on cells).
+    pub cursor_normal_alpha: f32,
+    /// Selection background colour. Both backends mix this with the
+    /// underlying line bg (TUI via cell bg overwrite, GTK via alpha
+    /// rect).
+    pub selection: Color,
+    /// Alpha (0.0..1.0) applied to the GTK selection rectangles.
+    pub selection_alpha: f32,
+    /// Background flash painted briefly after a yank.
+    pub yank_highlight_bg: Color,
+    /// Alpha (0.0..1.0) applied to the GTK yank-flash rectangles.
+    pub yank_highlight_alpha: f32,
+
+    // Bracket-match + indent-guides.
+    /// Background highlight on the cursor's bracket and its match.
+    pub bracket_match_bg: Color,
+    /// Foreground of inactive indent-guide rules.
+    pub indent_guide_fg: Color,
+    /// Foreground of the active indent-guide column (cursor's scope).
+    pub indent_guide_active_fg: Color,
+
+    // Inline annotations + AI ghost text.
+    /// Foreground of inline annotations (Lua-plugin virtual text, git
+    /// blame). Muted by convention.
+    pub annotation_fg: Color,
+    /// Foreground of AI-completion ghost text. Muted by convention.
+    pub ghost_text_fg: Color,
 }
 
 impl Default for Theme {
@@ -208,6 +291,37 @@ impl Default for Theme {
             accent_bg: Color::rgb(80, 160, 240),
             scrollbar_track: Color::rgb(40, 44, 56),
             scrollbar_thumb: Color::rgb(110, 115, 130),
+
+            // Editor lift (#276 Phase C Stage 1) — neutral defaults.
+            editor_active_background: bg,
+            cursorline_bg: Color::rgb(30, 33, 45),
+            dap_stopped_bg: Color::rgb(80, 70, 30),
+            colorcolumn_bg: Color::rgb(30, 32, 42),
+            diff_added_bg: Color::rgb(28, 50, 32),
+            diff_removed_bg: Color::rgb(60, 30, 30),
+            diff_padding_bg: Color::rgb(28, 30, 38),
+            line_number_fg: muted,
+            line_number_active_fg: Color::rgb(200, 200, 210),
+            diagnostic_error: Color::rgb(220, 80, 80),
+            diagnostic_warning: Color::rgb(220, 180, 80),
+            diagnostic_info: Color::rgb(110, 175, 230),
+            diagnostic_hint: Color::rgb(140, 200, 240),
+            git_added: Color::rgb(120, 200, 120),
+            git_modified: Color::rgb(220, 180, 80),
+            git_deleted: Color::rgb(220, 80, 80),
+            lightbulb: Color::rgb(220, 200, 80),
+            spell_error: Color::rgb(110, 200, 200),
+            cursor: Color::rgb(220, 220, 220),
+            cursor_normal_alpha: 0.40,
+            selection: Color::rgb(60, 80, 120),
+            selection_alpha: 0.50,
+            yank_highlight_bg: Color::rgb(220, 200, 80),
+            yank_highlight_alpha: 0.30,
+            bracket_match_bg: Color::rgb(80, 90, 110),
+            indent_guide_fg: Color::rgb(50, 54, 66),
+            indent_guide_active_fg: Color::rgb(110, 115, 130),
+            annotation_fg: Color::rgb(110, 115, 130),
+            ghost_text_fg: Color::rgb(110, 115, 130),
         }
     }
 }

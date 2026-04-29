@@ -134,6 +134,11 @@ pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
     DialogSeverity, VisibleDialogButton,
 };
+pub use primitives::editor::{
+    CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
+    DiagnosticSeverity, DiffLine, EditorCursor, EditorSelection, GitLineStatus,
+    SelectionKind as EditorSelectionKind, SpellMark, Style as EditorStyle,
+};
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
     FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
