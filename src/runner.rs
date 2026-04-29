@@ -27,12 +27,16 @@
 //! access also gives apps `services()` (clipboard, dialogs) and
 //! `modal_stack_mut()` for free in the event handler.
 //!
-//! # Single-area scope
+//! # Multi-area shape (#270 Stage B)
 //!
-//! The first runner ships supports apps with a single render target
-//! (one ratatui `Frame` for TUI, one `DrawingArea` for GTK).
-//! Multi-DrawingArea apps like vimcode need a richer shape — the
-//! runner can be extended with multi-target support in a later stage.
+//! The trait carries an [`AppLogic::AreaId`] associated type so apps
+//! with multiple independently-painted surfaces (typical of GTK with
+//! multiple `DrawingArea` widgets) route paints to the right surface
+//! via [`AppLogic::render(_, area)`].
+//!
+//! Single-area apps (the typical TUI shape — one frame per redraw)
+//! can use `type AreaId = ();` and ignore the parameter. The TUI
+//! runner always passes `Default::default()`.
 
 use crate::backend::Backend;
 use crate::event::UiEvent;
@@ -60,6 +64,26 @@ pub enum Reaction {
 /// and tear-down. The app owns its state (`&mut self`), per-frame
 /// rendering, and event dispatch.
 pub trait AppLogic {
+    /// App-defined identifier for distinct render targets. Single-area
+    /// apps (typical TUI shape) use `type AreaId = ();` and the unit
+    /// type's `Default` impl satisfies the bound. GTK apps with
+    /// multiple `DrawingArea` widgets define a custom enum:
+    ///
+    /// ```ignore
+    /// #[derive(Copy, Clone, Eq, PartialEq, Debug, Default, Hash)]
+    /// enum MyArea {
+    ///     #[default]
+    ///     Editor,
+    ///     Sidebar,
+    ///     StatusBar,
+    /// }
+    /// ```
+    ///
+    /// The TUI runner always passes `Default::default()` to
+    /// [`Self::render`]. Multi-area runners pass the area whose
+    /// surface is being repainted.
+    type AreaId: Copy + Eq + std::fmt::Debug + Default;
+
     /// One-time setup hook. Called by the runner after backend
     /// construction but before the first frame. Use this to register
     /// accelerators, warm caches, set up file watchers, etc.
@@ -74,7 +98,12 @@ pub trait AppLogic {
     /// for setting `theme` / `line_height` / `char_width` on the
     /// backend if the app's theme system varies (typically once per
     /// frame at the start of `render`).
-    fn render(&self, backend: &mut dyn Backend);
+    ///
+    /// `area` identifies which target is being painted. Single-area
+    /// apps ignore the value (always `Default::default()`).
+    /// Multi-area apps `match area` to dispatch to the right paint
+    /// path.
+    fn render(&self, backend: &mut dyn Backend, area: Self::AreaId);
 
     /// Per-event dispatch. The runner calls this for every
     /// [`UiEvent`] returned from `backend.wait_events`. Returns a

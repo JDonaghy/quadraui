@@ -17,8 +17,8 @@ tui = ["dep:ratatui"]
 gtk = ["dep:gtk4", "dep:pangocairo"]
 
 # Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
-# keeps working. The example doesn't import `quadraui::gtk` itself, but the
-# feature pulls in the GTK deps the example needs.
+# keeps working as a deprecated spelling. Prefer `--features gtk` going
+# forward — both gtk_demo and gtk_app now go through `quadraui::gtk::run`.
 gtk-example = ["gtk"]
 
 [dependencies]
@@ -47,4 +47,9 @@ required-features = ["tui"]
 [[example]]
 name = "gtk_demo"
 path = "examples/gtk_demo.rs"
-required-features = ["gtk-example"]
+required-features = ["gtk"]
+
+[[example]]
+name = "gtk_app"
+path = "examples/gtk_app.rs"
+required-features = ["gtk"]

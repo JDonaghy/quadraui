@@ -123,7 +123,10 @@ fn run_inner<A: AppLogic>(
             ));
             terminal.draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    app.render(b);
+                    // TUI is single-area; always pass the app's
+                    // default `AreaId`. Multi-area runners (GTK) pass
+                    // the AreaId for whichever surface is repainting.
+                    app.render(b, A::AreaId::default());
                 });
             })?;
             backend.end_frame();

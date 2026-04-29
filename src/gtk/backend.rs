@@ -221,6 +221,12 @@ impl GtkBackend {
         self.current_theme = theme;
     }
 
+    /// Read-only accessor for the cached theme. Used by the runner
+    /// to paint a full-DA background before each frame.
+    pub fn current_theme(&self) -> &crate::Theme {
+        &self.current_theme
+    }
+
     /// Update the cached Pango line height (in DIPs). Call once per
     /// frame from the App's draw callback (after measuring font
     /// metrics), before any trait `draw_*` invocations.
