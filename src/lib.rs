@@ -136,8 +136,9 @@ pub use primitives::dialog::{
 };
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
-    DiagnosticSeverity, DiffLine, EditorCursor, EditorSelection, GitLineStatus,
+    DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorLine, EditorSelection, GitLineStatus,
     SelectionKind as EditorSelectionKind, SpellMark, Style as EditorStyle,
+    StyledSpan as EditorStyledSpan,
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
