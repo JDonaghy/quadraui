@@ -568,6 +568,25 @@ impl Backend for TuiBackend {
             })
             .collect()
     }
+
+    fn draw_dialog(
+        &mut self,
+        dialog: &crate::primitives::dialog::Dialog,
+        layout: &crate::primitives::dialog::DialogLayout,
+    ) -> Vec<QRect> {
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_dialog called outside enter_frame_scope");
+        crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
+        // Derive button rects from the layout (TUI rasteriser doesn't
+        // return them; the primitive owns the layout).
+        layout
+            .visible_buttons
+            .iter()
+            .map(|vis| vis.bounds)
+            .collect()
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -718,6 +737,13 @@ mod tests {
             _m: &crate::ContextMenu,
             _l: &crate::ContextMenuLayout,
         ) -> Vec<(QRect, crate::WidgetId)> {
+            Vec::new()
+        }
+        fn draw_dialog(
+            &mut self,
+            _d: &crate::primitives::dialog::Dialog,
+            _l: &crate::primitives::dialog::DialogLayout,
+        ) -> Vec<QRect> {
             Vec::new()
         }
     }

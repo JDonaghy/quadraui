@@ -14,6 +14,7 @@ use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
+use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -145,6 +146,13 @@ pub trait Backend {
         menu: &ContextMenu,
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)>;
+
+    /// Draw a [`Dialog`] popup at its caller-resolved layout. Returns
+    /// the per-button hit rectangles in the same order as
+    /// `dialog.buttons`'s visible entries so the caller's click
+    /// handler can resolve a click to a button without re-running
+    /// layout. Mirrors [`draw_context_menu`](Self::draw_context_menu).
+    fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect>;
 }
 
 /// Platform services the backend exposes to apps: clipboard, file dialogs,
