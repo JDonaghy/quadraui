@@ -350,6 +350,18 @@ pub struct Editor {
     pub tabstop: usize,
     /// Whether to draw cursorline highlight.
     pub cursorline: bool,
+    /// Glyph the rasteriser draws in the gutter for lines with an
+    /// available LSP code action. The host computes this from its
+    /// icon registry per frame so nerd-font / fallback toggles
+    /// propagate without the rasteriser depending on a host icon
+    /// module. Apps without code-action icons can leave this at
+    /// `'\0'` and the rasteriser skips painting.
+    #[serde(default = "default_lightbulb_glyph")]
+    pub lightbulb_glyph: char,
+}
+
+fn default_lightbulb_glyph() -> char {
+    '!'
 }
 
 #[cfg(test)]
@@ -437,6 +449,7 @@ mod tests {
             active_indent_col: None,
             tabstop: 4,
             cursorline: true,
+            lightbulb_glyph: '!',
         };
         let json = serde_json::to_string(&editor).expect("Editor serialise");
         let back: Editor = serde_json::from_str(&json).expect("Editor deserialise");
