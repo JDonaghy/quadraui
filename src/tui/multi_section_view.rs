@@ -111,6 +111,11 @@ pub fn draw_multi_section_view(
             paint_divider(buf, d.bounds, theme);
         }
     }
+
+    // Panel-level scrollbar (WholePanel mode when content overflows).
+    if let Some(panel_sb) = layout.panel_scrollbar {
+        paint_scrollbar(buf, panel_sb, theme);
+    }
 }
 
 // ── Section paint helpers ──────────────────────────────────────────────────
