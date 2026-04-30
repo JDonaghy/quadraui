@@ -35,6 +35,7 @@ mod find_replace;
 mod form;
 mod list;
 mod message_list;
+mod multi_section_view;
 mod palette;
 mod rich_text_popup;
 mod run;
@@ -58,6 +59,10 @@ pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
 pub use message_list::draw_message_list;
+pub use multi_section_view::{
+    draw_multi_section_view, layout_for as multi_section_view_layout,
+    metrics_for as multi_section_view_metrics,
+};
 pub use palette::draw_palette;
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
