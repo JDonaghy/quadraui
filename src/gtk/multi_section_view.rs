@@ -180,7 +180,8 @@ pub fn draw_multi_section_view(
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
-        paint_scrollbar(cr, panel_sb, theme);
+        let total_content: f32 = view_layout.sections.iter().map(|s| s.resolved_size).sum();
+        paint_panel_scrollbar(cr, panel_sb, view.panel_scroll, total_content, theme);
     }
 }
 
@@ -508,15 +509,48 @@ fn paint_scrollbar(cr: &Context, bounds: QRect, theme: &Theme) {
     let bw = bounds.width as f64;
     let bh = bounds.height as f64;
 
-    cr.set_source_rgba(track.0, track.1, track.2, 0.3);
+    cr.set_source_rgba(track.0, track.1, track.2, 0.5);
     cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
-    // Default 1-cell thumb at top — backends with real scroll geometry
-    // overlay a `Scrollbar` primitive on top to refine.
+    // Default top-anchored thumb for per-section scrollbars (host
+    // overlays precise geometry via the standalone `Scrollbar`
+    // primitive when scroll state is known).
     let thumb_h = (bh * 0.2).max(20.0).min(bh);
-    cr.set_source_rgba(thumb.0, thumb.1, thumb.2, 0.7);
+    cr.set_source_rgba(thumb.0, thumb.1, thumb.2, 0.9);
     cr.rectangle(bx, by, bw, thumb_h);
+    cr.fill().ok();
+}
+
+/// Panel-level scrollbar with thumb size + position derived from
+/// `panel_scroll` and the total content height.
+fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
+    let track = cairo_rgb(theme.scrollbar_track);
+    let thumb = cairo_rgb(theme.scrollbar_thumb);
+
+    let bx = bounds.x as f64;
+    let by = bounds.y as f64;
+    let bw = bounds.width as f64;
+    let bh = bounds.height as f64;
+    if bh <= 0.0 || total <= 0.0 {
+        return;
+    }
+
+    cr.set_source_rgba(track.0, track.1, track.2, 0.5);
+    cr.rectangle(bx, by, bw, bh);
+    cr.fill().ok();
+
+    let visible_frac = (bh / total as f64).min(1.0);
+    let scroll_frac = if total as f64 > bh {
+        scroll as f64 / (total as f64 - bh)
+    } else {
+        0.0
+    };
+    let thumb_h = (bh * visible_frac).max(16.0);
+    let thumb_track = (bh - thumb_h).max(0.0);
+    let thumb_y = by + thumb_track * scroll_frac;
+    cr.set_source_rgba(thumb.0, thumb.1, thumb.2, 0.95);
+    cr.rectangle(bx, thumb_y, bw, thumb_h);
     cr.fill().ok();
 }
 

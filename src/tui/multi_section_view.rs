@@ -114,7 +114,8 @@ pub fn draw_multi_section_view(
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
     if let Some(panel_sb) = layout.panel_scrollbar {
-        paint_scrollbar(buf, panel_sb, theme);
+        let total_content: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+        paint_panel_scrollbar(buf, panel_sb, view.panel_scroll, total_content, theme);
     }
 }
 
@@ -402,10 +403,37 @@ fn paint_scrollbar(buf: &mut Buffer, bounds: QRect, theme: &Theme) {
         return;
     }
 
-    // Default to drawing the whole track as `░`. The thumb position
-    // depends on the inner body's scroll state, which the host will
-    // overlay separately if it cares; this baseline ensures the track
-    // is always visible so users can drag-click it.
+    // Per-section scrollbar (used by `PerSection` mode when an inner
+    // body overflows). Default-rendered as a full track with a 1-cell
+    // thumb at the top — hosts overlay precise geometry on top via the
+    // standalone `Scrollbar` primitive when they have real scroll state.
+    for dy in 0..height {
+        let cell_y = y_start + dy;
+        if cell_y >= buf.area.y + buf.area.height {
+            break;
+        }
+        set_cell(buf, x, cell_y, '░', track, bg);
+    }
+    if height >= 1 {
+        set_cell(buf, x, y_start, '█', thumb, bg);
+    }
+}
+
+/// Panel-level scrollbar. Computes thumb size + position from the
+/// panel-wide `scroll` and `total_content` heights.
+fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
+    let bg = ratatui_color(theme.background);
+    let track = ratatui_color(theme.scrollbar_track);
+    let thumb = ratatui_color(theme.scrollbar_thumb);
+
+    let x = bounds.x.round() as u16;
+    let y_start = bounds.y.round() as u16;
+    let height = bounds.height.round() as u16;
+    if height == 0 || total <= 0.0 {
+        return;
+    }
+
+    // Track.
     for dy in 0..height {
         let cell_y = y_start + dy;
         if cell_y >= buf.area.y + buf.area.height {
@@ -414,11 +442,25 @@ fn paint_scrollbar(buf: &mut Buffer, bounds: QRect, theme: &Theme) {
         set_cell(buf, x, cell_y, '░', track, bg);
     }
 
-    // A 1-cell thumb at the top is a sensible default for an empty /
-    // unscrolled body. Hosts that know real scroll geometry will paint
-    // a `█` thumb at the right position on top.
-    if height >= 1 {
-        set_cell(buf, x, y_start, '█', thumb, bg);
+    // Thumb position + size.
+    let visible_frac = (height as f32 / total).min(1.0);
+    let scroll_frac = if total > height as f32 {
+        scroll / (total - height as f32)
+    } else {
+        0.0
+    };
+    let thumb_h = ((height as f32 * visible_frac).ceil() as u16).max(1);
+    let thumb_track = height.saturating_sub(thumb_h);
+    let thumb_offset = (thumb_track as f32 * scroll_frac).round() as u16;
+    for dy in 0..thumb_h {
+        let cell_y = y_start + thumb_offset + dy;
+        if cell_y >= y_start + height {
+            break;
+        }
+        if cell_y >= buf.area.y + buf.area.height {
+            break;
+        }
+        set_cell(buf, x, cell_y, '█', thumb, bg);
     }
 }
 

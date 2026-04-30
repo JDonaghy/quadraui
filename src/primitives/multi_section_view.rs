@@ -553,7 +553,17 @@ impl MultiSectionView {
         let mut dividers = Vec::new();
         let mut hit_regions: Vec<(Rect, MultiSectionViewHit)> = Vec::new();
 
-        let mut y = bounds.y;
+        // For WholePanel mode, sections stack at content size and the
+        // viewport scrolls the whole panel. `panel_scroll` shifts every
+        // section's y upward — sections above `panel_scroll` get
+        // negative-y bounds (off-screen above), sections past
+        // `bounds.y + bounds.height` get bounds past the viewport
+        // bottom. Backends' clip regions handle the visible window.
+        let scroll_offset = match self.scroll_mode {
+            ScrollMode::WholePanel => self.panel_scroll.max(0.0),
+            ScrollMode::PerSection => 0.0,
+        };
+        let mut y = bounds.y - scroll_offset;
         for i in 0..n {
             // For PerSection, each section is bounded by its resolved size.
             // For WholePanel, sections stack at content size and the panel
