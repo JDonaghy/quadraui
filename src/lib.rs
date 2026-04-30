@@ -157,6 +157,12 @@ pub use primitives::menu_bar::{
 };
 pub use primitives::message_list::{MessageList, MessageRow};
 pub use primitives::modal::{Modal, ModalEvent, ModalHit, ModalLayout};
+pub use primitives::multi_section_view::{
+    ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
+    HeaderHit, InlineInput, LayoutMetrics as MsvLayoutMetrics, MultiSectionView,
+    MultiSectionViewHit, MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux,
+    SectionBody, SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
+};
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
     VisiblePaletteItem,

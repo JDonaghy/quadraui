@@ -15,6 +15,7 @@ pub mod list;
 pub mod menu_bar;
 pub mod message_list;
 pub mod modal;
+pub mod multi_section_view;
 pub mod palette;
 pub mod panel;
 pub mod progress;
