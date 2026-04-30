@@ -75,32 +75,47 @@ pub fn draw_multi_section_view(
 
     let panel_bg = ratatui_color(theme.background);
 
+    let viewport_top = bounds.y;
+    let viewport_bottom = bounds.y + bounds.height;
+
     for s_layout in &layout.sections {
         let section = &view.sections[s_layout.section_idx];
 
-        // Paint the chrome strip background (header + any gap before body).
-        paint_header(buf, s_layout.header_bounds, &section.header, theme);
+        // Header — clipped against viewport.
+        if let Some(clipped) =
+            clip_to_viewport(s_layout.header_bounds, viewport_top, viewport_bottom)
+        {
+            paint_header(buf, clipped, &section.header, section.collapsed, theme);
+        }
 
         if !s_layout.collapsed {
-            if let (Some(aux), Some(aux_b)) = (&section.aux, s_layout.aux_bounds) {
-                paint_aux(buf, aux_b, aux, theme);
+            if let Some(aux_b) = s_layout.aux_bounds {
+                if let Some(clipped) = clip_to_viewport(aux_b, viewport_top, viewport_bottom) {
+                    if let Some(aux) = &section.aux {
+                        paint_aux(buf, clipped, aux, theme);
+                    }
+                }
             }
 
-            // Body fill: ensure the background is solid before any
-            // body rasteriser draws (some painters expect a clean
-            // surface, others fill themselves).
-            fill_rect(buf, s_layout.body_bounds, ' ', panel_bg, panel_bg);
-
-            paint_body(
-                buf,
-                s_layout.body_bounds,
-                &section.body,
-                theme,
-                nerd_fonts_enabled,
-            );
+            // Body fill — only clear the visible portion.
+            if let Some(clipped_body) =
+                clip_to_viewport(s_layout.body_bounds, viewport_top, viewport_bottom)
+            {
+                fill_rect(buf, clipped_body, ' ', panel_bg, panel_bg);
+                paint_body(
+                    buf,
+                    s_layout.body_bounds,
+                    clipped_body,
+                    &section.body,
+                    theme,
+                    nerd_fonts_enabled,
+                );
+            }
 
             if let Some(sb_b) = s_layout.scrollbar_bounds {
-                paint_scrollbar(buf, sb_b, theme);
+                if let Some(clipped) = clip_to_viewport(sb_b, viewport_top, viewport_bottom) {
+                    paint_scrollbar(buf, clipped, theme);
+                }
             }
         }
     }
@@ -121,7 +136,13 @@ pub fn draw_multi_section_view(
 
 // ── Section paint helpers ──────────────────────────────────────────────────
 
-fn paint_header(buf: &mut Buffer, bounds: QRect, header: &SectionHeader, theme: &Theme) {
+fn paint_header(
+    buf: &mut Buffer,
+    bounds: QRect,
+    header: &SectionHeader,
+    collapsed: bool,
+    theme: &Theme,
+) {
     let bg = ratatui_color(theme.header_bg);
     let fg = ratatui_color(theme.header_fg);
     let dim = ratatui_color(theme.muted_fg);
@@ -138,15 +159,11 @@ fn paint_header(buf: &mut Buffer, bounds: QRect, header: &SectionHeader, theme: 
     let mut col = left;
 
     if header.show_chevron {
-        // Chevron char is intentionally simple in TUI; backends that
-        // want richer glyphs should track separate per-row state. The
-        // primitive itself is collapsed/expanded-aware via
-        // `Section::collapsed`; we pick the glyph here.
-        // (We don't have direct access to `Section` from here, but the
-        // header is always painted with the same chevron style; the
-        // collapsed-state choice is made at call time.)
+        // ▾ when expanded, ▸ when collapsed. Match the GTK convention
+        // and VSCode's chevron direction.
+        let glyph = if collapsed { '▸' } else { '▾' };
         if col < right {
-            set_cell(buf, col as u16, row_y, '▾', fg, bg);
+            set_cell(buf, col as u16, row_y, glyph, fg, bg);
             col += 1;
         }
         if col < right {
@@ -287,18 +304,42 @@ fn paint_aux(buf: &mut Buffer, bounds: QRect, aux: &SectionAux, theme: &Theme) {
 
 fn paint_body(
     buf: &mut Buffer,
-    bounds: QRect,
+    full_bounds: QRect,
+    visible_bounds: QRect,
     body: &SectionBody,
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
-    let area = q_to_tui_rect(bounds);
+    let area = q_to_tui_rect(visible_bounds);
     if area.width == 0 || area.height == 0 {
         return;
     }
+
+    // How many TUI rows of the body extend above the viewport — these
+    // need to be skipped via the inner primitive's scroll_offset so the
+    // visible area shows the right rows. TUI = 1 cell per row, so the
+    // skip count equals the clipped-above height.
+    let clip_above = (full_bounds.y - visible_bounds.y).abs().round() as usize;
+
     match body {
-        SectionBody::Tree(t) => draw_tree(buf, area, t, theme, nerd_fonts_enabled),
-        SectionBody::List(l) => draw_list(buf, area, l, theme, nerd_fonts_enabled),
+        SectionBody::Tree(t) => {
+            if clip_above == 0 {
+                draw_tree(buf, area, t, theme, nerd_fonts_enabled);
+            } else {
+                let mut t_clone = t.clone();
+                t_clone.scroll_offset = t.scroll_offset.saturating_add(clip_above);
+                draw_tree(buf, area, &t_clone, theme, nerd_fonts_enabled);
+            }
+        }
+        SectionBody::List(l) => {
+            if clip_above == 0 {
+                draw_list(buf, area, l, theme, nerd_fonts_enabled);
+            } else {
+                let mut l_clone = l.clone();
+                l_clone.scroll_offset = l.scroll_offset.saturating_add(clip_above);
+                draw_list(buf, area, &l_clone, theme, nerd_fonts_enabled);
+            }
+        }
         SectionBody::Form(f) => draw_form(buf, area, f, theme),
         SectionBody::MessageList(m) => draw_message_list(buf, area, m, theme.background),
         SectionBody::Terminal(_) => {
@@ -477,6 +518,22 @@ fn paint_divider(buf: &mut Buffer, bounds: QRect, theme: &Theme) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// Intersect `r` with the y-range `[viewport_top, viewport_bottom)`.
+/// Returns `None` when the rect lies entirely outside.
+fn clip_to_viewport(r: QRect, viewport_top: f32, viewport_bottom: f32) -> Option<QRect> {
+    let r_bottom = r.y + r.height;
+    if r.height <= 0.0 || r_bottom <= viewport_top || r.y >= viewport_bottom {
+        return None;
+    }
+    let new_y = r.y.max(viewport_top);
+    let new_bottom = r_bottom.min(viewport_bottom);
+    let new_h = (new_bottom - new_y).max(0.0);
+    if new_h <= 0.0 {
+        return None;
+    }
+    Some(QRect::new(r.x, new_y, r.width, new_h))
+}
 
 fn fill_rect(
     buf: &mut Buffer,

@@ -39,7 +39,10 @@ pub fn metrics_for(line_height: f64, allow_resize: bool) -> LayoutMetrics {
     LayoutMetrics {
         header_size: (line_height * 1.4) as f32,
         divider_size: if allow_resize { 1.0 } else { 0.0 },
-        scrollbar_size: 4.0,
+        // 8px gives a visible scrollbar against typical dark sidebar
+        // backgrounds; the previous 4px was easy to miss. Hosts that
+        // want a thinner scrollbar can compose `Scrollbar` directly.
+        scrollbar_size: 8.0,
     }
 }
 
@@ -139,6 +142,16 @@ pub fn draw_multi_section_view(
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     let view_layout = layout_for(view, bounds, line_height);
 
+    // Clip everything painted below to the panel area. Sections with
+    // negative-y bounds (scrolled past the viewport top) extend beyond
+    // the visible window — Cairo's clip silently drops the off-screen
+    // portion so the next section's body doesn't get overpainted by a
+    // tree from a previous section. Mirrors the TUI rasteriser's
+    // `clip_to_viewport`.
+    cr.save().ok();
+    cr.rectangle(x, y, w, h);
+    cr.clip();
+
     for s_layout in &view_layout.sections {
         let section = &view.sections[s_layout.section_idx];
 
@@ -177,6 +190,10 @@ pub fn draw_multi_section_view(
             paint_divider(cr, d.bounds, theme);
         }
     }
+
+    // Restore the unclipped region so the panel-level scrollbar paints
+    // on top without being itself clipped.
+    cr.restore().ok();
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
@@ -523,7 +540,11 @@ fn paint_scrollbar(cr: &Context, bounds: QRect, theme: &Theme) {
 }
 
 /// Panel-level scrollbar with thumb size + position derived from
-/// `panel_scroll` and the total content height.
+/// `panel_scroll` and the total content height. Painted with solid
+/// colours (no alpha) and at the full `metrics.scrollbar_size` width
+/// so it's actually visible against dark sidebar backgrounds; alpha
+/// blending against unknown panel backgrounds was washing the thumb
+/// out in onedark.
 fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
     let track = cairo_rgb(theme.scrollbar_track);
     let thumb = cairo_rgb(theme.scrollbar_thumb);
@@ -536,7 +557,7 @@ fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, t
         return;
     }
 
-    cr.set_source_rgba(track.0, track.1, track.2, 0.5);
+    cr.set_source_rgb(track.0, track.1, track.2);
     cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
@@ -546,10 +567,10 @@ fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, t
     } else {
         0.0
     };
-    let thumb_h = (bh * visible_frac).max(16.0);
+    let thumb_h = (bh * visible_frac).max(20.0);
     let thumb_track = (bh - thumb_h).max(0.0);
     let thumb_y = by + thumb_track * scroll_frac;
-    cr.set_source_rgba(thumb.0, thumb.1, thumb.2, 0.95);
+    cr.set_source_rgb(thumb.0, thumb.1, thumb.2);
     cr.rectangle(bx, thumb_y, bw, thumb_h);
     cr.fill().ok();
 }

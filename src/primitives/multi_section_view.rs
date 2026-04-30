@@ -555,12 +555,17 @@ impl MultiSectionView {
 
         // For WholePanel mode, sections stack at content size and the
         // viewport scrolls the whole panel. `panel_scroll` shifts every
-        // section's y upward — sections above `panel_scroll` get
-        // negative-y bounds (off-screen above), sections past
-        // `bounds.y + bounds.height` get bounds past the viewport
-        // bottom. Backends' clip regions handle the visible window.
+        // section's y upward; the layout clamps the value internally to
+        // `[0, total - viewport]` so sections never scroll past the
+        // bottom even if the host stores an over-shot value (host's
+        // stored scroll may exceed the clamp; layout only ever applies
+        // the clamped value).
         let scroll_offset = match self.scroll_mode {
-            ScrollMode::WholePanel => self.panel_scroll.max(0.0),
+            ScrollMode::WholePanel => {
+                let total: f32 = resolved.iter().sum::<f32>() + dividers_total;
+                let max_scroll = (total - bounds.height).max(0.0);
+                self.panel_scroll.clamp(0.0, max_scroll)
+            }
             ScrollMode::PerSection => 0.0,
         };
         let mut y = bounds.y - scroll_offset;
