@@ -182,7 +182,7 @@ pub fn draw_multi_section_view(
             );
 
             if let Some(sb_b) = s_layout.scrollbar_bounds {
-                paint_scrollbar(cr, sb_b, theme);
+                paint_scrollbar(cr, sb_b, s_layout.thumb_bounds, theme);
             }
         }
     }
@@ -519,25 +519,31 @@ fn paint_empty_body(
     }
 }
 
-fn paint_scrollbar(cr: &Context, bounds: QRect, theme: &Theme) {
+fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
     let track = cairo_rgb(theme.scrollbar_track);
     let thumb = cairo_rgb(theme.scrollbar_thumb);
 
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
+    let bx = gutter.x as f64;
+    let by = gutter.y as f64;
+    let bw = gutter.width as f64;
+    let bh = gutter.height as f64;
 
     cr.set_source_rgba(track.0, track.1, track.2, 0.5);
     cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
-    // Default top-anchored thumb for per-section scrollbars (host
-    // overlays precise geometry via the standalone `Scrollbar`
-    // primitive when scroll state is known).
-    let thumb_h = (bh * 0.2).max(20.0).min(bh);
+    // Thumb at the layout-computed position when the body's scroll
+    // state was introspectable (`Tree`, `List`). Falls back to a
+    // 20%-tall top-anchored thumb for overflowing bodies without
+    // row-based scroll — visual continuity with pre-#9. Per
+    // *Primitive Authoring Rule #6*: thumb position is state-derived
+    // and lives on the layout, not the rasteriser.
+    let (ty, th) = match thumb_bounds {
+        Some(t) => (t.y as f64, (t.height as f64).max(1.0)),
+        None => (by, (bh * 0.2).max(20.0).min(bh)),
+    };
     cr.set_source_rgba(thumb.0, thumb.1, thumb.2, 0.9);
-    cr.rectangle(bx, by, bw, thumb_h);
+    cr.rectangle(bx, ty, bw, th);
     cr.fill().ok();
 }
 

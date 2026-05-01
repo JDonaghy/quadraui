@@ -270,9 +270,22 @@ pub struct SectionLayout {
     /// Body content bounds. Has zero height when the section is
     /// collapsed.
     pub body_bounds: Rect,
-    /// Per-section scrollbar bounds (only present in
+    /// Per-section scrollbar gutter bounds (only present in
     /// [`ScrollMode::PerSection`] when the body overflows).
     pub scrollbar_bounds: Option<Rect>,
+    /// Per-section scrollbar thumb bounds — sub-rect of
+    /// [`Self::scrollbar_bounds`] reflecting the inner body's scroll
+    /// state. Computed via [`crate::fit_thumb`] from the body's
+    /// `scroll_offset` + row count + viewport rows; rounded to
+    /// `metrics.cell_quantum` when set so paint and hit-test agree on
+    /// integer cells.
+    ///
+    /// `Some` only when the body type carries a row-based
+    /// `scroll_offset` (`Tree`, `List`). For other overflowing body
+    /// types the layout still emits a single combined `Thumb` region
+    /// over the whole gutter — see the hit-region emission in
+    /// `layout_vertical`.
+    pub thumb_bounds: Option<Rect>,
     /// Whether this section is collapsed at layout time.
     pub collapsed: bool,
     /// Resolved size of this section along the main axis (header + aux
@@ -682,12 +695,33 @@ impl MultiSectionView {
                 None
             };
 
+            // Per-section thumb bounds — computed from the body's
+            // scroll state when introspectable (`Tree`, `List`). For
+            // overflowing bodies without row-based scroll the thumb
+            // bounds stay `None`; the hit-region emission below falls
+            // back to a single combined-Thumb region covering the
+            // whole gutter (preserves the pre-#9 behaviour for those
+            // body types).
+            let thumb_bounds = match (scrollbar_bounds, body_scroll_state(&self.sections[i].body)) {
+                (Some(sb), Some((scroll_rows, row_count))) if row_count > 0 => {
+                    Some(compute_thumb_bounds(
+                        sb,
+                        scroll_rows,
+                        row_count,
+                        measures[i].content_size,
+                        metrics.cell_quantum,
+                    ))
+                }
+                _ => None,
+            };
+
             sections_out.push(SectionLayout {
                 section_idx: i,
                 header_bounds,
                 aux_bounds,
                 body_bounds,
                 scrollbar_bounds,
+                thumb_bounds,
                 collapsed,
                 resolved_size: s_main,
             });
@@ -712,20 +746,56 @@ impl MultiSectionView {
                 hit_regions.push((body_bounds, MultiSectionViewHit::Body { section: i }));
             }
 
-            // Scrollbar hit regions: thumb / track-before / track-after.
-            // Thumb position is the host's responsibility (we only know
-            // total content size; thumb position depends on scroll
-            // offset inside the inner body). We emit a single
-            // scrollbar-thumb region for now; backends that want
-            // track-page-jump can split the bounds further at hit time.
+            // Scrollbar hit regions. When the body's scroll state is
+            // introspectable (Tree, List), split the gutter into
+            // TrackBefore / Thumb / TrackAfter so consumers can route
+            // page-up clicks (track above thumb) and page-down (track
+            // below thumb) without re-deriving thumb geometry. For
+            // overflowing body types without row-based scroll, fall
+            // back to a single combined-Thumb region — same as the
+            // pre-#9 behaviour. Hit-region order matters: Thumb
+            // first (front-to-back hit_test), then the two tracks.
             if let Some(sb) = scrollbar_bounds {
-                hit_regions.push((
-                    sb,
-                    MultiSectionViewHit::Scrollbar {
-                        section: i,
-                        kind: ScrollbarHit::Thumb,
-                    },
-                ));
+                if let Some(thumb) = thumb_bounds {
+                    hit_regions.push((
+                        thumb,
+                        MultiSectionViewHit::Scrollbar {
+                            section: i,
+                            kind: ScrollbarHit::Thumb,
+                        },
+                    ));
+                    let above_h = (thumb.y - sb.y).max(0.0);
+                    if above_h > 0.0 {
+                        let above = Rect::new(sb.x, sb.y, sb.width, above_h);
+                        hit_regions.push((
+                            above,
+                            MultiSectionViewHit::Scrollbar {
+                                section: i,
+                                kind: ScrollbarHit::TrackBefore,
+                            },
+                        ));
+                    }
+                    let below_y = thumb.y + thumb.height;
+                    let below_h = (sb.y + sb.height - below_y).max(0.0);
+                    if below_h > 0.0 {
+                        let below = Rect::new(sb.x, below_y, sb.width, below_h);
+                        hit_regions.push((
+                            below,
+                            MultiSectionViewHit::Scrollbar {
+                                section: i,
+                                kind: ScrollbarHit::TrackAfter,
+                            },
+                        ));
+                    }
+                } else {
+                    hit_regions.push((
+                        sb,
+                        MultiSectionViewHit::Scrollbar {
+                            section: i,
+                            kind: ScrollbarHit::Thumb,
+                        },
+                    ));
+                }
             }
 
             // Divider after this section (not after the last one).
@@ -863,6 +933,77 @@ fn body_overflows(s: &Section, content: f32, body_main: f32) -> bool {
         SectionBody::Empty(_) | SectionBody::Custom(_) => false,
         _ => content > body_main + 0.5, // tolerate sub-cell rounding
     }
+}
+
+/// Inner body's scroll state when introspectable. Returns
+/// `(scroll_offset_rows, row_count)` for body types that carry a
+/// row-based `scroll_offset` field. `None` for bodies without
+/// row-based scroll (`Form`, `Terminal`, `MessageList`, `Text`,
+/// `Empty`, `Custom`); the layout falls back to a single
+/// combined-Thumb hit region for those.
+///
+/// Per #9: the primitive introspects the body enum directly rather
+/// than threading a host-supplied scroll measure through every
+/// `MultiSectionView::layout` call. The scroll state already lives
+/// on the inner primitive — there's no second source of truth.
+fn body_scroll_state(body: &SectionBody) -> Option<(usize, usize)> {
+    match body {
+        SectionBody::Tree(t) => Some((t.scroll_offset, t.rows.len())),
+        SectionBody::List(l) => {
+            let title_row = if l.title.is_some() { 1 } else { 0 };
+            Some((l.scroll_offset, l.items.len() + title_row))
+        }
+        _ => None,
+    }
+}
+
+/// Compute thumb bounds for a per-section scrollbar.
+///
+/// Mirrors `paint_panel_scrollbar`'s arithmetic so per-section and
+/// panel-level scrollbars look the same. Snaps to `cell_quantum` when
+/// set so paint and hit-test agree on integer cells (TUI). Falls
+/// through to fractional bounds when `cell_quantum == 0.0` (GTK).
+fn compute_thumb_bounds(
+    gutter: Rect,
+    scroll_rows: usize,
+    row_count: usize,
+    content_size: f32,
+    cell_quantum: f32,
+) -> Rect {
+    if row_count == 0 || gutter.height <= 0.0 || content_size <= 0.0 {
+        return gutter;
+    }
+    // Convert row-indexed scroll into the same main-axis units as
+    // content_size: row_main_unit = content_size / row_count.
+    let row_main_unit = content_size / row_count as f32;
+    let scroll_main = scroll_rows as f32 * row_main_unit;
+    let visible = gutter.height; // viewport main-axis size = gutter height
+    let track_len = gutter.height;
+    let min_thumb_len = if cell_quantum > 0.0 {
+        cell_quantum
+    } else {
+        1.0
+    };
+    let (thumb_start, thumb_len) = crate::primitives::scrollbar::fit_thumb(
+        scroll_main,
+        content_size,
+        visible,
+        track_len,
+        min_thumb_len,
+    );
+    let (thumb_start, thumb_len) = if cell_quantum > 0.0 {
+        let q = cell_quantum;
+        let start_q = (thumb_start / q).floor() as i32;
+        let end_q = ((thumb_start + thumb_len) / q).ceil() as i32;
+        let max_end_q = (track_len / q).round() as i32;
+        let end_q = end_q.min(max_end_q);
+        let len_q = (end_q - start_q).max(1);
+        let start_q = start_q.min(max_end_q - len_q).max(0);
+        (start_q as f32 * q, len_q as f32 * q)
+    } else {
+        (thumb_start, thumb_len)
+    };
+    Rect::new(gutter.x, gutter.y + thumb_start, gutter.width, thumb_len)
 }
 
 /// Three-pass main-axis size resolution for `ScrollMode::PerSection`.

@@ -157,12 +157,17 @@ Breakpoints) and any "N collapsible tree panes" host wants.
   `(x - body_b.x, y - body_b.y)`. Header click → activate without
   selecting; body row → activate AND select; empty body → activate
   only.
-- **Drag routing.** On `Scrollbar { section }`, capture
-  `(section, origin_y, origin_offset)`. On each `MouseMoved`,
-  recompute `new = origin_offset + (y - origin_y)` clamped to
-  `[0, rows.len() - 1]` and write to `state.sections[section].scroll_offset`
-  ONLY. Other sections must remain untouched — that's the test
-  the consumer-state harness verifies.
+- **Scrollbar routing.** The layout splits each gutter into three
+  hit regions based on inner body scroll state:
+  - `Scrollbar { kind: Thumb }` — capture `(section, origin_y,
+    origin_offset)` on press; on each `MouseMoved` write
+    `new = origin_offset + (y - origin_y)` clamped to
+    `[0, rows.len() - 1]` to `state.sections[section].scroll_offset`
+    ONLY. Other sections must remain untouched.
+  - `Scrollbar { kind: TrackBefore }` — page up by `body_bounds.height`
+    rows.
+  - `Scrollbar { kind: TrackAfter }` — page down by `body_bounds.height`
+    rows.
 
 Runnable: `quadraui/examples/msv_multi_tree.rs`. Harness:
 `quadraui/src/tui/multi_section_view.rs::tests` ("Consumer-state

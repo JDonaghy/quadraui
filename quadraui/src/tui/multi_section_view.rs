@@ -86,7 +86,10 @@ pub fn draw_multi_section_view(
 
             if let Some(sb_b) = s_layout.scrollbar_bounds {
                 if let Some(clipped) = clip_to_viewport(sb_b, viewport_top, viewport_bottom) {
-                    paint_scrollbar(buf, clipped, theme);
+                    let clipped_thumb = s_layout
+                        .thumb_bounds
+                        .and_then(|t| clip_to_viewport(t, viewport_top, viewport_bottom));
+                    paint_scrollbar(buf, clipped, clipped_thumb, theme);
                 }
             }
         }
@@ -446,22 +449,19 @@ fn paint_empty_body(buf: &mut Buffer, area: TuiRect, empty: &EmptyBody, theme: &
     }
 }
 
-fn paint_scrollbar(buf: &mut Buffer, bounds: QRect, theme: &Theme) {
+fn paint_scrollbar(buf: &mut Buffer, gutter: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
     let bg = ratatui_color(theme.background);
     let track = ratatui_color(theme.scrollbar_track);
     let thumb = ratatui_color(theme.scrollbar_thumb);
 
-    let x = bounds.x.round() as u16;
-    let y_start = bounds.y.round() as u16;
-    let height = bounds.height.round() as u16;
+    let x = gutter.x.round() as u16;
+    let y_start = gutter.y.round() as u16;
+    let height = gutter.height.round() as u16;
     if height == 0 {
         return;
     }
 
-    // Per-section scrollbar (used by `PerSection` mode when an inner
-    // body overflows). Default-rendered as a full track with a 1-cell
-    // thumb at the top — hosts overlay precise geometry on top via the
-    // standalone `Scrollbar` primitive when they have real scroll state.
+    // Track first; thumb overlays on top.
     for dy in 0..height {
         let cell_y = y_start + dy;
         if cell_y >= buf.area.y + buf.area.height {
@@ -469,8 +469,27 @@ fn paint_scrollbar(buf: &mut Buffer, bounds: QRect, theme: &Theme) {
         }
         set_cell(buf, x, cell_y, '░', track, bg);
     }
-    if height >= 1 {
-        set_cell(buf, x, y_start, '█', thumb, bg);
+
+    // Thumb at the layout-computed position when the body's scroll
+    // state was introspectable (Tree, List). Falls back to a 1-cell
+    // top-anchored thumb for overflowing body types without row-based
+    // scroll — same shape as pre-#9, here for visual continuity. Per
+    // *Primitive Authoring Rule #6*, the thumb position must reflect
+    // state — that's why the layout owns these bounds, not the
+    // rasteriser.
+    let (thumb_y, thumb_h) = match thumb_bounds {
+        Some(t) => (t.y.round() as u16, t.height.round().max(1.0) as u16),
+        None => (y_start, 1),
+    };
+    for dy in 0..thumb_h {
+        let cell_y = thumb_y + dy;
+        if cell_y >= buf.area.y + buf.area.height {
+            break;
+        }
+        if cell_y >= y_start + height {
+            break;
+        }
+        set_cell(buf, x, cell_y, '█', thumb, bg);
     }
 }
 
@@ -972,6 +991,167 @@ mod tests {
                 body_b.y + 0.5,
                 click
             );
+        }
+    }
+
+    /// Painted scrollbar thumb lands at the y range the layout
+    /// computed from `(scroll_offset, content_rows, viewport_rows)` —
+    /// this is the *Primitive Authoring Rule #6* test for
+    /// state-derived paint geometry. Pre-#9 `paint_scrollbar` pinned
+    /// the thumb at `y_start` regardless of state; that bug is
+    /// catchable here in unit-test time.
+    ///
+    /// Setup: one section with 20 rows in a 10-cell body, scrolled by
+    /// 2 rows. With the snapping arithmetic in `compute_thumb_bounds`,
+    /// thumb lands at `sb.y + 1` with height 5.
+    #[test]
+    fn scrollbar_thumb_paints_at_layout_position() {
+        let area = TuiRect::new(0, 0, 30, 11);
+        let mut buf = Buffer::empty(area);
+        let mut v = view_with(vec![tree_section(
+            "scrolly",
+            &[
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+                "r13", "r14", "r15", "r16", "r17", "r18", "r19",
+            ],
+            SectionSize::EqualShare,
+        )]);
+        // Scroll 2 rows down on the only section.
+        if let SectionBody::Tree(t) = &mut v.sections[0].body {
+            t.scroll_offset = 2;
+        }
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+        let thumb = layout.sections[0]
+            .thumb_bounds
+            .expect("Tree body with overflow should have computed thumb_bounds");
+        let sb = layout.sections[0].scrollbar_bounds.unwrap();
+
+        // Part A — layout's thumb_bounds matches the formula.
+        // fit_thumb(scroll=2, total=20, visible=10, track=10, min=1) →
+        //   raw_len = 10/20 * 10 = 5; thumb_len = 5
+        //   range = max(20-10, 1) = 10; travel = 10-5 = 5
+        //   thumb_start = (2/10)*5 = 1.0
+        // With cell_quantum=1.0: start_q=1, end_q=ceil(6)=6, len=5.
+        // Section 0 starts at y=0; header 1 cell; gutter at y=1, height 10.
+        // → thumb at sb.y(=1)+1 = 2, height 5. Catches layout-formula
+        // mutations that move with paint (paint+layout could agree on
+        // a wrong answer if both reference the same broken formula).
+        assert!(
+            (thumb.y - 2.0).abs() < 0.01,
+            "thumb.y = {} (expected 2.0 from formula)",
+            thumb.y
+        );
+        assert!(
+            (thumb.height - 5.0).abs() < 0.01,
+            "thumb.height = {} (expected 5.0 from formula)",
+            thumb.height
+        );
+
+        // Part B — painted '█' rows match thumb_bounds. Catches paint
+        // mutations that ignore thumb_bounds.
+        let gutter_x = sb.x.round() as u16;
+        let mut painted_thumb_rows: Vec<u16> = Vec::new();
+        for y in (sb.y.round() as u16)..((sb.y + sb.height).round() as u16) {
+            if cell_char(&buf, gutter_x, y) == '█' {
+                painted_thumb_rows.push(y);
+            }
+        }
+        assert_eq!(
+            painted_thumb_rows,
+            (thumb.y.round() as u16..(thumb.y + thumb.height).round() as u16).collect::<Vec<_>>(),
+            "painted thumb rows should match layout's thumb_bounds y range"
+        );
+
+        // Part C — hit_test at a painted thumb cell returns
+        // `Scrollbar { Thumb }`. Closes the round-trip: paint position,
+        // layout bounds, and hit region all reference the same
+        // coordinates.
+        let painted_mid = painted_thumb_rows[painted_thumb_rows.len() / 2];
+        match layout.hit_test(sb.x + sb.width / 2.0, painted_mid as f32 + 0.5) {
+            MultiSectionViewHit::Scrollbar {
+                section,
+                kind: ScrollbarHit::Thumb,
+            } => assert_eq!(section, 0),
+            other => panic!(
+                "hit at painted thumb row {} returned {:?}; expected Scrollbar::Thumb",
+                painted_mid, other
+            ),
+        }
+    }
+
+    /// Hit-test in the gutter column above the painted thumb returns
+    /// `TrackBefore`, not `Thumb`. Locks the consumer-page-up
+    /// contract: clicking above the thumb is meant to page up by the
+    /// viewport size, not start a thumb drag.
+    #[test]
+    fn track_before_thumb_hits_track_before() {
+        let area = TuiRect::new(0, 0, 30, 11);
+        let mut v = view_with(vec![tree_section(
+            "scrolly",
+            &[
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+                "r13", "r14", "r15", "r16", "r17", "r18", "r19",
+            ],
+            SectionSize::EqualShare,
+        )]);
+        if let SectionBody::Tree(t) = &mut v.sections[0].body {
+            t.scroll_offset = 2; // thumb lands away from the top
+        }
+        let layout = tui_msv_layout(&v, area);
+        let sb = layout.sections[0].scrollbar_bounds.unwrap();
+        let thumb = layout.sections[0].thumb_bounds.unwrap();
+
+        // Click in the gutter column above the thumb's first y.
+        let click_x = sb.x + sb.width / 2.0;
+        let click_y = sb.y + 0.5; // top-of-gutter cell, before thumb starts
+        assert!(
+            click_y < thumb.y,
+            "test setup: click_y must be above thumb.y (got {} vs {})",
+            click_y,
+            thumb.y
+        );
+        match layout.hit_test(click_x, click_y) {
+            MultiSectionViewHit::Scrollbar {
+                section,
+                kind: ScrollbarHit::TrackBefore,
+            } => assert_eq!(section, 0),
+            other => panic!("expected TrackBefore, got {:?}", other),
+        }
+    }
+
+    /// Symmetric: hit-test below the painted thumb returns
+    /// `TrackAfter`. Locks the page-down contract.
+    #[test]
+    fn track_after_thumb_hits_track_after() {
+        let area = TuiRect::new(0, 0, 30, 11);
+        let mut v = view_with(vec![tree_section(
+            "scrolly",
+            &[
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+                "r13", "r14", "r15", "r16", "r17", "r18", "r19",
+            ],
+            SectionSize::EqualShare,
+        )]);
+        if let SectionBody::Tree(t) = &mut v.sections[0].body {
+            t.scroll_offset = 2;
+        }
+        let layout = tui_msv_layout(&v, area);
+        let sb = layout.sections[0].scrollbar_bounds.unwrap();
+        let thumb = layout.sections[0].thumb_bounds.unwrap();
+
+        // Click in the gutter below thumb's last y.
+        let click_x = sb.x + sb.width / 2.0;
+        let click_y = thumb.y + thumb.height + 0.5;
+        assert!(
+            click_y < sb.y + sb.height,
+            "test setup: click_y must be inside the gutter"
+        );
+        match layout.hit_test(click_x, click_y) {
+            MultiSectionViewHit::Scrollbar {
+                section,
+                kind: ScrollbarHit::TrackAfter,
+            } => assert_eq!(section, 0),
+            other => panic!("expected TrackAfter, got {:?}", other),
         }
     }
 

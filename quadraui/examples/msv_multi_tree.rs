@@ -27,25 +27,10 @@
 //! - `Enter`                 toggle selection on first row of active section
 //! - mouse click on header   activate that section
 //! - mouse click on body row activate + select
-//! - mouse drag on scrollbar update only that section's `scroll_offset`
+//! - mouse click on scrollbar track above thumb → page up that section
+//! - mouse click on scrollbar track below thumb → page down that section
+//! - mouse drag on scrollbar thumb → update only that section's `scroll_offset`
 //! - `q` / `Esc`             quit
-//!
-//! # Known visual limitations
-//!
-//! MSV's per-section scrollbar paint (`tui::multi_section_view::paint_scrollbar`)
-//! is a stub: it paints a full track + a 1-cell thumb pinned at the top of
-//! the gutter regardless of inner body scroll state. Likewise the layout
-//! only emits one `ScrollbarHit::Thumb` region covering the whole gutter
-//! — `TrackBefore` / `TrackAfter` page-jump regions exist as enum variants
-//! but aren't emitted today. So in this example: the inner tree scrolls
-//! correctly when you drag the gutter, but the thumb glyph stays at the
-//! top, and clicking the track without dragging does nothing.
-//!
-//! The contract this example demonstrates (per-section state, drag
-//! isolation, paint↔click round-trip) is unaffected — those are state
-//! semantics, not painted thumb geometry. Tracking this gap separately;
-//! see the issue tracker for "MSV per-section scrollbar paint + track-
-//! page hit regions".
 
 use std::io;
 use std::time::Duration;
@@ -64,9 +49,9 @@ use ratatui::Terminal;
 
 use quadraui::tui::{draw_multi_section_view, tui_msv_layout, tui_tree_layout};
 use quadraui::{
-    Decoration, MsvAxis, MultiSectionView, MultiSectionViewHit, ScrollMode, Section, SectionBody,
-    SectionHeader, SectionId, SectionSize, SelectionMode, StyledText, Theme, TreePath, TreeRow,
-    TreeView, TreeViewHit, WidgetId,
+    Decoration, MsvAxis, MultiSectionView, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section,
+    SectionBody, SectionHeader, SectionId, SectionSize, SelectionMode, StyledText, Theme, TreePath,
+    TreeRow, TreeView, TreeViewHit, WidgetId,
 };
 
 /// Per-section consumer state. The host owns scroll + selection;
@@ -196,13 +181,32 @@ impl DebugSidebar {
                     TreeViewHit::Empty => ClickAction::BodyActivated(section),
                 }
             }
-            MultiSectionViewHit::Scrollbar { section, .. } => {
+            MultiSectionViewHit::Scrollbar {
+                section,
+                kind: ScrollbarHit::Thumb,
+            } => {
                 self.scroll_drag = Some(ScrollDrag {
                     section,
                     origin_y: y,
                     origin_offset: self.sections[section].scroll_offset,
                 });
                 ClickAction::ScrollbarPressed(section)
+            }
+            MultiSectionViewHit::Scrollbar {
+                section,
+                kind: ScrollbarHit::TrackBefore,
+            } => {
+                let body_h = layout.sections[section].body_bounds.height as usize;
+                self.page_scroll(section, -(body_h as isize));
+                ClickAction::ScrollbarPagedUp(section)
+            }
+            MultiSectionViewHit::Scrollbar {
+                section,
+                kind: ScrollbarHit::TrackAfter,
+            } => {
+                let body_h = layout.sections[section].body_bounds.height as usize;
+                self.page_scroll(section, body_h as isize);
+                ClickAction::ScrollbarPagedDown(section)
             }
             _ => ClickAction::None,
         }
@@ -229,6 +233,16 @@ impl DebugSidebar {
     /// Release the captured drag.
     pub fn drag_end(&mut self) {
         self.scroll_drag = None;
+    }
+
+    /// Page-scroll a section by `delta` rows (negative = up, positive
+    /// = down). Used by track-page handling: clicking the gutter above
+    /// the thumb pages up by viewport rows; below the thumb pages down.
+    fn page_scroll(&mut self, section: usize, delta: isize) {
+        let max = self.sections[section].rows.len().saturating_sub(1) as isize;
+        let cur = self.sections[section].scroll_offset as isize;
+        let new = (cur + delta).max(0).min(max) as usize;
+        self.sections[section].scroll_offset = new;
     }
 
     /// Cycle the active section by `delta` (`+1` Tab, `-1` Shift+Tab).
@@ -290,6 +304,8 @@ pub enum ClickAction {
     BodyActivated(usize),
     RowSelected { section: usize, path: TreePath },
     ScrollbarPressed(usize),
+    ScrollbarPagedUp(usize),
+    ScrollbarPagedDown(usize),
     None,
 }
 
@@ -428,6 +444,12 @@ fn format_status(sidebar: &DebugSidebar, last: Option<&ClickAction>) -> String {
         }
         Some(ClickAction::ScrollbarPressed(i)) => {
             format!("scrollbar→{}", sidebar.sections[*i].id)
+        }
+        Some(ClickAction::ScrollbarPagedUp(i)) => {
+            format!("page-up→{}", sidebar.sections[*i].id)
+        }
+        Some(ClickAction::ScrollbarPagedDown(i)) => {
+            format!("page-down→{}", sidebar.sections[*i].id)
         }
         Some(ClickAction::None) => "inert".to_string(),
         None => "—".to_string(),
