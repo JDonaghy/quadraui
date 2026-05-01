@@ -15,9 +15,67 @@ downstream consumers.
 
 1. Read `README.md` for the high-level shape (workspace, primitives, status).
 2. Read `quadraui/docs/DECISIONS.md` for primitive-distinctness principles.
-3. Read `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §9 for the resolved
-   decisions log.
-4. Run `gh issue list --state open` to see active work.
+3. Read `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §4 (Backend trait shape) and §9 (resolved decisions log).
+4. Read the *Cross-backend portability commitment* below — this is the load-bearing rule that lets future backends (Windows, macOS) ship "for free."
+5. Run `gh issue list --state open` to see active work.
+
+## Cross-backend portability commitment
+
+**The goal: a future agent should be able to write the entire Windows or macOS backend with almost no input — just by implementing the `Backend` trait against Direct2D / Core Graphics. Zero consumer-side changes. Zero per-example rewrites.**
+
+This is non-negotiable. Every architectural decision in this repo serves it.
+
+What that means in practice:
+
+1. **Every primitive MUST have a `Backend` trait method.** `Backend::draw_<primitive>(rect, &primitive) -> ...`. If a primitive has TUI and GTK rasterisers but no trait method, **that's a bug, not a style choice** — file an issue and add the trait method. No exceptions, no shortcuts. Per `BACKEND_TRAIT_PROPOSAL.md` §4: "Adding a primitive is a breaking change to this trait. That's intentional."
+
+2. **Apps and examples MUST go through `AppLogic` + `quadraui::{tui,gtk}::run`.** Render code calls `backend.draw_status_bar(...)`, `backend.draw_multi_section_view(...)`, etc. The render code is **fully backend-generic** — a `<B: Backend>` function, or a method taking `&mut dyn Backend`. The same `AppLogic` impl drives every backend.
+
+3. **Examples are paired by shape, not by backend.** A consumer pattern (e.g. "MSV with N tree sections") has ONE `AppLogic` impl in `examples/common/<shape>.rs`. Each backend gets a ~10-line `examples/<backend>_<shape>.rs` whose `main()` is just `quadraui::<backend>::run(SharedApp::new())`. Mirrors `tui_app.rs` / `gtk_app.rs` and `tui_demo.rs` / `gtk_demo.rs`.
+
+4. **Bypassing the runner is a smell.** If an example writes its own `crossterm::Terminal` loop or `gtk4::Application` shell, that's a signal the `Backend` trait is missing the primitive. **Fix the trait, not the example.** The TUI/GTK runners must support every primitive the workspace ships. (Today's state: `multi_section_view`, `editor`, and a dozen others are missing — a known gap, see open issues.)
+
+5. **Layout helpers go through `Backend` too.** `Backend::msv_layout(rect, view) -> MultiSectionViewLayout` (analogous for tree, list, etc.). Each backend supplies its own native metrics internally (cells for TUI, pixels+line_height for GTK, DIPs+font metrics for Win/macOS). **Consumer click routers stay backend-agnostic** — no `tui_msv_layout` vs `gtk_msv_layout` branching at the consumer.
+
+6. **Events are unified at the `UiEvent` boundary.** Every backend translates its native events (crossterm `MouseEventKind`, GTK4 `GestureDrag`, Win32 `WM_LBUTTONDOWN`, NSEvent) into `quadraui::UiEvent` before reaching `AppLogic::handle`. App code never sees backend-specific event types. (Already true today for TUI + GTK.)
+
+What "Windows/macOS for free" looks like:
+
+```rust
+// quadraui/src/win/backend.rs (new, when Win-GUI ships)
+pub struct WinBackend { /* HWND, ID2D1RenderTarget, ... */ }
+impl Backend for WinBackend {
+    fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
+        crate::win::draw_tree(self.target(), rect, tree, self.theme());
+    }
+    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
+        crate::win::draw_multi_section_view(self.target(), rect, view, self.theme(), self.line_height());
+    }
+    // ... one impl per primitive, each ~3 lines
+}
+
+// quadraui/src/win/run.rs (new)
+pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+    // Win32 boilerplate: register class, CreateWindowEx, message loop,
+    // translate WM_* → UiEvent, dispatch to app.handle(), redraw via
+    // app.render(&mut backend, AreaId::default()).
+}
+
+// examples/win_multi_tree.rs (new, ~10 lines)
+fn main() {
+    quadraui::win::run(common::MultiTreeApp::new())
+}
+```
+
+Every existing AppLogic-driven example then **runs on Windows unchanged**. That's the definition of "for free."
+
+This commitment is the reason why:
+
+- Primitives expose `layout()` and `hit_test()` (D6 in BACKEND_TRAIT_PROPOSAL.md §9) — so consumer click routers consume one backend-agnostic API.
+- The harness pattern (Rule #4 below) tests backend rasterisers against the same primitive layouts — discovering drift in one backend can't hide.
+- The Backend trait deliberately uses per-method shape, not `enum AnyPrimitive` dispatch (§4 / §6.1) — adding a primitive is a compile-error breaking change in every backend, not a runtime panic.
+
+If you're tempted to take a shortcut — write a self-contained example that bypasses the runner, copy-paste an example across backends, build a per-backend layout helper — **stop and ask: does this violate the portability commitment?** If yes, fix the trait gap first; the shortcut perpetuates the problem.
 
 ## Development Workflow
 
@@ -129,6 +187,18 @@ When adding or changing a primitive:
    instead of computed from scroll_offset"). Verify empirically by
    mutating the formula and observing the test fail. See *Coverage
    taxonomy* under *Testing* for the full bug-class breakdown.
+7. **Add the primitive to the `Backend` trait.** Every primitive MUST
+   have a `Backend::draw_<name>` (and where applicable, `Backend::<name>_layout`)
+   method. Per `BACKEND_TRAIT_PROPOSAL.md` §4, adding a primitive is
+   an intentional breaking change to the trait — every backend
+   implementer sees the new method as a compile error and fills in
+   their rasteriser. **No primitive ships with TUI/GTK free-function
+   rasterisers but no trait coverage.** That's how the
+   *Cross-backend portability commitment* (above) stays load-bearing —
+   if a primitive isn't on the trait, downstream consumer code has to
+   pick a backend explicitly (the failure mode that motivates this
+   rule). The audit issue tracking the current gap is open in the
+   issue tracker.
 
 ## Consumer patterns
 
