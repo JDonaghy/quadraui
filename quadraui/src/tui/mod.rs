@@ -51,7 +51,7 @@ pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
 pub use message_list::draw_message_list;
-pub use multi_section_view::draw_multi_section_view;
+pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 pub use palette::draw_palette;
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::run;
@@ -61,7 +61,7 @@ pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR, TAB_CLOSE_COLS};
 pub use text_display::draw_text_display;
 pub use tooltip::draw_tooltip;
-pub use tree::draw_tree;
+pub use tree::{draw_tree, tui_tree_layout};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the
