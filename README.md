@@ -1,0 +1,94 @@
+# quadraui
+
+Cross-platform UI primitives with native rendering backends for **TUI**
+(via ratatui), **GTK4** (via gtk4-rs + Cairo + Pango), and — designed-
+for, not-yet-implemented — **Windows** (Direct2D + DirectWrite) and
+**macOS** (Core Graphics + Core Text).
+
+The premise: declarative widget descriptions (`TreeView`, `MultiSectionView`,
+`TabBar`, etc.) are produced once by the host app, and each backend
+rasterises them in its native idiom. Paint and click consume **one**
+layout instance — primitives expose a `layout(...)` helper that the
+rasteriser uses internally and that hosts call to drive hit-testing.
+This rules out the "paint and click drift" bug class structurally.
+
+## Status
+
+`0.0.x` — pre-1.0, breaking changes allowed. The TUI and GTK backends
+are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
+Windows and macOS backends are scaffolded but not implemented yet.
+
+## Workspace
+
+| Crate | Purpose |
+|---|---|
+| `quadraui` | The core library — primitives, types, theme, backend traits, TUI + GTK rasterisers. |
+| `kubeui-core` | Domain logic for a Kubernetes dashboard demo (no rendering deps). |
+| `kubeui` | TUI-rendered Kubernetes dashboard. Real consumer that exercises `MultiSectionView`, `TreeView`, `Form`, `StatusBar`, `Scrollbar`. |
+| `kubeui-gtk` | GTK-rendered Kubernetes dashboard. Same domain logic as `kubeui`; different backend. |
+
+Demo crates are kept inside this repo so primitive changes can be
+validated end-to-end before merge — they're not example code, they're
+real apps under development.
+
+## Features
+
+- `tui` — TUI rasteriser (`quadraui::tui::draw_*`).
+- `gtk` — GTK4 rasteriser (`quadraui::gtk::draw_*`).
+
+A consumer that needs both:
+
+```toml
+[dependencies]
+quadraui = { version = "0.0.1", features = ["tui", "gtk"] }
+```
+
+Backend-specific tests are gated on the corresponding feature. CI builds
+both sets.
+
+## Primitives
+
+Current set (declarative descriptions + layout + dual rasterisers):
+
+- `TreeView` — flat-rendered, scroll-aware, hit-testable.
+- `ListView` — single-column scrollable list.
+- `Form` — field/value rows with caret-aware text input.
+- `Tabs` (`TabBar`) — horizontal tab strip with active scroll.
+- `StatusBar` — left/right segment list with action dispatch.
+- `Scrollbar` — vertical scrollbar primitive.
+- `MultiSectionView` — vertically stacked, individually sized,
+  collapsible sections — each containing its own scrollable body.
+  Composes other primitives as section bodies.
+- `MessageList` — chat-style message history.
+- `Editor` — code-editor primitive (gutter, virtual text, syntax spans).
+- Plus: `Tooltip`, `ContextMenu`, `Dialog`, `Palette`, `Terminal`,
+  `RichTextPopup`, etc.
+
+## Design
+
+- [`quadraui/docs/DECISIONS.md`](quadraui/docs/DECISIONS.md) — primitive
+  distinctness principles and architectural decision log.
+- [`quadraui/docs/BACKEND_TRAIT_PROPOSAL.md`](quadraui/docs/BACKEND_TRAIT_PROPOSAL.md) §9 —
+  resolved decisions log.
+- [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) —
+  pitfalls discovered while building the Win-GUI backend; apply when
+  building macOS or any future native backend.
+
+## Testing
+
+Each backend has paint↔click round-trip tests in `quadraui/src/tui/*::tests`
+that paint into a virtual buffer, find painted glyphs, hit-test those
+exact coordinates, and assert paint and click identify the same widget
+region. These catch "paint and click coordinate-system drift" bugs that
+unit tests of either path alone would miss. The pattern is being rolled
+out across primitives — see PR history for `cell_quantum` (#297), MSV
+harness (#298), TreeView harness (#299).
+
+## License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.

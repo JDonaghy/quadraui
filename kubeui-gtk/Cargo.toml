@@ -1,9 +1,10 @@
 [package]
 name = "kubeui-gtk"
-version = "0.1.0"
-edition = "2021"
+version = "0.0.1"
+edition.workspace = true
 description = "GTK4 Kubernetes dashboard built on quadraui (kubeui-core consumer)"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [[bin]]
