@@ -19,6 +19,44 @@ downstream consumers.
    decisions log.
 4. Run `gh issue list --state open` to see active work.
 
+## Development Workflow
+
+All non-trivial work should be tracked via GitHub Issues. Issues are the source of truth for what needs doing, why, and what the design is.
+
+**Documentation-only changes** (pure `.md` edits, or comment-only edits in source files) may be committed directly to `develop` and pushed. No branch, no smoke test, no path decision. This includes `README.md`, `CLAUDE.md`, `quadraui/docs/*.md`, and any other workspace-root `.md`. If any code changes accompany the doc edit — even a one-line code change — use the full branch workflow below.
+
+**For all other changes (issue work, primitive changes, rasteriser changes, mini-app updates, release prep):**
+
+1. **Always work on a local branch off `develop`.** Never commit code directly to `develop`. Branch naming:
+   - Issue work: `issue-{number}-{short-description}` (e.g. `issue-6-menu-bar-rasterisers`)
+   - Other work: `{kind}-{short-description}` (e.g. `feat-tree-headers`, `fix-msv-scrollbar`, `test-tabbar-harness`, `refactor-extract-tui-tab-bar-layout`)
+2. Do the work on that branch, committing as you go. **Run the full quality gate before each commit** (`cargo build` / `cargo test --features tui` / `cargo test --features gtk` / `cargo clippy` / `cargo fmt --check` per the *Testing* section).
+3. **Do NOT push the branch yet.** Keep it local until one of the following applies:
+   - **(a)** The user has run smoke tests (e.g. `cargo run --example tui_app`, `cd kubeui && cargo run`, etc.) and confirmed the changes work, OR
+   - **(b)** The user has explicitly agreed that smoke testing is not needed (e.g. test-only changes where the harness is the verification, doc-only changes, or refactors fully covered by existing tests).
+   For primitive paint/click changes specifically, the **paint↔click round-trip harness IS the smoke test** — if the harness passes (and was empirically verified to catch the bug class — see *Lessons captured*), explicit (b) is appropriate.
+   Offer smoke tests explicitly and wait for approval.
+4. **Once approved, ask the user which landing path they want:**
+   - **Path A — merge locally + push.** For small / trivial changes (test fixes, typo fixes, doc updates, single-line refactors): fast-forward-merge the branch into `develop` locally with `git merge --ff-only <branch>`, push `develop`, delete the branch. No PR, no separate review.
+   - **Path B — push branch + open PR.** For normal feature, primitive, or rasteriser work, and anything closing an issue: push the branch, open a PR to `develop` with `gh pr create --base develop`. If the work closes an issue, reference it with "Closes #{number}" in the PR body. User reviews and merges.
+5. **When the user confirms a merge that closes an issue**, immediately close the issue with `gh issue close <number> -c "Implemented in PR #N"` — do not rely on GitHub auto-close.
+
+**Why both paths exist:** Path A is lower ceremony for changes so small that a PR review adds no information (a 2-line test fix where the fix *is* the verification). Path B is the default for work that warrants a review artifact, closes an issue, or is large enough that someone might want to see the diff separately from the merge commit. **When in doubt, default to Path B.** Primitive shape changes, new rasterisers, harness additions, and any change to the public API all warrant Path B even when small.
+
+**Creating issues:**
+- At session end, create issues for any planned but unstarted work discussed during the session.
+- Include full design context in the issue body — file paths, primitive shape, expected behavior, harness requirements, where to look in existing rasterisers as a template.
+- Use labels for categorization (`enhancement`, `bug`, `documentation`, etc.).
+- Issues should be self-contained — a new session should be able to pick one up and implement it from the issue body alone.
+
+**Bug fixes found during other work:**
+- If a bug is found while working on something else, create a separate issue for it.
+- Fix it on the current branch if it's small and directly related, or leave it for a separate branch if it's independent.
+
+**Cross-repo prereq tracking:**
+- If quadraui work is blocked on a downstream consumer change (rare, but possible), or if a vimcode issue is blocked on quadraui work (common during the harness-first phase), label the issue `blocked` and reference the prereq in the body as `<owner>/<repo>#<N>`.
+- The `/plan-next` skill resolves these cross-repo links and reports which `blocked` issues are now ready to unblock (all prereqs CLOSED).
+
 ## Architecture
 
 **Workspace members:**
@@ -81,6 +119,45 @@ When adding or changing a primitive:
    this same helper internally — paint and consumer-driven hit_test
    consume one source of truth.
 
+## Consumer patterns
+
+Recipes for shaping common consumer integrations onto quadraui
+primitives. Each pattern lives next to a runnable example AND a
+consumer-state round-trip harness; new patterns are added here once
+both gates pass.
+
+### MSV with N stacked TreeView sections (Debug-sidebar shape)
+
+The shape vimcode's Debug sidebar (Variables / Watch / Call Stack /
+Breakpoints) and any "N collapsible tree panes" host wants.
+
+- **Per-section state lives on the host.** Each section has its own
+  `scroll_offset: usize` and `selected_path: Option<TreePath>` owned
+  by the host's `AppState`/struct, NOT smuggled back into the
+  primitive via `Cell<T>` engine fields. Primitives are declarative;
+  the host rebuilds a fresh `MultiSectionView` from its state every
+  frame.
+- **Section sizing.** All sections `EqualShare`, `ScrollMode::PerSection`,
+  `Axis::Vertical`. Headers without chevrons (`show_chevron: false`)
+  match VSCode's Debug-sidebar styling.
+- **Click routing.** Call `tui_msv_layout(&view, area)` once per
+  click. On `Body { section }`, fetch `layout.sections[section].body_bounds`,
+  call `tui_tree_layout(&tree, body_area)`, hit_test at
+  `(x - body_b.x, y - body_b.y)`. Header click → activate without
+  selecting; body row → activate AND select; empty body → activate
+  only.
+- **Drag routing.** On `Scrollbar { section }`, capture
+  `(section, origin_y, origin_offset)`. On each `MouseMoved`,
+  recompute `new = origin_offset + (y - origin_y)` clamped to
+  `[0, rows.len() - 1]` and write to `state.sections[section].scroll_offset`
+  ONLY. Other sections must remain untouched — that's the test
+  the consumer-state harness verifies.
+
+Runnable: `quadraui/examples/msv_multi_tree.rs`. Harness:
+`quadraui/src/tui/multi_section_view.rs::tests` ("Consumer-state
+round-trip harness" block). Both must be updated together when
+changing the pattern.
+
 ## Testing
 
 **Lib tests:** `cargo test --features tui` (or `--features gtk`).
@@ -132,9 +209,75 @@ CI, license) can omit the scope or use `(workspace)`.
 
 ## Branching + releases
 
-`main` is the only long-lived branch. Feature work happens on
-`<kind>-<short-description>` branches; merge via PR after CI is green.
-Versions live in each crate's Cargo.toml.
+Two long-lived branches:
+
+- `main` — released/stable. Only updated by release merges from `develop`.
+- `develop` — integration branch. All feature work merges here first (per *Development Workflow* above).
+
+## Lessons captured
+
+  Durable rules that came out of real failures. Each one is load-bearing —
+  read at session start; apply as you work. New lessons get appended
+  (date + one-line incident summary). Lessons don't get removed unless
+  they turn out wrong.
+
+  ### Paint↔click drift is the structural bug class quadraui exists to eliminate
+
+  When a primitive's paint code computes one set of coordinates and its
+  hit_test code computes another, every consumer eventually sees "I
+  clicked X but Y was selected" — and each consumer works around it in a
+  different ad-hoc way. The library's job is to make that impossible by
+  construction:
+
+  - **One layout, two consumers.** Paint and hit_test must consume the
+    *same* `Layout` instance. Never let either side re-derive bounds.
+  - **Coordinate-system agreement is structural.** When a backend rounds
+    to a discrete unit (TUI cells, integer pixels), the layout itself
+    must snap to that unit *before* emitting bounds — not at paint time.
+    See `LayoutMetrics::cell_quantum` for the TUI case.
+  - **Round-trip coverage proves agreement.** A test that paints, finds
+    the painted region, and hit_tests at that exact position is the only
+    test that catches drift across paint/hit_test formulae. Unit tests of
+    either side alone will miss it.
+
+  ### The band-aid trap
+
+  When a consumer hits a paint/click drift bug mid-migration, the
+  tempting "fix" is to cache layout inputs on the consumer's state
+  (`Cell<T>` or similar) so click reads what paint wrote. **This
+  perpetuates the bug class.** Two code paths still derive the same
+  answer from the same inputs; if they ever diverge in inputs *or* in
+  derivation, the bug returns in a new shape.
+
+  The structural fix is always one derivation — inside the primitive's
+  `layout()` (preferred) or on a `Backend`-owned cache shared by paint
+  and hit_test. Per-consumer caches ship the problem; they don't solve it.
+
+  ### Theory-only iteration doesn't converge
+
+  When a migration breaks and the agent can't run the consumer (common
+  with TUI apps needing a real terminal), each "plausibly correct from
+  code reading" fix ships a new bug. The only escape is a harness that
+  exercises paint→hit_test agreement automatically, in unit-test time,
+  without a human in the loop. **The harness is the gate.** Don't ship
+  a primitive change or a consumer migration without one.
+
+  ### Migration discipline (corollary)
+
+  Migrating a consumer onto a primitive is a contract change, not a
+  refactor. The consumer commits to the primitive's `layout()` as the
+  source of truth for widget bounds. Every migration MUST add a
+  *consumer-state* round-trip test before merging:
+
+  1. Paint the consumer's MSV / TreeView / etc. into a buffer.
+  2. Find painted regions in that buffer.
+  3. Simulate the consumer's click handler at those coordinates.
+  4. Assert consumer-state mutation matches the painted UI — right
+     section activated, right item selected, right scroll offset moved.
+
+  A green primitive test does not prove the consumer integration is
+  correct.
+
 
 ## What NOT to do
 

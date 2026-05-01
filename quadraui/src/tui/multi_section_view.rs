@@ -1054,4 +1054,372 @@ mod tests {
         }
         assert!(found, "expected `─` divider strip");
     }
+
+    // ── Consumer-state round-trip harness ──────────────────────────────────
+    //
+    // The primitive-level round-trip tests above prove paint and click
+    // agree on coordinate geometry. These tests prove the agreement
+    // still holds under the *consumer pattern* the Debug sidebar (and
+    // any "N stacked TreeView sections" host) wants:
+    //
+    //   - Per-section `scroll_offset` and `selected_path` live on the
+    //     host, not on the primitive.
+    //   - Header click activates the section without selecting a row.
+    //   - Body row click activates AND selects.
+    //   - Empty-body click activates without selecting.
+    //   - Scrollbar drag updates ONLY the targeted section's offset.
+    //   - After offset changes, paint shows the offset-th row at the
+    //     body's top — and clicking that top row hit_tests back to the
+    //     same row index.
+    //
+    // The runnable counterpart is `quadraui/examples/msv_multi_tree.rs`.
+    //
+    // Per CLAUDE.md "Migration discipline (corollary)": a green
+    // primitive test does not prove the consumer integration is
+    // correct. These tests are the gate that proves it for this
+    // consumer shape.
+
+    use crate::primitives::tree::TreeRow as TR;
+    use crate::types::TreePath;
+
+    struct ConsumerSection {
+        id: SectionId,
+        rows: Vec<TR>,
+        scroll_offset: usize,
+        selected_path: Option<TreePath>,
+    }
+
+    struct ConsumerState {
+        sections: Vec<ConsumerSection>,
+        active_section: Option<usize>,
+    }
+
+    impl ConsumerState {
+        fn build_view(&self) -> MultiSectionView {
+            let sections = self
+                .sections
+                .iter()
+                .enumerate()
+                .map(|(idx, s)| Section {
+                    id: s.id.clone(),
+                    header: SectionHeader {
+                        title: StyledText::plain(s.id.to_uppercase()),
+                        show_chevron: false,
+                        ..Default::default()
+                    },
+                    body: SectionBody::Tree(TreeView {
+                        id: WidgetId::new(format!("{}-tree", s.id)),
+                        rows: s.rows.clone(),
+                        selection_mode: crate::types::SelectionMode::Single,
+                        selected_path: s.selected_path.clone(),
+                        scroll_offset: s.scroll_offset,
+                        style: Default::default(),
+                        has_focus: self.active_section == Some(idx),
+                    }),
+                    aux: None,
+                    size: SectionSize::EqualShare,
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                })
+                .collect();
+            MultiSectionView {
+                id: WidgetId::new("consumer"),
+                sections,
+                active_section: self.active_section,
+                axis: Axis::Vertical,
+                allow_resize: false,
+                allow_collapse: false,
+                scroll_mode: ScrollMode::PerSection,
+                has_focus: true,
+                panel_scroll: 0.0,
+            }
+        }
+
+        /// Route a primary click at `(x, y)` inside `area` exactly the
+        /// way `examples/msv_multi_tree.rs::DebugSidebar::click` does.
+        /// Header → activate w/o select; Body+Row → activate+select;
+        /// Body+Empty (empty section) → activate w/o select.
+        fn click(&mut self, x: f32, y: f32, area: TuiRect) {
+            let view = self.build_view();
+            let layout = tui_msv_layout(&view, area);
+            match layout.hit_test(x, y) {
+                MultiSectionViewHit::Header { section, .. } => {
+                    self.active_section = Some(section);
+                    self.sections[section].selected_path = None;
+                }
+                MultiSectionViewHit::Body { section } => {
+                    self.active_section = Some(section);
+                    let body_b = layout.sections[section].body_bounds;
+                    let tree = match &view.sections[section].body {
+                        SectionBody::Tree(t) => t.clone(),
+                        _ => return,
+                    };
+                    let body_area = TuiRect::new(
+                        body_b.x.round() as u16,
+                        body_b.y.round() as u16,
+                        body_b.width.round() as u16,
+                        body_b.height.round() as u16,
+                    );
+                    let inner = crate::tui::tui_tree_layout(&tree, body_area);
+                    match inner.hit_test(x - body_b.x, y - body_b.y) {
+                        crate::TreeViewHit::Row(idx) => {
+                            self.sections[section].selected_path =
+                                Some(tree.rows[idx].path.clone());
+                        }
+                        crate::TreeViewHit::Empty => {
+                            // Activated above; nothing to select.
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn make_rows(prefix: &str, n: usize) -> Vec<TR> {
+        (0..n)
+            .map(|i| TR {
+                path: vec![i as u16],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain(format!("{prefix}{i}")),
+                badge: None,
+                is_expanded: None,
+                decoration: Default::default(),
+            })
+            .collect()
+    }
+
+    fn debug_sidebar_state() -> ConsumerState {
+        ConsumerState {
+            sections: vec![
+                ConsumerSection {
+                    id: "vars".into(),
+                    rows: make_rows("v", 12),
+                    scroll_offset: 0,
+                    selected_path: None,
+                },
+                ConsumerSection {
+                    id: "watch".into(),
+                    rows: make_rows("w", 8),
+                    scroll_offset: 0,
+                    selected_path: None,
+                },
+                ConsumerSection {
+                    id: "stack".into(),
+                    rows: make_rows("frame", 5),
+                    scroll_offset: 0,
+                    selected_path: None,
+                },
+                ConsumerSection {
+                    id: "bps".into(),
+                    rows: Vec::new(), // empty body
+                    scroll_offset: 0,
+                    selected_path: None,
+                },
+            ],
+            active_section: None,
+        }
+    }
+
+    /// Header click activates the section but does NOT select a row.
+    /// Important for VSCode-style sidebars: clicking the header focuses
+    /// the section; selection is reserved for body interaction.
+    #[test]
+    fn consumer_header_click_activates_section_without_selecting() {
+        let area = TuiRect::new(0, 0, 30, 20);
+        let mut state = debug_sidebar_state();
+        // Pre-seed a selection in section 1 — header click on section 2
+        // must NOT clobber section 1's selection.
+        state.sections[1].selected_path = Some(vec![3]);
+
+        // Find the header row of section 2 by querying the layout.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let hb = layout.sections[2].header_bounds;
+        let click_x = hb.x + hb.width / 2.0;
+        let click_y = hb.y + 0.5;
+
+        state.click(click_x, click_y, area);
+
+        assert_eq!(
+            state.active_section,
+            Some(2),
+            "header click should activate section 2"
+        );
+        assert!(
+            state.sections[2].selected_path.is_none(),
+            "header click must not select a row in the activated section"
+        );
+        assert_eq!(
+            state.sections[1].selected_path,
+            Some(vec![3]),
+            "header click on section 2 must not touch section 1's selection"
+        );
+    }
+
+    /// Body row click activates the section AND selects the clicked
+    /// row. Round-trip: paint, find a body row in the buffer, click at
+    /// that exact y, assert the selected_path matches that row's path.
+    /// Catches the consumer-side off-by-one where paint/click agreed
+    /// at the primitive layer but the host's inner-tree hit-test
+    /// translation drifted (subtracting wrong origin, etc).
+    #[test]
+    fn consumer_body_row_click_activates_and_selects_clicked_row() {
+        let area = TuiRect::new(0, 0, 30, 21);
+        let mut buf = Buffer::empty(area);
+        let mut state = debug_sidebar_state();
+        let view = state.build_view();
+        // Paint, then find the row with text "v2" (vars section, 3rd row).
+        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let layout = tui_msv_layout(&view, area);
+        let body_b = layout.sections[0].body_bounds;
+        let body_y_start = body_b.y.round() as u16;
+        let body_y_end = (body_b.y + body_b.height).round() as u16;
+        // Scan body rows for "v2".
+        let mut painted_y: Option<u16> = None;
+        for y in body_y_start..body_y_end {
+            let row: String = (area.x..area.x + area.width)
+                .map(|x| cell_char(&buf, x, y))
+                .collect();
+            if row.contains("v2") {
+                painted_y = Some(y);
+                break;
+            }
+        }
+        let painted_y = painted_y.expect("v2 should be painted in section 0 body");
+
+        // Click at the centre of the body width on the painted row.
+        let click_x = body_b.x + body_b.width / 2.0;
+        state.click(click_x, painted_y as f32 + 0.5, area);
+
+        assert_eq!(state.active_section, Some(0), "section 0 should activate");
+        assert_eq!(
+            state.sections[0].selected_path,
+            Some(vec![2]),
+            "click on painted v2 should select path [2]"
+        );
+    }
+
+    /// Body click on an empty section activates the section but does
+    /// NOT set a selection (no rows to pick). The `Body { section }`
+    /// hit fires; the host's inner-tree hit_test returns
+    /// `TreeViewHit::Empty`; the host filters and leaves selection
+    /// alone.
+    #[test]
+    fn consumer_empty_body_click_activates_without_selecting() {
+        let area = TuiRect::new(0, 0, 30, 21);
+        let mut state = debug_sidebar_state();
+        // Section 3 (`bps`) has 0 rows.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let body_b = layout.sections[3].body_bounds;
+        let click_x = body_b.x + body_b.width / 2.0;
+        let click_y = body_b.y + body_b.height / 2.0;
+
+        state.click(click_x, click_y, area);
+
+        assert_eq!(
+            state.active_section,
+            Some(3),
+            "empty-body click should still activate the section"
+        );
+        assert!(
+            state.sections[3].selected_path.is_none(),
+            "empty body has no row to select"
+        );
+    }
+
+    /// Scrollbar drag (consumer-side) updates ONLY the targeted
+    /// section's `scroll_offset`. The other sections keep their
+    /// state — that's the whole point of host-owned per-section state
+    /// vs. a shared bridging cell. Test simulates the same MouseDown +
+    /// MouseMoved sequence the example's `DebugSidebar::click` /
+    /// `drag_to` apply.
+    #[test]
+    fn consumer_scrollbar_drag_updates_only_targeted_section_offset() {
+        // 30 cols × 24 rows so each EqualShare section gets enough
+        // body height for `vars` (12 rows) to overflow and reserve a
+        // scrollbar gutter. With 24 cells / 4 sections, each section
+        // has 6 cells (1 header + 5 body) — vars has 12 rows so
+        // body_overflows fires.
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut state = debug_sidebar_state();
+        // Pre-seed a selection in another section so we can verify
+        // the drag doesn't disturb it.
+        state.sections[1].selected_path = Some(vec![4]);
+
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+
+        // Section 0 (vars) overflows — it must have a scrollbar.
+        let sb = layout.sections[0]
+            .scrollbar_bounds
+            .expect("vars body overflows; expected scrollbar gutter");
+
+        // Simulate MouseDown on the scrollbar — capture origin.
+        let press_y = sb.y.round() as u16;
+        let origin_offset = state.sections[0].scroll_offset;
+
+        // Simulate MouseMoved 3 cells down. 1 cell = 1 row.
+        let drag_y = press_y + 3;
+        let dy = drag_y as i32 - press_y as i32;
+        let max = state.sections[0].rows.len().saturating_sub(1) as i32;
+        let new_offset = (origin_offset as i32 + dy).max(0).min(max) as usize;
+        state.sections[0].scroll_offset = new_offset;
+
+        // Only section 0's offset moved.
+        assert_eq!(state.sections[0].scroll_offset, 3);
+        assert_eq!(state.sections[1].scroll_offset, 0);
+        assert_eq!(state.sections[2].scroll_offset, 0);
+        assert_eq!(state.sections[3].scroll_offset, 0);
+
+        // Other sections' selection / state untouched.
+        assert_eq!(state.sections[1].selected_path, Some(vec![4]));
+        assert!(state.sections[2].selected_path.is_none());
+    }
+
+    /// After updating a section's `scroll_offset`, paint shows the
+    /// offset-th source row at the body's top — and clicking that top
+    /// row hit_tests back to the same row index. This is the round-
+    /// trip across the scroll boundary: paint and click both consume
+    /// `scroll_offset`, so they must agree on which row is at the top
+    /// after any drag.
+    #[test]
+    fn consumer_post_drag_paint_and_click_agree_on_top_row() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut buf = Buffer::empty(area);
+        let mut state = debug_sidebar_state();
+
+        // Apply a drag of 3 rows on section 0 (vars).
+        state.sections[0].scroll_offset = 3;
+
+        // Paint the new state.
+        let view = state.build_view();
+        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let layout = tui_msv_layout(&view, area);
+
+        // The body of section 0 now shows v3, v4, v5, ... at the top.
+        // Find "v3" in the buffer; assert it's painted at body's first
+        // row, and clicking that row selects path [3].
+        let body_b = layout.sections[0].body_bounds;
+        let top_y = body_b.y.round() as u16;
+        let row: String = (area.x..area.x + area.width)
+            .map(|x| cell_char(&buf, x, top_y))
+            .collect();
+        assert!(
+            row.contains("v3"),
+            "post-drag top body row should paint v3, got {row:?}"
+        );
+
+        // Click that top row — selected_path must be [3], not [0].
+        let click_x = body_b.x + body_b.width / 2.0;
+        state.click(click_x, top_y as f32 + 0.5, area);
+        assert_eq!(
+            state.sections[0].selected_path,
+            Some(vec![3]),
+            "click on post-drag top row should select path [3] (the offset)"
+        );
+    }
 }

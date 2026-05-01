@@ -74,6 +74,16 @@ Current set (declarative descriptions + layout + dual rasterisers):
   pitfalls discovered while building the Win-GUI backend; apply when
   building macOS or any future native backend.
 
+## Examples
+
+Runnable from the workspace root with `cargo run --example <name> --features <backend>`:
+
+| Example | Backend | What it shows |
+|---|---|---|
+| `tui_app` / `gtk_app` | `tui` / `gtk` | Minimal `AppLogic` with a single `StatusBar`. The smallest possible runner-driven app. |
+| `tui_demo` / `gtk_demo` | `tui` / `gtk` | `TabBar` + `StatusBar` with focus cycling. Same `AppLogic` body across backends — only the runner call differs. |
+| `msv_multi_tree` | `tui` | Debug-sidebar consumer pattern: 4 `EqualShare` `TreeView` sections in a `MultiSectionView`, with per-section `scroll_offset` + `selected_path` owned by the host. See *Consumer patterns* in `CLAUDE.md`. |
+
 ## Testing
 
 Each backend has paint↔click round-trip tests in `quadraui/src/tui/*::tests`
@@ -83,6 +93,12 @@ region. These catch "paint and click coordinate-system drift" bugs that
 unit tests of either path alone would miss. The pattern is being rolled
 out across primitives — see PR history for `cell_quantum` (#297), MSV
 harness (#298), TreeView harness (#299).
+
+Consumer-pattern integrations get an additional **consumer-state**
+round-trip layer alongside the primitive harness: paint, simulate the
+host's click-routing + state mutations, assert the host's state
+changes match the painted UI. See `quadraui/src/tui/multi_section_view.rs`
+"Consumer-state round-trip harness" for the canonical block.
 
 ## License
 

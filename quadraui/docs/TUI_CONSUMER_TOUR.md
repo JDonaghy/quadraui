@@ -245,5 +245,5 @@ Only the rasteriser + click-event plumbing are per-backend.
   Panel, Split, Modal, MenuBar, Toast, Spinner, ProgressBar).
 - **Session 328 (2026-04-23):** Phase B.4 chrome migration arc —
   22 commits on develop migrating every major TUI overlay to a
-  quadraui primitive or shared hit-region data. See PROJECT_STATE.md
+  quadraui primitive or shared hit-region data.
   Session 328 entry for the per-migration commit list.
