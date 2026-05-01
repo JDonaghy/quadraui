@@ -43,6 +43,8 @@ pub fn metrics_for(line_height: f64, allow_resize: bool) -> LayoutMetrics {
         // backgrounds; the previous 4px was easy to miss. Hosts that
         // want a thinner scrollbar can compose `Scrollbar` directly.
         scrollbar_size: 8.0,
+        // GTK paints at sub-pixel precision via Cairo; no quantization.
+        cell_quantum: 0.0,
     }
 }
 

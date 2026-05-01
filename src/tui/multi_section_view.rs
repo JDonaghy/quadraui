@@ -45,11 +45,15 @@ pub fn draw_multi_section_view(
 
     // TUI metrics: 1 cell per header row, 1 cell per scrollbar gutter,
     // 1 cell per divider (only when allow_resize is true; otherwise we
-    // omit the strip entirely).
+    // omit the strip entirely). `cell_quantum: 1.0` snaps section sizes
+    // to whole cells inside `MultiSectionView::layout` so paint
+    // (rounded to integer rows) and hit_test (raw fractional bounds)
+    // agree by construction.
     let metrics = LayoutMetrics {
         header_size: 1.0,
         divider_size: if view.allow_resize { 1.0 } else { 0.0 },
         scrollbar_size: 1.0,
+        cell_quantum: 1.0,
     };
 
     let bounds = QRect::new(

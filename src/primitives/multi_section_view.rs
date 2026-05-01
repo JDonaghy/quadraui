@@ -421,6 +421,12 @@ pub struct LayoutMetrics {
     /// Scrollbar gutter size in cross-axis units. Reserved on the
     /// trailing edge of each section's body when the body overflows.
     pub scrollbar_size: f32,
+    /// Snap distributed section sizes to integer multiples of this
+    /// value. `0.0` (default) means no snapping. TUI sets `1.0` so
+    /// section bounds align to terminal cells — paint (which rounds to
+    /// `u16` rows) and hit-test (which uses raw bounds) then agree by
+    /// construction. GTK leaves it `0.0` for sub-pixel layout.
+    pub cell_quantum: f32,
 }
 
 impl Default for LayoutMetrics {
@@ -429,6 +435,7 @@ impl Default for LayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
+            cell_quantum: 0.0,
         }
     }
 }
@@ -524,7 +531,7 @@ impl MultiSectionView {
         }
 
         // ── Resolve per-section main-axis sizes ────────────────────
-        let resolved = match self.scroll_mode {
+        let mut resolved = match self.scroll_mode {
             ScrollMode::WholePanel => {
                 // Every section sized to chrome + content height.
                 let mut sizes = Vec::with_capacity(n);
@@ -547,6 +554,54 @@ impl MultiSectionView {
                 usable_main,
             ),
         };
+
+        // Snap resolved sizes to integer cell multiples when the host
+        // requests it (TUI). Without this, fractional section sizes
+        // (e.g. 5.5 cells) cause paint to round to integer rows while
+        // hit_test uses the raw fractional bounds — paint and click
+        // disagree about which row is in which section. Distributes the
+        // remainder one cell at a time so the sum still equals the
+        // (integer) usable_main exactly.
+        if metrics.cell_quantum > 0.0 && n > 0 {
+            let q = metrics.cell_quantum;
+            let target_total: f32 = resolved.iter().sum();
+            let target_cells = (target_total / q).round() as i32;
+            let mut snapped: Vec<i32> = resolved.iter().map(|s| (s / q).floor() as i32).collect();
+            let mut remainder = target_cells - snapped.iter().sum::<i32>();
+            // Order the indices by the size of the dropped fractional
+            // part so the largest fractional shares get the spare
+            // cells first — matches how layout managers usually break
+            // ties on integer distribution.
+            let mut order: Vec<(usize, f32)> = resolved
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, (s / q) - (s / q).floor()))
+                .collect();
+            order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cursor = 0;
+            while remainder > 0 && !order.is_empty() {
+                let (idx, _) = order[cursor % order.len()];
+                snapped[idx] += 1;
+                remainder -= 1;
+                cursor += 1;
+            }
+            // If we overshot (remainder negative), shave from the
+            // smallest-fractional sections.
+            if remainder < 0 {
+                let mut order_rev = order;
+                order_rev.reverse();
+                let mut c = 0;
+                while remainder < 0 && !order_rev.is_empty() {
+                    let (idx, _) = order_rev[c % order_rev.len()];
+                    if snapped[idx] > 1 {
+                        snapped[idx] -= 1;
+                        remainder += 1;
+                    }
+                    c += 1;
+                }
+            }
+            resolved = snapped.into_iter().map(|s| (s as f32) * q).collect();
+        }
 
         // ── Walk and emit per-section layouts + dividers ───────────
         let mut sections_out = Vec::with_capacity(n);
@@ -1381,6 +1436,114 @@ mod tests {
         // Total content (each section header 1 + content 5 = 6, ×2 = 12)
         // exceeds bounds.height (4) → panel scrollbar.
         assert!(layout.panel_scrollbar.is_some());
+    }
+
+    #[test]
+    fn cell_quantum_snaps_section_bounds_to_integers() {
+        // Regression: with a fractional EqualShare distribution
+        // (4 sections in 21 cells → 5.25 each), paint snaps via
+        // `bounds.y.round()` while hit_test used to consume raw f32
+        // bounds. Click at the integer row that paint drew the header
+        // on resolved to the previous section's body, breaking
+        // every section after the first. With `cell_quantum: 1.0`
+        // the layout itself snaps to whole cells so paint and click
+        // can never disagree.
+        let v = view(vec![
+            empty_section("a", SectionSize::EqualShare),
+            empty_section("b", SectionSize::EqualShare),
+            empty_section("c", SectionSize::EqualShare),
+            empty_section("d", SectionSize::EqualShare),
+        ]);
+        let metrics = LayoutMetrics {
+            cell_quantum: 1.0,
+            ..LayoutMetrics::default()
+        };
+        let layout = v.layout(Rect::new(0.0, 0.0, 30.0, 21.0), metrics, |_| {
+            SectionMeasure {
+                content_size: 3.0,
+                aux_size: 0.0,
+            }
+        });
+        for s in &layout.sections {
+            let hb = s.header_bounds;
+            assert_eq!(
+                hb.y,
+                hb.y.round(),
+                "section {} header y {} not integer-aligned",
+                s.section_idx,
+                hb.y
+            );
+            assert_eq!(
+                hb.height,
+                hb.height.round(),
+                "section {} header h {} not integer-aligned",
+                s.section_idx,
+                hb.height
+            );
+            let bb = s.body_bounds;
+            assert_eq!(
+                bb.y,
+                bb.y.round(),
+                "section {} body y {} not integer-aligned",
+                s.section_idx,
+                bb.y
+            );
+            assert_eq!(
+                bb.height,
+                bb.height.round(),
+                "section {} body h {} not integer-aligned",
+                s.section_idx,
+                bb.height
+            );
+        }
+        // Sum of resolved sizes equals usable_main exactly (21 cells).
+        let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+        assert_eq!(total, 21.0);
+    }
+
+    #[test]
+    fn cell_quantum_paint_and_hit_test_agree_on_every_row() {
+        // For each integer row in the panel, the row paint draws a
+        // header on (rounding `header_bounds.y`) must equal the row
+        // hit_test resolves to that section's header. With
+        // `cell_quantum: 1.0` this is true by construction.
+        let v = view(vec![
+            empty_section("a", SectionSize::EqualShare),
+            empty_section("b", SectionSize::EqualShare),
+            empty_section("c", SectionSize::EqualShare),
+            empty_section("d", SectionSize::EqualShare),
+        ]);
+        let metrics = LayoutMetrics {
+            cell_quantum: 1.0,
+            ..LayoutMetrics::default()
+        };
+        // 21 rows: 4 headers + 17 body cells, distributed unevenly.
+        let layout = v.layout(Rect::new(0.0, 2.0, 30.0, 21.0), metrics, |_| {
+            SectionMeasure {
+                content_size: 5.0,
+                aux_size: 0.0,
+            }
+        });
+        for s in &layout.sections {
+            // Paint draws header at this integer row.
+            let painted_row = s.header_bounds.y.round();
+            // Hit-test at that row's center must return Header for this section.
+            let hit = layout.hit_test(15.0, painted_row + 0.0);
+            match hit {
+                MultiSectionViewHit::Header {
+                    section: hit_section,
+                    ..
+                } => assert_eq!(
+                    hit_section, s.section_idx,
+                    "row {} paints section {} header but hit_test returns section {}",
+                    painted_row, s.section_idx, hit_section
+                ),
+                other => panic!(
+                    "row {} paints section {} header but hit_test returns {:?}",
+                    painted_row, s.section_idx, other
+                ),
+            }
+        }
     }
 
     #[test]
