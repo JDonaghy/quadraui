@@ -1376,15 +1376,17 @@ mod tests {
 
     #[test]
     fn header_hit_chevron_vs_title_vs_action() {
-        let mut header = SectionHeader::default();
-        header.title = StyledText::plain("Section");
-        header.show_chevron = true;
-        header.actions = vec![HeaderAction {
-            id: "refresh".into(),
-            icon: Icon::new("", "R"),
-            tooltip: None,
-            enabled: true,
-        }];
+        let header = SectionHeader {
+            title: StyledText::plain("Section"),
+            show_chevron: true,
+            actions: vec![HeaderAction {
+                id: "refresh".into(),
+                icon: Icon::new("", "R"),
+                tooltip: None,
+                enabled: true,
+            }],
+            ..Default::default()
+        };
         let v = view(vec![Section {
             id: "s".into(),
             header,
@@ -1430,15 +1432,17 @@ mod tests {
 
     #[test]
     fn disabled_action_falls_through_to_title_area() {
-        let mut header = SectionHeader::default();
-        header.title = StyledText::plain("Section");
-        header.show_chevron = false;
-        header.actions = vec![HeaderAction {
-            id: "noop".into(),
-            icon: Icon::new("", "x"),
-            tooltip: None,
-            enabled: false,
-        }];
+        let header = SectionHeader {
+            title: StyledText::plain("Section"),
+            show_chevron: false,
+            actions: vec![HeaderAction {
+                id: "noop".into(),
+                icon: Icon::new("", "x"),
+                tooltip: None,
+                enabled: false,
+            }],
+            ..Default::default()
+        };
         let v = view(vec![Section {
             id: "s".into(),
             header,

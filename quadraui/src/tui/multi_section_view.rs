@@ -827,12 +827,7 @@ mod tests {
 
     fn find_row_with(buf: &Buffer, needle: &str) -> Option<u16> {
         let area = buf.area;
-        for y in area.y..area.y + area.height {
-            if row_text(buf, y).contains(needle) {
-                return Some(y);
-            }
-        }
-        None
+        (area.y..area.y + area.height).find(|&y| row_text(buf, y).contains(needle))
     }
 
     /// Round-trip: paint, find each section's title row in the buffer,

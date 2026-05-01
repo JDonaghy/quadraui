@@ -51,8 +51,10 @@ pub fn metrics_for(line_height: f64, allow_resize: bool) -> LayoutMetrics {
 /// Compute the layout for a `MultiSectionView` using the GTK metrics
 /// that the rasteriser would use itself. Hosts call this to drive
 /// hit-testing without re-computing or re-measuring — paint AND click
-/// share this single layout per frame.
-pub fn layout_for(
+/// share this single layout per frame. Mirrors TUI's [`crate::tui::tui_msv_layout`]
+/// in spirit: one source-of-truth layout produced by one set of
+/// metrics, consumed by both paint and hit-test.
+pub fn gtk_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
     line_height: f64,
@@ -142,7 +144,7 @@ pub fn draw_multi_section_view(
     layout.set_attributes(None);
 
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let view_layout = layout_for(view, bounds, line_height);
+    let view_layout = gtk_msv_layout(view, bounds, line_height);
 
     // Clip everything painted below to the panel area. Sections with
     // negative-y bounds (scrolled past the viewport top) extend beyond
@@ -593,4 +595,390 @@ fn paint_divider(cr: &Context, bounds: QRect, theme: &Theme) {
         bounds.height as f64,
     );
     cr.fill().ok();
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+//
+// Paint↔click round-trip harness for the GTK rasteriser. Mirrors the
+// TUI harness pattern in `tui::multi_section_view::tests` but paints
+// into a `cairo::ImageSurface` instead of a ratatui `Buffer` and
+// inspects pixels rather than glyphs.
+//
+// The bug class this catches: paint position derived from one set of
+// bounds while hit-test consumes another. On GTK the typical drift
+// vectors are subpixel rounding (paint snaps to integer pixels while
+// hit_test consumes fractional bounds) and font-metric quirks (the
+// rasteriser uses `line_height * 1.4` for body row pitch while a
+// drifting copy might use `line_height`).
+//
+// Tests are gated on `#[cfg(all(test, feature = "gtk"))]` so they
+// only run under `cargo test --features gtk`. They don't need a real
+// display — `cairo::ImageSurface` is pure memory; Pango uses
+// fontconfig and works headless.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::multi_section_view::{
+        MultiSectionViewHit, ScrollMode, Section, SectionSize,
+    };
+    use crate::primitives::tree::{TreeRow, TreeView};
+    use crate::types::{Color, Decoration, SelectionMode, WidgetId};
+    use pangocairo::cairo::{Format, ImageSurface};
+
+    /// Surface canvas size: wide enough for chevron + title + (optional)
+    /// scrollbar gutter; tall enough for several `EqualShare` sections.
+    const W: i32 = 200;
+    const H: i32 = 200;
+
+    /// Standard line-height the GTK rasteriser is parameterised by.
+    /// Header rows render at `line_height * 1.4`; body rows at the
+    /// same (per `body_measure`).
+    const LINE_HEIGHT: f64 = 14.0;
+
+    /// Build a [`Theme`] where the canonical background is pure white
+    /// (RGB 255,255,255) so any non-white pixel in the surface came
+    /// from `draw_multi_section_view` — header/aux fills, scrollbar
+    /// track/thumb, body fills, or rendered text. Other colors stay
+    /// at their defaults so the painted regions are visibly inked.
+    fn test_theme() -> Theme {
+        Theme {
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        }
+    }
+
+    fn tree_section(id: &str, items: &[&str]) -> Section {
+        let rows: Vec<TreeRow> = items
+            .iter()
+            .enumerate()
+            .map(|(i, t)| TreeRow {
+                path: vec![i as u16],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain((*t).to_string()),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+            })
+            .collect();
+        Section {
+            id: id.into(),
+            header: SectionHeader {
+                title: StyledText::plain(id.to_uppercase()),
+                show_chevron: false,
+                ..Default::default()
+            },
+            body: SectionBody::Tree(TreeView {
+                id: WidgetId::new(format!("{}-tree", id)),
+                rows,
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: Default::default(),
+                has_focus: true,
+            }),
+            aux: None,
+            size: SectionSize::EqualShare,
+            collapsed: false,
+            min_size: None,
+            max_size: None,
+        }
+    }
+
+    fn view_with(sections: Vec<Section>) -> MultiSectionView {
+        MultiSectionView {
+            id: WidgetId::new("v"),
+            sections,
+            active_section: None,
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: true,
+            panel_scroll: 0.0,
+        }
+    }
+
+    /// Paint `view` into a fresh surface; return (surface, layout).
+    /// Hit-test uses the SAME layout the rasteriser used internally —
+    /// that's the source-of-truth contract `gtk_msv_layout` enforces.
+    fn paint_then_layout(view: &MultiSectionView) -> (ImageSurface, MultiSectionViewLayout) {
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        // Clear surface to white so non-white pixels uniquely identify
+        // painted regions.
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let layout = pangocairo::functions::create_layout(&cr);
+            draw_multi_section_view(
+                &cr,
+                &layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                view,
+                &test_theme(),
+                LINE_HEIGHT,
+                /* nerd_fonts */ false,
+            );
+        }
+        let bounds = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = gtk_msv_layout(view, bounds, LINE_HEIGHT);
+        (surface, layout)
+    }
+
+    /// Read pixel at (x, y) as (r, g, b). Cairo ARGB32 byte order on
+    /// little-endian is BGRA, so byte[0]=B, byte[1]=G, byte[2]=R.
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn is_painted(data: &[u8], stride: usize, x: i32, y: i32) -> bool {
+        let (r, g, b) = pixel(data, stride, x, y);
+        !(r == 255 && g == 255 && b == 255)
+    }
+
+    /// Find any painted pixel within (x_range, y_range). Returns
+    /// (x, y) of the first non-white pixel, scanning row-major.
+    fn first_painted_in(
+        data: &[u8],
+        stride: usize,
+        x_range: (i32, i32),
+        y_range: (i32, i32),
+    ) -> Option<(i32, i32)> {
+        for y in y_range.0..y_range.1 {
+            for x in x_range.0..x_range.1 {
+                if x < 0 || y < 0 || x >= W || y >= H {
+                    continue;
+                }
+                if is_painted(data, stride, x, y) {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
+    /// Header round-trip: paint a section, find a painted pixel in
+    /// its header band, hit_test that exact pixel, assert the hit
+    /// identifies the same section's `Header`. Catches drift between
+    /// paint and layout for header bounds.
+    #[test]
+    fn gtk_header_round_trip_paint_to_pixel_to_hit_test() {
+        let v = view_with(vec![
+            tree_section("alpha", &["a0", "a1", "a2"]),
+            tree_section("beta", &["b0", "b1", "b2"]),
+            tree_section("gamma", &["g0", "g1", "g2"]),
+        ]);
+        let (mut surface, layout) = paint_then_layout(&v);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        for s in &layout.sections {
+            let hb = s.header_bounds;
+            // Interior-pixel scan: skip the 1px boundary on each edge
+            // because Cairo anti-aliases fractional bounds onto integer
+            // pixels (cell_quantum: 0.0 on GTK). A boundary pixel is
+            // mixed-ink by design — the contract is that *interior*
+            // pixels paint the section's ink AND hit_test there
+            // returns that section. The TUI analogue (cell_quantum:
+            // 1.0) snaps bounds to integers and avoids the AA region;
+            // GTK accepts AA and asserts at interior pixels only.
+            let x_range = (
+                (hb.x + 1.0).floor() as i32,
+                (hb.x + hb.width - 1.0).floor() as i32,
+            );
+            let y_range = (
+                (hb.y + 1.0).floor() as i32,
+                (hb.y + hb.height - 1.0).floor() as i32,
+            );
+            let painted = first_painted_in(&data, stride, x_range, y_range).unwrap_or_else(|| {
+                panic!(
+                    "section {} interior header bounds (x {}..{}, y {}..{}) contained no painted pixel",
+                    s.section_idx, x_range.0, x_range.1, y_range.0, y_range.1
+                )
+            });
+            let hit = layout.hit_test(painted.0 as f32 + 0.5, painted.1 as f32 + 0.5);
+            match hit {
+                MultiSectionViewHit::Header { section, .. } => assert_eq!(
+                    section, s.section_idx,
+                    "pixel ({}, {}) painted in section {} header but hit_test returned section {}",
+                    painted.0, painted.1, s.section_idx, section
+                ),
+                other => panic!(
+                    "pixel ({}, {}) painted in section {} header but hit_test returned {:?}",
+                    painted.0, painted.1, s.section_idx, other
+                ),
+            }
+        }
+    }
+
+    /// Body round-trip: each section's body bounds contain at least
+    /// one painted pixel; hit_test at that pixel returns Body for the
+    /// same section. Catches "body painted into the wrong y-range" and
+    /// "hit_test at painted body row returns Header of next section".
+    #[test]
+    fn gtk_body_round_trip_paint_to_pixel_to_hit_test() {
+        let v = view_with(vec![
+            tree_section("alpha", &["a0", "a1", "a2"]),
+            tree_section("beta", &["b0", "b1", "b2"]),
+            tree_section("gamma", &["g0", "g1", "g2"]),
+        ]);
+        let (mut surface, layout) = paint_then_layout(&v);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        for s in &layout.sections {
+            let bb = s.body_bounds;
+            if bb.height < 3.0 || bb.width < 3.0 {
+                continue;
+            }
+            // Interior-pixel scan; see header test for the AA rationale.
+            let x_range = (
+                (bb.x + 1.0).floor() as i32,
+                (bb.x + bb.width - 1.0).floor() as i32,
+            );
+            let y_range = (
+                (bb.y + 1.0).floor() as i32,
+                (bb.y + bb.height - 1.0).floor() as i32,
+            );
+            let painted = first_painted_in(&data, stride, x_range, y_range).unwrap_or_else(|| {
+                panic!(
+                    "section {} interior body bounds (x {}..{}, y {}..{}) contained no painted pixel",
+                    s.section_idx, x_range.0, x_range.1, y_range.0, y_range.1
+                )
+            });
+            let hit = layout.hit_test(painted.0 as f32 + 0.5, painted.1 as f32 + 0.5);
+            match hit {
+                MultiSectionViewHit::Body { section } => assert_eq!(
+                    section, s.section_idx,
+                    "pixel ({}, {}) painted in section {} body but hit_test returned Body{{{}}}",
+                    painted.0, painted.1, s.section_idx, section
+                ),
+                other => panic!(
+                    "pixel ({}, {}) painted in section {} body but hit_test returned {:?}",
+                    painted.0, painted.1, s.section_idx, other
+                ),
+            }
+        }
+    }
+
+    /// Overflowing section reserves a scrollbar gutter on the trailing
+    /// edge. Click in the gutter → `Scrollbar`, NOT `Body`. Click left
+    /// of the gutter → `Body`. Mirror of TUI's
+    /// `scrollbar_column_hits_scrollbar_not_body_when_section_overflows`.
+    #[test]
+    fn gtk_scrollbar_column_hits_scrollbar_not_body_when_overflowing() {
+        // 1 section with enough rows that body overflows.
+        let v = view_with(vec![tree_section(
+            "lots",
+            &[
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+                "r13", "r14", "r15",
+            ],
+        )]);
+        let (mut surface, layout) = paint_then_layout(&v);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let s = &layout.sections[0];
+        let sb = s
+            .scrollbar_bounds
+            .expect("overflowing section must reserve a scrollbar gutter (paint↔click contract)");
+
+        // Hit_test the centre of the gutter — should be Scrollbar.
+        let click_x = sb.x + sb.width / 2.0;
+        let click_y = sb.y + sb.height / 2.0;
+        match layout.hit_test(click_x, click_y) {
+            MultiSectionViewHit::Scrollbar { section, .. } => assert_eq!(section, 0),
+            other => panic!(
+                "click at gutter centre ({:.1}, {:.1}) returned {:?}",
+                click_x, click_y, other
+            ),
+        }
+
+        // Pixel inside the gutter must be painted (track or thumb).
+        let gx = sb.x.floor() as i32 + 1;
+        let gy = sb.y.floor() as i32 + 5;
+        if gx < W && gy < H {
+            assert!(
+                is_painted(&data, stride, gx, gy),
+                "scrollbar gutter at pixel ({}, {}) was not painted",
+                gx,
+                gy
+            );
+        }
+
+        // Hit_test left of the gutter — should be Body.
+        let body_b = s.body_bounds;
+        if body_b.width >= 2.0 {
+            let click = layout.hit_test(body_b.x + 1.0, body_b.y + 1.0);
+            assert!(
+                matches!(click, MultiSectionViewHit::Body { section: 0 }),
+                "click at body interior returned {:?}; expected Body{{0}}",
+                click
+            );
+        }
+    }
+
+    /// Subpixel safety: a fractional `EqualShare` distribution
+    /// produces section bounds with non-integer y/height. Paint and
+    /// hit_test must agree on integer pixel y. For each section, find
+    /// a painted pixel inside its header band, hit_test, assert the
+    /// section index matches.
+    ///
+    /// GTK keeps `cell_quantum: 0.0` (no integer snap; Cairo paints at
+    /// fractional coords directly). The contract: hit_test on integer
+    /// pixel coords routes to whichever section's logical bounds
+    /// contain that y. A pixel painted at y=N is logically inside
+    /// whichever section spans y=N..N+1.
+    #[test]
+    fn gtk_subpixel_section_bounds_round_trip() {
+        // 3 sections in a height that doesn't divide evenly. With
+        // line_height=14, header=14*1.4=19.6, this exercises
+        // fractional bounds.
+        let v = view_with(vec![
+            tree_section("alpha", &["a0", "a1"]),
+            tree_section("beta", &["b0", "b1"]),
+            tree_section("gamma", &["g0", "g1"]),
+        ]);
+        let (mut surface, layout) = paint_then_layout(&v);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // For each section, find an interior painted pixel inside its
+        // y-span (skipping the 1px AA boundary on each edge).
+        for s in &layout.sections {
+            let section_top = s.header_bounds.y;
+            let section_bot = section_top + s.resolved_size;
+            let y_top = (section_top + 1.0).floor() as i32;
+            let y_bot = (section_bot - 1.0).floor() as i32;
+            let painted = first_painted_in(&data, stride, (1, W - 1), (y_top, y_bot.min(H)))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "section {} interior (y={}..{}) contained no painted pixel",
+                        s.section_idx, y_top, y_bot
+                    )
+                });
+            let hit = layout.hit_test(painted.0 as f32 + 0.5, painted.1 as f32 + 0.5);
+            let hit_section = match hit {
+                MultiSectionViewHit::Header { section, .. } => section,
+                MultiSectionViewHit::Body { section } => section,
+                MultiSectionViewHit::Scrollbar { section, .. } => section,
+                other => panic!(
+                    "section {} (y={}..{}) painted at pixel ({}, {}) but hit_test returned {:?}",
+                    s.section_idx, y_top, y_bot, painted.0, painted.1, other
+                ),
+            };
+            assert_eq!(
+                hit_section, s.section_idx,
+                "pixel ({}, {}) painted in section {} (y range {}..{}) but hit_test returned section {}",
+                painted.0, painted.1, s.section_idx, y_top, y_bot, hit_section
+            );
+        }
+    }
 }

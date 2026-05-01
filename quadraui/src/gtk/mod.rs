@@ -60,8 +60,7 @@ pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
 pub use message_list::draw_message_list;
 pub use multi_section_view::{
-    draw_multi_section_view, layout_for as multi_section_view_layout,
-    metrics_for as multi_section_view_metrics,
+    draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
 pub use palette::draw_palette;
 pub use rich_text_popup::{
