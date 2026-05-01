@@ -73,7 +73,7 @@ pub use tab_bar::draw_tab_bar;
 pub use terminal::draw_terminal_cells;
 pub use text_display::draw_text_display;
 pub use tooltip::draw_tooltip;
-pub use tree::draw_tree;
+pub use tree::{draw_tree, gtk_tree_layout};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports
