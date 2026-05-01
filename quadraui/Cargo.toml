@@ -63,3 +63,8 @@ required-features = ["gtk"]
 name = "gtk_app"
 path = "examples/gtk_app.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "gtk_multi_tree"
+path = "examples/gtk_multi_tree.rs"
+required-features = ["gtk"]
