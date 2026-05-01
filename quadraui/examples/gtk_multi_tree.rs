@@ -70,11 +70,18 @@ struct TreeSection {
 }
 
 /// Active drag captured on press over a scrollbar thumb.
+///
+/// `travel` is the thumb's max pixel travel range (`track_len - thumb_h`)
+/// at drag-begin; `max_offset` is `rows.len() - viewport_rows`.
+/// Together they let the drag handler map mouse-y delta to scroll-row
+/// delta proportionally, so the painted thumb tracks the mouse 1:1
+/// in pixels — the inverse of `fit_thumb`'s position formula.
 struct ScrollDrag {
     section: usize,
     origin_y: f64,
     origin_offset: usize,
-    viewport_rows: usize,
+    travel: f64,
+    max_offset: usize,
 }
 
 pub struct DebugSidebar {
@@ -107,7 +114,16 @@ impl DebugSidebar {
             .map(|(idx, s)| Section {
                 id: s.id.clone(),
                 header: SectionHeader {
-                    title: StyledText::plain(s.title.clone()),
+                    // Prefix the active section's title with a marker so
+                    // Tab cycling has visible feedback even when no row
+                    // is selected. A proper primitive-level "active
+                    // section accent" would apply on both backends; this
+                    // is the consumer-side workaround for now.
+                    title: if self.active_section == Some(idx) {
+                        StyledText::plain(format!("▶ {}", s.title))
+                    } else {
+                        StyledText::plain(s.title.clone())
+                    },
                     show_chevron: false,
                     ..Default::default()
                 },
@@ -173,14 +189,27 @@ impl DebugSidebar {
                 section,
                 kind: ScrollbarHit::Thumb,
             } => {
+                let sb = layout.sections[section]
+                    .scrollbar_bounds
+                    .expect("scrollbar hit implies bounds present");
+                let thumb_h = layout.sections[section]
+                    .thumb_bounds
+                    .map(|t| t.height as f64)
+                    .unwrap_or(sb.height as f64);
                 let viewport_rows = (layout.sections[section].body_bounds.height as f64
                     / (LINE_HEIGHT * 1.4))
                     .floor() as usize;
+                let max_offset = self.sections[section]
+                    .rows
+                    .len()
+                    .saturating_sub(viewport_rows);
+                let travel = (sb.height as f64 - thumb_h).max(0.0);
                 self.scroll_drag = Some(ScrollDrag {
                     section,
                     origin_y: y,
                     origin_offset: self.sections[section].scroll_offset,
-                    viewport_rows,
+                    travel,
+                    max_offset,
                 });
                 ClickAction::ScrollbarPressed(section)
             }
@@ -209,20 +238,24 @@ impl DebugSidebar {
         self.last_action = Some(action);
     }
 
-    /// Apply mouse-move during an active scrollbar drag. 1 px of drag
-    /// = 1 row of scroll, clamped to `[0, rows.len() - viewport_rows]`.
+    /// Apply mouse-move during an active scrollbar drag. Proportional:
+    /// the painted thumb tracks the mouse 1:1 in pixels, derived by
+    /// inverting `fit_thumb`'s position formula
+    /// (`thumb_y / travel == scroll_offset / max_offset`).
+    /// Falls back to a no-op when `travel == 0` (content fits in view
+    /// — there's no scroll to apply).
     pub fn drag_to(&mut self, y: f64) {
         let Some(drag) = &self.scroll_drag else {
             return;
         };
+        if drag.travel <= 0.0 || drag.max_offset == 0 {
+            return;
+        }
         let dy = y - drag.origin_y;
-        // Convert pixel delta to row delta using the same row pitch
-        // gtk_tree_layout uses (1.4 × line_height for normal rows).
-        let drow = (dy / (LINE_HEIGHT * 1.4)).round() as i32;
-        let row_count = self.sections[drag.section].rows.len();
-        let max_offset = row_count.saturating_sub(drag.viewport_rows);
-        let new = (drag.origin_offset as i32 + drow).max(0) as usize;
-        self.sections[drag.section].scroll_offset = new.min(max_offset);
+        let drow = dy / drag.travel * drag.max_offset as f64;
+        let new = (drag.origin_offset as f64 + drow).round() as i32;
+        let new = new.max(0) as usize;
+        self.sections[drag.section].scroll_offset = new.min(drag.max_offset);
     }
 
     pub fn drag_end(&mut self) {
@@ -277,6 +310,11 @@ impl DebugSidebar {
         };
         if let Some(first) = self.sections[idx].rows.first() {
             self.sections[idx].selected_path = Some(first.path.clone());
+            // Reset scroll so the just-selected first row is in view.
+            // Without this, sections that were scrolled before Tab+Enter
+            // would show no visual indication that selection happened
+            // (the selected row paints below the visible viewport).
+            self.sections[idx].scroll_offset = 0;
         }
     }
 
