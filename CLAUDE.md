@@ -200,6 +200,18 @@ When adding or changing a primitive:
    rule). The audit issue tracking the current gap is open in the
    issue tracker.
 
+**Primitive maturity levels.** A primitive file in `primitives/` is
+not "shipped" until it has all three legs: (1) descriptor + layout +
+hit_test + layout tests, (2) TUI and GTK rasterisers with paint↔click
+harnesses, (3) `Backend` trait methods. Primitives with only leg (1)
+are **descriptors** — their shape is real and tested, but vimcode
+(and any other consumer) cannot adopt them yet because there's nothing
+to paint. Current descriptors-only: `panel`, `progress`, `spinner`,
+`split`, `toast` (tracked in the issue tracker). Don't delete
+descriptors — the layout + hit_test work is real and reusable. Do
+prioritise adding rasterisers for any descriptor that blocks a
+vimcode bespoke-paint elimination.
+
 ## Consumer patterns
 
 Recipes for shaping common consumer integrations onto quadraui
