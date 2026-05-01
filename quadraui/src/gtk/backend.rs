@@ -765,6 +765,165 @@ impl Backend for GtkBackend {
             .map(|(x, y, w, h)| QRect::new(x as f32, y as f32, w as f32, h as f32))
             .collect()
     }
+
+    // ─── #13: trait coverage for the rest of the rasterised primitives ──
+
+    fn draw_multi_section_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::multi_section_view::MultiSectionView,
+    ) {
+        let line_height = self.current_line_height;
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_multi_section_view called outside enter_frame_scope");
+        crate::gtk::draw_multi_section_view(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            view,
+            &theme,
+            line_height,
+            nerd_fonts,
+        );
+    }
+
+    fn msv_layout(
+        &self,
+        rect: QRect,
+        view: &crate::primitives::multi_section_view::MultiSectionView,
+    ) -> crate::primitives::multi_section_view::MultiSectionViewLayout {
+        crate::gtk::gtk_msv_layout(view, rect, self.current_line_height)
+    }
+
+    fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
+        crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
+    }
+
+    fn draw_editor(
+        &mut self,
+        rect: QRect,
+        editor: &crate::primitives::editor::Editor,
+    ) -> crate::backend::EditorPaintResult {
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_editor called outside enter_frame_scope");
+        // GTK draw_editor needs FontMetrics; resolve from the layout's
+        // font description. The TUI return type carries a TUI-specific
+        // cursor cell — GTK paints its own caret, so we return the
+        // default. Future GTK refinement can populate fields if hosts
+        // need GTK-side cursor pixel coordinates.
+        let pango_ctx = pango_layout.context();
+        let font_desc = pango_layout
+            .font_description()
+            .or_else(|| pango_ctx.font_description());
+        let metrics = pango_ctx.metrics(font_desc.as_ref(), None);
+        crate::gtk::draw_editor(
+            cr,
+            pango_layout,
+            &metrics,
+            editor,
+            &theme,
+            char_width,
+            line_height,
+        );
+        let _ = rect;
+        crate::backend::EditorPaintResult::default()
+    }
+
+    fn draw_message_list(
+        &mut self,
+        rect: QRect,
+        list: &crate::primitives::message_list::MessageList,
+    ) {
+        let line_height = self.current_line_height;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_message_list called outside enter_frame_scope");
+        crate::gtk::draw_message_list(
+            cr,
+            pango_layout,
+            list,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            (rect.y + rect.height) as f64,
+            line_height,
+        );
+    }
+
+    fn draw_rich_text_popup(
+        &mut self,
+        popup: &crate::primitives::rich_text_popup::RichTextPopup,
+        layout_arg: &crate::primitives::rich_text_popup::RichTextPopupLayout,
+    ) {
+        let theme = self.current_theme;
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_rich_text_popup called outside enter_frame_scope");
+        // GTK rasteriser returns link bounds; for trait parity we
+        // discard them. Hosts that need link hit-testing query the
+        // primitive's own `popup.layout(...).hit_test(...)` API.
+        let _ = crate::gtk::draw_rich_text_popup(
+            cr,
+            pango_layout,
+            &ui_font_desc,
+            popup,
+            layout_arg,
+            &theme,
+        );
+    }
+
+    fn draw_find_replace(
+        &mut self,
+        rect: QRect,
+        panel: &crate::primitives::find_replace::FindReplacePanel,
+    ) {
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_find_replace called outside enter_frame_scope");
+        // GTK rasteriser positions the panel via its own anchor logic;
+        // `rect` parameter is currently unused (forward-compat for a
+        // host-resolved layout per BACKEND_TRAIT_PROPOSAL §6.2).
+        let _ = rect;
+        crate::gtk::draw_find_replace(cr, pango_layout, panel, &theme, line_height, char_width);
+    }
+
+    fn draw_completions(
+        &mut self,
+        completions: &crate::primitives::completions::Completions,
+        layout_arg: &crate::primitives::completions::CompletionsLayout,
+    ) {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_completions called outside enter_frame_scope");
+        crate::gtk::draw_completions(cr, pango_layout, completions, layout_arg, &theme);
+    }
+
+    fn draw_scrollbar(
+        &mut self,
+        _rect: QRect,
+        scrollbar: &crate::primitives::scrollbar::Scrollbar,
+    ) {
+        let theme = self.current_theme;
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_scrollbar called outside enter_frame_scope");
+        crate::gtk::draw_scrollbar(cr, scrollbar, &theme);
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

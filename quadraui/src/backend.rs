@@ -13,11 +13,19 @@ use std::time::Duration;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::editor::Editor;
+use crate::primitives::find_replace::FindReplacePanel;
+use crate::primitives::message_list::MessageList;
+use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
+use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
+use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
+use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
@@ -153,6 +161,82 @@ pub trait Backend {
     /// handler can resolve a click to a button without re-running
     /// layout. Mirrors [`draw_context_menu`](Self::draw_context_menu).
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect>;
+
+    /// Draw a [`MultiSectionView`]. The backend computes the layout
+    /// internally with native metrics (cells for TUI, pixels +
+    /// `line_height` for GTK) and dispatches each section's body to
+    /// the appropriate inner-primitive painter (tree, list, etc.).
+    /// Hosts that need to hit-test clicks call [`Self::msv_layout`]
+    /// for the same layout instance.
+    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView);
+
+    /// Compute the layout the rasteriser would produce for `view` in
+    /// `rect`, using the backend's native metrics. Hosts call this
+    /// to drive hit-testing without re-deriving metrics — paint and
+    /// click consume one layout per frame, the source-of-truth
+    /// contract `MultiSectionView` exists to enforce.
+    fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout;
+
+    /// Compute the tree layout the rasteriser would produce. Used by
+    /// hosts (especially MSV consumers) to resolve body clicks down
+    /// to row indices without re-deriving the row pitch (1 cell
+    /// uniform on TUI; `1.0×`/`1.4×` line_height by `Decoration` on
+    /// GTK).
+    fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
+
+    /// Draw an [`Editor`]. Returns paint-side data the host needs
+    /// for chrome alignment (cursor pixel position for caret blink
+    /// overlays, etc.). Asymmetric across backends: TUI populates
+    /// the result; GTK paints its own caret and returns the default.
+    fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult;
+
+    /// Draw a [`MessageList`] (chat-style streaming row history).
+    /// The backend pulls panel background from its current theme;
+    /// hosts that want a custom panel bg compose the primitive
+    /// directly via the backend crate's free function.
+    fn draw_message_list(&mut self, rect: Rect, list: &MessageList);
+
+    /// Draw a [`RichTextPopup`] at its caller-resolved layout.
+    /// Mirrors [`draw_tooltip`](Self::draw_tooltip): host computes
+    /// anchor + viewport + measure and asks `popup.layout(...)` for
+    /// the bounds. Link hit regions are tracked on the backend's
+    /// internal state; hosts that need them query via the
+    /// backend-specific accessor today (link-hit-test trait method
+    /// is a follow-up).
+    fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout);
+
+    /// Draw a [`FindReplacePanel`] (find/replace overlay sitting
+    /// above the editor). The backend pulls the editor-relative
+    /// origin from `rect.x` (TUI's `editor_left` parameter is
+    /// derived from `rect`); hosts that want a non-default offset
+    /// compose the panel into a sub-rect.
+    fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel);
+
+    /// Draw a [`Completions`] popup at its caller-resolved layout.
+    /// Mirrors [`draw_tooltip`](Self::draw_tooltip): host computes
+    /// anchor + viewport + measure and asks `completions.layout(...)`
+    /// for the bounds.
+    fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout);
+
+    /// Draw a [`Scrollbar`] (standalone primitive, vs the
+    /// per-section scrollbars MSV paints internally). The backend
+    /// pulls cell/pixel background from its current theme.
+    fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
+}
+
+/// Paint-side data returned by [`Backend::draw_editor`]. Carries
+/// information the host needs to align external chrome (caret blink
+/// overlay, virtual-text positioning) with the editor's painted
+/// content. Backends that paint their own caret (GTK) populate the
+/// default; backends that delegate caret rendering to the host (TUI
+/// terminal cursor) populate the actual cursor cell.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EditorPaintResult {
+    /// Cursor's painted position in backend-native units, if the
+    /// host is responsible for terminal-cursor positioning. `None`
+    /// when the backend painted its own caret OR when the cursor is
+    /// outside the viewport.
+    pub cursor_position: Option<(u16, u16)>,
 }
 
 /// Platform services the backend exposes to apps: clipboard, file dialogs,
