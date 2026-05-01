@@ -18,16 +18,14 @@
 //! The pointer is null outside the scope, so the safe accessor
 //! returns `None` and `draw_*` methods can detect misuse.
 //!
-//! ### What the trait covers vs. what stays inherent
+//! ### What the trait covers
 //!
-//! Drawing methods for the migrated primitives — `draw_palette`,
-//! `draw_list`, `draw_tree`, `draw_form` — go through the trait so
-//! the same generic `<B: Backend>` paint function works against
-//! `TuiBackend`, `MockBackend` (see the `tests` module), and future
-//! GTK/Win-GUI/macOS backends. The other five `draw_*` methods stay
-//! stubbed pending a quadraui-side trait change to thread
-//! pre-computed `*Layout` parameters (see
-//! `BACKEND_TRAIT_PROPOSAL.md` §6.2).
+//! As of #13 the `Backend` trait covers every primitive that has
+//! TUI + GTK rasterisers. New primitives must add a trait method as
+//! part of the same change that adds the rasteriser (see CLAUDE.md
+//! Primitive Authoring Rule #7). Generic `<B: Backend>` render code
+//! works against `TuiBackend`, `GtkBackend`, the test `MockBackend`,
+//! and any future Win-GUI / macOS backend implementer.
 //!
 //! Drag-state observation is deliberately not on the trait — only
 //! `crate::dispatch::*` needs to inspect it, and the backend keeps
@@ -587,6 +585,123 @@ impl Backend for TuiBackend {
             .map(|vis| vis.bounds)
             .collect()
     }
+
+    // ─── #13: trait coverage for the rest of the rasterised primitives ──
+
+    fn draw_multi_section_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::multi_section_view::MultiSectionView,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_multi_section_view called outside enter_frame_scope");
+        crate::tui::draw_multi_section_view(frame.buffer_mut(), area, view, &theme, nerd_fonts);
+    }
+
+    fn msv_layout(
+        &self,
+        rect: QRect,
+        view: &crate::primitives::multi_section_view::MultiSectionView,
+    ) -> crate::primitives::multi_section_view::MultiSectionViewLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_msv_layout(view, area)
+    }
+
+    fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_tree_layout(tree, area)
+    }
+
+    fn draw_editor(
+        &mut self,
+        rect: QRect,
+        editor: &crate::primitives::editor::Editor,
+    ) -> crate::backend::EditorPaintResult {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_editor called outside enter_frame_scope");
+        let tui_result = crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme);
+        crate::backend::EditorPaintResult {
+            cursor_position: tui_result.cursor_position,
+        }
+    }
+
+    fn draw_message_list(
+        &mut self,
+        rect: QRect,
+        list: &crate::primitives::message_list::MessageList,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let panel_bg = self.current_theme.background;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_message_list called outside enter_frame_scope");
+        crate::tui::draw_message_list(frame.buffer_mut(), area, list, panel_bg);
+    }
+
+    fn draw_rich_text_popup(
+        &mut self,
+        popup: &crate::primitives::rich_text_popup::RichTextPopup,
+        layout: &crate::primitives::rich_text_popup::RichTextPopupLayout,
+    ) {
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_rich_text_popup called outside enter_frame_scope");
+        crate::tui::draw_rich_text_popup(frame.buffer_mut(), popup, layout, &theme);
+    }
+
+    fn draw_find_replace(
+        &mut self,
+        rect: QRect,
+        panel: &crate::primitives::find_replace::FindReplacePanel,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        // TUI free function takes `editor_left: u16` for editor-relative
+        // positioning. The trait abstraction passes the panel's full
+        // rect; downstream consumers that want a non-zero editor offset
+        // should compose into a sub-rect.
+        let editor_left = area.x;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_find_replace called outside enter_frame_scope");
+        crate::tui::draw_find_replace(frame.buffer_mut(), area, panel, &theme, editor_left);
+    }
+
+    fn draw_completions(
+        &mut self,
+        completions: &crate::primitives::completions::Completions,
+        layout: &crate::primitives::completions::CompletionsLayout,
+    ) {
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_completions called outside enter_frame_scope");
+        crate::tui::draw_completions(frame.buffer_mut(), completions, layout, &theme);
+    }
+
+    fn draw_scrollbar(
+        &mut self,
+        _rect: QRect,
+        scrollbar: &crate::primitives::scrollbar::Scrollbar,
+    ) {
+        let theme = self.current_theme;
+        let cell_bg = theme.background;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_scrollbar called outside enter_frame_scope");
+        // The standalone TUI scrollbar primitive paints from its own
+        // `track` bounds; `rect` is unused (the primitive owns layout).
+        // Forward-compat parameter for backends that need a clip rect.
+        crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -746,6 +861,73 @@ mod tests {
         ) -> Vec<QRect> {
             Vec::new()
         }
+
+        // ── #13: stubs for the trait methods added with this issue ──
+
+        fn draw_multi_section_view(
+            &mut self,
+            _r: QRect,
+            _v: &crate::primitives::multi_section_view::MultiSectionView,
+        ) {
+        }
+
+        fn msv_layout(
+            &self,
+            r: QRect,
+            v: &crate::primitives::multi_section_view::MultiSectionView,
+        ) -> crate::primitives::multi_section_view::MultiSectionViewLayout {
+            // Mock returns the primitive's natural layout with default
+            // metrics — sufficient for cross-backend compile checks.
+            v.layout(
+                r,
+                crate::primitives::multi_section_view::LayoutMetrics::default(),
+                |_| crate::primitives::multi_section_view::SectionMeasure::default(),
+            )
+        }
+
+        fn tree_layout(&self, r: QRect, t: &TreeView) -> crate::primitives::tree::TreeViewLayout {
+            t.layout(r.width, r.height, |_| {
+                crate::primitives::tree::TreeRowMeasure::new(1.0)
+            })
+        }
+
+        fn draw_editor(
+            &mut self,
+            _r: QRect,
+            _e: &crate::primitives::editor::Editor,
+        ) -> crate::backend::EditorPaintResult {
+            crate::backend::EditorPaintResult::default()
+        }
+
+        fn draw_message_list(
+            &mut self,
+            _r: QRect,
+            _l: &crate::primitives::message_list::MessageList,
+        ) {
+        }
+
+        fn draw_rich_text_popup(
+            &mut self,
+            _p: &crate::primitives::rich_text_popup::RichTextPopup,
+            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
+        ) {
+        }
+
+        fn draw_find_replace(
+            &mut self,
+            _r: QRect,
+            _p: &crate::primitives::find_replace::FindReplacePanel,
+        ) {
+        }
+
+        fn draw_completions(
+            &mut self,
+            _c: &crate::primitives::completions::Completions,
+            _l: &crate::primitives::completions::CompletionsLayout,
+        ) {
+        }
+
+        fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
     }
 
     /// Generic helper — the minimal "app render code" that consumes
