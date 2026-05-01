@@ -64,15 +64,20 @@ struct TreeSection {
     selected_path: Option<TreePath>,
 }
 
-/// Active drag captured on `MouseDown` over a scrollbar. We snapshot
-/// the section index, the y the drag began at, and the `scroll_offset`
-/// at that moment; on every subsequent `MouseMoved` we recompute the
-/// new offset as `origin_offset + (y - origin_y)`. Releasing the
-/// button (or moving outside) clears the capture.
+/// Active drag captured on `MouseDown` over a scrollbar thumb. We
+/// snapshot the section index, the y the drag began at, the
+/// `scroll_offset` at that moment, and the section's viewport row
+/// count. On every subsequent `MouseMoved` we recompute the new
+/// offset as `origin_offset + (y - origin_y)` clamped to
+/// `[0, rows.len() - viewport_rows]` — NOT `[0, rows.len() - 1]`,
+/// which would let the user drag past the last viewport-full of
+/// rows into a state where only the trailing row is visible.
+/// Releasing the button (or moving outside) clears the capture.
 struct ScrollDrag {
     section: usize,
     origin_y: u16,
     origin_offset: usize,
+    viewport_rows: usize,
 }
 
 /// The N-tree-section debug-sidebar consumer. State lives here, NOT
@@ -185,10 +190,12 @@ impl DebugSidebar {
                 section,
                 kind: ScrollbarHit::Thumb,
             } => {
+                let viewport_rows = layout.sections[section].body_bounds.height as usize;
                 self.scroll_drag = Some(ScrollDrag {
                     section,
                     origin_y: y,
                     origin_offset: self.sections[section].scroll_offset,
+                    viewport_rows,
                 });
                 ClickAction::ScrollbarPressed(section)
             }
@@ -197,7 +204,7 @@ impl DebugSidebar {
                 kind: ScrollbarHit::TrackBefore,
             } => {
                 let body_h = layout.sections[section].body_bounds.height as usize;
-                self.page_scroll(section, -(body_h as isize));
+                self.page_scroll(section, -(body_h as isize), body_h);
                 ClickAction::ScrollbarPagedUp(section)
             }
             MultiSectionViewHit::Scrollbar {
@@ -205,7 +212,7 @@ impl DebugSidebar {
                 kind: ScrollbarHit::TrackAfter,
             } => {
                 let body_h = layout.sections[section].body_bounds.height as usize;
-                self.page_scroll(section, body_h as isize);
+                self.page_scroll(section, body_h as isize, body_h);
                 ClickAction::ScrollbarPagedDown(section)
             }
             _ => ClickAction::None,
@@ -217,12 +224,21 @@ impl DebugSidebar {
     /// state changed (caller redraws). 1 cell of drag = 1 row of scroll
     /// — backends that want proportional dragging swap this for
     /// [`quadraui::fit_thumb`] arithmetic.
+    ///
+    /// Clamps to `[0, rows.len() - viewport_rows]` (the natural max),
+    /// NOT `[0, rows.len() - 1]`. Past the natural max the thumb
+    /// would saturate at the bottom of the gutter (per `fit_thumb`'s
+    /// `clamp(scroll/range, 0, 1)`), but `TreeView`'s internal scroll
+    /// renderer would keep going — yielding states where only the
+    /// trailing row is visible while the thumb sits idle. The natural
+    /// clamp eliminates that mode by construction.
     pub fn drag_to(&mut self, y: u16) -> bool {
         let Some(drag) = &self.scroll_drag else {
             return false;
         };
         let dy = y as i32 - drag.origin_y as i32;
-        let max_offset = self.sections[drag.section].rows.len().saturating_sub(1);
+        let row_count = self.sections[drag.section].rows.len();
+        let max_offset = row_count.saturating_sub(drag.viewport_rows);
         let new = (drag.origin_offset as i32 + dy).max(0) as usize;
         let new = new.min(max_offset);
         let changed = new != self.sections[drag.section].scroll_offset;
@@ -238,8 +254,11 @@ impl DebugSidebar {
     /// Page-scroll a section by `delta` rows (negative = up, positive
     /// = down). Used by track-page handling: clicking the gutter above
     /// the thumb pages up by viewport rows; below the thumb pages down.
-    fn page_scroll(&mut self, section: usize, delta: isize) {
-        let max = self.sections[section].rows.len().saturating_sub(1) as isize;
+    /// Clamps to `[0, rows.len() - viewport_rows]` so paging past the
+    /// last viewport-full of rows is impossible.
+    fn page_scroll(&mut self, section: usize, delta: isize, viewport_rows: usize) {
+        let row_count = self.sections[section].rows.len();
+        let max = row_count.saturating_sub(viewport_rows) as isize;
         let cur = self.sections[section].scroll_offset as isize;
         let new = (cur + delta).max(0).min(max) as usize;
         self.sections[section].scroll_offset = new;
@@ -266,14 +285,23 @@ impl DebugSidebar {
         self.active_section = Some(next);
     }
 
-    /// Scroll the active section by `delta` rows.
-    pub fn scroll_active(&mut self, delta: isize) -> bool {
+    /// Scroll the active section by `delta` rows. Clamps to the
+    /// natural max (`rows.len() - viewport_rows`). `area` is the
+    /// current sidebar render rect — needed to compute the active
+    /// section's viewport row count via `tui_msv_layout`.
+    pub fn scroll_active(&mut self, area: Rect, delta: isize) -> bool {
         let Some(idx) = self.active_section else {
             return false;
         };
-        let max = self.sections[idx].rows.len().saturating_sub(1);
+        let viewport_rows = {
+            let view = self.build_view();
+            let layout = tui_msv_layout(&view, area);
+            layout.sections[idx].body_bounds.height as usize
+        };
+        let row_count = self.sections[idx].rows.len();
+        let max = row_count.saturating_sub(viewport_rows) as isize;
         let cur = self.sections[idx].scroll_offset as isize;
-        let new = (cur + delta).max(0).min(max as isize) as usize;
+        let new = (cur + delta).max(0).min(max) as usize;
         let changed = new != self.sections[idx].scroll_offset;
         self.sections[idx].scroll_offset = new;
         changed
@@ -406,10 +434,10 @@ fn run_loop(
                 KeyCode::Tab => sidebar.cycle_active(1),
                 KeyCode::BackTab => sidebar.cycle_active(-1),
                 KeyCode::Up => {
-                    sidebar.scroll_active(-1);
+                    sidebar.scroll_active(sidebar_area, -1);
                 }
                 KeyCode::Down => {
-                    sidebar.scroll_active(1);
+                    sidebar.scroll_active(sidebar_area, 1);
                 }
                 KeyCode::Enter => sidebar.select_first_of_active(),
                 _ => {}

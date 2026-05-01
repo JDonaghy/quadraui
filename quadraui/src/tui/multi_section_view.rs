@@ -1320,6 +1320,25 @@ mod tests {
         /// way `examples/msv_multi_tree.rs::DebugSidebar::click` does.
         /// Header → activate w/o select; Body+Row → activate+select;
         /// Body+Empty (empty section) → activate w/o select.
+        /// Mirror the example's `DebugSidebar::drag_to` arithmetic:
+        /// 1 cell of drag = 1 row of scroll, clamped to
+        /// `[0, rows.len() - viewport_rows]`. The natural-max clamp
+        /// (vs. the naive `rows.len() - 1`) is the bug class
+        /// `consumer_drag_past_natural_max_clamps_to_keep_viewport_full`
+        /// catches.
+        fn drag_scrollbar(
+            &mut self,
+            section: usize,
+            origin_offset: usize,
+            viewport_rows: usize,
+            dy: i32,
+        ) {
+            let row_count = self.sections[section].rows.len();
+            let max_offset = row_count.saturating_sub(viewport_rows);
+            let new = (origin_offset as i32 + dy).max(0) as usize;
+            self.sections[section].scroll_offset = new.min(max_offset);
+        }
+
         fn click(&mut self, x: f32, y: f32, area: TuiRect) {
             let view = self.build_view();
             let layout = tui_msv_layout(&view, area);
@@ -1538,16 +1557,18 @@ mod tests {
             .scrollbar_bounds
             .expect("vars body overflows; expected scrollbar gutter");
 
-        // Simulate MouseDown on the scrollbar — capture origin.
+        // Simulate MouseDown on the scrollbar — capture origin and
+        // section viewport rows the same way the example's
+        // `DebugSidebar::click` does.
         let press_y = sb.y.round() as u16;
         let origin_offset = state.sections[0].scroll_offset;
+        let viewport_rows = layout.sections[0].body_bounds.height as usize;
 
-        // Simulate MouseMoved 3 cells down. 1 cell = 1 row.
+        // Simulate MouseMoved 3 cells down via the consumer's drag
+        // helper. 1 cell = 1 row.
         let drag_y = press_y + 3;
         let dy = drag_y as i32 - press_y as i32;
-        let max = state.sections[0].rows.len().saturating_sub(1) as i32;
-        let new_offset = (origin_offset as i32 + dy).max(0).min(max) as usize;
-        state.sections[0].scroll_offset = new_offset;
+        state.drag_scrollbar(0, origin_offset, viewport_rows, dy);
 
         // Only section 0's offset moved.
         assert_eq!(state.sections[0].scroll_offset, 3);
@@ -1558,6 +1579,51 @@ mod tests {
         // Other sections' selection / state untouched.
         assert_eq!(state.sections[1].selected_path, Some(vec![4]));
         assert!(state.sections[2].selected_path.is_none());
+    }
+
+    /// Smoke-found regression: dragging past the bottom of the gutter
+    /// kept advancing the inner tree's `scroll_offset` past the
+    /// natural max (`rows.len() - viewport_rows`), ending in states
+    /// where only the trailing row was visible while the saturated
+    /// thumb sat idle. Per *Primitive Authoring Rule #6* the thumb
+    /// position correctly saturates at max scroll (`fit_thumb` clamps
+    /// `scroll/range` to `[0, 1]`); the bug is consumer-side — drag
+    /// must clamp to the natural max so paint and state stay in sync.
+    ///
+    /// Catches naive `rows.len() - 1` clamps. Empirically: replacing
+    /// the clamp denominator with `1` in `drag_scrollbar` makes this
+    /// test fail.
+    #[test]
+    fn consumer_drag_past_natural_max_clamps_to_keep_viewport_full() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut state = debug_sidebar_state();
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+
+        let viewport_rows = layout.sections[0].body_bounds.height as usize;
+        let row_count = state.sections[0].rows.len();
+        let natural_max = row_count.saturating_sub(viewport_rows);
+        assert!(
+            natural_max > 0 && natural_max < row_count - 1,
+            "test setup: vars must overflow with a non-degenerate natural_max (got {natural_max}, row_count {row_count}, viewport {viewport_rows})"
+        );
+
+        // Drag WAY past the bottom — dy = +1000 cells. Natural-max
+        // clamp must absorb the overshoot.
+        state.drag_scrollbar(0, 0, viewport_rows, 1000);
+
+        assert_eq!(
+            state.sections[0].scroll_offset, natural_max,
+            "drag past bottom should clamp to natural_max ({natural_max}); got {}",
+            state.sections[0].scroll_offset
+        );
+        assert!(
+            state.sections[0].scroll_offset < row_count - 1,
+            "scroll_offset reached row_count - 1 ({}) — that's the over-scroll \
+             state where only the trailing row is visible. The natural-max \
+             clamp must prevent this by construction.",
+            row_count - 1
+        );
     }
 
     /// After updating a section's `scroll_offset`, paint shows the

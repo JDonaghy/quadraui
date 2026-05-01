@@ -160,14 +160,23 @@ Breakpoints) and any "N collapsible tree panes" host wants.
 - **Scrollbar routing.** The layout splits each gutter into three
   hit regions based on inner body scroll state:
   - `Scrollbar { kind: Thumb }` — capture `(section, origin_y,
-    origin_offset)` on press; on each `MouseMoved` write
-    `new = origin_offset + (y - origin_y)` clamped to
-    `[0, rows.len() - 1]` to `state.sections[section].scroll_offset`
-    ONLY. Other sections must remain untouched.
+    origin_offset, viewport_rows)` on press; on each `MouseMoved`
+    write `new = origin_offset + (y - origin_y)` clamped to
+    `[0, rows.len() - viewport_rows]` to
+    `state.sections[section].scroll_offset` ONLY. Other sections
+    must remain untouched.
   - `Scrollbar { kind: TrackBefore }` — page up by `body_bounds.height`
     rows.
   - `Scrollbar { kind: TrackAfter }` — page down by `body_bounds.height`
     rows.
+
+  **Why `rows.len() - viewport_rows`, not `rows.len() - 1`?** The
+  thumb saturates at the natural max (`fit_thumb` clamps `scroll/range`
+  to `[0, 1]`), so dragging past it leaves the thumb idle while the
+  inner `TreeView::scroll_offset` keeps advancing — yielding states
+  where only the trailing row is visible. The natural-max clamp
+  makes that mode unreachable. Tested in
+  `tui::multi_section_view::tests::consumer_drag_past_natural_max_clamps_to_keep_viewport_full`.
 
 Runnable: `quadraui/examples/msv_multi_tree.rs`. Harness:
 `quadraui/src/tui/multi_section_view.rs::tests` ("Consumer-state
