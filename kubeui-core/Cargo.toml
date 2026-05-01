@@ -1,0 +1,33 @@
+[package]
+name = "kubeui-core"
+version = "0.1.0"
+edition = "2021"
+description = "Backend-agnostic core for kubeui — state, k8s client, view-builders, action reducer"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+
+[dependencies]
+quadraui = { path = "../quadraui" }
+
+# Kubernetes client
+kube = { version = "0.99", default-features = false, features = ["client", "rustls-tls", "config"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+
+# Async runtime — kube-rs is async-only. Backends own the Runtime
+# instance and pass it to the reducer when an Action triggers a
+# network call.
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
+
+# rustls 0.23 made the crypto provider explicit. Backends must call
+# `kubeui_core::install_crypto_provider()` once at startup.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Errors and serde for kubeconfig
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Time formatting for "age" column.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
