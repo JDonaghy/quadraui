@@ -409,6 +409,10 @@ impl Backend for TuiBackend {
         &self.services
     }
 
+    fn line_height(&self) -> f32 {
+        1.0
+    }
+
     // ─── Drawing ───────────────────────────────────────────────────────────
     //
     // Implementations call into the public `crate::tui::draw_*` free
@@ -860,6 +864,10 @@ mod tests {
             _l: &crate::primitives::dialog::DialogLayout,
         ) -> Vec<QRect> {
             Vec::new()
+        }
+
+        fn line_height(&self) -> f32 {
+            1.0
         }
 
         // ── #13: stubs for the trait methods added with this issue ──

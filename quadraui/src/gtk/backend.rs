@@ -517,6 +517,10 @@ impl Backend for GtkBackend {
     // "deferred" message — the GTK draw path doesn't go through the
     // trait yet, so these are unreachable in practice.
 
+    fn line_height(&self) -> f32 {
+        self.current_line_height as f32
+    }
+
     fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
         let (cr, layout) = self
             .current_frame_refs()

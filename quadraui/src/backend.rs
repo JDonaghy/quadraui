@@ -75,6 +75,19 @@ pub trait Backend {
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
     fn services(&self) -> &dyn PlatformServices;
 
+    // ─── Measurement ───────────────────────────────────────────────────
+
+    /// Height of one standard text row in the backend's native units.
+    /// TUI: `1.0` (one terminal cell). GTK: Pango-resolved line height
+    /// in pixels (~14–20 depending on font). Win-GUI (future):
+    /// DirectWrite line height in DIPs.
+    ///
+    /// Apps that need portable rect sizing use this instead of
+    /// hardcoded constants. Example: `let status_h = backend.line_height() * 1.5;`
+    /// gives 1.5 cells on TUI, ~24px on GTK, proportional DIPs on
+    /// Win-GUI — all from the same code path.
+    fn line_height(&self) -> f32;
+
     // ─── Drawing — one method per primitive ────────────────────────────
     //
     // Implementations are thin wrappers around each backend crate's

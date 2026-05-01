@@ -33,12 +33,14 @@
 
 use quadraui::{
     AppLogic, Backend, ButtonMask, Color, Decoration, Key, MouseButton, MsvAxis, MultiSectionView,
-    MultiSectionViewHit, NamedKey, Reaction, Rect, ScrollMode, ScrollbarHit, Section, SectionBody,
-    SectionHeader, SectionId, SectionSize, SelectionMode, StatusBar, StatusBarSegment, StyledText,
-    TreePath, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
+    MultiSectionViewHit, NamedKey, Reaction, Rect, ScrollDelta, ScrollMode, ScrollbarHit, Section,
+    SectionBody, SectionHeader, SectionId, SectionSize, SelectionMode, StatusBar, StatusBarSegment,
+    StyledText, TreePath, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
-const STATUS_BAR_PX: f32 = 24.0;
+/// Status bar height as a multiple of backend line_height. 1.5× gives
+/// 1.5 cells on TUI (~1 cell rendered), ~24px on GTK — portable.
+const STATUS_BAR_LINES: f32 = 1.5;
 
 struct TreeSection {
     id: SectionId,
@@ -135,21 +137,23 @@ impl DebugSidebar {
 
     fn sidebar_rect(backend: &dyn Backend) -> Rect {
         let viewport = backend.viewport();
+        let status_h = backend.line_height() * STATUS_BAR_LINES;
         Rect::new(
             0.0,
             0.0,
             viewport.width,
-            (viewport.height - STATUS_BAR_PX).max(0.0),
+            (viewport.height - status_h).max(0.0),
         )
     }
 
     fn status_rect(backend: &dyn Backend) -> Rect {
         let viewport = backend.viewport();
+        let status_h = backend.line_height() * STATUS_BAR_LINES;
         Rect::new(
             0.0,
-            (viewport.height - STATUS_BAR_PX).max(0.0),
+            (viewport.height - status_h).max(0.0),
             viewport.width,
-            STATUS_BAR_PX,
+            status_h,
         )
     }
 
@@ -412,6 +416,11 @@ impl AppLogic for DebugSidebar {
             } => {
                 self.drag_end();
                 Reaction::Continue
+            }
+            UiEvent::Scroll { delta, .. } => {
+                let rows = if delta.y > 0.0 { -1 } else { 1 };
+                self.scroll_active(backend, rows);
+                Reaction::Redraw
             }
             UiEvent::KeyPressed { key, .. } => match key {
                 Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
