@@ -83,6 +83,7 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 | `tui_app` / `gtk_app` | `tui` / `gtk` | Minimal `AppLogic` with a single `StatusBar`. The smallest possible runner-driven app. |
 | `tui_demo` / `gtk_demo` | `tui` / `gtk` | `TabBar` + `StatusBar` with focus cycling. Same `AppLogic` body across backends — only the runner call differs. |
 | `msv_multi_tree` | `tui` | Debug-sidebar consumer pattern: 4 `EqualShare` `TreeView` sections in a `MultiSectionView`, with per-section `scroll_offset` + `selected_path` owned by the host. See *Consumer patterns* in `CLAUDE.md`. |
+| `msv_sc_panel` | `tui` | Source-Control consumer pattern: `SectionAux::Input` commit message editor + N collapsible `TreeView` sections (Changes / Staged / Worktrees). Adds input-mode keystroke routing + chevron-click collapse toggle on top of the multi-tree shape. |
 
 ## Testing
 

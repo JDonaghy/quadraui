@@ -183,6 +183,55 @@ Runnable: `quadraui/examples/msv_multi_tree.rs`. Harness:
 round-trip harness" block). Both must be updated together when
 changing the pattern.
 
+### MSV with aux=Input + N collapsible TreeView sections (SC panel shape)
+
+The shape vimcode's Source Control sidebar (commit input + Changes /
+Staged / Worktrees) and any "editor + grouped tree sections" host
+wants. Different from the Debug-sidebar shape: aux row carries an
+input editor, sections are collapsible, and section count is dynamic.
+
+- **Section sizing.** Section 0 is `SectionSize::Fixed(N)` with
+  `aux: Some(SectionAux::Input(...))` and `body: SectionBody::Tree(...)`
+  (the commit input + first tree). Sections 1..N are `EqualShare` with
+  `body: SectionBody::Tree(...)`. All sections have `show_chevron: true`
+  so chevron clicks toggle collapse. `MultiSectionView::allow_collapse`
+  is `true`.
+- **Host state.** Adds `commit_message: String`, `commit_caret: usize`,
+  `commit_input_active: bool`, plus a `collapsed: bool` per section
+  (in addition to the per-section `scroll_offset` / `selected_path`
+  the Debug-sidebar shape already needs).
+- **Click routing.** On top of the Debug-sidebar routes:
+  - `Aux { kind: Input }` → set `commit_input_active = true`,
+    `active_section = None`.
+  - `Header { kind: Chevron }` → toggle `state.sections[section].collapsed`,
+    activate that section.
+  - `Header { kind: TitleArea }` → activate without selecting (same
+    as Debug-sidebar shape).
+  - Any other hit (Body, Scrollbar, Inert, Outside) → blur the input
+    (`commit_input_active = false`).
+- **Keystroke routing.** When `commit_input_active`:
+  - printable char → insert at caret, advance caret.
+  - Backspace → delete char before caret, retreat caret.
+  - Left / Right → move caret.
+  - Esc → blur (`commit_input_active = false`).
+  When `!commit_input_active`, keys behave as in the Debug-sidebar
+  shape (Tab cycles section, ↑/↓ scrolls active section, etc.).
+- **Collapsed semantics.** A collapsed section's `body_bounds.height`
+  is `0`; its hit_regions never include a `Body` variant. The y-range
+  that *would* be its body if expanded is occupied by the next
+  section's chrome — there is no "would-be body click" to handle.
+  Multiple gates in `MultiSectionView::layout` enforce this
+  (size-resolution, body_main, hit-region emission); the
+  consumer-state harness asserts the contract from outside.
+- **Dynamic section count.** Sections can be added or removed at
+  runtime; `cell_quantum` snapping holds for any section count
+  (tested 1..=8). Build a fresh `MultiSectionView` with the current
+  sections every frame — primitives are declarative.
+
+Runnable: `quadraui/examples/msv_sc_panel.rs`. Harness:
+`quadraui/src/tui/multi_section_view.rs::tests` ("SC panel" sub-block
+within "Consumer-state round-trip harness").
+
 ## Testing
 
 **Lib tests:** `cargo test --features tui` (or `--features gtk`).

@@ -1668,4 +1668,460 @@ mod tests {
             "click on post-drag top row should select path [3] (the offset)"
         );
     }
+
+    // ── Consumer-state round-trip harness — SC panel ─────────────────────
+    //
+    // Per-issue #2: the SC panel consumer shape adds a
+    // `SectionAux::Input` commit-message editor on section 0, plus
+    // collapsible Tree sections. The contracts the harness verifies:
+    //
+    //   - Input keystrokes update aux text + caret; paint shows the
+    //     typed text in the aux row.
+    //   - Click on aux focuses the input; click outside blurs it.
+    //   - Click on chevron toggles `collapsed`; round-trip across paint
+    //     of '▾'/'▸' glyphs and click resolution stays consistent.
+    //   - Collapsed section paints header only — the inner Tree's
+    //     items do not appear in the buffer in that section's vertical
+    //     span.
+    //   - For every cell in the view, hit_test never returns
+    //     `Body { section }` for a collapsed section. Locks the
+    //     "click in collapsed body area" semantics (acceptance
+    //     criterion 3): there is no body region for a collapsed
+    //     section; the next section's chrome occupies that y-range.
+    //
+    // Runnable counterpart: `quadraui/examples/msv_sc_panel.rs`.
+
+    struct SCState {
+        commit_message: String,
+        commit_caret: usize,
+        commit_input_active: bool,
+        sections: Vec<SCStateSection>,
+        active_section: Option<usize>,
+    }
+
+    struct SCStateSection {
+        id: SectionId,
+        rows: Vec<TR>,
+        collapsed: bool,
+        scroll_offset: usize,
+        selected_path: Option<TreePath>,
+    }
+
+    impl SCState {
+        fn new() -> Self {
+            Self {
+                commit_message: String::new(),
+                commit_caret: 0,
+                commit_input_active: false,
+                sections: vec![
+                    SCStateSection {
+                        id: "changes".into(),
+                        rows: make_rows("c", 6),
+                        collapsed: false,
+                        scroll_offset: 0,
+                        selected_path: None,
+                    },
+                    SCStateSection {
+                        id: "staged".into(),
+                        rows: make_rows("s", 4),
+                        collapsed: false,
+                        scroll_offset: 0,
+                        selected_path: None,
+                    },
+                    SCStateSection {
+                        id: "worktrees".into(),
+                        rows: make_rows("w", 2),
+                        collapsed: false,
+                        scroll_offset: 0,
+                        selected_path: None,
+                    },
+                ],
+                active_section: None,
+            }
+        }
+
+        fn build_view(&self) -> MultiSectionView {
+            let sections = self
+                .sections
+                .iter()
+                .enumerate()
+                .map(|(idx, s)| {
+                    let aux = if idx == 0 {
+                        Some(SectionAux::Input(InlineInput {
+                            id: WidgetId::new("commit"),
+                            text: self.commit_message.clone(),
+                            caret: self.commit_caret,
+                            placeholder: Some("Commit message".to_string()),
+                            has_focus: self.commit_input_active,
+                        }))
+                    } else {
+                        None
+                    };
+                    let size = if idx == 0 {
+                        SectionSize::Fixed(8)
+                    } else {
+                        SectionSize::EqualShare
+                    };
+                    Section {
+                        id: s.id.clone(),
+                        header: SectionHeader {
+                            title: StyledText::plain(s.id.to_uppercase()),
+                            show_chevron: true,
+                            ..Default::default()
+                        },
+                        body: SectionBody::Tree(TreeView {
+                            id: WidgetId::new(format!("{}-tree", s.id)),
+                            rows: s.rows.clone(),
+                            selection_mode: crate::types::SelectionMode::Single,
+                            selected_path: s.selected_path.clone(),
+                            scroll_offset: s.scroll_offset,
+                            style: Default::default(),
+                            has_focus: !self.commit_input_active
+                                && self.active_section == Some(idx),
+                        }),
+                        aux,
+                        size,
+                        collapsed: s.collapsed,
+                        min_size: None,
+                        max_size: None,
+                    }
+                })
+                .collect();
+            MultiSectionView {
+                id: WidgetId::new("sc"),
+                sections,
+                active_section: self.active_section,
+                axis: Axis::Vertical,
+                allow_resize: false,
+                allow_collapse: true,
+                scroll_mode: ScrollMode::PerSection,
+                has_focus: true,
+                panel_scroll: 0.0,
+            }
+        }
+
+        /// Click router mirroring `examples/msv_sc_panel.rs::SCSidebar::click`.
+        /// Aux→focus input; Chevron→toggle collapsed + activate;
+        /// TitleArea→activate w/o select; outside→blur input.
+        fn click(&mut self, x: f32, y: f32, area: TuiRect) {
+            let view = self.build_view();
+            let layout = tui_msv_layout(&view, area);
+            match layout.hit_test(x, y) {
+                MultiSectionViewHit::Aux {
+                    kind: AuxHit::Input,
+                    ..
+                } => {
+                    self.commit_input_active = true;
+                    self.active_section = None;
+                }
+                MultiSectionViewHit::Header {
+                    section,
+                    kind: HeaderHit::Chevron,
+                } => {
+                    self.commit_input_active = false;
+                    self.active_section = Some(section);
+                    self.sections[section].collapsed = !self.sections[section].collapsed;
+                }
+                MultiSectionViewHit::Header {
+                    section,
+                    kind: HeaderHit::TitleArea,
+                } => {
+                    self.commit_input_active = false;
+                    self.active_section = Some(section);
+                }
+                MultiSectionViewHit::Body { section } => {
+                    self.commit_input_active = false;
+                    self.active_section = Some(section);
+                }
+                _ => {
+                    self.commit_input_active = false;
+                }
+            }
+        }
+
+        fn type_char(&mut self, c: char) {
+            if !self.commit_input_active {
+                return;
+            }
+            let mut chars: Vec<char> = self.commit_message.chars().collect();
+            chars.insert(self.commit_caret.min(chars.len()), c);
+            self.commit_message = chars.into_iter().collect();
+            self.commit_caret += 1;
+        }
+
+        fn backspace(&mut self) {
+            if !self.commit_input_active || self.commit_caret == 0 {
+                return;
+            }
+            let mut chars: Vec<char> = self.commit_message.chars().collect();
+            chars.remove(self.commit_caret - 1);
+            self.commit_message = chars.into_iter().collect();
+            self.commit_caret -= 1;
+        }
+    }
+
+    /// Helper: read a buffer row left-to-right.
+    fn buf_row(buf: &Buffer, y: u16) -> String {
+        let area = buf.area;
+        (area.x..area.x + area.width)
+            .map(|x| cell_char(buf, x, y))
+            .collect()
+    }
+
+    // ── 1. Aux input keystroke routing ───────────────────────────────────
+    //
+    // After focus + typing, the host's commit_message + caret reflect
+    // the chars entered, AND the painted aux row shows the typed text.
+    // Catches both state-mutation drift and paint-doesn't-read-state
+    // bugs.
+
+    /// Aux-row click focuses the commit input. Then typed chars
+    /// update host state AND appear in the painted aux row.
+    #[test]
+    fn consumer_sc_input_keystroke_updates_aux_text_and_caret() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut buf = Buffer::empty(area);
+        let mut state = SCState::new();
+
+        // Click on the aux row to focus the input.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let aux_b = layout.sections[0]
+            .aux_bounds
+            .expect("section 0 has aux=Input");
+        state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
+        assert!(
+            state.commit_input_active,
+            "click on aux should focus the commit input"
+        );
+
+        // Type "hi".
+        state.type_char('h');
+        state.type_char('i');
+        assert_eq!(state.commit_message, "hi");
+        assert_eq!(state.commit_caret, 2);
+
+        // Paint and verify aux row shows the typed text.
+        let view = state.build_view();
+        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let aux_y = aux_b.y.round() as u16;
+        let painted = buf_row(&buf, aux_y);
+        assert!(
+            painted.starts_with("hi"),
+            "aux row {} should start with typed 'hi', got {painted:?}",
+            aux_y
+        );
+
+        // Backspace — host state and paint both update.
+        state.backspace();
+        assert_eq!(state.commit_message, "h");
+        assert_eq!(state.commit_caret, 1);
+        let mut buf2 = Buffer::empty(area);
+        draw_multi_section_view(
+            &mut buf2,
+            area,
+            &state.build_view(),
+            &Theme::default(),
+            false,
+        );
+        let painted = buf_row(&buf2, aux_y);
+        assert!(
+            painted.starts_with("h ") || painted.starts_with("h"),
+            "aux row {} after backspace should start with 'h', got {painted:?}",
+            aux_y
+        );
+    }
+
+    /// Click outside the aux row blurs the input. Locks the focus
+    /// transition contract: a click on a header (or anywhere else)
+    /// drops input focus.
+    #[test]
+    fn consumer_sc_click_outside_aux_blurs_input() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut state = SCState::new();
+        // Focus the input.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let aux_b = layout.sections[0].aux_bounds.unwrap();
+        state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
+        assert!(state.commit_input_active);
+
+        // Click on section 1's header.
+        let header1 = layout.sections[1].header_bounds;
+        state.click(header1.x + 5.0, header1.y + 0.5, area);
+        assert!(
+            !state.commit_input_active,
+            "click outside aux should blur the input"
+        );
+    }
+
+    // ── 2. Chevron toggle round-trip ─────────────────────────────────────
+    //
+    // Section starts expanded ('▾'). Click the chevron at the painted
+    // glyph position; assert collapsed=true and paint flips to '▸'.
+    // Click again; assert expanded again. Catches any drift between
+    // the chevron's painted position and the chevron hit region.
+
+    #[test]
+    fn consumer_sc_chevron_click_toggles_collapsed_round_trip() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut buf = Buffer::empty(area);
+        let mut state = SCState::new();
+
+        // Section 1 starts expanded.
+        assert!(!state.sections[1].collapsed);
+
+        // Paint and find the chevron in section 1's header row.
+        // Default TreeStyle shows '▾' for expanded, '▸' for collapsed.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let header_y = layout.sections[1].header_bounds.y.round() as u16;
+        let painted = buf_row(&buf, header_y);
+        assert!(
+            painted.starts_with('▾'),
+            "section 1 header should paint expanded chevron '▾' at start, got {painted:?}"
+        );
+
+        // Click the chevron at painted column 0.
+        state.click(0.5, header_y as f32 + 0.5, area);
+        assert!(
+            state.sections[1].collapsed,
+            "chevron click should toggle collapsed=true"
+        );
+
+        // Re-paint; chevron flips to '▸'.
+        let mut buf = Buffer::empty(area);
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let header_y = layout.sections[1].header_bounds.y.round() as u16;
+        let painted = buf_row(&buf, header_y);
+        assert!(
+            painted.starts_with('▸'),
+            "section 1 header should paint collapsed chevron '▸' after toggle, got {painted:?}"
+        );
+
+        // Second click flips back.
+        state.click(0.5, header_y as f32 + 0.5, area);
+        assert!(
+            !state.sections[1].collapsed,
+            "second chevron click should toggle collapsed=false"
+        );
+    }
+
+    // ── 3. Collapsed section paints header only ──────────────────────────
+    //
+    // When section 1 is collapsed, its inner Tree row prefixes
+    // (e.g. "s0", "s1") must not appear anywhere in the buffer.
+    // Catches "collapsed section still paints body" bugs in the
+    // rasteriser.
+
+    #[test]
+    fn consumer_sc_collapsed_section_paints_header_only() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut buf = Buffer::empty(area);
+        let mut state = SCState::new();
+        state.sections[1].collapsed = true;
+
+        let view = state.build_view();
+        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+
+        // Scan every row: no row should contain any of section 1's
+        // item text ("s0".."s3"). The header text "STAGED" is fine.
+        for y in 0..area.height {
+            let row = buf_row(&buf, y);
+            for r in 0..state.sections[1].rows.len() {
+                let needle = format!("s{}", r);
+                assert!(
+                    !row.contains(&needle),
+                    "collapsed section's body item '{}' painted at row {}: {row:?}",
+                    needle,
+                    y
+                );
+            }
+        }
+    }
+
+    // ── 4. No click anywhere returns Body for a collapsed section ────────
+    //
+    // Locks the acceptance-criterion-3 semantics: a collapsed section
+    // has no body hit region. The y range that *would* be its body
+    // (if expanded) is occupied by the next section. Walk every cell
+    // in the view; assert hit_test never returns Body{collapsed_idx}.
+
+    #[test]
+    fn consumer_sc_collapsed_body_never_hit_testable() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut state = SCState::new();
+        state.sections[1].collapsed = true;
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let hit = layout.hit_test(x as f32, y as f32);
+                assert!(
+                    !matches!(hit, MultiSectionViewHit::Body { section: 1 }),
+                    "click at ({}, {}) returned Body{{1}} despite section 1 collapsed",
+                    x,
+                    y
+                );
+            }
+        }
+    }
+
+    // ── 5. Dynamic section count: layout still snaps integer cells ───────
+    //
+    // Acceptance criterion 5: layout works across a range of section
+    // counts. Sweep 1..=8 sections; assert (a) every bound is
+    // integer-aligned (cell_quantum=1.0), (b) total resolved size
+    // never exceeds bounds.height. Mixes Fixed(8) + EqualShare to
+    // exercise the same shape the SC panel uses.
+
+    #[test]
+    fn consumer_sc_dynamic_section_count_layout_snaps_integer_cells() {
+        for n in 1..=8 {
+            let area = TuiRect::new(0, 0, 30, 30);
+            let mut state = SCState::new();
+            state.sections.clear();
+            for i in 0..n {
+                state.sections.push(SCStateSection {
+                    id: format!("s{i}"),
+                    rows: make_rows("r", 4),
+                    collapsed: false,
+                    scroll_offset: 0,
+                    selected_path: None,
+                });
+            }
+            let view = state.build_view();
+            let layout = tui_msv_layout(&view, area);
+
+            for s in &layout.sections {
+                assert_eq!(
+                    s.header_bounds.y.round(),
+                    s.header_bounds.y,
+                    "n={}: section {} header y not integer-aligned: {}",
+                    n,
+                    s.section_idx,
+                    s.header_bounds.y
+                );
+                assert_eq!(
+                    s.body_bounds.height.round(),
+                    s.body_bounds.height,
+                    "n={}: section {} body height not integer-aligned: {}",
+                    n,
+                    s.section_idx,
+                    s.body_bounds.height
+                );
+            }
+
+            let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+            assert!(
+                total <= area.height as f32 + 0.001,
+                "n={n}: total resolved size {total} exceeds bounds height {}",
+                area.height
+            );
+        }
+    }
 }

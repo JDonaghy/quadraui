@@ -50,6 +50,11 @@ path = "examples/msv_multi_tree.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "msv_sc_panel"
+path = "examples/msv_sc_panel.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "gtk_demo"
 path = "examples/gtk_demo.rs"
 required-features = ["gtk"]
