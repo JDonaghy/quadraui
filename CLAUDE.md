@@ -473,6 +473,36 @@ Two long-lived branches:
   A green primitive test does not prove the consumer integration is
   correct.
 
+  ### Shared AppLogic code must not hardcode backend-native units
+
+  The first shared `AppLogic` refactor (#14) shipped with
+  `STATUS_BAR_PX = 24.0` — a pixel-based constant that zeroed out
+  the sidebar on TUI (viewport is ~24 cells, so `24 - 24 = 0`).
+  The fix: `backend.line_height() * 1.5` — portable across cells,
+  pixels, and DIPs.
+
+  Anywhere a shared `AppLogic` computes a rect size or position,
+  it MUST derive from `backend.line_height()`, `backend.viewport()`,
+  or the layout returned by `backend.msv_layout(...)` /
+  `backend.tree_layout(...)`. **No hardcoded px / cell / DIP
+  constants in shared render or event-handling code.** Constants
+  belong on the backend (they become setters on `TuiBackend` /
+  `GtkBackend` / etc.), not on the consumer.
+
+  ### All runners must fire all UiEvent variants the consumer pattern needs
+
+  GTK's runner had a `gdk_motion_to_uievent` translator helper but
+  never wired an `EventControllerMotion` to fire it. So
+  `UiEvent::MouseMoved` (needed for drag tracking) was a dead path
+  on GTK — consumers that routed drag through the runner got
+  nothing. Fixed in #14 by adding the motion controller to
+  `gtk::run`.
+
+  When adding a consumer pattern that consumes a particular
+  `UiEvent` variant, verify that **every runner** (TUI, GTK, and
+  future Win-GUI / macOS) actually produces that event. The harness
+  can't catch this — it runs at the primitive layer, not the
+  runner-event-flow layer.
 
 ## What NOT to do
 
