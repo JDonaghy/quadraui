@@ -248,9 +248,12 @@ Breakpoints) and any "N collapsible tree panes" host wants.
   makes that mode unreachable. Tested in
   `tui::multi_section_view::tests::consumer_drag_past_natural_max_clamps_to_keep_viewport_full`.
 
-Runnable: `quadraui/examples/msv_multi_tree.rs`. Harness:
+Runnable: `quadraui/examples/msv_multi_tree.rs` (TUI) +
+`quadraui/examples/gtk_multi_tree.rs` (GTK). Both are ~25-line
+runner shells; the canonical `AppLogic` impl + state shape live in
+`quadraui/examples/common/multi_tree.rs`. Harness:
 `quadraui/src/tui/multi_section_view.rs::tests` ("Consumer-state
-round-trip harness" block). Both must be updated together when
+round-trip harness" block). All three must be updated together when
 changing the pattern.
 
 ### MSV with aux=Input + N collapsible TreeView sections (SC panel shape)

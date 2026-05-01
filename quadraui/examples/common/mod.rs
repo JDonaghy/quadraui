@@ -16,6 +16,10 @@
 //!   by `tui_app` / `gtk_app`.
 //! - [`AppState`] (in [`demo`]) — richer demo state (tabs + status
 //!   focus + last message), used by `tui_demo` / `gtk_demo`.
+//! - [`DebugSidebar`] (in [`multi_tree`]) — `MultiSectionView` with
+//!   N collapsible-tree sections, used by `tui_multi_tree` /
+//!   `gtk_multi_tree`. Demonstrates the consumer pattern for
+//!   per-section scroll/selection state.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -23,6 +27,8 @@
 
 pub mod demo;
 pub mod mini_app;
+pub mod multi_tree;
 
 pub use demo::AppState;
 pub use mini_app::MiniApp;
+pub use multi_tree::DebugSidebar;

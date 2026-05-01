@@ -37,7 +37,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
     pango as pg, Application, ApplicationWindow, DrawingArea, EventControllerKey,
-    EventControllerScroll, EventControllerScrollFlags, GestureClick,
+    EventControllerMotion, EventControllerScroll, EventControllerScrollFlags, GestureClick,
 };
 use pangocairo::functions as pcfn;
 
@@ -237,6 +237,38 @@ fn activate<A: AppLogic + 'static>(
     }
     da.add_controller(click);
 
+    // ── Motion ─────────────────────────────────────────────────────
+    //
+    // Fires `UiEvent::MouseMoved` on every pointer motion. The
+    // `buttons` mask is read from the controller's current event
+    // state so consumers can distinguish drag motion (button held)
+    // from hover motion. Mirrors the TUI side, which translates
+    // `crossterm::MouseEventKind::Drag(b)` and `Moved` to the same
+    // `MouseMoved` shape.
+    let motion = EventControllerMotion::new();
+    {
+        let backend = backend.clone();
+        let app = app.clone();
+        let da_for_redraw = da.clone();
+        let window_for_close = window.clone();
+        motion.connect_motion(move |ctrl, x, y| {
+            let modifier = ctrl.current_event_state();
+            let buttons = ButtonMask {
+                left: modifier.contains(gtk4::gdk::ModifierType::BUTTON1_MASK),
+                middle: modifier.contains(gtk4::gdk::ModifierType::BUTTON2_MASK),
+                right: modifier.contains(gtk4::gdk::ModifierType::BUTTON3_MASK),
+            };
+            let ev = gdk_motion_to_uievent(x, y, buttons);
+            let reaction = {
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                app_mut.handle(ev, &mut *backend_mut)
+            };
+            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+        });
+    }
+    da.add_controller(motion);
+
     // ── Scroll ─────────────────────────────────────────────────────
     let scroll = EventControllerScroll::new(EventControllerScrollFlags::BOTH_AXES);
     {
@@ -288,10 +320,4 @@ fn apply_reaction(reaction: Reaction, da: &DrawingArea, window: &ApplicationWind
         Reaction::Redraw => da.queue_draw(),
         Reaction::Exit => window.close(),
     }
-}
-
-// Suppress an unused-import warning when other event types are unused.
-#[allow(dead_code)]
-fn _unused_imports(_: ButtonMask) {
-    let _ = gdk_motion_to_uievent;
 }
