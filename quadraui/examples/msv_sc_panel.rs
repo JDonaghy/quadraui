@@ -24,7 +24,7 @@
 //! Controls:
 //! - mouse click on commit input  focus input
 //! - chars / Backspace / ←→        edit input (when focused)
-//! - Esc                           blur input (or quit when not focused)
+//! - Esc                           blur input — active section restores (or quit when not focused)
 //! - mouse click on chevron        toggle that section's `collapsed`
 //! - mouse click on header (title) activate that section
 //! - mouse click on body row       activate + select
@@ -84,6 +84,7 @@ pub struct SCSidebar {
     commit_input_active: bool,
     sections: Vec<SCSection>,
     active_section: Option<usize>,
+    previous_active: Option<usize>,
     scroll_drag: Option<ScrollDrag>,
 }
 
@@ -99,6 +100,7 @@ impl SCSidebar {
                 sc_section("worktrees", "WORKTREES", &fake_rows("wt-", "", 2)),
             ],
             active_section: None,
+            previous_active: None,
             scroll_drag: None,
         }
     }
@@ -175,6 +177,7 @@ impl SCSidebar {
                 section: _,
                 kind: AuxHit::Input,
             } => {
+                self.previous_active = self.active_section;
                 self.commit_input_active = true;
                 self.active_section = None;
                 ClickAction::InputFocused
@@ -374,6 +377,7 @@ impl SCSidebar {
 
     pub fn blur_input(&mut self) {
         self.commit_input_active = false;
+        self.active_section = self.previous_active.or(Some(0));
     }
 }
 

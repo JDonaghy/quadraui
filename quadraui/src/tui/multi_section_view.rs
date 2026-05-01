@@ -1692,6 +1692,7 @@ mod tests {
         commit_input_active: bool,
         sections: Vec<SCStateSection>,
         active_section: Option<usize>,
+        previous_active: Option<usize>,
     }
 
     struct SCStateSection {
@@ -1732,6 +1733,7 @@ mod tests {
                     },
                 ],
                 active_section: None,
+                previous_active: None,
             }
         }
 
@@ -1806,6 +1808,7 @@ mod tests {
                     kind: AuxHit::Input,
                     ..
                 } => {
+                    self.previous_active = self.active_section;
                     self.commit_input_active = true;
                     self.active_section = None;
                 }
@@ -1852,6 +1855,11 @@ mod tests {
             chars.remove(self.commit_caret - 1);
             self.commit_message = chars.into_iter().collect();
             self.commit_caret -= 1;
+        }
+
+        fn blur_input(&mut self) {
+            self.commit_input_active = false;
+            self.active_section = self.previous_active.or(Some(0));
         }
     }
 
@@ -1947,6 +1955,62 @@ mod tests {
         assert!(
             !state.commit_input_active,
             "click outside aux should blur the input"
+        );
+    }
+
+    /// Esc (blur) restores the active section that was captured when the
+    /// input gained focus. If no section was active before, defaults to 0.
+    #[test]
+    fn consumer_sc_blur_restores_previous_active_section() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut state = SCState::new();
+
+        // Activate section 1 via header click.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let header1 = layout.sections[1].header_bounds;
+        state.click(header1.x + 5.0, header1.y + 0.5, area);
+        assert_eq!(state.active_section, Some(1));
+
+        // Click aux to focus input.
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let aux_b = layout.sections[0].aux_bounds.unwrap();
+        state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
+        assert!(state.commit_input_active);
+        assert_eq!(state.active_section, None);
+
+        // Blur — should restore section 1.
+        state.blur_input();
+        assert!(!state.commit_input_active);
+        assert_eq!(
+            state.active_section,
+            Some(1),
+            "blur should restore the previously-active section"
+        );
+    }
+
+    /// When no section was active before focusing the input, blur
+    /// defaults to section 0 (matches Tab-from-none behaviour).
+    #[test]
+    fn consumer_sc_blur_defaults_to_section_0_when_no_previous() {
+        let area = TuiRect::new(0, 0, 30, 24);
+        let mut state = SCState::new();
+        assert_eq!(state.active_section, None);
+
+        // Click aux directly (no prior section activation).
+        let view = state.build_view();
+        let layout = tui_msv_layout(&view, area);
+        let aux_b = layout.sections[0].aux_bounds.unwrap();
+        state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
+        assert!(state.commit_input_active);
+
+        // Blur — should default to section 0.
+        state.blur_input();
+        assert_eq!(
+            state.active_section,
+            Some(0),
+            "blur with no previous active should default to section 0"
         );
     }
 
