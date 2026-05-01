@@ -17,8 +17,8 @@ use ratatui::layout::Rect as TuiRect;
 use super::{draw_form, draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, LayoutMetrics, MultiSectionView, SectionAux, SectionBody, SectionHeader,
-    SectionMeasure,
+    Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
+    SectionBody, SectionHeader, SectionMeasure,
 };
 use crate::theme::Theme;
 use crate::types::StyledText;
@@ -43,44 +43,12 @@ pub fn draw_multi_section_view(
         return;
     }
 
-    // TUI metrics: 1 cell per header row, 1 cell per scrollbar gutter,
-    // 1 cell per divider (only when allow_resize is true; otherwise we
-    // omit the strip entirely). `cell_quantum: 1.0` snaps section sizes
-    // to whole cells inside `MultiSectionView::layout` so paint
-    // (rounded to integer rows) and hit_test (raw fractional bounds)
-    // agree by construction.
-    let metrics = LayoutMetrics {
-        header_size: 1.0,
-        divider_size: if view.allow_resize { 1.0 } else { 0.0 },
-        scrollbar_size: 1.0,
-        cell_quantum: 1.0,
-    };
-
-    let bounds = QRect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    );
-
-    // Per-section measure: aux is always 1 cell tall in TUI; content
-    // size is the inner body's natural height in cells.
-    let measure = |i: usize| -> SectionMeasure {
-        let s = &view.sections[i];
-        let aux_size = if s.aux.is_some() { 1.0 } else { 0.0 };
-        let content_size = body_content_rows(&s.body) as f32;
-        SectionMeasure {
-            content_size,
-            aux_size,
-        }
-    };
-
-    let layout = view.layout(bounds, metrics, measure);
+    let layout = tui_msv_layout(view, area);
 
     let panel_bg = ratatui_color(theme.background);
 
-    let viewport_top = bounds.y;
-    let viewport_bottom = bounds.y + bounds.height;
+    let viewport_top = layout.bounds.y;
+    let viewport_bottom = layout.bounds.y + layout.bounds.height;
 
     for s_layout in &layout.sections {
         let section = &view.sections[s_layout.section_idx];
@@ -136,6 +104,48 @@ pub fn draw_multi_section_view(
         let total_content: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
         paint_panel_scrollbar(buf, panel_sb, view.panel_scroll, total_content, theme);
     }
+}
+
+/// Compute the layout the TUI rasteriser would produce for `view` in
+/// `area`. Hosts and tests call this to drive hit-testing without
+/// re-deriving metrics that could drift from paint. `draw_multi_section_view`
+/// uses this same helper internally so paint and hit_test consume one
+/// layout instance produced by one set of metrics — the source-of-truth
+/// contract `MultiSectionView` exists to enforce.
+pub fn tui_msv_layout(view: &MultiSectionView, area: TuiRect) -> MultiSectionViewLayout {
+    // TUI metrics: 1 cell per header row, 1 cell per scrollbar gutter,
+    // 1 cell per divider (only when allow_resize is true; otherwise we
+    // omit the strip entirely). `cell_quantum: 1.0` snaps section sizes
+    // to whole cells inside `MultiSectionView::layout` so paint
+    // (rounded to integer rows) and hit_test (raw fractional bounds)
+    // agree by construction.
+    let metrics = LayoutMetrics {
+        header_size: 1.0,
+        divider_size: if view.allow_resize { 1.0 } else { 0.0 },
+        scrollbar_size: 1.0,
+        cell_quantum: 1.0,
+    };
+
+    let bounds = QRect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+
+    // Per-section measure: aux is always 1 cell tall in TUI; content
+    // size is the inner body's natural height in cells.
+    let measure = |i: usize| -> SectionMeasure {
+        let s = &view.sections[i];
+        let aux_size = if s.aux.is_some() { 1.0 } else { 0.0 };
+        let content_size = body_content_rows(&s.body) as f32;
+        SectionMeasure {
+            content_size,
+            aux_size,
+        }
+    };
+
+    view.layout(bounds, metrics, measure)
 }
 
 // ── Section paint helpers ──────────────────────────────────────────────────
@@ -710,6 +720,296 @@ mod tests {
         // Aux row at y=1.
         let placeholder: String = (0..6).map(|x| cell_char(&buf, x, 1)).collect();
         assert_eq!(placeholder, "Commit");
+    }
+
+    // ── Paint↔click round-trip harness ─────────────────────────────────────
+    //
+    // Per the Session 346 course correction (PLAN.md "🧭 Course
+    // correction"): primitives that promise paint/click consistency
+    // need empirical verification, not just structural design. These
+    // tests paint a `MultiSectionView` into a ratatui `Buffer`, find the
+    // cells the rasteriser actually wrote glyphs into, then hit_test
+    // those exact coordinates against the same `MultiSectionViewLayout`
+    // and assert the hit identifies the painted-into section. If paint
+    // and click ever drift in the TUI rasteriser, one of these fails.
+    //
+    // Pre-`cell_quantum` (Session 343–346 #296), fractional `EqualShare`
+    // distributions caused exactly this drift: paint snapped to integer
+    // rows via `bounds.y.round()`, hit_test consumed the raw fractional
+    // bounds, and clicks at the row paint drew a header on landed in
+    // the previous section's body. Either of these tests would have
+    // caught that pre-merge.
+
+    use super::{draw_multi_section_view, tui_msv_layout};
+    use crate::primitives::tree::{TreeRow, TreeView};
+    use crate::types::SelectionMode;
+
+    /// Paint into `buf` and return the layout the rasteriser used. Hit
+    /// tests query the SAME layout instance — that's the source-of-truth
+    /// contract the harness verifies. (`draw_multi_section_view`
+    /// internally calls `tui_msv_layout`; calling it again here returns
+    /// an equivalent layout because `tui_msv_layout` is pure: same
+    /// `view` + `area` → identical bounds.)
+    fn paint_then_layout(
+        buf: &mut Buffer,
+        area: TuiRect,
+        view: &MultiSectionView,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> MultiSectionViewLayout {
+        draw_multi_section_view(buf, area, view, theme, nerd_fonts_enabled);
+        tui_msv_layout(view, area)
+    }
+
+    fn tree_section(id: &str, items: &[&str], size: SectionSize) -> Section {
+        let rows: Vec<TreeRow> = items
+            .iter()
+            .enumerate()
+            .map(|(i, t)| TreeRow {
+                path: vec![i as u16],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain((*t).to_string()),
+                badge: None,
+                is_expanded: None,
+                decoration: Default::default(),
+            })
+            .collect();
+        Section {
+            id: id.into(),
+            header: SectionHeader {
+                title: StyledText::plain(id.to_uppercase()),
+                show_chevron: false,
+                ..Default::default()
+            },
+            body: SectionBody::Tree(TreeView {
+                id: WidgetId::new(format!("{}-tree", id)),
+                rows,
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: Default::default(),
+                has_focus: true,
+            }),
+            aux: None,
+            size,
+            collapsed: false,
+            min_size: None,
+            max_size: None,
+        }
+    }
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        let area = buf.area;
+        (area.x..area.x + area.width)
+            .map(|x| cell_char(buf, x, y))
+            .collect()
+    }
+
+    fn find_row_with(buf: &Buffer, needle: &str) -> Option<u16> {
+        let area = buf.area;
+        for y in area.y..area.y + area.height {
+            if row_text(buf, y).contains(needle) {
+                return Some(y);
+            }
+        }
+        None
+    }
+
+    /// Round-trip: paint, find each section's title row in the buffer,
+    /// hit_test that coordinate, assert the hit identifies the same
+    /// section. Uses a fractional `EqualShare` distribution (4 sections
+    /// in 21 cells = 5.25 each) — the worst case for paint/click drift.
+    #[test]
+    fn header_clicks_land_in_painted_section_under_fractional_distribution() {
+        let area = TuiRect::new(0, 0, 30, 21);
+        let mut buf = Buffer::empty(area);
+        let v = view_with(vec![
+            tree_section("alpha", &["a1", "a2", "a3"], SectionSize::EqualShare),
+            tree_section("beta", &["b1", "b2", "b3"], SectionSize::EqualShare),
+            tree_section("gamma", &["g1", "g2", "g3"], SectionSize::EqualShare),
+            tree_section("delta", &["d1", "d2", "d3"], SectionSize::EqualShare),
+        ]);
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+
+        for s in &layout.sections {
+            let needle = v.sections[s.section_idx]
+                .header
+                .title
+                .spans
+                .first()
+                .map(|sp| sp.text.clone())
+                .unwrap_or_default();
+            let painted_y = find_row_with(&buf, &needle).unwrap_or_else(|| {
+                panic!(
+                    "section {} title {:?} was not painted into the buffer",
+                    s.section_idx, needle
+                )
+            });
+            let hit = layout.hit_test(area.x as f32 + 5.0, painted_y as f32);
+            match hit {
+                MultiSectionViewHit::Header { section, .. } => assert_eq!(
+                    section, s.section_idx,
+                    "row {} paints section {} title {:?} but hit_test returns section {}",
+                    painted_y, s.section_idx, needle, section
+                ),
+                other => panic!(
+                    "row {} paints section {} title {:?} but hit_test returns {:?}",
+                    painted_y, s.section_idx, needle, other
+                ),
+            }
+        }
+    }
+
+    /// Round-trip: paint, find each section's body item rows (rows
+    /// containing item glyphs but NOT the title), hit_test those
+    /// coordinates, assert each lands in the SAME section's `Body`.
+    /// Catches the off-by-one drift that the band-aid #296 smokes
+    /// chased — a body row paints in section N but hit_test returns
+    /// Body{N-1} or Header{N+1}.
+    #[test]
+    fn body_clicks_land_in_painted_section_under_fractional_distribution() {
+        let area = TuiRect::new(0, 0, 30, 21);
+        let mut buf = Buffer::empty(area);
+        let v = view_with(vec![
+            tree_section("alpha", &["a1", "a2", "a3"], SectionSize::EqualShare),
+            tree_section("beta", &["b1", "b2", "b3"], SectionSize::EqualShare),
+            tree_section("gamma", &["g1", "g2", "g3"], SectionSize::EqualShare),
+            tree_section("delta", &["d1", "d2", "d3"], SectionSize::EqualShare),
+        ]);
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+
+        for s in &layout.sections {
+            let body_b = s.body_bounds;
+            if body_b.height < 1.0 {
+                continue;
+            }
+            // Find an item row painted inside this section's body bounds.
+            // body_bounds is in absolute coords; iterate cell rows that
+            // lie strictly inside.
+            let body_y_start = body_b.y.round() as u16;
+            let body_y_end = (body_b.y + body_b.height).round() as u16;
+            let body_x_start = body_b.x.round() as u16;
+            let body_x_end = (body_b.x + body_b.width).round() as u16;
+            let item_prefix = match v.sections[s.section_idx].id.chars().next() {
+                Some(c) => c,
+                None => continue,
+            };
+            let mut painted_item_y: Option<u16> = None;
+            for y in body_y_start..body_y_end {
+                let row = row_text(&buf, y);
+                if row.contains(item_prefix)
+                    && !row.contains(&v.sections[s.section_idx].id.to_uppercase())
+                {
+                    painted_item_y = Some(y);
+                    break;
+                }
+            }
+            let painted_y = painted_item_y.unwrap_or_else(|| {
+                panic!(
+                    "section {} ({}) body bounds y={}..{} contained no painted item row",
+                    s.section_idx, v.sections[s.section_idx].id, body_y_start, body_y_end
+                )
+            });
+            // Hit_test at a column inside the body bounds.
+            let click_x = (body_x_start + body_x_end) as f32 / 2.0;
+            let hit = layout.hit_test(click_x, painted_y as f32);
+            match hit {
+                MultiSectionViewHit::Body { section } => assert_eq!(
+                    section, s.section_idx,
+                    "row {} paints item in section {} but hit_test returns Body{{section: {}}}",
+                    painted_y, s.section_idx, section
+                ),
+                other => panic!(
+                    "row {} paints item in section {} but hit_test returns {:?}",
+                    painted_y, s.section_idx, other
+                ),
+            }
+        }
+    }
+
+    /// Sections with overflowing content reserve a 1-cell scrollbar
+    /// gutter on the body's trailing edge. Clicks in that column must
+    /// hit `Scrollbar`, NOT `Body` — otherwise the click would select
+    /// an empty body row instead of scrolling. Body and Scrollbar hit
+    /// regions must not overlap, and Body must not extend into the
+    /// scrollbar column.
+    #[test]
+    fn scrollbar_column_hits_scrollbar_not_body_when_section_overflows() {
+        let area = TuiRect::new(0, 0, 20, 8);
+        let mut buf = Buffer::empty(area);
+        // 1 section, 10 items in a 6-row body — overflows.
+        let v = view_with(vec![tree_section(
+            "lots",
+            &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+            SectionSize::EqualShare,
+        )]);
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+        let s = &layout.sections[0];
+        let sb = s
+            .scrollbar_bounds
+            .expect("overflowing section must reserve a scrollbar gutter (paint↔click contract)");
+        // Hit_test the centre cell of the scrollbar column.
+        let click_x = sb.x + sb.width / 2.0;
+        let click_y = sb.y + sb.height / 2.0;
+        match layout.hit_test(click_x, click_y) {
+            MultiSectionViewHit::Scrollbar { section, .. } => {
+                assert_eq!(section, 0, "expected Scrollbar{{0}}");
+            }
+            other => panic!(
+                "click at ({:.1}, {:.1}) inside scrollbar bounds {:?} returned {:?} — Body has shadowed Scrollbar in hit_regions",
+                click_x, click_y, sb, other
+            ),
+        }
+        // Conversely, hit_test the leftmost body cell — that must be Body, not Scrollbar.
+        let body_b = s.body_bounds;
+        if body_b.height >= 1.0 && body_b.width >= 1.0 {
+            let click = layout.hit_test(body_b.x + 0.5, body_b.y + 0.5);
+            assert!(
+                matches!(click, MultiSectionViewHit::Body { section: 0 }),
+                "leftmost body cell at ({:.1}, {:.1}) returned {:?}",
+                body_b.x + 0.5,
+                body_b.y + 0.5,
+                click
+            );
+        }
+    }
+
+    /// Each section's body bounds and scrollbar bounds must not
+    /// overlap. If body extended into the scrollbar column, paint and
+    /// click would each see the column differently. Walk every section
+    /// that has a scrollbar and assert the geometric exclusion.
+    #[test]
+    fn body_and_scrollbar_bounds_never_overlap() {
+        let area = TuiRect::new(0, 0, 20, 24);
+        let v = view_with(vec![
+            tree_section(
+                "a",
+                &["x", "y", "z", "w", "v", "u", "t", "s"],
+                SectionSize::EqualShare,
+            ),
+            tree_section(
+                "b",
+                &["x", "y", "z", "w", "v", "u", "t", "s"],
+                SectionSize::EqualShare,
+            ),
+        ]);
+        let mut buf = Buffer::empty(area);
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+        for s in &layout.sections {
+            if let Some(sb) = s.scrollbar_bounds {
+                let body = s.body_bounds;
+                let body_right = body.x + body.width;
+                let sb_left = sb.x;
+                assert!(
+                    body_right <= sb_left + 0.001,
+                    "section {}: body bounds {:?} extend into scrollbar bounds {:?}",
+                    s.section_idx,
+                    body,
+                    sb
+                );
+            }
+        }
     }
 
     #[test]
