@@ -233,12 +233,16 @@ Breakpoints) and any "N collapsible tree panes" host wants.
 - **Section sizing.** All sections `EqualShare`, `ScrollMode::PerSection`,
   `Axis::Vertical`. Headers without chevrons (`show_chevron: false`)
   match VSCode's Debug-sidebar styling.
-- **Click routing.** Call `tui_msv_layout(&view, area)` once per
-  click. On `Body { section }`, fetch `layout.sections[section].body_bounds`,
-  call `tui_tree_layout(&tree, body_area)`, hit_test at
-  `(x - body_b.x, y - body_b.y)`. Header click → activate without
-  selecting; body row → activate AND select; empty body → activate
-  only.
+- **Click routing.** Use the layout that paint produced — either
+  via `backend.msv_layout(&view, area)` (if inputs are guaranteed
+  identical to paint) or by caching the layout paint returned (if
+  paint and click run in different contexts — see *What NOT to do*
+  for the two safe patterns). On `Body { section }`, fetch
+  `layout.sections[section].body_bounds`, call
+  `backend.tree_layout(&tree, body_area)` (or the cached tree
+  layout), hit_test at `(x - body_b.x, y - body_b.y)`. Header
+  click → activate without selecting; body row → activate AND
+  select; empty body → activate only.
 - **Scrollbar routing.** The layout splits each gutter into three
   hit regions based on inner body scroll state:
   - `Scrollbar { kind: Thumb }` — capture `(section, origin_y,
@@ -450,15 +454,26 @@ Two long-lived branches:
   ### The band-aid trap
 
   When a consumer hits a paint/click drift bug mid-migration, the
-  tempting "fix" is to cache layout inputs on the consumer's state
-  (`Cell<T>` or similar) so click reads what paint wrote. **This
-  perpetuates the bug class.** Two code paths still derive the same
-  answer from the same inputs; if they ever diverge in inputs *or* in
+  tempting "fix" is to cache layout *inputs* on the consumer's state
+  (`Cell<T>` or similar) so click re-derives the same layout paint
+  derived. **This perpetuates the bug class.** Two code paths still
+  derive independently; if they ever diverge in inputs *or* in
   derivation, the bug returns in a new shape.
 
-  The structural fix is always one derivation — inside the primitive's
-  `layout()` (preferred) or on a `Backend`-owned cache shared by paint
-  and hit_test. Per-consumer caches ship the problem; they don't solve it.
+  The structural fix is always one derivation consumed by both paint
+  and click. Two ways to achieve this:
+
+  1. **`Backend::*_layout()` re-derivation** — safe when inputs are
+     guaranteed identical (AppLogic runner pattern).
+  2. **Cache the layout output** — paint computes the layout, stores
+     it (`RefCell<Option<Layout>>`); click reads it verbatim. Safe
+     when paint and click run in different contexts and inputs may
+     differ (vimcode's `terminal.draw()` closure vs event loop).
+
+  Option 2 is **not** Cell-smuggling. Cell-smuggling caches *inputs*
+  to bridge two independent derivations. Layout caching stores the
+  *output* of one derivation — there is no second derivation to
+  diverge. See *What NOT to do* for the full distinction.
 
   ### Theory-only iteration doesn't converge
 
@@ -541,13 +556,66 @@ Two long-lived branches:
   `current_frame_refs()` from a click handler. Fixed by switching
   to `current_char_width`-based measurement.
 
+  ### Real apps need layout caching, not layout re-derivation
+
+  The `Backend::*_layout()` methods (e.g. `msv_layout`, `tree_layout`,
+  `menu_bar_layout`) exist so click handlers can get the same layout
+  paint used — **but only when inputs are guaranteed identical.**
+  In practice, real apps beyond the demo stage often can't guarantee
+  this: paint runs inside ratatui's `terminal.draw(|frame| …)`
+  closure or GTK's draw callback, click runs in the event loop
+  outside it. The view is rebuilt from host state which may have
+  subtly different parameters (different area after resize, different
+  section count after a toggle, different scroll offsets after a
+  concurrent update).
+
+  The fix: cache the layout paint produced, read it in click.
+  `RefCell<Option<MultiSectionViewLayout>>` on the host state, set
+  by paint, consumed by click. One derivation, zero drift — by
+  construction.
+
+  This is NOT the "band-aid trap" (caching inputs to bridge two
+  independent derivations). Layout caching stores the output of one
+  derivation. There is no second derivation that can diverge.
+
+  First hit: vimcode's debug sidebar had persistent click-in-one-
+  section-highlights-another bugs because paint and click
+  independently called `tui_msv_layout` with slightly different
+  inputs. Switching to layout caching eliminated the class.
+
 ## What NOT to do
 
-- **Don't add per-consumer Cell-on-state fields for paint→click
-  bridging.** That perpetuates the two-source-of-truth bug class
-  primitives exist to eliminate. If paint and click need to agree on
-  state, it lives on the primitive's `Layout` struct, not on the
-  consumer's app state.
+- **Don't re-derive layouts with different inputs in click vs paint.**
+  The structural bug class quadraui eliminates is two independent
+  layout computations that can diverge. If paint builds a
+  `MultiSectionView` with one set of parameters and click calls
+  `tui_msv_layout` with a slightly different set (different area,
+  different section count, different scroll offsets), the results
+  will drift and clicks will land on the wrong element.
+
+  **Two safe patterns:**
+
+  1. **AppLogic runner (demos, simple apps):** `render()` calls
+     `backend.draw_msv(rect, &view)`, `handle()` calls
+     `backend.msv_layout(rect, &view)` with identical inputs.
+     Works when app state hasn't changed between render and handle
+     and both see the same `rect` and `view`.
+
+  2. **Layout caching (vimcode, complex apps):** Paint produces the
+     layout (returned by `draw_*` or computed internally), the
+     consumer stores it on its state (`RefCell<Option<Layout>>`),
+     click reads that exact layout. Zero re-derivation — one
+     computation, two consumers. **This is NOT the Cell-smuggling
+     anti-pattern.** Cell-smuggling is caching *inputs* so two
+     independent derivations produce the same result; layout
+     caching stores the *output* of one derivation and reads it
+     verbatim. The distinction: smuggled inputs can still diverge
+     in derivation; a cached output cannot.
+
+  Use pattern 2 when paint and click run in architecturally
+  separated contexts (e.g. ratatui's `terminal.draw(|frame| …)`
+  closure vs the event loop outside it, or GTK's draw callback vs
+  signal handlers). Most real apps beyond the demo stage need this.
 - **Don't import vimcode-specific patterns.** The library is pre-1.0
   but we still want it API-stable enough that downstream consumers
   besides vimcode can adopt it. If a primitive feels too "vimcode-
