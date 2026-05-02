@@ -47,8 +47,8 @@ use gtk4::pango;
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
-    PlatformServices, Rect as QRect, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay,
-    TreeView, UiEvent, Viewport,
+    PlatformServices, Rect as QRect, Split, StatusBar, TabBar, Terminal as TerminalPrim,
+    TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -962,6 +962,31 @@ impl Backend for GtkBackend {
                 display_chars as f32 * char_w + 16.0,
             )
         })
+    }
+
+    fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_split called outside enter_frame_scope");
+        crate::gtk::draw_split(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            split,
+            &self.current_theme,
+        )
+    }
+
+    fn split_layout(&self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
+        crate::gtk::gtk_split_layout(
+            split,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
 }
 

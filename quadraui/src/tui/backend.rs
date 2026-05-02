@@ -47,8 +47,8 @@ use std::time::Duration;
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
-    PlatformServices, Rect as QRect, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay,
-    TreeView, UiEvent, Viewport,
+    PlatformServices, Rect as QRect, Split, StatusBar, TabBar, Terminal as TerminalPrim,
+    TextDisplay, TreeView, UiEvent, Viewport,
 };
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -728,6 +728,20 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_menu_bar_layout(bar, area)
     }
+
+    fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_split called outside enter_frame_scope");
+        crate::tui::draw_split(frame.buffer_mut(), area, split, &theme)
+    }
+
+    fn split_layout(&self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_split_layout(split, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -979,6 +993,20 @@ mod tests {
             bar.layout(bounds, |_| {
                 crate::primitives::menu_bar::MenuBarItemMeasure::new(0.0)
             })
+        }
+
+        fn draw_split(
+            &mut self,
+            _r: QRect,
+            split: &Split,
+        ) -> crate::primitives::split::SplitLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            split.layout(bounds, crate::primitives::split::SplitMeasure::new(1.0))
+        }
+
+        fn split_layout(&self, _r: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            split.layout(bounds, crate::primitives::split::SplitMeasure::new(1.0))
         }
     }
 

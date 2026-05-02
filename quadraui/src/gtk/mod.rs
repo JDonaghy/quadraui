@@ -42,6 +42,7 @@ mod rich_text_popup;
 mod run;
 mod scrollbar;
 pub mod services;
+mod split;
 mod status_bar;
 mod tab_bar;
 mod terminal;
@@ -70,6 +71,7 @@ pub use rich_text_popup::{
 };
 pub use run::run;
 pub use scrollbar::draw_scrollbar;
+pub use split::{draw_split, gtk_split_layout};
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
 pub use terminal::draw_terminal_cells;

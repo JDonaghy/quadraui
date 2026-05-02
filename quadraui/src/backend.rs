@@ -23,6 +23,7 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
+use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -249,6 +250,17 @@ pub trait Backend {
     /// layout that was painted — never re-derive with a hand-rolled
     /// measurer.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
+
+    /// Draw a [`Split`] divider. The backend computes the layout with
+    /// its native divider thickness (1 cell for TUI, ~4px for GTK)
+    /// and returns the [`SplitLayout`] so hosts can route clicks and
+    /// drive drag operations. Pane content is NOT drawn — hosts paint
+    /// into `layout.first_bounds` / `layout.second_bounds`.
+    fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout;
+
+    /// Compute the split layout without painting. Hosts call this in
+    /// drag handlers to recompute the ratio from cursor position.
+    fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries
