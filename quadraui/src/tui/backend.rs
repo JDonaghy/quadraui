@@ -46,9 +46,9 @@ use std::time::Duration;
 
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    DragState, Form, KeyBinding, ListView, ModalStack, Palette, ParsedBinding, PlatformServices,
-    Rect as QRect, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent,
-    Viewport,
+    DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
+    PlatformServices, Rect as QRect, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay,
+    TreeView, UiEvent, Viewport,
 };
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -706,6 +706,28 @@ impl Backend for TuiBackend {
         // Forward-compat parameter for backends that need a clip rect.
         crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
     }
+
+    fn draw_menu_bar(
+        &mut self,
+        rect: QRect,
+        bar: &MenuBar,
+    ) -> crate::primitives::menu_bar::MenuBarLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_menu_bar called outside enter_frame_scope");
+        crate::tui::draw_menu_bar(frame.buffer_mut(), area, bar, &theme)
+    }
+
+    fn menu_bar_layout(
+        &self,
+        rect: QRect,
+        bar: &MenuBar,
+    ) -> crate::primitives::menu_bar::MenuBarLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_menu_bar_layout(bar, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -936,6 +958,28 @@ mod tests {
         }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
+
+        fn draw_menu_bar(
+            &mut self,
+            _r: QRect,
+            bar: &MenuBar,
+        ) -> crate::primitives::menu_bar::MenuBarLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            bar.layout(bounds, |_| {
+                crate::primitives::menu_bar::MenuBarItemMeasure::new(0.0)
+            })
+        }
+
+        fn menu_bar_layout(
+            &self,
+            _r: QRect,
+            bar: &MenuBar,
+        ) -> crate::primitives::menu_bar::MenuBarLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            bar.layout(bounds, |_| {
+                crate::primitives::menu_bar::MenuBarItemMeasure::new(0.0)
+            })
+        }
     }
 
     /// Generic helper — the minimal "app render code" that consumes

@@ -34,6 +34,7 @@ pub mod events;
 mod find_replace;
 mod form;
 mod list;
+mod menu_bar;
 mod message_list;
 mod multi_section_view;
 mod palette;
@@ -58,6 +59,7 @@ pub use editor::draw_editor;
 pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
+pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use message_list::draw_message_list;
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,

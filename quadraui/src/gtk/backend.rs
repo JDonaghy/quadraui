@@ -46,9 +46,9 @@ use gtk4::pango;
 
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    DragState, Form, KeyBinding, ListView, ModalStack, Palette, ParsedBinding, PlatformServices,
-    Rect as QRect, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent,
-    Viewport,
+    DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
+    PlatformServices, Rect as QRect, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay,
+    TreeView, UiEvent, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -927,6 +927,41 @@ impl Backend for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::draw_scrollbar called outside enter_frame_scope");
         crate::gtk::draw_scrollbar(cr, scrollbar, &theme);
+    }
+
+    fn draw_menu_bar(
+        &mut self,
+        rect: QRect,
+        bar: &MenuBar,
+    ) -> crate::primitives::menu_bar::MenuBarLayout {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_menu_bar called outside enter_frame_scope");
+        crate::gtk::draw_menu_bar(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            self.current_line_height,
+            bar,
+            &self.current_theme,
+        )
+    }
+
+    fn menu_bar_layout(
+        &self,
+        rect: QRect,
+        bar: &MenuBar,
+    ) -> crate::primitives::menu_bar::MenuBarLayout {
+        let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        let char_w = self.current_char_width as f32;
+        bar.layout(bounds, |i| {
+            let display_chars = bar.items[i].label.chars().filter(|&c| c != '&').count();
+            crate::primitives::menu_bar::MenuBarItemMeasure::new(
+                display_chars as f32 * char_w + 16.0,
+            )
+        })
     }
 }
 

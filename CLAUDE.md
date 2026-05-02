@@ -516,6 +516,31 @@ Two long-lived branches:
   can't catch this — it runs at the primitive layer, not the
   runner-event-flow layer.
 
+  ### Backend `_layout` methods must work outside the frame scope
+
+  GTK's `handle()` runs from signal handlers (click, key, motion)
+  which fire **outside** the `draw` callback. The Cairo `Context`
+  and `pango::Layout` only exist inside the draw callback (the
+  "frame scope"). So `Backend::foo_layout(&self, ...)` methods —
+  which apps call from `handle()` to hit-test clicks — **cannot
+  use pango or cairo handles**.
+
+  Use stored metrics instead: `current_line_height`,
+  `current_char_width`, etc. These are set once per
+  `set_current_line_height` / `set_current_char_width` call and
+  remain valid across the entire event cycle.
+
+  The `draw_*(&mut self, ...)` methods *can* use the frame scope
+  because they're called from `render()`, which runs inside the
+  draw callback. This asymmetry is structural to GTK's rendering
+  model and will apply to any retained-mode backend (Win-GUI,
+  macOS). TUI doesn't have this constraint because ratatui's
+  `Frame` is available throughout the event loop.
+
+  First hit: `menu_bar_layout` panicked on GTK because it called
+  `current_frame_refs()` from a click handler. Fixed by switching
+  to `current_char_width`-based measurement.
+
 ## What NOT to do
 
 - **Don't add per-consumer Cell-on-state fields for paint→click

@@ -18,6 +18,7 @@ use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
+use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
@@ -235,6 +236,19 @@ pub trait Backend {
     /// per-section scrollbars MSV paints internally). The backend
     /// pulls cell/pixel background from its current theme.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
+
+    /// Draw a [`MenuBar`]. The backend computes the layout internally
+    /// with native metrics (cells for TUI, Pango pixels for GTK) and
+    /// returns the [`MenuBarLayout`] so hosts can route clicks via
+    /// `layout.hit_test(x, y)` without re-deriving metrics.
+    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
+
+    /// Compute the menu-bar layout the rasteriser would produce for
+    /// `bar` in `rect`, using the backend's native metrics. Hosts
+    /// call this in click handlers to resolve hits against the same
+    /// layout that was painted — never re-derive with a hand-rolled
+    /// measurer.
+    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries
