@@ -61,7 +61,60 @@
 
 ### Open queue for next session
 
-- #6 TUI + GTK rasterisers for MenuBar primitive
-- #7 New SearchPanel primitive
-- #8 Audit primitives without rasterisers (panel, progress, spinner, split, toast)
-- #11 SC sidebar focus-restore after Esc (small polish)
+*Resolved in session 2026-05-01b below.*
+
+## Session 2026-05-01b — MenuBar + Split rasterisers, primitive audit
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (5)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 11 | SC sidebar focus-restore after Esc | A | `previous_active` field, 2 consumer-state tests (mutation-verified) |
+| 8 | Audit primitives without rasterisers | A | All 5 kept (real descriptors, not stubs). CLAUDE.md "Primitive maturity levels" rule added |
+| 6 | TUI + GTK rasterisers for MenuBar | A | `draw_menu_bar` + `tui_menu_bar_layout` / `gtk_menu_bar_layout`, Backend `draw_menu_bar` + `menu_bar_layout`, 5 TUI tests (mutation-verified), shared `MenuBarApp` + runner shells |
+| 18 | MenuBar: complete menu experience | A | Dropdown via ContextMenu composition, hover-to-switch, keyboard nav (Alt+key, arrows, Enter, Esc), realistic File/Edit/View menus |
+| 17 | MenuBar: hover + dropdown (premature split) | closed | Superseded by #18 |
+
+### Issues filed (3)
+
+| # | Title | Status |
+|---|---|---|
+| 16 | Rasterisers for descriptor-only primitives (umbrella) | open (split done, 4 remain) |
+| 17 | MenuBar hover + dropdown | closed (superseded by #18) |
+| 18 | MenuBar complete menu experience | closed in-session |
+
+### Split primitive shipped (first of #16's 5)
+
+- TUI rasteriser: `draw_split` + `tui_split_layout`, 4 paint↔click tests (mutation-verified)
+- GTK rasteriser: `draw_split` + `gtk_split_layout` via Cairo
+- Backend trait: `draw_split` + `split_layout`
+- Shared `SplitApp` + `tui_split` / `gtk_split` runner shells
+
+### CLAUDE.md sections added/updated
+
+- **Primitive maturity levels** (new) — descriptors vs shipped; don't delete descriptors, prioritise rasterisers for vimcode adoption.
+- **Lessons: Backend `_layout` methods must work outside GTK frame scope** (new) — use stored metrics (`current_char_width`, `current_line_height`), not pango handles. First hit: `menu_bar_layout` panic on GTK click.
+- **Lessons: All runners must fire all UiEvent variants** — already existed, relevant context for the MenuBar hover work.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 342 |
+| After #11 | 344 |
+| After #6 (MenuBar) | 349 |
+| After Split | 353 |
+| Session end | 353 |
+
+### Bugs found + fixed during session
+
+1. **GTK menu bar click drift**: example's `handle()` used a hand-rolled char-count measurer for click routing that didn't match GTK's Pango pixel-width measurer in paint. Fixed by adding `Backend::menu_bar_layout` so click handlers use the same measurer as the painter. Lesson captured in CLAUDE.md.
+2. **GTK `menu_bar_layout` panic**: `current_frame_refs()` called from `handle()` which runs outside GTK's draw callback. Fixed by using `current_char_width` instead of pango. Lesson captured.
+3. **TUI dropdown border clipping**: ContextMenu's 1-cell border extended above/left of `layout.bounds`, overwriting the menu bar row and clipping at x=0. Fixed by padding the anchor rect by `line_height`.
+
+### Open queue for next session
+
+- #16 — Rasterisers for 4 remaining descriptor-only primitives: panel (next), toast, progress, spinner
+- #7 — SearchPanel primitive spike (exploratory)

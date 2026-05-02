@@ -61,6 +61,10 @@ Current set (declarative descriptions + layout + dual rasterisers):
   Composes other primitives as section bodies.
 - `MessageList` — chat-style message history.
 - `Editor` — code-editor primitive (gutter, virtual text, syntax spans).
+- `MenuBar` — horizontal menu strip with dropdown menus via `ContextMenu`
+  composition, hover-to-switch, Alt-key activation.
+- `Split` — two-pane container with draggable divider, horizontal +
+  vertical, min-size constraints.
 - Plus: `Tooltip`, `ContextMenu`, `Dialog`, `Palette`, `Terminal`,
   `RichTextPopup`, etc.
 
@@ -84,6 +88,8 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 | `tui_demo` / `gtk_demo` | `tui` / `gtk` | `TabBar` + `StatusBar` with focus cycling. Same `AppLogic` body across backends — only the runner call differs. |
 | `msv_multi_tree` / `gtk_multi_tree` | `tui` / `gtk` | Debug-sidebar consumer pattern: 4 `EqualShare` `TreeView` sections in a `MultiSectionView`, with per-section `scroll_offset` + `selected_path` owned by the host. Both are ~24-line runner shells; the shared `AppLogic` impl lives in `examples/common/multi_tree.rs`. See *Consumer patterns* in `CLAUDE.md`. |
 | `msv_sc_panel` | `tui` | Source-Control consumer pattern: `SectionAux::Input` commit message editor + N collapsible `TreeView` sections (Changes / Staged / Worktrees). Adds input-mode keystroke routing + chevron-click collapse toggle on top of the multi-tree shape. |
+| `tui_menu_bar` / `gtk_menu_bar` | `tui` / `gtk` | Complete menu bar with dropdown menus via `MenuBar` + `ContextMenu` composition. Hover-to-switch, keyboard navigation (Alt+key, arrows, Enter, Esc), realistic File/Edit/View menus. |
+| `tui_split` / `gtk_split` | `tui` / `gtk` | Draggable `Split` with two labelled panes. Toggle horizontal/vertical, reset ratio. |
 
 ## Testing
 
