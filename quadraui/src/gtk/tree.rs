@@ -28,11 +28,12 @@ use crate::types::Decoration;
 /// Mirrors TUI's [`crate::tui::tui_tree_layout`] in spirit; differs
 /// in row pitch (TUI = 1 cell uniform; GTK = mixed via decoration).
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
+    let header_height = (line_height * 1.2).round();
     let item_height = (line_height * 1.4).round();
     tree.layout(area.width, area.height, |i| {
         let is_header = matches!(tree.rows[i].decoration, Decoration::Header);
         TreeRowMeasure::new(if is_header {
-            line_height as f32
+            header_height as f32
         } else {
             item_height as f32
         })
@@ -94,14 +95,28 @@ pub fn draw_tree(
     layout.set_attributes(None);
 
     let indent_px = (line_height * 0.9).round();
+    let header_height = (line_height * 1.2).round();
+    let item_height = (line_height * 1.4).round();
     let tree_layout = gtk_tree_layout(tree, QRect::new(0.0, 0.0, w as f32, h as f32), line_height);
 
     for vis_row in &tree_layout.visible_rows {
         let row = &tree.rows[vis_row.row_idx];
-        let row_y = y + vis_row.bounds.y as f64;
+        let row_y = (y + vis_row.bounds.y as f64).round();
         let row_h = vis_row.bounds.height as f64;
 
+        // Skip rows the layout clipped to a partial height — painting
+        // them produces a compressed background band at the section
+        // boundary.
         let is_header = matches!(row.decoration, Decoration::Header);
+        let full_h = if is_header {
+            header_height
+        } else {
+            item_height
+        };
+        if row_h < full_h - 0.5 {
+            continue;
+        }
+
         let is_selected =
             tree.has_focus && tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
 
@@ -131,7 +146,7 @@ pub fn draw_tree(
                 cr.set_source_rgb(def_fg.0, def_fg.1, def_fg.2);
                 layout.set_text(chevron);
                 let (cw, ch) = layout.pixel_size();
-                cr.move_to(cursor_x, row_y + (row_h - ch as f64) / 2.0);
+                cr.move_to(cursor_x, (row_y + (row_h - ch as f64) / 2.0).round());
                 pcfn::show_layout(cr, layout);
                 cursor_x += cw as f64 + 4.0;
             }
@@ -148,7 +163,7 @@ pub fn draw_tree(
             cr.set_source_rgb(def_fg.0, def_fg.1, def_fg.2);
             layout.set_text(glyph);
             let (iw, ih) = layout.pixel_size();
-            cr.move_to(cursor_x, row_y + (row_h - ih as f64) / 2.0);
+            cr.move_to(cursor_x, (row_y + (row_h - ih as f64) / 2.0).round());
             pcfn::show_layout(cr, layout);
             cursor_x += iw as f64 + 6.0;
         }
@@ -193,7 +208,7 @@ pub fn draw_tree(
             cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
             layout.set_text(&span.text);
             let (sw, sh) = layout.pixel_size();
-            cr.move_to(cursor_x, row_y + (row_h - sh as f64) / 2.0);
+            cr.move_to(cursor_x, (row_y + (row_h - sh as f64) / 2.0).round());
             pcfn::show_layout(cr, layout);
             cursor_x += sw as f64;
         }

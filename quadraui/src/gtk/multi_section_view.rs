@@ -221,9 +221,9 @@ fn paint_header(
     let dim = cairo_rgb(theme.muted_fg);
 
     let bx = bounds.x as f64;
-    let by = bounds.y as f64;
+    let by = bounds.y.round() as f64;
     let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
+    let bh = bounds.height.round() as f64;
 
     cr.set_source_rgb(bg.0, bg.1, bg.2);
     cr.rectangle(bx, by, bw, bh);
@@ -237,7 +237,7 @@ fn paint_header(
         cr.set_source_rgb(fg.0, fg.1, fg.2);
         layout.set_text(chevron);
         let (cw, ch) = layout.pixel_size();
-        cr.move_to(left_x, by + (bh - ch as f64) / 2.0);
+        cr.move_to(left_x, (by + (bh - ch as f64) * 0.4).round());
         pcfn::show_layout(cr, layout);
         left_x += cw as f64 + 4.0;
     }
@@ -254,7 +254,7 @@ fn paint_header(
             break;
         }
         cr.set_source_rgb(action_fg.0, action_fg.1, action_fg.2);
-        cr.move_to(right_x, by + (bh - gh as f64) / 2.0);
+        cr.move_to(right_x, (by + (bh - gh as f64) * 0.4).round());
         pcfn::show_layout(cr, layout);
         right_x -= 8.0; // gap between actions
     }
@@ -267,7 +267,7 @@ fn paint_header(
         let (tw, th) = layout.pixel_size();
         let max_w = (right_x - left_x).max(0.0);
         if max_w > 0.0 {
-            cr.move_to(left_x, by + (bh - th as f64) / 2.0);
+            cr.move_to(left_x, (by + (bh - th as f64) * 0.4).round());
             // Pango clips automatically when we don't set width; sub-row
             // truncation is handled by the user-visible row width.
             pcfn::show_layout(cr, layout);
