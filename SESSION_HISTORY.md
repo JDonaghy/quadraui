@@ -95,8 +95,11 @@
 ### CLAUDE.md sections added/updated
 
 - **Primitive maturity levels** (new) — descriptors vs shipped; don't delete descriptors, prioritise rasterisers for vimcode adoption.
-- **Lessons: Backend `_layout` methods must work outside GTK frame scope** (new) — use stored metrics (`current_char_width`, `current_line_height`), not pango handles. First hit: `menu_bar_layout` panic on GTK click.
-- **Lessons: All runners must fire all UiEvent variants** — already existed, relevant context for the MenuBar hover work.
+- **Lessons: Backend `_layout` methods must work outside GTK frame scope** (new) — use stored metrics, not pango handles.
+- **Lessons: Real apps need layout caching, not layout re-derivation** (new) — cache the layout paint produced on host state; read it in click. Distinguishes from Cell-smuggling anti-pattern.
+- **The band-aid trap** (updated) — now documents two safe patterns (re-derivation when inputs match vs layout caching when they don't).
+- **What NOT to do** (rewritten) — replaces overly broad Cell-smuggling warning with precise distinction: caching layout *outputs* is safe, caching *inputs* to bridge two independent derivations is not.
+- **Consumer patterns: MSV click routing** (updated) — references both safe patterns.
 
 ### Test count progression
 
@@ -113,8 +116,14 @@
 1. **GTK menu bar click drift**: example's `handle()` used a hand-rolled char-count measurer for click routing that didn't match GTK's Pango pixel-width measurer in paint. Fixed by adding `Backend::menu_bar_layout` so click handlers use the same measurer as the painter. Lesson captured in CLAUDE.md.
 2. **GTK `menu_bar_layout` panic**: `current_frame_refs()` called from `handle()` which runs outside GTK's draw callback. Fixed by using `current_char_width` instead of pango. Lesson captured.
 3. **TUI dropdown border clipping**: ContextMenu's 1-cell border extended above/left of `layout.bounds`, overwriting the menu bar row and clipping at x=0. Fixed by padding the anchor rect by `line_height`.
+4. **GTK tree row bleed into next section header**: no per-body Cairo clip in GTK MSV rasteriser. Fixed by adding `cr.save()/clip()/restore()` around each body paint.
+5. **GTK compressed last row**: tree layout clips last row to fractional height; rasteriser painted compressed background band. Fixed by skipping rows whose height < full row height.
+6. **GTK sub-pixel text blur**: text y-positions in tree rasteriser and MSV header were fractional pixels, causing anti-aliasing smear. Fixed by `.round()` on all `cr.move_to` y-coordinates.
+7. **GTK header text descender clipping**: "CALL STACK" header text bottom-clipped. Fixed by increasing tree header row from 1.0x to 1.2x line_height and biasing MSV header text centering to 0.4 (giving descenders 60% of slack).
+8. **TUI `q_to_tui_rect` rounding**: `round()` on body height could give rasteriser more cells than available. Fixed by switching to `floor()` (defensive — cell_quantum already snaps to integers).
 
 ### Open queue for next session
 
 - #16 — Rasterisers for 4 remaining descriptor-only primitives: panel (next), toast, progress, spinner
 - #7 — SearchPanel primitive spike (exploratory)
+- GTK list rasteriser has same sub-pixel text issue (same `move_to` pattern without `.round()`) — follow-up
