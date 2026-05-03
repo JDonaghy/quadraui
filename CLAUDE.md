@@ -206,11 +206,12 @@ hit_test + layout tests, (2) TUI and GTK rasterisers with paint↔click
 harnesses, (3) `Backend` trait methods. Primitives with only leg (1)
 are **descriptors** — their shape is real and tested, but vimcode
 (and any other consumer) cannot adopt them yet because there's nothing
-to paint. Current descriptors-only: `panel`, `progress`, `spinner`,
-`split`, `toast` (tracked in the issue tracker). Don't delete
-descriptors — the layout + hit_test work is real and reusable. Do
-prioritise adding rasterisers for any descriptor that blocks a
-vimcode bespoke-paint elimination.
+to paint. As of 2026-05-03, all previously descriptor-only primitives
+(`panel`, `progress`, `spinner`, `split`, `toast`) have shipped with
+full rasteriser + Backend trait coverage (#16). No current descriptors
+lack rasterisers. Don't delete descriptors — the layout + hit_test
+work is real and reusable. Do prioritise adding rasterisers for any
+descriptor that blocks a vimcode bespoke-paint elimination.
 
 ## Consumer patterns
 
