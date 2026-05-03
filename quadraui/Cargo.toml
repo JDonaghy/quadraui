@@ -98,3 +98,13 @@ required-features = ["tui"]
 name = "gtk_indicators"
 path = "examples/gtk_indicators.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_search_panel"
+path = "examples/tui_search_panel.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_search_panel"
+path = "examples/gtk_search_panel.rs"
+required-features = ["gtk"]
