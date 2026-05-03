@@ -595,8 +595,8 @@ fn q_to_tui_rect(r: QRect) -> TuiRect {
     TuiRect {
         x: r.x.round().max(0.0) as u16,
         y: r.y.round().max(0.0) as u16,
-        width: r.width.round().max(0.0) as u16,
-        height: r.height.round().max(0.0) as u16,
+        width: r.width.floor().max(0.0) as u16,
+        height: r.height.floor().max(0.0) as u16,
     }
 }
 
