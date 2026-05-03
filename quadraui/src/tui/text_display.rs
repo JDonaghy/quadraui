@@ -158,6 +158,37 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
     }
 }
 
+/// Compute the text-display layout using TUI-native metrics (1 cell per
+/// line, 1-cell scrollbar gutter). Consumers call this to drive hit-testing
+/// for scrollbar drag interaction without re-deriving metrics.
+pub fn tui_text_display_layout(
+    display: &TextDisplay,
+    area: Rect,
+) -> crate::primitives::text_display::TextDisplayLayout {
+    let body = if display.title.is_some() {
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        }
+    } else {
+        area
+    };
+    if body.height == 0 {
+        return display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(1.0));
+    }
+    if display.show_scrollbar {
+        display.layout_with_scrollbar(body.width as f32, body.height as f32, 1.0, 1.0, |_| {
+            TextDisplayLineMeasure::new(1.0)
+        })
+    } else {
+        display.layout(body.width as f32, body.height as f32, |_| {
+            TextDisplayLineMeasure::new(1.0)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

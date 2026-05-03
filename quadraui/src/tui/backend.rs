@@ -537,6 +537,15 @@ impl Backend for TuiBackend {
         crate::tui::draw_text_display(frame.buffer_mut(), area, td, &theme);
     }
 
+    fn text_display_layout(
+        &self,
+        rect: QRect,
+        td: &TextDisplay,
+    ) -> crate::primitives::text_display::TextDisplayLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_text_display_layout(td, area)
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout: &crate::TooltipLayout) {
         let theme = self.current_theme;
         let frame = self
@@ -973,6 +982,15 @@ mod tests {
         }
         fn draw_terminal(&mut self, _r: QRect, _t: &TerminalPrim) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
+        fn text_display_layout(
+            &self,
+            r: QRect,
+            td: &TextDisplay,
+        ) -> crate::primitives::text_display::TextDisplayLayout {
+            td.layout(r.width, r.height, |_| {
+                crate::primitives::text_display::TextDisplayLineMeasure::new(1.0)
+            })
+        }
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,

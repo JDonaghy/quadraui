@@ -10,7 +10,7 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
-use crate::primitives::text_display::{TextDisplay, TextDisplayLineMeasure};
+use crate::primitives::text_display::{TextDisplay, TextDisplayLayout, TextDisplayLineMeasure};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
@@ -153,5 +153,37 @@ pub fn draw_text_display(
             );
             cr.fill().ok();
         }
+    }
+}
+
+/// Compute the text-display layout using GTK-native metrics (pixel
+/// line_height, 12px scrollbar gutter, 8px min thumb). Consumers call
+/// this to drive hit-testing for scrollbar drag interaction without
+/// re-deriving metrics. Runs outside the frame scope (no cairo/pango
+/// handles needed).
+pub fn gtk_text_display_layout(
+    display: &TextDisplay,
+    rect: crate::event::Rect,
+    line_height: f64,
+) -> TextDisplayLayout {
+    let body_h = if display.title.is_some() {
+        (rect.height as f64 - line_height).max(0.0)
+    } else {
+        rect.height as f64
+    };
+    if body_h <= 0.0 {
+        return display.layout(0.0, 0.0, |_| {
+            TextDisplayLineMeasure::new(line_height as f32)
+        });
+    }
+    let gutter_px = 12.0_f32;
+    if display.show_scrollbar {
+        display.layout_with_scrollbar(rect.width, body_h as f32, gutter_px, 8.0, |_| {
+            TextDisplayLineMeasure::new(line_height as f32)
+        })
+    } else {
+        display.layout(rect.width, body_h as f32, |_| {
+            TextDisplayLineMeasure::new(line_height as f32)
+        })
     }
 }

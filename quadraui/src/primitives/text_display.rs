@@ -409,3 +409,174 @@ impl TextDisplay {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::StyledSpan;
+
+    fn line(text: &str) -> TextDisplayLine {
+        TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn make_td(lines: usize, show_scrollbar: bool, scroll: usize, auto: bool) -> TextDisplay {
+        TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..lines).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: scroll,
+            auto_scroll: auto,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar,
+        }
+    }
+
+    #[test]
+    fn scrollbar_layout_reserves_gutter_width() {
+        let td = make_td(20, true, 0, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Body width should be 39 (40 - 1 gutter).
+        for vis in &layout.visible_lines {
+            assert!(
+                (vis.bounds.width - 39.0).abs() < 0.01,
+                "line body width should be 39, got {}",
+                vis.bounds.width
+            );
+        }
+        assert!(layout.scrollbar_bounds.is_some());
+        let gutter = layout.scrollbar_bounds.unwrap();
+        assert!((gutter.x - 39.0).abs() < 0.01);
+        assert!((gutter.width - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn scrollbar_thumb_at_top_when_scroll_zero() {
+        let td = make_td(20, true, 0, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        let thumb = layout.thumb_bounds.expect("thumb present");
+        assert!(
+            thumb.y.abs() < 0.01,
+            "thumb should start at top, got y={}",
+            thumb.y
+        );
+    }
+
+    #[test]
+    fn scrollbar_thumb_at_bottom_when_fully_scrolled() {
+        let td = make_td(20, true, 10, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        let thumb = layout.thumb_bounds.expect("thumb present");
+        assert!(
+            (thumb.y + thumb.height - 10.0).abs() < 0.01,
+            "thumb should touch bottom: y={}, h={}, viewport=10",
+            thumb.y,
+            thumb.height
+        );
+    }
+
+    #[test]
+    fn scrollbar_hit_test_regions_present() {
+        let td = make_td(20, true, 5, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Scrollbar hit regions should be present (thumb + track before/after).
+        let has_thumb = layout
+            .hit_regions
+            .iter()
+            .any(|(_, h)| matches!(h, TextDisplayHit::ScrollbarThumb));
+        let has_track_before = layout
+            .hit_regions
+            .iter()
+            .any(|(_, h)| matches!(h, TextDisplayHit::ScrollbarTrackBefore));
+        let has_track_after = layout
+            .hit_regions
+            .iter()
+            .any(|(_, h)| matches!(h, TextDisplayHit::ScrollbarTrackAfter));
+        assert!(has_thumb, "thumb hit region missing");
+        assert!(has_track_before, "track-before hit region missing");
+        assert!(has_track_after, "track-after hit region missing");
+    }
+
+    #[test]
+    fn no_scrollbar_when_content_fits() {
+        let td = make_td(5, true, 0, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Content fits in viewport; scrollbar should have no thumb.
+        assert!(layout.thumb_bounds.is_none());
+    }
+
+    #[test]
+    fn no_scrollbar_when_disabled() {
+        let td = make_td(20, false, 0, false);
+        let layout = td.layout(40.0, 10.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert!(layout.scrollbar_bounds.is_none());
+        assert!(layout.thumb_bounds.is_none());
+        // No scrollbar hit regions.
+        let scrollbar_hits = layout.hit_regions.iter().any(|(_, h)| {
+            matches!(
+                h,
+                TextDisplayHit::ScrollbarThumb
+                    | TextDisplayHit::ScrollbarTrackBefore
+                    | TextDisplayHit::ScrollbarTrackAfter
+            )
+        });
+        assert!(!scrollbar_hits, "no scrollbar hits when disabled");
+    }
+
+    #[test]
+    fn hit_test_line_in_body_area() {
+        let td = make_td(20, true, 0, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Click in the body area (x=5, y=3.5) should hit line 3.
+        match layout.hit_test(5.0, 3.5) {
+            TextDisplayHit::Line(idx) => assert_eq!(idx, 3),
+            other => panic!("expected Line(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hit_test_scrollbar_thumb() {
+        let td = make_td(20, true, 0, false);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        let thumb = layout.thumb_bounds.expect("thumb present");
+        // Click inside the thumb.
+        match layout.hit_test(thumb.x + 0.5, thumb.y + thumb.height / 2.0) {
+            TextDisplayHit::ScrollbarThumb => {}
+            other => panic!("expected ScrollbarThumb, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn auto_scroll_with_scrollbar() {
+        let td = make_td(20, true, 0, true);
+        let layout =
+            td.layout_with_scrollbar(40.0, 10.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Auto-scroll should pin to bottom: resolved offset = 10.
+        assert_eq!(layout.resolved_scroll_offset, 10);
+        assert_eq!(layout.visible_lines.last().unwrap().line_idx, 19);
+    }
+
+    #[test]
+    fn append_line_and_max_lines() {
+        let mut td = TextDisplay::new(WidgetId::new("td"));
+        td.set_max_lines(5);
+        for i in 0..10 {
+            td.append_line(line(&format!("l{i}")));
+        }
+        assert_eq!(td.lines.len(), 5);
+        // Oldest lines should be trimmed; newest 5 remain.
+        assert_eq!(td.lines[0].spans[0].text, "l5");
+        assert_eq!(td.lines[4].spans[0].text, "l9");
+    }
+}

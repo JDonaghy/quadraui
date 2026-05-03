@@ -706,6 +706,14 @@ impl Backend for GtkBackend {
         );
     }
 
+    fn text_display_layout(
+        &self,
+        rect: QRect,
+        td: &TextDisplay,
+    ) -> crate::primitives::text_display::TextDisplayLayout {
+        crate::gtk::gtk_text_display_layout(td, rect, self.current_line_height)
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
         let (cr, pango_layout) = self
             .current_frame_refs()

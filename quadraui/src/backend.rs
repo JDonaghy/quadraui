@@ -29,6 +29,7 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
+use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
@@ -157,6 +158,13 @@ pub trait Backend {
     /// `TextDisplay` itself is non-interactive (selection / scroll
     /// happen at the panel chrome level, not at the line/span level).
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
+
+    /// Compute the text-display layout the rasteriser would produce for
+    /// `td` in `rect`, using the backend's native metrics. Hosts call
+    /// this to drive hit-testing for scrollbar drag interaction without
+    /// re-deriving metrics — paint and click consume one layout per
+    /// frame, the source-of-truth contract.
+    fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout;
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout. The
     /// caller computes anchor + viewport + content measurement and

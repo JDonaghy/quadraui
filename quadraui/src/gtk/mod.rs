@@ -82,7 +82,7 @@ pub use split::{draw_split, gtk_split_layout};
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
 pub use terminal::draw_terminal_cells;
-pub use text_display::draw_text_display;
+pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
 pub use tooltip::draw_tooltip;
 pub use tree::{draw_tree, gtk_tree_layout};
