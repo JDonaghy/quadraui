@@ -88,3 +88,13 @@ required-features = ["tui"]
 name = "gtk_toast"
 path = "examples/gtk_toast.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_indicators"
+path = "examples/tui_indicators.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_indicators"
+path = "examples/gtk_indicators.rs"
+required-features = ["gtk"]

@@ -1048,6 +1048,75 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn draw_progress(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::progress::ProgressBar,
+    ) -> crate::primitives::progress::ProgressBarLayout {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_progress called outside enter_frame_scope");
+        crate::gtk::draw_progress(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &theme,
+        )
+    }
+
+    fn progress_layout(
+        &self,
+        rect: QRect,
+        bar: &crate::primitives::progress::ProgressBar,
+    ) -> crate::primitives::progress::ProgressBarLayout {
+        crate::gtk::gtk_progress_layout(
+            bar,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
+
+    fn draw_spinner(
+        &mut self,
+        rect: QRect,
+        spinner: &crate::primitives::spinner::Spinner,
+    ) -> crate::primitives::spinner::SpinnerLayout {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_spinner called outside enter_frame_scope");
+        crate::gtk::draw_spinner(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            spinner,
+            &theme,
+        )
+    }
+
+    fn spinner_layout(
+        &self,
+        rect: QRect,
+        spinner: &crate::primitives::spinner::Spinner,
+    ) -> crate::primitives::spinner::SpinnerLayout {
+        spinner.layout(
+            rect.x,
+            rect.y,
+            crate::primitives::spinner::SpinnerMeasure::new(
+                rect.width,
+                self.current_line_height as f32,
+            ),
+        )
+    }
+
     fn toast_stack_layout(
         &self,
         rect: QRect,

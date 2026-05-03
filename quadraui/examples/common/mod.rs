@@ -26,6 +26,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod demo;
+pub mod indicators_app;
 pub mod menu_bar_app;
 pub mod mini_app;
 pub mod multi_tree;
@@ -34,6 +35,7 @@ pub mod split_app;
 pub mod toast_app;
 
 pub use demo::AppState;
+pub use indicators_app::IndicatorsApp;
 pub use menu_bar_app::MenuBarApp;
 pub use mini_app::MiniApp;
 pub use multi_tree::DebugSidebar;

@@ -22,8 +22,10 @@ use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
 use crate::primitives::panel::{Panel, PanelLayout};
+use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
+use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
@@ -285,6 +287,21 @@ pub trait Backend {
     /// Compute the toast-stack layout without painting. Hosts call
     /// this in click handlers to resolve hits.
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
+
+    /// Draw a [`ProgressBar`]. The backend paints the track, fill,
+    /// optional label, and optional cancel affordance. Returns the
+    /// [`ProgressBarLayout`] so hosts can route clicks.
+    fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
+
+    /// Compute progress-bar layout without painting.
+    fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
+
+    /// Draw a [`Spinner`] (indeterminate activity indicator). Returns
+    /// the [`SpinnerLayout`] for host hit-testing.
+    fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
+
+    /// Compute spinner layout without painting.
+    fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries

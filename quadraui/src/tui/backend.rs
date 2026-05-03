@@ -785,6 +785,50 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::toast::ToastStackLayout {
         crate::tui::tui_toast_stack_layout(stack, rect.width, rect.height)
     }
+
+    fn draw_progress(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::progress::ProgressBar,
+    ) -> crate::primitives::progress::ProgressBarLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_progress called outside enter_frame_scope");
+        crate::tui::draw_progress(frame.buffer_mut(), area, bar, &theme)
+    }
+
+    fn progress_layout(
+        &self,
+        rect: QRect,
+        bar: &crate::primitives::progress::ProgressBar,
+    ) -> crate::primitives::progress::ProgressBarLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_progress_layout(bar, area)
+    }
+
+    fn draw_spinner(
+        &mut self,
+        rect: QRect,
+        spinner: &crate::primitives::spinner::Spinner,
+    ) -> crate::primitives::spinner::SpinnerLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_spinner called outside enter_frame_scope");
+        crate::tui::draw_spinner(frame.buffer_mut(), area, spinner, &theme)
+    }
+
+    fn spinner_layout(
+        &self,
+        rect: QRect,
+        spinner: &crate::primitives::spinner::Spinner,
+    ) -> crate::primitives::spinner::SpinnerLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_spinner_layout(spinner, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1088,6 +1132,54 @@ mod tests {
             stack.layout(_r.width, _r.height, 1.0, 1.0, |_| {
                 crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
             })
+        }
+
+        fn draw_progress(
+            &mut self,
+            _r: QRect,
+            bar: &crate::primitives::progress::ProgressBar,
+        ) -> crate::primitives::progress::ProgressBarLayout {
+            bar.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::progress::ProgressBarMeasure::new(_r.width, _r.height),
+            )
+        }
+
+        fn progress_layout(
+            &self,
+            _r: QRect,
+            bar: &crate::primitives::progress::ProgressBar,
+        ) -> crate::primitives::progress::ProgressBarLayout {
+            bar.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::progress::ProgressBarMeasure::new(_r.width, _r.height),
+            )
+        }
+
+        fn draw_spinner(
+            &mut self,
+            _r: QRect,
+            spinner: &crate::primitives::spinner::Spinner,
+        ) -> crate::primitives::spinner::SpinnerLayout {
+            spinner.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
+            )
+        }
+
+        fn spinner_layout(
+            &self,
+            _r: QRect,
+            spinner: &crate::primitives::spinner::Spinner,
+        ) -> crate::primitives::spinner::SpinnerLayout {
+            spinner.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
+            )
         }
     }
 

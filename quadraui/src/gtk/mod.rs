@@ -39,10 +39,12 @@ mod message_list;
 mod multi_section_view;
 mod palette;
 mod panel;
+mod progress;
 mod rich_text_popup;
 mod run;
 mod scrollbar;
 pub mod services;
+mod spinner;
 mod split;
 mod status_bar;
 mod tab_bar;
@@ -69,11 +71,13 @@ pub use multi_section_view::{
 };
 pub use palette::draw_palette;
 pub use panel::{draw_panel, gtk_panel_layout};
+pub use progress::{draw_progress, gtk_progress_layout};
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
 pub use run::run;
 pub use scrollbar::draw_scrollbar;
+pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::{draw_split, gtk_split_layout};
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
