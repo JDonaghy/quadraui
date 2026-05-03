@@ -191,6 +191,7 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
                 underline: false,
             }],
         }),
+        show_scrollbar: false,
     }
 }
 

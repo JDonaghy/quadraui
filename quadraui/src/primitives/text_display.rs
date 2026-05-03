@@ -72,6 +72,13 @@ pub struct TextDisplay {
     /// — no bespoke title painter needed.
     #[serde(default)]
     pub title: Option<StyledText>,
+    /// When true, a vertical scrollbar is rendered at the trailing edge
+    /// of the viewport. The body's visible width shrinks by the scrollbar
+    /// gutter width (1 cell on TUI, ~12px on GTK). The scrollbar's
+    /// thumb + track hit regions are included in the layout's
+    /// `hit_regions` for drag interaction.
+    #[serde(default)]
+    pub show_scrollbar: bool,
 }
 
 fn default_auto_scroll() -> bool {
@@ -129,6 +136,9 @@ pub struct VisibleTextDisplayLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextDisplayHit {
     Line(usize),
+    ScrollbarThumb,
+    ScrollbarTrackBefore,
+    ScrollbarTrackAfter,
     Empty,
 }
 
@@ -145,6 +155,10 @@ pub struct TextDisplayLayout {
     /// write this back to the app's stored value so auto-scroll state
     /// is coherent across frames.
     pub resolved_scroll_offset: usize,
+    /// Scrollbar gutter bounds (when `show_scrollbar` is true).
+    pub scrollbar_bounds: Option<Rect>,
+    /// Scrollbar thumb bounds within the gutter.
+    pub thumb_bounds: Option<Rect>,
 }
 
 impl TextDisplayLayout {
@@ -183,8 +197,51 @@ impl TextDisplay {
     where
         F: Fn(usize) -> TextDisplayLineMeasure,
     {
+        self.layout_inner(viewport_width, viewport_height, 0.0, 0.0, measure_line)
+    }
+
+    /// Layout with scrollbar gutter reserved on the right.
+    /// `scrollbar_gutter` is the width in native units (1.0 for TUI,
+    /// ~12.0 for GTK). `min_thumb` is the minimum thumb length.
+    pub fn layout_with_scrollbar<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        scrollbar_gutter: f32,
+        min_thumb: f32,
+        measure_line: F,
+    ) -> TextDisplayLayout
+    where
+        F: Fn(usize) -> TextDisplayLineMeasure,
+    {
+        self.layout_inner(
+            viewport_width,
+            viewport_height,
+            scrollbar_gutter,
+            min_thumb,
+            measure_line,
+        )
+    }
+
+    fn layout_inner<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        scrollbar_gutter: f32,
+        min_thumb: f32,
+        measure_line: F,
+    ) -> TextDisplayLayout
+    where
+        F: Fn(usize) -> TextDisplayLineMeasure,
+    {
         let mut visible_lines: Vec<VisibleTextDisplayLine> = Vec::new();
         let mut hit_regions: Vec<(Rect, TextDisplayHit)> = Vec::new();
+
+        let body_width = if self.show_scrollbar && scrollbar_gutter > 0.0 {
+            (viewport_width - scrollbar_gutter).max(0.0)
+        } else {
+            viewport_width
+        };
 
         if self.lines.is_empty() || viewport_height <= 0.0 {
             return TextDisplayLayout {
@@ -193,21 +250,19 @@ impl TextDisplay {
                 visible_lines,
                 hit_regions,
                 resolved_scroll_offset: 0,
+                scrollbar_bounds: None,
+                thumb_bounds: None,
             };
         }
 
         // Decide the starting offset.
         let resolved_scroll_offset = if self.auto_scroll {
-            // Walk backwards from the last line accumulating heights
-            // until we've filled (or would overflow) the viewport.
             let mut used = 0.0_f32;
             let mut offset = self.lines.len();
             while offset > 0 {
                 let cand = offset - 1;
                 let h = measure_line(cand).height;
                 if used + h > viewport_height + f32::EPSILON {
-                    // One more line past the top → walking back further
-                    // overshoots. Stop here.
                     break;
                 }
                 used += h;
@@ -229,7 +284,7 @@ impl TextDisplay {
             if height <= 0.0 {
                 break;
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
+            let bounds = Rect::new(0.0, y, body_width, height);
             visible_lines.push(VisibleTextDisplayLine {
                 line_idx: i,
                 bounds,
@@ -238,12 +293,56 @@ impl TextDisplay {
             y += m.height;
         }
 
+        // Scrollbar.
+        let (scrollbar_bounds, thumb_bounds) =
+            if self.show_scrollbar && scrollbar_gutter > 0.0 && !self.lines.is_empty() {
+                let gutter = Rect::new(body_width, 0.0, scrollbar_gutter, viewport_height);
+                let visible_count = visible_lines.len() as f32;
+                let total = self.lines.len() as f32;
+                let (thumb_start, thumb_len) = crate::primitives::scrollbar::fit_thumb(
+                    resolved_scroll_offset as f32,
+                    total,
+                    visible_count,
+                    viewport_height,
+                    min_thumb,
+                );
+
+                if thumb_len > 0.0 {
+                    let thumb = Rect::new(body_width, thumb_start, scrollbar_gutter, thumb_len);
+                    let track_before = Rect::new(body_width, 0.0, scrollbar_gutter, thumb_start);
+                    let track_after = Rect::new(
+                        body_width,
+                        thumb_start + thumb_len,
+                        scrollbar_gutter,
+                        (viewport_height - thumb_start - thumb_len).max(0.0),
+                    );
+
+                    hit_regions.insert(0, (thumb, TextDisplayHit::ScrollbarThumb));
+                    if track_before.height > 0.0 {
+                        hit_regions.insert(1, (track_before, TextDisplayHit::ScrollbarTrackBefore));
+                    }
+                    if track_after.height > 0.0 {
+                        hit_regions.insert(
+                            if track_before.height > 0.0 { 2 } else { 1 },
+                            (track_after, TextDisplayHit::ScrollbarTrackAfter),
+                        );
+                    }
+                    (Some(gutter), Some(thumb))
+                } else {
+                    (Some(gutter), None)
+                }
+            } else {
+                (None, None)
+            };
+
         TextDisplayLayout {
             viewport_width,
             viewport_height,
             visible_lines,
             hit_regions,
             resolved_scroll_offset,
+            scrollbar_bounds,
+            thumb_bounds,
         }
     }
 }
@@ -276,6 +375,7 @@ impl TextDisplay {
             max_lines: 0,
             has_focus: false,
             title: None,
+            show_scrollbar: false,
         }
     }
 

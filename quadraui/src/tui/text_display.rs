@@ -77,9 +77,15 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
         return;
     }
 
-    let layout = display.layout(body.width as f32, body.height as f32, |_| {
-        TextDisplayLineMeasure::new(1.0)
-    });
+    let layout = if display.show_scrollbar {
+        display.layout_with_scrollbar(body.width as f32, body.height as f32, 1.0, 1.0, |_| {
+            TextDisplayLineMeasure::new(1.0)
+        })
+    } else {
+        display.layout(body.width as f32, body.height as f32, |_| {
+            TextDisplayLineMeasure::new(1.0)
+        })
+    };
 
     for vis in &layout.visible_lines {
         let line = &display.lines[vis.line_idx];
@@ -113,15 +119,40 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
         }
 
         // Spans.
+        let line_end = if display.show_scrollbar {
+            body.width.saturating_sub(1)
+        } else {
+            body.width
+        };
         for span in &line.spans {
             let span_fg = span.fg.map(ratatui_color).unwrap_or(line_fg);
             let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
             for ch in span.text.chars() {
-                if col >= body.width {
+                if col >= line_end {
                     break;
                 }
                 set_cell(buf, body.x + col, row_y, ch, span_fg, span_bg);
                 col += 1;
+            }
+        }
+    }
+
+    // Scrollbar gutter.
+    if display.show_scrollbar {
+        let gutter_x = body.x + body.width - 1;
+        let track_fg = ratatui_color(theme.muted_fg);
+        for dy in 0..body.height {
+            set_cell(buf, gutter_x, body.y + dy, '│', track_fg, bg);
+        }
+        if let Some(thumb) = layout.thumb_bounds {
+            let thumb_y = body.y + thumb.y.round() as u16;
+            let thumb_h = thumb.height.round() as u16;
+            let thumb_fg = ratatui_color(theme.foreground);
+            for dy in 0..thumb_h {
+                let y = thumb_y + dy;
+                if y < body.y + body.height {
+                    set_cell(buf, gutter_x, y, '█', thumb_fg, bg);
+                }
             }
         }
     }
@@ -156,6 +187,7 @@ mod tests {
             max_lines: 0,
             has_focus: false,
             title: None,
+            show_scrollbar: false,
         };
         draw_text_display(
             &mut buf,
@@ -196,6 +228,7 @@ mod tests {
             max_lines: 0,
             has_focus: false,
             title: None,
+            show_scrollbar: false,
         };
         draw_text_display(
             &mut buf,
@@ -219,6 +252,7 @@ mod tests {
             max_lines: 0,
             has_focus: false,
             title: None,
+            show_scrollbar: false,
         };
         draw_text_display(
             &mut buf,
@@ -246,8 +280,107 @@ mod tests {
             max_lines: 0,
             has_focus: false,
             title: None,
+            show_scrollbar: false,
         };
         draw_text_display(&mut buf, Rect::new(0, 0, 0, 5), &display, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 5),
+            &display,
+            &Theme::default(),
+        );
+
+        // Scrollbar gutter at column 19. Thumb should be at top (scroll_offset=0).
+        assert_eq!(cell_char(&buf, 19, 0), '█');
+
+        // Use layout for hit-test.
+        let layout = display
+            .layout_with_scrollbar(20.0, 5.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        let thumb = layout.thumb_bounds.expect("thumb bounds present");
+        let hit = layout.hit_test(thumb.x + 0.5, thumb.y + 0.5);
+        assert_eq!(
+            hit,
+            crate::primitives::text_display::TextDisplayHit::ScrollbarThumb
+        );
+    }
+
+    #[test]
+    fn scrollbar_track_after_hit() {
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        let layout = display
+            .layout_with_scrollbar(20.0, 5.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
+        // Click below the thumb → TrackAfter.
+        let hit = layout.hit_test(19.5, 4.5);
+        assert_eq!(
+            hit,
+            crate::primitives::text_display::TextDisplayHit::ScrollbarTrackAfter
+        );
+    }
+
+    #[test]
+    fn no_scrollbar_when_disabled() {
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        let layout = display.layout(20.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert!(layout.scrollbar_bounds.is_none());
+        assert!(layout.thumb_bounds.is_none());
+    }
+
+    #[test]
+    fn scrollbar_body_width_reduced() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("abcdefghijklmnopqrstuvwxyz")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 20, 5),
+            &display,
+            &Theme::default(),
+        );
+        // Text should stop before the scrollbar column (col 19).
+        // Col 18 should have 's' (19th char), col 19 should be scrollbar.
+        assert_eq!(cell_char(&buf, 18, 0), 's');
+        assert_ne!(cell_char(&buf, 19, 0), 't');
     }
 }

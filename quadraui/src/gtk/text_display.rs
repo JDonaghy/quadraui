@@ -70,9 +70,16 @@ pub fn draw_text_display(
         return;
     }
 
-    let display_layout = display.layout(w as f32, body_h as f32, |_| {
-        TextDisplayLineMeasure::new(line_height as f32)
-    });
+    let gutter_px = 12.0_f32;
+    let display_layout = if display.show_scrollbar {
+        display.layout_with_scrollbar(w as f32, body_h as f32, gutter_px, 8.0, |_| {
+            TextDisplayLineMeasure::new(line_height as f32)
+        })
+    } else {
+        display.layout(w as f32, body_h as f32, |_| {
+            TextDisplayLineMeasure::new(line_height as f32)
+        })
+    };
 
     for vis in &display_layout.visible_lines {
         let line = &display.lines[vis.line_idx];
@@ -118,6 +125,33 @@ pub fn draw_text_display(
             pcfn::show_layout(cr, layout);
             let (sw, _) = layout.pixel_size();
             cursor_x += sw as f64;
+        }
+    }
+
+    // Scrollbar gutter.
+    if display.show_scrollbar {
+        if let Some(gutter) = display_layout.scrollbar_bounds {
+            let gutter_bg = cairo_rgb(theme.surface_bg);
+            cr.set_source_rgb(gutter_bg.0, gutter_bg.1, gutter_bg.2);
+            cr.rectangle(
+                x + gutter.x as f64,
+                body_y + gutter.y as f64,
+                gutter.width as f64,
+                gutter.height as f64,
+            );
+            cr.fill().ok();
+        }
+        if let Some(thumb) = display_layout.thumb_bounds {
+            let thumb_fg = cairo_rgb(theme.foreground);
+            cr.set_source_rgb(thumb_fg.0, thumb_fg.1, thumb_fg.2);
+            let inset = 2.0;
+            cr.rectangle(
+                x + thumb.x as f64 + inset,
+                body_y + thumb.y as f64,
+                (thumb.width as f64 - inset * 2.0).max(2.0),
+                thumb.height as f64,
+            );
+            cr.fill().ok();
         }
     }
 }
