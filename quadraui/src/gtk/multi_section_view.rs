@@ -371,6 +371,11 @@ fn paint_body(
     if w <= 0.0 || h <= 0.0 {
         return;
     }
+    // Clip to body bounds so inner primitives (tree, list) can't
+    // paint past the section boundary into the next header.
+    cr.save().ok();
+    cr.rectangle(x, y, w, h);
+    cr.clip();
     match body {
         SectionBody::Tree(t) => {
             draw_tree(
@@ -420,6 +425,7 @@ fn paint_body(
             // Host paints in the body bounds.
         }
     }
+    cr.restore().ok();
 }
 
 #[allow(clippy::too_many_arguments)]
