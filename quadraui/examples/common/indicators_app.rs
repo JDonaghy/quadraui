@@ -173,13 +173,13 @@ impl AppLogic for IndicatorsApp {
                     ProgressBarHit::Cancel(_) => {
                         self.last_message = "Cancelled!".into();
                         self.progress = 0.0;
+                        self.indeterminate = false;
                     }
                     ProgressBarHit::Body(_) => {
                         self.last_message = "Bar clicked".into();
                     }
-                    ProgressBarHit::Empty => {}
+                    ProgressBarHit::Empty => return Reaction::Continue,
                 }
-                self.spinner_frame += 1;
                 Reaction::Redraw
             }
             UiEvent::WindowResized { .. } => Reaction::Redraw,
