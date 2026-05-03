@@ -414,4 +414,85 @@ mod tests {
         assert_eq!(cell_char(&buf, 18, 0), 's');
         assert_ne!(cell_char(&buf, 19, 0), 't');
     }
+
+    #[test]
+    fn track_before_page_up_reaches_line_zero() {
+        // Scenario: 40 lines, 30-row viewport, scrolled to bottom
+        // (offset=10, showing lines 10..39). Consumer clicks TrackBefore
+        // and pages up by visible_lines.len(). After paging, offset
+        // should be 0 and lines 0..29 should be visible.
+        let viewport_h = 30.0_f32;
+        let total_lines = 40;
+
+        // Step 1: layout at the bottom (scroll_offset=10).
+        let display_bottom = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..total_lines)
+                .map(|i| line(&format!("L{i:02}")))
+                .collect(),
+            scroll_offset: 10,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        let layout_bottom =
+            display_bottom.layout_with_scrollbar(40.0, viewport_h, 1.0, 1.0, |_| {
+                TextDisplayLineMeasure::new(1.0)
+            });
+        assert_eq!(layout_bottom.resolved_scroll_offset, 10);
+        assert_eq!(layout_bottom.visible_lines.len(), 30);
+        assert_eq!(layout_bottom.visible_lines[0].line_idx, 10);
+        assert_eq!(layout_bottom.visible_lines[29].line_idx, 39);
+
+        // Thumb should be at the bottom of the track.
+        let thumb = layout_bottom.thumb_bounds.expect("thumb");
+        assert!(
+            thumb.y > 0.0,
+            "thumb should not be at top when scrolled to bottom"
+        );
+
+        // TrackBefore should exist above the thumb.
+        let hit_top = layout_bottom.hit_test(39.5, 0.5);
+        assert_eq!(
+            hit_top,
+            crate::primitives::text_display::TextDisplayHit::ScrollbarTrackBefore
+        );
+
+        // Step 2: consumer pages up by visible_lines.len().
+        let page_size = layout_bottom.visible_lines.len();
+        let new_offset = 10_usize.saturating_sub(page_size);
+        assert_eq!(new_offset, 0, "page-up from 10 by 30 should reach 0");
+
+        // Step 3: re-layout at offset 0.
+        let display_top = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..total_lines)
+                .map(|i| line(&format!("L{i:02}")))
+                .collect(),
+            scroll_offset: new_offset,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: true,
+        };
+        let layout_top = display_top.layout_with_scrollbar(40.0, viewport_h, 1.0, 1.0, |_| {
+            TextDisplayLineMeasure::new(1.0)
+        });
+        assert_eq!(layout_top.resolved_scroll_offset, 0);
+        assert_eq!(
+            layout_top.visible_lines[0].line_idx, 0,
+            "first visible line should be 0 after paging to top"
+        );
+        assert_eq!(layout_top.visible_lines.len(), 30);
+
+        // Thumb should now be at y=0.
+        let thumb_top = layout_top.thumb_bounds.expect("thumb at top");
+        assert_eq!(
+            thumb_top.y, 0.0,
+            "thumb should be at top when scroll_offset=0"
+        );
+    }
 }
