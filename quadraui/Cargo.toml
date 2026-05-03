@@ -68,3 +68,13 @@ required-features = ["gtk"]
 name = "gtk_multi_tree"
 path = "examples/gtk_multi_tree.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_panel"
+path = "examples/tui_panel.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_panel"
+path = "examples/gtk_panel.rs"
+required-features = ["gtk"]

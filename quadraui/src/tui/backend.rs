@@ -742,6 +742,28 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_split_layout(split, area)
     }
+
+    fn draw_panel(
+        &mut self,
+        rect: QRect,
+        panel: &crate::primitives::panel::Panel,
+    ) -> crate::primitives::panel::PanelLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_panel called outside enter_frame_scope");
+        crate::tui::draw_panel(frame.buffer_mut(), area, panel, &theme)
+    }
+
+    fn panel_layout(
+        &self,
+        rect: QRect,
+        panel: &crate::primitives::panel::Panel,
+    ) -> crate::primitives::panel::PanelLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_panel_layout(panel, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1007,6 +1029,24 @@ mod tests {
         fn split_layout(&self, _r: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
             let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
             split.layout(bounds, crate::primitives::split::SplitMeasure::new(1.0))
+        }
+
+        fn draw_panel(
+            &mut self,
+            _r: QRect,
+            panel: &crate::primitives::panel::Panel,
+        ) -> crate::primitives::panel::PanelLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
+        }
+
+        fn panel_layout(
+            &self,
+            _r: QRect,
+            panel: &crate::primitives::panel::Panel,
+        ) -> crate::primitives::panel::PanelLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
         }
     }
 

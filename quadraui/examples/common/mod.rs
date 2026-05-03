@@ -29,10 +29,12 @@ pub mod demo;
 pub mod menu_bar_app;
 pub mod mini_app;
 pub mod multi_tree;
+pub mod panel_app;
 pub mod split_app;
 
 pub use demo::AppState;
 pub use menu_bar_app::MenuBarApp;
 pub use mini_app::MiniApp;
 pub use multi_tree::DebugSidebar;
+pub use panel_app::PanelApp;
 pub use split_app::SplitApp;

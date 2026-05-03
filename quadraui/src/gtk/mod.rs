@@ -38,6 +38,7 @@ mod menu_bar;
 mod message_list;
 mod multi_section_view;
 mod palette;
+mod panel;
 mod rich_text_popup;
 mod run;
 mod scrollbar;
@@ -66,6 +67,7 @@ pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
 pub use palette::draw_palette;
+pub use panel::{draw_panel, gtk_panel_layout};
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };

@@ -21,6 +21,7 @@ use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
+use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::split::{Split, SplitLayout};
@@ -261,6 +262,18 @@ pub trait Backend {
     /// Compute the split layout without painting. Hosts call this in
     /// drag handlers to recompute the ratio from cursor position.
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout;
+
+    /// Draw a [`Panel`] chrome (title bar + action buttons). The
+    /// backend computes the layout with its native title-bar height
+    /// (1 cell for TUI, line_height for GTK) and returns the
+    /// [`PanelLayout`] so hosts can route clicks to actions, title
+    /// bar, or content. Content is NOT drawn — hosts paint into
+    /// `layout.content_bounds`.
+    fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout;
+
+    /// Compute the panel layout without painting. Hosts call this in
+    /// click handlers to resolve hits without re-deriving metrics.
+    fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries

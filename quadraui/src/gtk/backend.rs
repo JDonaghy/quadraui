@@ -988,6 +988,44 @@ impl Backend for GtkBackend {
             rect.height as f64,
         )
     }
+
+    fn draw_panel(
+        &mut self,
+        rect: QRect,
+        panel: &crate::primitives::panel::Panel,
+    ) -> crate::primitives::panel::PanelLayout {
+        let line_height = self.current_line_height;
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_panel called outside enter_frame_scope");
+        crate::gtk::draw_panel(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            panel,
+            &theme,
+            line_height,
+        )
+    }
+
+    fn panel_layout(
+        &self,
+        rect: QRect,
+        panel: &crate::primitives::panel::Panel,
+    ) -> crate::primitives::panel::PanelLayout {
+        crate::gtk::gtk_panel_layout(
+            panel,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
