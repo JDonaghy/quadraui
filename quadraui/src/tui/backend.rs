@@ -764,6 +764,27 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_panel_layout(panel, area)
     }
+
+    fn draw_toast_stack(
+        &mut self,
+        rect: QRect,
+        stack: &crate::primitives::toast::ToastStack,
+    ) -> crate::primitives::toast::ToastStackLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_toast_stack called outside enter_frame_scope");
+        crate::tui::draw_toast_stack(frame.buffer_mut(), area, stack, &theme)
+    }
+
+    fn toast_stack_layout(
+        &self,
+        rect: QRect,
+        stack: &crate::primitives::toast::ToastStack,
+    ) -> crate::primitives::toast::ToastStackLayout {
+        crate::tui::tui_toast_stack_layout(stack, rect.width, rect.height)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1047,6 +1068,26 @@ mod tests {
         ) -> crate::primitives::panel::PanelLayout {
             let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
             panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
+        }
+
+        fn draw_toast_stack(
+            &mut self,
+            _r: QRect,
+            stack: &crate::primitives::toast::ToastStack,
+        ) -> crate::primitives::toast::ToastStackLayout {
+            stack.layout(_r.width, _r.height, 1.0, 1.0, |_| {
+                crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
+            })
+        }
+
+        fn toast_stack_layout(
+            &self,
+            _r: QRect,
+            stack: &crate::primitives::toast::ToastStack,
+        ) -> crate::primitives::toast::ToastStackLayout {
+            stack.layout(_r.width, _r.height, 1.0, 1.0, |_| {
+                crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
+            })
         }
     }
 

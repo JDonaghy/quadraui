@@ -1026,6 +1026,57 @@ impl Backend for GtkBackend {
             self.current_line_height,
         )
     }
+
+    fn draw_toast_stack(
+        &mut self,
+        rect: QRect,
+        stack: &crate::primitives::toast::ToastStack,
+    ) -> crate::primitives::toast::ToastStackLayout {
+        let line_height = self.current_line_height;
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_toast_stack called outside enter_frame_scope");
+        crate::gtk::draw_toast_stack(
+            cr,
+            pango_layout,
+            rect.width as f64,
+            rect.height as f64,
+            stack,
+            &theme,
+            line_height,
+        )
+    }
+
+    fn toast_stack_layout(
+        &self,
+        rect: QRect,
+        stack: &crate::primitives::toast::ToastStack,
+    ) -> crate::primitives::toast::ToastStackLayout {
+        // Layout-only path needs Pango for text measurement, but this
+        // runs outside the frame scope (from click handlers). Use a
+        // fixed-size approximation — same pattern as menu_bar_layout
+        // which uses current_char_width.
+        stack.layout(rect.width, rect.height, 12.0, 8.0, |i| {
+            let toast = &stack.toasts[i];
+            let h = if toast.body.is_empty() {
+                self.current_line_height as f32 + 16.0
+            } else {
+                self.current_line_height as f32 * 2.0 + 16.0
+            };
+            let action_w = toast
+                .action
+                .as_ref()
+                .map(|a| a.label.len() as f32 * self.current_char_width as f32 + 16.0)
+                .unwrap_or(0.0);
+            crate::primitives::toast::ToastMeasure {
+                width: 320.0_f32.min(rect.width - 24.0),
+                height: h,
+                dismiss_width: 28.0,
+                action_width: action_w,
+            }
+        })
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

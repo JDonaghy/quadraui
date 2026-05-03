@@ -48,6 +48,7 @@ mod status_bar;
 mod tab_bar;
 mod terminal;
 mod text_display;
+mod toast;
 mod tooltip;
 mod tree;
 
@@ -78,6 +79,7 @@ pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
 pub use terminal::draw_terminal_cells;
 pub use text_display::draw_text_display;
+pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
 pub use tooltip::draw_tooltip;
 pub use tree::{draw_tree, gtk_tree_layout};
 

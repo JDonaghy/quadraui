@@ -27,6 +27,7 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarHitRegion;
 use crate::primitives::tab_bar::TabBarHits;
+use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
@@ -274,6 +275,16 @@ pub trait Backend {
     /// Compute the panel layout without painting. Hosts call this in
     /// click handlers to resolve hits without re-deriving metrics.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
+
+    /// Draw a [`ToastStack`] overlay. The backend computes the layout
+    /// with its native toast dimensions (cell-width boxes for TUI,
+    /// pixel boxes for GTK) and returns the [`ToastStackLayout`] so
+    /// hosts can route clicks to dismiss, action, or body.
+    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
+
+    /// Compute the toast-stack layout without painting. Hosts call
+    /// this in click handlers to resolve hits.
+    fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries

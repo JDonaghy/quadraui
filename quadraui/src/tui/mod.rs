@@ -42,6 +42,7 @@ mod split;
 mod status_bar;
 mod tab_bar;
 mod text_display;
+mod toast;
 mod tooltip;
 mod tree;
 
@@ -66,6 +67,7 @@ pub use split::{draw_split, tui_split_layout};
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR, TAB_CLOSE_COLS};
 pub use text_display::draw_text_display;
+pub use toast::{draw_toast_stack, tui_toast_stack_layout};
 pub use tooltip::draw_tooltip;
 pub use tree::{draw_tree, tui_tree_layout};
 
