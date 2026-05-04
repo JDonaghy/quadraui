@@ -1155,6 +1155,52 @@ impl Backend for GtkBackend {
             }
         })
     }
+
+    fn draw_command_center(
+        &mut self,
+        rect: QRect,
+        cc: &crate::primitives::command_center::CommandCenter,
+    ) -> crate::primitives::command_center::CommandCenterLayout {
+        let line_height = self.current_line_height;
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_command_center called outside enter_frame_scope");
+        crate::gtk::draw_command_center(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            cc,
+            &theme,
+            line_height,
+        )
+    }
+
+    fn command_center_layout(
+        &self,
+        rect: QRect,
+        cc: &crate::primitives::command_center::CommandCenter,
+    ) -> crate::primitives::command_center::CommandCenterLayout {
+        let char_w = self.current_char_width as f32;
+        let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        let search_w = if cc.search_label.is_empty() {
+            0.0
+        } else {
+            (cc.search_label.len() as f32 * char_w + 16.0).max(280.0)
+        };
+        cc.layout(
+            bounds,
+            crate::primitives::command_center::CommandCenterMeasure {
+                arrow_width: 24.0,
+                gap: 8.0,
+                search_box_width: search_w,
+                height: rect.height,
+            },
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

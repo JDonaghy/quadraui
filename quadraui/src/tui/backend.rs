@@ -843,6 +843,28 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_spinner_layout(spinner, area)
     }
+
+    fn draw_command_center(
+        &mut self,
+        rect: QRect,
+        cc: &crate::primitives::command_center::CommandCenter,
+    ) -> crate::primitives::command_center::CommandCenterLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_command_center called outside enter_frame_scope");
+        crate::tui::draw_command_center(frame.buffer_mut(), area, cc, &theme)
+    }
+
+    fn command_center_layout(
+        &self,
+        rect: QRect,
+        cc: &crate::primitives::command_center::CommandCenter,
+    ) -> crate::primitives::command_center::CommandCenterLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_command_center_layout(cc, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1202,6 +1224,38 @@ mod tests {
                 _r.x,
                 _r.y,
                 crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
+            )
+        }
+
+        fn draw_command_center(
+            &mut self,
+            _r: QRect,
+            cc: &crate::primitives::command_center::CommandCenter,
+        ) -> crate::primitives::command_center::CommandCenterLayout {
+            cc.layout(
+                crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
+                crate::primitives::command_center::CommandCenterMeasure {
+                    arrow_width: 2.0,
+                    gap: 1.0,
+                    search_box_width: 0.0,
+                    height: 1.0,
+                },
+            )
+        }
+
+        fn command_center_layout(
+            &self,
+            _r: QRect,
+            cc: &crate::primitives::command_center::CommandCenter,
+        ) -> crate::primitives::command_center::CommandCenterLayout {
+            cc.layout(
+                crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
+                crate::primitives::command_center::CommandCenterMeasure {
+                    arrow_width: 2.0,
+                    gap: 1.0,
+                    search_box_width: 0.0,
+                    height: 1.0,
+                },
             )
         }
     }

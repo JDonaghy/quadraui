@@ -122,6 +122,9 @@ pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityItem, ActivitySide, VisibleActivityItem,
 };
+pub use primitives::command_center::{
+    CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
+};
 pub use primitives::completions::{
     CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsEvent,
     CompletionsHit, CompletionsLayout, CompletionsPlacement, VisibleCompletion,

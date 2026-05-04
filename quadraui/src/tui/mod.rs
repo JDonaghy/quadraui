@@ -21,6 +21,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 use crate::types::{Color, Decoration, StyledText};
 
 pub mod backend;
+mod command_center;
 mod completions;
 mod context_menu;
 mod dialog;
@@ -49,6 +50,7 @@ mod tooltip;
 mod tree;
 
 pub use backend::TuiBackend;
+pub use command_center::{draw_command_center, tui_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;

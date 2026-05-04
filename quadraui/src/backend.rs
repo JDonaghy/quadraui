@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
@@ -310,6 +311,13 @@ pub trait Backend {
 
     /// Compute spinner layout without painting.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
+
+    /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
+    /// [`CommandCenterLayout`] so hosts can route clicks.
+    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
+
+    /// Compute command-center layout without painting.
+    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries
