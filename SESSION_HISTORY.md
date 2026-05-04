@@ -124,6 +124,78 @@
 
 ### Open queue for next session
 
-- #16 — Rasterisers for 4 remaining descriptor-only primitives: panel (next), toast, progress, spinner
-- #7 — SearchPanel primitive spike (exploratory)
-- GTK list rasteriser has same sub-pixel text issue (same `move_to` pattern without `.round()`) — follow-up
+*Resolved in session 2026-05-03/04 below.*
+
+## Session 2026-05-03/04 — Primitive completion + vimcode migration support
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (8)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 16 | Rasterisers for descriptor-only primitives (umbrella) | A | Panel, toast, progress, spinner — all shipped with TUI+GTK rasterisers, Backend trait methods, paint↔click harnesses, paired examples. CLAUDE.md "Primitive maturity levels" updated: zero descriptors-only remaining. |
+| 7 | SearchPanel primitive spike | A | MSV+TreeView composition validated — no new primitive needed. `tui_search_panel`/`gtk_search_panel` examples with aux=Search input, file-grouped TreeView results, click-to-jump routing. |
+| 46 | ScrollableLog primitive | A | Extended `TextDisplay` with `show_scrollbar: bool` instead of new primitive. Layout reserves scrollbar gutter, computes thumb via `fit_thumb`, emits ScrollbarThumb/TrackBefore/TrackAfter hit regions. 4 new tests. |
+| 47 | Backend-independent scroll dispatch | A | `dispatch_scroll()` — modal-aware wheel event routing through registered `ScrollSurface` entries. 6 tests. |
+| 48 | Scrollbar click-to-page and thumb-drag | A | `dispatch_click()` — supersedes `dispatch_mouse_down` for consumers with scroll surfaces. Auto-starts `DragTarget::ScrollbarY` on thumb click, emits `ScrollOffsetChanged` on track click. 6 tests. |
+| 49 | GTK tab bar height hardcoded | A | Added `row_height: f64` parameter to GTK `draw_tab_bar`, `GtkBackend` forwards `rect.height`. |
+| 50 | GTK tab bar compact mode | A | Added `compact: bool` to `TabBar` — 2px padding + 0px gap (vs 14px + 1px) for compact chrome. |
+| 51 | CommandCenter primitive | A | New primitive: back/forward nav arrows + search box. TUI+GTK rasterisers, Backend trait methods, 5 paint↔click tests. |
+
+### Issues filed (26)
+
+Windows Backend milestone (#3): #19–#31 (13 issues)
+macOS Backend milestone (#4): #32–#44 (13 issues)
+
+### Primitives shipped (6 new, 1 extended)
+
+| Primitive | Type | Consumer lines eliminated |
+|---|---|---|
+| Panel | New rasterisers (#16) | vimcode terminal panels, sidebar subsections |
+| Toast (ToastStack) | New rasterisers (#16) | vimcode notification toasts |
+| Progress (ProgressBar) | New rasterisers (#16) | Mason install progress, git operations |
+| Spinner | New rasterisers (#16) | LSP boot, git clone spinners |
+| TextDisplay + scrollbar | Extended (#46) | vimcode debug output panel |
+| CommandCenter | New primitive (#51) | vimcode menu bar nav arrows + search box (~184 lines) |
+
+### Infrastructure shipped
+
+| Feature | Scope |
+|---|---|
+| `dispatch_scroll` | Modal-aware wheel event routing through `ScrollSurface` entries |
+| `dispatch_click` | Extends click dispatch with scrollbar thumb-drag + track-page |
+| `ScrollSurface` + `SurfaceScrollbar` | Paint-time surface registration for dispatch |
+| TabBar `compact` mode | GTK compact spacing for toolbar tabs |
+| TabBar `row_height` | GTK respects caller's rect height |
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 353 |
+| After Panel (#16) | 360 |
+| After Toast (#16) | 367 |
+| After Progress+Spinner (#16) | 376 |
+| After TextDisplay scrollbar (#46) | 380 |
+| After dispatch_scroll (#47) | 397 |
+| After dispatch_click (#48) | 403 |
+| After TabBar compact (#50) | 403 |
+| After CommandCenter (#51) | 408 |
+
+### Bugs found + fixed
+
+1. **Indicators cancel button advancing indeterminate pulse**: `spinner_frame += 1` ran unconditionally on every MouseDown in the indicators example. Fixed by only incrementing on body clicks, and making cancel exit indeterminate mode.
+2. **TextDisplay scrollbar theme colours**: initial impl used `muted_fg`/`foreground` for track/thumb. Fixed to use `scrollbar_track`/`scrollbar_thumb` theme fields.
+
+### CLAUDE.md updates
+
+- **Primitive maturity levels**: updated to reflect zero descriptors-only remaining (all 5 shipped).
+
+### Open queue for next session
+
+- #45 — StatusBar hover/pressed visual feedback (low priority, cosmetic)
+- Windows milestone (#19–#31) — requires Windows build environment
+- macOS milestone (#32–#44) — requires macOS build environment
+- GTK list rasteriser sub-pixel text issue (same `move_to` pattern without `.round()`) — follow-up
+- Vimcode migration ongoing — may surface more quadraui gaps to fill

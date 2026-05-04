@@ -65,8 +65,14 @@ Current set (declarative descriptions + layout + dual rasterisers):
   composition, hover-to-switch, Alt-key activation.
 - `Split` — two-pane container with draggable divider, horizontal +
   vertical, min-size constraints.
+- `Panel` — container chrome with title bar, action buttons, content region.
+- `Toast` (`ToastStack`) — corner-stacked notification boxes with
+  severity tint, dismiss, action buttons.
+- `ProgressBar` — determinate/indeterminate bar with optional cancel.
+- `Spinner` — indeterminate braille animation glyph + label.
+- `CommandCenter` — back/forward nav arrows + search box for menu bar row.
 - Plus: `Tooltip`, `ContextMenu`, `Dialog`, `Palette`, `Terminal`,
-  `RichTextPopup`, etc.
+  `RichTextPopup`, `TextDisplay` (with optional scrollbar), etc.
 
 ## Design
 
@@ -90,6 +96,10 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 | `msv_sc_panel` | `tui` | Source-Control consumer pattern: `SectionAux::Input` commit message editor + N collapsible `TreeView` sections (Changes / Staged / Worktrees). Adds input-mode keystroke routing + chevron-click collapse toggle on top of the multi-tree shape. |
 | `tui_menu_bar` / `gtk_menu_bar` | `tui` / `gtk` | Complete menu bar with dropdown menus via `MenuBar` + `ContextMenu` composition. Hover-to-switch, keyboard navigation (Alt+key, arrows, Enter, Esc), realistic File/Edit/View menus. |
 | `tui_split` / `gtk_split` | `tui` / `gtk` | Draggable `Split` with two labelled panes. Toggle horizontal/vertical, reset ratio. |
+| `tui_panel` / `gtk_panel` | `tui` / `gtk` | `Panel` with title bar, close/maximize actions, content area, collapse toggle. |
+| `tui_toast` / `gtk_toast` | `tui` / `gtk` | `ToastStack` with severity tints, dismiss, action buttons. |
+| `tui_indicators` / `gtk_indicators` | `tui` / `gtk` | `ProgressBar` + `Spinner` demo — determinate/indeterminate, cancel. |
+| `tui_search_panel` / `gtk_search_panel` | `tui` / `gtk` | Search panel spike: `MultiSectionView` + `TreeView` composition for file-search results. |
 
 ## Testing
 
