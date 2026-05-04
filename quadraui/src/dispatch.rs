@@ -347,6 +347,10 @@ pub fn dispatch_mouse_up(
 pub struct ScrollSurface {
     pub id: WidgetId,
     pub bounds: crate::event::Rect,
+    /// Optional scrollbar geometry. When present, [`dispatch_click`]
+    /// can route thumb clicks (auto-start drag) and track clicks
+    /// (page up/down) without per-backend code.
+    pub scrollbar: Option<SurfaceScrollbar>,
 }
 
 /// Translate a raw scroll-wheel event into a `Vec<UiEvent>`, consulting
@@ -408,6 +412,151 @@ pub fn dispatch_scroll(
         widget: None,
         delta,
         position,
+    }]
+}
+
+// ─── Click dispatch with scrollbar awareness ──────────────────────────────
+
+/// Scrollbar geometry for a [`ScrollSurface`]. Registered during paint
+/// so [`dispatch_click`] can route scrollbar clicks (thumb drag, track
+/// page) without per-backend code.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceScrollbar {
+    /// Full scrollbar track bounds (gutter area).
+    pub track_bounds: crate::event::Rect,
+    /// Current thumb bounds within the track.
+    pub thumb_bounds: crate::event::Rect,
+    /// Total number of scrollable items (lines, rows, etc.).
+    pub total_items: usize,
+    /// Number of items visible in the viewport.
+    pub visible_items: usize,
+    /// Current scroll offset (index of the first visible item).
+    pub scroll_offset: usize,
+}
+
+/// Translate a raw mouse-down event, consulting the modal stack first,
+/// then the registered scroll surfaces (including their scrollbar
+/// regions). Supersedes [`dispatch_mouse_down`] for consumers that
+/// register scroll surfaces.
+///
+/// # Returns
+///
+/// Priority order:
+///
+/// 1. **Click inside an open modal** → `MouseDown { widget: Some(modal_id) }`.
+/// 2. **Click outside every modal, but modal open** → dismiss topmost
+///    (same as [`dispatch_mouse_down`]).
+/// 3. **Click on a scroll surface's scrollbar thumb** → starts a
+///    [`DragTarget::ScrollbarY`] drag on `drag`, emits
+///    `MouseDown { widget: Some(surface_id) }`.
+/// 4. **Click on a scroll surface's scrollbar track** (above or below
+///    thumb) → emits `ScrollOffsetChanged { widget, new_offset }`
+///    with the offset paged up or down by `visible_items`.
+/// 5. **Click on a scroll surface body** (not scrollbar) →
+///    `MouseDown { widget: Some(surface_id) }`.
+/// 6. **No surface matched** → `MouseDown { widget: None }`.
+pub fn dispatch_click(
+    stack: &ModalStack,
+    scroll_surfaces: &[ScrollSurface],
+    drag: &mut DragState,
+    position: Point,
+    button: MouseButton,
+    modifiers: Modifiers,
+) -> Vec<UiEvent> {
+    // Case 1: click inside an open modal.
+    if let Some(widget_id) = stack.hit_test(position) {
+        return vec![UiEvent::MouseDown {
+            widget: Some(widget_id.clone()),
+            button,
+            position,
+            modifiers,
+        }];
+    }
+
+    // Case 2: modal open but click outside → dismiss topmost.
+    if let Some(top) = stack.top() {
+        return vec![
+            UiEvent::MouseDown {
+                widget: None,
+                button,
+                position,
+                modifiers,
+            },
+            UiEvent::Palette(top.id.clone(), PaletteEvent::Closed),
+        ];
+    }
+
+    // Case 3–5: no modals. Hit-test scroll surfaces (last-to-first).
+    for surface in scroll_surfaces.iter().rev() {
+        let in_bounds = position.x >= surface.bounds.x
+            && position.x < surface.bounds.x + surface.bounds.width
+            && position.y >= surface.bounds.y
+            && position.y < surface.bounds.y + surface.bounds.height;
+        if !in_bounds {
+            continue;
+        }
+
+        // Check scrollbar regions first (if present).
+        if let Some(ref sb) = surface.scrollbar {
+            let in_track = position.x >= sb.track_bounds.x
+                && position.x < sb.track_bounds.x + sb.track_bounds.width
+                && position.y >= sb.track_bounds.y
+                && position.y < sb.track_bounds.y + sb.track_bounds.height;
+
+            if in_track {
+                let in_thumb = position.x >= sb.thumb_bounds.x
+                    && position.x < sb.thumb_bounds.x + sb.thumb_bounds.width
+                    && position.y >= sb.thumb_bounds.y
+                    && position.y < sb.thumb_bounds.y + sb.thumb_bounds.height;
+
+                if in_thumb {
+                    // Thumb click → start drag.
+                    let grab_offset = position.y - sb.thumb_bounds.y;
+                    drag.begin(DragTarget::ScrollbarY {
+                        widget: surface.id.clone(),
+                        track_start: sb.track_bounds.y,
+                        track_length: sb.track_bounds.height,
+                        visible_rows: sb.visible_items,
+                        total_items: sb.total_items,
+                        grab_offset,
+                    });
+                    return vec![UiEvent::MouseDown {
+                        widget: Some(surface.id.clone()),
+                        button,
+                        position,
+                        modifiers,
+                    }];
+                }
+
+                // Track click → page up or down.
+                let max_offset = sb.total_items.saturating_sub(sb.visible_items);
+                let new_offset = if position.y < sb.thumb_bounds.y {
+                    sb.scroll_offset.saturating_sub(sb.visible_items)
+                } else {
+                    (sb.scroll_offset + sb.visible_items).min(max_offset)
+                };
+                return vec![UiEvent::ScrollOffsetChanged {
+                    widget: surface.id.clone(),
+                    new_offset,
+                }];
+            }
+        }
+
+        // Body click (not on scrollbar).
+        return vec![UiEvent::MouseDown {
+            widget: Some(surface.id.clone()),
+            button,
+            position,
+            modifiers,
+        }];
+    }
+
+    // Case 6: no surface matched.
+    vec![UiEvent::MouseDown {
+        widget: None,
+        button,
+        position,
+        modifiers,
     }]
 }
 
@@ -791,10 +940,12 @@ mod tests {
             ScrollSurface {
                 id: id("editor"),
                 bounds: rect(0.0, 0.0, 200.0, 200.0),
+                scrollbar: None,
             },
             ScrollSurface {
                 id: id("sidebar"),
                 bounds: rect(0.0, 0.0, 50.0, 200.0),
+                scrollbar: None,
             },
         ];
         // Point (25, 100) is inside both surfaces. Sidebar was pushed
@@ -816,10 +967,12 @@ mod tests {
             ScrollSurface {
                 id: id("editor"),
                 bounds: rect(50.0, 0.0, 150.0, 200.0),
+                scrollbar: None,
             },
             ScrollSurface {
                 id: id("sidebar"),
                 bounds: rect(0.0, 0.0, 50.0, 200.0),
+                scrollbar: None,
             },
         ];
         // Point (100, 100) is inside editor only.
@@ -851,6 +1004,7 @@ mod tests {
         let surfaces = vec![ScrollSurface {
             id: id("panel"),
             bounds: rect(0.0, 0.0, 50.0, 50.0),
+            scrollbar: None,
         }];
         let events = dispatch_scroll(&stack, &surfaces, pt(100.0, 100.0), delta(-1.0));
         match &events[0] {
@@ -859,5 +1013,179 @@ mod tests {
             }
             other => panic!("expected Scroll, got {:?}", other),
         }
+    }
+
+    // ── dispatch_click tests ──────────────────────────────────────────
+
+    fn surface_with_scrollbar() -> ScrollSurface {
+        ScrollSurface {
+            id: id("log"),
+            bounds: rect(0.0, 0.0, 40.0, 30.0),
+            scrollbar: Some(SurfaceScrollbar {
+                track_bounds: rect(39.0, 0.0, 1.0, 30.0),
+                thumb_bounds: rect(39.0, 20.0, 1.0, 8.0),
+                total_items: 100,
+                visible_items: 30,
+                scroll_offset: 60,
+            }),
+        }
+    }
+
+    #[test]
+    fn click_thumb_starts_drag() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_scrollbar()];
+        let mut drag = DragState::new();
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 22.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown {
+                widget: Some(w),
+                ..
+            } if w.as_str() == "log"
+        ));
+        assert!(drag.is_active());
+        match drag.target().unwrap() {
+            DragTarget::ScrollbarY {
+                widget,
+                visible_rows,
+                total_items,
+                ..
+            } => {
+                assert_eq!(widget.as_str(), "log");
+                assert_eq!(*visible_rows, 30);
+                assert_eq!(*total_items, 100);
+            }
+            other => panic!("expected ScrollbarY, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn click_track_before_pages_up() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_scrollbar()];
+        let mut drag = DragState::new();
+        // Click above the thumb (thumb starts at y=20).
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 5.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => {
+                assert_eq!(widget.as_str(), "log");
+                // scroll_offset=60, page up by visible_items=30 → 30.
+                assert_eq!(*new_offset, 30);
+            }
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+        assert!(!drag.is_active());
+    }
+
+    #[test]
+    fn click_track_after_pages_down() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_scrollbar()];
+        let mut drag = DragState::new();
+        // Click below the thumb (thumb ends at y=28).
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 29.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => {
+                assert_eq!(widget.as_str(), "log");
+                // scroll_offset=60, page down by 30, max=70 → 70.
+                assert_eq!(*new_offset, 70);
+            }
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn click_body_not_scrollbar_emits_mousedown() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_scrollbar()];
+        let mut drag = DragState::new();
+        // Click in the body area (not on the scrollbar gutter).
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(10.0, 10.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown {
+                widget: Some(w),
+                ..
+            } if w.as_str() == "log"
+        ));
+        assert!(!drag.is_active());
+    }
+
+    #[test]
+    fn click_no_surfaces_emits_no_widget() {
+        let stack = ModalStack::new();
+        let mut drag = DragState::new();
+        let events = dispatch_click(
+            &stack,
+            &[],
+            &mut drag,
+            pt(50.0, 50.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown { widget: None, .. }
+        ));
+    }
+
+    #[test]
+    fn click_modal_takes_priority_over_surfaces() {
+        let mut stack = ModalStack::new();
+        stack.push(id("dialog"), rect(0.0, 0.0, 100.0, 100.0));
+        let surfaces = vec![surface_with_scrollbar()];
+        let mut drag = DragState::new();
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 22.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        // Should route to the modal, not the scrollbar.
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown {
+                widget: Some(w),
+                ..
+            } if w.as_str() == "dialog"
+        ));
+        assert!(!drag.is_active());
     }
 }
