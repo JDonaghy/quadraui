@@ -25,11 +25,16 @@ const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
 const TAB_OUTER_GAP: f64 = 1.0;
 
-/// Draw a [`TabBar`] into `(0, y_offset, width, line_height * 1.6)`
-/// on `cr`. Caller is responsible for setting the desired UI font on
-/// `layout` *before* calling — the rasteriser uses
+/// Draw a [`TabBar`] into `(0, y_offset, width, row_height)` on `cr`.
+/// Caller is responsible for setting the desired UI font on `layout`
+/// *before* calling — the rasteriser uses
 /// [`pango::Layout::font_description`] as the base font and toggles
 /// to a Pango Italic variant for preview tabs.
+///
+/// `row_height` controls the tab bar's vertical extent. Callers that
+/// want padded file-tab spacing pass `(line_height * 1.6).ceil()`;
+/// callers that want compact bars (terminal toolbar, bottom panel tab
+/// switcher) pass `line_height` directly.
 ///
 /// `hovered_close_tab` is a per-frame interaction override: when
 /// `Some(i)` the `i`-th tab gets a rounded hover background behind
@@ -37,8 +42,7 @@ const TAB_OUTER_GAP: f64 = 1.0;
 ///
 /// # Visual contract
 ///
-/// - **Tab row height:** `(line_height * 1.6).ceil()` — vertical
-///   padding so the tabs don't touch the cell above.
+/// - **Tab row height:** caller-provided via `row_height`.
 /// - **Active tab:** `theme.tab_active_bg` background, optional 2 px
 ///   accent line at the top edge in [`TabBar::active_accent`].
 /// - **Dirty tab:** close glyph is `●` (in `theme.foreground`)
@@ -53,11 +57,12 @@ pub fn draw_tab_bar(
     width: f64,
     line_height: f64,
     y_offset: f64,
+    row_height: f64,
     bar: &TabBar,
     theme: &Theme,
     hovered_close_tab: Option<usize>,
 ) -> TabBarHits {
-    let tab_row_height = (line_height * 1.6).ceil();
+    let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
     // Tab bar background.

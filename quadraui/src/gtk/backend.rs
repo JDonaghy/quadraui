@@ -644,6 +644,7 @@ impl Backend for GtkBackend {
             rect.width as f64,
             self.current_line_height,
             rect.y as f64,
+            rect.height as f64,
             bar,
             &self.current_theme,
             hovered_close_tab,
