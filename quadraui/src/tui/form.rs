@@ -8,32 +8,46 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{draw_styled_text, ratatui_color, set_cell};
-use crate::primitives::form::{FieldKind, Form, FormFieldMeasure};
+use crate::primitives::form::{FieldKind, Form, FormFieldMeasure, FormItemMeasure};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
+/// Compute the form layout using TUI cell metrics (1 cell per row,
+/// char-count item widths).
+pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::FormLayout {
+    form.layout(area.width as f32, area.height as f32, |i| {
+        let field = &form.fields[i];
+        match &field.kind {
+            FieldKind::ToggleGroup { toggles } => {
+                let label_w = field.label.visible_width();
+                let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                let items = toggles
+                    .iter()
+                    .map(|t| FormItemMeasure {
+                        id: t.id.clone(),
+                        width: t.label.chars().count() as f32,
+                    })
+                    .collect();
+                FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+            }
+            FieldKind::ButtonRow { buttons } => {
+                let label_w = field.label.visible_width();
+                let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                let items = buttons
+                    .iter()
+                    .map(|b| FormItemMeasure {
+                        id: b.id.clone(),
+                        width: (b.label.chars().count() + 2) as f32,
+                    })
+                    .collect();
+                FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+            }
+            _ => FormFieldMeasure::new(1.0),
+        }
+    })
+}
+
 /// Draw a [`Form`] into `area` on `buf`.
-///
-/// # Visual contract
-///
-/// - **Header field** (`FieldKind::Label`): `header_bg` / `header_fg`.
-/// - **Focused field**: row gets a `selected_bg` tint with the row's
-///   default foreground.
-/// - **Disabled field**: foreground replaced with `muted_fg`.
-/// - **Toggle**: `[x]` (in `accent_fg` when on) / `[ ]` right-aligned.
-/// - **TextInput**: `[value]` right-aligned in brackets; cursor block
-///   inverts fg/bg at the cursor position; selection range highlights
-///   in `selected_bg`. Empty value renders the placeholder in
-///   `muted_fg`.
-/// - **Button**: redraws the label as `< text >` right-aligned;
-///   brackets in `accent_fg` when focused, `muted_fg` otherwise.
-/// - **ReadOnly**: right-aligned dimmed value in `muted_fg`.
-/// - **Slider**: `[====----]  N.NN` track with filled cells in
-///   `accent_fg`.
-/// - **ColorPicker**: `■ #rrggbb` with the swatch glyph painted in
-///   the value's RGB.
-/// - **Dropdown**: " selected ▾ " right-aligned with the chevron
-///   dimmed.
 pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -47,9 +61,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
     let dim_fg = ratatui_color(theme.muted_fg);
     let accent_fg = ratatui_color(theme.accent_fg);
 
-    let layout = form.layout(area.width as f32, area.height as f32, |_| {
-        FormFieldMeasure::new(1.0)
-    });
+    let layout = tui_form_layout(form, area);
 
     for visible_field in &layout.visible_fields {
         let field = &form.fields[visible_field.field_idx];
@@ -305,6 +317,57 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     }
                 }
             }
+            FieldKind::ToggleGroup { toggles } => {
+                for (item_id, item_rect) in &visible_field.item_bounds {
+                    let toggle = toggles.iter().find(|t| &t.id == item_id);
+                    if let Some(toggle) = toggle {
+                        let col = area.x as f32 + item_rect.x;
+                        let toggle_fg = if toggle.value && !field.disabled {
+                            accent_fg
+                        } else {
+                            dim_fg
+                        };
+                        for (i, ch) in toggle.label.chars().enumerate() {
+                            let cx = col as u16 + i as u16;
+                            if cx < area.x + area.width {
+                                set_cell(buf, cx, y, ch, toggle_fg, row_bg);
+                            }
+                        }
+                    }
+                }
+            }
+            FieldKind::ButtonRow { buttons } => {
+                for (item_id, item_rect) in &visible_field.item_bounds {
+                    let button = buttons.iter().find(|b| &b.id == item_id);
+                    if let Some(button) = button {
+                        let col = area.x as f32 + item_rect.x;
+                        let btn_fg = if button.disabled || field.disabled {
+                            dim_fg
+                        } else {
+                            field_fg
+                        };
+                        let brk_fg = if button.disabled || field.disabled {
+                            dim_fg
+                        } else {
+                            accent_fg
+                        };
+                        let cx = col as u16;
+                        if cx < area.x + area.width {
+                            set_cell(buf, cx, y, '[', brk_fg, row_bg);
+                        }
+                        for (i, ch) in button.label.chars().enumerate() {
+                            let cx = col as u16 + 1 + i as u16;
+                            if cx < area.x + area.width {
+                                set_cell(buf, cx, y, ch, btn_fg, row_bg);
+                            }
+                        }
+                        let end = col as u16 + 1 + button.label.chars().count() as u16;
+                        if end < area.x + area.width {
+                            set_cell(buf, end, y, ']', brk_fg, row_bg);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -498,5 +561,288 @@ mod tests {
         let f = make_form();
         draw_form(&mut buf, Rect::new(0, 0, 0, 5), &f, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── ToggleGroup paint↔click round-trip ──────────────────────────────
+
+    use crate::primitives::form::{FormHit, ToggleGroupItem};
+
+    fn make_toggle_group_form() -> Form {
+        Form {
+            id: WidgetId::new("search"),
+            fields: vec![FormField {
+                id: WidgetId::new("opts"),
+                label: label(""),
+                kind: FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("case"),
+                            label: "Aa".into(),
+                            value: true,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("word"),
+                            label: "Ab|".into(),
+                            value: false,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("regex"),
+                            label: ".*".into(),
+                            value: false,
+                        },
+                    ],
+                },
+                disabled: false,
+                hint: label(""),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    fn toggle_group_paints_labels() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let f = make_toggle_group_form();
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &Theme::default());
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(row.contains("Aa"), "expected 'Aa' in row: {row:?}");
+        assert!(row.contains("Ab|"), "expected 'Ab|' in row: {row:?}");
+        assert!(row.contains(".*"), "expected '.*' in row: {row:?}");
+    }
+
+    #[test]
+    fn toggle_group_click_hits_correct_item() {
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_toggle_group_form();
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let layout = f.layout(area.width as f32, area.height as f32, |i| {
+            let field = &f.fields[i];
+            match &field.kind {
+                FieldKind::ToggleGroup { toggles } => {
+                    let label_w = field.label.visible_width();
+                    let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                    let items = toggles
+                        .iter()
+                        .map(|t| crate::primitives::form::FormItemMeasure {
+                            id: t.id.clone(),
+                            width: t.label.chars().count() as f32,
+                        })
+                        .collect();
+                    FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+                }
+                _ => FormFieldMeasure::new(1.0),
+            }
+        });
+
+        // Find where "Aa" is painted (first toggle).
+        let mut aa_col = None;
+        for x in 0..40u16 {
+            if cell_char(&buf, x, 0) == 'A' {
+                if x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'a' {
+                    aa_col = Some(x);
+                    break;
+                }
+            }
+        }
+        let aa_col = aa_col.expect("'Aa' must be painted");
+        let hit = layout.hit_test(aa_col as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("case")));
+
+        // Find where "Ab|" is painted (second toggle).
+        let mut ab_col = None;
+        for x in (aa_col + 2)..40u16 {
+            if cell_char(&buf, x, 0) == 'A' {
+                if x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'b' {
+                    ab_col = Some(x);
+                    break;
+                }
+            }
+        }
+        let ab_col = ab_col.expect("'Ab|' must be painted");
+        let hit = layout.hit_test(ab_col as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("word")));
+
+        // Find ".*" (third toggle).
+        let mut dot_col = None;
+        for x in (ab_col + 3)..40u16 {
+            if cell_char(&buf, x, 0) == '.' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == '*' {
+                dot_col = Some(x);
+                break;
+            }
+        }
+        let dot_col = dot_col.expect("'.*' must be painted");
+        let hit = layout.hit_test(dot_col as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("regex")));
+    }
+
+    // ── ButtonRow paint↔click round-trip ────────────────────────────────
+
+    use crate::primitives::form::ButtonRowItem;
+
+    fn make_button_row_form() -> Form {
+        Form {
+            id: WidgetId::new("search"),
+            fields: vec![FormField {
+                id: WidgetId::new("actions"),
+                label: label(""),
+                kind: FieldKind::ButtonRow {
+                    buttons: vec![
+                        ButtonRowItem {
+                            id: WidgetId::new("next"),
+                            label: "Next".into(),
+                            disabled: false,
+                        },
+                        ButtonRowItem {
+                            id: WidgetId::new("replace"),
+                            label: "Repl".into(),
+                            disabled: false,
+                        },
+                        ButtonRowItem {
+                            id: WidgetId::new("all"),
+                            label: "All".into(),
+                            disabled: true,
+                        },
+                    ],
+                },
+                disabled: false,
+                hint: label(""),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    fn button_row_paints_bracketed_labels() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let f = make_button_row_form();
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &Theme::default());
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(row.contains("[Next]"), "expected '[Next]' in row: {row:?}");
+        assert!(row.contains("[Repl]"), "expected '[Repl]' in row: {row:?}");
+        assert!(row.contains("[All]"), "expected '[All]' in row: {row:?}");
+    }
+
+    #[test]
+    fn button_row_click_hits_correct_item() {
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_button_row_form();
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let layout = f.layout(area.width as f32, area.height as f32, |i| {
+            let field = &f.fields[i];
+            match &field.kind {
+                FieldKind::ButtonRow { buttons } => {
+                    let label_w = field.label.visible_width();
+                    let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                    let items = buttons
+                        .iter()
+                        .map(|b| crate::primitives::form::FormItemMeasure {
+                            id: b.id.clone(),
+                            width: (b.label.chars().count() + 2) as f32,
+                        })
+                        .collect();
+                    FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+                }
+                _ => FormFieldMeasure::new(1.0),
+            }
+        });
+
+        // Find "[Next]" — the 'N' inside brackets.
+        let mut next_col = None;
+        for x in 0..40u16 {
+            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'N' {
+                next_col = Some(x);
+                break;
+            }
+        }
+        let next_col = next_col.expect("'[Next]' must be painted");
+        let hit = layout.hit_test(next_col as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("next")));
+
+        // Click inside "Next" text (col + 2).
+        let hit = layout.hit_test((next_col + 2) as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("next")));
+
+        // Find "[Repl]".
+        let mut repl_col = None;
+        for x in (next_col + 5)..40u16 {
+            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'R' {
+                repl_col = Some(x);
+                break;
+            }
+        }
+        let repl_col = repl_col.expect("'[Repl]' must be painted");
+        let hit = layout.hit_test(repl_col as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("replace")));
+
+        // Find "[All]".
+        let mut all_col = None;
+        for x in (repl_col + 5)..40u16 {
+            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'A' {
+                all_col = Some(x);
+                break;
+            }
+        }
+        let all_col = all_col.expect("'[All]' must be painted");
+        let hit = layout.hit_test(all_col as f32, 0.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("all")));
+    }
+
+    #[test]
+    fn toggle_group_active_uses_accent_fg() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let f = make_toggle_group_form();
+        let theme = Theme {
+            accent_fg: crate::types::Color::rgb(200, 100, 50),
+            ..Theme::default()
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+
+        // "Aa" (value=true) should be in accent_fg.
+        let mut aa_col = None;
+        for x in 0..40u16 {
+            if cell_char(&buf, x, 0) == 'A' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'a' {
+                aa_col = Some(x);
+                break;
+            }
+        }
+        let aa_col = aa_col.expect("'Aa' painted");
+        let fg = buf[(aa_col, 0u16)].fg;
+        assert_eq!(fg, ratatui::style::Color::Rgb(200, 100, 50));
+    }
+
+    #[test]
+    fn button_row_disabled_uses_muted_fg() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let f = make_button_row_form();
+        let theme = Theme {
+            muted_fg: crate::types::Color::rgb(80, 80, 80),
+            accent_fg: crate::types::Color::rgb(200, 100, 50),
+            ..Theme::default()
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+
+        // "[All]" (disabled=true) bracket should be in muted_fg.
+        let mut all_col = None;
+        for x in 0..40u16 {
+            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'A' {
+                if x + 2 < 40 && cell_char(&buf, x + 2, 0) == 'l' {
+                    all_col = Some(x);
+                    break;
+                }
+            }
+        }
+        let all_col = all_col.expect("'[All]' painted");
+        let bracket_fg = buf[(all_col, 0u16)].fg;
+        assert_eq!(bracket_fg, ratatui::style::Color::Rgb(80, 80, 80));
     }
 }

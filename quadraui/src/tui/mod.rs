@@ -56,7 +56,7 @@ pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use editor::{draw_editor, EditorPaintResult};
 pub use find_replace::draw_find_replace;
-pub use form::{draw_form, draw_settings_chrome};
+pub use form::{draw_form, draw_settings_chrome, tui_form_layout};
 pub use list::draw_list;
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 pub use message_list::draw_message_list;

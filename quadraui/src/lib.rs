@@ -148,7 +148,8 @@ pub use primitives::find_replace::{
     FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
 };
 pub use primitives::form::{
-    FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit, FormLayout, VisibleFormField,
+    ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
+    FormItemMeasure, FormLayout, ToggleGroupItem, VisibleFormField,
 };
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
@@ -1618,6 +1619,60 @@ mod tests {
             FieldKind::Slider { step, .. } => assert_eq!(step, 1.0),
             _ => panic!("expected Slider"),
         }
+    }
+
+    #[test]
+    fn form_toggle_group_serde() {
+        let field = FormField {
+            id: WidgetId::new("opts"),
+            label: StyledText::plain("Options"),
+            kind: FieldKind::ToggleGroup {
+                toggles: vec![
+                    ToggleGroupItem {
+                        id: WidgetId::new("case"),
+                        label: "Aa".into(),
+                        value: true,
+                    },
+                    ToggleGroupItem {
+                        id: WidgetId::new("word"),
+                        label: "Ab|".into(),
+                        value: false,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_button_row_serde() {
+        let field = FormField {
+            id: WidgetId::new("actions"),
+            label: StyledText::default(),
+            kind: FieldKind::ButtonRow {
+                buttons: vec![
+                    ButtonRowItem {
+                        id: WidgetId::new("next"),
+                        label: "Find Next".into(),
+                        disabled: false,
+                    },
+                    ButtonRowItem {
+                        id: WidgetId::new("all"),
+                        label: "Replace All".into(),
+                        disabled: true,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
     }
 
     // ── Completions primitive tests (D6) ──────────────────────────────

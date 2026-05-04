@@ -153,6 +153,38 @@ pub enum FieldKind {
         options: Vec<StyledText>,
         selected_idx: usize,
     },
+    /// Horizontal row of named boolean toggles. Each toggle has its own
+    /// `WidgetId`, label, and value. Click toggles the value; emits
+    /// `FormEvent::ToggleChanged { id, value }` with the individual
+    /// toggle's ID.
+    ///
+    /// Use for filter bars, toolbar toggle options, search-panel flags
+    /// (case-sensitive / whole-word / regex).
+    ToggleGroup { toggles: Vec<ToggleGroupItem> },
+    /// Horizontal row of action buttons. Each button has its own
+    /// `WidgetId` and label. Click emits `FormEvent::ButtonClicked { id }`
+    /// with the individual button's ID.
+    ///
+    /// Use for dialog footers, form submit rows, search-panel actions
+    /// (Find Next / Replace / Replace All).
+    ButtonRow { buttons: Vec<ButtonRowItem> },
+}
+
+/// One toggle in a [`FieldKind::ToggleGroup`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToggleGroupItem {
+    pub id: WidgetId,
+    pub label: String,
+    pub value: bool,
+}
+
+/// One button in a [`FieldKind::ButtonRow`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ButtonRowItem {
+    pub id: WidgetId,
+    pub label: String,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 fn slider_default_step() -> f32 {
@@ -168,15 +200,51 @@ fn slider_default_step() -> f32 {
 // not layout, so it stays backend-owned: the layout just places rows.
 
 /// Per-field measurement supplied by the backend.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FormFieldMeasure {
     pub height: f32,
+    /// Per-item widths for `ToggleGroup` / `ButtonRow` fields. The
+    /// layout uses these to compute per-item hit regions. Empty for
+    /// other field kinds.
+    pub item_measures: Vec<FormItemMeasure>,
+    /// X offset where items start (after label + padding). Only used
+    /// when `item_measures` is non-empty.
+    pub items_start_x: f32,
+    /// Gap between items (cells for TUI, pixels for GTK). Only used
+    /// when `item_measures` is non-empty.
+    pub item_gap: f32,
 }
 
 impl FormFieldMeasure {
     pub fn new(height: f32) -> Self {
-        Self { height }
+        Self {
+            height,
+            item_measures: Vec::new(),
+            items_start_x: 0.0,
+            item_gap: 0.0,
+        }
     }
+
+    pub fn with_items(
+        height: f32,
+        items_start_x: f32,
+        item_gap: f32,
+        items: Vec<FormItemMeasure>,
+    ) -> Self {
+        Self {
+            height,
+            item_measures: items,
+            items_start_x,
+            item_gap,
+        }
+    }
+}
+
+/// Width of one item inside a `ToggleGroup` or `ButtonRow`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormItemMeasure {
+    pub id: WidgetId,
+    pub width: f32,
 }
 
 /// Resolved position of one visible form field after layout.
@@ -188,6 +256,10 @@ pub struct VisibleFormField {
     /// re-index into the primitive.
     pub id: WidgetId,
     pub bounds: Rect,
+    /// Resolved per-item rects for `ToggleGroup` / `ButtonRow` fields.
+    /// Empty for other field kinds. Rasterisers consume these to paint
+    /// items at the layout-determined positions.
+    pub item_bounds: Vec<(WidgetId, Rect)>,
 }
 
 /// Classification of a hit-test result. Carries the field's `WidgetId`
@@ -268,12 +340,25 @@ impl Form {
             }
             let bounds = Rect::new(0.0, y, viewport_width, height);
             let id = self.fields[i].id.clone();
+
+            let mut item_bounds = Vec::new();
+            if !m.item_measures.is_empty() {
+                let mut item_x = m.items_start_x;
+                for item in &m.item_measures {
+                    let item_rect = Rect::new(item_x, y, item.width, height);
+                    hit_regions.push((item_rect, FormHit::Field(item.id.clone())));
+                    item_bounds.push((item.id.clone(), item_rect));
+                    item_x += item.width + m.item_gap;
+                }
+            }
+            hit_regions.push((bounds, FormHit::Field(id.clone())));
+
             visible_fields.push(VisibleFormField {
                 field_idx: i,
-                id: id.clone(),
+                id,
                 bounds,
+                item_bounds,
             });
-            hit_regions.push((bounds, FormHit::Field(id)));
             y += m.height;
         }
 

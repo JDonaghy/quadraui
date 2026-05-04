@@ -225,6 +225,57 @@ pub fn draw_form(
             FieldKind::Slider { .. }
             | FieldKind::ColorPicker { .. }
             | FieldKind::Dropdown { .. } => {}
+            FieldKind::ToggleGroup { toggles } => {
+                let mut ix = label_right + 12.0;
+                for toggle in toggles {
+                    let toggle_fg = if toggle.value && !field.disabled {
+                        accent
+                    } else {
+                        dim
+                    };
+                    cr.set_source_rgb(toggle_fg.0, toggle_fg.1, toggle_fg.2);
+                    layout.set_text(&toggle.label);
+                    let (tw, th) = layout.pixel_size();
+                    cr.move_to(ix, y_off + (row_h - th as f64) / 2.0);
+                    pcfn::show_layout(cr, layout);
+                    ix += tw as f64 + 8.0;
+                }
+            }
+            FieldKind::ButtonRow { buttons } => {
+                let mut ix = label_right + 12.0;
+                for button in buttons {
+                    let btn_fg = if button.disabled || field.disabled {
+                        dim
+                    } else {
+                        field_fg
+                    };
+                    let brk_fg = if button.disabled || field.disabled {
+                        dim
+                    } else {
+                        accent
+                    };
+                    cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
+                    layout.set_text("[");
+                    let (bw, bh) = layout.pixel_size();
+                    cr.move_to(ix, y_off + (row_h - bh as f64) / 2.0);
+                    pcfn::show_layout(cr, layout);
+                    ix += bw as f64;
+
+                    cr.set_source_rgb(btn_fg.0, btn_fg.1, btn_fg.2);
+                    layout.set_text(&button.label);
+                    let (lw, lh) = layout.pixel_size();
+                    cr.move_to(ix, y_off + (row_h - lh as f64) / 2.0);
+                    pcfn::show_layout(cr, layout);
+                    ix += lw as f64;
+
+                    cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
+                    layout.set_text("]");
+                    let (rw, _) = layout.pixel_size();
+                    cr.move_to(ix, y_off + (row_h - bh as f64) / 2.0);
+                    pcfn::show_layout(cr, layout);
+                    ix += rw as f64 + 8.0;
+                }
+            }
         }
 
         y_off += row_h;

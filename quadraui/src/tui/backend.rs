@@ -634,6 +634,11 @@ impl Backend for TuiBackend {
         crate::tui::tui_tree_layout(tree, area)
     }
 
+    fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_form_layout(form, area)
+    }
+
     fn draw_editor(
         &mut self,
         rect: QRect,
@@ -1065,6 +1070,11 @@ mod tests {
             t.layout(r.width, r.height, |_| {
                 crate::primitives::tree::TreeRowMeasure::new(1.0)
             })
+        }
+
+        fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {
+            let area = q_rect_to_ratatui(r);
+            crate::tui::tui_form_layout(form, area)
         }
 
         fn draw_editor(

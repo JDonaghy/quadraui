@@ -818,6 +818,46 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
     }
 
+    fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
+        let row_h = (self.current_line_height * 1.4).round() as f32;
+        let char_w = self.current_char_width as f32;
+        let gap = 8.0_f32;
+        form.layout(rect.width, rect.height, |i| {
+            let field = &form.fields[i];
+            match &field.kind {
+                crate::primitives::form::FieldKind::ToggleGroup { toggles } => {
+                    let label_w = field.label.visible_width() as f32 * char_w;
+                    let start_x = 6.0 + label_w + 12.0;
+                    let items = toggles
+                        .iter()
+                        .map(|t| crate::primitives::form::FormItemMeasure {
+                            id: t.id.clone(),
+                            width: (t.label.chars().count() as f32 * char_w).ceil() + 2.0,
+                        })
+                        .collect();
+                    crate::primitives::form::FormFieldMeasure::with_items(
+                        row_h, start_x, gap, items,
+                    )
+                }
+                crate::primitives::form::FieldKind::ButtonRow { buttons } => {
+                    let label_w = field.label.visible_width() as f32 * char_w;
+                    let start_x = 6.0 + label_w + 12.0;
+                    let items = buttons
+                        .iter()
+                        .map(|b| crate::primitives::form::FormItemMeasure {
+                            id: b.id.clone(),
+                            width: ((b.label.chars().count() + 2) as f32 * char_w).ceil() + 2.0,
+                        })
+                        .collect();
+                    crate::primitives::form::FormFieldMeasure::with_items(
+                        row_h, start_x, gap, items,
+                    )
+                }
+                _ => crate::primitives::form::FormFieldMeasure::new(row_h),
+            }
+        })
+    }
+
     fn draw_editor(
         &mut self,
         rect: QRect,

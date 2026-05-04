@@ -19,6 +19,7 @@ use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
+use crate::primitives::form::FormLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
@@ -211,6 +212,13 @@ pub trait Backend {
     /// uniform on TUI; `1.0×`/`1.4×` line_height by `Decoration` on
     /// GTK).
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
+
+    /// Compute the form layout the rasteriser would produce for `form`
+    /// in `rect`, using the backend's native metrics. Hosts call this
+    /// to drive hit-testing — especially for `ToggleGroup` and
+    /// `ButtonRow` fields where per-item hit regions depend on
+    /// backend-specific text measurement.
+    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout;
 
     /// Draw an [`Editor`]. Returns paint-side data the host needs
     /// for chrome alignment (cursor pixel position for caret blink

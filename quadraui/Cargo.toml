@@ -108,3 +108,13 @@ required-features = ["tui"]
 name = "gtk_search_panel"
 path = "examples/gtk_search_panel.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_form_groups"
+path = "examples/tui_form_groups.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_groups"
+path = "examples/gtk_form_groups.rs"
+required-features = ["gtk"]
