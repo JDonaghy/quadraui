@@ -497,16 +497,21 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         // Cell-unit measurer mirrors `render_impl::render_tab_bar`.
+        let close_cols = if bar.show_tab_close {
+            crate::tui::TAB_CLOSE_COLS as usize
+        } else {
+            0
+        };
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
-            .map(|t| t.label.chars().count() + crate::tui::TAB_CLOSE_COLS as usize)
+            .map(|t| t.label.chars().count() + close_cols)
             .collect();
         let layout = bar.layout(
             area.width as f32,
             area.height as f32,
             0.0, // no scroll arrows in TUI
-            |i| crate::TabMeasure::new(tab_widths[i] as f32, crate::tui::TAB_CLOSE_COLS as f32),
+            |i| crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
         let frame = self

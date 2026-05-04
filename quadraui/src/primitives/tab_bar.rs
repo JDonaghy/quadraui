@@ -92,6 +92,15 @@ pub struct TabBar {
     /// `None` = no underline accent (typical for inactive groups).
     #[serde(default)]
     pub active_accent: Option<Color>,
+    /// When `false`, per-tab close buttons (×/●) are suppressed — the
+    /// measurer returns `close_width: 0.0` and rasterisers skip the glyph.
+    /// Defaults to `true` for backward compatibility with file-tab bars.
+    #[serde(default = "default_true")]
+    pub show_tab_close: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One tab in a `TabBar`.
@@ -679,6 +688,7 @@ mod hit_test_diff_tests {
             ],
             active_accent: None,
             scroll_offset: 0,
+            show_tab_close: true,
         }
     }
 

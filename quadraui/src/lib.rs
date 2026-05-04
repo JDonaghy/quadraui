@@ -964,6 +964,7 @@ mod tests {
                 },
             ],
             active_accent: Some(Color::rgb(100, 200, 255)),
+            show_tab_close: true,
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: TabBar = serde_json::from_str(&json).unwrap();
@@ -3482,6 +3483,7 @@ mod tests {
             scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
+            show_tab_close: true,
         }
     }
 
@@ -3682,6 +3684,7 @@ mod tests {
                 },
             ],
             active_accent: None,
+            show_tab_close: true,
         };
         // Bar 100 wide. Tab 10 wide. Right segments: 6 wide total.
         let layout = bar.layout(
@@ -3720,6 +3723,7 @@ mod tests {
                 is_active: false,
             }],
             active_accent: None,
+            show_tab_close: true,
         };
         // Bar 50 wide. Segment is 60 wide; literally doesn't fit → drop.
         let layout = bar.layout(

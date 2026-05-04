@@ -131,6 +131,7 @@ pub fn build_tab_bar(state: &AppState) -> TabBar {
             is_active: false,
         }],
         active_accent: Some(Color::rgb(80, 160, 240)),
+        show_tab_close: true,
     }
 }
 

@@ -83,16 +83,23 @@ pub fn draw_tab_bar(
     let effective_tab_area = (width - reserved_px).max(0.0);
 
     // ── Per-tab measurement ──────────────────────────────────────────
-    let close_w = {
+    let close_w = if bar.show_tab_close {
         layout.set_font_description(Some(&normal_font));
         layout.set_text("×");
         let (w, _) = layout.pixel_size();
         w as f64
+    } else {
+        0.0
     };
 
     // Pre-measure every tab's full slot width (label + padding +
     // close button + outer gap). Used both to compute the correct
     // scroll offset AND for the per-tab paint loop below.
+    let close_extra = if bar.show_tab_close {
+        TAB_INNER_GAP + close_w
+    } else {
+        0.0
+    };
     let tab_slot_widths: Vec<f64> = bar
         .tabs
         .iter()
@@ -104,7 +111,7 @@ pub fn draw_tab_bar(
             }
             layout.set_text(&tab.label);
             let (name_w, _) = layout.pixel_size();
-            TAB_PAD + name_w as f64 + TAB_INNER_GAP + close_w + TAB_PAD + TAB_OUTER_GAP
+            TAB_PAD + name_w as f64 + close_extra + TAB_PAD + TAB_OUTER_GAP
         })
         .collect();
 
@@ -135,17 +142,19 @@ pub fn draw_tab_bar(
         layout.set_text(&tab.label);
         let (tab_name_w, _) = layout.pixel_size();
         let tab_w = tab_name_w as f64;
-        let tab_content_w = TAB_PAD + tab_w + TAB_INNER_GAP + close_w + TAB_PAD;
+        let tab_content_w = TAB_PAD + tab_w + close_extra + TAB_PAD;
         let slot_w = tab_content_w + TAB_OUTER_GAP;
         if x + slot_w > effective_tab_area {
             break;
         }
         slot_positions.push((x, x + slot_w));
-        // Close-button hit zone matches the rendered glyph's pad-extended
-        // box (the rounded hover-bg rect). See `close_x` below.
-        let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
-        let close_pad = 2.0;
-        close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
+        if bar.show_tab_close {
+            let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
+            let close_pad = 2.0;
+            close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
+        } else {
+            close_bounds.push(None);
+        }
 
         // Tab background.
         let bg_col = if tab.is_active {
@@ -183,67 +192,69 @@ pub fn draw_tab_bar(
         cr.move_to(x + TAB_PAD, text_y_offset);
         pcfn::show_layout(cr, layout);
 
-        // Close (×) or dirty (●) glyph — with optional rounded hover bg.
-        let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
-        let is_close_hovered = hovered_close_tab == Some(tab_idx);
-        if is_close_hovered {
-            let pad = 2.0;
-            let rx = close_x - pad;
-            let ry = text_y_offset + pad;
-            let rw = close_w + pad * 2.0;
-            let rh = line_height - pad * 2.0;
-            let (hr, hg, hb) = cairo_rgb(theme.foreground);
-            cr.set_source_rgba(hr, hg, hb, 0.15);
-            let radius = 3.0;
-            cr.new_path();
-            cr.arc(
-                rx + rw - radius,
-                ry + radius,
-                radius,
-                -std::f64::consts::FRAC_PI_2,
-                0.0,
-            );
-            cr.arc(
-                rx + rw - radius,
-                ry + rh - radius,
-                radius,
-                0.0,
-                std::f64::consts::FRAC_PI_2,
-            );
-            cr.arc(
-                rx + radius,
-                ry + rh - radius,
-                radius,
-                std::f64::consts::FRAC_PI_2,
-                std::f64::consts::PI,
-            );
-            cr.arc(
-                rx + radius,
-                ry + radius,
-                radius,
-                std::f64::consts::PI,
-                3.0 * std::f64::consts::FRAC_PI_2,
-            );
-            cr.close_path();
-            cr.fill().ok();
+        if bar.show_tab_close {
+            // Close (×) or dirty (●) glyph — with optional rounded hover bg.
+            let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
+            let is_close_hovered = hovered_close_tab == Some(tab_idx);
+            if is_close_hovered {
+                let pad = 2.0;
+                let rx = close_x - pad;
+                let ry = text_y_offset + pad;
+                let rw = close_w + pad * 2.0;
+                let rh = line_height - pad * 2.0;
+                let (hr, hg, hb) = cairo_rgb(theme.foreground);
+                cr.set_source_rgba(hr, hg, hb, 0.15);
+                let radius = 3.0;
+                cr.new_path();
+                cr.arc(
+                    rx + rw - radius,
+                    ry + radius,
+                    radius,
+                    -std::f64::consts::FRAC_PI_2,
+                    0.0,
+                );
+                cr.arc(
+                    rx + rw - radius,
+                    ry + rh - radius,
+                    radius,
+                    0.0,
+                    std::f64::consts::FRAC_PI_2,
+                );
+                cr.arc(
+                    rx + radius,
+                    ry + rh - radius,
+                    radius,
+                    std::f64::consts::FRAC_PI_2,
+                    std::f64::consts::PI,
+                );
+                cr.arc(
+                    rx + radius,
+                    ry + radius,
+                    radius,
+                    std::f64::consts::PI,
+                    3.0 * std::f64::consts::FRAC_PI_2,
+                );
+                cr.close_path();
+                cr.fill().ok();
+            }
+            let close_glyph = if tab.is_dirty && !is_close_hovered {
+                "●"
+            } else {
+                "×"
+            };
+            let close_fg = if tab.is_dirty || is_close_hovered {
+                theme.foreground
+            } else if tab.is_active {
+                theme.tab_inactive_fg
+            } else {
+                theme.separator
+            };
+            set_source(cr, close_fg);
+            layout.set_font_description(Some(&normal_font));
+            layout.set_text(close_glyph);
+            cr.move_to(close_x, text_y_offset);
+            pcfn::show_layout(cr, layout);
         }
-        let close_glyph = if tab.is_dirty && !is_close_hovered {
-            "●"
-        } else {
-            "×"
-        };
-        let close_fg = if tab.is_dirty || is_close_hovered {
-            theme.foreground
-        } else if tab.is_active {
-            theme.tab_inactive_fg
-        } else {
-            theme.separator
-        };
-        set_source(cr, close_fg);
-        layout.set_font_description(Some(&normal_font));
-        layout.set_text(close_glyph);
-        cr.move_to(close_x, text_y_offset);
-        pcfn::show_layout(cr, layout);
 
         x += slot_w;
     }

@@ -248,6 +248,7 @@ mod tests {
             right_segments: vec![],
             active_accent: None,
             scroll_offset: 0,
+            show_tab_close: true,
         }
     }
 
@@ -322,6 +323,7 @@ mod tests {
             }],
             active_accent: None,
             scroll_offset: 0,
+            show_tab_close: true,
         };
         let layout = bar.layout(
             30.0,
