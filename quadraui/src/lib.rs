@@ -228,7 +228,8 @@ pub use event::{
 
 // Phase B.4 re-exports.
 pub use dispatch::{
-    dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, DragState, DragTarget,
+    dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll, DragState,
+    DragTarget, ScrollSurface,
 };
 pub use modal_stack::{ModalEntry, ModalStack};
 pub use runner::{AppLogic, Reaction};

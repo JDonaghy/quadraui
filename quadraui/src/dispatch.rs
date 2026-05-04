@@ -1,9 +1,9 @@
-//! Cross-backend mouse dispatch.
+//! Cross-backend mouse + scroll dispatch.
 //!
 //! Backends call into these free functions with raw (platform-translated)
-//! mouse events. Quadraui consults the [`ModalStack`] first, decides
-//! which widget — if any — should receive the event, and returns a
-//! `Vec<UiEvent>` the backend pushes onto its per-frame event queue.
+//! mouse and scroll events. Quadraui consults the [`ModalStack`] first,
+//! decides which widget — if any — should receive the event, and returns
+//! a `Vec<UiEvent>` the backend pushes onto its per-frame event queue.
 //!
 //! The key guarantee: **events landing inside an open modal cannot fall
 //! through to widgets behind it**. This is the contract vimcode's
@@ -28,7 +28,7 @@
 //!   existing mouse handlers, which are already per-backend. Later
 //!   commits can route them through here too.
 
-use crate::event::{MouseButton, Point, UiEvent};
+use crate::event::{MouseButton, Point, ScrollDelta, UiEvent};
 use crate::modal_stack::ModalStack;
 use crate::primitives::palette::PaletteEvent;
 use crate::types::WidgetId;
@@ -330,6 +330,83 @@ pub fn dispatch_mouse_up(
     vec![UiEvent::MouseUp {
         widget,
         button,
+        position,
+    }]
+}
+
+// ─── Scroll dispatch ──────────────────────────────────────────────────────
+
+/// A scrollable surface registered during paint. The consumer pushes
+/// one entry per scrollable widget each frame; [`dispatch_scroll`]
+/// hit-tests the list to route wheel events to the right widget.
+///
+/// Push in paint order (back-to-front). The dispatcher walks
+/// last-to-first so the topmost-painted surface wins on overlap —
+/// same semantics as [`ModalStack`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollSurface {
+    pub id: WidgetId,
+    pub bounds: crate::event::Rect,
+}
+
+/// Translate a raw scroll-wheel event into a `Vec<UiEvent>`, consulting
+/// the modal stack first, then the registered scroll surfaces.
+///
+/// # Returns
+///
+/// Three cases:
+///
+/// 1. **Scroll landed inside an open modal.** Emits
+///    `[UiEvent::Scroll { widget: Some(modal_id), delta, position }]`.
+///    The app routes to the modal's inner scroll handler.
+/// 2. **Modal(s) open but scroll was outside them.** Emits nothing —
+///    scroll behind an open modal is swallowed (you can't scroll the
+///    editor while a dialog is up).
+/// 3. **No modal open.** Hit-tests `scroll_surfaces` last-to-first
+///    (topmost-painted wins). If a surface matches, emits
+///    `[UiEvent::Scroll { widget: Some(surface_id), delta, position }]`.
+///    If no surface matches, emits
+///    `[UiEvent::Scroll { widget: None, delta, position }]` for
+///    base-layer handling.
+pub fn dispatch_scroll(
+    stack: &ModalStack,
+    scroll_surfaces: &[ScrollSurface],
+    position: Point,
+    delta: ScrollDelta,
+) -> Vec<UiEvent> {
+    // Case 1: scroll inside an open modal.
+    if let Some(widget_id) = stack.hit_test(position) {
+        return vec![UiEvent::Scroll {
+            widget: Some(widget_id.clone()),
+            delta,
+            position,
+        }];
+    }
+
+    // Case 2: modal(s) open but scroll was outside → swallow.
+    if !stack.is_empty() {
+        return Vec::new();
+    }
+
+    // Case 3: no modals. Hit-test scroll surfaces (last-to-first).
+    for surface in scroll_surfaces.iter().rev() {
+        if position.x >= surface.bounds.x
+            && position.x < surface.bounds.x + surface.bounds.width
+            && position.y >= surface.bounds.y
+            && position.y < surface.bounds.y + surface.bounds.height
+        {
+            return vec![UiEvent::Scroll {
+                widget: Some(surface.id.clone()),
+                delta,
+                position,
+            }];
+        }
+    }
+
+    // No surface matched — base-layer event.
+    vec![UiEvent::Scroll {
+        widget: None,
+        delta,
         position,
     }]
 }
@@ -673,6 +750,114 @@ mod tests {
                 assert_eq!(widget.as_ref().unwrap(), &id("palette"));
             }
             _ => panic!(),
+        }
+    }
+
+    // ── Scroll dispatch tests ─────────────────────────────────────────
+
+    fn delta(dy: f32) -> ScrollDelta {
+        ScrollDelta::new(0.0, dy)
+    }
+
+    #[test]
+    fn scroll_inside_modal_routes_to_modal() {
+        let mut stack = ModalStack::new();
+        stack.push(id("picker"), rect(10.0, 10.0, 100.0, 100.0));
+        let events = dispatch_scroll(&stack, &[], pt(50.0, 50.0), delta(-3.0));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::Scroll {
+                widget, delta: d, ..
+            } => {
+                assert_eq!(widget.as_ref().unwrap(), &id("picker"));
+                assert_eq!(d.y, -3.0);
+            }
+            other => panic!("expected Scroll, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scroll_outside_open_modal_is_swallowed() {
+        let mut stack = ModalStack::new();
+        stack.push(id("dialog"), rect(10.0, 10.0, 50.0, 50.0));
+        let events = dispatch_scroll(&stack, &[], pt(500.0, 500.0), delta(-1.0));
+        assert!(events.is_empty(), "scroll behind modal should be swallowed");
+    }
+
+    #[test]
+    fn scroll_routes_to_topmost_surface() {
+        let stack = ModalStack::new();
+        let surfaces = vec![
+            ScrollSurface {
+                id: id("editor"),
+                bounds: rect(0.0, 0.0, 200.0, 200.0),
+            },
+            ScrollSurface {
+                id: id("sidebar"),
+                bounds: rect(0.0, 0.0, 50.0, 200.0),
+            },
+        ];
+        // Point (25, 100) is inside both surfaces. Sidebar was pushed
+        // last (painted on top) → wins.
+        let events = dispatch_scroll(&stack, &surfaces, pt(25.0, 100.0), delta(-1.0));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::Scroll { widget, .. } => {
+                assert_eq!(widget.as_ref().unwrap(), &id("sidebar"));
+            }
+            other => panic!("expected Scroll, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scroll_on_non_overlapping_surface() {
+        let stack = ModalStack::new();
+        let surfaces = vec![
+            ScrollSurface {
+                id: id("editor"),
+                bounds: rect(50.0, 0.0, 150.0, 200.0),
+            },
+            ScrollSurface {
+                id: id("sidebar"),
+                bounds: rect(0.0, 0.0, 50.0, 200.0),
+            },
+        ];
+        // Point (100, 100) is inside editor only.
+        let events = dispatch_scroll(&stack, &surfaces, pt(100.0, 100.0), delta(2.0));
+        match &events[0] {
+            UiEvent::Scroll { widget, .. } => {
+                assert_eq!(widget.as_ref().unwrap(), &id("editor"));
+            }
+            other => panic!("expected Scroll, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scroll_with_no_surfaces_emits_no_widget() {
+        let stack = ModalStack::new();
+        let events = dispatch_scroll(&stack, &[], pt(50.0, 50.0), delta(-1.0));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::Scroll { widget, .. } => {
+                assert!(widget.is_none());
+            }
+            other => panic!("expected Scroll, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scroll_outside_all_surfaces_emits_no_widget() {
+        let stack = ModalStack::new();
+        let surfaces = vec![ScrollSurface {
+            id: id("panel"),
+            bounds: rect(0.0, 0.0, 50.0, 50.0),
+        }];
+        let events = dispatch_scroll(&stack, &surfaces, pt(100.0, 100.0), delta(-1.0));
+        match &events[0] {
+            UiEvent::Scroll { widget, .. } => {
+                assert!(widget.is_none());
+            }
+            other => panic!("expected Scroll, got {:?}", other),
         }
     }
 }
