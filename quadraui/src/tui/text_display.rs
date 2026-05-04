@@ -140,14 +140,14 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
     // Scrollbar gutter.
     if display.show_scrollbar {
         let gutter_x = body.x + body.width - 1;
-        let track_fg = ratatui_color(theme.muted_fg);
+        let track_fg = ratatui_color(theme.scrollbar_track);
         for dy in 0..body.height {
-            set_cell(buf, gutter_x, body.y + dy, '│', track_fg, bg);
+            set_cell(buf, gutter_x, body.y + dy, '░', track_fg, bg);
         }
         if let Some(thumb) = layout.thumb_bounds {
             let thumb_y = body.y + thumb.y.round() as u16;
             let thumb_h = thumb.height.round() as u16;
-            let thumb_fg = ratatui_color(theme.foreground);
+            let thumb_fg = ratatui_color(theme.scrollbar_thumb);
             for dy in 0..thumb_h {
                 let y = thumb_y + dy;
                 if y < body.y + body.height {

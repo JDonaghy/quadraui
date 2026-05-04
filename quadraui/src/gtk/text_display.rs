@@ -131,8 +131,8 @@ pub fn draw_text_display(
     // Scrollbar gutter.
     if display.show_scrollbar {
         if let Some(gutter) = display_layout.scrollbar_bounds {
-            let gutter_bg = cairo_rgb(theme.surface_bg);
-            cr.set_source_rgb(gutter_bg.0, gutter_bg.1, gutter_bg.2);
+            let track_bg = cairo_rgb(theme.scrollbar_track);
+            cr.set_source_rgb(track_bg.0, track_bg.1, track_bg.2);
             cr.rectangle(
                 x + gutter.x as f64,
                 body_y + gutter.y as f64,
@@ -142,7 +142,7 @@ pub fn draw_text_display(
             cr.fill().ok();
         }
         if let Some(thumb) = display_layout.thumb_bounds {
-            let thumb_fg = cairo_rgb(theme.foreground);
+            let thumb_fg = cairo_rgb(theme.scrollbar_thumb);
             cr.set_source_rgb(thumb_fg.0, thumb_fg.1, thumb_fg.2);
             let inset = 2.0;
             cr.rectangle(
