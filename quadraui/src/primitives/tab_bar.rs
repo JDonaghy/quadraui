@@ -97,6 +97,12 @@ pub struct TabBar {
     /// Defaults to `true` for backward compatibility with file-tab bars.
     #[serde(default = "default_true")]
     pub show_tab_close: bool,
+    /// When `true`, the GTK rasteriser uses minimal padding (2px) and
+    /// zero gap between tabs. Intended for compact chrome like terminal
+    /// toolbar tabs or bottom panel tab switchers. TUI is unaffected
+    /// (it already renders labels with no padding).
+    #[serde(default)]
+    pub compact: bool,
 }
 
 fn default_true() -> bool {
@@ -689,6 +695,7 @@ mod hit_test_diff_tests {
             active_accent: None,
             scroll_offset: 0,
             show_tab_close: true,
+            compact: false,
         }
     }
 

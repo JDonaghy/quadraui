@@ -65,6 +65,10 @@ pub fn draw_tab_bar(
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
+    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
+    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+
     // Tab bar background.
     set_source(cr, theme.tab_bar_bg);
     cr.rectangle(0.0, y_offset, width, tab_row_height);
@@ -101,7 +105,7 @@ pub fn draw_tab_bar(
     // close button + outer gap). Used both to compute the correct
     // scroll offset AND for the per-tab paint loop below.
     let close_extra = if bar.show_tab_close {
-        TAB_INNER_GAP + close_w
+        tab_inner_gap + close_w
     } else {
         0.0
     };
@@ -116,7 +120,7 @@ pub fn draw_tab_bar(
             }
             layout.set_text(&tab.label);
             let (name_w, _) = layout.pixel_size();
-            TAB_PAD + name_w as f64 + close_extra + TAB_PAD + TAB_OUTER_GAP
+            tab_pad + name_w as f64 + close_extra + tab_pad + tab_outer_gap
         })
         .collect();
 
@@ -147,14 +151,14 @@ pub fn draw_tab_bar(
         layout.set_text(&tab.label);
         let (tab_name_w, _) = layout.pixel_size();
         let tab_w = tab_name_w as f64;
-        let tab_content_w = TAB_PAD + tab_w + close_extra + TAB_PAD;
-        let slot_w = tab_content_w + TAB_OUTER_GAP;
+        let tab_content_w = tab_pad + tab_w + close_extra + tab_pad;
+        let slot_w = tab_content_w + tab_outer_gap;
         if x + slot_w > effective_tab_area {
             break;
         }
         slot_positions.push((x, x + slot_w));
         if bar.show_tab_close {
-            let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
+            let close_x = x + tab_pad + tab_w + tab_inner_gap;
             let close_pad = 2.0;
             close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
         } else {
@@ -194,12 +198,12 @@ pub fn draw_tab_bar(
         } else {
             &normal_font
         }));
-        cr.move_to(x + TAB_PAD, text_y_offset);
+        cr.move_to(x + tab_pad, text_y_offset);
         pcfn::show_layout(cr, layout);
 
         if bar.show_tab_close {
             // Close (×) or dirty (●) glyph — with optional rounded hover bg.
-            let close_x = x + TAB_PAD + tab_w + TAB_INNER_GAP;
+            let close_x = x + tab_pad + tab_w + tab_inner_gap;
             let is_close_hovered = hovered_close_tab == Some(tab_idx);
             if is_close_hovered {
                 let pad = 2.0;

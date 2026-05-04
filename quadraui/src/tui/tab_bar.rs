@@ -249,6 +249,7 @@ mod tests {
             active_accent: None,
             scroll_offset: 0,
             show_tab_close: true,
+            compact: false,
         }
     }
 
@@ -324,6 +325,7 @@ mod tests {
             active_accent: None,
             scroll_offset: 0,
             show_tab_close: true,
+            compact: false,
         };
         let layout = bar.layout(
             30.0,
