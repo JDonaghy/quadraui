@@ -89,6 +89,7 @@ pub fn draw_form(
         cr.move_to(label_x, y_off + (row_h - label_h as f64) / 2.0);
         pcfn::show_layout(cr, layout);
         let label_right = label_x + label_w as f64;
+        let no_label = label_text.is_empty();
 
         let input_right = x + w - 8.0;
         match &field.kind {
@@ -103,8 +104,12 @@ pub fn draw_form(
                 cr.set_source_rgb(fg_color.0, fg_color.1, fg_color.2);
                 layout.set_text(glyph);
                 let (iw, ih) = layout.pixel_size();
-                let ix = input_right - iw as f64;
-                if ix > label_right + 8.0 {
+                let ix = if no_label {
+                    label_x
+                } else {
+                    input_right - iw as f64
+                };
+                if no_label || ix > label_right + 8.0 {
                     cr.move_to(ix, y_off + (row_h - ih as f64) / 2.0);
                     pcfn::show_layout(cr, layout);
                 }
@@ -125,10 +130,18 @@ pub fn draw_form(
                 layout.set_text(shown);
                 let (shown_w, shown_h) = layout.pixel_size();
 
-                let max_width = (w * 0.6).max(80.0);
-                let draw_w = (shown_w as f64).min(max_width);
-                let ix = input_right - draw_w - 14.0;
-                if ix > label_right + 8.0 {
+                let (ix, _, bracket_right) = if no_label {
+                    let ix = label_x;
+                    let avail = input_right - ix - 8.0;
+                    let dw = (shown_w as f64).min(avail.max(0.0));
+                    (ix, dw, input_right)
+                } else {
+                    let max_width = (w * 0.6).max(80.0);
+                    let dw = (shown_w as f64).min(max_width);
+                    let ix = input_right - dw - 14.0;
+                    (ix, dw, ix + 8.0 + dw + 2.0)
+                };
+                if no_label || ix > label_right + 8.0 {
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("[");
                     cr.move_to(ix, y_off + (row_h - shown_h as f64) / 2.0);
@@ -161,10 +174,7 @@ pub fn draw_form(
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("]");
-                    cr.move_to(
-                        ix + 8.0 + draw_w + 2.0,
-                        y_off + (row_h - shown_h as f64) / 2.0,
-                    );
+                    cr.move_to(bracket_right, y_off + (row_h - shown_h as f64) / 2.0);
                     pcfn::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
@@ -189,8 +199,12 @@ pub fn draw_form(
                 layout.set_text(&cap_text);
                 let (cap_w, cap_h) = layout.pixel_size();
                 let total_w = cap_w as f64 + 24.0;
-                let ix = input_right - total_w;
-                if ix > x + 8.0 {
+                let ix = if no_label {
+                    label_x
+                } else {
+                    input_right - total_w
+                };
+                if no_label || ix > x + 8.0 {
                     let brk = if is_focused { accent } else { dim };
                     cr.set_source_rgb(brk.0, brk.1, brk.2);
                     layout.set_text("<");
@@ -215,8 +229,12 @@ pub fn draw_form(
                 let value_text: String = value.spans.iter().map(|s| s.text.as_str()).collect();
                 layout.set_text(&value_text);
                 let (vw, vh) = layout.pixel_size();
-                let ix = input_right - vw as f64;
-                if ix > label_right + 8.0 {
+                let ix = if no_label {
+                    label_x
+                } else {
+                    input_right - vw as f64
+                };
+                if no_label || ix > label_right + 8.0 {
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     cr.move_to(ix, y_off + (row_h - vh as f64) / 2.0);
                     pcfn::show_layout(cr, layout);
