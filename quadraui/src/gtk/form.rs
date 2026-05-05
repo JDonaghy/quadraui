@@ -52,7 +52,7 @@ pub fn draw_form(
     layout.set_attributes(None);
 
     let row_h = (line_height * 1.4).round();
-    let mut y_off = y;
+    let mut y_off = y.round();
     let y_end = y + h;
 
     for field in form.fields.iter().skip(form.scroll_offset) {
@@ -86,7 +86,7 @@ pub fn draw_form(
         layout.set_text(&label_text);
         let (label_w, label_h) = layout.pixel_size();
         let label_x = x + 6.0;
-        cr.move_to(label_x, y_off + (row_h - label_h as f64) / 2.0);
+        cr.move_to(label_x, (y_off + (row_h - label_h as f64) / 2.0).round());
         pcfn::show_layout(cr, layout);
         let label_right = label_x + label_w as f64;
         let no_label = label_text.is_empty();
@@ -110,7 +110,7 @@ pub fn draw_form(
                     input_right - iw as f64
                 };
                 if no_label || ix > label_right + 8.0 {
-                    cr.move_to(ix, y_off + (row_h - ih as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - ih as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
                 }
             }
@@ -132,9 +132,10 @@ pub fn draw_form(
 
                 let (ix, _, bracket_right) = if no_label {
                     let ix = label_x;
-                    let avail = input_right - ix - 8.0;
+                    let bracket_r = input_right - 4.0;
+                    let avail = bracket_r - ix - 8.0;
                     let dw = (shown_w as f64).min(avail.max(0.0));
-                    (ix, dw, input_right)
+                    (ix, dw, bracket_r)
                 } else {
                     let max_width = (w * 0.6).max(80.0);
                     let dw = (shown_w as f64).min(max_width);
@@ -144,7 +145,7 @@ pub fn draw_form(
                 if no_label || ix > label_right + 8.0 {
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("[");
-                    cr.move_to(ix, y_off + (row_h - shown_h as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
 
                     if let (Some(cur), Some(anchor)) = (cursor, selection_anchor) {
@@ -169,12 +170,12 @@ pub fn draw_form(
 
                     cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
                     layout.set_text(shown);
-                    cr.move_to(ix + 8.0, y_off + (row_h - shown_h as f64) / 2.0);
+                    cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("]");
-                    cr.move_to(bracket_right, y_off + (row_h - shown_h as f64) / 2.0);
+                    cr.move_to(bracket_right, (y_off + (row_h - shown_h as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
@@ -208,12 +209,12 @@ pub fn draw_form(
                     let brk = if is_focused { accent } else { dim };
                     cr.set_source_rgb(brk.0, brk.1, brk.2);
                     layout.set_text("<");
-                    cr.move_to(ix, y_off + (row_h - cap_h as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - cap_h as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
 
                     cr.set_source_rgb(field_fg.0, field_fg.1, field_fg.2);
                     layout.set_text(&cap_text);
-                    cr.move_to(ix + 12.0, y_off + (row_h - cap_h as f64) / 2.0);
+                    cr.move_to(ix + 12.0, (y_off + (row_h - cap_h as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
 
                     cr.set_source_rgb(brk.0, brk.1, brk.2);
@@ -236,7 +237,7 @@ pub fn draw_form(
                 };
                 if no_label || ix > label_right + 8.0 {
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    cr.move_to(ix, y_off + (row_h - vh as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - vh as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
                 }
             }
@@ -254,7 +255,7 @@ pub fn draw_form(
                     cr.set_source_rgb(toggle_fg.0, toggle_fg.1, toggle_fg.2);
                     layout.set_text(&toggle.label);
                     let (tw, th) = layout.pixel_size();
-                    cr.move_to(ix, y_off + (row_h - th as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - th as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
                     ix += tw as f64 + 8.0;
                 }
@@ -275,21 +276,21 @@ pub fn draw_form(
                     cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
                     layout.set_text("[");
                     let (bw, bh) = layout.pixel_size();
-                    cr.move_to(ix, y_off + (row_h - bh as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
                     ix += bw as f64;
 
                     cr.set_source_rgb(btn_fg.0, btn_fg.1, btn_fg.2);
                     layout.set_text(&button.label);
                     let (lw, lh) = layout.pixel_size();
-                    cr.move_to(ix, y_off + (row_h - lh as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - lh as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
                     ix += lw as f64;
 
                     cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
                     layout.set_text("]");
                     let (rw, _) = layout.pixel_size();
-                    cr.move_to(ix, y_off + (row_h - bh as f64) / 2.0);
+                    cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
                     ix += rw as f64 + 8.0;
                 }
@@ -351,7 +352,7 @@ pub fn draw_settings_chrome(
     cr.set_source_rgb(hdr_fg.0, hdr_fg.1, hdr_fg.2);
     layout.set_text(header_text);
     let (_, header_lh) = layout.pixel_size();
-    cr.move_to(x + 2.0, y + (line_height - header_lh as f64) / 2.0);
+    cr.move_to(x + 2.0, (y + (line_height - header_lh as f64) / 2.0).round());
     pcfn::show_layout(cr, layout);
 
     // Row 1: search input.
@@ -365,7 +366,7 @@ pub fn draw_settings_chrome(
     cr.set_source_rgb(dim.0, dim.1, dim.2);
     layout.set_text(prefix);
     let (prefix_w, _) = layout.pixel_size();
-    cr.move_to(x + 2.0, search_y + (line_height - header_lh as f64) / 2.0);
+    cr.move_to(x + 2.0, (search_y + (line_height - header_lh as f64) / 2.0).round());
     pcfn::show_layout(cr, layout);
 
     let q_x = x + 2.0 + prefix_w as f64;
@@ -380,7 +381,7 @@ pub fn draw_settings_chrome(
     cr.set_source_rgb(color.0, color.1, color.2);
     layout.set_text(text);
     let (q_w, _) = layout.pixel_size();
-    cr.move_to(q_x, search_y + (line_height - header_lh as f64) / 2.0);
+    cr.move_to(q_x, (search_y + (line_height - header_lh as f64) / 2.0).round());
     pcfn::show_layout(cr, layout);
 
     if active {
