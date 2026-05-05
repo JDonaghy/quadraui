@@ -1054,11 +1054,11 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::menu_bar::MenuBarLayout {
         let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
         let char_w = self.current_char_width as f32;
+        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
         bar.layout(bounds, |i| {
-            let display_chars = bar.items[i].label.chars().filter(|&c| c != '&').count();
-            crate::primitives::menu_bar::MenuBarItemMeasure::new(
-                display_chars as f32 * char_w + 16.0,
-            )
+            let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
+            let text_w = self.pango_str_width(&pango_layout, &text, char_w);
+            crate::primitives::menu_bar::MenuBarItemMeasure::new(text_w + 16.0)
         })
     }
 
