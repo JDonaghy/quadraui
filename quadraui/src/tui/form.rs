@@ -98,6 +98,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             Decoration::Normal,
             dim_fg,
         );
+        let no_label = field.label.visible_width() == 0;
 
         match &field.kind {
             FieldKind::Label => {
@@ -106,8 +107,12 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             FieldKind::Toggle { value } => {
                 let glyph = if *value { "[x]" } else { "[ ]" };
                 let w = glyph.chars().count();
-                let start_col = (area.width as usize).saturating_sub(w + 2);
-                if start_col > label_end + 1 {
+                let start_col = if no_label {
+                    1
+                } else {
+                    (area.width as usize).saturating_sub(w + 2)
+                };
+                if start_col > label_end + 1 || no_label {
                     let input_fg = if *value { accent_fg } else { field_fg };
                     let mut col = start_col;
                     for ch in glyph.chars() {
@@ -131,9 +136,17 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     value.as_str()
                 };
                 let input_fg = if value.is_empty() { dim_fg } else { field_fg };
-                let max_input = (area.width as usize * 2 / 3).max(10);
-                let desired = shown.chars().count().min(max_input);
-                let start_col = (area.width as usize).saturating_sub(desired + 2);
+
+                let (start_col, desired) = if no_label {
+                    let sc = 1usize;
+                    let avail = (area.width as usize).saturating_sub(sc + 2);
+                    (sc, shown.chars().count().min(avail))
+                } else {
+                    let max_input = (area.width as usize * 2 / 3).max(10);
+                    let d = shown.chars().count().min(max_input);
+                    let sc = (area.width as usize).saturating_sub(d + 2);
+                    (sc, d)
+                };
 
                 let (sel_lo, sel_hi) = if value.is_empty() {
                     (0, 0)
@@ -144,7 +157,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     }
                 };
 
-                if start_col > label_end + 1 {
+                if start_col > label_end + 1 || no_label {
                     if start_col > 0 && start_col - 1 < area.width as usize {
                         set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
                     }
@@ -160,8 +173,13 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                         col += 1;
                         byte += ch.len_utf8();
                     }
-                    if col < area.width as usize {
-                        set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
+                    let bracket_col = if no_label {
+                        (area.width as usize).saturating_sub(1)
+                    } else {
+                        col
+                    };
+                    if bracket_col < area.width as usize {
+                        set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
                     }
 
                     if let Some(cur) = cursor {
@@ -185,14 +203,15 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                 }
             }
             FieldKind::Button => {
-                // The field's label IS the button caption. Redraw it
-                // wrapped in `< text >` on the right side, overwriting the
-                // normal label rendering.
                 for x in area.x..area.x + (label_end as u16).min(area.width) {
                     set_cell(buf, x, y, ' ', default_fg, row_bg);
                 }
                 let width = field.label.visible_width() + 4;
-                let start_col = (area.width as usize).saturating_sub(width + 1);
+                let start_col = if no_label {
+                    1
+                } else {
+                    (area.width as usize).saturating_sub(width + 1)
+                };
                 if start_col < area.width as usize {
                     let brk_fg = if is_focused { accent_fg } else { dim_fg };
                     let text_fg = if field.disabled { dim_fg } else { field_fg };
@@ -218,8 +237,12 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             }
             FieldKind::ReadOnly { value } => {
                 let w = value.visible_width();
-                let start_col = (area.width as usize).saturating_sub(w + 2);
-                if start_col > label_end + 1 {
+                let start_col = if no_label {
+                    1
+                } else {
+                    (area.width as usize).saturating_sub(w + 2)
+                };
+                if start_col > label_end + 1 || no_label {
                     draw_styled_text(
                         buf,
                         area,
@@ -561,6 +584,38 @@ mod tests {
         let f = make_form();
         draw_form(&mut buf, Rect::new(0, 0, 0, 5), &f, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    #[test]
+    fn text_input_no_label_spans_full_width() {
+        let f = Form {
+            id: WidgetId::new("search"),
+            fields: vec![FormField {
+                id: WidgetId::new("query"),
+                label: label(""),
+                kind: FieldKind::TextInput {
+                    value: "test".into(),
+                    placeholder: "Search…".into(),
+                    cursor: Some(4),
+                    selection_anchor: None,
+                },
+                disabled: false,
+                hint: label(""),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
+        draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
+
+        // Row fills full width: '[' at col 0, text at col 1, ']' at col 29.
+        let row: String = (0..30).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.starts_with("[test"),
+            "expected full-width '[test...' but got: {row:?}"
+        );
+        assert_eq!(cell_char(&buf, 29, 0), ']', "expected ']' at right edge");
     }
 
     // ── ToggleGroup paint↔click round-trip ──────────────────────────────
