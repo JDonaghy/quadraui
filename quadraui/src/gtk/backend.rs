@@ -111,6 +111,11 @@ pub struct GtkBackend {
     /// App alongside `current_line_height`. Required by primitives
     /// that map cells to pixels (e.g. `draw_terminal`).
     current_char_width: f64,
+    /// Pango context for text measurement outside the draw callback.
+    /// Set once via [`Self::set_pango_context`] during init; used by
+    /// `form_layout()` and other `_layout()` methods that need exact
+    /// Pango measurement rather than the `current_char_width` approximation.
+    pango_ctx: Option<pango::Context>,
     /// Whether nerd-font glyphs should be used by primitives that
     /// have icon variants. Apps wire this from their own setting
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
@@ -146,6 +151,7 @@ impl GtkBackend {
             current_theme: crate::Theme::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            pango_ctx: None,
             nerd_fonts_enabled: false,
             ui_font: "Sans 11".to_string(),
         }
@@ -241,6 +247,43 @@ impl GtkBackend {
     #[allow(dead_code)]
     pub fn set_current_char_width(&mut self, char_width: f64) {
         self.current_char_width = char_width;
+    }
+
+    /// Store the widget's Pango context for text measurement outside
+    /// the draw callback. Call once during init (e.g. from the runner
+    /// after `DrawingArea::realize`). The context carries the font
+    /// configuration and is valid for the widget's lifetime.
+    pub fn set_pango_context(&mut self, ctx: pango::Context) {
+        self.pango_ctx = Some(ctx);
+    }
+
+    /// Measure a `StyledText` label width in pixels using Pango if
+    /// available, falling back to `visible_width * char_w`.
+    fn pango_text_width(
+        &self,
+        pango_layout: &Option<pango::Layout>,
+        text: &crate::types::StyledText,
+        char_w: f32,
+    ) -> f32 {
+        let plain: String = text.spans.iter().map(|s| s.text.as_str()).collect();
+        self.pango_str_width(pango_layout, &plain, char_w)
+    }
+
+    /// Measure a plain string width in pixels using Pango if
+    /// available, falling back to `chars().count() * char_w`.
+    fn pango_str_width(
+        &self,
+        pango_layout: &Option<pango::Layout>,
+        text: &str,
+        char_w: f32,
+    ) -> f32 {
+        if let Some(pl) = pango_layout {
+            pl.set_text(text);
+            let (w, _) = pl.pixel_size();
+            w as f32
+        } else {
+            (text.chars().count() as f32 * char_w).ceil() + 2.0
+        }
     }
 
     /// Enter the frame-scope: stash the cairo context + pango layout
@@ -822,17 +865,20 @@ impl Backend for GtkBackend {
         let row_h = (self.current_line_height * 1.4).round() as f32;
         let char_w = self.current_char_width as f32;
         let gap = 8.0_f32;
+
+        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+
         form.layout(rect.width, rect.height, |i| {
             let field = &form.fields[i];
             match &field.kind {
                 crate::primitives::form::FieldKind::ToggleGroup { toggles } => {
-                    let label_w = field.label.visible_width() as f32 * char_w;
+                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
                     let start_x = 6.0 + label_w + 12.0;
                     let items = toggles
                         .iter()
                         .map(|t| crate::primitives::form::FormItemMeasure {
                             id: t.id.clone(),
-                            width: (t.label.chars().count() as f32 * char_w).ceil() + 2.0,
+                            width: self.pango_str_width(&pango_layout, &t.label, char_w),
                         })
                         .collect();
                     crate::primitives::form::FormFieldMeasure::with_items(
@@ -840,13 +886,16 @@ impl Backend for GtkBackend {
                     )
                 }
                 crate::primitives::form::FieldKind::ButtonRow { buttons } => {
-                    let label_w = field.label.visible_width() as f32 * char_w;
+                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
                     let start_x = 6.0 + label_w + 12.0;
                     let items = buttons
                         .iter()
-                        .map(|b| crate::primitives::form::FormItemMeasure {
-                            id: b.id.clone(),
-                            width: ((b.label.chars().count() + 2) as f32 * char_w).ceil() + 2.0,
+                        .map(|b| {
+                            let bracketed = format!("[{}]", b.label);
+                            crate::primitives::form::FormItemMeasure {
+                                id: b.id.clone(),
+                                width: self.pango_str_width(&pango_layout, &bracketed, char_w),
+                            }
                         })
                         .collect();
                     crate::primitives::form::FormFieldMeasure::with_items(

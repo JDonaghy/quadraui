@@ -109,6 +109,16 @@ fn activate<A: AppLogic + 'static>(
     da.set_vexpand(true);
     window.set_child(Some(&da));
 
+    // Seed the backend's persistent pango context from the widget so
+    // `form_layout()` and other `_layout()` methods can use exact Pango
+    // measurement outside the draw callback.
+    {
+        let pctx = da.pango_context();
+        let font_desc = pg::FontDescription::from_string("Sans 11");
+        pctx.set_font_description(Some(&font_desc));
+        backend.borrow_mut().set_pango_context(pctx);
+    }
+
     // App setup hook (one-time).
     {
         let mut backend_mut = backend.borrow_mut();
