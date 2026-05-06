@@ -325,7 +325,7 @@ impl MenuSystem {
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let menu_width = 20.0 * lh;
         let ctx_menu = self.build_dropdown(open_idx);
-        let item_h = (lh * 1.4).max(lh + 4.0);
+        let item_h = lh * 1.4;
         let layout = ctx_menu.layout_at(anchor, viewport_rect, menu_width, |i| {
             if ctx_menu.items[i].is_separator() {
                 ContextMenuItemMeasure::new(lh * 0.5)
