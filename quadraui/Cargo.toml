@@ -16,6 +16,12 @@ tui = ["dep:ratatui"]
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 gtk = ["dep:gtk4", "dep:pangocairo"]
 
+# Public Win-GUI rasterisers in `quadraui::win`. No deps yet — the
+# feature gate exists so the module compiles and the Backend impl is
+# exercised by `cargo check --features win`. Actual Direct2D /
+# DirectWrite deps (via `windows-rs`) land when #19 ships.
+win = []
+
 # Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
 # keeps working as a deprecated spelling. Prefer `--features gtk` going
 # forward — both gtk_demo and gtk_app now go through `quadraui::gtk::run`.

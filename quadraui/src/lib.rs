@@ -96,6 +96,8 @@ pub mod types;
 pub mod gtk;
 #[cfg(feature = "tui")]
 pub mod tui;
+#[cfg(feature = "win")]
+pub mod win;
 
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
 // See quadraui/docs/BACKEND_TRAIT_PROPOSAL.md for design. These modules add
