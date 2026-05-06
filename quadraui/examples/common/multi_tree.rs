@@ -17,9 +17,9 @@
 //! - `q` / `Esc`                  quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Key, NamedKey, Reaction, Rect, SectionSize,
-    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, StyledText,
-    TreeRow, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Decoration, Key, NamedKey, Reaction, Rect, SectionSize, SidebarEvent,
+    SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, StyledText, TreeRow, UiEvent,
+    WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;

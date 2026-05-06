@@ -8,7 +8,7 @@
 //! Controls:
 //! - mouse click on toggle  → flip value
 //! - mouse click on button  → log to status bar
-//! - `Tab`                  → cycle focused field
+//! - `Tab` / `Shift+Tab`    → cycle focused field (via FocusRing)
 //! - `q` / `Esc`            → quit
 
 #[path = "common/mod.rs"]

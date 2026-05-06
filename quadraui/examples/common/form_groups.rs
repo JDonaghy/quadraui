@@ -1,5 +1,5 @@
-//! Backend-agnostic Form demo showcasing `FieldKind::ToggleGroup` and
-//! `FieldKind::ButtonRow` — horizontal multi-item field layouts.
+//! Backend-agnostic Form demo showcasing `FieldKind::ToggleGroup`,
+//! `FieldKind::ButtonRow`, and [`FocusRing`] for Tab/Shift+Tab cycling.
 //!
 //! Single [`AppLogic`] impl drives both the TUI runner and the GTK
 //! runner. The thin shells in `examples/{tui,gtk}_form_groups.rs` are
@@ -14,13 +14,13 @@
 //! Controls:
 //! - mouse click on toggle  → flip value
 //! - mouse click on button  → log to status bar
-//! - `Tab`                  → cycle focused field
+//! - `Tab` / `Shift+Tab`    → cycle focused field (via FocusRing)
 //! - `q` / `Esc`            → quit
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, Form, FormField, FormHit, Key, MouseButton,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, ToggleGroupItem, UiEvent,
-    WidgetId,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField, FormHit, Key,
+    Modifiers, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    ToggleGroupItem, UiEvent, WidgetId,
 };
 
 pub struct FormGroupsApp {
@@ -29,7 +29,7 @@ pub struct FormGroupsApp {
     case_sensitive: bool,
     whole_word: bool,
     regex: bool,
-    focused_field: Option<WidgetId>,
+    focus: FocusRing,
     last_action: String,
 }
 
@@ -41,7 +41,7 @@ impl FormGroupsApp {
             case_sensitive: true,
             whole_word: false,
             regex: false,
-            focused_field: Some(WidgetId::new("search")),
+            focus: FocusRing::new(vec!["search", "toggles", "replace", "buttons"]),
             last_action: "—".into(),
         }
     }
@@ -125,7 +125,7 @@ impl FormGroupsApp {
                     disabled: false,
                 },
             ],
-            focused_field: self.focused_field.clone(),
+            focused_field: self.focus.current().cloned(),
             scroll_offset: 0,
             has_focus: true,
         }
@@ -168,25 +168,12 @@ impl FormGroupsApp {
                         self.last_action = "Replace All".into();
                     }
                 } else {
-                    self.focused_field = Some(id.clone());
+                    self.focus.set(id);
                     self.last_action = format!("focus → {}", id.as_str());
                 }
             }
             FormHit::Empty => {}
         }
-    }
-
-    fn cycle_focus(&mut self) {
-        let ids = ["search", "toggles", "replace", "buttons"];
-        let cur = self
-            .focused_field
-            .as_ref()
-            .and_then(|id| ids.iter().position(|&s| s == id.as_str()));
-        let next = match cur {
-            Some(i) => (i + 1) % ids.len(),
-            None => 0,
-        };
-        self.focused_field = Some(WidgetId::new(ids[next]));
     }
 
     fn build_status_bar(&self) -> StatusBar {
@@ -202,7 +189,7 @@ impl FormGroupsApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " click / Tab / q ".into(),
+                text: " click / Tab / Shift+Tab / q ".into(),
                 fg,
                 bg,
                 bold: false,
@@ -238,10 +225,14 @@ impl AppLogic for FormGroupsApp {
                 self.click(backend, position.x, position.y);
                 Reaction::Redraw
             }
-            UiEvent::KeyPressed { key, .. } => match key {
+            UiEvent::KeyPressed { key, modifiers, .. } => match key {
                 Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
                 Key::Named(NamedKey::Tab) => {
-                    self.cycle_focus();
+                    if modifiers.shift {
+                        self.focus.retreat();
+                    } else {
+                        self.focus.advance();
+                    }
                     Reaction::Redraw
                 }
                 _ => Reaction::Continue,
