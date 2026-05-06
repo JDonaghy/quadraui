@@ -19,7 +19,7 @@
 
 use quadraui::{
     AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField, FormHit, Key,
-    Modifiers, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
     ToggleGroupItem, UiEvent, WidgetId,
 };
 
@@ -225,14 +225,14 @@ impl AppLogic for FormGroupsApp {
                 self.click(backend, position.x, position.y);
                 Reaction::Redraw
             }
-            UiEvent::KeyPressed { key, modifiers, .. } => match key {
+            UiEvent::KeyPressed { key, .. } => match key {
                 Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
                 Key::Named(NamedKey::Tab) => {
-                    if modifiers.shift {
-                        self.focus.retreat();
-                    } else {
-                        self.focus.advance();
-                    }
+                    self.focus.advance();
+                    Reaction::Redraw
+                }
+                Key::Named(NamedKey::BackTab) => {
+                    self.focus.retreat();
                     Reaction::Redraw
                 }
                 _ => Reaction::Continue,
