@@ -157,13 +157,14 @@ impl MenuBarApp {
         let bar_layout = backend.menu_bar_layout(menu_rect, &bar);
         let raw_anchor = bar_layout.visible_items[open_idx].bounds;
         // Pad the anchor so the TUI rasteriser's 1-cell border outside
-        // layout.bounds doesn't overwrite the menu bar (top) or clip
-        // at x=0 (left). lh is 1 cell on TUI, ~16px on GTK.
+        // layout.bounds doesn't overwrite the menu bar. The x-offset
+        // avoids clipping at x=0. The height offset is 1 cell on TUI
+        // (~1.0) and ~2px on GTK to keep the dropdown tight.
         let anchor = Rect::new(
-            raw_anchor.x + lh,
+            raw_anchor.x + (lh * 0.15).max(1.0),
             raw_anchor.y,
             raw_anchor.width,
-            raw_anchor.height + lh,
+            raw_anchor.height + (lh * 0.15).max(1.0),
         );
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let menu_width = 20.0 * lh;
