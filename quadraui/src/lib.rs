@@ -99,6 +99,8 @@ pub mod tui;
 #[cfg(feature = "win")]
 pub mod win;
 
+pub mod compose;
+
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
 // See quadraui/docs/BACKEND_TRAIT_PROPOSAL.md for design. These modules add
 // the unified cross-backend surface alongside the existing per-backend
@@ -239,6 +241,7 @@ pub use dispatch::{
 };
 pub use modal_stack::{ModalEntry, ModalStack};
 pub use runner::{AppLogic, Reaction};
+pub use compose::{MenuDef, MenuEvent, MenuSystem};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
