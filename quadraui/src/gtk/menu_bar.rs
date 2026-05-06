@@ -23,10 +23,10 @@ pub fn gtk_menu_bar_layout(
     x: f64,
     y: f64,
     width: f64,
-    line_height: f64,
+    height: f64,
     bar: &MenuBar,
 ) -> MenuBarLayout {
-    let bounds = Rect::new(x as f32, y as f32, width as f32, line_height as f32);
+    let bounds = Rect::new(x as f32, y as f32, width as f32, height as f32);
     bar.layout(bounds, |i| {
         let text = display_text(&bar.items[i].label);
         pango_layout.set_text(&text);
@@ -36,8 +36,14 @@ pub fn gtk_menu_bar_layout(
     })
 }
 
-/// Draw a [`MenuBar`] into `(x, y, width, line_height)` on `cr`.
+/// Draw a [`MenuBar`] into `(x, y, width, height)` on `cr`.
 /// Returns the layout for host click dispatch.
+///
+/// The bar occupies the full `height` — background fill, active-item
+/// highlight, and clip all span `height`, and labels are vertically
+/// centred. Pass `line_height` for a tight single-row bar, or a
+/// larger value (e.g. the titlebar DA height) when the bar shares a
+/// row with taller widgets like a command centre.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_menu_bar(
     cr: &Context,
@@ -45,7 +51,7 @@ pub fn draw_menu_bar(
     x: f64,
     y: f64,
     width: f64,
-    line_height: f64,
+    height: f64,
     bar: &MenuBar,
     theme: &Theme,
 ) -> MenuBarLayout {
@@ -54,15 +60,15 @@ pub fn draw_menu_bar(
     pango_layout.set_ellipsize(pango::EllipsizeMode::None);
 
     cr.save().ok();
-    cr.rectangle(x, y, width, line_height);
+    cr.rectangle(x, y, width, height);
     cr.clip();
 
     let fill = cairo_rgb(theme.tab_bar_bg);
     cr.set_source_rgb(fill.0, fill.1, fill.2);
-    cr.rectangle(x, y, width, line_height);
+    cr.rectangle(x, y, width, height);
     cr.fill().ok();
 
-    let layout = gtk_menu_bar_layout(pango_layout, x, y, width, line_height, bar);
+    let layout = gtk_menu_bar_layout(pango_layout, x, y, width, height, bar);
 
     for vi in &layout.visible_items {
         let item = &bar.items[vi.item_idx];
@@ -81,7 +87,7 @@ pub fn draw_menu_bar(
 
         if is_active {
             set_source(cr, bg_color);
-            cr.rectangle(item_x, y, item_w, line_height);
+            cr.rectangle(item_x, y, item_w, height);
             cr.fill().ok();
         }
 
@@ -99,10 +105,12 @@ pub fn draw_menu_bar(
         pango_layout.set_attributes(Some(&attrs));
 
         let text_w = pango_layout.pixel_size().0.max(0) as f64;
+        let text_h = pango_layout.pixel_size().1.max(0) as f64;
         let text_x = item_x + (item_w - text_w) / 2.0;
+        let text_y = y + (height - text_h) / 2.0;
 
         set_source(cr, fg_color);
-        cr.move_to(text_x, y);
+        cr.move_to(text_x, text_y);
         pcfn::show_layout(cr, pango_layout);
     }
 
