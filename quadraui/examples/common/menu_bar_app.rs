@@ -182,7 +182,7 @@ impl MenuBarApp {
     fn open_menu(&mut self, idx: usize, backend: &mut dyn Backend) {
         self.open_item = Some(idx);
         self.focused_item = Some(idx);
-        self.dropdown_selected = self.first_selectable(idx);
+        self.dropdown_selected = self.build_dropdown(idx).first_selectable();
         if let Some((_menu, layout)) = self.dropdown_layout(backend) {
             backend
                 .modal_stack_mut()
@@ -209,32 +209,12 @@ impl MenuBarApp {
         from
     }
 
-    fn first_selectable(&self, menu_idx: usize) -> usize {
-        for (i, item) in self.menus[menu_idx].iter().enumerate() {
-            if !item.is_separator() && !item.disabled {
-                return i;
-            }
-        }
-        0
-    }
-
-    fn move_selection(&mut self, delta: isize) {
+    fn move_selection(&mut self, delta: i32) {
         let Some(open_idx) = self.open_item else {
             return;
         };
-        let items = &self.menus[open_idx];
-        if items.is_empty() {
-            return;
-        }
-        let n = items.len() as isize;
-        let mut idx = self.dropdown_selected as isize;
-        for _ in 0..items.len() {
-            idx = (idx + delta).rem_euclid(n);
-            if !items[idx as usize].is_separator() && !items[idx as usize].disabled {
-                self.dropdown_selected = idx as usize;
-                return;
-            }
-        }
+        let dropdown = self.build_dropdown(open_idx);
+        self.dropdown_selected = dropdown.move_selection(self.dropdown_selected, delta);
     }
 
     fn activate_selected(&mut self, backend: &mut dyn Backend) {

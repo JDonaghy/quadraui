@@ -25,8 +25,9 @@ use serde::{Deserialize, Serialize};
 pub struct ContextMenu {
     pub id: WidgetId,
     pub items: Vec<ContextMenuItem>,
-    /// Index of the keyboard-selected item. Apps are responsible for
-    /// skipping separators when navigating.
+    /// Index of the keyboard-selected item. Use [`Self::move_selection`]
+    /// and [`Self::first_selectable`] to navigate — they skip separators
+    /// and disabled items automatically.
     pub selected_idx: usize,
     /// Background colour override. `None` = theme default.
     #[serde(default)]
@@ -361,5 +362,132 @@ impl ContextMenu {
             hit_regions,
             resolved_placement,
         }
+    }
+
+    /// Index of the first non-separator, non-disabled item.
+    /// Returns 0 if no selectable items exist.
+    pub fn first_selectable(&self) -> usize {
+        self.items
+            .iter()
+            .position(|item| !item.is_separator() && !item.disabled)
+            .unwrap_or(0)
+    }
+
+    /// Navigate selection by `delta` steps (positive = down, negative = up),
+    /// skipping separators and disabled items, wrapping at boundaries.
+    /// Returns the new selected index, or `current` if no selectable item
+    /// exists.
+    pub fn move_selection(&self, current: usize, delta: i32) -> usize {
+        if self.items.is_empty() {
+            return current;
+        }
+        let n = self.items.len() as i32;
+        let mut idx = current as i32;
+        for _ in 0..self.items.len() {
+            idx = (idx + delta).rem_euclid(n);
+            let item = &self.items[idx as usize];
+            if !item.is_separator() && !item.disabled {
+                return idx as usize;
+            }
+        }
+        current
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{StyledText, WidgetId};
+
+    fn action(id: &str) -> ContextMenuItem {
+        ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(id),
+            detail: None,
+            disabled: false,
+        }
+    }
+
+    fn separator() -> ContextMenuItem {
+        ContextMenuItem {
+            id: None,
+            label: StyledText::default(),
+            detail: None,
+            disabled: false,
+        }
+    }
+
+    fn disabled(id: &str) -> ContextMenuItem {
+        ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(id),
+            detail: None,
+            disabled: true,
+        }
+    }
+
+    fn menu(items: Vec<ContextMenuItem>) -> ContextMenu {
+        ContextMenu {
+            id: WidgetId::new("test-menu"),
+            items,
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+        }
+    }
+
+    #[test]
+    fn first_selectable_skips_separator_and_disabled() {
+        let m = menu(vec![separator(), disabled("x"), action("a"), action("b")]);
+        assert_eq!(m.first_selectable(), 2);
+    }
+
+    #[test]
+    fn first_selectable_returns_zero_when_all_inert() {
+        let m = menu(vec![separator(), disabled("x")]);
+        assert_eq!(m.first_selectable(), 0);
+    }
+
+    #[test]
+    fn first_selectable_first_item() {
+        let m = menu(vec![action("a"), separator(), action("b")]);
+        assert_eq!(m.first_selectable(), 0);
+    }
+
+    #[test]
+    fn move_selection_skips_separators() {
+        let m = menu(vec![action("a"), separator(), action("b")]);
+        assert_eq!(m.move_selection(0, 1), 2);
+        assert_eq!(m.move_selection(2, -1), 0);
+    }
+
+    #[test]
+    fn move_selection_skips_disabled() {
+        let m = menu(vec![action("a"), disabled("x"), action("b")]);
+        assert_eq!(m.move_selection(0, 1), 2);
+    }
+
+    #[test]
+    fn move_selection_wraps_forward() {
+        let m = menu(vec![action("a"), separator(), action("b")]);
+        assert_eq!(m.move_selection(2, 1), 0);
+    }
+
+    #[test]
+    fn move_selection_wraps_backward() {
+        let m = menu(vec![action("a"), separator(), action("b")]);
+        assert_eq!(m.move_selection(0, -1), 2);
+    }
+
+    #[test]
+    fn move_selection_returns_current_when_no_selectable() {
+        let m = menu(vec![separator(), disabled("x")]);
+        assert_eq!(m.move_selection(0, 1), 0);
+    }
+
+    #[test]
+    fn move_selection_empty_menu() {
+        let m = menu(vec![]);
+        assert_eq!(m.move_selection(0, 1), 0);
     }
 }
