@@ -298,7 +298,7 @@ impl MenuSystem {
         }
     }
 
-    pub fn dropdown_layout(
+    fn dropdown_layout(
         &self,
         backend: &dyn Backend,
         bar_rect: Rect,
