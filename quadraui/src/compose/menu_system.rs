@@ -81,6 +81,11 @@ impl MenuSystem {
             .pop(&self.dropdown_id);
     }
 
+    /// Return the current `MenuBar` descriptor without rendering.
+    pub fn menu_bar(&self) -> MenuBar {
+        self.build_menu_bar()
+    }
+
     /// Draw the menu bar and any open dropdown.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
         let bar = self.build_menu_bar();
