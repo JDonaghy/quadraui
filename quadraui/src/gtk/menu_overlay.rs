@@ -165,6 +165,12 @@ impl MenuOverlay {
 
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
 
+            // Clear the overlay surface so old content doesn't bleed
+            // through if the layout shifts between frames.
+            cr.set_operator(gtk4::cairo::Operator::Clear);
+            cr.paint().ok();
+            cr.set_operator(gtk4::cairo::Operator::Over);
+
             let mut b = backend.borrow_mut();
             b.begin_frame(Viewport::new(w as f32, h as f32, 1.0));
             b.enter_frame_scope(cr, &pango_layout, |b| {
