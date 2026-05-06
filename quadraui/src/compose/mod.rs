@@ -8,7 +8,10 @@
 //! open/close/navigate/hover logic.
 //!
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
+//! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 
 pub mod menu_system;
+pub mod sidebar_system;
 
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
+pub use sidebar_system::{SidebarEvent, SidebarSectionDef, SidebarSystem};

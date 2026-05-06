@@ -92,14 +92,27 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 |---|---|---|
 | `tui_app` / `gtk_app` | `tui` / `gtk` | Minimal `AppLogic` with a single `StatusBar`. The smallest possible runner-driven app. |
 | `tui_demo` / `gtk_demo` | `tui` / `gtk` | `TabBar` + `StatusBar` with focus cycling. Same `AppLogic` body across backends — only the runner call differs. |
-| `msv_multi_tree` / `gtk_multi_tree` | `tui` / `gtk` | Debug-sidebar consumer pattern: 4 `EqualShare` `TreeView` sections in a `MultiSectionView`, with per-section `scroll_offset` + `selected_path` owned by the host. Both are ~24-line runner shells; the shared `AppLogic` impl lives in `examples/common/multi_tree.rs`. See *Consumer patterns* in `CLAUDE.md`. |
+| `msv_multi_tree` / `gtk_multi_tree` | `tui` / `gtk` | Debug-sidebar using `SidebarSystem` compose helper: 4 `EqualShare` `TreeView` sections with per-section scroll/selection, keyboard nav, scrollbar drag — all handled by `SidebarSystem`. See *Compose helpers* below. |
 | `msv_sc_panel` | `tui` | Source-Control consumer pattern: `SectionAux::Input` commit message editor + N collapsible `TreeView` sections (Changes / Staged / Worktrees). Adds input-mode keystroke routing + chevron-click collapse toggle on top of the multi-tree shape. |
-| `tui_menu_bar` / `gtk_menu_bar` | `tui` / `gtk` | Complete menu bar with dropdown menus via `MenuBar` + `ContextMenu` composition. Hover-to-switch, keyboard navigation (Alt+key, arrows, Enter, Esc), realistic File/Edit/View menus. |
+| `tui_menu_bar` / `gtk_menu_bar` | `tui` / `gtk` | Complete menu bar using `MenuSystem` compose helper: dropdown menus, hover-to-switch, keyboard navigation (Alt+key, arrows, Enter, Esc). See *Compose helpers* below. |
 | `tui_split` / `gtk_split` | `tui` / `gtk` | Draggable `Split` with two labelled panes. Toggle horizontal/vertical, reset ratio. |
 | `tui_panel` / `gtk_panel` | `tui` / `gtk` | `Panel` with title bar, close/maximize actions, content area, collapse toggle. |
 | `tui_toast` / `gtk_toast` | `tui` / `gtk` | `ToastStack` with severity tints, dismiss, action buttons. |
 | `tui_indicators` / `gtk_indicators` | `tui` / `gtk` | `ProgressBar` + `Spinner` demo — determinate/indeterminate, cancel. |
 | `tui_search_panel` / `gtk_search_panel` | `tui` / `gtk` | Search panel spike: `MultiSectionView` + `TreeView` composition for file-search results. |
+| `tui_form_groups` / `gtk_form_groups` | `tui` / `gtk` | `Form` with `ToggleGroup` + `ButtonRow` horizontal field kinds. Mini search/replace panel shape. |
+
+## Compose Helpers
+
+High-level controllers in `quadraui::compose` that combine multiple
+primitives into reusable interaction patterns. Apps define structure,
+the helper owns the state machine, and the app matches on semantic
+events.
+
+| Helper | Primitives | What it handles |
+|---|---|---|
+| `MenuSystem` | `MenuBar` + `ContextMenu` | Open/close, Alt+key activation, arrow navigation, hover-to-switch, modal stack, dropdown anchoring. App matches on `MenuEvent::Activated(WidgetId)`. |
+| `SidebarSystem` | `MultiSectionView` + `TreeView` | Per-section scroll/selection, Tab cycling, scrollbar drag, two-layer click dispatch (MSV → TreeView with coordinate translation). App matches on `SidebarEvent::RowSelected { section, path }`. |
 
 ## Testing
 
