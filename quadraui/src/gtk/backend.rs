@@ -1052,7 +1052,8 @@ impl Backend for GtkBackend {
         rect: QRect,
         bar: &MenuBar,
     ) -> crate::primitives::menu_bar::MenuBarLayout {
-        let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        let lh = self.current_line_height as f32;
+        let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, lh);
         let char_w = self.current_char_width as f32;
         let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
         bar.layout(bounds, |i| {
