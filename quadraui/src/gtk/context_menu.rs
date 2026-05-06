@@ -55,7 +55,7 @@ pub fn draw_context_menu(
 
     cr.set_source_rgb(border.0, border.1, border.2);
     cr.set_line_width(1.0);
-    cr.rectangle(bx, by, bw, bh);
+    cr.rectangle(bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0);
     cr.stroke().ok();
 
     let mut rects: Vec<(f64, f64, f64, f64, WidgetId)> = Vec::new();

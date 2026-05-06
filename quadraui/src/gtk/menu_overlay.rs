@@ -158,8 +158,8 @@ impl MenuOverlay {
             let pango_layout = pango::Layout::new(&pango_ctx);
             let font_desc = pango::FontDescription::from_string(&font_str);
             pango_layout.set_font_description(Some(&font_desc));
-            pango_layout.set_text("Xy");
-            let lh = pango_layout.pixel_size().1 as f64;
+            let metrics = pango_ctx.metrics(Some(&font_desc), None);
+            let lh = (metrics.ascent() + metrics.descent()) as f64 / pango::SCALE as f64;
             pango_layout.set_text("M");
             let cw = pango_layout.pixel_size().0 as f64;
 
