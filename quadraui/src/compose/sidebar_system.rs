@@ -282,13 +282,7 @@ impl SidebarSystem {
         }
     }
 
-    fn click(
-        &mut self,
-        backend: &mut dyn Backend,
-        rect: Rect,
-        x: f32,
-        y: f32,
-    ) -> SidebarEvent {
+    fn click(&mut self, backend: &mut dyn Backend, rect: Rect, x: f32, y: f32) -> SidebarEvent {
         let view = self.build_view();
         let layout = backend.msv_layout(rect, &view);
         match layout.hit_test(x, y) {
@@ -552,9 +546,7 @@ mod tests {
         ss.active_section = Some(0);
         let view = ss.build_view();
         assert_eq!(view.sections.len(), 3);
-        assert!(view.sections[0].header.title.spans[0]
-            .text
-            .starts_with("▶"));
+        assert!(view.sections[0].header.title.spans[0].text.starts_with("▶"));
         assert_eq!(view.active_section, Some(0));
     }
 }
