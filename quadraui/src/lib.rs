@@ -235,13 +235,13 @@ pub use event::{
 };
 
 // Phase B.4 re-exports.
+pub use compose::{MenuDef, MenuEvent, MenuSystem};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     DragState, DragTarget, ScrollSurface, SurfaceScrollbar,
 };
 pub use modal_stack::{ModalEntry, ModalStack};
 pub use runner::{AppLogic, Reaction};
-pub use compose::{MenuDef, MenuEvent, MenuSystem};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

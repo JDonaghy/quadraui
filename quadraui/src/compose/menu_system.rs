@@ -76,9 +76,7 @@ impl MenuSystem {
     pub fn close(&mut self, backend: &mut dyn Backend) {
         self.open_item = None;
         self.focused_item = None;
-        backend
-            .modal_stack_mut()
-            .pop(&self.dropdown_id);
+        backend.modal_stack_mut().pop(&self.dropdown_id);
     }
 
     /// Return the current `MenuBar` descriptor without rendering.
@@ -304,7 +302,10 @@ impl MenuSystem {
         &self,
         backend: &dyn Backend,
         bar_rect: Rect,
-    ) -> Option<(ContextMenu, crate::primitives::context_menu::ContextMenuLayout)> {
+    ) -> Option<(
+        ContextMenu,
+        crate::primitives::context_menu::ContextMenuLayout,
+    )> {
         let open_idx = self.open_item?;
         if self.menus[open_idx].items.is_empty() {
             return None;

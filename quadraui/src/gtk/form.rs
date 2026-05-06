@@ -175,7 +175,10 @@ pub fn draw_form(
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("]");
-                    cr.move_to(bracket_right, (y_off + (row_h - shown_h as f64) / 2.0).round());
+                    cr.move_to(
+                        bracket_right,
+                        (y_off + (row_h - shown_h as f64) / 2.0).round(),
+                    );
                     pcfn::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
@@ -352,7 +355,10 @@ pub fn draw_settings_chrome(
     cr.set_source_rgb(hdr_fg.0, hdr_fg.1, hdr_fg.2);
     layout.set_text(header_text);
     let (_, header_lh) = layout.pixel_size();
-    cr.move_to(x + 2.0, (y + (line_height - header_lh as f64) / 2.0).round());
+    cr.move_to(
+        x + 2.0,
+        (y + (line_height - header_lh as f64) / 2.0).round(),
+    );
     pcfn::show_layout(cr, layout);
 
     // Row 1: search input.
@@ -366,7 +372,10 @@ pub fn draw_settings_chrome(
     cr.set_source_rgb(dim.0, dim.1, dim.2);
     layout.set_text(prefix);
     let (prefix_w, _) = layout.pixel_size();
-    cr.move_to(x + 2.0, (search_y + (line_height - header_lh as f64) / 2.0).round());
+    cr.move_to(
+        x + 2.0,
+        (search_y + (line_height - header_lh as f64) / 2.0).round(),
+    );
     pcfn::show_layout(cr, layout);
 
     let q_x = x + 2.0 + prefix_w as f64;
@@ -381,7 +390,10 @@ pub fn draw_settings_chrome(
     cr.set_source_rgb(color.0, color.1, color.2);
     layout.set_text(text);
     let (q_w, _) = layout.pixel_size();
-    cr.move_to(q_x, (search_y + (line_height - header_lh as f64) / 2.0).round());
+    cr.move_to(
+        q_x,
+        (search_y + (line_height - header_lh as f64) / 2.0).round(),
+    );
     pcfn::show_layout(cr, layout);
 
     if active {
