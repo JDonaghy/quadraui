@@ -144,6 +144,15 @@ multi-primitive compositions so consumers don't reimplement them:
 - `MenuSystem` — MenuBar + ContextMenu dropdown interaction.
 - `SidebarSystem` — MSV + TreeView sidebar panel interaction.
 
+**GTK hosting helpers** in `quadraui/src/gtk/`:
+
+- `MenuOverlay` — encapsulates the DrawingArea boilerplate for
+  MenuSystem dropdown popups when the menu bar lives in a separate
+  titlebar widget. Handles the negative-y coordinate transform,
+  `set_focusable(false)`, `can_target` toggling, surface clearing,
+  and draw/click/motion wiring. Apps that use the single-DA runner
+  don't need this — the dropdown paints on the same surface.
+
 **Backend trait** in `quadraui/src/backend.rs` plumbs frame state and
 the `set_current_theme` / `set_nerd_fonts` setters that hosts call once
 per frame. Per-primitive `draw_*` functions are free functions in the
@@ -591,6 +600,34 @@ Two long-lived branches:
   section-highlights-another bugs because paint and click
   independently called `tui_msv_layout` with slightly different
   inputs. Switching to layout caching eliminated the class.
+
+  ### Backend draw_* and *_layout must agree on which dimensions they use
+
+  When a `Backend` trait method pair (`draw_foo` / `foo_layout`) uses
+  different dimensions for the same parameter, paint and hit-testing
+  diverge. First hit: GTK's `draw_menu_bar` passed
+  `self.current_line_height` to the rasteriser while `menu_bar_layout`
+  used `rect.height`. When consumers passed a bar_rect taller than
+  line_height (titlebar DA with a command centre), the dropdown
+  anchored below the full rect in hit-testing but painted at
+  line_height — producing a gap and broken clicks.
+
+  Rule: for every `(draw_foo, foo_layout)` pair, audit that they
+  pass the same rect/height/width to the underlying layout
+  computation. If the rasteriser overrides a caller-provided
+  dimension (e.g. substituting line_height for rect.height), the
+  layout method must apply the same override.
+
+  ### Dropdown item sizing must use backend-native units
+
+  `MenuSystem::dropdown_layout()` computes item heights from
+  `backend.line_height()`. Adding a constant (`lh + 4.0`) assumes
+  pixel units — in TUI where `lh = 1.0` cell, `lh + 4.0 = 5.0`
+  cells per item. Multiplicative scaling (`lh * 1.4`) is safe
+  across unit systems, but fractional values (1.4 cells) cause
+  items to land on non-integer rows with blank gaps. Fix: round
+  to the nearest integer (`(lh * 1.4).round()`). For TUI this
+  snaps to 1 cell; for GTK the rounding is sub-pixel and invisible.
 
 ## What NOT to do
 
