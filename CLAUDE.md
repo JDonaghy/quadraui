@@ -136,6 +136,14 @@ All non-trivial work should be tracked via GitHub Issues. Issues are the source 
   Each consumes the primitive's `layout()` and paints verbatim. **Must
   NOT contain layout decisions** that the primitive could express.
 
+**Compose helpers** in `quadraui/src/compose/` sit above primitives
+and below apps. They own interaction state machines for common
+multi-primitive compositions so consumers don't reimplement them:
+
+- `FocusRing` — Tab/Shift+Tab cycling through widget IDs.
+- `MenuSystem` — MenuBar + ContextMenu dropdown interaction.
+- `SidebarSystem` — MSV + TreeView sidebar panel interaction.
+
 **Backend trait** in `quadraui/src/backend.rs` plumbs frame state and
 the `set_current_theme` / `set_nerd_fonts` setters that hosts call once
 per frame. Per-primitive `draw_*` functions are free functions in the

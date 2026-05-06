@@ -100,7 +100,7 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 | `tui_toast` / `gtk_toast` | `tui` / `gtk` | `ToastStack` with severity tints, dismiss, action buttons. |
 | `tui_indicators` / `gtk_indicators` | `tui` / `gtk` | `ProgressBar` + `Spinner` demo — determinate/indeterminate, cancel. |
 | `tui_search_panel` / `gtk_search_panel` | `tui` / `gtk` | Search panel spike: `MultiSectionView` + `TreeView` composition for file-search results. |
-| `tui_form_groups` / `gtk_form_groups` | `tui` / `gtk` | `Form` with `ToggleGroup` + `ButtonRow` horizontal field kinds. Mini search/replace panel shape. |
+| `tui_form_groups` / `gtk_form_groups` | `tui` / `gtk` | `Form` with `ToggleGroup` + `ButtonRow` horizontal field kinds, plus `FocusRing` for Tab/Shift+Tab cycling. Mini search/replace panel shape. |
 
 ## Compose Helpers
 
@@ -111,6 +111,7 @@ events.
 
 | Helper | Primitives | What it handles |
 |---|---|---|
+| `FocusRing` | Any focusable widgets | Tab/Shift+Tab cycling through a list of `WidgetId`s. `advance()`, `retreat()`, `set()`, `current()`. Eliminates repeated modulo arithmetic. |
 | `MenuSystem` | `MenuBar` + `ContextMenu` | Open/close, Alt+key activation, arrow navigation, hover-to-switch, modal stack, dropdown anchoring. App matches on `MenuEvent::Activated(WidgetId)`. |
 | `SidebarSystem` | `MultiSectionView` + `TreeView` | Per-section scroll/selection, Tab cycling, scrollbar drag, two-layer click dispatch (MSV → TreeView with coordinate translation). App matches on `SidebarEvent::RowSelected { section, path }`. |
 
