@@ -257,6 +257,15 @@ impl GtkBackend {
         self.pango_ctx = Some(ctx);
     }
 
+    /// Create a `pango::Layout` from the stored Pango context (set via
+    /// [`Self::set_pango_context`]). The layout inherits the stable font
+    /// options from init, avoiding per-frame font-hinting variance that
+    /// occurs when creating a context from a transient Cairo surface.
+    /// Returns `None` if no Pango context has been stored.
+    pub fn create_stable_pango_layout(&self) -> Option<pango::Layout> {
+        self.pango_ctx.as_ref().map(pango::Layout::new)
+    }
+
     /// Measure a `StyledText` label width in pixels using Pango if
     /// available, falling back to `visible_width * char_w`.
     fn pango_text_width(

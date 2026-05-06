@@ -154,14 +154,23 @@ impl MenuOverlay {
             if !menu_system.borrow().is_open() {
                 return;
             }
-            let pango_ctx = pcfn::create_context(cr);
-            let pango_layout = pango::Layout::new(&pango_ctx);
+            let b_ref = backend.borrow();
+            let pango_layout = match b_ref.create_stable_pango_layout() {
+                Some(pl) => pl,
+                None => {
+                    let ctx = pcfn::create_context(cr);
+                    pango::Layout::new(&ctx)
+                }
+            };
+            pcfn::update_layout(cr, &pango_layout);
             let font_desc = pango::FontDescription::from_string(&font_str);
             pango_layout.set_font_description(Some(&font_desc));
+            let pango_ctx = pango_layout.context();
             let metrics = pango_ctx.metrics(Some(&font_desc), None);
             let lh = (metrics.ascent() + metrics.descent()) as f64 / pango::SCALE as f64;
             pango_layout.set_text("M");
             let cw = pango_layout.pixel_size().0 as f64;
+            drop(b_ref);
 
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
 
