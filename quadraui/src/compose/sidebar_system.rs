@@ -17,8 +17,9 @@
 
 use crate::{
     Backend, ButtonMask, Key, MouseButton, MsvAxis, MultiSectionView, MultiSectionViewHit,
-    NamedKey, Rect, ScrollMode, ScrollbarHit, Section, SectionBody, SectionHeader, SectionSize,
-    SelectionMode, StyledText, TreePath, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
+    NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeView, TreeViewHit, UiEvent,
+    WidgetId,
 };
 
 /// How Up/Down keys behave in the sidebar.
@@ -63,6 +64,13 @@ pub enum SidebarEvent {
     /// Distinct from `RowSelected` (click-driven) — lets apps
     /// distinguish keyboard activation from mouse selection.
     RowActivated { section: usize, path: TreePath },
+    /// Right-click on a body row. `position` is the click position
+    /// in the backend's native coordinates (for context menu placement).
+    ContextMenuRequested {
+        section: usize,
+        path: TreePath,
+        position: Point,
+    },
     /// Scrollbar interaction (drag or page).
     ScrollChanged { section: usize },
     /// State changed (navigation, collapse) — app should redraw.
@@ -196,6 +204,13 @@ impl SidebarSystem {
                 position,
                 ..
             } => self.click(backend, rect, position.x, position.y),
+
+            // ── Right-click ──────────────────────────────────────
+            UiEvent::MouseDown {
+                button: MouseButton::Right,
+                position,
+                ..
+            } => self.right_click(backend, rect, *position),
 
             // ── Mouse drag ────────────────────────────────────────
             UiEvent::MouseMoved {
@@ -541,6 +556,40 @@ impl SidebarSystem {
                 let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
                 self.page_scroll(section, viewport_rows as isize, viewport_rows);
                 SidebarEvent::ScrollChanged { section }
+            }
+            _ => SidebarEvent::Ignored,
+        }
+    }
+
+    fn right_click(
+        &mut self,
+        backend: &mut dyn Backend,
+        rect: Rect,
+        position: Point,
+    ) -> SidebarEvent {
+        let view = self.build_view();
+        let layout = backend.msv_layout(rect, &view);
+        match layout.hit_test(position.x, position.y) {
+            MultiSectionViewHit::Body { section } => {
+                let body_b = layout.sections[section].body_bounds;
+                let tree = match &view.sections[section].body {
+                    SectionBody::Tree(t) => t.clone(),
+                    _ => return SidebarEvent::Ignored,
+                };
+                let inner = backend.tree_layout(body_b, &tree);
+                match inner.hit_test(position.x - body_b.x, position.y - body_b.y) {
+                    TreeViewHit::Row(idx) => {
+                        let path = tree.rows[idx].path.clone();
+                        self.active_section = Some(section);
+                        self.selected_paths[section] = Some(path.clone());
+                        SidebarEvent::ContextMenuRequested {
+                            section,
+                            path,
+                            position,
+                        }
+                    }
+                    TreeViewHit::Empty => SidebarEvent::Ignored,
+                }
             }
             _ => SidebarEvent::Ignored,
         }

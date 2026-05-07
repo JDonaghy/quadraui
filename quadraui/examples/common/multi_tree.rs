@@ -124,6 +124,17 @@ impl AppLogic for DebugSidebar {
                 self.last_action = format!("row→{section} {path:?}");
                 Reaction::Redraw
             }
+            SidebarEvent::ContextMenuRequested {
+                section,
+                path,
+                position,
+            } => {
+                self.last_action = format!(
+                    "ctx→{section} {path:?} @({:.0},{:.0})",
+                    position.x, position.y
+                );
+                Reaction::Redraw
+            }
             SidebarEvent::ScrollChanged { .. }
             | SidebarEvent::StateChanged
             | SidebarEvent::Consumed => Reaction::Redraw,
