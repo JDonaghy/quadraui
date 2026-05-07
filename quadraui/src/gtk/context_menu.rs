@@ -60,8 +60,9 @@ pub fn draw_context_menu(
 
     let mut rects: Vec<(f64, f64, f64, f64, WidgetId)> = Vec::new();
 
+    // Pass 1: backgrounds (separators + selection highlights).
+    // Drawn first so no highlight can overwrite previously rendered text.
     for vis in &menu_layout.visible_items {
-        let item = &menu.items[vis.item_idx];
         let row_x = vis.bounds.x as f64;
         let row_y = vis.bounds.y as f64;
         let row_w = vis.bounds.width as f64;
@@ -84,6 +85,26 @@ pub fn draw_context_menu(
             cr.fill().ok();
         }
 
+        if vis.clickable {
+            if let Some(ref id) = menu.items[vis.item_idx].id {
+                rects.push((row_x, row_y, row_w, row_h, id.clone()));
+            }
+        }
+    }
+
+    // Pass 2: text (labels + detail/shortcut).
+    // Rendered on top of all backgrounds so descenders are never clipped.
+    for vis in &menu_layout.visible_items {
+        if vis.is_separator {
+            continue;
+        }
+
+        let item = &menu.items[vis.item_idx];
+        let row_x = vis.bounds.x as f64;
+        let row_y = vis.bounds.y as f64;
+        let row_w = vis.bounds.width as f64;
+        let row_h = vis.bounds.height as f64;
+
         let label_text: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
         let label_fg = if vis.clickable { fg } else { dim };
         cr.set_source_rgb(label_fg.0, label_fg.1, label_fg.2);
@@ -104,12 +125,7 @@ pub fn draw_context_menu(
                 pcfn::show_layout(cr, layout);
             }
         }
-
-        if vis.clickable {
-            if let Some(ref id) = item.id {
-                rects.push((row_x, row_y, row_w, row_h, id.clone()));
-            }
-        }
     }
+
     rects
 }
