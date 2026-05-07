@@ -193,7 +193,11 @@ impl MenuOverlay {
     ) {
         let gesture = GestureClick::new();
         gesture.set_button(1);
-        gesture.connect_pressed(move |_, _, x, y| {
+        gesture.connect_pressed(move |g, _, x, y| {
+            let w = g.widget().width() as f32;
+            let h = g.widget().height() as f32;
+            let mut b = backend.borrow_mut();
+            b.begin_frame(Viewport::new(w, h, 1.0));
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
             let ev = UiEvent::MouseDown {
                 widget: None,
@@ -201,10 +205,8 @@ impl MenuOverlay {
                 position: Point::new(x as f32, y as f32),
                 modifiers: Modifiers::default(),
             };
-            let menu_event =
-                menu_system
-                    .borrow_mut()
-                    .handle(&ev, &mut *backend.borrow_mut(), overlay_rect);
+            let menu_event = menu_system.borrow_mut().handle(&ev, &mut *b, overlay_rect);
+            drop(b);
             on_event(menu_event);
         });
         self.da.add_controller(gesture);
@@ -218,19 +220,21 @@ impl MenuOverlay {
         on_event: impl Fn(MenuEvent) + 'static,
     ) {
         let motion = EventControllerMotion::new();
-        motion.connect_motion(move |_, x, y| {
+        motion.connect_motion(move |m, x, y| {
             if !menu_system.borrow().is_open() {
                 return;
             }
+            let w = m.widget().width() as f32;
+            let h = m.widget().height() as f32;
+            let mut b = backend.borrow_mut();
+            b.begin_frame(Viewport::new(w, h, 1.0));
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
             let ev = UiEvent::MouseMoved {
                 position: Point::new(x as f32, y as f32),
                 buttons: ButtonMask::default(),
             };
-            let menu_event =
-                menu_system
-                    .borrow_mut()
-                    .handle(&ev, &mut *backend.borrow_mut(), overlay_rect);
+            let menu_event = menu_system.borrow_mut().handle(&ev, &mut *b, overlay_rect);
+            drop(b);
             on_event(menu_event);
         });
         self.da.add_controller(motion);
