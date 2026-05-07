@@ -5,6 +5,12 @@
 //! active section cycling, scrollbar drag, keyboard navigation, and
 //! two-layer click dispatch (MSV → TreeView with coordinate translation).
 //!
+//! Two navigation modes (set via [`SidebarSystem::set_navigation_mode`]):
+//! - [`NavigationMode::Scroll`] (default): Up/Down scroll the viewport.
+//! - [`NavigationMode::Selection`]: Up/Down/j/k move `selected_path` to
+//!   the next/previous row with scroll-to-follow. Home/End/PageUp/PageDown
+//!   jump by page or extremes. Enter emits [`SidebarEvent::RowActivated`].
+//!
 //! Apps define section structure via [`SidebarSectionDef`], set row data
 //! per frame via [`SidebarSystem::set_rows`], and match on
 //! [`SidebarEvent`] for semantic actions.
@@ -14,6 +20,17 @@ use crate::{
     NamedKey, Rect, ScrollMode, ScrollbarHit, Section, SectionBody, SectionHeader, SectionSize,
     SelectionMode, StyledText, TreePath, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
+
+/// How Up/Down keys behave in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavigationMode {
+    /// Up/Down scroll the viewport (legacy behaviour).
+    #[default]
+    Scroll,
+    /// Up/Down move `selected_path` to the next/previous row; the
+    /// viewport scrolls to keep the selection visible.
+    Selection,
+}
 
 /// Definition of one sidebar section (structure, not data).
 #[derive(Debug, Clone)]
@@ -42,6 +59,10 @@ pub enum SidebarEvent {
     HeaderActivated { section: usize },
     /// Tree row clicked — section activated + row selected.
     RowSelected { section: usize, path: TreePath },
+    /// Enter pressed on the currently selected row (Selection mode).
+    /// Distinct from `RowSelected` (click-driven) — lets apps
+    /// distinguish keyboard activation from mouse selection.
+    RowActivated { section: usize, path: TreePath },
     /// Scrollbar interaction (drag or page).
     ScrollChanged { section: usize },
     /// State changed (navigation, collapse) — app should redraw.
@@ -70,6 +91,7 @@ pub struct SidebarSystem {
     scroll_drag: Option<ScrollDrag>,
     has_focus: bool,
     allow_collapse: bool,
+    navigation_mode: NavigationMode,
 }
 
 impl SidebarSystem {
@@ -85,6 +107,7 @@ impl SidebarSystem {
             scroll_drag: None,
             has_focus: true,
             allow_collapse: false,
+            navigation_mode: NavigationMode::default(),
         }
     }
 
@@ -138,6 +161,14 @@ impl SidebarSystem {
 
     pub fn set_allow_collapse(&mut self, allow: bool) {
         self.allow_collapse = allow;
+    }
+
+    pub fn navigation_mode(&self) -> NavigationMode {
+        self.navigation_mode
+    }
+
+    pub fn set_navigation_mode(&mut self, mode: NavigationMode) {
+        self.navigation_mode = mode;
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -205,33 +236,184 @@ impl SidebarSystem {
                 self.cycle_active(-1);
                 SidebarEvent::StateChanged
             }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Up),
-                ..
-            } => {
-                self.scroll_active(backend, rect, -1);
-                SidebarEvent::Consumed
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                ..
-            } => {
-                self.scroll_active(backend, rect, 1);
-                SidebarEvent::Consumed
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Enter),
-                ..
-            } => {
-                self.select_first_of_active();
-                SidebarEvent::StateChanged
-            }
+            UiEvent::KeyPressed { key, .. } => self.handle_key(key, backend, rect),
 
             _ => SidebarEvent::Ignored,
         }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
+
+    fn handle_key(&mut self, key: &Key, backend: &mut dyn Backend, rect: Rect) -> SidebarEvent {
+        match self.navigation_mode {
+            NavigationMode::Scroll => self.handle_key_scroll(key, backend, rect),
+            NavigationMode::Selection => self.handle_key_selection(key, backend, rect),
+        }
+    }
+
+    fn handle_key_scroll(
+        &mut self,
+        key: &Key,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> SidebarEvent {
+        match key {
+            Key::Named(NamedKey::Up) => {
+                self.scroll_active(backend, rect, -1);
+                SidebarEvent::Consumed
+            }
+            Key::Named(NamedKey::Down) => {
+                self.scroll_active(backend, rect, 1);
+                SidebarEvent::Consumed
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.select_first_of_active();
+                SidebarEvent::StateChanged
+            }
+            _ => SidebarEvent::Ignored,
+        }
+    }
+
+    fn handle_key_selection(
+        &mut self,
+        key: &Key,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> SidebarEvent {
+        match key {
+            Key::Named(NamedKey::Up) | Key::Char('k') => self.move_selection(-1, backend, rect),
+            Key::Named(NamedKey::Down) | Key::Char('j') => self.move_selection(1, backend, rect),
+            Key::Named(NamedKey::Home) => self.jump_selection_to_edge(true, backend, rect),
+            Key::Named(NamedKey::End) => self.jump_selection_to_edge(false, backend, rect),
+            Key::Named(NamedKey::PageUp) => {
+                let vr = self.active_viewport_rows(backend, rect);
+                self.move_selection_by(-((vr.max(1) - 1).max(1) as isize), vr)
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let vr = self.active_viewport_rows(backend, rect);
+                self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
+            }
+            Key::Named(NamedKey::Enter) => self.activate_selection(),
+            _ => SidebarEvent::Ignored,
+        }
+    }
+
+    fn move_selection(
+        &mut self,
+        delta: isize,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> SidebarEvent {
+        let vr = self.active_viewport_rows(backend, rect);
+        self.move_selection_by(delta, vr)
+    }
+
+    fn move_selection_by(&mut self, delta: isize, viewport_rows: usize) -> SidebarEvent {
+        let Some(idx) = self.active_section else {
+            return SidebarEvent::Ignored;
+        };
+        if self.collapsed[idx] || self.rows[idx].is_empty() {
+            return SidebarEvent::Ignored;
+        }
+
+        let count = self.rows[idx].len();
+        let current = self.selected_row_index(idx);
+
+        let new = if let Some(cur) = current {
+            let target = cur as isize + delta;
+            target.max(0).min(count as isize - 1) as usize
+        } else if delta > 0 {
+            0
+        } else {
+            count - 1
+        };
+
+        if current == Some(new) {
+            return SidebarEvent::Consumed;
+        }
+
+        let path = self.rows[idx][new].path.clone();
+        self.selected_paths[idx] = Some(path.clone());
+        self.scroll_to_visible(idx, new, viewport_rows);
+        SidebarEvent::RowSelected { section: idx, path }
+    }
+
+    fn jump_selection_to_edge(
+        &mut self,
+        to_start: bool,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> SidebarEvent {
+        let vr = self.active_viewport_rows(backend, rect);
+        self.jump_selection_to_edge_by(to_start, vr)
+    }
+
+    fn jump_selection_to_edge_by(&mut self, to_start: bool, viewport_rows: usize) -> SidebarEvent {
+        let Some(idx) = self.active_section else {
+            return SidebarEvent::Ignored;
+        };
+        if self.rows[idx].is_empty() {
+            return SidebarEvent::Ignored;
+        }
+        let row = if to_start {
+            0
+        } else {
+            self.rows[idx].len() - 1
+        };
+        let path = self.rows[idx][row].path.clone();
+        self.selected_paths[idx] = Some(path.clone());
+        self.scroll_to_visible(idx, row, viewport_rows);
+        SidebarEvent::RowSelected { section: idx, path }
+    }
+
+    fn activate_selection(&self) -> SidebarEvent {
+        let Some(idx) = self.active_section else {
+            return SidebarEvent::Ignored;
+        };
+        match &self.selected_paths[idx] {
+            Some(path) => SidebarEvent::RowActivated {
+                section: idx,
+                path: path.clone(),
+            },
+            None => SidebarEvent::Ignored,
+        }
+    }
+
+    fn selected_row_index(&self, section: usize) -> Option<usize> {
+        let sel = self.selected_paths[section].as_ref()?;
+        self.rows[section].iter().position(|r| &r.path == sel)
+    }
+
+    fn scroll_to_visible(&mut self, section: usize, row: usize, viewport_rows: usize) {
+        if viewport_rows == 0 {
+            return;
+        }
+        let offset = self.scroll_offsets[section];
+        if row < offset {
+            self.scroll_offsets[section] = row;
+        } else if row >= offset + viewport_rows {
+            self.scroll_offsets[section] = row.saturating_sub(viewport_rows.saturating_sub(1));
+        }
+    }
+
+    fn active_viewport_rows(&self, backend: &mut dyn Backend, rect: Rect) -> usize {
+        let Some(idx) = self.active_section else {
+            return 0;
+        };
+        self.section_viewport_rows(idx, backend, rect)
+    }
+
+    fn section_viewport_rows(
+        &self,
+        section: usize,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> usize {
+        let view = self.build_view();
+        let layout = backend.msv_layout(rect, &view);
+        let body_b = layout.sections[section].body_bounds;
+        self.viewport_rows(backend, body_b, section, &view)
+    }
 
     fn build_view(&self) -> MultiSectionView {
         let sections: Vec<Section> = self
@@ -548,5 +730,164 @@ mod tests {
         assert_eq!(view.sections.len(), 3);
         assert!(view.sections[0].header.title.spans[0].text.starts_with("▶"));
         assert_eq!(view.active_section, Some(0));
+    }
+
+    // ── Selection-mode tests ────────────────────────────────────────
+
+    fn selection_sidebar() -> SidebarSystem {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_navigation_mode(NavigationMode::Selection);
+        ss.set_rows(0, fake_rows("v", 5));
+        ss.set_rows(1, fake_rows("w", 3));
+        ss.set_rows(2, fake_rows("b", 4));
+        ss.active_section = Some(0);
+        ss
+    }
+
+    #[test]
+    fn selection_down_selects_first_row_when_none_selected() {
+        let mut ss = selection_sidebar();
+        let ev = ss.move_selection_by(1, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![0]));
+        assert!(matches!(ev, SidebarEvent::RowSelected { section: 0, .. }));
+    }
+
+    #[test]
+    fn selection_down_advances_to_next_row() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![0]));
+        let ev = ss.move_selection_by(1, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![1]));
+        assert!(matches!(ev, SidebarEvent::RowSelected { section: 0, .. }));
+    }
+
+    #[test]
+    fn selection_up_moves_to_previous_row() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![2]));
+        ss.move_selection_by(-1, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![1]));
+    }
+
+    #[test]
+    fn selection_clamps_at_first_row() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![0]));
+        let ev = ss.move_selection_by(-1, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![0]));
+        assert_eq!(ev, SidebarEvent::Consumed);
+    }
+
+    #[test]
+    fn selection_clamps_at_last_row() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![4]));
+        let ev = ss.move_selection_by(1, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![4]));
+        assert_eq!(ev, SidebarEvent::Consumed);
+    }
+
+    #[test]
+    fn selection_up_with_no_selection_selects_last_row() {
+        let mut ss = selection_sidebar();
+        ss.move_selection_by(-1, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![4]));
+    }
+
+    #[test]
+    fn selection_home_jumps_to_first_row() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![3]));
+        ss.jump_selection_to_edge_by(true, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![0]));
+    }
+
+    #[test]
+    fn selection_end_jumps_to_last_row() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![0]));
+        ss.jump_selection_to_edge_by(false, 10);
+        assert_eq!(ss.selected_path(0), Some(&vec![4]));
+    }
+
+    #[test]
+    fn selection_page_down_jumps_by_viewport() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![0]));
+        let jump = (3_usize.max(1) - 1).max(1) as isize; // viewport=3 → jump=2
+        ss.move_selection_by(jump, 3);
+        assert_eq!(ss.selected_path(0), Some(&vec![2]));
+    }
+
+    #[test]
+    fn selection_enter_emits_row_activated() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![2]));
+        let ev = ss.activate_selection();
+        assert_eq!(
+            ev,
+            SidebarEvent::RowActivated {
+                section: 0,
+                path: vec![2]
+            }
+        );
+    }
+
+    #[test]
+    fn selection_enter_with_no_selection_returns_ignored() {
+        let ss = selection_sidebar();
+        let ev = ss.activate_selection();
+        assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    #[test]
+    fn selection_scroll_follows_when_row_below_viewport() {
+        let mut ss = selection_sidebar();
+        // 5 rows, viewport=3, start at row 0 with offset 0.
+        ss.set_selected_path(0, Some(vec![0]));
+        // Move down 4 times: 0→1→2→3→4
+        for _ in 0..4 {
+            ss.move_selection_by(1, 3);
+        }
+        assert_eq!(ss.selected_path(0), Some(&vec![4]));
+        // scroll_offset should have followed: row 4 visible in 3-row viewport
+        // means offset must be at least 2.
+        assert!(ss.scroll_offset(0) >= 2, "offset={}", ss.scroll_offset(0));
+        assert!(ss.scroll_offset(0) + 3 > 4);
+    }
+
+    #[test]
+    fn selection_scroll_follows_when_row_above_viewport() {
+        let mut ss = selection_sidebar();
+        ss.set_selected_path(0, Some(vec![4]));
+        ss.scroll_offsets[0] = 2;
+        // Move up to row 0.
+        for _ in 0..4 {
+            ss.move_selection_by(-1, 3);
+        }
+        assert_eq!(ss.selected_path(0), Some(&vec![0]));
+        assert_eq!(ss.scroll_offset(0), 0);
+    }
+
+    #[test]
+    fn selection_collapsed_section_returns_ignored() {
+        let mut ss = selection_sidebar();
+        ss.set_collapsed(0, true);
+        let ev = ss.move_selection_by(1, 10);
+        assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    #[test]
+    fn selection_no_active_section_returns_ignored() {
+        let mut ss = selection_sidebar();
+        ss.active_section = None;
+        let ev = ss.move_selection_by(1, 10);
+        assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    #[test]
+    fn navigation_mode_defaults_to_scroll() {
+        let ss = SidebarSystem::new(sample_defs());
+        assert_eq!(ss.navigation_mode(), NavigationMode::Scroll);
     }
 }

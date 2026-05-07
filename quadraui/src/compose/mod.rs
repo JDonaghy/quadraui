@@ -17,4 +17,4 @@ pub mod sidebar_system;
 
 pub use focus_ring::FocusRing;
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
-pub use sidebar_system::{SidebarEvent, SidebarSectionDef, SidebarSystem};
+pub use sidebar_system::{NavigationMode, SidebarEvent, SidebarSectionDef, SidebarSystem};
