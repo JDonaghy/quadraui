@@ -212,10 +212,12 @@ impl SidebarSystem {
         section: usize,
         path: TreePath,
         initial_text: String,
+        cursor: usize,
+        selection_anchor: Option<usize>,
         placeholder: Option<String>,
     ) {
         if let Some(tc) = self.sections.get_mut(section) {
-            tc.start_editing(path, initial_text, placeholder);
+            tc.start_editing(path, initial_text, cursor, selection_anchor, placeholder);
         }
     }
 
