@@ -228,9 +228,65 @@ Claude Code worktrees created from a 77-commit-stale `develop` instead of the ti
 
 ### Open queue for next session
 
+*Resolved in session 2026-05-07 below.*
+
+## Session 2026-05-07 — TreeController + FocusGroup compose helpers
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Context
+
+Reviewed the SidebarSystem abstraction (#63, #68) and what vimcode's agent did with it. Identified that the keyboard-navigation + scroll-to-follow state machine inside SidebarSystem was TreeView-generic — methods like `move_selection_by`, `scroll_to_visible`, `jump_to_edge`, `activate_selection` didn't use any MSV-specific state. Extracted these into reusable compose helpers.
+
+### Issues closed (2)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 71 | TreeController: compose helper for single-TreeView keyboard navigation | B (PR #75) | Standalone compose controller for a single keyboard-navigable TreeView with scrollbar. Keyboard nav (Up/Down/j/k, Home/End, PageUp/PageDown, Enter), click hit-testing, scrollbar thumb drag, scroll wheel. `vim_keys` flag (default true) to disable j/k. SidebarSystem refactored to use `Vec<TreeController>` internally, replacing 3 parallel vectors. |
+| 72 | FocusGroup: tiny helper for Tab-cycling between focusable regions | B (PR #76) | Index-based Tab/Shift+Tab cycling with wrap-around. Starts unfocused (None), supports dynamic count with clamping. SidebarSystem refactored to use `FocusGroup` replacing hand-rolled `active_section` + `cycle_active`. |
+
+### Issues filed (2)
+
+| # | Title | Status |
+|---|---|---|
+| 71 | TreeController | closed (PR #75) |
+| 72 | FocusGroup | closed (PR #76) |
+
+### Compose helpers shipped (2)
+
+| Helper | File | Lines | Consumer lines eliminated |
+|---|---|---|---|
+| `TreeController` | `compose/tree_controller.rs` | 667 | ~300 per standalone tree consumer (file picker, search results, vimcode explorer panel) |
+| `FocusGroup` | `compose/focus_group.rs` | 155 | ~15 per Tab-cycling consumer (panel layouts, dialog tab order) |
+
+### SidebarSystem refactoring
+
+SidebarSystem was refactored in two stages:
+1. **PR #75:** Replaced 3 parallel vectors (`rows`, `scroll_offsets`, `selected_paths`) with `Vec<TreeController>`. Navigation logic delegates to TreeController's pub primitives.
+2. **PR #76:** Replaced `active_section: Option<usize>` + `cycle_active()` with `FocusGroup` field.
+
+Net effect: SidebarSystem is now a thin MSV-level orchestrator over N TreeControllers + a FocusGroup, plus Tab cycling, collapse state, two-layer click dispatch, and `build_view()`.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 466 |
+| After #71 (TreeController) | 486 |
+| After #72 (FocusGroup) | 497 |
+
+### Design decisions
+
+1. **`TreeControllerEvent` naming** (not `TreeEvent`): `TreeEvent` already exists in `primitives::tree` for raw tree events. The compose helper's semantic event needed a distinct name.
+2. **`vim_keys` flag** (default true): j/k bindings are opt-out rather than opt-in, matching SidebarSystem's existing behavior. Consumers wanting fully custom key dispatch call the pub navigation primitives directly.
+3. **Scrollbar track width** = `backend.line_height()`: 1 cell on TUI (matches MSV's 1-cell scrollbar), proportional on GTK. Simplest portable heuristic without adding a new Backend method.
+4. **FocusGroup vs FocusRing**: FocusRing is WidgetId-based and always starts focused. FocusGroup is index-based, starts unfocused (None), and supports None→first/last on first cycle. Different use cases, no overlap.
+
+### Open queue for next session
+
 - #45 — StatusBar hover/pressed visual feedback (low priority, cosmetic)
 - #53 — Form additional field kinds (textarea, validation, password, segmented control)
 - #65 — SplitDragController compose helper (deferred)
 - Windows milestone (#19–#31) — requires Windows build environment
 - macOS milestone (#32–#44) — requires macOS build environment
-- Vimcode migration ongoing — may surface more quadraui gaps
+- Vimcode migration ongoing — TreeController available for explorer panel adoption
