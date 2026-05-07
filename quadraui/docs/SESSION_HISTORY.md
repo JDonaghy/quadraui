@@ -4,6 +4,52 @@ Archived session summaries. Newest at top.
 
 ---
 
+## 2026-05-07d — TreeController inline text editing (#83)
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+**Issue closed:** #83 (PR #84)
+
+Added inline text editing support to `TreeController` and both
+rasterisers. When a `TreeRow` has `edit: Some(TreeRowEditState)`,
+backends render a text input (cursor, selection, char-by-char painting)
+in place of the row's label and badge — no consumer-side rendering.
+
+**Primitive layer:** `TreeRowEditState` struct with `text`, `cursor`,
+`selection_anchor`. Added as `#[serde(default)] edit: Option<...>` on
+`TreeRow`.
+
+**Compose layer:** `TreeController` gains `EditingState` (private),
+`start_editing()` / `cancel_editing()` / `is_editing()` public API,
+modal key dispatch (editing mode swallows all keys, routes to text
+manipulation helpers), and three new `TreeControllerEvent` variants:
+`EditConfirmed`, `EditCancelled`, `EditChanged`.
+
+**SidebarSystem propagation:** `build_view()` stamps editing state
+onto the matching row, `CharTyped`/`ClipboardPaste`/`KeyPressed`
+forwarded to the editing section's TreeController, matching
+`SidebarEvent` variants added.
+
+**TUI rasteriser:** Block cursor via cell inversion, selection via
+`selected_bg`, following `InlineInput` pattern.
+
+**GTK rasteriser:** Thin vertical caret bar (1.5px) via Pango prefix
+measurement, selection highlight rectangle, following Form `TextInput`
+pattern.
+
+**Bug found during smoke test:** `SidebarSystem::build_view()` built
+`TreeView` from raw `tc.rows()`, never stamping editing state. Both
+rasterisers saw `edit: None` so editing was invisible. Fixed by
+applying the same stamping in `build_view()`.
+
+**Files touched:** 11 (primitive, compose, both rasterisers, lib.rs
+re-export, 2 MSV test files, 3 example files).
+
+**Tests added:** 14 (10 TreeController unit, 2 TUI paint, 2 GTK paint).
+Test count: 518 (up from 504).
+
+---
+
 ## 2026-05-07c — TreeController public API + scroll convention fix
 
 **Agent:** Claude Opus 4.6 (1M context)
