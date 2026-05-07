@@ -15,6 +15,7 @@
 //! per frame via [`SidebarSystem::set_rows`], and match on
 //! [`SidebarEvent`] for semantic actions.
 
+use super::tree_controller::TreeController;
 use crate::{
     Backend, ButtonMask, Key, MouseButton, MsvAxis, MultiSectionView, MultiSectionViewHit,
     NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody, SectionHeader,
@@ -91,10 +92,8 @@ struct ScrollDrag {
 
 pub struct SidebarSystem {
     defs: Vec<SidebarSectionDef>,
-    rows: Vec<Vec<TreeRow>>,
+    sections: Vec<TreeController>,
     active_section: Option<usize>,
-    scroll_offsets: Vec<usize>,
-    selected_paths: Vec<Option<TreePath>>,
     collapsed: Vec<bool>,
     scroll_drag: Option<ScrollDrag>,
     has_focus: bool,
@@ -106,12 +105,14 @@ pub struct SidebarSystem {
 impl SidebarSystem {
     pub fn new(defs: Vec<SidebarSectionDef>) -> Self {
         let n = defs.len();
+        let sections = defs
+            .iter()
+            .map(|def| TreeController::new(format!("{}-tree", def.id)))
+            .collect();
         Self {
             defs,
-            rows: vec![Vec::new(); n],
+            sections,
             active_section: None,
-            scroll_offsets: vec![0; n],
-            selected_paths: vec![None; n],
             collapsed: vec![false; n],
             scroll_drag: None,
             has_focus: true,
@@ -124,8 +125,8 @@ impl SidebarSystem {
     // ── Per-frame data ────────────────────────────────────────────────
 
     pub fn set_rows(&mut self, section: usize, rows: Vec<TreeRow>) {
-        if section < self.rows.len() {
-            self.rows[section] = rows;
+        if let Some(tc) = self.sections.get_mut(section) {
+            tc.set_rows(rows);
         }
     }
 
@@ -136,11 +137,14 @@ impl SidebarSystem {
     }
 
     pub fn selected_path(&self, section: usize) -> Option<&TreePath> {
-        self.selected_paths.get(section).and_then(|p| p.as_ref())
+        self.sections.get(section).and_then(|tc| tc.selected_path())
     }
 
     pub fn scroll_offset(&self, section: usize) -> usize {
-        self.scroll_offsets.get(section).copied().unwrap_or(0)
+        self.sections
+            .get(section)
+            .map(|tc| tc.scroll_offset())
+            .unwrap_or(0)
     }
 
     pub fn is_collapsed(&self, section: usize) -> bool {
@@ -154,8 +158,8 @@ impl SidebarSystem {
     }
 
     pub fn set_selected_path(&mut self, section: usize, path: Option<TreePath>) {
-        if section < self.selected_paths.len() {
-            self.selected_paths[section] = path;
+        if let Some(tc) = self.sections.get_mut(section) {
+            tc.set_selected_path(path);
         }
     }
 
@@ -330,30 +334,17 @@ impl SidebarSystem {
         let Some(idx) = self.active_section else {
             return SidebarEvent::Ignored;
         };
-        if self.collapsed[idx] || self.rows[idx].is_empty() {
+        if self.collapsed[idx] {
             return SidebarEvent::Ignored;
         }
-
-        let count = self.rows[idx].len();
-        let current = self.selected_row_index(idx);
-
-        let new = if let Some(cur) = current {
-            let target = cur as isize + delta;
-            target.max(0).min(count as isize - 1) as usize
-        } else if delta > 0 {
-            0
-        } else {
-            count - 1
-        };
-
-        if current == Some(new) {
-            return SidebarEvent::Consumed;
+        use super::tree_controller::TreeControllerEvent;
+        match self.sections[idx].move_selection_by(delta, viewport_rows) {
+            TreeControllerEvent::RowSelected { path } => {
+                SidebarEvent::RowSelected { section: idx, path }
+            }
+            TreeControllerEvent::Consumed => SidebarEvent::Consumed,
+            _ => SidebarEvent::Ignored,
         }
-
-        let path = self.rows[idx][new].path.clone();
-        self.selected_paths[idx] = Some(path.clone());
-        self.scroll_to_visible(idx, new, viewport_rows);
-        SidebarEvent::RowSelected { section: idx, path }
     }
 
     fn jump_selection_to_edge(
@@ -370,47 +361,25 @@ impl SidebarSystem {
         let Some(idx) = self.active_section else {
             return SidebarEvent::Ignored;
         };
-        if self.rows[idx].is_empty() {
-            return SidebarEvent::Ignored;
+        use super::tree_controller::TreeControllerEvent;
+        match self.sections[idx].jump_to_edge(to_start, viewport_rows) {
+            TreeControllerEvent::RowSelected { path } => {
+                SidebarEvent::RowSelected { section: idx, path }
+            }
+            _ => SidebarEvent::Ignored,
         }
-        let row = if to_start {
-            0
-        } else {
-            self.rows[idx].len() - 1
-        };
-        let path = self.rows[idx][row].path.clone();
-        self.selected_paths[idx] = Some(path.clone());
-        self.scroll_to_visible(idx, row, viewport_rows);
-        SidebarEvent::RowSelected { section: idx, path }
     }
 
     fn activate_selection(&self) -> SidebarEvent {
         let Some(idx) = self.active_section else {
             return SidebarEvent::Ignored;
         };
-        match &self.selected_paths[idx] {
-            Some(path) => SidebarEvent::RowActivated {
-                section: idx,
-                path: path.clone(),
-            },
-            None => SidebarEvent::Ignored,
-        }
-    }
-
-    fn selected_row_index(&self, section: usize) -> Option<usize> {
-        let sel = self.selected_paths[section].as_ref()?;
-        self.rows[section].iter().position(|r| &r.path == sel)
-    }
-
-    fn scroll_to_visible(&mut self, section: usize, row: usize, viewport_rows: usize) {
-        if viewport_rows == 0 {
-            return;
-        }
-        let offset = self.scroll_offsets[section];
-        if row < offset {
-            self.scroll_offsets[section] = row;
-        } else if row >= offset + viewport_rows {
-            self.scroll_offsets[section] = row.saturating_sub(viewport_rows.saturating_sub(1));
+        use super::tree_controller::TreeControllerEvent;
+        match self.sections[idx].activate_selection() {
+            TreeControllerEvent::RowActivated { path } => {
+                SidebarEvent::RowActivated { section: idx, path }
+            }
+            _ => SidebarEvent::Ignored,
         }
     }
 
@@ -447,6 +416,7 @@ impl SidebarSystem {
             .enumerate()
             .map(|(idx, def)| {
                 let is_active = self.active_section == Some(idx);
+                let tc = &self.sections[idx];
                 let title = if is_active {
                     format!("▶ {}", def.title)
                 } else {
@@ -461,10 +431,10 @@ impl SidebarSystem {
                     },
                     body: SectionBody::Tree(TreeView {
                         id: WidgetId::new(format!("{}-tree", def.id)),
-                        rows: self.rows[idx].clone(),
+                        rows: tc.rows().to_vec(),
                         selection_mode: SelectionMode::Single,
-                        selected_path: self.selected_paths[idx].clone(),
-                        scroll_offset: self.scroll_offsets[idx],
+                        selected_path: tc.selected_path().cloned(),
+                        scroll_offset: tc.scroll_offset(),
                         style: Default::default(),
                         has_focus: is_active && self.has_focus,
                     }),
@@ -495,7 +465,7 @@ impl SidebarSystem {
         match layout.hit_test(x, y) {
             MultiSectionViewHit::Header { section, .. } => {
                 self.active_section = Some(section);
-                self.selected_paths[section] = None;
+                self.sections[section].set_selected_path(None);
                 SidebarEvent::HeaderActivated { section }
             }
             MultiSectionViewHit::Body { section } => {
@@ -509,7 +479,7 @@ impl SidebarSystem {
                 match inner.hit_test(x - body_b.x, y - body_b.y) {
                     TreeViewHit::Row(idx) => {
                         let path = tree.rows[idx].path.clone();
-                        self.selected_paths[section] = Some(path.clone());
+                        self.sections[section].set_selected_path(Some(path.clone()));
                         SidebarEvent::RowSelected { section, path }
                     }
                     TreeViewHit::Empty => SidebarEvent::HeaderActivated { section },
@@ -528,12 +498,13 @@ impl SidebarSystem {
                     .unwrap_or(sb.height);
                 let body_b = layout.sections[section].body_bounds;
                 let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
-                let max_offset = self.rows[section].len().saturating_sub(viewport_rows);
+                let row_count = self.sections[section].rows().len();
+                let max_offset = row_count.saturating_sub(viewport_rows);
                 let travel = (sb.height - thumb_h).max(0.0);
                 self.scroll_drag = Some(ScrollDrag {
                     section,
                     origin_y: y,
-                    origin_offset: self.scroll_offsets[section],
+                    origin_offset: self.sections[section].scroll_offset(),
                     travel,
                     max_offset,
                 });
@@ -545,7 +516,7 @@ impl SidebarSystem {
             } => {
                 let body_b = layout.sections[section].body_bounds;
                 let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
-                self.page_scroll(section, -(viewport_rows as isize), viewport_rows);
+                self.sections[section].page_scroll(-(viewport_rows as isize), viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
             MultiSectionViewHit::Scrollbar {
@@ -554,7 +525,7 @@ impl SidebarSystem {
             } => {
                 let body_b = layout.sections[section].body_bounds;
                 let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
-                self.page_scroll(section, viewport_rows as isize, viewport_rows);
+                self.sections[section].page_scroll(viewport_rows as isize, viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
             _ => SidebarEvent::Ignored,
@@ -581,7 +552,7 @@ impl SidebarSystem {
                     TreeViewHit::Row(idx) => {
                         let path = tree.rows[idx].path.clone();
                         self.active_section = Some(section);
-                        self.selected_paths[section] = Some(path.clone());
+                        self.sections[section].set_selected_path(Some(path.clone()));
                         SidebarEvent::ContextMenuRequested {
                             section,
                             path,
@@ -624,19 +595,11 @@ impl SidebarSystem {
         let new = new.max(0) as usize;
         let new = new.min(drag.max_offset);
         let section = drag.section;
-        if new == self.scroll_offsets[section] {
+        if new == self.sections[section].scroll_offset() {
             return SidebarEvent::Ignored;
         }
-        self.scroll_offsets[section] = new;
+        self.sections[section].set_scroll_offset(new);
         SidebarEvent::Consumed
-    }
-
-    fn page_scroll(&mut self, section: usize, delta: isize, viewport_rows: usize) {
-        let row_count = self.rows[section].len();
-        let max = row_count.saturating_sub(viewport_rows) as isize;
-        let cur = self.scroll_offsets[section] as isize;
-        let new = (cur + delta).max(0).min(max) as usize;
-        self.scroll_offsets[section] = new;
     }
 
     fn cycle_active(&mut self, delta: isize) {
@@ -665,20 +628,21 @@ impl SidebarSystem {
         let layout = backend.msv_layout(rect, &view);
         let body_b = layout.sections[idx].body_bounds;
         let viewport_rows = self.viewport_rows(backend, body_b, idx, &view);
-        let row_count = self.rows[idx].len();
+        let row_count = self.sections[idx].rows().len();
         let max = row_count.saturating_sub(viewport_rows) as isize;
-        let cur = self.scroll_offsets[idx] as isize;
+        let cur = self.sections[idx].scroll_offset() as isize;
         let new = (cur + delta).max(0).min(max) as usize;
-        self.scroll_offsets[idx] = new;
+        self.sections[idx].set_scroll_offset(new);
     }
 
     fn select_first_of_active(&mut self) {
         let Some(idx) = self.active_section else {
             return;
         };
-        if let Some(first) = self.rows[idx].first() {
-            self.selected_paths[idx] = Some(first.path.clone());
-            self.scroll_offsets[idx] = 0;
+        if let Some(first) = self.sections[idx].rows().first() {
+            let path = first.path.clone();
+            self.sections[idx].set_selected_path(Some(path));
+            self.sections[idx].set_scroll_offset(0);
         }
     }
 }
@@ -722,9 +686,9 @@ mod tests {
     #[test]
     fn set_rows_updates_section_data() {
         let mut ss = SidebarSystem::new(sample_defs());
-        assert!(ss.rows[0].is_empty());
+        assert!(ss.sections[0].rows().is_empty());
         ss.set_rows(0, fake_rows("v", 5));
-        assert_eq!(ss.rows[0].len(), 5);
+        assert_eq!(ss.sections[0].rows().len(), 5);
     }
 
     #[test]
@@ -763,7 +727,7 @@ mod tests {
     fn select_first_of_active_sets_path_and_resets_scroll() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(1, fake_rows("w", 5));
-        ss.scroll_offsets[1] = 3;
+        ss.sections[1].set_scroll_offset(3);
         ss.active_section = Some(1);
         ss.select_first_of_active();
         assert_eq!(ss.selected_path(1), Some(&vec![0]));
@@ -774,9 +738,9 @@ mod tests {
     fn page_scroll_clamps_to_bounds() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 20));
-        ss.page_scroll(0, 100, 5);
+        ss.sections[0].page_scroll(100, 5);
         assert_eq!(ss.scroll_offset(0), 15); // 20 - 5
-        ss.page_scroll(0, -100, 5);
+        ss.sections[0].page_scroll(-100, 5);
         assert_eq!(ss.scroll_offset(0), 0);
     }
 
@@ -919,7 +883,7 @@ mod tests {
     fn selection_scroll_follows_when_row_above_viewport() {
         let mut ss = selection_sidebar();
         ss.set_selected_path(0, Some(vec![4]));
-        ss.scroll_offsets[0] = 2;
+        ss.sections[0].set_scroll_offset(2);
         // Move up to row 0.
         for _ in 0..4 {
             ss.move_selection_by(-1, 3);

@@ -237,7 +237,7 @@ pub use event::{
 // Phase B.4 re-exports.
 pub use compose::{
     FocusRing, MenuDef, MenuEvent, MenuSystem, NavigationMode, SidebarEvent, SidebarSectionDef,
-    SidebarSystem,
+    SidebarSystem, TreeController, TreeControllerEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
