@@ -666,6 +666,7 @@ mod tests {
                 badge: None,
                 is_expanded: None,
                 decoration: Decoration::Normal,
+                edit: None,
             })
             .collect();
         Section {

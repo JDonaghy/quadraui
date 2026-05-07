@@ -792,6 +792,7 @@ mod tests {
                 badge: None,
                 is_expanded: None,
                 decoration: Default::default(),
+                edit: None,
             })
             .collect();
         Section {
@@ -1381,6 +1382,7 @@ mod tests {
                 badge: None,
                 is_expanded: None,
                 decoration: Default::default(),
+                edit: None,
             })
             .collect()
     }

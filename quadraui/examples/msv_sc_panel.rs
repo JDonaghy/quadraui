@@ -421,6 +421,7 @@ fn fake_rows(prefix: &str, dir: &str, n: usize) -> Vec<TreeRow> {
             badge: None,
             is_expanded: None,
             decoration: Decoration::Normal,
+            edit: None,
         })
         .collect()
 }
