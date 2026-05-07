@@ -4,6 +4,34 @@ Archived session summaries. Newest at top.
 
 ---
 
+## 2026-05-07b — StatusBar hover/pressed visual feedback
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+**Issue closed:** #45 (PR #80)
+
+Added `hovered_id: Option<&WidgetId>` and `pressed_id: Option<&WidgetId>`
+parameters to `Backend::draw_status_bar` and both TUI + GTK rasterisers.
+Follows the established pattern (ActivityBar `hovered_idx`, TabBar
+`hovered_close_tab`) of passing per-frame interaction state alongside
+the primitive rather than inside the struct.
+
+- Hovered clickable segment: `bg.lighten(0.05)`
+- Pressed clickable segment: `bg.darken(0.05)` (pressed takes precedence)
+- Non-clickable segments: unaffected
+
+Also added `Color::darken(amount)` as a symmetric counterpart to
+`Color::lighten`.
+
+**Files touched:** 19 (Backend trait, TUI + GTK + Win rasterisers/backends,
+10 example AppLogic files, 2 kubeui consumers).
+
+**Tests added:** 4 TUI tests (hover paint, pressed paint,
+pressed-over-hover precedence, non-clickable ignores hover).
+Test count: 501 (up from 497).
+
+---
+
 ## 2026-05-06 (continued) — MenuOverlay refinements + CLAUDE.md split
 
 **Continued from the MenuSystem triage session.**

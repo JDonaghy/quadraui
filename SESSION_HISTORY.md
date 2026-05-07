@@ -284,7 +284,6 @@ Net effect: SidebarSystem is now a thin MSV-level orchestrator over N TreeContro
 
 ### Open queue for next session
 
-- #45 — StatusBar hover/pressed visual feedback (low priority, cosmetic)
 - #53 — Form additional field kinds (textarea, validation, password, segmented control)
 - #65 — SplitDragController compose helper (deferred)
 - Windows milestone (#19–#31) — requires Windows build environment
