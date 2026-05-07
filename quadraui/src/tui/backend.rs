@@ -473,7 +473,13 @@ impl Backend for TuiBackend {
     // are now thin pass-throughs, mirroring the GTK impls in
     // `gtk/backend.rs`.
 
-    fn draw_status_bar(&mut self, rect: QRect, bar: &StatusBar) -> Vec<crate::StatusBarHitRegion> {
+    fn draw_status_bar(
+        &mut self,
+        rect: QRect,
+        bar: &StatusBar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
+    ) -> Vec<crate::StatusBarHitRegion> {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         // Cell-unit measurer: each char counts as one cell.
@@ -483,7 +489,15 @@ impl Backend for TuiBackend {
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_status_bar called outside enter_frame_scope");
-        crate::tui::draw_status_bar(frame.buffer_mut(), area, bar, &layout, &theme)
+        crate::tui::draw_status_bar(
+            frame.buffer_mut(),
+            area,
+            bar,
+            &layout,
+            &theme,
+            hovered_id,
+            pressed_id,
+        )
     }
 
     fn draw_tab_bar(
@@ -993,7 +1007,13 @@ mod tests {
         // records the ones the cross-backend test actually exercises.
         fn draw_tree(&mut self, _r: QRect, _t: &TreeView) {}
         fn draw_form(&mut self, _r: QRect, _f: &Form) {}
-        fn draw_status_bar(&mut self, _r: QRect, _b: &StatusBar) -> Vec<crate::StatusBarHitRegion> {
+        fn draw_status_bar(
+            &mut self,
+            _r: QRect,
+            _b: &StatusBar,
+            _hovered_id: Option<&crate::types::WidgetId>,
+            _pressed_id: Option<&crate::types::WidgetId>,
+        ) -> Vec<crate::StatusBarHitRegion> {
             Vec::new()
         }
         fn draw_tab_bar(

@@ -119,6 +119,8 @@ fn run(
                 &bar,
                 &bar_layout,
                 &theme(),
+                None,
+                None,
             );
             if let Some(picker) = state.picker.as_ref() {
                 let viewport = quadraui::Rect::new(0.0, 0.0, area.width as f32, area.height as f32);

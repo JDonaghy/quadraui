@@ -212,7 +212,7 @@ impl AppLogic for FormGroupsApp {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
         backend.draw_form(form_rect, &self.build_form());
-        let _hits = backend.draw_status_bar(status_rect, &self.build_status_bar());
+        let _hits = backend.draw_status_bar(status_rect, &self.build_status_bar(), None, None);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

@@ -126,11 +126,20 @@ pub trait Backend {
     // Methods that produce hit-region data (clickable segments,
     // close-button rects, link rects) return it directly so callers
     // route clicks against the same data the rasteriser used to paint.
-    /// Draw a status bar. Returns hit regions in **bar-local
-    /// coordinates** (relative to `rect.x` / `rect.y`) for each segment
-    /// carrying an `action_id`. Caller dispatches clicks against the
-    /// returned list.
-    fn draw_status_bar(&mut self, rect: Rect, bar: &StatusBar) -> Vec<StatusBarHitRegion>;
+    /// Draw a status bar. `hovered_id` and `pressed_id` carry per-frame
+    /// interaction state so the rasteriser can tint the background of the
+    /// matching clickable segment (the primitive itself carries no mouse
+    /// state — same pattern as `ActivityBar`'s `hovered_idx`). Returns
+    /// hit regions in **bar-local coordinates** (relative to `rect.x` /
+    /// `rect.y`) for each segment carrying an `action_id`. Caller
+    /// dispatches clicks against the returned list.
+    fn draw_status_bar(
+        &mut self,
+        rect: Rect,
+        bar: &StatusBar,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) -> Vec<StatusBarHitRegion>;
     /// Draw a tab bar. `hovered_close_tab` carries per-frame hover
     /// state so the rasteriser can paint a hover background behind the
     /// hovered tab's close glyph (the primitive itself carries no

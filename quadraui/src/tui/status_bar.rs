@@ -16,6 +16,7 @@ use crate::primitives::status_bar::{
     StatusBar, StatusBarHitRegion, StatusBarLayout, StatusSegmentSide,
 };
 use crate::theme::Theme;
+use crate::types::WidgetId;
 
 /// Draw a [`StatusBar`] into `area` on `buf`. Returns hit regions in
 /// **bar-local cell coordinates** (relative to `area.x`) for each
@@ -45,6 +46,8 @@ pub fn draw_status_bar(
     bar: &StatusBar,
     layout: &StatusBarLayout,
     theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
 ) -> Vec<StatusBarHitRegion> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
@@ -68,7 +71,22 @@ pub fn draw_status_bar(
             StatusSegmentSide::Right => &bar.right_segments[vs.segment_idx],
         };
         let fg = ratatui_color(seg.fg);
-        let bg = ratatui_color(seg.bg);
+        let effective_bg = if seg
+            .action_id
+            .as_ref()
+            .is_some_and(|id| Some(id) == pressed_id)
+        {
+            seg.bg.darken(0.05)
+        } else if seg
+            .action_id
+            .as_ref()
+            .is_some_and(|id| Some(id) == hovered_id)
+        {
+            seg.bg.lighten(0.05)
+        } else {
+            seg.bg
+        };
+        let bg = ratatui_color(effective_bg);
         let start_x = area.x + vs.bounds.x.round() as u16;
         let bar_end = area.x + area.width;
         let mut cx = start_x;
@@ -148,6 +166,8 @@ mod tests {
             &bar,
             &layout,
             &Theme::default(),
+            None,
+            None,
         );
 
         // Left side starts at column 0: "NORMAL main.rs "
@@ -175,7 +195,15 @@ mod tests {
             foreground: Color::rgb(255, 255, 255),
             ..Theme::default()
         };
-        draw_status_bar(&mut buf, Rect::new(0, 0, 10, 1), &bar, &layout, &theme);
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 10, 1),
+            &bar,
+            &layout,
+            &theme,
+            None,
+            None,
+        );
 
         // Whole bar painted with theme.background as bg.
         for x in 0..10 {
@@ -201,6 +229,8 @@ mod tests {
             &bar,
             &layout,
             &Theme::default(),
+            None,
+            None,
         );
 
         // "NORMAL" was the bold segment — first 6 cells should carry BOLD.
@@ -234,6 +264,8 @@ mod tests {
             &bar,
             &layout,
             &Theme::default(),
+            None,
+            None,
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert!(regions.is_empty());
@@ -272,6 +304,8 @@ mod tests {
             &bar,
             &layout,
             &Theme::default(),
+            None,
+            None,
         );
 
         // One region for the segment with action_id.
@@ -281,5 +315,127 @@ mod tests {
         // and is 4 cells wide ("BBBB").
         assert_eq!(regions[0].col, 3);
         assert_eq!(regions[0].width, 4);
+    }
+
+    fn make_clickable_bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("click-bar"),
+            left_segments: vec![StatusBarSegment {
+                text: "BTN".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: false,
+                action_id: Some(WidgetId::new("btn")),
+            }],
+            right_segments: vec![],
+        }
+    }
+
+    #[test]
+    fn hovered_segment_uses_lightened_bg() {
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let hover_id = WidgetId::new("btn");
+        let layout = bar.layout(20.0, 1.0, 0.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            Some(&hover_id),
+            None,
+        );
+
+        let expected = ratatui_color(base_bg.lighten(0.05));
+        assert_eq!(
+            buf[(0, 0)].bg,
+            expected,
+            "hovered segment bg should be lightened"
+        );
+    }
+
+    #[test]
+    fn pressed_segment_uses_darkened_bg() {
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let press_id = WidgetId::new("btn");
+        let layout = bar.layout(20.0, 1.0, 0.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            None,
+            Some(&press_id),
+        );
+
+        let expected = ratatui_color(base_bg.darken(0.05));
+        assert_eq!(
+            buf[(0, 0)].bg,
+            expected,
+            "pressed segment bg should be darkened"
+        );
+    }
+
+    #[test]
+    fn pressed_takes_precedence_over_hovered() {
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let id = WidgetId::new("btn");
+        let layout = bar.layout(20.0, 1.0, 0.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            Some(&id),
+            Some(&id),
+        );
+
+        let expected = ratatui_color(base_bg.darken(0.05));
+        assert_eq!(buf[(0, 0)].bg, expected, "pressed should win over hovered");
+    }
+
+    #[test]
+    fn non_clickable_segment_ignores_hover() {
+        let bar = make_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let fake_id = WidgetId::new("no-match");
+        let layout = bar.layout(40.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            Some(&fake_id),
+            None,
+        );
+
+        let expected = ratatui_color(base_bg);
+        assert_eq!(
+            buf[(0, 0)].bg,
+            expected,
+            "non-clickable segment bg should be unchanged"
+        );
     }
 }

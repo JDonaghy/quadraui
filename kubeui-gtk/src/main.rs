@@ -259,7 +259,18 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
 
     // ── Status bar ─────────────────────────────────────────────
     let bar = build_status_bar(state);
-    quadraui::gtk::draw_status_bar(cr, &layout, 0.0, h - line_h, w, line_h, &bar, &theme());
+    quadraui::gtk::draw_status_bar(
+        cr,
+        &layout,
+        0.0,
+        h - line_h,
+        w,
+        line_h,
+        &bar,
+        &theme(),
+        None,
+        None,
+    );
 
     // ── Picker overlay (optional) ──────────────────────────────
     if let Some(picker) = state.picker.as_ref() {
