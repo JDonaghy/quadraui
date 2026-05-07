@@ -87,6 +87,7 @@ pub fn draw_tree(
     let fg = cairo_rgb(theme.foreground);
     let dim = cairo_rgb(theme.muted_fg);
     let sel = cairo_rgb(theme.selected_bg);
+    let text_sel = cairo_rgb(theme.selection_bg);
 
     cr.set_source_rgb(bg.0, bg.1, bg.2);
     cr.rectangle(x, y, w, h);
@@ -178,7 +179,7 @@ pub fn draw_tree(
                 x + w,
                 edit,
                 def_fg,
-                sel,
+                text_sel,
                 dim,
             );
         } else {

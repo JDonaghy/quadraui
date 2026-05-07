@@ -56,6 +56,7 @@ pub fn draw_tree(
     let hdr_fg = ratatui_color(theme.header_fg);
     let item_fg = ratatui_color(theme.foreground);
     let sel_bg = ratatui_color(theme.selected_bg);
+    let text_sel_bg = ratatui_color(theme.selection_bg);
     let dim_fg = ratatui_color(theme.muted_fg);
 
     let indent_cells = tree.style.indent as usize;
@@ -131,7 +132,7 @@ pub fn draw_tree(
         }
 
         if let Some(ref edit) = row.edit {
-            paint_edit_input(buf, area, y, col, edit, default_fg, bg, sel_bg, dim_fg);
+            paint_edit_input(buf, area, y, col, edit, default_fg, bg, text_sel_bg, dim_fg);
         } else {
             let text_start = col;
             let text_end = draw_styled_text(
