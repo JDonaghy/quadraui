@@ -194,8 +194,43 @@ macOS Backend milestone (#4): #32–#44 (13 issues)
 
 ### Open queue for next session
 
+*Resolved in session 2026-05-06c below.*
+
+## Session 2026-05-06c — SidebarSystem selection nav + GTK menu fixes
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (3)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 68 | SidebarSystem: selection navigation mode | A | `NavigationMode::Selection` — Up/Down/j/k move `selected_path` with scroll-to-follow; Home/End/PageUp/PageDown; Enter → `RowActivated`. 17 new tests. |
+| 69 | GtkBackend viewport 0x0 on menu open | A | `MenuOverlay` click/motion handlers call `begin_frame` with DA allocation before `menu_system.handle()`. |
+| 70 | Menu dropdown descender clipping on highlight change | A | Split `draw_context_menu` into bg pass (separators + highlights) then text pass (labels + detail). |
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 452 |
+| After #68 | 466 |
+| After #69 | 466 |
+| After #70 | 466 |
+
+### Bugs found + fixed
+
+1. **Viewport 0x0 on menu open** (#69): `GtkBackend.viewport` was never set outside the draw_func, so `MenuSystem::open_menu()` computed dropdown bounds against a zero-height viewport. Fixed by calling `begin_frame` in click/motion handlers.
+2. **Context menu descender clipping** (#70): interleaved bg+text draw loop let a later item's highlight rectangle overwrite the previous item's text descenders. Fixed by two-pass rendering.
+
+### Worktree tooling failure noted
+
+Claude Code worktrees created from a 77-commit-stale `develop` instead of the tip. Wasted implementation on a non-existent codebase state. Discarded and reimplemented directly on real `develop`. Not a code bug — a tooling issue with worktree creation.
+
+### Open queue for next session
+
 - #45 — StatusBar hover/pressed visual feedback (low priority, cosmetic)
+- #53 — Form additional field kinds (textarea, validation, password, segmented control)
+- #65 — SplitDragController compose helper (deferred)
 - Windows milestone (#19–#31) — requires Windows build environment
 - macOS milestone (#32–#44) — requires macOS build environment
-- GTK list rasteriser sub-pixel text issue (same `move_to` pattern without `.round()`) — follow-up
-- Vimcode migration ongoing — may surface more quadraui gaps to fill
+- Vimcode migration ongoing — may surface more quadraui gaps

@@ -41,6 +41,21 @@ quadraui issue.
 
 ---
 
+## 2026-05-06c — SidebarSystem selection nav + GTK menu fixes
+
+**Issues closed:** #68, #69, #70.
+
+- **#68** `NavigationMode::Selection` on `SidebarSystem` — j/k/Up/Down
+  move `selected_path` with scroll-to-follow; Home/End/PageUp/PageDown
+  jump; Enter → `RowActivated`. 17 tests. Re-exported `NavigationMode`
+  at crate root.
+- **#69** MenuOverlay viewport 0x0 fix — click/motion handlers call
+  `begin_frame` with DA allocation before `menu_system.handle()`.
+- **#70** Context menu descender clipping — split `draw_context_menu`
+  into backgrounds pass then text pass.
+
+---
+
 ## 2026-05-06 — GTK MenuSystem bug triage + MenuOverlay helper
 
 **Context:** Vimcode's agent was failing to integrate quadraui's
