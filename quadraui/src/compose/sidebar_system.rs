@@ -15,6 +15,7 @@
 //! per frame via [`SidebarSystem::set_rows`], and match on
 //! [`SidebarEvent`] for semantic actions.
 
+use super::focus_group::FocusGroup;
 use super::tree_controller::TreeController;
 use crate::{
     Backend, ButtonMask, Key, MouseButton, MsvAxis, MultiSectionView, MultiSectionViewHit,
@@ -93,7 +94,7 @@ struct ScrollDrag {
 pub struct SidebarSystem {
     defs: Vec<SidebarSectionDef>,
     sections: Vec<TreeController>,
-    active_section: Option<usize>,
+    focus: FocusGroup,
     collapsed: Vec<bool>,
     scroll_drag: Option<ScrollDrag>,
     has_focus: bool,
@@ -112,7 +113,7 @@ impl SidebarSystem {
         Self {
             defs,
             sections,
-            active_section: None,
+            focus: FocusGroup::new(n),
             collapsed: vec![false; n],
             scroll_drag: None,
             has_focus: true,
@@ -133,7 +134,7 @@ impl SidebarSystem {
     // ── State accessors ───────────────────────────────────────────────
 
     pub fn active_section(&self) -> Option<usize> {
-        self.active_section
+        self.focus.active()
     }
 
     pub fn selected_path(&self, section: usize) -> Option<&TreePath> {
@@ -154,7 +155,7 @@ impl SidebarSystem {
     // ── Programmatic state control ────────────────────────────────────
 
     pub fn set_active_section(&mut self, section: Option<usize>) {
-        self.active_section = section;
+        self.focus.set_active(section);
     }
 
     pub fn set_selected_path(&mut self, section: usize, path: Option<TreePath>) {
@@ -303,7 +304,8 @@ impl SidebarSystem {
         rect: Rect,
     ) -> SidebarEvent {
         let vim = self
-            .active_section
+            .focus
+            .active()
             .and_then(|i| self.sections.get(i))
             .is_none_or(|tc| tc.vim_keys());
         let vim_up = vim && matches!(key, Key::Char('k'));
@@ -339,7 +341,7 @@ impl SidebarSystem {
     }
 
     fn move_selection_by(&mut self, delta: isize, viewport_rows: usize) -> SidebarEvent {
-        let Some(idx) = self.active_section else {
+        let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
         if self.collapsed[idx] {
@@ -366,7 +368,7 @@ impl SidebarSystem {
     }
 
     fn jump_selection_to_edge_by(&mut self, to_start: bool, viewport_rows: usize) -> SidebarEvent {
-        let Some(idx) = self.active_section else {
+        let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
         use super::tree_controller::TreeControllerEvent;
@@ -379,7 +381,7 @@ impl SidebarSystem {
     }
 
     fn activate_selection(&self) -> SidebarEvent {
-        let Some(idx) = self.active_section else {
+        let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
         use super::tree_controller::TreeControllerEvent;
@@ -392,7 +394,7 @@ impl SidebarSystem {
     }
 
     fn active_viewport_rows(&mut self, backend: &mut dyn Backend, rect: Rect) -> usize {
-        let Some(idx) = self.active_section else {
+        let Some(idx) = self.focus.active() else {
             return 0;
         };
         if let Some((cached_section, cached_vr)) = self.cached_viewport_rows {
@@ -423,7 +425,7 @@ impl SidebarSystem {
             .iter()
             .enumerate()
             .map(|(idx, def)| {
-                let is_active = self.active_section == Some(idx);
+                let is_active = self.focus.active() == Some(idx);
                 let tc = &self.sections[idx];
                 let title = if is_active {
                     format!("▶ {}", def.title)
@@ -457,7 +459,7 @@ impl SidebarSystem {
         MultiSectionView {
             id: WidgetId::new("sidebar-system"),
             sections,
-            active_section: self.active_section,
+            active_section: self.focus.active(),
             axis: MsvAxis::Vertical,
             allow_resize: false,
             allow_collapse: self.allow_collapse,
@@ -472,12 +474,12 @@ impl SidebarSystem {
         let layout = backend.msv_layout(rect, &view);
         match layout.hit_test(x, y) {
             MultiSectionViewHit::Header { section, .. } => {
-                self.active_section = Some(section);
+                self.focus.set_active(Some(section));
                 self.sections[section].set_selected_path(None);
                 SidebarEvent::HeaderActivated { section }
             }
             MultiSectionViewHit::Body { section } => {
-                self.active_section = Some(section);
+                self.focus.set_active(Some(section));
                 let body_b = layout.sections[section].body_bounds;
                 let tree = match &view.sections[section].body {
                     SectionBody::Tree(t) => t.clone(),
@@ -559,7 +561,7 @@ impl SidebarSystem {
                 match inner.hit_test(position.x - body_b.x, position.y - body_b.y) {
                     TreeViewHit::Row(idx) => {
                         let path = tree.rows[idx].path.clone();
-                        self.active_section = Some(section);
+                        self.focus.set_active(Some(section));
                         self.sections[section].set_selected_path(Some(path.clone()));
                         SidebarEvent::ContextMenuRequested {
                             section,
@@ -611,25 +613,11 @@ impl SidebarSystem {
     }
 
     fn cycle_active(&mut self, delta: isize) {
-        let n = self.defs.len() as isize;
-        if n == 0 {
-            return;
-        }
-        let next = match self.active_section {
-            Some(i) => ((i as isize + delta).rem_euclid(n)) as usize,
-            None => {
-                if delta >= 0 {
-                    0
-                } else {
-                    (n - 1) as usize
-                }
-            }
-        };
-        self.active_section = Some(next);
+        self.focus.cycle(delta);
     }
 
     fn scroll_active(&mut self, backend: &mut dyn Backend, rect: Rect, delta: isize) {
-        let Some(idx) = self.active_section else {
+        let Some(idx) = self.focus.active() else {
             return;
         };
         let view = self.build_view();
@@ -644,7 +632,7 @@ impl SidebarSystem {
     }
 
     fn select_first_of_active(&mut self) {
-        let Some(idx) = self.active_section else {
+        let Some(idx) = self.focus.active() else {
             return;
         };
         if let Some(first) = self.sections[idx].rows().first() {
@@ -736,7 +724,7 @@ mod tests {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(1, fake_rows("w", 5));
         ss.sections[1].set_scroll_offset(3);
-        ss.active_section = Some(1);
+        ss.focus.set_active(Some(1));
         ss.select_first_of_active();
         assert_eq!(ss.selected_path(1), Some(&vec![0]));
         assert_eq!(ss.scroll_offset(1), 0);
@@ -756,7 +744,7 @@ mod tests {
     fn build_view_produces_correct_sections() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 3));
-        ss.active_section = Some(0);
+        ss.focus.set_active(Some(0));
         let view = ss.build_view();
         assert_eq!(view.sections.len(), 3);
         assert!(view.sections[0].header.title.spans[0].text.starts_with("▶"));
@@ -771,7 +759,7 @@ mod tests {
         ss.set_rows(0, fake_rows("v", 5));
         ss.set_rows(1, fake_rows("w", 3));
         ss.set_rows(2, fake_rows("b", 4));
-        ss.active_section = Some(0);
+        ss.focus.set_active(Some(0));
         ss
     }
 
@@ -911,7 +899,7 @@ mod tests {
     #[test]
     fn selection_no_active_section_returns_ignored() {
         let mut ss = selection_sidebar();
-        ss.active_section = None;
+        ss.focus.set_active(None);
         let ev = ss.move_selection_by(1, 10);
         assert_eq!(ev, SidebarEvent::Ignored);
     }
