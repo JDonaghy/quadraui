@@ -356,6 +356,15 @@ pub struct ScrollSurface {
 /// Translate a raw scroll-wheel event into a `Vec<UiEvent>`, consulting
 /// the modal stack first, then the registered scroll surfaces.
 ///
+/// # Scroll delta sign convention
+///
+/// Positive `delta.y` = scroll content **up** (toward the top of the
+/// document). Backends normalise their native direction before
+/// constructing [`ScrollDelta`] — see [`ScrollDelta`] for the
+/// canonical definition. Compose helpers ([`TreeController`],
+/// [`SidebarSystem`]) consume the delta directly without per-call-site
+/// negation.
+///
 /// # Returns
 ///
 /// Three cases:
