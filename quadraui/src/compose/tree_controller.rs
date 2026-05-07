@@ -17,6 +17,11 @@
 //! - `End`               — last row
 //! - `PageUp` / `PageDown` — jump by viewport rows
 //! - `Enter`             — emit [`TreeControllerEvent::RowActivated`]
+//! - Double-click        — emit [`TreeControllerEvent::RowActivated`]
+//!
+//! Scroll-wheel events follow the [`ScrollDelta`](crate::ScrollDelta)
+//! sign convention: positive `delta.y` = scroll content up (decrease
+//! offset). Backends normalise their native direction before emitting.
 
 use crate::{
     Backend, ButtonMask, Key, MouseButton, NamedKey, Rect, Scrollbar, SelectionMode, TreePath,

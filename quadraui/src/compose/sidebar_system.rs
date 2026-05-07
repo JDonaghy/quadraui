@@ -14,6 +14,10 @@
 //! Apps define section structure via [`SidebarSectionDef`], set row data
 //! per frame via [`SidebarSystem::set_rows`], and match on
 //! [`SidebarEvent`] for semantic actions.
+//!
+//! Scroll-wheel events follow the [`ScrollDelta`](crate::ScrollDelta)
+//! sign convention: positive `delta.y` = scroll content up (decrease
+//! offset). Backends normalise their native direction before emitting.
 
 use super::focus_group::FocusGroup;
 use super::tree_controller::TreeController;

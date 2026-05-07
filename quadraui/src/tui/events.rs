@@ -106,12 +106,12 @@ pub fn crossterm_mouse_to_uievent(event: MouseEvent) -> Option<UiEvent> {
         }),
         MouseEventKind::ScrollUp => Some(UiEvent::Scroll {
             widget: None,
-            delta: ScrollDelta { x: 0.0, y: -1.0 },
+            delta: ScrollDelta { x: 0.0, y: 1.0 },
             position,
         }),
         MouseEventKind::ScrollDown => Some(UiEvent::Scroll {
             widget: None,
-            delta: ScrollDelta { x: 0.0, y: 1.0 },
+            delta: ScrollDelta { x: 0.0, y: -1.0 },
             position,
         }),
         MouseEventKind::ScrollLeft => Some(UiEvent::Scroll {
@@ -312,9 +312,9 @@ pub fn synth_mouseevent(ev: &UiEvent) -> Option<MouseEvent> {
         UiEvent::Scroll {
             delta, position, ..
         } => {
-            let kind = if delta.y < 0.0 {
+            let kind = if delta.y > 0.0 {
                 MouseEventKind::ScrollUp
-            } else if delta.y > 0.0 {
+            } else if delta.y < 0.0 {
                 MouseEventKind::ScrollDown
             } else if delta.x < 0.0 {
                 MouseEventKind::ScrollLeft
@@ -520,11 +520,11 @@ mod tests {
     }
 
     #[test]
-    fn mouse_scroll_up_translates_to_negative_y() {
+    fn mouse_scroll_up_translates_to_positive_y() {
         let ev = crossterm_mouse_to_uievent(mouse(MouseEventKind::ScrollUp, 0, 0)).unwrap();
         match ev {
             UiEvent::Scroll { delta, .. } => {
-                assert_eq!(delta.y, -1.0);
+                assert_eq!(delta.y, 1.0);
                 assert_eq!(delta.x, 0.0);
             }
             other => panic!("unexpected variant: {:?}", other),
@@ -532,10 +532,10 @@ mod tests {
     }
 
     #[test]
-    fn mouse_scroll_down_translates_to_positive_y() {
+    fn mouse_scroll_down_translates_to_negative_y() {
         let ev = crossterm_mouse_to_uievent(mouse(MouseEventKind::ScrollDown, 0, 0)).unwrap();
         match ev {
-            UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, 1.0),
+            UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, -1.0),
             other => panic!("unexpected variant: {:?}", other),
         }
     }
