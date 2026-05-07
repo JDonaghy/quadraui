@@ -24,8 +24,8 @@
 //! offset). Backends normalise their native direction before emitting.
 
 use crate::{
-    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Rect, Scrollbar, SelectionMode,
-    TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
+    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
+    SelectionMode, TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
 /// What happened after [`TreeController::handle`] processed an event.
@@ -47,6 +47,8 @@ pub enum TreeControllerEvent {
     EditCancelled { path: TreePath },
     /// The text buffer changed during inline editing.
     EditChanged { path: TreePath, text: String },
+    /// Right-click on a row. Consumer should build and show a context menu.
+    ContextMenuRequested { path: TreePath, position: Point },
 }
 
 struct ScrollDrag {
@@ -240,6 +242,12 @@ impl TreeController {
                 position,
                 ..
             } => self.click(backend, rect, position.x, position.y),
+
+            UiEvent::MouseDown {
+                button: MouseButton::Right,
+                position,
+                ..
+            } => self.right_click(backend, rect, *position),
 
             UiEvent::DoubleClick { position, .. } => {
                 self.double_click(backend, rect, position.x, position.y)
@@ -625,6 +633,28 @@ impl TreeController {
                 let path = self.rows[idx].path.clone();
                 self.selected_path = Some(path.clone());
                 TreeControllerEvent::RowActivated { path }
+            }
+            TreeViewHit::Empty => TreeControllerEvent::Consumed,
+        }
+    }
+
+    fn right_click(
+        &mut self,
+        backend: &mut dyn Backend,
+        rect: Rect,
+        position: Point,
+    ) -> TreeControllerEvent {
+        let (tree_rect, _) = self.split_rect(backend, rect);
+        if !rect_contains(tree_rect, position.x, position.y) {
+            return TreeControllerEvent::Ignored;
+        }
+        let tree = self.build_tree_view(tree_rect);
+        let layout = backend.tree_layout(tree_rect, &tree);
+        match layout.hit_test(position.x - tree_rect.x, position.y - tree_rect.y) {
+            TreeViewHit::Row(idx) => {
+                let path = self.rows[idx].path.clone();
+                self.selected_path = Some(path.clone());
+                TreeControllerEvent::ContextMenuRequested { path, position }
             }
             TreeViewHit::Empty => TreeControllerEvent::Consumed,
         }
