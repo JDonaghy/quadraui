@@ -13,7 +13,7 @@ use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
@@ -168,69 +168,130 @@ pub fn draw_tree(
             cursor_x += iw as f64 + 6.0;
         }
 
-        let badge_info = row.badge.as_ref().map(|badge| {
-            layout.set_text(&badge.text);
-            let (bw, _) = layout.pixel_size();
-            let bfg = badge.fg.map(cairo_rgb).unwrap_or(dim);
-            let bbg = badge.bg.map(cairo_rgb).unwrap_or(row_bg);
-            (badge.text.clone(), bw as f64, bfg, bbg)
-        });
-        let badge_reserve = badge_info
-            .as_ref()
-            .map(|(_, bw, ..)| *bw + 8.0)
-            .unwrap_or(0.0);
-        let text_right_limit = x + w - badge_reserve - 4.0;
+        if let Some(ref edit) = row.edit {
+            paint_edit_input_gtk(cr, layout, cursor_x, row_y, row_h, x + w, edit, def_fg, sel);
+        } else {
+            let badge_info = row.badge.as_ref().map(|badge| {
+                layout.set_text(&badge.text);
+                let (bw, _) = layout.pixel_size();
+                let bfg = badge.fg.map(cairo_rgb).unwrap_or(dim);
+                let bbg = badge.bg.map(cairo_rgb).unwrap_or(row_bg);
+                (badge.text.clone(), bw as f64, bfg, bbg)
+            });
+            let badge_reserve = badge_info
+                .as_ref()
+                .map(|(_, bw, ..)| *bw + 8.0)
+                .unwrap_or(0.0);
+            let text_right_limit = x + w - badge_reserve - 4.0;
 
-        for span in &row.text.spans {
-            if cursor_x >= text_right_limit {
-                break;
-            }
-            let span_fg = if let Some(c) = span.fg {
-                cairo_rgb(c)
-            } else if matches!(row.decoration, Decoration::Muted) {
-                dim
-            } else {
-                def_fg
-            };
-            if let Some(sbg) = span.bg {
-                let span_bg = cairo_rgb(sbg);
-                layout.set_text(&span.text);
-                let (sw, _) = layout.pixel_size();
-                cr.set_source_rgb(span_bg.0, span_bg.1, span_bg.2);
-                cr.rectangle(
-                    cursor_x,
-                    row_y,
-                    (sw as f64).min(text_right_limit - cursor_x),
-                    row_h,
-                );
-                cr.fill().ok();
-            }
-            cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
-            layout.set_text(&span.text);
-            let (sw, sh) = layout.pixel_size();
-            cr.move_to(cursor_x, (row_y + (row_h - sh as f64) / 2.0).round());
-            pcfn::show_layout(cr, layout);
-            cursor_x += sw as f64;
-        }
-
-        if let Some((btext, bw, bfg, bbg)) = badge_info {
-            let bx = x + w - bw - 4.0;
-            if bx > cursor_x {
-                if bbg != row_bg {
-                    cr.set_source_rgb(bbg.0, bbg.1, bbg.2);
-                    cr.rectangle(bx - 2.0, row_y, bw + 4.0, row_h);
+            for span in &row.text.spans {
+                if cursor_x >= text_right_limit {
+                    break;
+                }
+                let span_fg = if let Some(c) = span.fg {
+                    cairo_rgb(c)
+                } else if matches!(row.decoration, Decoration::Muted) {
+                    dim
+                } else {
+                    def_fg
+                };
+                if let Some(sbg) = span.bg {
+                    let span_bg = cairo_rgb(sbg);
+                    layout.set_text(&span.text);
+                    let (sw, _) = layout.pixel_size();
+                    cr.set_source_rgb(span_bg.0, span_bg.1, span_bg.2);
+                    cr.rectangle(
+                        cursor_x,
+                        row_y,
+                        (sw as f64).min(text_right_limit - cursor_x),
+                        row_h,
+                    );
                     cr.fill().ok();
                 }
-                cr.set_source_rgb(bfg.0, bfg.1, bfg.2);
-                layout.set_text(&btext);
-                let (_, bh) = layout.pixel_size();
-                cr.move_to(bx, row_y + (row_h - bh as f64) / 2.0);
+                cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
+                layout.set_text(&span.text);
+                let (sw, sh) = layout.pixel_size();
+                cr.move_to(cursor_x, (row_y + (row_h - sh as f64) / 2.0).round());
                 pcfn::show_layout(cr, layout);
+                cursor_x += sw as f64;
+            }
+
+            if let Some((btext, bw, bfg, bbg)) = badge_info {
+                let bx = x + w - bw - 4.0;
+                if bx > cursor_x {
+                    if bbg != row_bg {
+                        cr.set_source_rgb(bbg.0, bbg.1, bbg.2);
+                        cr.rectangle(bx - 2.0, row_y, bw + 4.0, row_h);
+                        cr.fill().ok();
+                    }
+                    cr.set_source_rgb(bfg.0, bfg.1, bfg.2);
+                    layout.set_text(&btext);
+                    let (_, bh) = layout.pixel_size();
+                    cr.move_to(bx, row_y + (row_h - bh as f64) / 2.0);
+                    pcfn::show_layout(cr, layout);
+                }
             }
         }
     }
 
     layout.set_attributes(None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_edit_input_gtk(
+    cr: &Context,
+    layout: &pango::Layout,
+    text_x: f64,
+    row_y: f64,
+    row_h: f64,
+    right_edge: f64,
+    edit: &TreeRowEditState,
+    fg: (f64, f64, f64),
+    sel_rgb: (f64, f64, f64),
+) {
+    let text_w = right_edge - text_x - 4.0;
+    if text_w <= 0.0 {
+        return;
+    }
+
+    // Selection highlight.
+    if let Some(anchor) = edit.selection_anchor {
+        if anchor != edit.cursor {
+            let lo = anchor.min(edit.cursor).min(edit.text.len());
+            let hi = anchor.max(edit.cursor).min(edit.text.len());
+            let prefix = &edit.text[..lo];
+            let sel_text = &edit.text[lo..hi];
+            layout.set_text(prefix);
+            let (prefix_w, _) = layout.pixel_size();
+            layout.set_text(sel_text);
+            let (sel_w, _) = layout.pixel_size();
+            cr.set_source_rgb(sel_rgb.0, sel_rgb.1, sel_rgb.2);
+            cr.rectangle(
+                text_x + prefix_w as f64,
+                row_y + 2.0,
+                sel_w as f64,
+                row_h - 4.0,
+            );
+            cr.fill().ok();
+        }
+    }
+
+    // Text.
+    cr.set_source_rgb(fg.0, fg.1, fg.2);
+    layout.set_text(&edit.text);
+    let (_, th) = layout.pixel_size();
+    cr.move_to(text_x, (row_y + (row_h - th as f64) / 2.0).round());
+    pcfn::show_layout(cr, layout);
+
+    // Thin vertical caret bar.
+    let cursor_byte = edit.cursor.min(edit.text.len());
+    let cursor_prefix = &edit.text[..cursor_byte];
+    layout.set_text(cursor_prefix);
+    let (cx_off, _) = layout.pixel_size();
+    let caret_x = text_x + cx_off as f64;
+    cr.set_source_rgb(fg.0, fg.1, fg.2);
+    cr.rectangle(caret_x, row_y + 3.0, 1.5, row_h - 6.0);
+    cr.fill().ok();
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -277,6 +338,7 @@ mod tests {
             badge: None,
             is_expanded: None,
             decoration: Decoration::Normal,
+            edit: None,
         }
     }
 
@@ -289,6 +351,7 @@ mod tests {
             badge: None,
             is_expanded: None,
             decoration: Decoration::Header,
+            edit: None,
         }
     }
 
@@ -538,5 +601,46 @@ mod tests {
                 y_bot
             );
         }
+    }
+
+    // ── Inline editing paint test ───────────────────────────────────
+
+    use crate::primitives::tree::TreeRowEditState;
+
+    #[test]
+    fn gtk_editing_row_has_caret_pixels() {
+        let tree = make_tree(vec![
+            leaf(0, "alpha"),
+            TreeRow {
+                path: vec![1],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("old-name".to_string()),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: Some(TreeRowEditState {
+                    text: "new-name".into(),
+                    cursor: 3, // after "new"
+                    selection_anchor: None,
+                }),
+            },
+            leaf(2, "gamma"),
+        ]);
+        let (mut surface, layout) = paint_then_layout(&tree);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // The editing row (index 1) should have non-background pixels
+        // (the caret bar) painted in its interior.
+        let vis = &layout.visible_rows[1];
+        let bounds = vis.bounds;
+        let y_top = (bounds.y + 1.0).floor() as i32;
+        let y_bot = (bounds.y + bounds.height - 1.0).floor() as i32;
+        let painted = first_painted_in(&data, stride, (1, W - 1), (y_top, y_bot.min(H)));
+        assert!(
+            painted.is_some(),
+            "editing row interior should contain painted pixels (caret + text)"
+        );
     }
 }

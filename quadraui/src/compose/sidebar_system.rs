@@ -21,11 +21,12 @@
 
 use super::focus_group::FocusGroup;
 use super::tree_controller::TreeController;
+use super::tree_controller::TreeControllerEvent;
 use crate::{
-    Backend, ButtonMask, Key, MouseButton, MsvAxis, MultiSectionView, MultiSectionViewHit,
-    NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeView, TreeViewHit, UiEvent,
-    WidgetId,
+    Backend, ButtonMask, Key, Modifiers, MouseButton, MsvAxis, MultiSectionView,
+    MultiSectionViewHit, NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody,
+    SectionHeader, SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState,
+    TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
 /// How Up/Down keys behave in the sidebar.
@@ -79,6 +80,20 @@ pub enum SidebarEvent {
     },
     /// Scrollbar interaction (drag or page).
     ScrollChanged { section: usize },
+    /// The user confirmed an inline edit (pressed Enter).
+    EditConfirmed {
+        section: usize,
+        path: TreePath,
+        new_text: String,
+    },
+    /// The user cancelled an inline edit (pressed Escape).
+    EditCancelled { section: usize, path: TreePath },
+    /// The text buffer changed during inline editing.
+    EditChanged {
+        section: usize,
+        path: TreePath,
+        text: String,
+    },
     /// State changed (navigation, collapse) — app should redraw.
     StateChanged,
     /// Event consumed (drag update, hover) — app should redraw.
@@ -190,6 +205,24 @@ impl SidebarSystem {
         self.navigation_mode = mode;
     }
 
+    // ── Inline editing ───────────────────────────────────────────────
+
+    pub fn start_editing(&mut self, section: usize, path: TreePath, initial_text: String) {
+        if let Some(tc) = self.sections.get_mut(section) {
+            tc.start_editing(path, initial_text);
+        }
+    }
+
+    pub fn cancel_editing(&mut self, section: usize) {
+        if let Some(tc) = self.sections.get_mut(section) {
+            tc.cancel_editing();
+        }
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.sections.iter().any(|tc| tc.is_editing())
+    }
+
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
@@ -206,6 +239,16 @@ impl SidebarSystem {
         rect: Rect,
     ) -> SidebarEvent {
         self.cached_viewport_rows = None;
+
+        // Route text input events to the editing section's TreeController.
+        if self.is_editing() {
+            match event {
+                UiEvent::CharTyped(ch) => return self.forward_edit_char(*ch),
+                UiEvent::ClipboardPaste(text) => return self.forward_edit_paste(text),
+                _ => {}
+            }
+        }
+
         match event {
             // ── Mouse click ───────────────────────────────────────
             UiEvent::MouseDown {
@@ -263,7 +306,12 @@ impl SidebarSystem {
                 self.cycle_active(-1);
                 SidebarEvent::StateChanged
             }
-            UiEvent::KeyPressed { key, .. } => self.handle_key(key, backend, rect),
+            UiEvent::KeyPressed { key, modifiers, .. } => {
+                if self.is_editing() {
+                    return self.forward_edit_key(key, modifiers);
+                }
+                self.handle_key(key, backend, rect)
+            }
 
             _ => SidebarEvent::Ignored,
         }
@@ -351,7 +399,6 @@ impl SidebarSystem {
         if self.collapsed[idx] {
             return SidebarEvent::Ignored;
         }
-        use super::tree_controller::TreeControllerEvent;
         match self.sections[idx].move_selection_by(delta, viewport_rows) {
             TreeControllerEvent::RowSelected { path } => {
                 SidebarEvent::RowSelected { section: idx, path }
@@ -375,7 +422,6 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
-        use super::tree_controller::TreeControllerEvent;
         match self.sections[idx].jump_to_edge(to_start, viewport_rows) {
             TreeControllerEvent::RowSelected { path } => {
                 SidebarEvent::RowSelected { section: idx, path }
@@ -388,11 +434,75 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
-        use super::tree_controller::TreeControllerEvent;
         match self.sections[idx].activate_selection() {
             TreeControllerEvent::RowActivated { path } => {
                 SidebarEvent::RowActivated { section: idx, path }
             }
+            _ => SidebarEvent::Ignored,
+        }
+    }
+
+    // ── Inline editing forwarding ────────────────────────────────────
+
+    fn editing_section(&self) -> Option<usize> {
+        self.sections.iter().position(|tc| tc.is_editing())
+    }
+
+    fn forward_edit_char(&mut self, ch: char) -> SidebarEvent {
+        let Some(idx) = self.editing_section() else {
+            return SidebarEvent::Ignored;
+        };
+        let tc = &mut self.sections[idx];
+        tc.edit_insert_char_via(ch);
+        self.map_tc_edit_event(idx)
+    }
+
+    fn forward_edit_paste(&mut self, text: &str) -> SidebarEvent {
+        let Some(idx) = self.editing_section() else {
+            return SidebarEvent::Ignored;
+        };
+        let tc = &mut self.sections[idx];
+        tc.edit_insert_str_via(text);
+        self.map_tc_edit_event(idx)
+    }
+
+    fn forward_edit_key(&mut self, key: &Key, modifiers: &Modifiers) -> SidebarEvent {
+        let Some(idx) = self.editing_section() else {
+            return SidebarEvent::Ignored;
+        };
+        let ev = self.sections[idx].handle_edit_key_via(key, modifiers);
+        Self::map_tc_event(idx, ev)
+    }
+
+    fn map_tc_edit_event(&self, idx: usize) -> SidebarEvent {
+        let tc = &self.sections[idx];
+        if let Some(path) = tc.editing_path() {
+            SidebarEvent::EditChanged {
+                section: idx,
+                path: path.clone(),
+                text: tc.editing_text().unwrap_or_default().to_string(),
+            }
+        } else {
+            SidebarEvent::Consumed
+        }
+    }
+
+    fn map_tc_event(idx: usize, ev: TreeControllerEvent) -> SidebarEvent {
+        match ev {
+            TreeControllerEvent::EditConfirmed { path, new_text } => SidebarEvent::EditConfirmed {
+                section: idx,
+                path,
+                new_text,
+            },
+            TreeControllerEvent::EditCancelled { path } => {
+                SidebarEvent::EditCancelled { section: idx, path }
+            }
+            TreeControllerEvent::EditChanged { path, text } => SidebarEvent::EditChanged {
+                section: idx,
+                path,
+                text,
+            },
+            TreeControllerEvent::Consumed => SidebarEvent::Consumed,
             _ => SidebarEvent::Ignored,
         }
     }
@@ -443,14 +553,26 @@ impl SidebarSystem {
                         show_chevron: def.show_chevron,
                         ..Default::default()
                     },
-                    body: SectionBody::Tree(TreeView {
-                        id: WidgetId::new(format!("{}-tree", def.id)),
-                        rows: tc.rows().to_vec(),
-                        selection_mode: SelectionMode::Single,
-                        selected_path: tc.selected_path().cloned(),
-                        scroll_offset: tc.scroll_offset(),
-                        style: Default::default(),
-                        has_focus: is_active && self.has_focus,
+                    body: SectionBody::Tree({
+                        let mut rows = tc.rows().to_vec();
+                        if let Some(editing_path) = tc.editing_path() {
+                            if let Some(row) = rows.iter_mut().find(|r| &r.path == editing_path) {
+                                row.edit = Some(TreeRowEditState {
+                                    text: tc.editing_text().unwrap_or("").to_string(),
+                                    cursor: tc.editing_cursor(),
+                                    selection_anchor: tc.editing_selection_anchor(),
+                                });
+                            }
+                        }
+                        TreeView {
+                            id: WidgetId::new(format!("{}-tree", def.id)),
+                            rows,
+                            selection_mode: SelectionMode::Single,
+                            selected_path: tc.selected_path().cloned(),
+                            scroll_offset: tc.scroll_offset(),
+                            style: Default::default(),
+                            has_focus: is_active && self.has_focus,
+                        }
                     }),
                     aux: None,
                     size: def.size,
@@ -670,6 +792,7 @@ mod tests {
                 badge: None,
                 is_expanded: None,
                 decoration: Decoration::Normal,
+                edit: None,
             })
             .collect()
     }

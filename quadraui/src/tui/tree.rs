@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{draw_styled_text, qc, ratatui_color, set_cell};
-use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
@@ -130,38 +130,89 @@ pub fn draw_tree(
             }
         }
 
-        let text_start = col;
-        let text_end = draw_styled_text(
-            buf,
-            area,
-            y,
-            col,
-            &row.text,
-            default_fg,
-            bg,
-            row.decoration,
-            dim_fg,
-        );
-        col = text_end;
+        if let Some(ref edit) = row.edit {
+            paint_edit_input(buf, area, y, col, edit, default_fg, bg, sel_bg);
+        } else {
+            let text_start = col;
+            let text_end = draw_styled_text(
+                buf,
+                area,
+                y,
+                col,
+                &row.text,
+                default_fg,
+                bg,
+                row.decoration,
+                dim_fg,
+            );
+            col = text_end;
 
-        if let Some(ref badge) = row.badge {
-            let badge_width: usize = badge.text.chars().count();
-            let badge_start_col = (area.width as usize).saturating_sub(badge_width);
-            if badge_start_col > text_start {
-                let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
-                let badge_bg = badge.bg.map(qc).unwrap_or(bg);
-                let mut bx = badge_start_col;
-                for ch in badge.text.chars() {
-                    if bx >= area.width as usize {
-                        break;
+            if let Some(ref badge) = row.badge {
+                let badge_width: usize = badge.text.chars().count();
+                let badge_start_col = (area.width as usize).saturating_sub(badge_width);
+                if badge_start_col > text_start {
+                    let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
+                    let badge_bg = badge.bg.map(qc).unwrap_or(bg);
+                    let mut bx = badge_start_col;
+                    for ch in badge.text.chars() {
+                        if bx >= area.width as usize {
+                            break;
+                        }
+                        set_cell(buf, area.x + bx as u16, y, ch, badge_fg, badge_bg);
+                        bx += 1;
                     }
-                    set_cell(buf, area.x + bx as u16, y, ch, badge_fg, badge_bg);
-                    bx += 1;
                 }
             }
         }
 
         let _ = col;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_edit_input(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    start_col: usize,
+    edit: &TreeRowEditState,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    sel_bg: ratatui::style::Color,
+) {
+    let (sel_lo, sel_hi) = match edit.selection_anchor {
+        Some(a) if a != edit.cursor => (a.min(edit.cursor), a.max(edit.cursor)),
+        _ => (0, 0),
+    };
+    let has_selection = sel_hi > sel_lo;
+
+    let mut col = start_col;
+    let mut byte = 0usize;
+    for ch in edit.text.chars() {
+        if col >= area.width as usize {
+            break;
+        }
+        let in_sel = has_selection && byte >= sel_lo && byte < sel_hi;
+        let cell_bg = if in_sel { sel_bg } else { bg };
+        set_cell(buf, area.x + col as u16, y, ch, fg, cell_bg);
+        byte += ch.len_utf8();
+        col += 1;
+    }
+
+    // Block cursor: find char index for cursor byte offset, invert that cell.
+    let mut cursor_char_idx = 0usize;
+    let mut b = 0usize;
+    for ch in edit.text.chars() {
+        if b >= edit.cursor {
+            break;
+        }
+        b += ch.len_utf8();
+        cursor_char_idx += 1;
+    }
+    let cursor_col = start_col + cursor_char_idx;
+    if cursor_col < area.width as usize {
+        let ch = edit.text.chars().nth(cursor_char_idx).unwrap_or(' ');
+        set_cell(buf, area.x + cursor_col as u16, y, ch, bg, fg);
     }
 }
 
@@ -198,6 +249,7 @@ mod tests {
             badge: None,
             is_expanded: expanded,
             decoration: Decoration::Normal,
+            edit: None,
         }
     }
 
@@ -282,6 +334,7 @@ mod tests {
                 badge: None,
                 is_expanded: Some(true),
                 decoration: Decoration::Header,
+                edit: None,
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
@@ -363,6 +416,7 @@ mod tests {
                 badge: None,
                 is_expanded: None,
                 decoration: Decoration::Normal,
+                edit: None,
             })
             .collect();
         TreeView {
@@ -491,6 +545,7 @@ mod tests {
                     badge: None,
                     is_expanded: Some(true),
                     decoration: Decoration::Header,
+                    edit: None,
                 },
                 row(&[0, 0], 1, "alpha", None),
                 row(&[0, 1], 1, "beta", None),
@@ -513,5 +568,79 @@ mod tests {
                 "row {needle:?} painted at y={painted_y}: expected Row({expected_idx}), got {hit:?}"
             );
         }
+    }
+
+    // ── Inline editing paint tests ──────────────────────────────────
+
+    use crate::primitives::tree::TreeRowEditState;
+
+    #[test]
+    fn editing_row_shows_edit_text_not_original() {
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        let mut tree = make_tree();
+        // Put the second row (main.rs) into editing mode with different text.
+        tree.rows[1].edit = Some(TreeRowEditState {
+            text: "renamed.rs".into(),
+            cursor: 10,
+            selection_anchor: None,
+        });
+        draw_tree(&mut buf, area, &tree, &Theme::default(), false);
+
+        // "renamed.rs" should appear.
+        assert!(
+            find_row_with(&buf, "renamed.rs").is_some(),
+            "editing row should show 'renamed.rs'"
+        );
+        // The original "main.rs" text should NOT appear on that row.
+        // (find_row_with searches all rows, "main.rs" shouldn't be on any.)
+        assert!(
+            find_row_with(&buf, "main.rs").is_none(),
+            "original label 'main.rs' should be replaced by edit text"
+        );
+    }
+
+    #[test]
+    fn editing_row_cursor_is_inverted() {
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                text: StyledText::plain("old"),
+                icon: None,
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: Some(TreeRowEditState {
+                    text: "ab".into(),
+                    cursor: 2, // cursor at end (on the space after 'b')
+                    selection_anchor: None,
+                }),
+            }],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let theme = Theme::default();
+        draw_tree(&mut buf, area, &tree, &theme, false);
+        // The leaf has indent=0, no icon, no chevron → 2-cell gap then edit text.
+        // Edit text "ab" at cols 2,3. Cursor at byte 2 → char index 2 → col 4.
+        // Cursor cell should have inverted fg/bg.
+        let row_bg = ratatui_color(theme.tab_bar_bg);
+        let row_fg = ratatui_color(theme.foreground);
+        let cursor_cell = &buf[(area.x + 4, 0u16)];
+        assert_eq!(
+            cursor_cell.fg, row_bg,
+            "cursor cell fg should be the row bg (inverted)"
+        );
+        assert_eq!(
+            cursor_cell.bg, row_fg,
+            "cursor cell bg should be the row fg (inverted)"
+        );
     }
 }

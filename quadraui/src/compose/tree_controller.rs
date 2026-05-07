@@ -24,8 +24,8 @@
 //! offset). Backends normalise their native direction before emitting.
 
 use crate::{
-    Backend, ButtonMask, Key, MouseButton, NamedKey, Rect, Scrollbar, SelectionMode, TreePath,
-    TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
+    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Rect, Scrollbar, SelectionMode,
+    TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
 /// What happened after [`TreeController::handle`] processed an event.
@@ -41,6 +41,12 @@ pub enum TreeControllerEvent {
     Consumed,
     /// Event not relevant to the tree.
     Ignored,
+    /// The user confirmed an inline edit (pressed Enter).
+    EditConfirmed { path: TreePath, new_text: String },
+    /// The user cancelled an inline edit (pressed Escape).
+    EditCancelled { path: TreePath },
+    /// The text buffer changed during inline editing.
+    EditChanged { path: TreePath, text: String },
 }
 
 struct ScrollDrag {
@@ -48,6 +54,13 @@ struct ScrollDrag {
     origin_offset: usize,
     travel: f32,
     max_offset: usize,
+}
+
+struct EditingState {
+    path: TreePath,
+    text: String,
+    cursor: usize,
+    selection_anchor: Option<usize>,
 }
 
 pub struct TreeController {
@@ -58,6 +71,7 @@ pub struct TreeController {
     has_focus: bool,
     scroll_drag: Option<ScrollDrag>,
     vim_keys: bool,
+    editing: Option<EditingState>,
 }
 
 impl TreeController {
@@ -70,6 +84,7 @@ impl TreeController {
             has_focus: true,
             scroll_drag: None,
             vim_keys: true,
+            editing: None,
         }
     }
 
@@ -122,6 +137,67 @@ impl TreeController {
         self.vim_keys = enabled;
     }
 
+    // ── Inline editing ───────────────────────────────────────────────
+
+    /// Begin inline editing of the row at `path`. The cursor starts at
+    /// the end with all text selected (select-all).
+    pub fn start_editing(&mut self, path: TreePath, initial_text: String) {
+        let cursor = initial_text.len();
+        self.editing = Some(EditingState {
+            path: path.clone(),
+            text: initial_text,
+            cursor,
+            selection_anchor: Some(0),
+        });
+        self.selected_path = Some(path);
+    }
+
+    /// Cancel editing programmatically.
+    pub fn cancel_editing(&mut self) {
+        self.editing = None;
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    pub fn editing_path(&self) -> Option<&TreePath> {
+        self.editing.as_ref().map(|e| &e.path)
+    }
+
+    pub fn editing_text(&self) -> Option<&str> {
+        self.editing.as_ref().map(|e| e.text.as_str())
+    }
+
+    pub fn editing_cursor(&self) -> usize {
+        self.editing.as_ref().map(|e| e.cursor).unwrap_or(0)
+    }
+
+    pub fn editing_selection_anchor(&self) -> Option<usize> {
+        self.editing.as_ref().and_then(|e| e.selection_anchor)
+    }
+
+    pub fn edit_insert_char_via(&mut self, ch: char) -> TreeControllerEvent {
+        if self.editing.is_none() {
+            return TreeControllerEvent::Ignored;
+        }
+        self.edit_insert_char(ch)
+    }
+
+    pub fn edit_insert_str_via(&mut self, s: &str) -> TreeControllerEvent {
+        if self.editing.is_none() {
+            return TreeControllerEvent::Ignored;
+        }
+        self.edit_insert_str(s)
+    }
+
+    pub fn handle_edit_key_via(&mut self, key: &Key, modifiers: &Modifiers) -> TreeControllerEvent {
+        if self.editing.is_none() {
+            return TreeControllerEvent::Ignored;
+        }
+        self.handle_edit_key(key, modifiers)
+    }
+
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
@@ -143,6 +219,10 @@ impl TreeController {
         rect: Rect,
     ) -> TreeControllerEvent {
         match event {
+            UiEvent::CharTyped(ch) if self.editing.is_some() => self.edit_insert_char(*ch),
+
+            UiEvent::ClipboardPaste(text) if self.editing.is_some() => self.edit_insert_str(text),
+
             UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position,
@@ -178,7 +258,9 @@ impl TreeController {
                 TreeControllerEvent::Consumed
             }
 
-            UiEvent::KeyPressed { key, .. } => self.handle_key(key, backend, rect),
+            UiEvent::KeyPressed { key, modifiers, .. } => {
+                self.handle_key(key, modifiers, backend, rect)
+            }
 
             _ => TreeControllerEvent::Ignored,
         }
@@ -253,9 +335,13 @@ impl TreeController {
     fn handle_key(
         &mut self,
         key: &Key,
+        modifiers: &Modifiers,
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> TreeControllerEvent {
+        if self.editing.is_some() {
+            return self.handle_edit_key(key, modifiers);
+        }
         let vim_up = self.vim_keys && matches!(key, Key::Char('k'));
         let vim_down = self.vim_keys && matches!(key, Key::Char('j'));
         match key {
@@ -293,6 +379,185 @@ impl TreeController {
             }
             Key::Named(NamedKey::Enter) => self.activate_selection(),
             _ => TreeControllerEvent::Ignored,
+        }
+    }
+
+    // ── Inline editing key dispatch ──────────────────────────────────
+
+    fn handle_edit_key(&mut self, key: &Key, modifiers: &Modifiers) -> TreeControllerEvent {
+        match key {
+            Key::Named(NamedKey::Enter) => {
+                let e = self.editing.take().unwrap();
+                TreeControllerEvent::EditConfirmed {
+                    path: e.path,
+                    new_text: e.text,
+                }
+            }
+            Key::Named(NamedKey::Escape) => {
+                let e = self.editing.take().unwrap();
+                TreeControllerEvent::EditCancelled { path: e.path }
+            }
+            Key::Named(NamedKey::Backspace) => self.edit_backspace(),
+            Key::Named(NamedKey::Delete) => self.edit_delete(),
+            Key::Named(NamedKey::Left) => {
+                self.edit_move_cursor_left(modifiers.shift);
+                TreeControllerEvent::Consumed
+            }
+            Key::Named(NamedKey::Right) => {
+                self.edit_move_cursor_right(modifiers.shift);
+                TreeControllerEvent::Consumed
+            }
+            Key::Named(NamedKey::Home) => {
+                self.edit_move_home(modifiers.shift);
+                TreeControllerEvent::Consumed
+            }
+            Key::Named(NamedKey::End) => {
+                self.edit_move_end(modifiers.shift);
+                TreeControllerEvent::Consumed
+            }
+            Key::Char('a') if modifiers.ctrl => {
+                self.edit_select_all();
+                TreeControllerEvent::Consumed
+            }
+            Key::Char(c) => self.edit_insert_char(*c),
+            _ => TreeControllerEvent::Consumed,
+        }
+    }
+
+    // ── Text buffer manipulation helpers ─────────────────────────────
+
+    fn edit_delete_selection(&mut self) -> bool {
+        let e = self.editing.as_mut().unwrap();
+        if let Some(anchor) = e.selection_anchor {
+            if anchor != e.cursor {
+                let lo = anchor.min(e.cursor);
+                let hi = anchor.max(e.cursor);
+                let lo = snap_to_char_boundary(&e.text, lo);
+                let hi = snap_to_char_boundary(&e.text, hi);
+                e.text.replace_range(lo..hi, "");
+                e.cursor = lo;
+                e.selection_anchor = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn edit_insert_char(&mut self, c: char) -> TreeControllerEvent {
+        self.edit_delete_selection();
+        let e = self.editing.as_mut().unwrap();
+        let cursor = snap_to_char_boundary(&e.text, e.cursor);
+        e.text.insert(cursor, c);
+        e.cursor = cursor + c.len_utf8();
+        e.selection_anchor = None;
+        self.emit_edit_changed()
+    }
+
+    fn edit_insert_str(&mut self, s: &str) -> TreeControllerEvent {
+        self.edit_delete_selection();
+        let e = self.editing.as_mut().unwrap();
+        let cursor = snap_to_char_boundary(&e.text, e.cursor);
+        e.text.insert_str(cursor, s);
+        e.cursor = cursor + s.len();
+        e.selection_anchor = None;
+        self.emit_edit_changed()
+    }
+
+    fn edit_backspace(&mut self) -> TreeControllerEvent {
+        if self.edit_delete_selection() {
+            return self.emit_edit_changed();
+        }
+        let e = self.editing.as_mut().unwrap();
+        if e.cursor == 0 {
+            return TreeControllerEvent::Consumed;
+        }
+        let prev = prev_char_boundary(&e.text, e.cursor);
+        e.text.replace_range(prev..e.cursor, "");
+        e.cursor = prev;
+        e.selection_anchor = None;
+        self.emit_edit_changed()
+    }
+
+    fn edit_delete(&mut self) -> TreeControllerEvent {
+        if self.edit_delete_selection() {
+            return self.emit_edit_changed();
+        }
+        let e = self.editing.as_mut().unwrap();
+        if e.cursor >= e.text.len() {
+            return TreeControllerEvent::Consumed;
+        }
+        let next = next_char_boundary(&e.text, e.cursor);
+        e.text.replace_range(e.cursor..next, "");
+        self.emit_edit_changed()
+    }
+
+    fn edit_move_cursor_left(&mut self, extend_selection: bool) {
+        let e = self.editing.as_mut().unwrap();
+        if e.cursor == 0 {
+            if !extend_selection {
+                e.selection_anchor = None;
+            }
+            return;
+        }
+        if extend_selection && e.selection_anchor.is_none() {
+            e.selection_anchor = Some(e.cursor);
+        }
+        e.cursor = prev_char_boundary(&e.text, e.cursor);
+        if !extend_selection {
+            e.selection_anchor = None;
+        }
+    }
+
+    fn edit_move_cursor_right(&mut self, extend_selection: bool) {
+        let e = self.editing.as_mut().unwrap();
+        if e.cursor >= e.text.len() {
+            if !extend_selection {
+                e.selection_anchor = None;
+            }
+            return;
+        }
+        if extend_selection && e.selection_anchor.is_none() {
+            e.selection_anchor = Some(e.cursor);
+        }
+        e.cursor = next_char_boundary(&e.text, e.cursor);
+        if !extend_selection {
+            e.selection_anchor = None;
+        }
+    }
+
+    fn edit_move_home(&mut self, extend_selection: bool) {
+        let e = self.editing.as_mut().unwrap();
+        if extend_selection && e.selection_anchor.is_none() {
+            e.selection_anchor = Some(e.cursor);
+        }
+        e.cursor = 0;
+        if !extend_selection {
+            e.selection_anchor = None;
+        }
+    }
+
+    fn edit_move_end(&mut self, extend_selection: bool) {
+        let e = self.editing.as_mut().unwrap();
+        if extend_selection && e.selection_anchor.is_none() {
+            e.selection_anchor = Some(e.cursor);
+        }
+        e.cursor = e.text.len();
+        if !extend_selection {
+            e.selection_anchor = None;
+        }
+    }
+
+    fn edit_select_all(&mut self) {
+        let e = self.editing.as_mut().unwrap();
+        e.selection_anchor = Some(0);
+        e.cursor = e.text.len();
+    }
+
+    fn emit_edit_changed(&self) -> TreeControllerEvent {
+        let e = self.editing.as_ref().unwrap();
+        TreeControllerEvent::EditChanged {
+            path: e.path.clone(),
+            text: e.text.clone(),
         }
     }
 
@@ -429,9 +694,19 @@ impl TreeController {
     }
 
     fn build_tree_view(&self, _rect: Rect) -> TreeView {
+        let mut rows = self.rows.clone();
+        if let Some(ref editing) = self.editing {
+            if let Some(row) = rows.iter_mut().find(|r| r.path == editing.path) {
+                row.edit = Some(TreeRowEditState {
+                    text: editing.text.clone(),
+                    cursor: editing.cursor,
+                    selection_anchor: editing.selection_anchor,
+                });
+            }
+        }
         TreeView {
             id: self.id.clone(),
-            rows: self.rows.clone(),
+            rows,
             selection_mode: SelectionMode::Single,
             selected_path: self.selected_path.clone(),
             scroll_offset: self.scroll_offset,
@@ -487,6 +762,38 @@ impl TreeController {
     }
 }
 
+fn snap_to_char_boundary(s: &str, byte: usize) -> usize {
+    let byte = byte.min(s.len());
+    let mut i = byte;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn prev_char_boundary(s: &str, byte: usize) -> usize {
+    if byte == 0 {
+        return 0;
+    }
+    let mut i = byte - 1;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn next_char_boundary(s: &str, byte: usize) -> usize {
+    let byte = byte.min(s.len());
+    if byte >= s.len() {
+        return s.len();
+    }
+    let mut i = byte + 1;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
@@ -506,6 +813,7 @@ mod tests {
                 badge: None,
                 is_expanded: None,
                 decoration: Decoration::Normal,
+                edit: None,
             })
             .collect()
     }
@@ -723,5 +1031,128 @@ mod tests {
         assert_eq!(tc.scroll_offset(), 5); // 10 - 5
         tc.scroll_by(-100, 5);
         assert_eq!(tc.scroll_offset(), 0);
+    }
+
+    // ── Inline editing ──────────────────────────────────────────────
+
+    #[test]
+    fn start_editing_initializes_state() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![2], "hello.rs".into());
+        assert!(tc.is_editing());
+        assert_eq!(tc.editing_path(), Some(&vec![2]));
+        assert_eq!(tc.editing_text(), Some("hello.rs"));
+        assert_eq!(tc.selected_path(), Some(&vec![2]));
+    }
+
+    #[test]
+    fn cancel_editing_clears_state() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], "a.rs".into());
+        tc.cancel_editing();
+        assert!(!tc.is_editing());
+        assert_eq!(tc.editing_path(), None);
+    }
+
+    #[test]
+    fn char_key_inserts_during_editing() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], String::new());
+        let ev = tc.handle_edit_key_via(&Key::Char('j'), &Modifiers::default());
+        assert!(matches!(ev, TreeControllerEvent::EditChanged { .. }));
+        assert_eq!(tc.editing_text(), Some("j"));
+    }
+
+    #[test]
+    fn enter_confirms_editing() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![1], "new.txt".into());
+        // Select-all is on by default; type to replace.
+        tc.handle_edit_key_via(&Key::Char('x'), &Modifiers::default());
+        let ev = tc.handle_edit_key_via(&Key::Named(NamedKey::Enter), &Modifiers::default());
+        assert_eq!(
+            ev,
+            TreeControllerEvent::EditConfirmed {
+                path: vec![1],
+                new_text: "x".into()
+            }
+        );
+        assert!(!tc.is_editing());
+    }
+
+    #[test]
+    fn escape_cancels_editing() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], "old.txt".into());
+        let ev = tc.handle_edit_key_via(&Key::Named(NamedKey::Escape), &Modifiers::default());
+        assert_eq!(ev, TreeControllerEvent::EditCancelled { path: vec![0] });
+        assert!(!tc.is_editing());
+    }
+
+    #[test]
+    fn backspace_deletes_char() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], "abc".into());
+        // Clear select-all first by pressing Right.
+        tc.handle_edit_key_via(&Key::Named(NamedKey::End), &Modifiers::default());
+        tc.handle_edit_key_via(&Key::Named(NamedKey::Backspace), &Modifiers::default());
+        assert_eq!(tc.editing_text(), Some("ab"));
+    }
+
+    #[test]
+    fn left_right_move_cursor() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], "ab".into());
+        // End clears select-all and goes to end.
+        tc.handle_edit_key_via(&Key::Named(NamedKey::End), &Modifiers::default());
+        tc.handle_edit_key_via(&Key::Named(NamedKey::Left), &Modifiers::default());
+        tc.handle_edit_key_via(&Key::Char('X'), &Modifiers::default());
+        assert_eq!(tc.editing_text(), Some("aXb"));
+    }
+
+    #[test]
+    fn shift_right_extends_selection_and_backspace_deletes_range() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], "abcd".into());
+        // Home to clear select-all, then Shift+Right twice to select "ab".
+        tc.handle_edit_key_via(&Key::Named(NamedKey::Home), &Modifiers::default());
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        tc.handle_edit_key_via(&Key::Named(NamedKey::Right), &shift);
+        tc.handle_edit_key_via(&Key::Named(NamedKey::Right), &shift);
+        tc.handle_edit_key_via(&Key::Named(NamedKey::Backspace), &Modifiers::default());
+        assert_eq!(tc.editing_text(), Some("cd"));
+    }
+
+    #[test]
+    fn build_tree_view_stamps_edit_state() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![2], "renamed".into());
+        let tree = tc.build_tree_view(Rect::new(0.0, 0.0, 40.0, 10.0));
+        let row = &tree.rows[2];
+        assert!(row.edit.is_some());
+        let edit = row.edit.as_ref().unwrap();
+        assert_eq!(edit.text, "renamed");
+    }
+
+    #[test]
+    fn nav_keys_suppressed_during_editing() {
+        let mut tc = test_controller();
+        tc.set_selected_path(Some(vec![2]));
+        tc.start_editing(vec![2], "test".into());
+        let ev = tc.handle_edit_key_via(&Key::Named(NamedKey::Down), &Modifiers::default());
+        assert_eq!(ev, TreeControllerEvent::Consumed);
+        assert_eq!(tc.selected_path(), Some(&vec![2]));
+    }
+
+    #[test]
+    fn select_all_then_type_replaces() {
+        let mut tc = test_controller();
+        tc.start_editing(vec![0], "old".into());
+        // start_editing selects all, so typing replaces.
+        tc.handle_edit_key_via(&Key::Char('n'), &Modifiers::default());
+        assert_eq!(tc.editing_text(), Some("n"));
     }
 }

@@ -215,7 +215,8 @@ pub use primitives::tooltip::{
     TooltipPlacement,
 };
 pub use primitives::tree::{
-    TreeEvent, TreeRow, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
+    TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
+    VisibleTreeRow,
 };
 pub use theme::Theme;
 pub use types::{
@@ -308,6 +309,7 @@ mod tests {
                 badge: Some(Badge::plain("3")),
                 is_expanded: Some(true),
                 decoration: Decoration::Normal,
+                edit: None,
             }],
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
@@ -3209,6 +3211,7 @@ mod tests {
             badge: None,
             is_expanded: None,
             decoration: Decoration::Normal,
+            edit: None,
         }
     }
 

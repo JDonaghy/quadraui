@@ -17,9 +17,9 @@
 //! - `q` / `Esc`                  quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Key, NamedKey, Reaction, Rect, SectionSize, SidebarEvent,
-    SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, StyledText, TreeRow, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
+    SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment,
+    StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
@@ -41,6 +41,8 @@ impl DebugSidebar {
         sidebar.set_rows(1, fake_rows("w", 8));
         sidebar.set_rows(2, fake_rows("frame", 5));
         sidebar.set_rows(3, fake_rows("bp", 0));
+        sidebar.set_navigation_mode(NavigationMode::Selection);
+        sidebar.set_active_section(Some(0));
         Self {
             sidebar,
             last_action: "—".into(),
@@ -86,7 +88,7 @@ impl DebugSidebar {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " mouse / Tab / ↑↓ / Enter / q ".into(),
+                text: " mouse / Tab / ↑↓ / Enter / r=edit / q ".into(),
                 fg,
                 bg,
                 bold: false,
@@ -135,10 +137,31 @@ impl AppLogic for DebugSidebar {
                 );
                 Reaction::Redraw
             }
+            SidebarEvent::EditConfirmed { section, path, .. } => {
+                self.last_action = format!("edit-ok→{section} {path:?}");
+                Reaction::Redraw
+            }
+            SidebarEvent::EditCancelled { section, path } => {
+                self.last_action = format!("edit-cancel→{section} {path:?}");
+                Reaction::Redraw
+            }
             SidebarEvent::ScrollChanged { .. }
+            | SidebarEvent::EditChanged { .. }
             | SidebarEvent::StateChanged
             | SidebarEvent::Consumed => Reaction::Redraw,
             SidebarEvent::Ignored => match event {
+                UiEvent::KeyPressed {
+                    key: Key::Char('r'),
+                    ..
+                } => {
+                    if let Some(section) = self.sidebar.active_section() {
+                        if let Some(path) = self.sidebar.selected_path(section).cloned() {
+                            let label = format!("item{}", path.last().unwrap_or(&0));
+                            self.sidebar.start_editing(section, path, label);
+                        }
+                    }
+                    Reaction::Redraw
+                }
                 UiEvent::KeyPressed {
                     key: Key::Char('q'),
                     ..
@@ -164,6 +187,7 @@ fn fake_rows(prefix: &str, n: usize) -> Vec<TreeRow> {
             badge: None,
             is_expanded: None,
             decoration: Decoration::Normal,
+            edit: None,
         })
         .collect()
 }

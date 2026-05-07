@@ -81,6 +81,7 @@ impl SearchPanelApp {
                 badge: None,
                 is_expanded: Some(file.expanded),
                 decoration: quadraui::Decoration::Header,
+                edit: None,
             });
             if file.expanded {
                 for (mi, m) in file.matches.iter().enumerate() {
@@ -105,6 +106,7 @@ impl SearchPanelApp {
                         badge: None,
                         is_expanded: None,
                         decoration: quadraui::Decoration::Normal,
+                        edit: None,
                     });
                 }
             }

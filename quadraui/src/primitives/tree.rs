@@ -66,6 +66,23 @@ pub struct TreeRow {
     pub is_expanded: Option<bool>,
     #[serde(default)]
     pub decoration: Decoration,
+    /// When `Some`, backends render an inline text input in place of
+    /// `text` and `badge`. The row's indent, icon, and chevron are
+    /// still rendered normally.
+    #[serde(default)]
+    pub edit: Option<TreeRowEditState>,
+}
+
+/// Inline editing state for a tree row. When present on a `TreeRow`,
+/// backends render a text input in place of the normal row label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeRowEditState {
+    pub text: String,
+    /// Cursor position as a byte offset into `text`.
+    pub cursor: usize,
+    /// Selection anchor as a byte offset. When `Some(n)` and `n != cursor`,
+    /// the range between anchor and cursor is selected.
+    pub selection_anchor: Option<usize>,
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
