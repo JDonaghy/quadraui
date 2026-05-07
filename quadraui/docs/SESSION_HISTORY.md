@@ -4,6 +4,31 @@ Archived session summaries. Newest at top.
 
 ---
 
+## 2026-05-07c — TreeController public API + scroll convention fix
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+**Issues closed:** #77 (PR #81), #78 (PR #81), #79 (PR #82)
+
+- **#77** Made `TreeController::scroll_by()` public with
+  `(delta, viewport_rows)` signature — no Backend reference needed,
+  matching `move_selection_by`, `jump_to_edge`, `page_scroll`.
+- **#78** Double-click emits `RowActivated` — added `UiEvent::DoubleClick`
+  handling in `TreeController::handle()`, hit-tests the tree and fires
+  `TreeControllerEvent::RowActivated` for the clicked row.
+- **#79** Fixed TUI scroll delta sign convention — positive `delta.y`
+  now means "scroll content up" (toward top of document) in both TUI
+  and GTK backends. TUI was inverted. Also added doc comments to
+  `dispatch_scroll` and `SidebarSystem` documenting the convention.
+
+**Files touched:** `compose/tree_controller.rs`, `tui/events.rs`,
+`dispatch.rs`, `compose/sidebar_system.rs`.
+
+**Tests:** 3 new `scroll_by` tests. TUI event round-trip tests updated
+for flipped signs. Test count: 504 (up from 501).
+
+---
+
 ## 2026-05-07b — StatusBar hover/pressed visual feedback
 
 **Agent:** Claude Opus 4.6 (1M context)
