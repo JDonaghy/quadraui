@@ -144,6 +144,10 @@ impl TreeController {
                 ..
             } => self.click(backend, rect, position.x, position.y),
 
+            UiEvent::DoubleClick { position, .. } => {
+                self.double_click(backend, rect, position.x, position.y)
+            }
+
             UiEvent::MouseMoved {
                 position,
                 buttons:
@@ -163,8 +167,9 @@ impl TreeController {
             }
 
             UiEvent::Scroll { delta, .. } => {
+                let vr = self.viewport_rows(backend, rect);
                 let rows = if delta.y > 0.0 { -1 } else { 1 };
-                self.scroll_by(backend, rect, rows);
+                self.scroll_by(rows, vr);
                 TreeControllerEvent::Consumed
             }
 
@@ -320,6 +325,29 @@ impl TreeController {
         }
     }
 
+    fn double_click(
+        &mut self,
+        backend: &mut dyn Backend,
+        rect: Rect,
+        x: f32,
+        y: f32,
+    ) -> TreeControllerEvent {
+        let (tree_rect, _) = self.split_rect(backend, rect);
+        if !rect_contains(tree_rect, x, y) {
+            return TreeControllerEvent::Ignored;
+        }
+        let tree = self.build_tree_view(tree_rect);
+        let layout = backend.tree_layout(tree_rect, &tree);
+        match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
+            TreeViewHit::Row(idx) => {
+                let path = self.rows[idx].path.clone();
+                self.selected_path = Some(path.clone());
+                TreeControllerEvent::RowActivated { path }
+            }
+            TreeViewHit::Empty => TreeControllerEvent::Consumed,
+        }
+    }
+
     fn click_scrollbar(
         &mut self,
         backend: &mut dyn Backend,
@@ -375,9 +403,7 @@ impl TreeController {
         TreeControllerEvent::Consumed
     }
 
-    fn scroll_by(&mut self, backend: &mut dyn Backend, rect: Rect, delta: isize) {
-        let (tree_rect, _) = self.split_rect(backend, rect);
-        let viewport_rows = self.viewport_rows(backend, tree_rect);
+    pub fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
         let max = self.rows.len().saturating_sub(viewport_rows) as isize;
         let cur = self.scroll_offset as isize;
         let new = (cur + delta).max(0).min(max) as usize;
@@ -663,5 +689,34 @@ mod tests {
         let mut tc = TreeController::new("t");
         let ev = tc.jump_to_edge(true, 10);
         assert_eq!(ev, TreeControllerEvent::Ignored);
+    }
+
+    // ── scroll_by (pub) ─────────────────────────────────────────────
+
+    #[test]
+    fn scroll_by_positive_advances_offset() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 20));
+        tc.scroll_by(3, 5);
+        assert_eq!(tc.scroll_offset(), 3);
+    }
+
+    #[test]
+    fn scroll_by_negative_retreats_offset() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 20));
+        tc.set_scroll_offset(5);
+        tc.scroll_by(-2, 5);
+        assert_eq!(tc.scroll_offset(), 3);
+    }
+
+    #[test]
+    fn scroll_by_clamps_to_bounds() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 10));
+        tc.scroll_by(100, 5);
+        assert_eq!(tc.scroll_offset(), 5); // 10 - 5
+        tc.scroll_by(-100, 5);
+        assert_eq!(tc.scroll_offset(), 0);
     }
 }
