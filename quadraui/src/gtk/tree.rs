@@ -169,7 +169,18 @@ pub fn draw_tree(
         }
 
         if let Some(ref edit) = row.edit {
-            paint_edit_input_gtk(cr, layout, cursor_x, row_y, row_h, x + w, edit, def_fg, sel);
+            paint_edit_input_gtk(
+                cr,
+                layout,
+                cursor_x,
+                row_y,
+                row_h,
+                x + w,
+                edit,
+                def_fg,
+                sel,
+                dim,
+            );
         } else {
             let badge_info = row.badge.as_ref().map(|badge| {
                 layout.set_text(&badge.text);
@@ -248,9 +259,25 @@ fn paint_edit_input_gtk(
     edit: &TreeRowEditState,
     fg: (f64, f64, f64),
     sel_rgb: (f64, f64, f64),
+    dim: (f64, f64, f64),
 ) {
     let text_w = right_edge - text_x - 4.0;
     if text_w <= 0.0 {
+        return;
+    }
+
+    if edit.text.is_empty() {
+        if let Some(ref ph) = edit.placeholder {
+            cr.set_source_rgb(dim.0, dim.1, dim.2);
+            layout.set_text(ph);
+            let (_, th) = layout.pixel_size();
+            cr.move_to(text_x, (row_y + (row_h - th as f64) / 2.0).round());
+            pcfn::show_layout(cr, layout);
+        }
+        // Caret at position 0.
+        cr.set_source_rgb(fg.0, fg.1, fg.2);
+        cr.rectangle(text_x, row_y + 3.0, 1.5, row_h - 6.0);
+        cr.fill().ok();
         return;
     }
 
@@ -623,6 +650,7 @@ mod tests {
                     text: "new-name".into(),
                     cursor: 3, // after "new"
                     selection_anchor: None,
+                    placeholder: None,
                 }),
             },
             leaf(2, "gamma"),

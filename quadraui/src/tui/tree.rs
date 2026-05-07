@@ -131,7 +131,7 @@ pub fn draw_tree(
         }
 
         if let Some(ref edit) = row.edit {
-            paint_edit_input(buf, area, y, col, edit, default_fg, bg, sel_bg);
+            paint_edit_input(buf, area, y, col, edit, default_fg, bg, sel_bg, dim_fg);
         } else {
             let text_start = col;
             let text_end = draw_styled_text(
@@ -179,7 +179,26 @@ fn paint_edit_input(
     fg: ratatui::style::Color,
     bg: ratatui::style::Color,
     sel_bg: ratatui::style::Color,
+    dim_fg: ratatui::style::Color,
 ) {
+    if edit.text.is_empty() {
+        if let Some(ref ph) = edit.placeholder {
+            let mut col = start_col;
+            for ch in ph.chars() {
+                if col >= area.width as usize {
+                    break;
+                }
+                set_cell(buf, area.x + col as u16, y, ch, dim_fg, bg);
+                col += 1;
+            }
+        }
+        // Cursor at position 0 (inverted space).
+        if start_col < area.width as usize {
+            set_cell(buf, area.x + start_col as u16, y, ' ', bg, fg);
+        }
+        return;
+    }
+
     let (sel_lo, sel_hi) = match edit.selection_anchor {
         Some(a) if a != edit.cursor => (a.min(edit.cursor), a.max(edit.cursor)),
         _ => (0, 0),
@@ -584,6 +603,7 @@ mod tests {
             text: "renamed.rs".into(),
             cursor: 10,
             selection_anchor: None,
+            placeholder: None,
         });
         draw_tree(&mut buf, area, &tree, &Theme::default(), false);
 
@@ -618,6 +638,7 @@ mod tests {
                     text: "ab".into(),
                     cursor: 2, // cursor at end (on the space after 'b')
                     selection_anchor: None,
+                    placeholder: None,
                 }),
             }],
             selection_mode: crate::types::SelectionMode::default(),

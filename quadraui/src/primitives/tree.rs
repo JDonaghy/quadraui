@@ -83,6 +83,9 @@ pub struct TreeRowEditState {
     /// Selection anchor as a byte offset. When `Some(n)` and `n != cursor`,
     /// the range between anchor and cursor is selected.
     pub selection_anchor: Option<usize>,
+    /// Shown in muted style when `text` is empty (e.g. "New file name...").
+    #[serde(default)]
+    pub placeholder: Option<String>,
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

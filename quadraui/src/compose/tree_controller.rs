@@ -61,6 +61,7 @@ struct EditingState {
     text: String,
     cursor: usize,
     selection_anchor: Option<usize>,
+    placeholder: Option<String>,
 }
 
 pub struct TreeController {
@@ -140,14 +141,21 @@ impl TreeController {
     // ── Inline editing ───────────────────────────────────────────────
 
     /// Begin inline editing of the row at `path`. The cursor starts at
-    /// the end with all text selected (select-all).
-    pub fn start_editing(&mut self, path: TreePath, initial_text: String) {
+    /// the end with all text selected (select-all). An optional
+    /// `placeholder` is shown in muted style when the text is empty.
+    pub fn start_editing(
+        &mut self,
+        path: TreePath,
+        initial_text: String,
+        placeholder: Option<String>,
+    ) {
         let cursor = initial_text.len();
         self.editing = Some(EditingState {
             path: path.clone(),
             text: initial_text,
             cursor,
             selection_anchor: Some(0),
+            placeholder,
         });
         self.selected_path = Some(path);
     }
@@ -175,6 +183,10 @@ impl TreeController {
 
     pub fn editing_selection_anchor(&self) -> Option<usize> {
         self.editing.as_ref().and_then(|e| e.selection_anchor)
+    }
+
+    pub fn editing_placeholder(&self) -> Option<&str> {
+        self.editing.as_ref().and_then(|e| e.placeholder.as_deref())
     }
 
     pub fn edit_insert_char_via(&mut self, ch: char) -> TreeControllerEvent {
@@ -701,6 +713,7 @@ impl TreeController {
                     text: editing.text.clone(),
                     cursor: editing.cursor,
                     selection_anchor: editing.selection_anchor,
+                    placeholder: editing.placeholder.clone(),
                 });
             }
         }
@@ -1038,7 +1051,7 @@ mod tests {
     #[test]
     fn start_editing_initializes_state() {
         let mut tc = test_controller();
-        tc.start_editing(vec![2], "hello.rs".into());
+        tc.start_editing(vec![2], "hello.rs".into(), None);
         assert!(tc.is_editing());
         assert_eq!(tc.editing_path(), Some(&vec![2]));
         assert_eq!(tc.editing_text(), Some("hello.rs"));
@@ -1048,7 +1061,7 @@ mod tests {
     #[test]
     fn cancel_editing_clears_state() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], "a.rs".into());
+        tc.start_editing(vec![0], "a.rs".into(), None);
         tc.cancel_editing();
         assert!(!tc.is_editing());
         assert_eq!(tc.editing_path(), None);
@@ -1057,7 +1070,7 @@ mod tests {
     #[test]
     fn char_key_inserts_during_editing() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], String::new());
+        tc.start_editing(vec![0], String::new(), None);
         let ev = tc.handle_edit_key_via(&Key::Char('j'), &Modifiers::default());
         assert!(matches!(ev, TreeControllerEvent::EditChanged { .. }));
         assert_eq!(tc.editing_text(), Some("j"));
@@ -1066,7 +1079,7 @@ mod tests {
     #[test]
     fn enter_confirms_editing() {
         let mut tc = test_controller();
-        tc.start_editing(vec![1], "new.txt".into());
+        tc.start_editing(vec![1], "new.txt".into(), None);
         // Select-all is on by default; type to replace.
         tc.handle_edit_key_via(&Key::Char('x'), &Modifiers::default());
         let ev = tc.handle_edit_key_via(&Key::Named(NamedKey::Enter), &Modifiers::default());
@@ -1083,7 +1096,7 @@ mod tests {
     #[test]
     fn escape_cancels_editing() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], "old.txt".into());
+        tc.start_editing(vec![0], "old.txt".into(), None);
         let ev = tc.handle_edit_key_via(&Key::Named(NamedKey::Escape), &Modifiers::default());
         assert_eq!(ev, TreeControllerEvent::EditCancelled { path: vec![0] });
         assert!(!tc.is_editing());
@@ -1092,7 +1105,7 @@ mod tests {
     #[test]
     fn backspace_deletes_char() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], "abc".into());
+        tc.start_editing(vec![0], "abc".into(), None);
         // Clear select-all first by pressing Right.
         tc.handle_edit_key_via(&Key::Named(NamedKey::End), &Modifiers::default());
         tc.handle_edit_key_via(&Key::Named(NamedKey::Backspace), &Modifiers::default());
@@ -1102,7 +1115,7 @@ mod tests {
     #[test]
     fn left_right_move_cursor() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], "ab".into());
+        tc.start_editing(vec![0], "ab".into(), None);
         // End clears select-all and goes to end.
         tc.handle_edit_key_via(&Key::Named(NamedKey::End), &Modifiers::default());
         tc.handle_edit_key_via(&Key::Named(NamedKey::Left), &Modifiers::default());
@@ -1113,7 +1126,7 @@ mod tests {
     #[test]
     fn shift_right_extends_selection_and_backspace_deletes_range() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], "abcd".into());
+        tc.start_editing(vec![0], "abcd".into(), None);
         // Home to clear select-all, then Shift+Right twice to select "ab".
         tc.handle_edit_key_via(&Key::Named(NamedKey::Home), &Modifiers::default());
         let shift = Modifiers {
@@ -1129,7 +1142,7 @@ mod tests {
     #[test]
     fn build_tree_view_stamps_edit_state() {
         let mut tc = test_controller();
-        tc.start_editing(vec![2], "renamed".into());
+        tc.start_editing(vec![2], "renamed".into(), None);
         let tree = tc.build_tree_view(Rect::new(0.0, 0.0, 40.0, 10.0));
         let row = &tree.rows[2];
         assert!(row.edit.is_some());
@@ -1141,7 +1154,7 @@ mod tests {
     fn nav_keys_suppressed_during_editing() {
         let mut tc = test_controller();
         tc.set_selected_path(Some(vec![2]));
-        tc.start_editing(vec![2], "test".into());
+        tc.start_editing(vec![2], "test".into(), None);
         let ev = tc.handle_edit_key_via(&Key::Named(NamedKey::Down), &Modifiers::default());
         assert_eq!(ev, TreeControllerEvent::Consumed);
         assert_eq!(tc.selected_path(), Some(&vec![2]));
@@ -1150,7 +1163,7 @@ mod tests {
     #[test]
     fn select_all_then_type_replaces() {
         let mut tc = test_controller();
-        tc.start_editing(vec![0], "old".into());
+        tc.start_editing(vec![0], "old".into(), None);
         // start_editing selects all, so typing replaces.
         tc.handle_edit_key_via(&Key::Char('n'), &Modifiers::default());
         assert_eq!(tc.editing_text(), Some("n"));

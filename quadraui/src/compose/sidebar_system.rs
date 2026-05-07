@@ -207,9 +207,15 @@ impl SidebarSystem {
 
     // ── Inline editing ───────────────────────────────────────────────
 
-    pub fn start_editing(&mut self, section: usize, path: TreePath, initial_text: String) {
+    pub fn start_editing(
+        &mut self,
+        section: usize,
+        path: TreePath,
+        initial_text: String,
+        placeholder: Option<String>,
+    ) {
         if let Some(tc) = self.sections.get_mut(section) {
-            tc.start_editing(path, initial_text);
+            tc.start_editing(path, initial_text, placeholder);
         }
     }
 
@@ -561,6 +567,7 @@ impl SidebarSystem {
                                     text: tc.editing_text().unwrap_or("").to_string(),
                                     cursor: tc.editing_cursor(),
                                     selection_anchor: tc.editing_selection_anchor(),
+                                    placeholder: tc.editing_placeholder().map(String::from),
                                 });
                             }
                         }
