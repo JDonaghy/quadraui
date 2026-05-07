@@ -9,7 +9,8 @@
 //! [`TreeController::render`] + [`TreeController::handle`], and match on
 //! [`TreeControllerEvent`] for semantic actions.
 //!
-//! Keyboard behaviour:
+//! Keyboard behaviour (`j`/`k` require [`TreeController::set_vim_keys`]`(true)`,
+//! which is the default):
 //! - `Up` / `k`          — previous row (scroll-to-follow)
 //! - `Down` / `j`        — next row (scroll-to-follow)
 //! - `Home`              — first row
@@ -51,6 +52,7 @@ pub struct TreeController {
     scroll_offset: usize,
     has_focus: bool,
     scroll_drag: Option<ScrollDrag>,
+    vim_keys: bool,
 }
 
 impl TreeController {
@@ -62,6 +64,7 @@ impl TreeController {
             scroll_offset: 0,
             has_focus: true,
             scroll_drag: None,
+            vim_keys: true,
         }
     }
 
@@ -101,6 +104,17 @@ impl TreeController {
 
     pub fn set_has_focus(&mut self, has_focus: bool) {
         self.has_focus = has_focus;
+    }
+
+    pub fn vim_keys(&self) -> bool {
+        self.vim_keys
+    }
+
+    /// Enable or disable `j`/`k` as aliases for Down/Up. Default `true`.
+    /// Consumers wanting fully custom key bindings can set this to `false`
+    /// and call the navigation primitives directly.
+    pub fn set_vim_keys(&mut self, enabled: bool) {
+        self.vim_keys = enabled;
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -232,12 +246,22 @@ impl TreeController {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> TreeControllerEvent {
+        let vim_up = self.vim_keys && matches!(key, Key::Char('k'));
+        let vim_down = self.vim_keys && matches!(key, Key::Char('j'));
         match key {
-            Key::Named(NamedKey::Up) | Key::Char('k') => {
+            Key::Named(NamedKey::Up) => {
                 let vr = self.viewport_rows(backend, rect);
                 self.move_selection_by(-1, vr)
             }
-            Key::Named(NamedKey::Down) | Key::Char('j') => {
+            _ if vim_up => {
+                let vr = self.viewport_rows(backend, rect);
+                self.move_selection_by(-1, vr)
+            }
+            Key::Named(NamedKey::Down) => {
+                let vr = self.viewport_rows(backend, rect);
+                self.move_selection_by(1, vr)
+            }
+            _ if vim_down => {
                 let vr = self.viewport_rows(backend, rect);
                 self.move_selection_by(1, vr)
             }

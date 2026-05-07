@@ -302,9 +302,17 @@ impl SidebarSystem {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> SidebarEvent {
+        let vim = self
+            .active_section
+            .and_then(|i| self.sections.get(i))
+            .is_none_or(|tc| tc.vim_keys());
+        let vim_up = vim && matches!(key, Key::Char('k'));
+        let vim_down = vim && matches!(key, Key::Char('j'));
         match key {
-            Key::Named(NamedKey::Up) | Key::Char('k') => self.move_selection(-1, backend, rect),
-            Key::Named(NamedKey::Down) | Key::Char('j') => self.move_selection(1, backend, rect),
+            Key::Named(NamedKey::Up) => self.move_selection(-1, backend, rect),
+            _ if vim_up => self.move_selection(-1, backend, rect),
+            Key::Named(NamedKey::Down) => self.move_selection(1, backend, rect),
+            _ if vim_down => self.move_selection(1, backend, rect),
             Key::Named(NamedKey::Home) => self.jump_selection_to_edge(true, backend, rect),
             Key::Named(NamedKey::End) => self.jump_selection_to_edge(false, backend, rect),
             Key::Named(NamedKey::PageUp) => {
