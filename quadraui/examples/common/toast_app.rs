@@ -102,7 +102,7 @@ impl AppLogic for ToastApp {
 
         // Status bar at bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar());
+        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
 
         // Toast stack overlays the viewport.
         let overlay_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);

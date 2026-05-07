@@ -109,7 +109,7 @@ impl AppLogic for IndicatorsApp {
 
         // Status bar at bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar());
+        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

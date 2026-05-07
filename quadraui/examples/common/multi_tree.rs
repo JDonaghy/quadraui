@@ -109,7 +109,7 @@ impl AppLogic for DebugSidebar {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        let _hits = backend.draw_status_bar(status, &self.build_status_bar());
+        let _hits = backend.draw_status_bar(status, &self.build_status_bar(), None, None);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

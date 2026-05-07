@@ -63,6 +63,18 @@ impl Color {
             a: self.a,
         }
     }
+
+    /// Linearly interpolate each channel toward black by `amount`
+    /// (clamped to `[0.0, 1.0]`). Symmetric counterpart of [`Self::lighten`].
+    pub fn darken(self, amount: f64) -> Self {
+        let f = amount.clamp(0.0, 1.0);
+        Self {
+            r: (self.r as f64 * (1.0 - f)) as u8,
+            g: (self.g as f64 * (1.0 - f)) as u8,
+            b: (self.b as f64 * (1.0 - f)) as u8,
+            a: self.a,
+        }
+    }
 }
 
 /// A contiguous run of text sharing a single style.

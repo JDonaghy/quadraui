@@ -162,7 +162,13 @@ impl Backend for WinBackend {
         todo!("Direct2D palette rasteriser")
     }
 
-    fn draw_status_bar(&mut self, _rect: Rect, _bar: &StatusBar) -> Vec<StatusBarHitRegion> {
+    fn draw_status_bar(
+        &mut self,
+        _rect: Rect,
+        _bar: &StatusBar,
+        _hovered_id: Option<&crate::types::WidgetId>,
+        _pressed_id: Option<&crate::types::WidgetId>,
+    ) -> Vec<StatusBarHitRegion> {
         todo!("Direct2D status bar rasteriser")
     }
 

@@ -91,7 +91,7 @@ impl PanelApp {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar(label_rect, &bar);
+        let _ = backend.draw_status_bar(label_rect, &bar, None, None);
     }
 }
 
@@ -114,7 +114,7 @@ impl AppLogic for PanelApp {
         self.fill_content(backend, layout.content_bounds);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar());
+        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

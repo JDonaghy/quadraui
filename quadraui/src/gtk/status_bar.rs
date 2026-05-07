@@ -21,6 +21,7 @@ use crate::primitives::status_bar::{
     StatusBar, StatusBarHitRegion, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
 };
 use crate::theme::Theme;
+use crate::types::WidgetId;
 
 /// 16-pixel minimum gap between left and right segment groups, matching
 /// the existing vimcode GTK behaviour. Right segments are dropped from
@@ -56,6 +57,8 @@ pub fn draw_status_bar(
     line_height: f64,
     bar: &StatusBar,
     theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
 ) -> Vec<StatusBarHitRegion> {
     // Reset layout state.
     layout.set_attributes(None);
@@ -111,8 +114,23 @@ pub fn draw_status_bar(
         let seg_x = x + vs.bounds.x as f64;
         let seg_w = vs.bounds.width as f64;
 
-        // Segment background fill.
-        set_source(cr, seg.bg);
+        // Segment background fill (with hover/pressed tint for interactive segments).
+        let effective_bg = if seg
+            .action_id
+            .as_ref()
+            .is_some_and(|id| Some(id) == pressed_id)
+        {
+            seg.bg.darken(0.05)
+        } else if seg
+            .action_id
+            .as_ref()
+            .is_some_and(|id| Some(id) == hovered_id)
+        {
+            seg.bg.lighten(0.05)
+        } else {
+            seg.bg
+        };
+        set_source(cr, effective_bg);
         cr.rectangle(seg_x, y, seg_w, line_height);
         cr.fill().ok();
 

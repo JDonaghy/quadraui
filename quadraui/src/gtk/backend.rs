@@ -664,7 +664,13 @@ impl Backend for GtkBackend {
     // impls stay as stubs and the GTK call sites continue to use the
     // legacy shims directly.
 
-    fn draw_status_bar(&mut self, rect: QRect, bar: &StatusBar) -> Vec<crate::StatusBarHitRegion> {
+    fn draw_status_bar(
+        &mut self,
+        rect: QRect,
+        bar: &StatusBar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
+    ) -> Vec<crate::StatusBarHitRegion> {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
@@ -677,6 +683,8 @@ impl Backend for GtkBackend {
             self.current_line_height,
             bar,
             &self.current_theme,
+            hovered_id,
+            pressed_id,
         )
     }
 
