@@ -92,6 +92,7 @@ pub struct SidebarSystem {
     has_focus: bool,
     allow_collapse: bool,
     navigation_mode: NavigationMode,
+    cached_viewport_rows: Option<(usize, usize)>,
 }
 
 impl SidebarSystem {
@@ -108,6 +109,7 @@ impl SidebarSystem {
             has_focus: true,
             allow_collapse: false,
             navigation_mode: NavigationMode::default(),
+            cached_viewport_rows: None,
         }
     }
 
@@ -186,6 +188,7 @@ impl SidebarSystem {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> SidebarEvent {
+        self.cached_viewport_rows = None;
         match event {
             // ── Mouse click ───────────────────────────────────────
             UiEvent::MouseDown {
@@ -396,11 +399,18 @@ impl SidebarSystem {
         }
     }
 
-    fn active_viewport_rows(&self, backend: &mut dyn Backend, rect: Rect) -> usize {
+    fn active_viewport_rows(&mut self, backend: &mut dyn Backend, rect: Rect) -> usize {
         let Some(idx) = self.active_section else {
             return 0;
         };
-        self.section_viewport_rows(idx, backend, rect)
+        if let Some((cached_section, cached_vr)) = self.cached_viewport_rows {
+            if cached_section == idx {
+                return cached_vr;
+            }
+        }
+        let vr = self.section_viewport_rows(idx, backend, rect);
+        self.cached_viewport_rows = Some((idx, vr));
+        vr
     }
 
     fn section_viewport_rows(
