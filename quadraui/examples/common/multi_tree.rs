@@ -157,7 +157,9 @@ impl AppLogic for DebugSidebar {
                     if let Some(section) = self.sidebar.active_section() {
                         if let Some(path) = self.sidebar.selected_path(section).cloned() {
                             let label = format!("item{}", path.last().unwrap_or(&0));
-                            self.sidebar.start_editing(section, path, label, None);
+                            let len = label.len();
+                            self.sidebar
+                                .start_editing(section, path, label, len, Some(0), None);
                         }
                     }
                     Reaction::Redraw
