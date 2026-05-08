@@ -131,6 +131,8 @@ pub struct SidebarSystem {
     sections: Vec<TreeController>,
     focus: FocusGroup,
     collapsed: Vec<bool>,
+    visible: Vec<bool>,
+    badges: Vec<Option<StyledText>>,
     scroll_drag: Option<ScrollDrag>,
     panel_drag: Option<PanelScrollDrag>,
     has_focus: bool,
@@ -154,6 +156,8 @@ impl SidebarSystem {
             sections,
             focus: FocusGroup::new(n),
             collapsed: vec![false; n],
+            visible: vec![true; n],
+            badges: vec![None; n],
             scroll_drag: None,
             panel_drag: None,
             has_focus: true,
@@ -195,6 +199,14 @@ impl SidebarSystem {
         self.collapsed.get(section).copied().unwrap_or(false)
     }
 
+    pub fn is_section_visible(&self, section: usize) -> bool {
+        self.visible.get(section).copied().unwrap_or(true)
+    }
+
+    pub fn section_badge(&self, section: usize) -> Option<&StyledText> {
+        self.badges.get(section).and_then(|b| b.as_ref())
+    }
+
     // ── Programmatic state control ────────────────────────────────────
 
     pub fn set_active_section(&mut self, section: Option<usize>) {
@@ -210,6 +222,18 @@ impl SidebarSystem {
     pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
         if section < self.collapsed.len() {
             self.collapsed[section] = collapsed;
+        }
+    }
+
+    pub fn set_section_visible(&mut self, section: usize, visible: bool) {
+        if section < self.visible.len() {
+            self.visible[section] = visible;
+        }
+    }
+
+    pub fn set_section_badge(&mut self, section: usize, badge: Option<StyledText>) {
+        if section < self.badges.len() {
+            self.badges[section] = badge;
         }
     }
 
@@ -288,7 +312,7 @@ impl SidebarSystem {
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let view = self.build_view();
+        let (view, _) = self.build_view();
         backend.draw_multi_section_view(rect, &view);
     }
 
@@ -422,9 +446,10 @@ impl SidebarSystem {
         rect: Rect,
         metrics: &LayoutMetrics,
         lh: f32,
-    ) -> MultiSectionViewLayout {
-        let view = self.build_view();
-        view.layout(rect, *metrics, |i| body_measure(&view.sections[i], lh))
+    ) -> (MultiSectionViewLayout, Vec<usize>) {
+        let (view, map) = self.build_view();
+        let layout = view.layout(rect, *metrics, |i| body_measure(&view.sections[i], lh));
+        (layout, map)
     }
 
     fn compute_tree_layout(
@@ -668,14 +693,17 @@ impl SidebarSystem {
         lh: f32,
         metrics: &LayoutMetrics,
     ) -> usize {
-        let layout = self.compute_layout(rect, metrics, lh);
-        let body_b = layout.sections[section].body_bounds;
-        self.viewport_rows_from_layout(body_b, section, lh)
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let Some(msv_idx) = map.iter().position(|&s| s == section) else {
+            return 0;
+        };
+        let body_b = layout.sections[msv_idx].body_bounds;
+        self.viewport_rows_from_layout(body_b, msv_idx, lh)
     }
 
-    fn viewport_rows_from_layout(&self, body_b: Rect, section: usize, lh: f32) -> usize {
-        let view = self.build_view();
-        let SectionBody::Tree(t) = &view.sections[section].body else {
+    fn viewport_rows_from_layout(&self, body_b: Rect, msv_section: usize, lh: f32) -> usize {
+        let (view, _) = self.build_view();
+        let SectionBody::Tree(t) = &view.sections[msv_section].body else {
             return 0;
         };
         let mut shadow = t.clone();
@@ -684,67 +712,72 @@ impl SidebarSystem {
         inner.visible_rows.len()
     }
 
-    fn build_view(&self) -> MultiSectionView {
-        let sections: Vec<Section> = self
-            .defs
-            .iter()
-            .enumerate()
-            .map(|(idx, def)| {
-                let is_active = self.focus.active() == Some(idx);
-                let tc = &self.sections[idx];
-                let title = if is_active {
-                    format!("▶ {}", def.title)
-                } else {
-                    def.title.clone()
-                };
-                Section {
-                    id: def.id.clone(),
-                    header: SectionHeader {
-                        title: StyledText::plain(title),
-                        show_chevron: def.show_chevron,
-                        ..Default::default()
-                    },
-                    body: SectionBody::Tree({
-                        let mut rows = tc.rows().to_vec();
-                        if let Some(editing_path) = tc.editing_path() {
-                            if let Some(row) = rows.iter_mut().find(|r| &r.path == editing_path) {
-                                row.edit = Some(TreeRowEditState {
-                                    text: tc.editing_text().unwrap_or("").to_string(),
-                                    cursor: tc.editing_cursor(),
-                                    selection_anchor: tc.editing_selection_anchor(),
-                                    placeholder: tc.editing_placeholder().map(String::from),
-                                });
-                            }
+    fn build_view(&self) -> (MultiSectionView, Vec<usize>) {
+        let mut msv_to_sidebar: Vec<usize> = Vec::new();
+        let mut sections: Vec<Section> = Vec::new();
+        let active = self.focus.active();
+        for (idx, def) in self.defs.iter().enumerate() {
+            if !self.visible[idx] {
+                continue;
+            }
+            let is_active = active == Some(idx);
+            let tc = &self.sections[idx];
+            let title = if is_active {
+                format!("▶ {}", def.title)
+            } else {
+                def.title.clone()
+            };
+            sections.push(Section {
+                id: def.id.clone(),
+                header: SectionHeader {
+                    title: StyledText::plain(title),
+                    show_chevron: def.show_chevron,
+                    badge: self.badges[idx].clone(),
+                    ..Default::default()
+                },
+                body: SectionBody::Tree({
+                    let mut rows = tc.rows().to_vec();
+                    if let Some(editing_path) = tc.editing_path() {
+                        if let Some(row) = rows.iter_mut().find(|r| &r.path == editing_path) {
+                            row.edit = Some(TreeRowEditState {
+                                text: tc.editing_text().unwrap_or("").to_string(),
+                                cursor: tc.editing_cursor(),
+                                selection_anchor: tc.editing_selection_anchor(),
+                                placeholder: tc.editing_placeholder().map(String::from),
+                            });
                         }
-                        TreeView {
-                            id: WidgetId::new(format!("{}-tree", def.id)),
-                            rows,
-                            selection_mode: SelectionMode::Single,
-                            selected_path: tc.selected_path().cloned(),
-                            scroll_offset: tc.scroll_offset(),
-                            style: Default::default(),
-                            has_focus: is_active && self.has_focus,
-                        }
-                    }),
-                    aux: None,
-                    size: def.size,
-                    collapsed: self.collapsed[idx],
-                    min_size: None,
-                    max_size: None,
-                }
-            })
-            .collect();
-        MultiSectionView {
+                    }
+                    TreeView {
+                        id: WidgetId::new(format!("{}-tree", def.id)),
+                        rows,
+                        selection_mode: SelectionMode::Single,
+                        selected_path: tc.selected_path().cloned(),
+                        scroll_offset: tc.scroll_offset(),
+                        style: Default::default(),
+                        has_focus: is_active && self.has_focus,
+                    }
+                }),
+                aux: None,
+                size: def.size,
+                collapsed: self.collapsed[idx],
+                min_size: None,
+                max_size: None,
+            });
+            msv_to_sidebar.push(idx);
+        }
+        let msv_active = active.and_then(|a| msv_to_sidebar.iter().position(|&s| s == a));
+        let view = MultiSectionView {
             id: WidgetId::new("sidebar-system"),
             sections,
-            active_section: self.focus.active(),
+            active_section: msv_active,
             axis: MsvAxis::Vertical,
             allow_resize: false,
             allow_collapse: self.allow_collapse,
             scroll_mode: self.scroll_mode,
             has_focus: self.has_focus,
             panel_scroll: self.panel_scroll,
-        }
+        };
+        (view, msv_to_sidebar)
     }
 
     fn click(
@@ -755,18 +788,24 @@ impl SidebarSystem {
         lh: f32,
         metrics: &LayoutMetrics,
     ) -> SidebarEvent {
-        let layout = self.compute_layout(rect, metrics, lh);
-        let view = self.build_view();
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let (view, _) = self.build_view();
         match layout.hit_test(x, y) {
-            MultiSectionViewHit::Header { section, .. } => {
+            MultiSectionViewHit::Header {
+                section: msv_idx, ..
+            } => {
+                let section = map[msv_idx];
                 self.focus.set_active(Some(section));
                 self.sections[section].set_selected_path(None);
                 SidebarEvent::HeaderActivated { section }
             }
-            MultiSectionViewHit::Body { section } => {
+            MultiSectionViewHit::Body {
+                section: msv_idx, ..
+            } => {
+                let section = map[msv_idx];
                 self.focus.set_active(Some(section));
-                let body_b = layout.sections[section].body_bounds;
-                let tree = match &view.sections[section].body {
+                let body_b = layout.sections[msv_idx].body_bounds;
+                let tree = match &view.sections[msv_idx].body {
                     SectionBody::Tree(t) => t.clone(),
                     _ => return SidebarEvent::Consumed,
                 };
@@ -781,18 +820,19 @@ impl SidebarSystem {
                 }
             }
             MultiSectionViewHit::Scrollbar {
-                section,
+                section: msv_idx,
                 kind: ScrollbarHit::Thumb,
             } => {
-                let sb = layout.sections[section]
+                let section = map[msv_idx];
+                let sb = layout.sections[msv_idx]
                     .scrollbar_bounds
                     .expect("scrollbar hit implies bounds present");
-                let thumb_h = layout.sections[section]
+                let thumb_h = layout.sections[msv_idx]
                     .thumb_bounds
                     .map(|t| t.height)
                     .unwrap_or(sb.height);
-                let body_b = layout.sections[section].body_bounds;
-                let viewport_rows = self.viewport_rows_from_layout(body_b, section, lh);
+                let body_b = layout.sections[msv_idx].body_bounds;
+                let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
                 let row_count = self.sections[section].rows().len();
                 let max_offset = row_count.saturating_sub(viewport_rows);
                 let travel = (sb.height - thumb_h).max(0.0);
@@ -806,20 +846,22 @@ impl SidebarSystem {
                 SidebarEvent::ScrollChanged { section }
             }
             MultiSectionViewHit::Scrollbar {
-                section,
+                section: msv_idx,
                 kind: ScrollbarHit::TrackBefore,
             } => {
-                let body_b = layout.sections[section].body_bounds;
-                let viewport_rows = self.viewport_rows_from_layout(body_b, section, lh);
+                let section = map[msv_idx];
+                let body_b = layout.sections[msv_idx].body_bounds;
+                let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
                 self.sections[section].page_scroll(-(viewport_rows as isize), viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
             MultiSectionViewHit::Scrollbar {
-                section,
+                section: msv_idx,
                 kind: ScrollbarHit::TrackAfter,
             } => {
-                let body_b = layout.sections[section].body_bounds;
-                let viewport_rows = self.viewport_rows_from_layout(body_b, section, lh);
+                let section = map[msv_idx];
+                let body_b = layout.sections[msv_idx].body_bounds;
+                let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
                 self.sections[section].page_scroll(viewport_rows as isize, viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
@@ -870,12 +912,15 @@ impl SidebarSystem {
         lh: f32,
         metrics: &LayoutMetrics,
     ) -> SidebarEvent {
-        let layout = self.compute_layout(rect, metrics, lh);
-        let view = self.build_view();
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let (view, _) = self.build_view();
         match layout.hit_test(position.x, position.y) {
-            MultiSectionViewHit::Body { section } => {
-                let body_b = layout.sections[section].body_bounds;
-                let tree = match &view.sections[section].body {
+            MultiSectionViewHit::Body {
+                section: msv_idx, ..
+            } => {
+                let section = map[msv_idx];
+                let body_b = layout.sections[msv_idx].body_bounds;
+                let tree = match &view.sections[msv_idx].body {
                     SectionBody::Tree(t) => t.clone(),
                     _ => return SidebarEvent::Ignored,
                 };
@@ -932,11 +977,26 @@ impl SidebarSystem {
     }
 
     fn cycle_active(&mut self, delta: isize) {
+        let n = self.defs.len();
+        if n == 0 {
+            return;
+        }
         self.focus.cycle(delta);
+        // Skip invisible sections.
+        for _ in 0..n {
+            if let Some(idx) = self.focus.active() {
+                if self.visible[idx] {
+                    return;
+                }
+                self.focus.cycle(delta);
+            } else {
+                return;
+            }
+        }
     }
 
     fn scroll_panel(&mut self, rect: Rect, dy: f32, lh: f32, metrics: &LayoutMetrics) {
-        let layout = self.compute_layout(rect, metrics, lh);
+        let (layout, _) = self.compute_layout(rect, metrics, lh);
         let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
         let max = (total - rect.height).max(0.0);
         self.panel_scroll = (self.panel_scroll + dy).clamp(0.0, max);
@@ -946,13 +1006,16 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return;
         };
-        let layout = self.compute_layout(rect, metrics, lh);
-        if idx >= layout.sections.len() {
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let Some(msv_idx) = map.iter().position(|&s| s == idx) else {
+            return;
+        };
+        if msv_idx >= layout.sections.len() {
             return;
         }
         let total: f32 = layout.sections.iter().map(|s2| s2.resolved_size).sum();
         let max = (total - rect.height).max(0.0);
-        let s = &layout.sections[idx];
+        let s = &layout.sections[msv_idx];
         let content_top = s.header_bounds.y - rect.y + self.panel_scroll;
         let content_bottom = content_top + s.resolved_size;
         if content_top < self.panel_scroll {
@@ -966,9 +1029,12 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return;
         };
-        let layout = self.compute_layout(rect, metrics, lh);
-        let body_b = layout.sections[idx].body_bounds;
-        let viewport_rows = self.viewport_rows_from_layout(body_b, idx, lh);
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let Some(msv_idx) = map.iter().position(|&s| s == idx) else {
+            return;
+        };
+        let body_b = layout.sections[msv_idx].body_bounds;
+        let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
         let row_count = self.sections[idx].rows().len();
         let max = row_count.saturating_sub(viewport_rows) as isize;
         let cur = self.sections[idx].scroll_offset() as isize;
@@ -1125,7 +1191,7 @@ mod tests {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 3));
         ss.focus.set_active(Some(0));
-        let view = ss.build_view();
+        let (view, _) = ss.build_view();
         assert_eq!(view.sections.len(), 3);
         assert!(view.sections[0].header.title.spans[0].text.starts_with("▶"));
         assert_eq!(view.active_section, Some(0));
@@ -1318,8 +1384,62 @@ mod tests {
         ss.set_rows(0, fake_rows("v", 5));
         ss.set_scroll_mode(ScrollMode::WholePanel);
         ss.set_panel_scroll(10.0);
-        let view = ss.build_view();
+        let (view, _) = ss.build_view();
         assert_eq!(view.scroll_mode, ScrollMode::WholePanel);
         assert_eq!(view.panel_scroll, 10.0);
+    }
+
+    // ── Section visibility ──────────────────────────────────────────
+
+    #[test]
+    fn sections_visible_by_default() {
+        let ss = SidebarSystem::new(sample_defs());
+        assert!(ss.is_section_visible(0));
+        assert!(ss.is_section_visible(1));
+    }
+
+    #[test]
+    fn hidden_section_excluded_from_view() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 3));
+        ss.set_rows(1, fake_rows("w", 2));
+        ss.set_section_visible(0, false);
+        let (view, map) = ss.build_view();
+        assert_eq!(view.sections.len(), 2);
+        assert_eq!(view.sections[0].id, "watch");
+        assert_eq!(view.sections[1].id, "breakpoints");
+        assert_eq!(map, vec![1, 2]);
+    }
+
+    #[test]
+    fn tab_skips_hidden_section() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 3));
+        ss.set_rows(1, fake_rows("w", 2));
+        ss.set_active_section(Some(0));
+        ss.set_section_visible(1, false);
+        ss.cycle_active(1);
+        // Should skip section 1 (hidden) and land on section 0 (wraps).
+        assert_ne!(ss.active_section(), Some(1));
+    }
+
+    // ── Section badges ──────────────────────────────────────────────
+
+    #[test]
+    fn badge_defaults_to_none() {
+        let ss = SidebarSystem::new(sample_defs());
+        assert_eq!(ss.section_badge(0), None);
+    }
+
+    #[test]
+    fn set_badge_appears_in_view() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 3));
+        ss.set_section_badge(0, Some(StyledText::plain("(3)")));
+        let (view, _) = ss.build_view();
+        assert_eq!(
+            view.sections[0].header.badge,
+            Some(StyledText::plain("(3)"))
+        );
     }
 }
