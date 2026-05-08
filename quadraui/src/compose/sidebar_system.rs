@@ -110,12 +110,20 @@ struct ScrollDrag {
     max_offset: usize,
 }
 
+struct PanelScrollDrag {
+    origin_y: f32,
+    origin_scroll: f32,
+    travel: f32,
+    max_scroll: f32,
+}
+
 pub struct SidebarSystem {
     defs: Vec<SidebarSectionDef>,
     sections: Vec<TreeController>,
     focus: FocusGroup,
     collapsed: Vec<bool>,
     scroll_drag: Option<ScrollDrag>,
+    panel_drag: Option<PanelScrollDrag>,
     has_focus: bool,
     allow_collapse: bool,
     navigation_mode: NavigationMode,
@@ -137,6 +145,7 @@ impl SidebarSystem {
             focus: FocusGroup::new(n),
             collapsed: vec![false; n],
             scroll_drag: None,
+            panel_drag: None,
             has_focus: true,
             allow_collapse: false,
             navigation_mode: NavigationMode::default(),
@@ -309,6 +318,7 @@ impl SidebarSystem {
                 ..
             } => {
                 self.scroll_drag = None;
+                self.panel_drag = None;
                 SidebarEvent::Ignored
             }
 
@@ -714,6 +724,42 @@ impl SidebarSystem {
                 self.sections[section].page_scroll(viewport_rows as isize, viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
+            MultiSectionViewHit::PanelScrollbar {
+                kind: ScrollbarHit::Thumb,
+            } => {
+                if let Some(sb) = layout.panel_scrollbar {
+                    let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+                    let max_scroll = (total - rect.height).max(0.0);
+                    let thumb_frac = rect.height / total;
+                    let thumb_h = (sb.height * thumb_frac).max(backend.line_height());
+                    let travel = (sb.height - thumb_h).max(0.0);
+                    self.panel_drag = Some(PanelScrollDrag {
+                        origin_y: y,
+                        origin_scroll: self.panel_scroll,
+                        travel,
+                        max_scroll,
+                    });
+                    SidebarEvent::Consumed
+                } else {
+                    SidebarEvent::Ignored
+                }
+            }
+            MultiSectionViewHit::PanelScrollbar {
+                kind: ScrollbarHit::TrackBefore,
+            } => {
+                let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+                let max_scroll = (total - rect.height).max(0.0);
+                self.panel_scroll = (self.panel_scroll - rect.height).clamp(0.0, max_scroll);
+                SidebarEvent::Consumed
+            }
+            MultiSectionViewHit::PanelScrollbar {
+                kind: ScrollbarHit::TrackAfter,
+            } => {
+                let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+                let max_scroll = (total - rect.height).max(0.0);
+                self.panel_scroll = (self.panel_scroll + rect.height).clamp(0.0, max_scroll);
+                SidebarEvent::Consumed
+            }
             _ => SidebarEvent::Ignored,
         }
     }
@@ -769,6 +815,19 @@ impl SidebarSystem {
     }
 
     fn drag_to(&mut self, y: f32) -> SidebarEvent {
+        if let Some(drag) = &self.panel_drag {
+            if drag.travel <= 0.0 || drag.max_scroll <= 0.0 {
+                return SidebarEvent::Ignored;
+            }
+            let dy = y - drag.origin_y;
+            let new = drag.origin_scroll + dy / drag.travel * drag.max_scroll;
+            let new = new.clamp(0.0, drag.max_scroll);
+            if (new - self.panel_scroll).abs() < 0.5 {
+                return SidebarEvent::Ignored;
+            }
+            self.panel_scroll = new;
+            return SidebarEvent::Consumed;
+        }
         let Some(drag) = &self.scroll_drag else {
             return SidebarEvent::Ignored;
         };

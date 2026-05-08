@@ -621,6 +621,18 @@ impl MultiSectionView {
         let mut dividers = Vec::new();
         let mut hit_regions: Vec<(Rect, MultiSectionViewHit)> = Vec::new();
 
+        let panel_sb_w = match self.scroll_mode {
+            ScrollMode::WholePanel => {
+                let total: f32 = resolved.iter().sum::<f32>() + dividers_total;
+                if total > bounds.height {
+                    metrics.scrollbar_size
+                } else {
+                    0.0
+                }
+            }
+            ScrollMode::PerSection => 0.0,
+        };
+
         // For WholePanel mode, sections stack at content size and the
         // viewport scrolls the whole panel. `panel_scroll` shifts every
         // section's y upward; the layout clamps the value internally to
@@ -645,7 +657,12 @@ impl MultiSectionView {
             let s_main = resolved[i];
             let s_top = y;
 
-            let header_bounds = Rect::new(bounds.x, s_top, bounds.width, metrics.header_size);
+            let header_bounds = Rect::new(
+                bounds.x,
+                s_top,
+                (bounds.width - panel_sb_w).max(0.0),
+                metrics.header_size,
+            );
 
             let mut content_top = s_top + metrics.header_size;
 
@@ -681,7 +698,7 @@ impl MultiSectionView {
             } else {
                 0.0
             };
-            let body_w = (bounds.width - scrollbar_w).max(0.0);
+            let body_w = (bounds.width - scrollbar_w - panel_sb_w).max(0.0);
 
             let body_bounds = Rect::new(bounds.x, content_top, body_w, body_main);
             let scrollbar_bounds = if needs_scrollbar {
@@ -830,12 +847,41 @@ impl MultiSectionView {
                         sb_w,
                         bounds.height,
                     );
+                    let thumb_frac = bounds.height / total_content;
+                    let min_thumb = metrics.scrollbar_size.max(8.0);
+                    let thumb_h = (r.height * thumb_frac).max(min_thumb).min(r.height);
+                    let max_scroll = (total_content - bounds.height).max(0.0);
+                    let scroll_frac = if max_scroll > 0.0 {
+                        self.panel_scroll.clamp(0.0, max_scroll) / max_scroll
+                    } else {
+                        0.0
+                    };
+                    let travel = (r.height - thumb_h).max(0.0);
+                    let thumb_y = r.y + travel * scroll_frac;
+                    if thumb_y > r.y {
+                        hit_regions.push((
+                            Rect::new(r.x, r.y, r.width, thumb_y - r.y),
+                            MultiSectionViewHit::PanelScrollbar {
+                                kind: ScrollbarHit::TrackBefore,
+                            },
+                        ));
+                    }
                     hit_regions.push((
-                        r,
+                        Rect::new(r.x, thumb_y, r.width, thumb_h),
                         MultiSectionViewHit::PanelScrollbar {
                             kind: ScrollbarHit::Thumb,
                         },
                     ));
+                    let thumb_bottom = thumb_y + thumb_h;
+                    let track_bottom = r.y + r.height;
+                    if thumb_bottom < track_bottom {
+                        hit_regions.push((
+                            Rect::new(r.x, thumb_bottom, r.width, track_bottom - thumb_bottom),
+                            MultiSectionViewHit::PanelScrollbar {
+                                kind: ScrollbarHit::TrackAfter,
+                            },
+                        ));
+                    }
                     Some(r)
                 } else {
                     None
