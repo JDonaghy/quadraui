@@ -18,8 +18,9 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarAction,
-    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    ScrollMode, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
+    StatusBarAction, StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent,
+    WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
@@ -43,6 +44,7 @@ impl DebugSidebar {
         sidebar.set_rows(2, fake_rows("frame", 5));
         sidebar.set_rows(3, fake_rows("bp", 0));
         sidebar.set_navigation_mode(NavigationMode::Selection);
+        sidebar.set_scroll_mode(ScrollMode::WholePanel);
         sidebar.set_active_section(Some(0));
         Self {
             sidebar,

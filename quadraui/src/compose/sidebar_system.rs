@@ -120,6 +120,8 @@ pub struct SidebarSystem {
     allow_collapse: bool,
     navigation_mode: NavigationMode,
     cached_viewport_rows: Option<(usize, usize)>,
+    scroll_mode: ScrollMode,
+    panel_scroll: f32,
 }
 
 impl SidebarSystem {
@@ -139,6 +141,8 @@ impl SidebarSystem {
             allow_collapse: false,
             navigation_mode: NavigationMode::default(),
             cached_viewport_rows: None,
+            scroll_mode: ScrollMode::PerSection,
+            panel_scroll: 0.0,
         }
     }
 
@@ -203,6 +207,22 @@ impl SidebarSystem {
 
     pub fn set_navigation_mode(&mut self, mode: NavigationMode) {
         self.navigation_mode = mode;
+    }
+
+    pub fn scroll_mode(&self) -> ScrollMode {
+        self.scroll_mode
+    }
+
+    pub fn set_scroll_mode(&mut self, mode: ScrollMode) {
+        self.scroll_mode = mode;
+    }
+
+    pub fn panel_scroll(&self) -> f32 {
+        self.panel_scroll
+    }
+
+    pub fn set_panel_scroll(&mut self, offset: f32) {
+        self.panel_scroll = offset.max(0.0);
     }
 
     // ── Inline editing ───────────────────────────────────────────────
@@ -294,8 +314,14 @@ impl SidebarSystem {
 
             // ── Scroll wheel ──────────────────────────────────────
             UiEvent::Scroll { delta, .. } => {
-                let rows = if delta.y > 0.0 { -1 } else { 1 };
-                self.scroll_active(backend, rect, rows);
+                if self.scroll_mode == ScrollMode::WholePanel {
+                    let step = backend.line_height();
+                    let dy = if delta.y > 0.0 { -step } else { step };
+                    self.scroll_panel(backend, rect, dy);
+                } else {
+                    let rows = if delta.y > 0.0 { -1 } else { 1 };
+                    self.scroll_active(backend, rect, rows);
+                }
                 SidebarEvent::Consumed
             }
 
@@ -305,6 +331,9 @@ impl SidebarSystem {
                 ..
             } => {
                 self.cycle_active(1);
+                if self.scroll_mode == ScrollMode::WholePanel {
+                    self.scroll_to_active_section(backend, rect);
+                }
                 SidebarEvent::StateChanged
             }
             UiEvent::KeyPressed {
@@ -312,6 +341,9 @@ impl SidebarSystem {
                 ..
             } => {
                 self.cycle_active(-1);
+                if self.scroll_mode == ScrollMode::WholePanel {
+                    self.scroll_to_active_section(backend, rect);
+                }
                 SidebarEvent::StateChanged
             }
             UiEvent::KeyPressed { key, modifiers, .. } => {
@@ -340,13 +372,22 @@ impl SidebarSystem {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> SidebarEvent {
+        let lh = backend.line_height();
         match key {
             Key::Named(NamedKey::Up) => {
-                self.scroll_active(backend, rect, -1);
+                if self.scroll_mode == ScrollMode::WholePanel {
+                    self.scroll_panel(backend, rect, -lh);
+                } else {
+                    self.scroll_active(backend, rect, -1);
+                }
                 SidebarEvent::Consumed
             }
             Key::Named(NamedKey::Down) => {
-                self.scroll_active(backend, rect, 1);
+                if self.scroll_mode == ScrollMode::WholePanel {
+                    self.scroll_panel(backend, rect, lh);
+                } else {
+                    self.scroll_active(backend, rect, 1);
+                }
                 SidebarEvent::Consumed
             }
             Key::Named(NamedKey::Enter) => {
@@ -598,9 +639,9 @@ impl SidebarSystem {
             axis: MsvAxis::Vertical,
             allow_resize: false,
             allow_collapse: self.allow_collapse,
-            scroll_mode: ScrollMode::PerSection,
+            scroll_mode: self.scroll_mode,
             has_focus: self.has_focus,
-            panel_scroll: 0.0,
+            panel_scroll: self.panel_scroll,
         }
     }
 
@@ -749,6 +790,37 @@ impl SidebarSystem {
 
     fn cycle_active(&mut self, delta: isize) {
         self.focus.cycle(delta);
+    }
+
+    fn scroll_panel(&mut self, backend: &mut dyn Backend, rect: Rect, dy: f32) {
+        let view = self.build_view();
+        let layout = backend.msv_layout(rect, &view);
+        let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+        let max = (total - rect.height).max(0.0);
+        self.panel_scroll = (self.panel_scroll + dy).clamp(0.0, max);
+    }
+
+    fn scroll_to_active_section(&mut self, backend: &mut dyn Backend, rect: Rect) {
+        let Some(idx) = self.focus.active() else {
+            return;
+        };
+        let view = self.build_view();
+        let layout = backend.msv_layout(rect, &view);
+        if idx >= layout.sections.len() {
+            return;
+        }
+        let total: f32 = layout.sections.iter().map(|s2| s2.resolved_size).sum();
+        let max = (total - rect.height).max(0.0);
+        let s = &layout.sections[idx];
+        // header_bounds.y is in screen space (shifted by -panel_scroll).
+        // Convert to content space to compute the target scroll offset.
+        let content_top = s.header_bounds.y - rect.y + self.panel_scroll;
+        let content_bottom = content_top + s.resolved_size;
+        if content_top < self.panel_scroll {
+            self.panel_scroll = content_top.clamp(0.0, max);
+        } else if content_bottom > self.panel_scroll + rect.height {
+            self.panel_scroll = (content_bottom - rect.height).clamp(0.0, max);
+        }
     }
 
     fn scroll_active(&mut self, backend: &mut dyn Backend, rect: Rect, delta: isize) {
@@ -1044,5 +1116,38 @@ mod tests {
     fn navigation_mode_defaults_to_scroll() {
         let ss = SidebarSystem::new(sample_defs());
         assert_eq!(ss.navigation_mode(), NavigationMode::Scroll);
+    }
+
+    #[test]
+    fn scroll_mode_defaults_to_per_section() {
+        let ss = SidebarSystem::new(sample_defs());
+        assert_eq!(ss.scroll_mode(), ScrollMode::PerSection);
+        assert_eq!(ss.panel_scroll(), 0.0);
+    }
+
+    #[test]
+    fn set_scroll_mode_whole_panel() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+        assert_eq!(ss.scroll_mode(), ScrollMode::WholePanel);
+    }
+
+    #[test]
+    fn set_panel_scroll_clamps_negative() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+        ss.set_panel_scroll(-10.0);
+        assert_eq!(ss.panel_scroll(), 0.0);
+    }
+
+    #[test]
+    fn build_view_uses_scroll_mode() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 5));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+        ss.set_panel_scroll(10.0);
+        let view = ss.build_view();
+        assert_eq!(view.scroll_mode, ScrollMode::WholePanel);
+        assert_eq!(view.panel_scroll, 10.0);
     }
 }
