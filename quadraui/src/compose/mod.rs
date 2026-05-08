@@ -17,10 +17,12 @@ pub mod focus_group;
 pub mod focus_ring;
 pub mod menu_system;
 pub mod sidebar_system;
+pub mod status_bar_interaction;
 pub mod tree_controller;
 
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use sidebar_system::{NavigationMode, SidebarEvent, SidebarSectionDef, SidebarSystem};
+pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
 pub use tree_controller::{TreeController, TreeControllerEvent};

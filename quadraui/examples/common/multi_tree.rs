@@ -18,14 +18,15 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment,
-    StyledText, TreeRow, UiEvent, WidgetId,
+    SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarAction,
+    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
 
 pub struct DebugSidebar {
     sidebar: SidebarSystem,
+    status_interaction: StatusBarInteraction,
     last_action: String,
 }
 
@@ -45,6 +46,7 @@ impl DebugSidebar {
         sidebar.set_active_section(Some(0));
         Self {
             sidebar,
+            status_interaction: StatusBarInteraction::new(),
             last_action: "—".into(),
         }
     }
@@ -78,15 +80,32 @@ impl DebugSidebar {
         };
         let fg = Color::rgb(220, 220, 220);
         let bg = Color::rgb(40, 40, 60);
+        let btn_bg = Color::rgb(60, 60, 90);
         StatusBar {
             id: WidgetId::new("multi-tree-status"),
-            left_segments: vec![StatusBarSegment {
-                text: format!(" active: {active}  last: {} ", self.last_action),
-                fg,
-                bg,
-                bold: false,
-                action_id: None,
-            }],
+            left_segments: vec![
+                StatusBarSegment {
+                    text: format!(" active: {active}  last: {} ", self.last_action),
+                    fg,
+                    bg,
+                    bold: false,
+                    action_id: None,
+                },
+                StatusBarSegment {
+                    text: " ▶ Run ".into(),
+                    fg,
+                    bg: btn_bg,
+                    bold: true,
+                    action_id: Some(WidgetId::new("run")),
+                },
+                StatusBarSegment {
+                    text: " ■ Stop ".into(),
+                    fg,
+                    bg: btn_bg,
+                    bold: true,
+                    action_id: Some(WidgetId::new("stop")),
+                },
+            ],
             right_segments: vec![StatusBarSegment {
                 text: " mouse / Tab / ↑↓ / Enter / r=edit / q ".into(),
                 fg,
@@ -111,10 +130,26 @@ impl AppLogic for DebugSidebar {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        let _hits = backend.draw_status_bar(status, &self.build_status_bar(), None, None);
+        let regions = backend.draw_status_bar(
+            status,
+            &self.build_status_bar(),
+            self.status_interaction.hovered_id(),
+            self.status_interaction.pressed_id(),
+        );
+        self.status_interaction.set_hit_regions(regions);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        let status_rect = Self::status_rect(backend);
+        match self.status_interaction.handle(&event, status_rect) {
+            StatusBarAction::Clicked(id) => {
+                self.last_action = format!("btn:{}", id.as_str());
+                return Reaction::Redraw;
+            }
+            StatusBarAction::Redraw => return Reaction::Redraw,
+            StatusBarAction::Ignored => {}
+        }
+
         let rect = Self::sidebar_rect(backend);
         match self.sidebar.handle(&event, backend, rect) {
             SidebarEvent::HeaderActivated { section } => {
