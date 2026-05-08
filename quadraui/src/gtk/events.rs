@@ -23,6 +23,8 @@
 //! standalone (no Rc/RefCell), so they're trivially testable.
 
 use gtk4::gdk;
+use gtk4::glib;
+use gtk4::prelude::*;
 
 use crate::{Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
@@ -200,6 +202,77 @@ pub fn gdk_button_to_quadraui(button: u32) -> MouseButton {
         9 => MouseButton::X2,
         n => MouseButton::Other(n.min(255) as u8),
     }
+}
+
+/// Attach mouse, scroll, and click event controllers to a
+/// `DrawingArea` and translate all native events to [`UiEvent`].
+///
+/// The `on_event` callback fires for every translated event. The
+/// consumer routes it (e.g. to `SidebarSystem::handle_cached`) and
+/// triggers a redraw if needed.
+///
+/// Covers: MouseDown (left+right), MouseUp, DoubleClick, MouseMoved
+/// (with button mask for drag detection), and Scroll (with correct
+/// sign convention).
+///
+/// This eliminates ~40 lines of per-DrawingArea signal wiring that
+/// every GTK consumer otherwise needs to write manually.
+pub fn wire_da_events<F>(da: &gtk4::DrawingArea, on_event: F)
+where
+    F: Fn(UiEvent) + Clone + 'static,
+{
+    use gtk4::{
+        EventControllerMotion, EventControllerScroll, EventControllerScrollFlags, GestureClick,
+    };
+
+    let click = GestureClick::builder().button(0).build();
+    {
+        let on_event = on_event.clone();
+        click.connect_pressed(move |gesture, n_press, x, y| {
+            let button = gesture.current_button();
+            let modifier = gesture.current_event_state();
+            if n_press == 2 {
+                on_event(UiEvent::DoubleClick {
+                    widget: None,
+                    position: Point::new(x as f32, y as f32),
+                });
+            } else {
+                on_event(gdk_button_to_mouse_down(button, x, y, modifier));
+            }
+        });
+    }
+    {
+        let on_event = on_event.clone();
+        click.connect_released(move |gesture, _n_press, x, y| {
+            on_event(gdk_button_to_mouse_up(gesture.current_button(), x, y));
+        });
+    }
+    da.add_controller(click);
+
+    let motion = EventControllerMotion::new();
+    {
+        let on_event = on_event.clone();
+        motion.connect_motion(move |ctrl, x, y| {
+            let modifier = ctrl.current_event_state();
+            let buttons = crate::ButtonMask {
+                left: modifier.contains(gdk::ModifierType::BUTTON1_MASK),
+                middle: modifier.contains(gdk::ModifierType::BUTTON2_MASK),
+                right: modifier.contains(gdk::ModifierType::BUTTON3_MASK),
+            };
+            on_event(gdk_motion_to_uievent(x, y, buttons));
+        });
+    }
+    da.add_controller(motion);
+
+    let scroll = EventControllerScroll::new(EventControllerScrollFlags::BOTH_AXES);
+    {
+        let on_event = on_event.clone();
+        scroll.connect_scroll(move |_ctrl, dx, dy| {
+            on_event(gdk_scroll_to_uievent(dx, dy, 0.0, 0.0));
+            glib::Propagation::Stop
+        });
+    }
+    da.add_controller(scroll);
 }
 
 #[cfg(test)]
