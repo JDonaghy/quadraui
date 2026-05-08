@@ -830,12 +830,41 @@ impl MultiSectionView {
                         sb_w,
                         bounds.height,
                     );
+                    let thumb_frac = bounds.height / total_content;
+                    let min_thumb = metrics.scrollbar_size.max(8.0);
+                    let thumb_h = (r.height * thumb_frac).max(min_thumb).min(r.height);
+                    let max_scroll = (total_content - bounds.height).max(0.0);
+                    let scroll_frac = if max_scroll > 0.0 {
+                        self.panel_scroll.clamp(0.0, max_scroll) / max_scroll
+                    } else {
+                        0.0
+                    };
+                    let travel = (r.height - thumb_h).max(0.0);
+                    let thumb_y = r.y + travel * scroll_frac;
+                    if thumb_y > r.y {
+                        hit_regions.push((
+                            Rect::new(r.x, r.y, r.width, thumb_y - r.y),
+                            MultiSectionViewHit::PanelScrollbar {
+                                kind: ScrollbarHit::TrackBefore,
+                            },
+                        ));
+                    }
                     hit_regions.push((
-                        r,
+                        Rect::new(r.x, thumb_y, r.width, thumb_h),
                         MultiSectionViewHit::PanelScrollbar {
                             kind: ScrollbarHit::Thumb,
                         },
                     ));
+                    let thumb_bottom = thumb_y + thumb_h;
+                    let track_bottom = r.y + r.height;
+                    if thumb_bottom < track_bottom {
+                        hit_regions.push((
+                            Rect::new(r.x, thumb_bottom, r.width, track_bottom - thumb_bottom),
+                            MultiSectionViewHit::PanelScrollbar {
+                                kind: ScrollbarHit::TrackAfter,
+                            },
+                        ));
+                    }
                     Some(r)
                 } else {
                     None
