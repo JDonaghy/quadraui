@@ -8,7 +8,7 @@ Archived session summaries. Newest at top.
 
 **Agent:** Claude Opus 4.6 (1M context)
 
-**Issues closed (8):**
+**Issues closed (9):**
 
 | # | Title | PR | Key deliverable |
 |---|---|---|---|
@@ -21,6 +21,7 @@ Archived session summaries. Newest at top.
 | 93+95 | SidebarSystem WholePanel scroll | #94, #96 | `ScrollMode::WholePanel` on SidebarSystem, panel-level scrollbar with TrackBefore/Thumb/TrackAfter hit regions, thumb drag, auto-scroll-to-active-section on Tab. |
 | 97 | SidebarSystem::has_focus() getter | #98 | One-line addition. |
 | 99 | Backend-free handle_cached() | #100 | `Backend::msv_metrics()` trait method, `SidebarSystem::set_backend_info()` + `handle_cached()`. Internal refactor: all handle() internals take `(lh, metrics)` instead of `&mut dyn Backend`. |
+| 101 | gtk::wire_da_events helper | #102 | Attaches GestureClick + EventControllerMotion + EventControllerScroll to a DrawingArea, translates to UiEvent via callback. Eliminates ~40 lines of per-DA signal wiring. |
 
 **Test count:** 527 (up from 504 at session start).
 
