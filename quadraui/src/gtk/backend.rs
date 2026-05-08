@@ -874,6 +874,10 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_msv_layout(view, rect, self.current_line_height)
     }
 
+    fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+        crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
+    }
+
     fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
         crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
     }

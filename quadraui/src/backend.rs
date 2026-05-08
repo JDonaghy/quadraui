@@ -22,7 +22,9 @@ use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
-use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
+use crate::primitives::multi_section_view::{
+    LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
+};
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
@@ -214,6 +216,11 @@ pub trait Backend {
     /// click consume one layout per frame, the source-of-truth
     /// contract `MultiSectionView` exists to enforce.
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout;
+
+    /// Return the layout metrics this backend uses for MSV layout.
+    /// Compose helpers cache these to compute layouts without a Backend
+    /// reference at event-handling time.
+    fn msv_metrics(&self) -> LayoutMetrics;
 
     /// Compute the tree layout the rasteriser would produce. Used by
     /// hosts (especially MSV consumers) to resolve body clicks down
