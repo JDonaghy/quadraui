@@ -202,6 +202,10 @@ impl SidebarSystem {
         }
     }
 
+    pub fn has_focus(&self) -> bool {
+        self.has_focus
+    }
+
     pub fn set_has_focus(&mut self, has_focus: bool) {
         self.has_focus = has_focus;
     }
