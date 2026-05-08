@@ -288,4 +288,4 @@ Net effect: SidebarSystem is now a thin MSV-level orchestrator over N TreeContro
 - #65 — SplitDragController compose helper (deferred)
 - Windows milestone (#19–#31) — requires Windows build environment
 - macOS milestone (#32–#44) — requires macOS build environment
-- Vimcode migration ongoing — TreeController now has inline editing, pub scroll_by, double-click RowActivated
+- Vimcode migration ongoing — TreeController fully featured (inline editing, context menu, right-click, selection params), SidebarSystem has WholePanel scroll + backend-free handle_cached()

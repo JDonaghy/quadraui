@@ -4,6 +4,45 @@ Archived session summaries. Newest at top.
 
 ---
 
+## 2026-05-07e/08 — Vimcode integration sprint (inline editing, context menu, scrollbar, backend-free handle)
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+**Issues closed (8):**
+
+| # | Title | PR | Key deliverable |
+|---|---|---|---|
+| 83 | TreeController: inline text editing | #84 | `TreeRowEditState` on `TreeRow`, modal key dispatch, TUI+GTK rasterisers with cursor/selection paint. SidebarSystem propagation. |
+| 85 | Edit placeholder field | #85 | `placeholder: Option<String>` on `TreeRowEditState`, rendered in muted style when text empty. |
+| 86 | TreeController: context menu on right-click | #87 | `ContextMenuRequested { path, position }` event on `MouseButton::Right`. |
+| 88 | start_editing cursor/selection params | #88 | Explicit `cursor`/`selection_anchor` byte offsets replace hardcoded select-all. Filename-stem selection for rename. |
+| 89 | Edit selection highlight invisible | #90 | Switched from `theme.selected_bg` to `theme.selection_bg` for inline edit text selection. |
+| 91 | StatusBar hover/press dispatch | #92 | `StatusBarInteraction` compose helper — lightweight hover/press state tracker with `RefCell`-based `set_hit_regions`. |
+| 93+95 | SidebarSystem WholePanel scroll | #94, #96 | `ScrollMode::WholePanel` on SidebarSystem, panel-level scrollbar with TrackBefore/Thumb/TrackAfter hit regions, thumb drag, auto-scroll-to-active-section on Tab. |
+| 97 | SidebarSystem::has_focus() getter | #98 | One-line addition. |
+| 99 | Backend-free handle_cached() | #100 | `Backend::msv_metrics()` trait method, `SidebarSystem::set_backend_info()` + `handle_cached()`. Internal refactor: all handle() internals take `(lh, metrics)` instead of `&mut dyn Backend`. |
+
+**Test count:** 527 (up from 504 at session start).
+
+**Design decisions:**
+
+1. **Inline editing state on TreeRow (primitive) + TreeController (compose)**: controller owns authoritative editing state, stamps it onto `TreeRow.edit` each frame via `build_tree_view()`. SidebarSystem's `build_view()` does the same stamping.
+2. **Consumer controls editing lifecycle**: `start_editing()` / `cancel_editing()` — library doesn't know when rename/new-entry should start.
+3. **Byte-offset cursor convention**: matches `FieldKind::TextInput`. All helpers use `char_indices()` for char-boundary alignment.
+4. **StatusBarInteraction uses RefCell for hit_regions**: `set_hit_regions(&self)` callable from `render(&self)` path. Pixel-accurate regions from `draw_status_bar` return value.
+5. **WholePanel body bounds exclude panel scrollbar width**: prevents body hit regions from overlapping panel scrollbar.
+6. **Backend-free handle via set_backend_info**: `LayoutMetrics` + `line_height` cached once at init. `handle_cached()` computes layouts using cached metrics — same formulas as both backends. No RefCell, no stale caches.
+7. **GTK tree row formula works for TUI too**: `(1.0 * 1.2).round() = 1.0`, `(1.0 * 1.4).round() = 1.0` — matches TUI's uniform 1-cell rows.
+
+**Bugs found + fixed:**
+
+1. **SidebarSystem::build_view() didn't stamp editing state** (PR #84): rasterisers saw `edit: None`, editing invisible. Fixed by applying same stamping as `TreeController::build_tree_view()`.
+2. **Edit selection highlight invisible** (#89): used `selected_bg` (same as row highlight). Fixed by using `selection_bg`.
+3. **Panel scrollbar hit regions** (#95/#96): entire track was one Thumb region → clicks consumed by body. Fixed by splitting into TrackBefore/Thumb/TrackAfter and narrowing body bounds to exclude scrollbar width.
+4. **PR #94 scrollbar fix lost on merge**: amended after merge, changes went to stale branch. Fixed by creating fresh PR #96.
+
+---
+
 ## 2026-05-07d — TreeController inline text editing (#83)
 
 **Agent:** Claude Opus 4.6 (1M context)
