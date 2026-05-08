@@ -64,6 +64,7 @@ pub use completions::draw_completions;
 pub use context_menu::draw_context_menu;
 pub use dialog::draw_dialog;
 pub use editor::draw_editor;
+pub use events::wire_da_events;
 pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
