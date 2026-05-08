@@ -22,6 +22,10 @@
 use super::focus_group::FocusGroup;
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
+use crate::primitives::multi_section_view::{
+    LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
+};
+use crate::primitives::tree::TreeRowMeasure;
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, MsvAxis, MultiSectionView,
     MultiSectionViewHit, NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody,
@@ -117,6 +121,11 @@ struct PanelScrollDrag {
     max_scroll: f32,
 }
 
+struct BackendInfo {
+    line_height: f32,
+    metrics: LayoutMetrics,
+}
+
 pub struct SidebarSystem {
     defs: Vec<SidebarSectionDef>,
     sections: Vec<TreeController>,
@@ -130,6 +139,7 @@ pub struct SidebarSystem {
     cached_viewport_rows: Option<(usize, usize)>,
     scroll_mode: ScrollMode,
     panel_scroll: f32,
+    backend_info: Option<BackendInfo>,
 }
 
 impl SidebarSystem {
@@ -152,6 +162,7 @@ impl SidebarSystem {
             cached_viewport_rows: None,
             scroll_mode: ScrollMode::PerSection,
             panel_scroll: 0.0,
+            backend_info: None,
         }
     }
 
@@ -238,6 +249,16 @@ impl SidebarSystem {
         self.panel_scroll = offset.max(0.0);
     }
 
+    /// Cache backend-specific layout info so [`Self::handle_cached`] can
+    /// compute layouts without a Backend reference. Call once at init, or
+    /// again if `line_height` changes (font/DPI change).
+    pub fn set_backend_info(&mut self, line_height: f32, metrics: LayoutMetrics) {
+        self.backend_info = Some(BackendInfo {
+            line_height,
+            metrics,
+        });
+    }
+
     // ── Inline editing ───────────────────────────────────────────────
 
     pub fn start_editing(
@@ -279,6 +300,30 @@ impl SidebarSystem {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> SidebarEvent {
+        let lh = backend.line_height();
+        let metrics = backend.msv_metrics();
+        self.handle_inner(event, rect, lh, &metrics)
+    }
+
+    /// Backend-free event handler. Requires [`Self::set_backend_info`]
+    /// called first. Returns [`SidebarEvent::Ignored`] if backend info
+    /// is not set.
+    pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> SidebarEvent {
+        let Some(ref info) = self.backend_info else {
+            return SidebarEvent::Ignored;
+        };
+        let lh = info.line_height;
+        let metrics = info.metrics;
+        self.handle_inner(event, rect, lh, &metrics)
+    }
+
+    fn handle_inner(
+        &mut self,
+        event: &UiEvent,
+        rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
+    ) -> SidebarEvent {
         self.cached_viewport_rows = None;
 
         // Route text input events to the editing section's TreeController.
@@ -296,14 +341,14 @@ impl SidebarSystem {
                 button: MouseButton::Left,
                 position,
                 ..
-            } => self.click(backend, rect, position.x, position.y),
+            } => self.click(rect, position.x, position.y, lh, metrics),
 
             // ── Right-click ──────────────────────────────────────
             UiEvent::MouseDown {
                 button: MouseButton::Right,
                 position,
                 ..
-            } => self.right_click(backend, rect, *position),
+            } => self.right_click(rect, *position, lh, metrics),
 
             // ── Mouse drag ────────────────────────────────────────
             UiEvent::MouseMoved {
@@ -329,12 +374,11 @@ impl SidebarSystem {
             // ── Scroll wheel ──────────────────────────────────────
             UiEvent::Scroll { delta, .. } => {
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    let step = backend.line_height();
-                    let dy = if delta.y > 0.0 { -step } else { step };
-                    self.scroll_panel(backend, rect, dy);
+                    let dy = if delta.y > 0.0 { -lh } else { lh };
+                    self.scroll_panel(rect, dy, lh, metrics);
                 } else {
                     let rows = if delta.y > 0.0 { -1 } else { 1 };
-                    self.scroll_active(backend, rect, rows);
+                    self.scroll_active(rect, rows, lh, metrics);
                 }
                 SidebarEvent::Consumed
             }
@@ -346,7 +390,7 @@ impl SidebarSystem {
             } => {
                 self.cycle_active(1);
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    self.scroll_to_active_section(backend, rect);
+                    self.scroll_to_active_section(rect, lh, metrics);
                 }
                 SidebarEvent::StateChanged
             }
@@ -356,7 +400,7 @@ impl SidebarSystem {
             } => {
                 self.cycle_active(-1);
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    self.scroll_to_active_section(backend, rect);
+                    self.scroll_to_active_section(rect, lh, metrics);
                 }
                 SidebarEvent::StateChanged
             }
@@ -364,7 +408,7 @@ impl SidebarSystem {
                 if self.is_editing() {
                     return self.forward_edit_key(key, modifiers);
                 }
-                self.handle_key(key, backend, rect)
+                self.handle_key(key, rect, lh, metrics)
             }
 
             _ => SidebarEvent::Ignored,
@@ -373,34 +417,64 @@ impl SidebarSystem {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    fn handle_key(&mut self, key: &Key, backend: &mut dyn Backend, rect: Rect) -> SidebarEvent {
+    fn compute_layout(
+        &self,
+        rect: Rect,
+        metrics: &LayoutMetrics,
+        lh: f32,
+    ) -> MultiSectionViewLayout {
+        let view = self.build_view();
+        view.layout(rect, *metrics, |i| body_measure(&view.sections[i], lh))
+    }
+
+    fn compute_tree_layout(
+        &self,
+        body_b: Rect,
+        tree: &TreeView,
+        lh: f32,
+    ) -> crate::primitives::tree::TreeViewLayout {
+        let header_h = (lh * 1.2).round();
+        let item_h = (lh * 1.4).round();
+        tree.layout(body_b.width, body_b.height, |i| {
+            let is_header = matches!(tree.rows[i].decoration, crate::types::Decoration::Header);
+            TreeRowMeasure::new(if is_header { header_h } else { item_h })
+        })
+    }
+
+    fn handle_key(
+        &mut self,
+        key: &Key,
+        rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
+    ) -> SidebarEvent {
         match self.navigation_mode {
-            NavigationMode::Scroll => self.handle_key_scroll(key, backend, rect),
-            NavigationMode::Selection => self.handle_key_selection(key, backend, rect),
+            NavigationMode::Scroll => self.handle_key_scroll(key, rect, lh, metrics),
+            NavigationMode::Selection => self.handle_key_selection(key, rect, lh, metrics),
         }
     }
 
     fn handle_key_scroll(
         &mut self,
         key: &Key,
-        backend: &mut dyn Backend,
         rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
     ) -> SidebarEvent {
-        let lh = backend.line_height();
         match key {
             Key::Named(NamedKey::Up) => {
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    self.scroll_panel(backend, rect, -lh);
+                    self.scroll_panel(rect, -lh, lh, metrics);
                 } else {
-                    self.scroll_active(backend, rect, -1);
+                    self.scroll_active(rect, -1, lh, metrics);
                 }
                 SidebarEvent::Consumed
             }
             Key::Named(NamedKey::Down) => {
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    self.scroll_panel(backend, rect, lh);
+                    self.scroll_panel(rect, lh, lh, metrics);
                 } else {
-                    self.scroll_active(backend, rect, 1);
+                    self.scroll_active(rect, 1, lh, metrics);
                 }
                 SidebarEvent::Consumed
             }
@@ -415,8 +489,9 @@ impl SidebarSystem {
     fn handle_key_selection(
         &mut self,
         key: &Key,
-        backend: &mut dyn Backend,
         rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
     ) -> SidebarEvent {
         let vim = self
             .focus
@@ -426,18 +501,18 @@ impl SidebarSystem {
         let vim_up = vim && matches!(key, Key::Char('k'));
         let vim_down = vim && matches!(key, Key::Char('j'));
         match key {
-            Key::Named(NamedKey::Up) => self.move_selection(-1, backend, rect),
-            _ if vim_up => self.move_selection(-1, backend, rect),
-            Key::Named(NamedKey::Down) => self.move_selection(1, backend, rect),
-            _ if vim_down => self.move_selection(1, backend, rect),
-            Key::Named(NamedKey::Home) => self.jump_selection_to_edge(true, backend, rect),
-            Key::Named(NamedKey::End) => self.jump_selection_to_edge(false, backend, rect),
+            Key::Named(NamedKey::Up) => self.move_selection(-1, rect, lh, metrics),
+            _ if vim_up => self.move_selection(-1, rect, lh, metrics),
+            Key::Named(NamedKey::Down) => self.move_selection(1, rect, lh, metrics),
+            _ if vim_down => self.move_selection(1, rect, lh, metrics),
+            Key::Named(NamedKey::Home) => self.jump_selection_to_edge(true, rect, lh, metrics),
+            Key::Named(NamedKey::End) => self.jump_selection_to_edge(false, rect, lh, metrics),
             Key::Named(NamedKey::PageUp) => {
-                let vr = self.active_viewport_rows(backend, rect);
+                let vr = self.active_viewport_rows(rect, lh, metrics);
                 self.move_selection_by(-((vr.max(1) - 1).max(1) as isize), vr)
             }
             Key::Named(NamedKey::PageDown) => {
-                let vr = self.active_viewport_rows(backend, rect);
+                let vr = self.active_viewport_rows(rect, lh, metrics);
                 self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
             }
             Key::Named(NamedKey::Enter) => self.activate_selection(),
@@ -448,10 +523,11 @@ impl SidebarSystem {
     fn move_selection(
         &mut self,
         delta: isize,
-        backend: &mut dyn Backend,
         rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
     ) -> SidebarEvent {
-        let vr = self.active_viewport_rows(backend, rect);
+        let vr = self.active_viewport_rows(rect, lh, metrics);
         self.move_selection_by(delta, vr)
     }
 
@@ -474,10 +550,11 @@ impl SidebarSystem {
     fn jump_selection_to_edge(
         &mut self,
         to_start: bool,
-        backend: &mut dyn Backend,
         rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
     ) -> SidebarEvent {
-        let vr = self.active_viewport_rows(backend, rect);
+        let vr = self.active_viewport_rows(rect, lh, metrics);
         self.jump_selection_to_edge_by(to_start, vr)
     }
 
@@ -570,7 +647,7 @@ impl SidebarSystem {
         }
     }
 
-    fn active_viewport_rows(&mut self, backend: &mut dyn Backend, rect: Rect) -> usize {
+    fn active_viewport_rows(&mut self, rect: Rect, lh: f32, metrics: &LayoutMetrics) -> usize {
         let Some(idx) = self.focus.active() else {
             return 0;
         };
@@ -579,7 +656,7 @@ impl SidebarSystem {
                 return cached_vr;
             }
         }
-        let vr = self.section_viewport_rows(idx, backend, rect);
+        let vr = self.section_viewport_rows(idx, rect, lh, metrics);
         self.cached_viewport_rows = Some((idx, vr));
         vr
     }
@@ -587,13 +664,24 @@ impl SidebarSystem {
     fn section_viewport_rows(
         &self,
         section: usize,
-        backend: &mut dyn Backend,
         rect: Rect,
+        lh: f32,
+        metrics: &LayoutMetrics,
     ) -> usize {
-        let view = self.build_view();
-        let layout = backend.msv_layout(rect, &view);
+        let layout = self.compute_layout(rect, metrics, lh);
         let body_b = layout.sections[section].body_bounds;
-        self.viewport_rows(backend, body_b, section, &view)
+        self.viewport_rows_from_layout(body_b, section, lh)
+    }
+
+    fn viewport_rows_from_layout(&self, body_b: Rect, section: usize, lh: f32) -> usize {
+        let view = self.build_view();
+        let SectionBody::Tree(t) = &view.sections[section].body else {
+            return 0;
+        };
+        let mut shadow = t.clone();
+        shadow.scroll_offset = 0;
+        let inner = self.compute_tree_layout(body_b, &shadow, lh);
+        inner.visible_rows.len()
     }
 
     fn build_view(&self) -> MultiSectionView {
@@ -659,9 +747,16 @@ impl SidebarSystem {
         }
     }
 
-    fn click(&mut self, backend: &mut dyn Backend, rect: Rect, x: f32, y: f32) -> SidebarEvent {
+    fn click(
+        &mut self,
+        rect: Rect,
+        x: f32,
+        y: f32,
+        lh: f32,
+        metrics: &LayoutMetrics,
+    ) -> SidebarEvent {
+        let layout = self.compute_layout(rect, metrics, lh);
         let view = self.build_view();
-        let layout = backend.msv_layout(rect, &view);
         match layout.hit_test(x, y) {
             MultiSectionViewHit::Header { section, .. } => {
                 self.focus.set_active(Some(section));
@@ -675,7 +770,7 @@ impl SidebarSystem {
                     SectionBody::Tree(t) => t.clone(),
                     _ => return SidebarEvent::Consumed,
                 };
-                let inner = backend.tree_layout(body_b, &tree);
+                let inner = self.compute_tree_layout(body_b, &tree, lh);
                 match inner.hit_test(x - body_b.x, y - body_b.y) {
                     TreeViewHit::Row(idx) => {
                         let path = tree.rows[idx].path.clone();
@@ -697,7 +792,7 @@ impl SidebarSystem {
                     .map(|t| t.height)
                     .unwrap_or(sb.height);
                 let body_b = layout.sections[section].body_bounds;
-                let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
+                let viewport_rows = self.viewport_rows_from_layout(body_b, section, lh);
                 let row_count = self.sections[section].rows().len();
                 let max_offset = row_count.saturating_sub(viewport_rows);
                 let travel = (sb.height - thumb_h).max(0.0);
@@ -715,7 +810,7 @@ impl SidebarSystem {
                 kind: ScrollbarHit::TrackBefore,
             } => {
                 let body_b = layout.sections[section].body_bounds;
-                let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
+                let viewport_rows = self.viewport_rows_from_layout(body_b, section, lh);
                 self.sections[section].page_scroll(-(viewport_rows as isize), viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
@@ -724,7 +819,7 @@ impl SidebarSystem {
                 kind: ScrollbarHit::TrackAfter,
             } => {
                 let body_b = layout.sections[section].body_bounds;
-                let viewport_rows = self.viewport_rows(backend, body_b, section, &view);
+                let viewport_rows = self.viewport_rows_from_layout(body_b, section, lh);
                 self.sections[section].page_scroll(viewport_rows as isize, viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
@@ -735,7 +830,7 @@ impl SidebarSystem {
                     let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
                     let max_scroll = (total - rect.height).max(0.0);
                     let thumb_frac = rect.height / total;
-                    let thumb_h = (sb.height * thumb_frac).max(backend.line_height());
+                    let thumb_h = (sb.height * thumb_frac).max(lh);
                     let travel = (sb.height - thumb_h).max(0.0);
                     self.panel_drag = Some(PanelScrollDrag {
                         origin_y: y,
@@ -770,12 +865,13 @@ impl SidebarSystem {
 
     fn right_click(
         &mut self,
-        backend: &mut dyn Backend,
         rect: Rect,
         position: Point,
+        lh: f32,
+        metrics: &LayoutMetrics,
     ) -> SidebarEvent {
+        let layout = self.compute_layout(rect, metrics, lh);
         let view = self.build_view();
-        let layout = backend.msv_layout(rect, &view);
         match layout.hit_test(position.x, position.y) {
             MultiSectionViewHit::Body { section } => {
                 let body_b = layout.sections[section].body_bounds;
@@ -783,7 +879,7 @@ impl SidebarSystem {
                     SectionBody::Tree(t) => t.clone(),
                     _ => return SidebarEvent::Ignored,
                 };
-                let inner = backend.tree_layout(body_b, &tree);
+                let inner = self.compute_tree_layout(body_b, &tree, lh);
                 match inner.hit_test(position.x - body_b.x, position.y - body_b.y) {
                     TreeViewHit::Row(idx) => {
                         let path = tree.rows[idx].path.clone();
@@ -800,22 +896,6 @@ impl SidebarSystem {
             }
             _ => SidebarEvent::Ignored,
         }
-    }
-
-    fn viewport_rows(
-        &self,
-        backend: &dyn Backend,
-        body_b: Rect,
-        section: usize,
-        view: &MultiSectionView,
-    ) -> usize {
-        let SectionBody::Tree(t) = &view.sections[section].body else {
-            return 0;
-        };
-        let mut shadow = t.clone();
-        shadow.scroll_offset = 0;
-        let inner = backend.tree_layout(body_b, &shadow);
-        inner.visible_rows.len()
     }
 
     fn drag_to(&mut self, y: f32) -> SidebarEvent {
@@ -855,28 +935,24 @@ impl SidebarSystem {
         self.focus.cycle(delta);
     }
 
-    fn scroll_panel(&mut self, backend: &mut dyn Backend, rect: Rect, dy: f32) {
-        let view = self.build_view();
-        let layout = backend.msv_layout(rect, &view);
+    fn scroll_panel(&mut self, rect: Rect, dy: f32, lh: f32, metrics: &LayoutMetrics) {
+        let layout = self.compute_layout(rect, metrics, lh);
         let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
         let max = (total - rect.height).max(0.0);
         self.panel_scroll = (self.panel_scroll + dy).clamp(0.0, max);
     }
 
-    fn scroll_to_active_section(&mut self, backend: &mut dyn Backend, rect: Rect) {
+    fn scroll_to_active_section(&mut self, rect: Rect, lh: f32, metrics: &LayoutMetrics) {
         let Some(idx) = self.focus.active() else {
             return;
         };
-        let view = self.build_view();
-        let layout = backend.msv_layout(rect, &view);
+        let layout = self.compute_layout(rect, metrics, lh);
         if idx >= layout.sections.len() {
             return;
         }
         let total: f32 = layout.sections.iter().map(|s2| s2.resolved_size).sum();
         let max = (total - rect.height).max(0.0);
         let s = &layout.sections[idx];
-        // header_bounds.y is in screen space (shifted by -panel_scroll).
-        // Convert to content space to compute the target scroll offset.
         let content_top = s.header_bounds.y - rect.y + self.panel_scroll;
         let content_bottom = content_top + s.resolved_size;
         if content_top < self.panel_scroll {
@@ -886,14 +962,13 @@ impl SidebarSystem {
         }
     }
 
-    fn scroll_active(&mut self, backend: &mut dyn Backend, rect: Rect, delta: isize) {
+    fn scroll_active(&mut self, rect: Rect, delta: isize, lh: f32, metrics: &LayoutMetrics) {
         let Some(idx) = self.focus.active() else {
             return;
         };
-        let view = self.build_view();
-        let layout = backend.msv_layout(rect, &view);
+        let layout = self.compute_layout(rect, metrics, lh);
         let body_b = layout.sections[idx].body_bounds;
-        let viewport_rows = self.viewport_rows(backend, body_b, idx, &view);
+        let viewport_rows = self.viewport_rows_from_layout(body_b, idx, lh);
         let row_count = self.sections[idx].rows().len();
         let max = row_count.saturating_sub(viewport_rows) as isize;
         let cur = self.sections[idx].scroll_offset() as isize;
@@ -910,6 +985,40 @@ impl SidebarSystem {
             self.sections[idx].set_selected_path(Some(path));
             self.sections[idx].set_scroll_offset(0);
         }
+    }
+}
+
+fn body_measure(section: &Section, lh: f32) -> SectionMeasure {
+    let aux_size = if section.aux.is_some() {
+        (lh * 1.4).round()
+    } else {
+        0.0
+    };
+    let item_h = (lh * 1.4).round();
+    let content_size = match &section.body {
+        SectionBody::Tree(t) => {
+            let header_h = (lh * 1.2).round();
+            t.rows
+                .iter()
+                .map(|r| {
+                    if matches!(r.decoration, crate::types::Decoration::Header) {
+                        header_h
+                    } else {
+                        item_h
+                    }
+                })
+                .sum()
+        }
+        SectionBody::List(l) => {
+            let title_h = if l.title.is_some() { lh } else { 0.0 };
+            title_h + l.items.len() as f32 * item_h
+        }
+        SectionBody::Form(f) => f.fields.len() as f32 * item_h,
+        _ => 0.0,
+    };
+    SectionMeasure {
+        content_size,
+        aux_size,
     }
 }
 

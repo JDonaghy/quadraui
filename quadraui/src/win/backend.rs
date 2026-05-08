@@ -39,7 +39,9 @@ use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
-use crate::primitives::multi_section_view::{MultiSectionView, MultiSectionViewLayout};
+use crate::primitives::multi_section_view::{
+    LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
+};
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
@@ -224,6 +226,10 @@ impl Backend for WinBackend {
 
     fn msv_layout(&self, _rect: Rect, _view: &MultiSectionView) -> MultiSectionViewLayout {
         todo!("DirectWrite MSV layout")
+    }
+
+    fn msv_metrics(&self) -> LayoutMetrics {
+        todo!("DirectWrite MSV metrics")
     }
 
     fn tree_layout(&self, _rect: Rect, _tree: &TreeView) -> TreeViewLayout {

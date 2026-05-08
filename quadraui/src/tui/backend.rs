@@ -643,6 +643,15 @@ impl Backend for TuiBackend {
         crate::tui::tui_msv_layout(view, area)
     }
 
+    fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+        crate::primitives::multi_section_view::LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        }
+    }
+
     fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_tree_layout(tree, area)
@@ -1084,6 +1093,10 @@ mod tests {
                 crate::primitives::multi_section_view::LayoutMetrics::default(),
                 |_| crate::primitives::multi_section_view::SectionMeasure::default(),
             )
+        }
+
+        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+            crate::primitives::multi_section_view::LayoutMetrics::default()
         }
 
         fn tree_layout(&self, r: QRect, t: &TreeView) -> crate::primitives::tree::TreeViewLayout {
