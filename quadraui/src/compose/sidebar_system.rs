@@ -27,7 +27,7 @@ use super::focus_group::FocusGroup;
 use super::form_controller::FormController;
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
-use crate::primitives::form::{Form, FormEvent};
+use crate::primitives::form::{FieldKind, Form, FormEvent};
 use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
@@ -928,10 +928,8 @@ impl SidebarSystem {
                         });
                         match form_layout.hit_test(x - body_b.x, y - body_b.y) {
                             crate::primitives::form::FormHit::Field(id) => {
-                                SidebarEvent::FormEvent {
-                                    section,
-                                    event: FormEvent::ButtonClicked { id },
-                                }
+                                let event = form_click_event(f, &id);
+                                SidebarEvent::FormEvent { section, event }
                             }
                             crate::primitives::form::FormHit::Empty => {
                                 SidebarEvent::HeaderActivated { section }
@@ -1196,6 +1194,43 @@ impl SidebarSystem {
             tc.set_selected_path(Some(path));
             tc.set_scroll_offset(0);
         }
+    }
+}
+
+fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
+    for field in &form.fields {
+        if &field.id == clicked_id {
+            return match &field.kind {
+                FieldKind::Toggle { value } => FormEvent::ToggleChanged {
+                    id: clicked_id.clone(),
+                    value: !value,
+                },
+                FieldKind::Button => FormEvent::ButtonClicked {
+                    id: clicked_id.clone(),
+                },
+                _ => FormEvent::FocusChanged {
+                    id: clicked_id.clone(),
+                },
+            };
+        }
+        if let FieldKind::ToggleGroup { toggles } = &field.kind {
+            if let Some(t) = toggles.iter().find(|t| &t.id == clicked_id) {
+                return FormEvent::ToggleChanged {
+                    id: clicked_id.clone(),
+                    value: !t.value,
+                };
+            }
+        }
+        if let FieldKind::ButtonRow { buttons } = &field.kind {
+            if buttons.iter().any(|b| &b.id == clicked_id) {
+                return FormEvent::ButtonClicked {
+                    id: clicked_id.clone(),
+                };
+            }
+        }
+    }
+    FormEvent::FocusChanged {
+        id: clicked_id.clone(),
     }
 }
 
@@ -1744,5 +1779,139 @@ mod tests {
         ss.focus.set_active(Some(0));
         let ev = ss.move_selection_by(1, 10);
         assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    // ── Form click event dispatch ──────────────────────────────────────
+
+    #[test]
+    fn form_click_text_input_emits_focus_changed() {
+        let form = sample_form();
+        let ev = form_click_event(&form, &WidgetId::new("query"));
+        assert_eq!(
+            ev,
+            FormEvent::FocusChanged {
+                id: WidgetId::new("query")
+            }
+        );
+    }
+
+    #[test]
+    fn form_click_toggle_emits_toggle_changed_with_flipped_value() {
+        let form = sample_form();
+        let ev = form_click_event(&form, &WidgetId::new("case-sensitive"));
+        assert_eq!(
+            ev,
+            FormEvent::ToggleChanged {
+                id: WidgetId::new("case-sensitive"),
+                value: true, // was false, click flips to true
+            }
+        );
+    }
+
+    #[test]
+    fn form_click_button_emits_button_clicked() {
+        use crate::primitives::form::FormField;
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("submit"),
+                label: StyledText::plain("Go"),
+                kind: FieldKind::Button,
+                hint: StyledText::default(),
+                disabled: false,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let ev = form_click_event(&form, &WidgetId::new("submit"));
+        assert_eq!(
+            ev,
+            FormEvent::ButtonClicked {
+                id: WidgetId::new("submit")
+            }
+        );
+    }
+
+    #[test]
+    fn form_click_toggle_group_item_emits_toggle_changed() {
+        use crate::primitives::form::{FormField, ToggleGroupItem};
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("flags"),
+                label: StyledText::plain("Flags"),
+                kind: FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("case"),
+                            label: "Aa".into(),
+                            value: true,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("regex"),
+                            label: ".*".into(),
+                            value: false,
+                        },
+                    ],
+                },
+                hint: StyledText::default(),
+                disabled: false,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let ev = form_click_event(&form, &WidgetId::new("regex"));
+        assert_eq!(
+            ev,
+            FormEvent::ToggleChanged {
+                id: WidgetId::new("regex"),
+                value: true, // was false, flipped
+            }
+        );
+    }
+
+    #[test]
+    fn form_click_button_row_item_emits_button_clicked() {
+        use crate::primitives::form::{ButtonRowItem, FormField};
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("actions"),
+                label: StyledText::plain(""),
+                kind: FieldKind::ButtonRow {
+                    buttons: vec![ButtonRowItem {
+                        id: WidgetId::new("replace-all"),
+                        label: "Replace All".into(),
+                        disabled: false,
+                    }],
+                },
+                hint: StyledText::default(),
+                disabled: false,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let ev = form_click_event(&form, &WidgetId::new("replace-all"));
+        assert_eq!(
+            ev,
+            FormEvent::ButtonClicked {
+                id: WidgetId::new("replace-all")
+            }
+        );
+    }
+
+    #[test]
+    fn form_click_unknown_id_emits_focus_changed() {
+        let form = sample_form();
+        let ev = form_click_event(&form, &WidgetId::new("nonexistent"));
+        assert_eq!(
+            ev,
+            FormEvent::FocusChanged {
+                id: WidgetId::new("nonexistent")
+            }
+        );
     }
 }
