@@ -182,7 +182,8 @@ impl AppLogic for DebugSidebar {
                 self.last_action = format!("edit-cancel→{section} {path:?}");
                 Reaction::Redraw
             }
-            SidebarEvent::ScrollChanged { .. }
+            SidebarEvent::FormEvent { .. }
+            | SidebarEvent::ScrollChanged { .. }
             | SidebarEvent::EditChanged { .. }
             | SidebarEvent::StateChanged
             | SidebarEvent::Consumed => Reaction::Redraw,
