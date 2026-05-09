@@ -22,8 +22,9 @@ Archived session summaries. Newest at top.
 | 97 | SidebarSystem::has_focus() getter | #98 | One-line addition. |
 | 99 | Backend-free handle_cached() | #100 | `Backend::msv_metrics()` trait method, `SidebarSystem::set_backend_info()` + `handle_cached()`. Internal refactor: all handle() internals take `(lh, metrics)` instead of `&mut dyn Backend`. |
 | 101 | gtk::wire_da_events helper | #102 | Attaches GestureClick + EventControllerMotion + EventControllerScroll to a DrawingArea, translates to UiEvent via callback. Eliminates ~40 lines of per-DA signal wiring. |
+| 103 | Section visibility + header badges | #104 | `set_section_visible` / `set_section_badge` on SidebarSystem. Hidden sections excluded from build_view(), Tab skips them, MSV→SidebarSystem index mapping for stable event indices. |
 
-**Test count:** 527 (up from 504 at session start).
+**Test count:** 532 (up from 504 at session start).
 
 **Design decisions:**
 
