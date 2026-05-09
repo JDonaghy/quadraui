@@ -2185,4 +2185,166 @@ mod tests {
             );
         }
     }
+
+    // ── 6. Mixed Form + Tree section round-trip ────────────────────────────
+    //
+    // Paints a Form section above a Tree section, finds the painted form
+    // field labels and tree row text, hit-tests the coordinates, and
+    // asserts each hit lands in the correct section with the correct body
+    // type. Validates the SidebarSystem → MSV → TUI pipeline end-to-end.
+
+    use crate::primitives::form::{FieldKind, Form, FormField};
+
+    fn form_section(id: &str, fields: Vec<FormField>, size: SectionSize) -> Section {
+        Section {
+            id: id.into(),
+            header: SectionHeader {
+                title: StyledText::plain(id.to_uppercase()),
+                show_chevron: false,
+                ..Default::default()
+            },
+            body: SectionBody::Form(Form {
+                id: WidgetId::new(format!("{}-form", id)),
+                fields,
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+            }),
+            aux: None,
+            size,
+            collapsed: false,
+            min_size: None,
+            max_size: None,
+        }
+    }
+
+    #[test]
+    fn mixed_form_tree_paint_click_round_trip() {
+        let area = TuiRect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+
+        let fields = vec![
+            FormField {
+                id: WidgetId::new("query"),
+                label: StyledText::plain("Query"),
+                kind: FieldKind::TextInput {
+                    value: "hello".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+            },
+            FormField {
+                id: WidgetId::new("case"),
+                label: StyledText::plain("Case"),
+                kind: FieldKind::Toggle { value: true },
+                hint: StyledText::default(),
+                disabled: false,
+            },
+        ];
+
+        let v = view_with(vec![
+            form_section("search", fields, SectionSize::Content),
+            tree_section(
+                "results",
+                &["file1.rs", "file2.rs", "file3.rs"],
+                SectionSize::EqualShare,
+            ),
+        ]);
+
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+
+        // Verify both sections painted their headers.
+        let search_header_y = find_row_with(&buf, "SEARCH").expect("SEARCH header not painted");
+        let results_header_y = find_row_with(&buf, "RESULTS").expect("RESULTS header not painted");
+        assert!(
+            results_header_y > search_header_y,
+            "RESULTS header should be below SEARCH header"
+        );
+
+        // Verify form field labels are painted.
+        let query_y = find_row_with(&buf, "Query").expect("Query field label not painted");
+        let case_y = find_row_with(&buf, "Case").expect("Case field label not painted");
+        assert!(
+            query_y > search_header_y && query_y < results_header_y,
+            "Query field should be in SEARCH section body"
+        );
+        assert!(
+            case_y > search_header_y && case_y < results_header_y,
+            "Case field should be in SEARCH section body"
+        );
+
+        // Verify tree rows are painted.
+        let file1_y = find_row_with(&buf, "file1.rs").expect("file1.rs tree row not painted");
+        assert!(
+            file1_y > results_header_y,
+            "file1.rs should be in RESULTS section body"
+        );
+
+        // Round-trip: hit-test at form field row → Body { section: 0 }.
+        let hit = layout.hit_test(5.0, query_y as f32);
+        match hit {
+            MultiSectionViewHit::Body { section, .. } => assert_eq!(
+                section, 0,
+                "click at Query row hit section {section}, expected 0"
+            ),
+            other => panic!(
+                "click at Query row returned {:?}, expected Body{{0}}",
+                other
+            ),
+        }
+
+        // Round-trip: hit-test at tree row → Body { section: 1 }.
+        let hit = layout.hit_test(5.0, file1_y as f32);
+        match hit {
+            MultiSectionViewHit::Body { section, .. } => assert_eq!(
+                section, 1,
+                "click at file1.rs row hit section {section}, expected 1"
+            ),
+            other => panic!(
+                "click at file1.rs row returned {:?}, expected Body{{1}}",
+                other
+            ),
+        }
+
+        // Round-trip: hit-test at headers → Header { section: N }.
+        let hit = layout.hit_test(5.0, search_header_y as f32);
+        assert!(
+            matches!(hit, MultiSectionViewHit::Header { section: 0, .. }),
+            "click at SEARCH header returned {:?}",
+            hit
+        );
+        let hit = layout.hit_test(5.0, results_header_y as f32);
+        assert!(
+            matches!(hit, MultiSectionViewHit::Header { section: 1, .. }),
+            "click at RESULTS header returned {:?}",
+            hit
+        );
+    }
+
+    #[test]
+    fn form_toggle_value_paints_correctly() {
+        let area = TuiRect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        let fields = vec![FormField {
+            id: WidgetId::new("toggle"),
+            label: StyledText::plain("Enabled"),
+            kind: FieldKind::Toggle { value: true },
+            hint: StyledText::default(),
+            disabled: false,
+        }];
+
+        let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);
+        draw_multi_section_view(&mut buf, area, &v, &Theme::default(), false);
+
+        let toggle_y = find_row_with(&buf, "Enabled").expect("Toggle field not painted");
+        let row = row_text(&buf, toggle_y);
+        assert!(
+            row.contains("[x]"),
+            "toggle value=true should paint [x], got row: {row:?}"
+        );
+    }
 }

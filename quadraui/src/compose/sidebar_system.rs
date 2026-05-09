@@ -1,9 +1,12 @@
-//! `SidebarSystem` — a composed controller for MSV + TreeView sidebar
-//! panels.
+//! `SidebarSystem` — a composed controller for MSV sidebar panels.
 //!
 //! Owns the full interaction state machine: per-section scroll/selection,
 //! active section cycling, scrollbar drag, keyboard navigation, and
-//! two-layer click dispatch (MSV → TreeView with coordinate translation).
+//! two-layer click dispatch (MSV → body with coordinate translation).
+//!
+//! Sections may be Tree-bodied (managed by `TreeController`) or
+//! Form-bodied (managed by `FormController`). The section kind is set
+//! at construction time via [`SectionKind`] on [`SidebarSectionDef`].
 //!
 //! Two navigation modes (set via [`SidebarSystem::set_navigation_mode`]):
 //! - [`NavigationMode::Scroll`] (default): Up/Down scroll the viewport.
@@ -12,7 +15,8 @@
 //!   jump by page or extremes. Enter emits [`SidebarEvent::RowActivated`].
 //!
 //! Apps define section structure via [`SidebarSectionDef`], set row data
-//! per frame via [`SidebarSystem::set_rows`], and match on
+//! per frame via [`SidebarSystem::set_rows`] (tree sections) or
+//! [`SidebarSystem::set_form`] (form sections), and match on
 //! [`SidebarEvent`] for semantic actions.
 //!
 //! Scroll-wheel events follow the [`ScrollDelta`](crate::ScrollDelta)
@@ -20,8 +24,10 @@
 //! offset). Backends normalise their native direction before emitting.
 
 use super::focus_group::FocusGroup;
+use super::form_controller::FormController;
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
+use crate::primitives::form::{Form, FormEvent};
 use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
@@ -44,6 +50,14 @@ pub enum NavigationMode {
     Selection,
 }
 
+/// Whether a sidebar section hosts a TreeView or a Form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SectionKind {
+    #[default]
+    Tree,
+    Form,
+}
+
 /// Definition of one sidebar section (structure, not data).
 #[derive(Debug, Clone)]
 pub struct SidebarSectionDef {
@@ -51,6 +65,7 @@ pub struct SidebarSectionDef {
     pub title: String,
     pub show_chevron: bool,
     pub size: SectionSize,
+    pub kind: SectionKind,
 }
 
 impl SidebarSectionDef {
@@ -60,6 +75,17 @@ impl SidebarSectionDef {
             title: title.into(),
             show_chevron: false,
             size: SectionSize::EqualShare,
+            kind: SectionKind::Tree,
+        }
+    }
+
+    pub fn form(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            show_chevron: false,
+            size: SectionSize::Content,
+            kind: SectionKind::Form,
         }
     }
 }
@@ -98,6 +124,8 @@ pub enum SidebarEvent {
         path: TreePath,
         text: String,
     },
+    /// A Form section emitted a form event (toggle, text input, button, etc.).
+    FormEvent { section: usize, event: FormEvent },
     /// State changed (navigation, collapse) — app should redraw.
     StateChanged,
     /// Event consumed (drag update, hover) — app should redraw.
@@ -126,9 +154,14 @@ struct BackendInfo {
     metrics: LayoutMetrics,
 }
 
+enum SectionController {
+    Tree(TreeController),
+    Form(FormController),
+}
+
 pub struct SidebarSystem {
     defs: Vec<SidebarSectionDef>,
-    sections: Vec<TreeController>,
+    sections: Vec<SectionController>,
     focus: FocusGroup,
     collapsed: Vec<bool>,
     visible: Vec<bool>,
@@ -149,7 +182,14 @@ impl SidebarSystem {
         let n = defs.len();
         let sections = defs
             .iter()
-            .map(|def| TreeController::new(format!("{}-tree", def.id)))
+            .map(|def| match def.kind {
+                SectionKind::Tree => {
+                    SectionController::Tree(TreeController::new(format!("{}-tree", def.id)))
+                }
+                SectionKind::Form => {
+                    SectionController::Form(FormController::new(format!("{}-form", def.id)))
+                }
+            })
             .collect();
         Self {
             defs,
@@ -173,8 +213,14 @@ impl SidebarSystem {
     // ── Per-frame data ────────────────────────────────────────────────
 
     pub fn set_rows(&mut self, section: usize, rows: Vec<TreeRow>) {
-        if let Some(tc) = self.sections.get_mut(section) {
+        if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
             tc.set_rows(rows);
+        }
+    }
+
+    pub fn set_form(&mut self, section: usize, form: Form) {
+        if let Some(SectionController::Form(fc)) = self.sections.get_mut(section) {
+            fc.set_form(form);
         }
     }
 
@@ -185,14 +231,28 @@ impl SidebarSystem {
     }
 
     pub fn selected_path(&self, section: usize) -> Option<&TreePath> {
-        self.sections.get(section).and_then(|tc| tc.selected_path())
+        match self.sections.get(section) {
+            Some(SectionController::Tree(tc)) => tc.selected_path(),
+            _ => None,
+        }
     }
 
     pub fn scroll_offset(&self, section: usize) -> usize {
-        self.sections
-            .get(section)
-            .map(|tc| tc.scroll_offset())
-            .unwrap_or(0)
+        match self.sections.get(section) {
+            Some(SectionController::Tree(tc)) => tc.scroll_offset(),
+            _ => 0,
+        }
+    }
+
+    pub fn form(&self, section: usize) -> Option<&Form> {
+        match self.sections.get(section) {
+            Some(SectionController::Form(fc)) => fc.form(),
+            _ => None,
+        }
+    }
+
+    pub fn section_kind(&self, section: usize) -> Option<SectionKind> {
+        self.defs.get(section).map(|d| d.kind)
     }
 
     pub fn is_collapsed(&self, section: usize) -> bool {
@@ -214,7 +274,7 @@ impl SidebarSystem {
     }
 
     pub fn set_selected_path(&mut self, section: usize, path: Option<TreePath>) {
-        if let Some(tc) = self.sections.get_mut(section) {
+        if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
             tc.set_selected_path(path);
         }
     }
@@ -294,19 +354,21 @@ impl SidebarSystem {
         selection_anchor: Option<usize>,
         placeholder: Option<String>,
     ) {
-        if let Some(tc) = self.sections.get_mut(section) {
+        if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
             tc.start_editing(path, initial_text, cursor, selection_anchor, placeholder);
         }
     }
 
     pub fn cancel_editing(&mut self, section: usize) {
-        if let Some(tc) = self.sections.get_mut(section) {
+        if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
             tc.cancel_editing();
         }
     }
 
     pub fn is_editing(&self) -> bool {
-        self.sections.iter().any(|tc| tc.is_editing())
+        self.sections
+            .iter()
+            .any(|sc| matches!(sc, SectionController::Tree(tc) if tc.is_editing()))
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -522,7 +584,10 @@ impl SidebarSystem {
             .focus
             .active()
             .and_then(|i| self.sections.get(i))
-            .is_none_or(|tc| tc.vim_keys());
+            .is_none_or(|sc| match sc {
+                SectionController::Tree(tc) => tc.vim_keys(),
+                SectionController::Form(_) => false,
+            });
         let vim_up = vim && matches!(key, Key::Char('k'));
         let vim_down = vim && matches!(key, Key::Char('j'));
         match key {
@@ -563,7 +628,10 @@ impl SidebarSystem {
         if self.collapsed[idx] {
             return SidebarEvent::Ignored;
         }
-        match self.sections[idx].move_selection_by(delta, viewport_rows) {
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
+        match tc.move_selection_by(delta, viewport_rows) {
             TreeControllerEvent::RowSelected { path } => {
                 SidebarEvent::RowSelected { section: idx, path }
             }
@@ -587,7 +655,10 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
-        match self.sections[idx].jump_to_edge(to_start, viewport_rows) {
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
+        match tc.jump_to_edge(to_start, viewport_rows) {
             TreeControllerEvent::RowSelected { path } => {
                 SidebarEvent::RowSelected { section: idx, path }
             }
@@ -599,7 +670,10 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
-        match self.sections[idx].activate_selection() {
+        let SectionController::Tree(tc) = &self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
+        match tc.activate_selection() {
             TreeControllerEvent::RowActivated { path } => {
                 SidebarEvent::RowActivated { section: idx, path }
             }
@@ -610,14 +684,18 @@ impl SidebarSystem {
     // ── Inline editing forwarding ────────────────────────────────────
 
     fn editing_section(&self) -> Option<usize> {
-        self.sections.iter().position(|tc| tc.is_editing())
+        self.sections
+            .iter()
+            .position(|sc| matches!(sc, SectionController::Tree(tc) if tc.is_editing()))
     }
 
     fn forward_edit_char(&mut self, ch: char) -> SidebarEvent {
         let Some(idx) = self.editing_section() else {
             return SidebarEvent::Ignored;
         };
-        let tc = &mut self.sections[idx];
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
         tc.edit_insert_char_via(ch);
         self.map_tc_edit_event(idx)
     }
@@ -626,7 +704,9 @@ impl SidebarSystem {
         let Some(idx) = self.editing_section() else {
             return SidebarEvent::Ignored;
         };
-        let tc = &mut self.sections[idx];
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
         tc.edit_insert_str_via(text);
         self.map_tc_edit_event(idx)
     }
@@ -635,12 +715,17 @@ impl SidebarSystem {
         let Some(idx) = self.editing_section() else {
             return SidebarEvent::Ignored;
         };
-        let ev = self.sections[idx].handle_edit_key_via(key, modifiers);
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
+        let ev = tc.handle_edit_key_via(key, modifiers);
         Self::map_tc_event(idx, ev)
     }
 
     fn map_tc_edit_event(&self, idx: usize) -> SidebarEvent {
-        let tc = &self.sections[idx];
+        let SectionController::Tree(tc) = &self.sections[idx] else {
+            return SidebarEvent::Consumed;
+        };
         if let Some(path) = tc.editing_path() {
             SidebarEvent::EditChanged {
                 section: idx,
@@ -721,21 +806,13 @@ impl SidebarSystem {
                 continue;
             }
             let is_active = active == Some(idx);
-            let tc = &self.sections[idx];
             let title = if is_active {
                 format!("▶ {}", def.title)
             } else {
                 def.title.clone()
             };
-            sections.push(Section {
-                id: def.id.clone(),
-                header: SectionHeader {
-                    title: StyledText::plain(title),
-                    show_chevron: def.show_chevron,
-                    badge: self.badges[idx].clone(),
-                    ..Default::default()
-                },
-                body: SectionBody::Tree({
+            let body = match &self.sections[idx] {
+                SectionController::Tree(tc) => {
                     let mut rows = tc.rows().to_vec();
                     if let Some(editing_path) = tc.editing_path() {
                         if let Some(row) = rows.iter_mut().find(|r| &r.path == editing_path) {
@@ -747,7 +824,7 @@ impl SidebarSystem {
                             });
                         }
                     }
-                    TreeView {
+                    SectionBody::Tree(TreeView {
                         id: WidgetId::new(format!("{}-tree", def.id)),
                         rows,
                         selection_mode: SelectionMode::Single,
@@ -755,8 +832,31 @@ impl SidebarSystem {
                         scroll_offset: tc.scroll_offset(),
                         style: Default::default(),
                         has_focus: is_active && self.has_focus,
-                    }
-                }),
+                    })
+                }
+                SectionController::Form(fc) => {
+                    let form = fc.form().cloned().unwrap_or_else(|| Form {
+                        id: fc.default_form_id(),
+                        fields: Vec::new(),
+                        focused_field: None,
+                        scroll_offset: 0,
+                        has_focus: is_active && self.has_focus,
+                    });
+                    SectionBody::Form(Form {
+                        has_focus: is_active && self.has_focus,
+                        ..form
+                    })
+                }
+            };
+            sections.push(Section {
+                id: def.id.clone(),
+                header: SectionHeader {
+                    title: StyledText::plain(title),
+                    show_chevron: def.show_chevron,
+                    badge: self.badges[idx].clone(),
+                    ..Default::default()
+                },
+                body,
                 aux: None,
                 size: def.size,
                 collapsed: self.collapsed[idx],
@@ -796,7 +896,9 @@ impl SidebarSystem {
             } => {
                 let section = map[msv_idx];
                 self.focus.set_active(Some(section));
-                self.sections[section].set_selected_path(None);
+                if let SectionController::Tree(tc) = &mut self.sections[section] {
+                    tc.set_selected_path(None);
+                }
                 SidebarEvent::HeaderActivated { section }
             }
             MultiSectionViewHit::Body {
@@ -805,18 +907,38 @@ impl SidebarSystem {
                 let section = map[msv_idx];
                 self.focus.set_active(Some(section));
                 let body_b = layout.sections[msv_idx].body_bounds;
-                let tree = match &view.sections[msv_idx].body {
-                    SectionBody::Tree(t) => t.clone(),
-                    _ => return SidebarEvent::Consumed,
-                };
-                let inner = self.compute_tree_layout(body_b, &tree, lh);
-                match inner.hit_test(x - body_b.x, y - body_b.y) {
-                    TreeViewHit::Row(idx) => {
-                        let path = tree.rows[idx].path.clone();
-                        self.sections[section].set_selected_path(Some(path.clone()));
-                        SidebarEvent::RowSelected { section, path }
+                match &view.sections[msv_idx].body {
+                    SectionBody::Tree(t) => {
+                        let tree = t.clone();
+                        let inner = self.compute_tree_layout(body_b, &tree, lh);
+                        match inner.hit_test(x - body_b.x, y - body_b.y) {
+                            TreeViewHit::Row(idx) => {
+                                let path = tree.rows[idx].path.clone();
+                                if let SectionController::Tree(tc) = &mut self.sections[section] {
+                                    tc.set_selected_path(Some(path.clone()));
+                                }
+                                SidebarEvent::RowSelected { section, path }
+                            }
+                            TreeViewHit::Empty => SidebarEvent::HeaderActivated { section },
+                        }
                     }
-                    TreeViewHit::Empty => SidebarEvent::HeaderActivated { section },
+                    SectionBody::Form(f) => {
+                        let form_layout = f.layout(body_b.width, body_b.height, |_| {
+                            crate::primitives::form::FormFieldMeasure::new((lh * 1.4).round())
+                        });
+                        match form_layout.hit_test(x - body_b.x, y - body_b.y) {
+                            crate::primitives::form::FormHit::Field(id) => {
+                                SidebarEvent::FormEvent {
+                                    section,
+                                    event: FormEvent::ButtonClicked { id },
+                                }
+                            }
+                            crate::primitives::form::FormHit::Empty => {
+                                SidebarEvent::HeaderActivated { section }
+                            }
+                        }
+                    }
+                    _ => SidebarEvent::Consumed,
                 }
             }
             MultiSectionViewHit::Scrollbar {
@@ -824,6 +946,9 @@ impl SidebarSystem {
                 kind: ScrollbarHit::Thumb,
             } => {
                 let section = map[msv_idx];
+                let SectionController::Tree(tc) = &self.sections[section] else {
+                    return SidebarEvent::Ignored;
+                };
                 let sb = layout.sections[msv_idx]
                     .scrollbar_bounds
                     .expect("scrollbar hit implies bounds present");
@@ -833,13 +958,13 @@ impl SidebarSystem {
                     .unwrap_or(sb.height);
                 let body_b = layout.sections[msv_idx].body_bounds;
                 let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
-                let row_count = self.sections[section].rows().len();
+                let row_count = tc.rows().len();
                 let max_offset = row_count.saturating_sub(viewport_rows);
                 let travel = (sb.height - thumb_h).max(0.0);
                 self.scroll_drag = Some(ScrollDrag {
                     section,
                     origin_y: y,
-                    origin_offset: self.sections[section].scroll_offset(),
+                    origin_offset: tc.scroll_offset(),
                     travel,
                     max_offset,
                 });
@@ -852,7 +977,10 @@ impl SidebarSystem {
                 let section = map[msv_idx];
                 let body_b = layout.sections[msv_idx].body_bounds;
                 let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
-                self.sections[section].page_scroll(-(viewport_rows as isize), viewport_rows);
+                let SectionController::Tree(tc) = &mut self.sections[section] else {
+                    return SidebarEvent::Ignored;
+                };
+                tc.page_scroll(-(viewport_rows as isize), viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
             MultiSectionViewHit::Scrollbar {
@@ -862,7 +990,10 @@ impl SidebarSystem {
                 let section = map[msv_idx];
                 let body_b = layout.sections[msv_idx].body_bounds;
                 let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
-                self.sections[section].page_scroll(viewport_rows as isize, viewport_rows);
+                let SectionController::Tree(tc) = &mut self.sections[section] else {
+                    return SidebarEvent::Ignored;
+                };
+                tc.page_scroll(viewport_rows as isize, viewport_rows);
                 SidebarEvent::ScrollChanged { section }
             }
             MultiSectionViewHit::PanelScrollbar {
@@ -929,7 +1060,9 @@ impl SidebarSystem {
                     TreeViewHit::Row(idx) => {
                         let path = tree.rows[idx].path.clone();
                         self.focus.set_active(Some(section));
-                        self.sections[section].set_selected_path(Some(path.clone()));
+                        if let SectionController::Tree(tc) = &mut self.sections[section] {
+                            tc.set_selected_path(Some(path.clone()));
+                        }
                         SidebarEvent::ContextMenuRequested {
                             section,
                             path,
@@ -969,10 +1102,13 @@ impl SidebarSystem {
         let new = new.max(0) as usize;
         let new = new.min(drag.max_offset);
         let section = drag.section;
-        if new == self.sections[section].scroll_offset() {
+        let SectionController::Tree(tc) = &mut self.sections[section] else {
+            return SidebarEvent::Ignored;
+        };
+        if new == tc.scroll_offset() {
             return SidebarEvent::Ignored;
         }
-        self.sections[section].set_scroll_offset(new);
+        tc.set_scroll_offset(new);
         SidebarEvent::Consumed
     }
 
@@ -1029,27 +1165,36 @@ impl SidebarSystem {
         let Some(idx) = self.focus.active() else {
             return;
         };
+        if !matches!(self.sections[idx], SectionController::Tree(_)) {
+            return;
+        }
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let Some(msv_idx) = map.iter().position(|&s| s == idx) else {
             return;
         };
         let body_b = layout.sections[msv_idx].body_bounds;
         let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
-        let row_count = self.sections[idx].rows().len();
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return;
+        };
+        let row_count = tc.rows().len();
         let max = row_count.saturating_sub(viewport_rows) as isize;
-        let cur = self.sections[idx].scroll_offset() as isize;
+        let cur = tc.scroll_offset() as isize;
         let new = (cur + delta).max(0).min(max) as usize;
-        self.sections[idx].set_scroll_offset(new);
+        tc.set_scroll_offset(new);
     }
 
     fn select_first_of_active(&mut self) {
         let Some(idx) = self.focus.active() else {
             return;
         };
-        if let Some(first) = self.sections[idx].rows().first() {
+        let SectionController::Tree(tc) = &mut self.sections[idx] else {
+            return;
+        };
+        if let Some(first) = tc.rows().first() {
             let path = first.path.clone();
-            self.sections[idx].set_selected_path(Some(path));
-            self.sections[idx].set_scroll_offset(0);
+            tc.set_selected_path(Some(path));
+            tc.set_scroll_offset(0);
         }
     }
 }
@@ -1128,9 +1273,17 @@ mod tests {
     #[test]
     fn set_rows_updates_section_data() {
         let mut ss = SidebarSystem::new(sample_defs());
-        assert!(ss.sections[0].rows().is_empty());
+        let tc = match &ss.sections[0] {
+            SectionController::Tree(tc) => tc,
+            _ => panic!("expected tree section"),
+        };
+        assert!(tc.rows().is_empty());
         ss.set_rows(0, fake_rows("v", 5));
-        assert_eq!(ss.sections[0].rows().len(), 5);
+        let tc = match &ss.sections[0] {
+            SectionController::Tree(tc) => tc,
+            _ => panic!("expected tree section"),
+        };
+        assert_eq!(tc.rows().len(), 5);
     }
 
     #[test]
@@ -1169,7 +1322,9 @@ mod tests {
     fn select_first_of_active_sets_path_and_resets_scroll() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(1, fake_rows("w", 5));
-        ss.sections[1].set_scroll_offset(3);
+        if let SectionController::Tree(tc) = &mut ss.sections[1] {
+            tc.set_scroll_offset(3);
+        }
         ss.focus.set_active(Some(1));
         ss.select_first_of_active();
         assert_eq!(ss.selected_path(1), Some(&vec![0]));
@@ -1180,9 +1335,13 @@ mod tests {
     fn page_scroll_clamps_to_bounds() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 20));
-        ss.sections[0].page_scroll(100, 5);
+        if let SectionController::Tree(tc) = &mut ss.sections[0] {
+            tc.page_scroll(100, 5);
+        }
         assert_eq!(ss.scroll_offset(0), 15); // 20 - 5
-        ss.sections[0].page_scroll(-100, 5);
+        if let SectionController::Tree(tc) = &mut ss.sections[0] {
+            tc.page_scroll(-100, 5);
+        }
         assert_eq!(ss.scroll_offset(0), 0);
     }
 
@@ -1325,7 +1484,9 @@ mod tests {
     fn selection_scroll_follows_when_row_above_viewport() {
         let mut ss = selection_sidebar();
         ss.set_selected_path(0, Some(vec![4]));
-        ss.sections[0].set_scroll_offset(2);
+        if let SectionController::Tree(tc) = &mut ss.sections[0] {
+            tc.set_scroll_offset(2);
+        }
         // Move up to row 0.
         for _ in 0..4 {
             ss.move_selection_by(-1, 3);
@@ -1441,5 +1602,147 @@ mod tests {
             view.sections[0].header.badge,
             Some(StyledText::plain("(3)"))
         );
+    }
+
+    // ── Form section support ───────────────────────────────────────────
+
+    fn mixed_defs() -> Vec<SidebarSectionDef> {
+        vec![
+            SidebarSectionDef::form("search", "SEARCH"),
+            SidebarSectionDef::new("results", "RESULTS"),
+        ]
+    }
+
+    fn sample_form() -> Form {
+        use crate::primitives::form::{FieldKind, FormField};
+        Form {
+            id: WidgetId::new("search-form"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("query"),
+                    label: StyledText::plain("Query"),
+                    kind: FieldKind::TextInput {
+                        value: String::new(),
+                        placeholder: "Search...".into(),
+                        cursor: None,
+                        selection_anchor: None,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                },
+                FormField {
+                    id: WidgetId::new("case-sensitive"),
+                    label: StyledText::plain("Case"),
+                    kind: FieldKind::Toggle { value: false },
+                    hint: StyledText::default(),
+                    disabled: false,
+                },
+            ],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    fn mixed_sidebar_creates_correct_controllers() {
+        let ss = SidebarSystem::new(mixed_defs());
+        assert!(matches!(ss.sections[0], SectionController::Form(_)));
+        assert!(matches!(ss.sections[1], SectionController::Tree(_)));
+    }
+
+    #[test]
+    fn form_def_defaults_to_content_size() {
+        let def = SidebarSectionDef::form("s", "S");
+        assert_eq!(def.kind, SectionKind::Form);
+        assert_eq!(def.size, SectionSize::Content);
+    }
+
+    #[test]
+    fn set_form_updates_form_section() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        assert!(ss.form(0).is_none());
+        ss.set_form(0, sample_form());
+        assert!(ss.form(0).is_some());
+        assert_eq!(ss.form(0).unwrap().fields.len(), 2);
+    }
+
+    #[test]
+    fn set_form_on_tree_section_is_noop() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(1, sample_form());
+        assert!(ss.form(1).is_none());
+    }
+
+    #[test]
+    fn set_rows_on_form_section_is_noop() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_rows(0, fake_rows("v", 5));
+        assert_eq!(ss.scroll_offset(0), 0);
+        assert_eq!(ss.selected_path(0), None);
+    }
+
+    #[test]
+    fn build_view_produces_form_body() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.set_rows(1, fake_rows("r", 3));
+        let (view, _) = ss.build_view();
+        assert_eq!(view.sections.len(), 2);
+        assert!(matches!(view.sections[0].body, SectionBody::Form(_)));
+        assert!(matches!(view.sections[1].body, SectionBody::Tree(_)));
+    }
+
+    #[test]
+    fn build_view_form_section_has_focus() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.focus.set_active(Some(0));
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(f.has_focus),
+            _ => panic!("expected Form body"),
+        }
+    }
+
+    #[test]
+    fn build_view_empty_form_section() {
+        let ss = SidebarSystem::new(mixed_defs());
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(f.fields.is_empty()),
+            _ => panic!("expected Form body"),
+        }
+    }
+
+    #[test]
+    fn tab_cycles_through_mixed_sections() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.set_rows(1, fake_rows("r", 3));
+        ss.cycle_active(1);
+        assert_eq!(ss.active_section(), Some(0));
+        ss.cycle_active(1);
+        assert_eq!(ss.active_section(), Some(1));
+        ss.cycle_active(1);
+        assert_eq!(ss.active_section(), Some(0));
+    }
+
+    #[test]
+    fn section_kind_accessor() {
+        let ss = SidebarSystem::new(mixed_defs());
+        assert_eq!(ss.section_kind(0), Some(SectionKind::Form));
+        assert_eq!(ss.section_kind(1), Some(SectionKind::Tree));
+        assert_eq!(ss.section_kind(99), None);
+    }
+
+    #[test]
+    fn selection_on_form_section_returns_ignored() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_navigation_mode(NavigationMode::Selection);
+        ss.set_form(0, sample_form());
+        ss.focus.set_active(Some(0));
+        let ev = ss.move_selection_by(1, 10);
+        assert_eq!(ev, SidebarEvent::Ignored);
     }
 }
