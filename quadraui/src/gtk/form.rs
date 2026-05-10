@@ -182,15 +182,13 @@ pub fn draw_form(
                     pcfn::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
-                        if !value.is_empty() {
-                            let prefix = &shown[..(*cur).min(shown.len())];
-                            layout.set_text(prefix);
-                            let (prefix_w, _) = layout.pixel_size();
-                            let cx = ix + 8.0 + prefix_w as f64;
-                            cr.set_source_rgb(accent.0, accent.1, accent.2);
-                            cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
-                            cr.fill().ok();
-                        }
+                        let prefix = &shown[..(*cur).min(shown.len())];
+                        layout.set_text(prefix);
+                        let (prefix_w, _) = layout.pixel_size();
+                        let cx = ix + 8.0 + prefix_w as f64;
+                        cr.set_source_rgb(accent.0, accent.1, accent.2);
+                        cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
+                        cr.fill().ok();
                     }
                 }
             }
