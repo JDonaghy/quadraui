@@ -2325,6 +2325,77 @@ mod tests {
     }
 
     #[test]
+    fn form_toggle_group_items_individually_clickable_in_msv() {
+        use crate::primitives::form::{FormHit, ToggleGroupItem};
+
+        let area = TuiRect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        let fields = vec![FormField {
+            id: WidgetId::new("flags"),
+            label: StyledText::plain(""),
+            kind: FieldKind::ToggleGroup {
+                toggles: vec![
+                    ToggleGroupItem {
+                        id: WidgetId::new("case"),
+                        label: "Aa".into(),
+                        value: false,
+                    },
+                    ToggleGroupItem {
+                        id: WidgetId::new("regex"),
+                        label: ".*".into(),
+                        value: true,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        }];
+
+        let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+
+        let s = &layout.sections[0];
+        let body_b = s.body_bounds;
+
+        // Find the row with the toggles — scan for "Aa" painted text.
+        let toggle_y = find_row_with(&buf, "Aa").expect("ToggleGroup items not painted");
+
+        // The click should land in the body.
+        let hit = layout.hit_test(5.0, toggle_y as f32);
+        assert!(
+            matches!(hit, MultiSectionViewHit::Body { section: 0 }),
+            "click at toggle row returned {:?}, expected Body{{0}}",
+            hit
+        );
+
+        // Now hit-test the Form layout inside the body to verify
+        // individual items are reachable.
+        if let SectionBody::Form(f) = &v.sections[0].body {
+            let form_layout = crate::tui::form::tui_form_layout(
+                f,
+                TuiRect::new(0, 0, body_b.width as u16, body_b.height as u16),
+            );
+            // First item should be individually hit-testable.
+            let vis = &form_layout.visible_fields[0];
+            assert!(
+                !vis.item_bounds.is_empty(),
+                "ToggleGroup should have per-item bounds in form layout"
+            );
+            let (first_id, first_rect) = &vis.item_bounds[0];
+            assert_eq!(first_id, &WidgetId::new("case"));
+            let hit = form_layout.hit_test(first_rect.x + 0.5, first_rect.y + 0.5);
+            assert_eq!(
+                hit,
+                FormHit::Field(WidgetId::new("case")),
+                "hit-test at first toggle item should return its individual ID"
+            );
+        } else {
+            panic!("expected Form body");
+        }
+    }
+
+    #[test]
     fn form_toggle_value_paints_correctly() {
         let area = TuiRect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);

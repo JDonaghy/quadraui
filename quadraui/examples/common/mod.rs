@@ -33,6 +33,7 @@ pub mod mini_app;
 pub mod multi_tree;
 pub mod panel_app;
 pub mod search_panel;
+pub mod sidebar_search;
 pub mod split_app;
 pub mod toast_app;
 
@@ -44,5 +45,6 @@ pub use mini_app::MiniApp;
 pub use multi_tree::DebugSidebar;
 pub use panel_app::PanelApp;
 pub use search_panel::SearchPanelApp;
+pub use sidebar_search::SidebarSearchApp;
 pub use split_app::SplitApp;
 pub use toast_app::ToastApp;

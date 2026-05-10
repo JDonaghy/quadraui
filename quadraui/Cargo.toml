@@ -116,6 +116,16 @@ path = "examples/gtk_search_panel.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_sidebar_search"
+path = "examples/tui_sidebar_search.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_sidebar_search"
+path = "examples/gtk_sidebar_search.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_form_groups"
 path = "examples/tui_form_groups.rs"
 required-features = ["tui"]
