@@ -27,7 +27,9 @@ use super::focus_group::FocusGroup;
 use super::form_controller::FormController;
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
-use crate::primitives::form::{FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure};
+use crate::primitives::form::{
+    FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormLayout,
+};
 use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
@@ -175,6 +177,7 @@ pub struct SidebarSystem {
     scroll_mode: ScrollMode,
     panel_scroll: f32,
     backend_info: Option<BackendInfo>,
+    cached_form_layouts: Vec<Option<FormLayout>>,
 }
 
 impl SidebarSystem {
@@ -207,6 +210,7 @@ impl SidebarSystem {
             scroll_mode: ScrollMode::PerSection,
             panel_scroll: 0.0,
             backend_info: None,
+            cached_form_layouts: vec![None; n],
         }
     }
 
@@ -341,6 +345,28 @@ impl SidebarSystem {
             line_height,
             metrics,
         });
+    }
+
+    /// Pre-compute and cache form layouts using the backend's native
+    /// measurement (Pango for GTK, char cells for TUI). Call after
+    /// `render()` or `set_form()` so that [`Self::handle_cached`]
+    /// uses pixel-accurate hit regions instead of the generic estimate.
+    pub fn cache_form_layouts(&mut self, backend: &dyn Backend) {
+        let (view, map) = self.build_view();
+        let lh = backend.line_height();
+        let metrics = backend.msv_metrics();
+        let layout = view.layout(Rect::new(0.0, 0.0, 0.0, 0.0), metrics, |i| {
+            body_measure(&view.sections[i], lh)
+        });
+        for (msv_idx, s_layout) in layout.sections.iter().enumerate() {
+            let sidebar_idx = map[msv_idx];
+            if let SectionBody::Form(ref f) = view.sections[msv_idx].body {
+                let fl = backend.form_layout(s_layout.body_bounds, f);
+                if sidebar_idx < self.cached_form_layouts.len() {
+                    self.cached_form_layouts[sidebar_idx] = Some(fl);
+                }
+            }
+        }
     }
 
     // ── Inline editing ───────────────────────────────────────────────
@@ -927,6 +953,12 @@ impl SidebarSystem {
                     SectionBody::Form(f) => {
                         let form_layout = if let Some(be) = backend {
                             be.form_layout(body_b, f)
+                        } else if let Some(cached) = self
+                            .cached_form_layouts
+                            .get(section)
+                            .and_then(|c| c.clone())
+                        {
+                            cached
                         } else {
                             let row_h = (lh * 1.4).round();
                             let char_w = lh * 0.6;
