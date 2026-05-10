@@ -14,7 +14,7 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
-use crate::primitives::form::{FieldKind, Form};
+use crate::primitives::form::{FieldKind, Form, ValidationState};
 use crate::theme::Theme;
 
 /// Draw a [`Form`] into `(x, y, w, h)` on `cr` using `layout` for text
@@ -45,6 +45,8 @@ pub fn draw_form(
     let dim = cairo_rgb(theme.muted_fg);
     let sel = cairo_rgb(theme.selected_bg);
     let accent = cairo_rgb(theme.accent_fg);
+    let error = cairo_rgb(theme.error_fg);
+    let warning = cairo_rgb(theme.warning_fg);
 
     cr.set_source_rgb(bg.0, bg.1, bg.2);
     cr.rectangle(x, y, w, h);
@@ -295,6 +297,193 @@ pub fn draw_form(
                     pcfn::show_layout(cr, layout);
                     ix += rw as f64 + 8.0;
                 }
+            }
+            FieldKind::PasswordInput {
+                value,
+                placeholder,
+                cursor,
+                mask_char,
+            } => {
+                let masked: String = value.chars().map(|_| *mask_char).collect();
+                let shown = if value.is_empty() {
+                    placeholder.as_str()
+                } else {
+                    masked.as_str()
+                };
+                let input_fg = if value.is_empty() { dim } else { field_fg };
+
+                layout.set_text(shown);
+                let (shown_w, shown_h) = layout.pixel_size();
+
+                let (ix, _, bracket_right) = if no_label {
+                    let ix = label_x;
+                    let bracket_r = input_right - 4.0;
+                    let avail = bracket_r - ix - 8.0;
+                    let dw = (shown_w as f64).min(avail.max(0.0));
+                    (ix, dw, bracket_r)
+                } else {
+                    let max_width = (w * 0.6).max(80.0);
+                    let dw = (shown_w as f64).min(max_width);
+                    let ix = input_right - dw - 14.0;
+                    (ix, dw, ix + 8.0 + dw + 2.0)
+                };
+                if no_label || ix > label_right + 8.0 {
+                    cr.set_source_rgb(dim.0, dim.1, dim.2);
+                    layout.set_text("[");
+                    cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
+                    pcfn::show_layout(cr, layout);
+
+                    cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
+                    layout.set_text(shown);
+                    cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
+                    pcfn::show_layout(cr, layout);
+
+                    cr.set_source_rgb(dim.0, dim.1, dim.2);
+                    layout.set_text("]");
+                    cr.move_to(
+                        bracket_right,
+                        (y_off + (row_h - shown_h as f64) / 2.0).round(),
+                    );
+                    pcfn::show_layout(cr, layout);
+
+                    if let Some(cur) = cursor {
+                        // Cursor position: each original char maps to one
+                        // mask char, so measure the masked prefix up to
+                        // the byte-offset translated cursor.
+                        let char_pos = value[..(*cur).min(value.len())].chars().count();
+                        let mask_prefix: String = masked.chars().take(char_pos).collect();
+                        layout.set_text(&mask_prefix);
+                        let (prefix_w, _) = layout.pixel_size();
+                        let cx = ix + 8.0 + prefix_w as f64;
+                        cr.set_source_rgb(accent.0, accent.1, accent.2);
+                        cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
+                        cr.fill().ok();
+                    }
+                }
+            }
+            FieldKind::TextArea {
+                value,
+                placeholder,
+                cursor,
+                ..
+            } => {
+                // For now, render as a single-line input showing the
+                // first line of value. Multi-row GTK rendering is a
+                // future enhancement.
+                let first_line = value.lines().next().unwrap_or("");
+                let shown = if value.is_empty() {
+                    placeholder.as_str()
+                } else {
+                    first_line
+                };
+                let input_fg = if value.is_empty() { dim } else { field_fg };
+
+                layout.set_text(shown);
+                let (shown_w, shown_h) = layout.pixel_size();
+
+                let (ix, _, bracket_right) = if no_label {
+                    let ix = label_x;
+                    let bracket_r = input_right - 4.0;
+                    let avail = bracket_r - ix - 8.0;
+                    let dw = (shown_w as f64).min(avail.max(0.0));
+                    (ix, dw, bracket_r)
+                } else {
+                    let max_width = (w * 0.6).max(80.0);
+                    let dw = (shown_w as f64).min(max_width);
+                    let ix = input_right - dw - 14.0;
+                    (ix, dw, ix + 8.0 + dw + 2.0)
+                };
+                if no_label || ix > label_right + 8.0 {
+                    cr.set_source_rgb(dim.0, dim.1, dim.2);
+                    layout.set_text("[");
+                    cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
+                    pcfn::show_layout(cr, layout);
+
+                    cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
+                    layout.set_text(shown);
+                    cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
+                    pcfn::show_layout(cr, layout);
+
+                    cr.set_source_rgb(dim.0, dim.1, dim.2);
+                    layout.set_text("]");
+                    cr.move_to(
+                        bracket_right,
+                        (y_off + (row_h - shown_h as f64) / 2.0).round(),
+                    );
+                    pcfn::show_layout(cr, layout);
+
+                    if let Some(cur) = cursor {
+                        // Clamp cursor to first line length for display.
+                        let clamped = (*cur).min(first_line.len());
+                        let prefix = &shown[..clamped.min(shown.len())];
+                        layout.set_text(prefix);
+                        let (prefix_w, _) = layout.pixel_size();
+                        let cx = ix + 8.0 + prefix_w as f64;
+                        cr.set_source_rgb(accent.0, accent.1, accent.2);
+                        cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
+                        cr.fill().ok();
+                    }
+                }
+            }
+            FieldKind::SegmentedControl {
+                options,
+                selected_idx,
+            } => {
+                let mut ix = label_right + 12.0;
+                // Opening bracket.
+                cr.set_source_rgb(dim.0, dim.1, dim.2);
+                layout.set_text("[");
+                let (bw, bh) = layout.pixel_size();
+                cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
+                pcfn::show_layout(cr, layout);
+                ix += bw as f64;
+
+                for (i, opt) in options.iter().enumerate() {
+                    if i > 0 {
+                        cr.set_source_rgb(dim.0, dim.1, dim.2);
+                        layout.set_text("|");
+                        let (sw, sh) = layout.pixel_size();
+                        cr.move_to(ix, (y_off + (row_h - sh as f64) / 2.0).round());
+                        pcfn::show_layout(cr, layout);
+                        ix += sw as f64;
+                    }
+                    let opt_fg = if i == *selected_idx { accent } else { dim };
+                    cr.set_source_rgb(opt_fg.0, opt_fg.1, opt_fg.2);
+                    layout.set_text(opt);
+                    let (ow, oh) = layout.pixel_size();
+                    cr.move_to(ix, (y_off + (row_h - oh as f64) / 2.0).round());
+                    pcfn::show_layout(cr, layout);
+                    ix += ow as f64;
+                }
+
+                // Closing bracket.
+                cr.set_source_rgb(dim.0, dim.1, dim.2);
+                layout.set_text("]");
+                let (_, rh) = layout.pixel_size();
+                cr.move_to(ix, (y_off + (row_h - rh as f64) / 2.0).round());
+                pcfn::show_layout(cr, layout);
+            }
+        }
+
+        // ── Validation indicator ────────────────────────────────────────
+        if let Some(ref vs) = field.validation {
+            let (indicator_color, msg) = match vs {
+                ValidationState::Error(msg) => (error, msg.as_str()),
+                ValidationState::Warning(msg) => (warning, msg.as_str()),
+            };
+            // Small 3x3 px colored rectangle at the left edge, vertically centered.
+            cr.set_source_rgb(indicator_color.0, indicator_color.1, indicator_color.2);
+            cr.rectangle(x + 2.0, y_off + (row_h - 3.0) / 2.0, 3.0, 3.0);
+            cr.fill().ok();
+
+            // Render error/warning message text in the indicator color.
+            if !msg.is_empty() {
+                layout.set_text(msg);
+                let (_, msg_h) = layout.pixel_size();
+                let msg_x = x + 8.0;
+                let msg_y = (y_off + (row_h + msg_h as f64) / 2.0 + 1.0).round();
+                cr.move_to(msg_x, msg_y);
+                pcfn::show_layout(cr, layout);
             }
         }
 

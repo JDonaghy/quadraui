@@ -61,6 +61,7 @@ impl FormGroupsApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -86,6 +87,7 @@ impl FormGroupsApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -98,6 +100,7 @@ impl FormGroupsApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -123,6 +126,7 @@ impl FormGroupsApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),

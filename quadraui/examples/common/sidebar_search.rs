@@ -14,7 +14,7 @@
 //! - Tab cycles sections
 //! - q / Esc to quit
 
-use quadraui::primitives::form::{FieldKind, FormField, ToggleGroupItem};
+use quadraui::primitives::form::{FieldKind, FormField, ToggleGroupItem, ValidationState};
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Form, FormEvent, Key, NamedKey, NavigationMode, Reaction,
     Rect, SectionKind, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
@@ -29,6 +29,9 @@ pub struct SidebarSearchApp {
     regex: bool,
     whole_word: bool,
     query: String,
+    password: String,
+    scope_idx: usize,
+    focused_field: Option<String>,
     expanded: Vec<bool>,
     last_event: String,
 }
@@ -49,6 +52,9 @@ impl SidebarSearchApp {
             regex: false,
             whole_word: false,
             query: String::new(),
+            password: String::new(),
+            scope_idx: 0,
+            focused_field: Some("query".into()),
             expanded,
             last_event: "Click toggles, headers, or match rows".into(),
         };
@@ -72,6 +78,11 @@ impl SidebarSearchApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: if self.query.is_empty() {
+                        Some(ValidationState::Error("Query required".into()))
+                    } else {
+                        None
+                    },
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -97,9 +108,41 @@ impl SidebarSearchApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("scope"),
+                    label: StyledText::plain("Scope"),
+                    kind: FieldKind::SegmentedControl {
+                        options: vec!["Workspace".into(), "File".into(), "Selection".into()],
+                        selected_idx: self.scope_idx,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("password"),
+                    label: StyledText::plain("Token"),
+                    kind: FieldKind::PasswordInput {
+                        value: self.password.clone(),
+                        placeholder: "API key...".into(),
+                        cursor: Some(self.password.len()),
+                        mask_char: '•',
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: if self.password.len() > 0 && self.password.len() < 4 {
+                        Some(ValidationState::Warning("Token too short".into()))
+                    } else {
+                        None
+                    },
                 },
             ],
-            focused_field: Some(WidgetId::new("query")),
+            focused_field: self
+                .focused_field
+                .as_ref()
+                .map(|f| WidgetId::new(f.clone())),
             scroll_offset: 0,
             has_focus: self.sidebar.active_section() == Some(0),
         };
@@ -182,11 +225,13 @@ impl SidebarSearchApp {
     }
 
     fn build_status_bar(&self) -> StatusBar {
+        let scope = ["Workspace", "File", "Selection"][self.scope_idx.min(2)];
         let flags = format!(
-            "Aa:{} .*:{} W:{}",
+            "Aa:{} .*:{} W:{} scope:{}",
             if self.case_sensitive { "on" } else { "off" },
             if self.regex { "on" } else { "off" },
             if self.whole_word { "on" } else { "off" },
+            scope,
         );
         StatusBar {
             id: WidgetId::new("status"),
@@ -239,7 +284,15 @@ impl AppLogic for SidebarSearchApp {
                         }
                         self.last_event = format!("ToggleChanged {name}={value}");
                     }
+                    FormEvent::SegmentedControlChanged { id, selected_idx } => {
+                        if id.as_str() == "scope" {
+                            self.scope_idx = *selected_idx;
+                        }
+                        self.last_event =
+                            format!("SegmentedControl {}={selected_idx}", id.as_str());
+                    }
                     FormEvent::FocusChanged { id } => {
+                        self.focused_field = Some(id.as_str().to_string());
                         self.last_event = format!("FocusChanged {}", id.as_str());
                     }
                     FormEvent::ButtonClicked { id } => {
@@ -281,11 +334,56 @@ impl AppLogic for SidebarSearchApp {
             | SidebarEvent::Consumed
             | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
             SidebarEvent::Ignored => match event {
-                UiEvent::KeyPressed {
-                    key: Key::Char('q'),
-                    ..
-                }
+                UiEvent::CharTyped(ch)
                 | UiEvent::KeyPressed {
+                    key: Key::Char(ch), ..
+                } => {
+                    if self.sidebar.active_section() == Some(0) {
+                        match self.focused_field.as_deref() {
+                            Some("query") => {
+                                if ch == 'q' || !ch.is_control() {
+                                    self.query.push(ch);
+                                    self.update_form();
+                                    return Reaction::Redraw;
+                                }
+                            }
+                            Some("password") => {
+                                if !ch.is_control() {
+                                    self.password.push(ch);
+                                    self.update_form();
+                                    return Reaction::Redraw;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if ch == 'q' {
+                        Reaction::Exit
+                    } else {
+                        Reaction::Continue
+                    }
+                }
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Backspace),
+                    ..
+                } => {
+                    if self.sidebar.active_section() == Some(0) {
+                        match self.focused_field.as_deref() {
+                            Some("query") => {
+                                self.query.pop();
+                            }
+                            Some("password") => {
+                                self.password.pop();
+                            }
+                            _ => return Reaction::Continue,
+                        }
+                        self.update_form();
+                        Reaction::Redraw
+                    } else {
+                        Reaction::Continue
+                    }
+                }
+                UiEvent::KeyPressed {
                     key: Key::Named(NamedKey::Escape),
                     ..
                 } => Reaction::Exit,

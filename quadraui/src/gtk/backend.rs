@@ -923,6 +923,30 @@ impl Backend for GtkBackend {
                         row_h, start_x, gap, items,
                     )
                 }
+                crate::primitives::form::FieldKind::SegmentedControl { options, .. } => {
+                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
+                    let start_x = 6.0 + label_w + 12.0;
+                    let items = options
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, opt)| {
+                            let bracketed = format!("[{opt}]");
+                            crate::primitives::form::FormItemMeasure {
+                                id: crate::WidgetId::new(format!(
+                                    "{}__seg_{idx}",
+                                    field.id.as_str()
+                                )),
+                                width: self.pango_str_width(&pango_layout, &bracketed, char_w),
+                            }
+                        })
+                        .collect();
+                    crate::primitives::form::FormFieldMeasure::with_items(
+                        row_h, start_x, 0.0, items,
+                    )
+                }
+                crate::primitives::form::FieldKind::TextArea { visible_rows, .. } => {
+                    crate::primitives::form::FormFieldMeasure::new(row_h * *visible_rows as f32)
+                }
                 _ => crate::primitives::form::FormFieldMeasure::new(row_h),
             }
         })

@@ -153,7 +153,7 @@ pub use primitives::find_replace::{
 };
 pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
-    FormItemMeasure, FormLayout, ToggleGroupItem, VisibleFormField,
+    FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,
 };
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
@@ -334,6 +334,7 @@ mod tests {
                     kind: FieldKind::Label,
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -341,6 +342,7 @@ mod tests {
                     kind: FieldKind::Toggle { value: true },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -353,6 +355,7 @@ mod tests {
                     },
                     hint: StyledText::plain("Number of spaces per tab"),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -360,6 +363,7 @@ mod tests {
                     kind: FieldKind::Button,
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
@@ -1573,6 +1577,7 @@ mod tests {
             },
             hint: StyledText::plain("Editor font size in px"),
             disabled: false,
+            validation: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1589,6 +1594,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1610,6 +1616,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1653,6 +1660,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1680,6 +1688,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2672,6 +2681,7 @@ mod tests {
             kind,
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         }
     }
 
@@ -3989,6 +3999,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
