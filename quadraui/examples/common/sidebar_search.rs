@@ -334,15 +334,31 @@ impl AppLogic for SidebarSearchApp {
             | SidebarEvent::Consumed
             | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
             SidebarEvent::Ignored => match event {
-                UiEvent::CharTyped(ch) => {
+                UiEvent::CharTyped(ch)
+                | UiEvent::KeyPressed {
+                    key: Key::Char(ch), ..
+                } => {
                     if self.sidebar.active_section() == Some(0) {
                         match self.focused_field.as_deref() {
-                            Some("query") => self.query.push(ch),
-                            Some("password") => self.password.push(ch),
-                            _ => return Reaction::Continue,
+                            Some("query") => {
+                                if ch == 'q' || !ch.is_control() {
+                                    self.query.push(ch);
+                                    self.update_form();
+                                    return Reaction::Redraw;
+                                }
+                            }
+                            Some("password") => {
+                                if !ch.is_control() {
+                                    self.password.push(ch);
+                                    self.update_form();
+                                    return Reaction::Redraw;
+                                }
+                            }
+                            _ => {}
                         }
-                        self.update_form();
-                        Reaction::Redraw
+                    }
+                    if ch == 'q' {
+                        Reaction::Exit
                     } else {
                         Reaction::Continue
                     }
@@ -365,18 +381,6 @@ impl AppLogic for SidebarSearchApp {
                         Reaction::Redraw
                     } else {
                         Reaction::Continue
-                    }
-                }
-                UiEvent::KeyPressed {
-                    key: Key::Char('q'),
-                    ..
-                } => {
-                    if self.focused_field.as_deref() == Some("query")
-                        || self.focused_field.as_deref() == Some("password")
-                    {
-                        Reaction::Continue
-                    } else {
-                        Reaction::Exit
                     }
                 }
                 UiEvent::KeyPressed {
