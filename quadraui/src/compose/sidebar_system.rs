@@ -27,7 +27,7 @@ use super::focus_group::FocusGroup;
 use super::form_controller::FormController;
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
-use crate::primitives::form::{FieldKind, Form, FormEvent};
+use crate::primitives::form::{FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure};
 use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
@@ -923,8 +923,10 @@ impl SidebarSystem {
                         }
                     }
                     SectionBody::Form(f) => {
-                        let form_layout = f.layout(body_b.width, body_b.height, |_| {
-                            crate::primitives::form::FormFieldMeasure::new((lh * 1.4).round())
+                        let row_h = (lh * 1.4).round();
+                        let char_w = lh * 0.6;
+                        let form_layout = f.layout(body_b.width, body_b.height, |i| {
+                            form_field_measure(&f.fields[i], row_h, char_w)
                         });
                         match form_layout.hit_test(x - body_b.x, y - body_b.y) {
                             crate::primitives::form::FormHit::Field(id) => {
@@ -1194,6 +1196,48 @@ impl SidebarSystem {
             tc.set_selected_path(Some(path));
             tc.set_scroll_offset(0);
         }
+    }
+}
+
+fn form_field_measure(
+    field: &crate::primitives::form::FormField,
+    row_h: f32,
+    char_w: f32,
+) -> FormFieldMeasure {
+    match &field.kind {
+        FieldKind::ToggleGroup { toggles } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = toggles
+                .iter()
+                .map(|t| FormItemMeasure {
+                    id: t.id.clone(),
+                    width: (t.label.chars().count() as f32 + 2.0) * char_w,
+                })
+                .collect();
+            FormFieldMeasure::with_items(row_h, start_x, char_w, items)
+        }
+        FieldKind::ButtonRow { buttons } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = buttons
+                .iter()
+                .map(|b| FormItemMeasure {
+                    id: b.id.clone(),
+                    width: (b.label.chars().count() as f32 + 2.0) * char_w,
+                })
+                .collect();
+            FormFieldMeasure::with_items(row_h, start_x, char_w, items)
+        }
+        _ => FormFieldMeasure::new(row_h),
     }
 }
 
@@ -1983,5 +2027,144 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── Form item-level click dispatch (#112) ──────────────────────────
+
+    #[test]
+    fn form_field_measure_populates_toggle_group_items() {
+        use crate::primitives::form::{FormField, ToggleGroupItem};
+        let field = FormField {
+            id: WidgetId::new("flags"),
+            label: StyledText::plain("Flags"),
+            kind: FieldKind::ToggleGroup {
+                toggles: vec![
+                    ToggleGroupItem {
+                        id: WidgetId::new("case"),
+                        label: "Aa".into(),
+                        value: false,
+                    },
+                    ToggleGroupItem {
+                        id: WidgetId::new("regex"),
+                        label: ".*".into(),
+                        value: false,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let m = form_field_measure(&field, 20.0, 10.0);
+        assert_eq!(m.item_measures.len(), 2);
+        assert_eq!(m.item_measures[0].id, WidgetId::new("case"));
+        assert_eq!(m.item_measures[1].id, WidgetId::new("regex"));
+        assert!(m.items_start_x > 0.0);
+    }
+
+    #[test]
+    fn form_field_measure_populates_button_row_items() {
+        use crate::primitives::form::{ButtonRowItem, FormField};
+        let field = FormField {
+            id: WidgetId::new("actions"),
+            label: StyledText::plain(""),
+            kind: FieldKind::ButtonRow {
+                buttons: vec![
+                    ButtonRowItem {
+                        id: WidgetId::new("replace"),
+                        label: "Replace".into(),
+                        disabled: false,
+                    },
+                    ButtonRowItem {
+                        id: WidgetId::new("replace-all"),
+                        label: "Replace All".into(),
+                        disabled: false,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+        };
+        let m = form_field_measure(&field, 20.0, 10.0);
+        assert_eq!(m.item_measures.len(), 2);
+        assert_eq!(m.item_measures[0].id, WidgetId::new("replace"));
+        assert_eq!(m.item_measures[1].id, WidgetId::new("replace-all"));
+    }
+
+    #[test]
+    fn form_layout_hit_test_returns_individual_toggle_id() {
+        use crate::primitives::form::{FormField, FormHit, ToggleGroupItem};
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("flags"),
+                label: StyledText::plain(""),
+                kind: FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("case"),
+                            label: "Aa".into(),
+                            value: false,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("regex"),
+                            label: ".*".into(),
+                            value: false,
+                        },
+                    ],
+                },
+                hint: StyledText::default(),
+                disabled: false,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let lh: f32 = 16.0;
+        let row_h = (lh * 1.4).round();
+        let char_w = lh * 0.6;
+        let layout = form.layout(200.0, 100.0, |i| {
+            form_field_measure(&form.fields[i], row_h, char_w)
+        });
+        let m = &layout.visible_fields[0];
+        assert!(
+            !m.item_bounds.is_empty(),
+            "item_bounds should be populated for ToggleGroup"
+        );
+        let (first_id, first_rect) = &m.item_bounds[0];
+        assert_eq!(first_id, &WidgetId::new("case"));
+        let hit = layout.hit_test(first_rect.x + 1.0, first_rect.y + 1.0);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("case")));
+    }
+
+    #[test]
+    fn form_click_event_dispatches_individual_toggle() {
+        use crate::primitives::form::{FormField, ToggleGroupItem};
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("flags"),
+                label: StyledText::plain(""),
+                kind: FieldKind::ToggleGroup {
+                    toggles: vec![ToggleGroupItem {
+                        id: WidgetId::new("case"),
+                        label: "Aa".into(),
+                        value: true,
+                    }],
+                },
+                hint: StyledText::default(),
+                disabled: false,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let ev = form_click_event(&form, &WidgetId::new("case"));
+        assert_eq!(
+            ev,
+            FormEvent::ToggleChanged {
+                id: WidgetId::new("case"),
+                value: false,
+            }
+        );
     }
 }
