@@ -31,6 +31,7 @@ pub struct SidebarSearchApp {
     query: String,
     password: String,
     scope_idx: usize,
+    focused_field: Option<String>,
     expanded: Vec<bool>,
     last_event: String,
 }
@@ -53,6 +54,7 @@ impl SidebarSearchApp {
             query: String::new(),
             password: String::new(),
             scope_idx: 0,
+            focused_field: Some("query".into()),
             expanded,
             last_event: "Click toggles, headers, or match rows".into(),
         };
@@ -137,7 +139,10 @@ impl SidebarSearchApp {
                     },
                 },
             ],
-            focused_field: Some(WidgetId::new("query")),
+            focused_field: self
+                .focused_field
+                .as_ref()
+                .map(|f| WidgetId::new(f.clone())),
             scroll_offset: 0,
             has_focus: self.sidebar.active_section() == Some(0),
         };
@@ -287,6 +292,7 @@ impl AppLogic for SidebarSearchApp {
                             format!("SegmentedControl {}={selected_idx}", id.as_str());
                     }
                     FormEvent::FocusChanged { id } => {
+                        self.focused_field = Some(id.as_str().to_string());
                         self.last_event = format!("FocusChanged {}", id.as_str());
                     }
                     FormEvent::ButtonClicked { id } => {
@@ -328,11 +334,52 @@ impl AppLogic for SidebarSearchApp {
             | SidebarEvent::Consumed
             | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
             SidebarEvent::Ignored => match event {
+                UiEvent::CharTyped(ch) => {
+                    if self.sidebar.active_section() == Some(0) {
+                        match self.focused_field.as_deref() {
+                            Some("query") => self.query.push(ch),
+                            Some("password") => self.password.push(ch),
+                            _ => return Reaction::Continue,
+                        }
+                        self.update_form();
+                        Reaction::Redraw
+                    } else {
+                        Reaction::Continue
+                    }
+                }
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Backspace),
+                    ..
+                } => {
+                    if self.sidebar.active_section() == Some(0) {
+                        match self.focused_field.as_deref() {
+                            Some("query") => {
+                                self.query.pop();
+                            }
+                            Some("password") => {
+                                self.password.pop();
+                            }
+                            _ => return Reaction::Continue,
+                        }
+                        self.update_form();
+                        Reaction::Redraw
+                    } else {
+                        Reaction::Continue
+                    }
+                }
                 UiEvent::KeyPressed {
                     key: Key::Char('q'),
                     ..
+                } => {
+                    if self.focused_field.as_deref() == Some("query")
+                        || self.focused_field.as_deref() == Some("password")
+                    {
+                        Reaction::Continue
+                    } else {
+                        Reaction::Exit
+                    }
                 }
-                | UiEvent::KeyPressed {
+                UiEvent::KeyPressed {
                     key: Key::Named(NamedKey::Escape),
                     ..
                 } => Reaction::Exit,
