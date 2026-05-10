@@ -1914,4 +1914,74 @@ mod tests {
             }
         );
     }
+
+    // ── Header row click precision (#110) ──────────────────────────────
+
+    #[test]
+    fn header_row_bottom_pixel_hits_header_not_child() {
+        let lh: f32 = 16.0;
+        let header_h = (lh * 1.2).round(); // 19.0
+
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![
+                TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("src/"),
+                    badge: None,
+                    is_expanded: Some(true),
+                    decoration: Decoration::Header,
+                    edit: None,
+                },
+                TreeRow {
+                    path: vec![0, 0],
+                    indent: 1,
+                    icon: None,
+                    text: StyledText::plain("main.rs"),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Decoration::Normal,
+                    edit: None,
+                },
+            ],
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: true,
+        };
+
+        let body_b = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
+        let layout = ss.compute_tree_layout(body_b, &tree, lh);
+
+        // Header row spans [0, header_h). Click at header_h - 0.5 (bottom pixel)
+        // should still land on the header (row 0), not the child (row 1).
+        let bottom_of_header = header_h - 0.5;
+        match layout.hit_test(5.0, bottom_of_header) {
+            TreeViewHit::Row(idx) => assert_eq!(
+                idx, 0,
+                "click at y={bottom_of_header} (bottom of header row) hit row {idx}, expected 0"
+            ),
+            other => panic!(
+                "click at y={bottom_of_header} returned {:?}, expected Row(0)",
+                other
+            ),
+        }
+
+        // First pixel of child row should hit row 1.
+        let top_of_child = header_h + 0.5;
+        match layout.hit_test(5.0, top_of_child) {
+            TreeViewHit::Row(idx) => assert_eq!(
+                idx, 1,
+                "click at y={top_of_child} (top of child row) hit row {idx}, expected 1"
+            ),
+            other => panic!(
+                "click at y={top_of_child} returned {:?}, expected Row(1)",
+                other
+            ),
+        }
+    }
 }
