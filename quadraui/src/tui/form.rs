@@ -1126,4 +1126,222 @@ mod tests {
         let bracket_fg = buf[(all_col, 0u16)].fg;
         assert_eq!(bracket_fg, ratatui::style::Color::Rgb(80, 80, 80));
     }
+
+    // ── PasswordInput round-trip ──────────────────────────────────────
+
+    #[test]
+    fn password_input_paints_mask_chars() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("pw"),
+                label: label("Token"),
+                kind: FieldKind::PasswordInput {
+                    value: "secret".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    mask_char: '•',
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.contains("••••••"),
+            "password should show mask chars, got: {row:?}"
+        );
+        assert!(
+            !row.contains("secret"),
+            "password should NOT show plaintext, got: {row:?}"
+        );
+    }
+
+    #[test]
+    fn password_input_shows_placeholder_when_empty() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("pw"),
+                label: label(""),
+                kind: FieldKind::PasswordInput {
+                    value: String::new(),
+                    placeholder: "Enter key".into(),
+                    cursor: None,
+                    mask_char: '•',
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.contains("Enter key"),
+            "empty password should show placeholder, got: {row:?}"
+        );
+    }
+
+    // ── SegmentedControl round-trip ───────────────────────────────────
+
+    #[test]
+    fn segmented_control_paints_all_options() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("scope"),
+                label: label(""),
+                kind: FieldKind::SegmentedControl {
+                    options: vec!["Ws".into(), "File".into(), "Sel".into()],
+                    selected_idx: 1,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(row.contains("Ws"), "should paint 'Ws', got: {row:?}");
+        assert!(row.contains("File"), "should paint 'File', got: {row:?}");
+        assert!(row.contains("Sel"), "should paint 'Sel', got: {row:?}");
+    }
+
+    #[test]
+    fn segmented_control_hit_test_returns_item_id() {
+        use crate::primitives::form::FormHit;
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("scope"),
+                label: label(""),
+                kind: FieldKind::SegmentedControl {
+                    options: vec!["Ws".into(), "File".into()],
+                    selected_idx: 0,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
+        let vis = &layout.visible_fields[0];
+        assert!(
+            vis.item_bounds.len() >= 2,
+            "SegmentedControl should have per-item bounds"
+        );
+        let (id0, rect0) = &vis.item_bounds[0];
+        assert_eq!(id0, &WidgetId::new("scope__seg_0"));
+        let hit = layout.hit_test(rect0.x + 1.0, rect0.y + 0.5);
+        assert_eq!(hit, FormHit::Field(WidgetId::new("scope__seg_0")));
+    }
+
+    // ── TextArea round-trip ──────────────────────────────────────────
+
+    #[test]
+    fn textarea_paints_multi_row() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 6));
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("desc"),
+                label: label("Desc"),
+                kind: FieldKind::TextArea {
+                    value: "line one content here".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    visible_rows: 3,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
+        let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
+        assert_eq!(
+            layout.visible_fields[0].bounds.height, 3.0,
+            "TextArea with visible_rows=3 should be 3 cells tall"
+        );
+    }
+
+    // ── ValidationState round-trip ───────────────────────────────────
+
+    #[test]
+    fn validation_error_paints_indicator() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("name"),
+                label: label("Name"),
+                kind: FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: Some(ValidationState::Error("Required".into())),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        let col0 = cell_char(&buf, 0, 0);
+        assert_eq!(col0, '!', "error validation should paint '!' at col 0");
+    }
+
+    #[test]
+    fn validation_warning_paints_indicator() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("name"),
+                label: label("Name"),
+                kind: FieldKind::TextInput {
+                    value: "ab".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: Some(ValidationState::Warning("Too short".into())),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        let col0 = cell_char(&buf, 0, 0);
+        assert_eq!(
+            col0, '\u{26A0}',
+            "warning validation should paint warning sign at col 0"
+        );
+    }
 }
