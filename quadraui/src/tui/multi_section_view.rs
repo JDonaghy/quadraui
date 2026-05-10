@@ -2235,6 +2235,7 @@ mod tests {
                 },
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             },
             FormField {
                 id: WidgetId::new("case"),
@@ -2242,6 +2243,7 @@ mod tests {
                 kind: FieldKind::Toggle { value: true },
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             },
         ];
 
@@ -2350,6 +2352,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);
@@ -2406,6 +2409,7 @@ mod tests {
             kind: FieldKind::Toggle { value: true },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);

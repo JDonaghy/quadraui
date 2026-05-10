@@ -1275,6 +1275,26 @@ fn form_field_measure(
                 .collect();
             FormFieldMeasure::with_items(row_h, start_x, char_w, items)
         }
+        FieldKind::SegmentedControl { options, .. } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = options
+                .iter()
+                .enumerate()
+                .map(|(idx, opt)| FormItemMeasure {
+                    id: WidgetId::new(format!("{}__seg_{idx}", field.id.as_str())),
+                    width: (opt.chars().count() as f32 + 2.0) * char_w,
+                })
+                .collect();
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        FieldKind::TextArea { visible_rows, .. } => {
+            FormFieldMeasure::new(row_h * *visible_rows as f32)
+        }
         _ => FormFieldMeasure::new(row_h),
     }
 }
@@ -1308,6 +1328,17 @@ fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
                 return FormEvent::ButtonClicked {
                     id: clicked_id.clone(),
                 };
+            }
+        }
+        if let FieldKind::SegmentedControl { .. } = &field.kind {
+            let prefix = format!("{}__seg_", field.id.as_str());
+            if clicked_id.as_str().starts_with(&prefix) {
+                if let Ok(idx) = clicked_id.as_str()[prefix.len()..].parse::<usize>() {
+                    return FormEvent::SegmentedControlChanged {
+                        id: field.id.clone(),
+                        selected_idx: idx,
+                    };
+                }
             }
         }
     }
@@ -1746,6 +1777,7 @@ mod tests {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("case-sensitive"),
@@ -1753,6 +1785,7 @@ mod tests {
                     kind: FieldKind::Toggle { value: false },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
             ],
             focused_field: None,
@@ -1901,6 +1934,7 @@ mod tests {
                 kind: FieldKind::Button,
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1939,6 +1973,7 @@ mod tests {
                 },
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1971,6 +2006,7 @@ mod tests {
                 },
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2091,6 +2127,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2121,6 +2158,7 @@ mod tests {
             },
             hint: StyledText::default(),
             disabled: false,
+            validation: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2152,6 +2190,7 @@ mod tests {
                 },
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2191,6 +2230,7 @@ mod tests {
                 },
                 hint: StyledText::default(),
                 disabled: false,
+                validation: None,
             }],
             focused_field: None,
             scroll_offset: 0,

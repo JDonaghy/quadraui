@@ -72,6 +72,7 @@ impl SidebarSearchApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -97,6 +98,7 @@ impl SidebarSearchApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
+                    validation: None,
                 },
             ],
             focused_field: Some(WidgetId::new("query")),

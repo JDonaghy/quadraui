@@ -63,6 +63,13 @@ pub struct Form {
     pub has_focus: bool,
 }
 
+/// Validation state rendered as a colored indicator + message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ValidationState {
+    Error(String),
+    Warning(String),
+}
+
 /// One row in a `Form`: a label + an input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FormField {
@@ -78,6 +85,10 @@ pub struct FormField {
     /// When true, the field is rendered dimmed and will not emit events.
     #[serde(default)]
     pub disabled: bool,
+    /// When set, backends render a red/yellow indicator + message.
+    /// Overrides `hint` visually when present.
+    #[serde(default)]
+    pub validation: Option<ValidationState>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -153,6 +164,37 @@ pub enum FieldKind {
         options: Vec<StyledText>,
         selected_idx: usize,
     },
+    /// Multi-line text editing area. `visible_rows` controls the height
+    /// hint (number of rows rendered). Emits `FormEvent::TextInputChanged`
+    /// and `TextInputCommitted` like `TextInput`.
+    TextArea {
+        value: String,
+        #[serde(default)]
+        placeholder: String,
+        #[serde(default)]
+        cursor: Option<usize>,
+        #[serde(default = "textarea_default_rows")]
+        visible_rows: usize,
+    },
+    /// Masked single-line text input. Characters display as `mask_char`
+    /// (default `'•'`). Value is stored in plaintext; only rendering is
+    /// masked. Emits the same events as `TextInput`.
+    PasswordInput {
+        value: String,
+        #[serde(default)]
+        placeholder: String,
+        #[serde(default)]
+        cursor: Option<usize>,
+        #[serde(default = "password_default_mask")]
+        mask_char: char,
+    },
+    /// Horizontal row of N options where exactly one is selected.
+    /// All options are visible (unlike Dropdown). Click selects; emits
+    /// `FormEvent::SegmentedControlChanged`.
+    SegmentedControl {
+        options: Vec<String>,
+        selected_idx: usize,
+    },
     /// Horizontal row of named boolean toggles. Each toggle has its own
     /// `WidgetId`, label, and value. Click toggles the value; emits
     /// `FormEvent::ToggleChanged { id, value }` with the individual
@@ -189,6 +231,14 @@ pub struct ButtonRowItem {
 
 fn slider_default_step() -> f32 {
     1.0
+}
+
+fn textarea_default_rows() -> usize {
+    3
+}
+
+fn password_default_mask() -> char {
+    '•'
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -388,6 +438,8 @@ pub enum FormEvent {
     ColorChanged { id: WidgetId, value: crate::Color },
     /// A `Dropdown` field committed a new selection.
     DropdownChanged { id: WidgetId, selected_idx: usize },
+    /// A `SegmentedControl` field committed a new selection.
+    SegmentedControlChanged { id: WidgetId, selected_idx: usize },
     /// Keyboard focus moved to a different field.
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.
