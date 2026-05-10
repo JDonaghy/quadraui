@@ -388,7 +388,7 @@ impl SidebarSystem {
     ) -> SidebarEvent {
         let lh = backend.line_height();
         let metrics = backend.msv_metrics();
-        self.handle_inner(event, rect, lh, &metrics)
+        self.handle_inner(event, rect, lh, &metrics, Some(&*backend))
     }
 
     /// Backend-free event handler. Requires [`Self::set_backend_info`]
@@ -400,7 +400,7 @@ impl SidebarSystem {
         };
         let lh = info.line_height;
         let metrics = info.metrics;
-        self.handle_inner(event, rect, lh, &metrics)
+        self.handle_inner(event, rect, lh, &metrics, None)
     }
 
     fn handle_inner(
@@ -409,6 +409,7 @@ impl SidebarSystem {
         rect: Rect,
         lh: f32,
         metrics: &LayoutMetrics,
+        backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         self.cached_viewport_rows = None;
 
@@ -427,7 +428,7 @@ impl SidebarSystem {
                 button: MouseButton::Left,
                 position,
                 ..
-            } => self.click(rect, position.x, position.y, lh, metrics),
+            } => self.click(rect, position.x, position.y, lh, metrics, backend),
 
             // ── Right-click ──────────────────────────────────────
             UiEvent::MouseDown {
@@ -887,6 +888,7 @@ impl SidebarSystem {
         y: f32,
         lh: f32,
         metrics: &LayoutMetrics,
+        backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let (view, _) = self.build_view();
@@ -923,11 +925,15 @@ impl SidebarSystem {
                         }
                     }
                     SectionBody::Form(f) => {
-                        let row_h = (lh * 1.4).round();
-                        let char_w = lh * 0.6;
-                        let form_layout = f.layout(body_b.width, body_b.height, |i| {
-                            form_field_measure(&f.fields[i], row_h, char_w)
-                        });
+                        let form_layout = if let Some(be) = backend {
+                            be.form_layout(body_b, f)
+                        } else {
+                            let row_h = (lh * 1.4).round();
+                            let char_w = lh * 0.6;
+                            f.layout(body_b.width, body_b.height, |i| {
+                                form_field_measure(&f.fields[i], row_h, char_w)
+                            })
+                        };
                         match form_layout.hit_test(x - body_b.x, y - body_b.y) {
                             crate::primitives::form::FormHit::Field(id) => {
                                 let event = form_click_event(f, &id);
