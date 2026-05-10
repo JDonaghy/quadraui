@@ -66,14 +66,8 @@ pub fn gtk_msv_layout(
 }
 
 fn body_measure(body: &SectionBody, aux: &Option<SectionAux>, line_height: f64) -> SectionMeasure {
-    let aux_size = if aux.is_some() {
-        // Inline inputs and toolbars match leaf-row height in GTK
-        // conventions.
-        (line_height * 1.4) as f32
-    } else {
-        0.0
-    };
-    let item_h = (line_height * 1.4) as f32;
+    let item_h = (line_height * 1.4).round() as f32;
+    let aux_size = if aux.is_some() { item_h } else { 0.0 };
     let content_size = match body {
         SectionBody::Tree(t) => {
             let header_h = (line_height * 1.2).round() as f32;
@@ -982,5 +976,148 @@ mod tests {
                 painted.0, painted.1, s.section_idx, y_top, y_bot, hit_section
             );
         }
+    }
+
+    /// Tree body round-trip with mixed Decoration::Header and Normal
+    /// rows. Header rows are shorter (1.2× line_height) than normal
+    /// rows (1.4× line_height). Verifies that clicking in the bottom
+    /// pixel of a header row hit-tests to the header row, not the
+    /// child below it.
+    #[test]
+    fn gtk_header_decoration_row_boundary_round_trip() {
+        use crate::gtk::tree::gtk_tree_layout;
+        use crate::primitives::tree::TreeViewHit;
+
+        let rows = vec![
+            TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("src/main.rs"),
+                badge: None,
+                is_expanded: Some(true),
+                decoration: Decoration::Header,
+                edit: None,
+            },
+            TreeRow {
+                path: vec![0, 0],
+                indent: 1,
+                icon: None,
+                text: StyledText::plain("line 12: fn main()"),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+            TreeRow {
+                path: vec![0, 1],
+                indent: 1,
+                icon: None,
+                text: StyledText::plain("line 45: let config"),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+        ];
+
+        let tree = TreeView {
+            id: WidgetId::new("results"),
+            rows,
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: true,
+        };
+
+        let section = Section {
+            id: "results".into(),
+            header: SectionHeader {
+                title: StyledText::plain("RESULTS"),
+                show_chevron: false,
+                ..Default::default()
+            },
+            body: SectionBody::Tree(tree),
+            aux: None,
+            size: SectionSize::EqualShare,
+            collapsed: false,
+            min_size: None,
+            max_size: None,
+        };
+
+        let view = view_with(vec![section]);
+        let bounds = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let msv_layout = gtk_msv_layout(&view, bounds, LINE_HEIGHT);
+
+        let s = &msv_layout.sections[0];
+        let body_b = s.body_bounds;
+
+        let tree_ref = match &view.sections[0].body {
+            SectionBody::Tree(t) => t,
+            _ => panic!("expected tree body"),
+        };
+        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT);
+
+        let header_h = (LINE_HEIGHT * 1.2).round();
+        let item_h = (LINE_HEIGHT * 1.4).round();
+
+        // Row 0 (Header) should span [0, header_h).
+        // Row 1 (Normal) should span [header_h, header_h + item_h).
+        assert_eq!(tree_layout.visible_rows.len(), 3);
+
+        let r0 = &tree_layout.visible_rows[0];
+        let r1 = &tree_layout.visible_rows[1];
+        assert!(
+            (r0.bounds.height as f64 - header_h).abs() < 0.01,
+            "header row height {}, expected {}",
+            r0.bounds.height,
+            header_h
+        );
+        assert!(
+            (r1.bounds.y as f64 - header_h).abs() < 0.01,
+            "child row starts at {}, expected {}",
+            r1.bounds.y,
+            header_h
+        );
+
+        // Hit-test bottom pixel of header row → Row(0).
+        let bottom_of_header = header_h as f32 - 0.5;
+        match tree_layout.hit_test(5.0, bottom_of_header) {
+            TreeViewHit::Row(idx) => assert_eq!(
+                idx, 0,
+                "click at y={bottom_of_header} (bottom of header) hit row {idx}, expected 0"
+            ),
+            other => panic!(
+                "click at y={bottom_of_header} returned {:?}, expected Row(0)",
+                other
+            ),
+        }
+
+        // Hit-test top pixel of child row → Row(1).
+        let top_of_child = header_h as f32 + 0.5;
+        match tree_layout.hit_test(5.0, top_of_child) {
+            TreeViewHit::Row(idx) => assert_eq!(
+                idx, 1,
+                "click at y={top_of_child} (top of child) hit row {idx}, expected 1"
+            ),
+            other => panic!(
+                "click at y={top_of_child} returned {:?}, expected Row(1)",
+                other
+            ),
+        }
+
+        // Verify body_measure content_size matches the tree's total row heights.
+        let expected_content = header_h as f32 + 2.0 * item_h as f32;
+        let actual_content =
+            body_measure(&view.sections[0].body, &view.sections[0].aux, LINE_HEIGHT);
+        assert!(
+            (actual_content.content_size - expected_content).abs() < 0.01,
+            "body_measure content_size {}, expected {} (header_h={}, item_h={})",
+            actual_content.content_size,
+            expected_content,
+            header_h,
+            item_h
+        );
     }
 }
