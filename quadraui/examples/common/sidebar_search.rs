@@ -14,7 +14,7 @@
 //! - Tab cycles sections
 //! - q / Esc to quit
 
-use quadraui::primitives::form::{FieldKind, FormField, ToggleGroupItem};
+use quadraui::primitives::form::{FieldKind, FormField, ToggleGroupItem, ValidationState};
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Form, FormEvent, Key, NamedKey, NavigationMode, Reaction,
     Rect, SectionKind, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
@@ -29,6 +29,8 @@ pub struct SidebarSearchApp {
     regex: bool,
     whole_word: bool,
     query: String,
+    password: String,
+    scope_idx: usize,
     expanded: Vec<bool>,
     last_event: String,
 }
@@ -49,6 +51,8 @@ impl SidebarSearchApp {
             regex: false,
             whole_word: false,
             query: String::new(),
+            password: String::new(),
+            scope_idx: 0,
             expanded,
             last_event: "Click toggles, headers, or match rows".into(),
         };
@@ -72,7 +76,11 @@ impl SidebarSearchApp {
                     },
                     hint: StyledText::default(),
                     disabled: false,
-                    validation: None,
+                    validation: if self.query.is_empty() {
+                        Some(ValidationState::Error("Query required".into()))
+                    } else {
+                        None
+                    },
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -99,6 +107,34 @@ impl SidebarSearchApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("scope"),
+                    label: StyledText::plain("Scope"),
+                    kind: FieldKind::SegmentedControl {
+                        options: vec!["Workspace".into(), "File".into(), "Selection".into()],
+                        selected_idx: self.scope_idx,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("password"),
+                    label: StyledText::plain("Token"),
+                    kind: FieldKind::PasswordInput {
+                        value: self.password.clone(),
+                        placeholder: "API key...".into(),
+                        cursor: Some(self.password.len()),
+                        mask_char: '•',
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: if self.password.len() > 0 && self.password.len() < 4 {
+                        Some(ValidationState::Warning("Token too short".into()))
+                    } else {
+                        None
+                    },
                 },
             ],
             focused_field: Some(WidgetId::new("query")),
@@ -184,11 +220,13 @@ impl SidebarSearchApp {
     }
 
     fn build_status_bar(&self) -> StatusBar {
+        let scope = ["Workspace", "File", "Selection"][self.scope_idx.min(2)];
         let flags = format!(
-            "Aa:{} .*:{} W:{}",
+            "Aa:{} .*:{} W:{} scope:{}",
             if self.case_sensitive { "on" } else { "off" },
             if self.regex { "on" } else { "off" },
             if self.whole_word { "on" } else { "off" },
+            scope,
         );
         StatusBar {
             id: WidgetId::new("status"),
@@ -240,6 +278,13 @@ impl AppLogic for SidebarSearchApp {
                             _ => {}
                         }
                         self.last_event = format!("ToggleChanged {name}={value}");
+                    }
+                    FormEvent::SegmentedControlChanged { id, selected_idx } => {
+                        if id.as_str() == "scope" {
+                            self.scope_idx = *selected_idx;
+                        }
+                        self.last_event =
+                            format!("SegmentedControl {}={selected_idx}", id.as_str());
                     }
                     FormEvent::FocusChanged { id } => {
                         self.last_event = format!("FocusChanged {}", id.as_str());
