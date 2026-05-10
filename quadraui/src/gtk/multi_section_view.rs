@@ -76,16 +76,11 @@ fn body_measure(body: &SectionBody, aux: &Option<SectionAux>, line_height: f64) 
     let item_h = (line_height * 1.4) as f32;
     let content_size = match body {
         SectionBody::Tree(t) => {
-            // Mirror the GTK tree row convention: headers 1.0×,
-            // others 1.4×.
+            let header_h = (line_height * 1.2).round() as f32;
             let mut total = 0.0_f32;
             for row in &t.rows {
                 let is_header = matches!(row.decoration, crate::types::Decoration::Header);
-                total += if is_header {
-                    line_height as f32
-                } else {
-                    item_h
-                };
+                total += if is_header { header_h } else { item_h };
             }
             total
         }
