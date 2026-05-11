@@ -201,6 +201,7 @@ pub use primitives::tab_bar::{
 };
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,
+    TerminalSplitHit, TerminalSplitLayout,
 };
 pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,

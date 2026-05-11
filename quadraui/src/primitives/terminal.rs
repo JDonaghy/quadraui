@@ -202,6 +202,68 @@ impl Terminal {
     }
 }
 
+// ── Split-pane layout ───────────────────────────────────────────────────────
+
+/// Layout geometry for a side-by-side terminal split. The divider
+/// occupies one `cell_width` column between the two panes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalSplitLayout {
+    /// Left pane region.
+    pub left: Rect,
+    /// Right pane region.
+    pub right: Rect,
+    /// X-coordinate of the divider column's left edge.
+    pub divider_x: f32,
+    /// Width of the divider column (one `cell_width`).
+    pub divider_width: f32,
+}
+
+impl TerminalSplitLayout {
+    /// Compute a two-pane split layout from a containing area, left
+    /// pane column count, and cell width. The divider is one cell wide.
+    ///
+    /// TUI callers pass `cell_width = 1.0`; GTK callers pass the font's
+    /// advance width.
+    pub fn new(area: Rect, left_cols: usize, cell_width: f32) -> Self {
+        let left_w = (left_cols as f32 * cell_width).min(area.width);
+        let divider_x = area.x + left_w;
+        let divider_w = cell_width.min((area.width - left_w).max(0.0));
+        let right_x = divider_x + divider_w;
+        let right_w = (area.width - left_w - divider_w).max(0.0);
+        Self {
+            left: Rect::new(area.x, area.y, left_w, area.height),
+            right: Rect::new(right_x, area.y, right_w, area.height),
+            divider_x,
+            divider_width: divider_w,
+        }
+    }
+
+    /// Which pane does point `(x, y)` land in?
+    pub fn hit_test(&self, x: f32, y: f32) -> TerminalSplitHit {
+        if y < self.left.y || y >= self.left.y + self.left.height {
+            return TerminalSplitHit::Outside;
+        }
+        if x >= self.left.x && x < self.left.x + self.left.width {
+            TerminalSplitHit::Left
+        } else if x >= self.divider_x && x < self.divider_x + self.divider_width {
+            TerminalSplitHit::Divider
+        } else if x >= self.right.x && x < self.right.x + self.right.width {
+            TerminalSplitHit::Right
+        } else {
+            TerminalSplitHit::Outside
+        }
+    }
+}
+
+/// Result of [`TerminalSplitLayout::hit_test`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSplitHit {
+    Left,
+    Divider,
+    Right,
+    Outside,
+}
+
 /// Events a `Terminal` emits back to the app. Currently unused by vimcode
 /// (the terminal panel handles its own input directly via the engine's
 /// `terminal_*` methods), but defined for plugin invariants §10 — a
@@ -220,4 +282,59 @@ pub enum TerminalEvent {
     /// Mouse wheel scroll: positive = scroll content downward (toward
     /// live), negative = scroll backward into history.
     Scroll { delta: i32 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_layout_basic() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let sl = TerminalSplitLayout::new(area, 40, 1.0);
+        assert_eq!(sl.left, Rect::new(0.0, 0.0, 40.0, 24.0));
+        assert_eq!(sl.divider_x, 40.0);
+        assert_eq!(sl.divider_width, 1.0);
+        assert_eq!(sl.right, Rect::new(41.0, 0.0, 39.0, 24.0));
+    }
+
+    #[test]
+    fn split_layout_pixel_units() {
+        let area = Rect::new(10.0, 5.0, 800.0, 600.0);
+        let sl = TerminalSplitLayout::new(area, 40, 8.0);
+        assert_eq!(sl.left, Rect::new(10.0, 5.0, 320.0, 600.0));
+        assert_eq!(sl.divider_x, 330.0);
+        assert_eq!(sl.divider_width, 8.0);
+        assert_eq!(sl.right, Rect::new(338.0, 5.0, 472.0, 600.0));
+    }
+
+    #[test]
+    fn split_layout_left_cols_exceed_area() {
+        let area = Rect::new(0.0, 0.0, 20.0, 10.0);
+        let sl = TerminalSplitLayout::new(area, 30, 1.0);
+        assert_eq!(sl.left.width, 20.0);
+        assert_eq!(sl.divider_width, 0.0);
+        assert_eq!(sl.right.width, 0.0);
+    }
+
+    #[test]
+    fn split_layout_zero_left_cols() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let sl = TerminalSplitLayout::new(area, 0, 1.0);
+        assert_eq!(sl.left.width, 0.0);
+        assert_eq!(sl.divider_x, 0.0);
+        assert_eq!(sl.divider_width, 1.0);
+        assert_eq!(sl.right.width, 79.0);
+    }
+
+    #[test]
+    fn split_hit_test() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let sl = TerminalSplitLayout::new(area, 40, 1.0);
+        assert_eq!(sl.hit_test(10.0, 5.0), TerminalSplitHit::Left);
+        assert_eq!(sl.hit_test(40.0, 5.0), TerminalSplitHit::Divider);
+        assert_eq!(sl.hit_test(50.0, 5.0), TerminalSplitHit::Right);
+        assert_eq!(sl.hit_test(50.0, 30.0), TerminalSplitHit::Outside);
+        assert_eq!(sl.hit_test(-1.0, 5.0), TerminalSplitHit::Outside);
+    }
 }
