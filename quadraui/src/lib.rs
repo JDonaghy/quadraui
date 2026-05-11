@@ -897,6 +897,8 @@ mod tests {
                 total_lines: 500,
                 visible_lines: 24,
                 scroll_offset: 100,
+                inverted: false,
+                width: None,
             }),
         };
         let json = serde_json::to_string(&term).unwrap();

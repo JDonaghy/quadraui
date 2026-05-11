@@ -22,7 +22,10 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
         return;
     }
 
-    let sb_cols: u16 = if term.scrollbar.is_some() { 1 } else { 0 };
+    let sb_cols: u16 = match &term.scrollbar {
+        Some(sb) => sb.width.unwrap_or(1),
+        None => 0,
+    };
     let cell_area_w = area.width.saturating_sub(sb_cols);
 
     for (row_idx, row) in term.cells.iter().enumerate() {
@@ -66,7 +69,7 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
         let sb = Scrollbar::vertical(
             term.id.clone(),
             track,
-            sb_state.scroll_offset as f32,
+            sb_state.effective_scroll_offset() as f32,
             sb_state.total_lines as f32,
             sb_state.visible_lines as f32,
             1.0,
@@ -95,6 +98,24 @@ fn resolve_cell_colors(
     }
 }
 
+/// Helper: find the top-most and bottom-most rows containing the thumb
+/// glyph (`█`) in the scrollbar column.
+#[cfg(test)]
+fn find_thumb_extent(buf: &Buffer, sb_col: u16, y0: u16, height: u16) -> Option<(u16, u16)> {
+    let mut first = None;
+    let mut last = None;
+    for dy in 0..height {
+        let y = y0 + dy;
+        if buf[(sb_col, y)].symbol() == "█" {
+            if first.is_none() {
+                first = Some(dy);
+            }
+            last = Some(dy);
+        }
+    }
+    first.zip(last)
+}
+
 /// Draw a vertical divider for a terminal split pane.
 /// Places `│` characters down the column at `x` using
 /// `theme.separator` colour.
@@ -108,5 +129,102 @@ pub fn draw_terminal_divider(buf: &mut Buffer, x: u16, y: u16, height: u16, them
             cell.set_char('│').set_fg(sep_fg).set_bg(sep_bg);
             cell.modifier = Modifier::empty();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::terminal::{TerminalCell, TerminalScrollbar};
+    use crate::types::Color;
+
+    fn blank_cell() -> TerminalCell {
+        TerminalCell {
+            ch: ' ',
+            fg: Color::rgb(200, 200, 200),
+            bg: Color::rgb(0, 0, 0),
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        }
+    }
+
+    fn make_terminal(rows: usize, cols: usize, sb: Option<TerminalScrollbar>) -> Terminal {
+        let row = vec![blank_cell(); cols];
+        Terminal {
+            id: "test-term".into(),
+            cells: vec![row; rows],
+            scrollbar: sb,
+        }
+    }
+
+    #[test]
+    fn inverted_offset_zero_thumb_at_bottom() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 20,
+            scroll_offset: 0,
+            inverted: true,
+            width: None,
+        };
+        let term = make_terminal(20, 39, Some(sb));
+        let area = Rect::new(0, 0, 40, 20);
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(area);
+        draw_terminal(&mut buf, area, &term, &theme);
+
+        let (top, bot) = find_thumb_extent(&buf, 39, 0, 20).expect("thumb should be painted");
+        // effective_scroll_offset = 480 → thumb near track bottom
+        assert!(
+            bot >= 18,
+            "inverted offset=0: thumb bottom ({bot}) should be at/near row 19"
+        );
+        assert!(
+            top > 0,
+            "inverted offset=0: thumb top ({top}) should NOT be at row 0"
+        );
+    }
+
+    #[test]
+    fn inverted_offset_max_thumb_at_top() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 20,
+            scroll_offset: 480,
+            inverted: true,
+            width: None,
+        };
+        let term = make_terminal(20, 39, Some(sb));
+        let area = Rect::new(0, 0, 40, 20);
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(area);
+        draw_terminal(&mut buf, area, &term, &theme);
+
+        let (top, _bot) = find_thumb_extent(&buf, 39, 0, 20).expect("thumb should be painted");
+        // effective_scroll_offset = 0 → thumb at track top
+        assert_eq!(top, 0, "inverted offset=max: thumb should start at row 0");
+    }
+
+    #[test]
+    fn non_inverted_offset_zero_thumb_at_top() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 20,
+            scroll_offset: 0,
+            inverted: false,
+            width: None,
+        };
+        let term = make_terminal(20, 39, Some(sb));
+        let area = Rect::new(0, 0, 40, 20);
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(area);
+        draw_terminal(&mut buf, area, &term, &theme);
+
+        let (top, _bot) = find_thumb_extent(&buf, 39, 0, 20).expect("thumb should be painted");
+        assert_eq!(top, 0, "non-inverted offset=0: thumb should start at row 0");
     }
 }

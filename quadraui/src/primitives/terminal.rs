@@ -59,6 +59,31 @@ pub struct TerminalScrollbar {
     pub total_lines: usize,
     pub visible_lines: usize,
     pub scroll_offset: usize,
+    /// When `true`, `scroll_offset = 0` means "at the bottom" (live
+    /// view) and increasing offset scrolls up into history. The
+    /// rasteriser flips the offset before constructing the visual
+    /// scrollbar so the thumb sits at the bottom when offset is 0.
+    #[serde(default)]
+    pub inverted: bool,
+    /// Scrollbar width in surface-native units (pixels for GTK, cells
+    /// for TUI). When `None`, the rasteriser picks a default (8px GTK,
+    /// 1 cell TUI).
+    #[serde(default)]
+    pub width: Option<u16>,
+}
+
+impl TerminalScrollbar {
+    /// Scroll offset suitable for `Scrollbar::vertical`. When
+    /// `inverted`, flips so offset 0 maps to the track bottom.
+    pub fn effective_scroll_offset(&self) -> usize {
+        if self.inverted {
+            self.total_lines
+                .saturating_sub(self.visible_lines)
+                .saturating_sub(self.scroll_offset)
+        } else {
+            self.scroll_offset
+        }
+    }
 }
 
 /// One styled cell in a `Terminal`. Carries the rendered character, RGB
@@ -351,5 +376,68 @@ mod tests {
         assert_eq!(sl.hit_test(50.0, 5.0), TerminalSplitHit::Right);
         assert_eq!(sl.hit_test(50.0, 30.0), TerminalSplitHit::Outside);
         assert_eq!(sl.hit_test(-1.0, 5.0), TerminalSplitHit::Outside);
+    }
+
+    #[test]
+    fn effective_scroll_offset_non_inverted() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 24,
+            scroll_offset: 100,
+            inverted: false,
+            width: None,
+        };
+        assert_eq!(sb.effective_scroll_offset(), 100);
+    }
+
+    #[test]
+    fn effective_scroll_offset_inverted_at_bottom() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 24,
+            scroll_offset: 0,
+            inverted: true,
+            width: None,
+        };
+        // offset 0 = live view → thumb at bottom → effective = max
+        assert_eq!(sb.effective_scroll_offset(), 476);
+    }
+
+    #[test]
+    fn effective_scroll_offset_inverted_at_top() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 24,
+            scroll_offset: 476,
+            inverted: true,
+            width: None,
+        };
+        // fully scrolled into history → thumb at top → effective = 0
+        assert_eq!(sb.effective_scroll_offset(), 0);
+    }
+
+    #[test]
+    fn effective_scroll_offset_inverted_midpoint() {
+        let sb = TerminalScrollbar {
+            total_lines: 500,
+            visible_lines: 24,
+            scroll_offset: 200,
+            inverted: true,
+            width: None,
+        };
+        assert_eq!(sb.effective_scroll_offset(), 276);
+    }
+
+    #[test]
+    fn effective_scroll_offset_inverted_no_overflow() {
+        let sb = TerminalScrollbar {
+            total_lines: 24,
+            visible_lines: 24,
+            scroll_offset: 0,
+            inverted: true,
+            width: None,
+        };
+        // total == visible → no scrollable range
+        assert_eq!(sb.effective_scroll_offset(), 0);
     }
 }
