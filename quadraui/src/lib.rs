@@ -205,7 +205,7 @@ pub use primitives::tab_bar::{
 };
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,
-    TerminalSplitHit, TerminalSplitLayout,
+    TerminalScrollbar, TerminalSplitHit, TerminalSplitLayout,
 };
 pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
@@ -869,10 +869,43 @@ mod tests {
                     is_find_active: false,
                 }],
             ],
+            scrollbar: None,
         };
         let json = serde_json::to_string(&term).unwrap();
         let back: Terminal = serde_json::from_str(&json).unwrap();
         assert_eq!(term, back);
+    }
+
+    #[test]
+    fn terminal_scrollbar_serde_round_trip() {
+        use primitives::terminal::{TerminalCell, TerminalScrollbar};
+        let term = Terminal {
+            id: WidgetId::new("t"),
+            cells: vec![vec![TerminalCell {
+                ch: 'x',
+                fg: Color::rgb(200, 200, 200),
+                bg: Color::rgb(20, 20, 20),
+                bold: false,
+                italic: false,
+                underline: false,
+                selected: false,
+                is_cursor: false,
+                is_find_match: false,
+                is_find_active: false,
+            }]],
+            scrollbar: Some(TerminalScrollbar {
+                total_lines: 500,
+                visible_lines: 24,
+                scroll_offset: 100,
+            }),
+        };
+        let json = serde_json::to_string(&term).unwrap();
+        let back: Terminal = serde_json::from_str(&json).unwrap();
+        assert_eq!(term, back);
+        let sb = back.scrollbar.unwrap();
+        assert_eq!(sb.total_lines, 500);
+        assert_eq!(sb.visible_lines, 24);
+        assert_eq!(sb.scroll_offset, 100);
     }
 
     #[test]
@@ -2524,6 +2557,7 @@ mod tests {
         Terminal {
             id: WidgetId::new("term"),
             cells: (0..rows).map(|_| vec![cell.clone(); cols]).collect(),
+            scrollbar: None,
         }
     }
 

@@ -543,8 +543,13 @@ impl Backend for TuiBackend {
         unimplemented!("TuiBackend::draw_activity_bar — TUI uses inline draw; trait reserved")
     }
 
-    fn draw_terminal(&mut self, _rect: QRect, _term: &TerminalPrim) {
-        unimplemented!("TuiBackend::draw_terminal — TUI uses inline draw; trait reserved")
+    fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_terminal called outside enter_frame_scope");
+        crate::tui::draw_terminal(frame.buffer_mut(), area, term, &theme);
     }
 
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {

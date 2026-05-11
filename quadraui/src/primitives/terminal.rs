@@ -44,6 +44,21 @@ use serde::{Deserialize, Serialize};
 pub struct Terminal {
     pub id: WidgetId,
     pub cells: Vec<Vec<TerminalCell>>,
+    /// When present, the rasteriser draws a themed scrollbar using the
+    /// same style as editor scrollbars (`Backend::draw_scrollbar`).
+    #[serde(default)]
+    pub scrollbar: Option<TerminalScrollbar>,
+}
+
+/// Scrollbar state for a `Terminal`. The rasteriser constructs a
+/// [`crate::Scrollbar::vertical`] from these values and the terminal's
+/// rect, then delegates to `Backend::draw_scrollbar` for themed
+/// rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalScrollbar {
+    pub total_lines: usize,
+    pub visible_lines: usize,
+    pub scroll_offset: usize,
 }
 
 /// One styled cell in a `Terminal`. Carries the rendered character, RGB
