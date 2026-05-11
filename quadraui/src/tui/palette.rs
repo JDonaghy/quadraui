@@ -310,6 +310,9 @@ mod tests {
             detail: None,
             icon: None,
             match_positions: Vec::new(),
+            depth: 0,
+            expandable: false,
+            expanded: false,
         }
     }
 
@@ -324,6 +327,7 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             total_count: 3,
+            preview: None,
         }
     }
 

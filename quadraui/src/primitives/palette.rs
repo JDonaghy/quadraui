@@ -61,6 +61,10 @@ pub struct Palette {
     pub total_count: usize,
     #[serde(default)]
     pub has_focus: bool,
+    /// When present, the palette renders a split layout: item list on
+    /// the left, preview content on the right.
+    #[serde(default)]
+    pub preview: Option<PalettePreview>,
 }
 
 /// One row in a `Palette`'s filtered result list.
@@ -81,6 +85,33 @@ pub struct PaletteItem {
     /// text. Empty means "no fuzzy-match highlighting".
     #[serde(default)]
     pub match_positions: Vec<usize>,
+    /// Indentation level for tree-structured items. `0` = top level.
+    /// Backends render `depth * indent_width` leading space.
+    #[serde(default)]
+    pub depth: usize,
+    /// Whether this item shows an expand/collapse arrow.
+    #[serde(default)]
+    pub expandable: bool,
+    /// Arrow direction when `expandable` is true (`▾` vs `▸`).
+    #[serde(default)]
+    pub expanded: bool,
+}
+
+/// Preview pane content shown alongside the item list when the palette
+/// operates in split-layout mode (file pickers, symbol pickers).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PalettePreview {
+    /// Syntax-highlighted content lines.
+    pub lines: Vec<StyledText>,
+    /// Optional title shown above the preview content (e.g. file path).
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Scroll offset into `lines`.
+    #[serde(default)]
+    pub scroll_offset: usize,
+    /// Line to visually highlight (e.g. the matched line in a search).
+    #[serde(default)]
+    pub highlight_line: Option<usize>,
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -116,12 +147,14 @@ pub struct VisiblePaletteItem {
 pub enum PaletteHit {
     /// Click landed on the title chrome row (typically no-op).
     Title,
-    /// Click landed on the query input row. Apps typically focus the
-    /// query and may use the local x-offset (click_x - query_bounds.x)
-    /// to place the caret; the primitive doesn't resolve that in v1.
+    /// Click landed on the query input row.
     Query,
     /// Click landed on an item row.
     Item(usize),
+    /// Click landed on the expand/collapse arrow of a tree item.
+    ExpandToggle(usize),
+    /// Click landed on the preview pane area.
+    Preview,
     /// Click landed outside any region.
     Empty,
 }
@@ -140,6 +173,11 @@ pub struct PaletteLayout {
     pub hit_regions: Vec<(Rect, PaletteHit)>,
     /// Scroll offset actually used, clamped to `[0, items.len())`.
     pub resolved_scroll_offset: usize,
+    /// Width of the item list column. Equals `viewport_width` when no
+    /// preview is present; narrower (~40%) when a preview pane is shown.
+    pub item_list_width: f32,
+    /// Preview pane bounds, present when `Palette.preview` is `Some`.
+    pub preview_bounds: Option<Rect>,
 }
 
 impl PaletteLayout {
@@ -175,12 +213,18 @@ impl Palette {
     where
         F: Fn(usize) -> PaletteItemMeasure,
     {
+        let has_preview = self.preview.is_some();
+        let item_list_width = if has_preview {
+            (viewport_width * 0.4).round()
+        } else {
+            viewport_width
+        };
+
         let mut visible_items: Vec<VisiblePaletteItem> = Vec::new();
         let mut hit_regions: Vec<(Rect, PaletteHit)> = Vec::new();
 
         let mut y = 0.0_f32;
 
-        // Title row (optional).
         let title_bounds = if title_height > 0.0 && y < viewport_height {
             let h = title_height.min(viewport_height - y);
             let bounds = Rect::new(0.0, y, viewport_width, h);
@@ -191,7 +235,6 @@ impl Palette {
             None
         };
 
-        // Query input row (optional but usually present).
         let query_bounds = if query_height > 0.0 && y < viewport_height {
             let h = query_height.min(viewport_height - y);
             let bounds = Rect::new(0.0, y, viewport_width, h);
@@ -202,14 +245,14 @@ impl Palette {
             None
         };
 
-        // Clamp scroll_offset.
+        let items_top = y;
+
         let resolved_scroll_offset = if self.items.is_empty() {
             0
         } else {
             self.scroll_offset.min(self.items.len() - 1)
         };
 
-        // Items list.
         for i in resolved_scroll_offset..self.items.len() {
             if y >= viewport_height {
                 break;
@@ -220,7 +263,7 @@ impl Palette {
             if height <= 0.0 {
                 break;
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
+            let bounds = Rect::new(0.0, y, item_list_width, height);
             visible_items.push(VisiblePaletteItem {
                 item_idx: i,
                 bounds,
@@ -228,6 +271,17 @@ impl Palette {
             hit_regions.push((bounds, PaletteHit::Item(i)));
             y += m.height;
         }
+
+        let preview_bounds = if has_preview {
+            let preview_x = item_list_width;
+            let preview_w = (viewport_width - item_list_width).max(0.0);
+            let preview_h = (viewport_height - items_top).max(0.0);
+            let bounds = Rect::new(preview_x, items_top, preview_w, preview_h);
+            hit_regions.push((bounds, PaletteHit::Preview));
+            Some(bounds)
+        } else {
+            None
+        };
 
         PaletteLayout {
             viewport_width,
@@ -237,6 +291,8 @@ impl Palette {
             visible_items,
             hit_regions,
             resolved_scroll_offset,
+            item_list_width,
+            preview_bounds,
         }
     }
 }
@@ -250,6 +306,8 @@ pub enum PaletteEvent {
     SelectionChanged { idx: usize },
     /// User confirmed the highlighted row (Enter or double-click).
     ItemConfirmed { idx: usize },
+    /// User toggled a tree item's expand/collapse state.
+    ExpandToggled { idx: usize, expanded: bool },
     /// Palette was dismissed (Escape, click outside, etc.).
     Closed,
     /// A key was pressed while the palette had focus and the primitive
