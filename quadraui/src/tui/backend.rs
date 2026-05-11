@@ -1325,6 +1325,9 @@ mod tests {
                     detail: None,
                     icon: None,
                     match_positions: Vec::new(),
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
                 },
                 PaletteItem {
                     text: StyledText {
@@ -1333,12 +1336,16 @@ mod tests {
                     detail: None,
                     icon: None,
                     match_positions: Vec::new(),
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
                 },
             ],
             selected_idx: 0,
             scroll_offset: 0,
             total_count: 2,
             has_focus: true,
+            preview: None,
         }
     }
 

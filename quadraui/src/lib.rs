@@ -177,7 +177,7 @@ pub use primitives::multi_section_view::{
 };
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
-    VisiblePaletteItem,
+    PalettePreview, VisiblePaletteItem,
 };
 pub use primitives::panel::{
     Panel, PanelAction, PanelEvent, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
@@ -455,18 +455,25 @@ mod tests {
                     detail: Some(StyledText::plain("Ctrl+O")),
                     icon: None,
                     match_positions: vec![0, 1, 2, 3],
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
                 },
                 PaletteItem {
                     text: StyledText::plain("Open Recent"),
                     detail: None,
                     icon: None,
                     match_positions: vec![0, 1, 2, 3],
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
                 },
             ],
             selected_idx: 0,
             scroll_offset: 0,
             total_count: 42,
             has_focus: true,
+            preview: None,
         };
         let json = serde_json::to_string(&palette).unwrap();
         let back: Palette = serde_json::from_str(&json).unwrap();
@@ -2801,6 +2808,9 @@ mod tests {
             detail: None,
             icon: None,
             match_positions: vec![],
+            depth: 0,
+            expandable: false,
+            expanded: false,
         }
     }
 
@@ -2821,6 +2831,7 @@ mod tests {
             scroll_offset: scroll,
             total_count: 0,
             has_focus: true,
+            preview: None,
         }
     }
 
@@ -2901,6 +2912,66 @@ mod tests {
         assert_eq!(layout.query_bounds.unwrap().height, 40.0);
         assert_eq!(layout.visible_items[0].bounds.y, 72.0);
         assert_eq!(layout.visible_items[0].bounds.height, 24.0);
+    }
+
+    #[test]
+    fn palette_layout_with_preview_splits_width() {
+        let mut p = make_palette("Files", "", vec![make_palette_item("main.rs")], 0, 0);
+        p.preview = Some(primitives::palette::PalettePreview {
+            lines: vec![StyledText::plain("fn main() {}")],
+            title: Some("main.rs".into()),
+            scroll_offset: 0,
+            highlight_line: None,
+        });
+        let layout = p.layout(100.0, 50.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        assert_eq!(layout.item_list_width, 40.0);
+        assert_eq!(layout.visible_items[0].bounds.width, 40.0);
+        let pb = layout.preview_bounds.unwrap();
+        assert_eq!(pb.x, 40.0);
+        assert_eq!(pb.width, 60.0);
+        assert_eq!(pb.y, 2.0);
+        assert_eq!(pb.height, 48.0);
+    }
+
+    #[test]
+    fn palette_layout_without_preview_full_width() {
+        let p = make_palette("Cmd", "", vec![make_palette_item("foo")], 0, 0);
+        let layout = p.layout(100.0, 50.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        assert_eq!(layout.item_list_width, 100.0);
+        assert!(layout.preview_bounds.is_none());
+        assert_eq!(layout.visible_items[0].bounds.width, 100.0);
+    }
+
+    #[test]
+    fn palette_preview_hit_test() {
+        let mut p = make_palette("Files", "", vec![make_palette_item("a.rs")], 0, 0);
+        p.preview = Some(primitives::palette::PalettePreview {
+            lines: vec![],
+            title: None,
+            scroll_offset: 0,
+            highlight_line: None,
+        });
+        let layout = p.layout(100.0, 50.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        assert_eq!(layout.hit_test(50.0, 10.0), PaletteHit::Preview);
+        assert_eq!(layout.hit_test(10.0, 2.5), PaletteHit::Item(0));
+    }
+
+    #[test]
+    fn palette_tree_item_serde_round_trip() {
+        let item = primitives::palette::PaletteItem {
+            text: StyledText::plain("src/"),
+            detail: None,
+            icon: None,
+            match_positions: vec![],
+            depth: 2,
+            expandable: true,
+            expanded: true,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let back: primitives::palette::PaletteItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.depth, 2);
+        assert!(back.expandable);
+        assert!(back.expanded);
     }
 
     // ── D6 ActivityBar layout API tests ───────────────────────────────
