@@ -141,6 +141,10 @@ pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
     DialogSeverity, VisibleDialogButton,
 };
+pub use primitives::drop_zone::{
+    compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
+    DropZoneKind,
+};
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
     DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorLine, EditorSelection, GitLineStatus,
