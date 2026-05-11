@@ -284,8 +284,81 @@ Net effect: SidebarSystem is now a thin MSV-level orchestrator over N TreeContro
 
 ### Open queue for next session
 
-- #53 — Form additional field kinds (textarea, validation, password, segmented control)
+*Resolved in session 2026-05-09/10 below.*
+
+## Session 2026-05-09/10 — SidebarSystem Form sections + Form field kinds
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (7)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 105 | SidebarSystem: support Form sections | B (PR #106) | `SectionKind` enum, `FormController`, `SidebarEvent::FormEvent`, `build_view` branches on kind, mixed Form+Tree sidebar. 13 unit tests + 2 TUI round-trip smoke tests. |
+| 107 | Form click emits ButtonClicked for all field types | B (PR #108) | `form_click_event()` inspects `FieldKind` to emit correct event (Toggle→ToggleChanged, Button→ButtonClicked, etc.). 6 tests. |
+| 109 | GTK form: no cursor drawn on empty TextInput | B (PR #111) | Removed `!value.is_empty()` guard on cursor drawing. |
+| 110 | Header row click selects first child | B (PR #111, #113) | GTK `body_measure` used 1.0× line_height for headers and unrounded item_h. Fixed to `(line_height * 1.2).round()` and `(line_height * 1.4).round()`, matching `gtk_tree_layout`. GTK round-trip test with mixed Header/Normal rows. |
+| 112 | Form click generic measurement — items not individually clickable | B (PR #114) | `form_field_measure()` populates per-item hit regions for ToggleGroup/ButtonRow. `handle()` uses `backend.form_layout()` for pixel-accurate GTK hit-test. `sidebar_search` manual smoke test example. |
+| 116 | handle_cached Form hit region drift | B (PR #117) | `cache_form_layouts()` pre-computes form layouts using backend measurement. `handle_cached()` checks cache before fallback estimate. |
+| 53 | Form: additional field kinds | B (PR #119) | `FieldKind::TextArea`, `PasswordInput`, `SegmentedControl` + `ValidationState`. TUI+GTK rasterisers, layout measurement, SidebarSystem click dispatch. 7 new TUI tests. |
+
+### Issues filed (4)
+
+| # | Title | Status |
+|---|---|---|
+| 115 | quadraui-lua: reusable Lua app bridge crate | open (tracking) |
+| 118 | quadraui-ipc: language-agnostic JSON bridge | open (tracking) |
+| 120 | sidebar_search example: cursor movement + clipboard | open |
+
+### New primitives/features shipped
+
+| Feature | Files | Description |
+|---|---|---|
+| `SectionKind::Form` | compose/sidebar_system.rs, compose/form_controller.rs | SidebarSystem manages Form sections alongside Tree sections |
+| `FieldKind::TextArea` | primitives/form.rs, tui/form.rs, gtk/form.rs | Multi-line text editing with `visible_rows` height hint |
+| `FieldKind::PasswordInput` | primitives/form.rs, tui/form.rs, gtk/form.rs | Masked single-line input with configurable `mask_char` |
+| `FieldKind::SegmentedControl` | primitives/form.rs, tui/form.rs, gtk/form.rs | Horizontal exclusive-choice selector `[opt1\|opt2\|opt3]` |
+| `ValidationState` | primitives/form.rs | Error/Warning indicator on any FormField |
+| `FormEvent::SegmentedControlChanged` | primitives/form.rs | New event for segmented control selection |
+| `SidebarSystem::cache_form_layouts` | compose/sidebar_system.rs | Pre-compute form layouts for handle_cached path |
+
+### New example
+
+- `sidebar_search` (`tui_sidebar_search` / `gtk_sidebar_search`) — SidebarSystem with Form section (TextInput, ToggleGroup, SegmentedControl, PasswordInput, ValidationState) above a Tree section with Header-decorated rows. Manual smoke test for #105, #110, #112, #53.
+
+### Bugs found + fixed
+
+1. **Form click always emits ButtonClicked** (#107): `form_click_event` didn't inspect `FieldKind`. Fixed with per-kind dispatch.
+2. **GTK empty TextInput cursor** (#109): `!value.is_empty()` guard prevented cursor drawing. Removed.
+3. **GTK header row click drift** (#110): `body_measure` used 1.0× for headers (should be 1.2×) and unrounded item heights (19.6 vs 20.0). Both fixed to match `gtk_tree_layout`.
+4. **ToggleGroup/ButtonRow items not individually clickable** (#112): Generic `FormFieldMeasure::new()` produced no per-item hit regions. Added `form_field_measure()` with item-level measurement, plus `backend.form_layout()` for GTK accuracy.
+5. **GTK SegmentedControl not clickable**: GTK `form_layout()` fell through to generic measure for SegmentedControl. Added Pango-measured item regions.
+6. **GTK text input in sidebar_search**: GTK emits `KeyPressed { Key::Char(ch) }` not `CharTyped`. Example now handles both.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 543 |
+| After #105 (Form sections) | 545 |
+| After #107 (click dispatch) | 551 |
+| After #110 (header click) | 553 |
+| After #112 (item click) | 557 |
+| After #53 (field kinds) | 565 |
+
+### Design decisions
+
+1. **`SectionKind` at construction time**: Explicit in `SidebarSectionDef`, not inferred from setter calls. Cleaner for Lua extensions declaring `kind = "form"`.
+2. **`SidebarEvent::FormEvent { section, event }`**: Forward full `FormEvent` variant instead of collapsing to opaque `FormFieldActivated`. Enables typed Lua callbacks.
+3. **`backend.form_layout()` threading**: `handle()` passes `Some(&*backend)` through `handle_inner` → `click()` for pixel-accurate GTK form hit-test. `handle_cached()` passes `None`, uses cached or estimated layout.
+4. **SegmentedControl synthetic IDs**: `{field_id}__seg_{idx}` pattern parsed by `form_click_event` to emit `SegmentedControlChanged`.
+5. **quadraui-lua vs quadraui-ipc**: Complementary crates — in-process Lua bridge vs out-of-process JSON/stdio bridge. Both tracked as future work.
+
+### Open queue for next session
+
+- #120 — sidebar_search cursor movement + clipboard
 - #65 — SplitDragController compose helper (deferred)
-- Windows milestone (#19–#31) — requires Windows build environment
-- macOS milestone (#32–#44) — requires macOS build environment
-- Vimcode migration ongoing — SidebarSystem feature-complete for SC panel (visibility, badges, WholePanel scroll, backend-free handle_cached, wire_da_events)
+- #115 — quadraui-lua bridge crate (future)
+- #118 — quadraui-ipc JSON bridge (future)
+- Windows milestone (#19–#31)
+- macOS milestone (#32–#44)
