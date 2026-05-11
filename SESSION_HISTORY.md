@@ -407,11 +407,11 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 
 *Resolved in session 2026-05-11 below.*
 
-## Session 2026-05-11 — Vimcode dedup primitives + dispatch extensions
+## Session 2026-05-11 — Vimcode dedup primitives + dispatch extensions + TUI terminal rasteriser
 
 **Agent:** Claude Opus 4.6 (1M context)
 
-### Issues closed (4)
+### Issues closed (5)
 
 | # | Title | Path | Key deliverable |
 |---|---|---|---|
@@ -419,16 +419,26 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 | 123 | Terminal split-pane layout helper | B (PR #126) | `TerminalSplitLayout::new(area, left_cols, cell_width)` — left/right pane rects, divider position, hit_test. 5 new tests. |
 | 121 | TabBar drop-zone computation + overlay | B (PR #127) | `compute_drop_zone` (Center/Split/TabReorder), `drop_zone_overlay` (highlight rect + insertion bar + ghost position), `DropEdge`, `DropGroupRect`. Edge-zone detection (20% clamped), tab midpoint reorder. 13 new tests. |
 | 122 | Palette preview pane + tree-indented items | B (PR #128) | `PalettePreview` struct, `preview: Option` on Palette (40/60 split layout), `depth`/`expandable`/`expanded` on PaletteItem, `ExpandToggle`/`Preview` hit variants, `ExpandToggled` event. 4 new tests. |
+| 129 | Terminal scrollbar rendering | B (PR #130) | `TerminalScrollbar` on Terminal primitive. TUI `draw_terminal` rasteriser (was `unimplemented!`) with full cell rendering + themed scrollbar. GTK `draw_terminal` draws themed scrollbar. `draw_terminal_divider` for both backends. 1 new test. |
 
 ### New primitives/types shipped
 
 | Type | File | Description |
 |---|---|---|
 | `TerminalSplitLayout` | primitives/terminal.rs | Split-pane geometry + hit_test (Left/Divider/Right/Outside) |
+| `TerminalScrollbar` | primitives/terminal.rs | Scroll state (total/visible/offset) for themed scrollbar rendering |
 | `DropGroupRect` | primitives/drop_zone.rs | Group bounds + tab slot positions for drop-zone computation |
 | `DropZone` / `DropZoneKind` | primitives/drop_zone.rs | Center/Split(DropEdge)/TabReorder result |
 | `DropOverlay` | primitives/drop_zone.rs | Highlight rect + insertion bar + ghost position |
 | `PalettePreview` | primitives/palette.rs | Styled lines, title, scroll offset, highlight line |
+
+### New rasterisers
+
+| Rasteriser | File | Description |
+|---|---|---|
+| TUI `draw_terminal` | tui/terminal.rs | Full cell grid rendering with overlay colors (cursor/selection/find) + themed scrollbar. Replaces `unimplemented!`. |
+| TUI `draw_terminal_divider` | tui/terminal.rs | `│` characters for split-pane dividers using `theme.separator` |
+| GTK `draw_terminal_divider` | gtk/terminal.rs | 1px Cairo line for split-pane dividers using `theme.separator` |
 
 ### Dispatch extensions
 
@@ -446,6 +456,7 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 | After #123 (terminal split) | 574 |
 | After #121 (drop zone) | 587 |
 | After #122 (palette preview) | 591 |
+| After #129 (terminal scrollbar) | 592 |
 
 ### Open queue for next session
 
