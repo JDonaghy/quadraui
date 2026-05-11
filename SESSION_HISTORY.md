@@ -356,7 +356,55 @@ Net effect: SidebarSystem is now a thin MSV-level orchestrator over N TreeContro
 
 ### Open queue for next session
 
-- #120 — sidebar_search cursor movement + clipboard
+*Resolved in session 2026-05-10b below.*
+
+## Session 2026-05-10b — Text field editing + clipboard + selection contrast
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (1)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 120 | sidebar_search: cursor movement + clipboard for text fields | A | `TextFieldState` editing state machine, arboard system clipboard for TUI+GTK, GTK Ctrl+key event fix, selection contrast fix in both backends. |
+
+### Changes shipped
+
+| Area | Files | Description |
+|---|---|---|
+| TextFieldState | examples/common/sidebar_search.rs | Consumer-side text editing: cursor positioning, char boundary navigation, selection range tracking, insert/delete at position, select all |
+| Keyboard handling | examples/common/sidebar_search.rs | Left/Right/Home/End move cursor; Shift+variants extend selection; Ctrl+A select all; Ctrl+C copy (query only, not password); Ctrl+V paste; Delete key; ClipboardPaste event |
+| arboard clipboard | Cargo.toml, tui/services.rs, gtk/services.rs | Replaced TUI no-op stub and GTK async-limited stub with `arboard` crate. `RefCell<Option<arboard::Clipboard>>` kept alive to avoid Linux clipboard serving thread teardown. |
+| GTK Ctrl+key fix | gtk/events.rs | `gdk_key_to_quadraui_key` recovered base letter from keysym name when `to_unicode()` returns a control character (Ctrl+C → '\x03' → recover 'c') |
+| TUI selection contrast | tui/form.rs | Text selection swaps fg/bg (inverse video) instead of using `selected_bg` for both row highlight and text selection |
+| GTK selection contrast | gtk/form.rs | Text selection rendered in three segments: prefix (normal fg), selected (foreground on `selection_bg` rect), suffix (normal fg). Previous single-block paint made selection invisible when `selected_bg ≈ selection_bg`. |
+
+### Bugs found + fixed
+
+1. **TUI/GTK clipboard no-op**: `TuiClipboard` was a stub (read→None, write→no-op). `GtkClipboard::read_text` returned None (GTK read is async, trait is sync). Fixed by wiring `arboard` for both.
+2. **arboard clipboard dropped too quickly**: Short-lived `arboard::Clipboard` handles logged "clipboard dropped in 0ms" on Linux — clipboard serving thread killed before managers could read. Fixed by storing handle in `RefCell` on the services struct.
+3. **GTK Ctrl+key events silently dropped**: `gdk_key_to_quadraui_key` checked `!c.is_control()` and fell through to named-key lookup, which returned None for single-letter names like "c". Control characters Ctrl+A through Ctrl+Z never reached the app. Fixed with keysym name recovery.
+4. **Text selection invisible on focused row (TUI)**: `selected_bg` used for both row-focus highlight and text-selection highlight — identical colors. Fixed with fg/bg swap for selected text.
+5. **Text selection invisible on focused row (GTK)**: Same root cause — `sel` color used for both. Fixed with three-segment text rendering and `selection_bg` background rect.
+6. **Ctrl+A case mismatch (GTK)**: GTK may deliver uppercase keyval depending on keyboard state. `handle_ctrl_key` matched lowercase only. Fixed with `ch.to_ascii_lowercase()`.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 565 |
+| Session end | 565 |
+
+No new tests — this was consumer-side example logic + backend service wiring. Existing 565 tests pass.
+
+### Dependencies added
+
+| Crate | Version | Features pulling it in | Why |
+|---|---|---|---|
+| arboard | 3 | tui, gtk | System clipboard access (replaces no-op stubs) |
+
+### Open queue for next session
+
 - #65 — SplitDragController compose helper (deferred)
 - #115 — quadraui-lua bridge crate (future)
 - #118 — quadraui-ipc JSON bridge (future)
