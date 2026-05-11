@@ -103,3 +103,17 @@ pub fn draw_terminal_cells(
         }
     }
 }
+
+/// Draw a vertical divider line for a terminal split pane.
+/// Paints a 1-pixel-wide line at `x` from `y` to `y + height`
+/// using `theme.separator` colour.
+pub fn draw_terminal_divider(cr: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
+    let (r, g, b) = (
+        theme.separator.r as f64 / 255.0,
+        theme.separator.g as f64 / 255.0,
+        theme.separator.b as f64 / 255.0,
+    );
+    cr.set_source_rgb(r, g, b);
+    cr.rectangle(x, y, 1.0, height);
+    cr.fill().ok();
+}
