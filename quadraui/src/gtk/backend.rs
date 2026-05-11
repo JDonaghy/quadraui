@@ -734,20 +734,44 @@ impl Backend for GtkBackend {
     }
 
     fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {
+        let lh = self.current_line_height;
+        let cw = self.current_char_width;
+        let theme = self.current_theme;
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
+
+        let sb_width = if term.scrollbar.is_some() { lh } else { 0.0 };
+        let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
+
         crate::gtk::draw_terminal_cells(
             cr,
             layout,
             term,
             rect.x as f64,
             rect.y as f64,
-            rect.width as f64,
-            self.current_line_height,
-            self.current_char_width,
-            &self.current_theme,
+            cell_area_w,
+            lh,
+            cw,
+            &theme,
         );
+
+        if let Some(ref sb_state) = term.scrollbar {
+            let sb = crate::primitives::scrollbar::Scrollbar::vertical(
+                term.id.clone(),
+                crate::event::Rect::new(
+                    rect.x + cell_area_w as f32,
+                    rect.y,
+                    sb_width as f32,
+                    rect.height,
+                ),
+                sb_state.scroll_offset as f32,
+                sb_state.total_lines as f32,
+                sb_state.visible_lines as f32,
+                lh as f32,
+            );
+            crate::gtk::draw_scrollbar(cr, &sb, &theme);
+        }
     }
 
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
