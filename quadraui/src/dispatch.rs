@@ -78,6 +78,11 @@ pub enum DragTarget {
         /// on the track *outside* the thumb (jump-to-position
         /// behavior — the thumb hops so its top lands at the cursor).
         grab_offset: f32,
+        /// When true, offset 0 means "at the bottom" (scrollback
+        /// style). The dispatcher flips the ratio so the thumb sits
+        /// at the bottom when offset is 0 and at the top when fully
+        /// scrolled back.
+        inverted: bool,
     },
     /// A horizontal scrollbar drag. Same shape as [`DragTarget::ScrollbarY`]
     /// but operates on the x-axis: `track_start` is the leftmost x of
@@ -98,6 +103,9 @@ pub enum DragTarget {
         /// Cursor's x-offset from the thumb's left at click-down. See
         /// [`DragTarget::ScrollbarY`] for why this matters.
         grab_offset: f32,
+        /// When true, offset 0 means "at the right edge". See
+        /// [`DragTarget::ScrollbarY::inverted`].
+        inverted: bool,
     },
 }
 
@@ -258,25 +266,15 @@ pub fn dispatch_mouse_drag(
             visible_rows,
             total_items,
             grab_offset,
+            inverted,
         }) => {
             if *track_length > 0.0 && *total_items > 0 {
-                // Scroll math accounts for the thumb occupying part of the
-                // track. The thumb's height is `visible/total * track`;
-                // the mouse can only drive the thumb through the remaining
-                // `effective_track = track - thumb` before the thumb hits
-                // the bottom. Without this adjustment the mouse feels
-                // ~track/(track - thumb) times faster than the thumb itself,
-                // which users perceive as laggy drag.
-                //
-                // `grab_offset` tracks where on the thumb the cursor was at
-                // click-down. Subtracting it before the rel calc keeps the
-                // cursor at the same relative spot on the thumb during the
-                // drag — the "thumb doesn't jump when you grab it" UX.
                 let thumb_ratio = (*visible_rows as f32 / *total_items as f32).min(1.0);
                 let thumb_length = (*track_length * thumb_ratio).max(1.0);
                 let effective_track = (*track_length - thumb_length).max(1.0);
                 let rel = (position.y - *track_start - *grab_offset) / effective_track;
                 let clamped = rel.clamp(0.0, 1.0);
+                let clamped = if *inverted { 1.0 - clamped } else { clamped };
                 let max_scroll = total_items.saturating_sub(*visible_rows);
                 let new_offset = (clamped * max_scroll as f32).round() as usize;
                 events.push(UiEvent::ScrollOffsetChanged {
@@ -292,14 +290,15 @@ pub fn dispatch_mouse_drag(
             visible_cols,
             total_cols,
             grab_offset,
+            inverted,
         }) => {
-            // Mirror of the Y-axis math, on x.
             if *track_length > 0.0 && *total_cols > 0 {
                 let thumb_ratio = (*visible_cols as f32 / *total_cols as f32).min(1.0);
                 let thumb_length = (*track_length * thumb_ratio).max(1.0);
                 let effective_track = (*track_length - thumb_length).max(1.0);
                 let rel = (position.x - *track_start - *grab_offset) / effective_track;
                 let clamped = rel.clamp(0.0, 1.0);
+                let clamped = if *inverted { 1.0 - clamped } else { clamped };
                 let max_scroll = total_cols.saturating_sub(*visible_cols);
                 let new_offset = (clamped * max_scroll as f32).round() as usize;
                 events.push(UiEvent::ScrollOffsetChanged {
@@ -441,6 +440,10 @@ pub struct SurfaceScrollbar {
     pub visible_items: usize,
     /// Current scroll offset (index of the first visible item).
     pub scroll_offset: usize,
+    /// When true, offset 0 means "at the bottom" (scrollback style).
+    /// Propagated to `DragTarget::ScrollbarY::inverted` on thumb
+    /// click and used to flip track-click page direction.
+    pub inverted: bool,
 }
 
 /// Translate a raw mouse-down event, consulting the modal stack first,
@@ -519,7 +522,6 @@ pub fn dispatch_click(
                     && position.y < sb.thumb_bounds.y + sb.thumb_bounds.height;
 
                 if in_thumb {
-                    // Thumb click → start drag.
                     let grab_offset = position.y - sb.thumb_bounds.y;
                     drag.begin(DragTarget::ScrollbarY {
                         widget: surface.id.clone(),
@@ -528,6 +530,7 @@ pub fn dispatch_click(
                         visible_rows: sb.visible_items,
                         total_items: sb.total_items,
                         grab_offset,
+                        inverted: sb.inverted,
                     });
                     return vec![UiEvent::MouseDown {
                         widget: Some(surface.id.clone()),
@@ -537,9 +540,17 @@ pub fn dispatch_click(
                     }];
                 }
 
-                // Track click → page up or down.
+                // Track click → page up or down. When inverted,
+                // clicking above the thumb pages toward max_offset
+                // (deeper into history) and below pages toward 0.
                 let max_offset = sb.total_items.saturating_sub(sb.visible_items);
-                let new_offset = if position.y < sb.thumb_bounds.y {
+                let above_thumb = position.y < sb.thumb_bounds.y;
+                let page_back = if sb.inverted {
+                    !above_thumb
+                } else {
+                    above_thumb
+                };
+                let new_offset = if page_back {
                     sb.scroll_offset.saturating_sub(sb.visible_items)
                 } else {
                     (sb.scroll_offset + sb.visible_items).min(max_offset)
@@ -718,6 +729,7 @@ mod tests {
             visible_rows: 10,
             total_items: 50,
             grab_offset: 0.0,
+            inverted: false,
         });
         assert!(drag.is_active());
         match drag.target().unwrap() {
@@ -751,6 +763,7 @@ mod tests {
             visible_rows: 20,
             total_items: 100,
             grab_offset: 0.0,
+            inverted: false,
         });
         let events = dispatch_mouse_drag(&drag, pt(500.0, 132.0), buttons_mask_left());
         assert_eq!(events.len(), 2);
@@ -775,6 +788,7 @@ mod tests {
             visible_rows: 20,
             total_items: 100,
             grab_offset: 0.0,
+            inverted: false,
         });
         // Above track: offset = 0.
         let events = dispatch_mouse_drag(&drag, pt(0.0, 50.0), buttons_mask_left());
@@ -805,6 +819,7 @@ mod tests {
             visible_rows: 10,
             total_items: 100,
             grab_offset: 0.0,
+            inverted: false,
         });
         let events = dispatch_mouse_drag(&drag, pt(0.0, 0.0), buttons_mask_left());
         assert_eq!(events.len(), 1);
@@ -821,6 +836,7 @@ mod tests {
             visible_rows: 10,
             total_items: 20,
             grab_offset: 0.0,
+            inverted: false,
         });
         let stack = ModalStack::new();
         let events = dispatch_mouse_up(&stack, &mut drag, pt(5.0, 5.0), MouseButton::Left);
@@ -844,6 +860,7 @@ mod tests {
             visible_rows: 20,
             total_items: 100,
             grab_offset: 8.0,
+            inverted: false,
         });
         let events = dispatch_mouse_drag(&drag, pt(500.0, 140.0), buttons_mask_left());
         match &events[1] {
@@ -865,6 +882,7 @@ mod tests {
             visible_cols: 20,
             total_cols: 100,
             grab_offset: 0.0,
+            inverted: false,
         });
         let events = dispatch_mouse_drag(&drag, pt(132.0, 500.0), buttons_mask_left());
         assert_eq!(events.len(), 2);
@@ -889,6 +907,7 @@ mod tests {
             visible_cols: 20,
             total_cols: 100,
             grab_offset: 8.0,
+            inverted: false,
         });
         let events = dispatch_mouse_drag(&drag, pt(140.0, 500.0), buttons_mask_left());
         match &events[1] {
@@ -1036,6 +1055,7 @@ mod tests {
                 total_items: 100,
                 visible_items: 30,
                 scroll_offset: 60,
+                inverted: false,
             }),
         }
     }
@@ -1196,5 +1216,133 @@ mod tests {
             } if w.as_str() == "dialog"
         ));
         assert!(!drag.is_active());
+    }
+
+    // ── Inverted scrollbar tests ─────────────────────────────────────
+
+    #[test]
+    fn inverted_drag_flips_offset() {
+        // Same geometry as the basic drag test: track 80 from y=100,
+        // viewport 20, total 100. effective_track=64, max_scroll=80.
+        // Normal: cursor at y=132 (halfway) → offset 40.
+        // Inverted: same position → offset 80 - 40 = 40… wait:
+        //   rel = 32/64 = 0.5, inverted → 1.0 - 0.5 = 0.5 → 40.
+        // To see the flip, use the track top: y=100 → rel=0, inv→1.0 → 80.
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("term"),
+            track_start: 100.0,
+            track_length: 80.0,
+            visible_rows: 20,
+            total_items: 100,
+            grab_offset: 0.0,
+            inverted: true,
+        });
+        // Cursor at track top → normal offset 0, inverted offset 80.
+        let events = dispatch_mouse_drag(&drag, pt(0.0, 100.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 80),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+        // Cursor at track bottom → normal offset 80, inverted offset 0.
+        let events = dispatch_mouse_drag(&drag, pt(0.0, 500.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 0),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn inverted_drag_halfway_matches_non_inverted() {
+        // At the exact midpoint, both normal and inverted produce the
+        // same offset (symmetry check).
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarY {
+            widget: id("term"),
+            track_start: 100.0,
+            track_length: 80.0,
+            visible_rows: 20,
+            total_items: 100,
+            grab_offset: 0.0,
+            inverted: true,
+        });
+        let events = dispatch_mouse_drag(&drag, pt(0.0, 132.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 40),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    fn surface_with_inverted_scrollbar() -> ScrollSurface {
+        ScrollSurface {
+            id: id("term"),
+            bounds: rect(0.0, 0.0, 40.0, 30.0),
+            scrollbar: Some(SurfaceScrollbar {
+                track_bounds: rect(39.0, 0.0, 1.0, 30.0),
+                thumb_bounds: rect(39.0, 20.0, 1.0, 8.0),
+                total_items: 100,
+                visible_items: 30,
+                scroll_offset: 60,
+                inverted: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn inverted_thumb_click_propagates_flag() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_inverted_scrollbar()];
+        let mut drag = DragState::new();
+        dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 22.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert!(drag.is_active());
+        match drag.target().unwrap() {
+            DragTarget::ScrollbarY { inverted, .. } => assert!(*inverted),
+            other => panic!("expected ScrollbarY, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn inverted_track_click_flips_page_direction() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_inverted_scrollbar()];
+        let mut drag = DragState::new();
+        // Click ABOVE the thumb (y=5 < thumb y=20).
+        // Normal: page up → offset 60 - 30 = 30.
+        // Inverted: above thumb pages FORWARD → offset 60 + 30 = 70 (capped at 70).
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 5.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        match &events[0] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 70),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+
+        // Click BELOW the thumb (y=29 > thumb bottom y=28).
+        // Normal: page down → offset 60 + 30 = 70.
+        // Inverted: below thumb pages BACK → offset 60 - 30 = 30.
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(39.5, 29.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        match &events[0] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 30),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
     }
 }
