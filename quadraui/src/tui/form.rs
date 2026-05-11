@@ -186,8 +186,12 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                             break;
                         }
                         let in_selection = sel_hi > sel_lo && byte >= sel_lo && byte < sel_hi;
-                        let cell_bg = if in_selection { sel_bg } else { row_bg };
-                        set_cell(buf, area.x + col as u16, y, ch, input_fg, cell_bg);
+                        let (ch_fg, ch_bg) = if in_selection {
+                            (row_bg, input_fg)
+                        } else {
+                            (input_fg, row_bg)
+                        };
+                        set_cell(buf, area.x + col as u16, y, ch, ch_fg, ch_bg);
                         col += 1;
                         byte += ch.len_utf8();
                     }

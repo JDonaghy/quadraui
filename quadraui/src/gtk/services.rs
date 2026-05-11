@@ -1,26 +1,19 @@
 //! GTK implementation of [`quadraui::PlatformServices`].
 //!
-//! Stage 7 wires the synchronous-API methods through real GTK calls:
-//! `Clipboard::write_text` and `PlatformServices::open_url`. The
-//! async-API methods (`Clipboard::read_text`, `show_file_*_dialog`)
-//! stay stubbed because the trait shape is synchronous and GTK's
-//! native versions are async — vimcode's existing GTK code calls
-//! those native APIs directly with `await`-style callbacks; the trait
-//! surface is the forward-compat escape hatch a future shape change
-//! would route through.
+//! Clipboard uses `arboard` for synchronous system clipboard access
+//! (GTK's native read API is async, incompatible with the sync trait).
+//! `open_url` uses GIO. File dialogs and notifications remain stubbed
+//! pending an async-aware trait shape.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
-
-use gtk4::gdk;
-use gtk4::prelude::*;
 
 use crate::backend::{Clipboard, FileDialogOptions, Notification};
 use crate::PlatformServices;
 
-/// GTK platform-services impl. Holds a `GtkClipboard` proxy that
-/// reaches the GDK display's clipboard each call. Other surfaces
-/// (file dialogs, notifications) stay stubbed pending an async-aware
-/// trait shape.
+/// GTK platform-services impl. Clipboard is backed by `arboard` for
+/// cross-platform synchronous access. Other surfaces (file dialogs,
+/// notifications) stay stubbed pending an async-aware trait shape.
 pub struct GtkPlatformServices {
     clipboard: GtkClipboard,
 }
@@ -28,7 +21,7 @@ pub struct GtkPlatformServices {
 impl GtkPlatformServices {
     pub fn new() -> Self {
         Self {
-            clipboard: GtkClipboard,
+            clipboard: GtkClipboard::new(),
         }
     }
 }
@@ -45,10 +38,6 @@ impl PlatformServices for GtkPlatformServices {
     }
 
     fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        // GTK's `gtk::FileDialog::open` is async (callback-style). The
-        // trait's synchronous return doesn't fit. Today vimcode
-        // invokes FileDialog directly from `mod.rs` and feeds the
-        // result back through Relm4 messages.
         None
     }
 
@@ -56,16 +45,9 @@ impl PlatformServices for GtkPlatformServices {
         None
     }
 
-    fn send_notification(&self, _n: Notification) {
-        // Same async-vs-sync mismatch. `gio::Application::send_notification`
-        // requires a registered Application id and an active GMainContext.
-    }
+    fn send_notification(&self, _n: Notification) {}
 
     fn open_url(&self, url: &str) {
-        // `gio::AppInfo::launch_default_for_uri` is synchronous and
-        // doesn't need a parent window or active GMainContext.
-        // Failures (no handler, malformed URI) are swallowed — the
-        // worst case is a no-op, same as TUI's stub.
         let _ =
             gtk4::gio::AppInfo::launch_default_for_uri(url, None::<&gtk4::gio::AppLaunchContext>);
     }
@@ -75,22 +57,28 @@ impl PlatformServices for GtkPlatformServices {
     }
 }
 
-/// GTK clipboard proxy. `write_text` writes to the default display's
-/// clipboard via `gdk::Clipboard::set_text` — synchronous. `read_text`
-/// stays a stub because GTK's clipboard read API is async (callback-
-/// style); the trait's `-> Option<String>` shape can't await without
-/// a runtime swap, and vimcode's existing engine clipboard callbacks
-/// (set in `mod.rs::setup_clipboard`) cover the read path today.
-pub struct GtkClipboard;
+/// System clipboard via `arboard`. The handle is kept alive for the
+/// process lifetime so Linux clipboard serving threads persist.
+pub struct GtkClipboard {
+    inner: RefCell<Option<arboard::Clipboard>>,
+}
+
+impl GtkClipboard {
+    fn new() -> Self {
+        Self {
+            inner: RefCell::new(arboard::Clipboard::new().ok()),
+        }
+    }
+}
 
 impl Clipboard for GtkClipboard {
     fn read_text(&self) -> Option<String> {
-        None
+        self.inner.borrow_mut().as_mut()?.get_text().ok()
     }
 
     fn write_text(&self, text: &str) {
-        if let Some(display) = gdk::Display::default() {
-            display.clipboard().set_text(text);
+        if let Some(cb) = self.inner.borrow_mut().as_mut() {
+            let _ = cb.set_text(text);
         }
     }
 }

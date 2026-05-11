@@ -140,15 +140,20 @@ pub fn gdk_modifiers_to_quadraui(m: gdk::ModifierType) -> Modifiers {
 /// counterpart (modifier keys, function keys above F24, dead keys,
 /// etc.).
 pub fn gdk_key_to_quadraui_key(key: gdk::Key) -> Option<Key> {
-    // First pass: printable Unicode characters.
     if let Some(c) = key.to_unicode() {
         if !c.is_control() {
             return Some(Key::Char(c));
         }
+        // Ctrl+letter produces a control character (e.g. \x03 for Ctrl+C).
+        // Recover the base letter from the keysym name so the app sees
+        // Key::Char('c') with modifiers.ctrl == true.
+        if let Some(name) = key.name() {
+            let bytes = name.as_bytes();
+            if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() {
+                return Some(Key::Char(bytes[0] as char));
+            }
+        }
     }
-    // Second pass: named non-printable keys. Match on the keysym
-    // name string for simplicity — gdk::Key constants would also
-    // work but the name match keeps the translator readable.
     let name = key.name()?;
     let named = gdk_keyname_to_named_key(&name)?;
     Some(Key::Named(named))

@@ -44,6 +44,7 @@ pub fn draw_form(
     let fg = cairo_rgb(theme.foreground);
     let dim = cairo_rgb(theme.muted_fg);
     let sel = cairo_rgb(theme.selected_bg);
+    let text_sel = cairo_rgb(theme.selection_bg);
     let accent = cairo_rgb(theme.accent_fg);
     let error = cairo_rgb(theme.error_fg);
     let warning = cairo_rgb(theme.warning_fg);
@@ -150,30 +151,59 @@ pub fn draw_form(
                     cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
                     pcfn::show_layout(cr, layout);
 
-                    if let (Some(cur), Some(anchor)) = (cursor, selection_anchor) {
-                        if *cur != *anchor && !value.is_empty() {
-                            let (lo, hi) = (*cur.min(anchor), *cur.max(anchor));
-                            let prefix = &shown[..lo.min(shown.len())];
-                            let sel_text = &shown[lo.min(shown.len())..hi.min(shown.len())];
-                            layout.set_text(prefix);
-                            let (prefix_w, _) = layout.pixel_size();
-                            layout.set_text(sel_text);
-                            let (sel_w, _) = layout.pixel_size();
-                            cr.set_source_rgb(sel.0, sel.1, sel.2);
-                            cr.rectangle(
-                                ix + 8.0 + prefix_w as f64,
-                                y_off + 2.0,
-                                sel_w as f64,
-                                row_h - 4.0,
-                            );
-                            cr.fill().ok();
-                        }
-                    }
+                    let text_y = (y_off + (row_h - shown_h as f64) / 2.0).round();
+                    let has_sel = matches!(
+                        (cursor, selection_anchor),
+                        (Some(c), Some(a)) if *c != *a && !value.is_empty()
+                    );
 
-                    cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
-                    layout.set_text(shown);
-                    cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    if has_sel {
+                        let cur = cursor.unwrap();
+                        let anchor = selection_anchor.unwrap();
+                        let (lo, hi) = (cur.min(anchor), cur.max(anchor));
+                        let lo = lo.min(shown.len());
+                        let hi = hi.min(shown.len());
+
+                        let prefix = &shown[..lo];
+                        let sel_text = &shown[lo..hi];
+                        let suffix = &shown[hi..];
+
+                        layout.set_text(prefix);
+                        let (prefix_w, _) = layout.pixel_size();
+                        layout.set_text(sel_text);
+                        let (sel_w, _) = layout.pixel_size();
+
+                        cr.set_source_rgb(text_sel.0, text_sel.1, text_sel.2);
+                        cr.rectangle(
+                            ix + 8.0 + prefix_w as f64,
+                            y_off + 2.0,
+                            sel_w as f64,
+                            row_h - 4.0,
+                        );
+                        cr.fill().ok();
+
+                        // Prefix
+                        cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
+                        layout.set_text(prefix);
+                        cr.move_to(ix + 8.0, text_y);
+                        pcfn::show_layout(cr, layout);
+
+                        cr.set_source_rgb(fg.0, fg.1, fg.2);
+                        layout.set_text(sel_text);
+                        cr.move_to(ix + 8.0 + prefix_w as f64, text_y);
+                        pcfn::show_layout(cr, layout);
+
+                        // Suffix
+                        cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
+                        layout.set_text(suffix);
+                        cr.move_to(ix + 8.0 + prefix_w as f64 + sel_w as f64, text_y);
+                        pcfn::show_layout(cr, layout);
+                    } else {
+                        cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
+                        layout.set_text(shown);
+                        cr.move_to(ix + 8.0, text_y);
+                        pcfn::show_layout(cr, layout);
+                    }
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("]");

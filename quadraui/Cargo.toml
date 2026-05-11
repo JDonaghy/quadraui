@@ -11,10 +11,10 @@ publish = false
 
 [features]
 # Public TUI rasterisers in `quadraui::tui`. Pulls in ratatui.
-tui = ["dep:ratatui"]
+tui = ["dep:ratatui", "dep:arboard"]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
-gtk = ["dep:gtk4", "dep:pangocairo"]
+gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard"]
 
 # Public Win-GUI rasterisers in `quadraui::win`. No deps yet — the
 # feature gate exists so the module compiles and the Backend impl is
@@ -34,6 +34,8 @@ gtk4 = { version = "0.7", features = ["v4_10"], optional = true }
 pangocairo = { version = "0.18", optional = true }
 # Optional — pulled in by the `tui` feature.
 ratatui = { version = "0.29", optional = true }
+# Optional — pulled in by `tui` and `gtk` for system clipboard access.
+arboard = { version = "3", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
