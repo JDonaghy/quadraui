@@ -741,7 +741,10 @@ impl Backend for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
 
-        let sb_width = if term.scrollbar.is_some() { lh } else { 0.0 };
+        let sb_width = match &term.scrollbar {
+            Some(sb) => sb.width.map(|w| w as f64).unwrap_or(8.0),
+            None => 0.0,
+        };
         let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
 
         crate::gtk::draw_terminal_cells(
@@ -765,7 +768,7 @@ impl Backend for GtkBackend {
                     sb_width as f32,
                     rect.height,
                 ),
-                sb_state.scroll_offset as f32,
+                sb_state.effective_scroll_offset() as f32,
                 sb_state.total_lines as f32,
                 sb_state.visible_lines as f32,
                 lh as f32,
