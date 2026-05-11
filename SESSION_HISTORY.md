@@ -405,6 +405,50 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 
 ### Open queue for next session
 
+*Resolved in session 2026-05-11 below.*
+
+## Session 2026-05-11 — Vimcode dedup primitives + dispatch extensions
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (4)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 124 | DragTarget::ScrollbarY inverted flag | B (PR #125) | `inverted: bool` on ScrollbarY/X + SurfaceScrollbar. dispatch_mouse_drag flips ratio; dispatch_click flips track-click page direction. 4 new tests. |
+| 123 | Terminal split-pane layout helper | B (PR #126) | `TerminalSplitLayout::new(area, left_cols, cell_width)` — left/right pane rects, divider position, hit_test. 5 new tests. |
+| 121 | TabBar drop-zone computation + overlay | B (PR #127) | `compute_drop_zone` (Center/Split/TabReorder), `drop_zone_overlay` (highlight rect + insertion bar + ghost position), `DropEdge`, `DropGroupRect`. Edge-zone detection (20% clamped), tab midpoint reorder. 13 new tests. |
+| 122 | Palette preview pane + tree-indented items | B (PR #128) | `PalettePreview` struct, `preview: Option` on Palette (40/60 split layout), `depth`/`expandable`/`expanded` on PaletteItem, `ExpandToggle`/`Preview` hit variants, `ExpandToggled` event. 4 new tests. |
+
+### New primitives/types shipped
+
+| Type | File | Description |
+|---|---|---|
+| `TerminalSplitLayout` | primitives/terminal.rs | Split-pane geometry + hit_test (Left/Divider/Right/Outside) |
+| `DropGroupRect` | primitives/drop_zone.rs | Group bounds + tab slot positions for drop-zone computation |
+| `DropZone` / `DropZoneKind` | primitives/drop_zone.rs | Center/Split(DropEdge)/TabReorder result |
+| `DropOverlay` | primitives/drop_zone.rs | Highlight rect + insertion bar + ghost position |
+| `PalettePreview` | primitives/palette.rs | Styled lines, title, scroll offset, highlight line |
+
+### Dispatch extensions
+
+| Extension | File | Description |
+|---|---|---|
+| `DragTarget::ScrollbarY::inverted` | dispatch.rs | Flips scroll ratio for scrollback-style scrollbars |
+| `SurfaceScrollbar::inverted` | dispatch.rs | Propagated to DragTarget on thumb click; flips track-click direction |
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 565 |
+| After #124 (inverted scrollbar) | 569 |
+| After #123 (terminal split) | 574 |
+| After #121 (drop zone) | 587 |
+| After #122 (palette preview) | 591 |
+
+### Open queue for next session
+
 - #65 — SplitDragController compose helper (deferred)
 - #115 — quadraui-lua bridge crate (future)
 - #118 — quadraui-ipc JSON bridge (future)
