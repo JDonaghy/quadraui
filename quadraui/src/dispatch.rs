@@ -31,6 +31,7 @@
 use crate::event::{MouseButton, Point, ScrollDelta, UiEvent};
 use crate::modal_stack::ModalStack;
 use crate::primitives::palette::PaletteEvent;
+use crate::primitives::scrollbar::ScrollAxis;
 use crate::types::WidgetId;
 use crate::Modifiers;
 
@@ -424,21 +425,26 @@ pub fn dispatch_scroll(
 
 /// Scrollbar geometry for a [`ScrollSurface`]. Registered during paint
 /// so [`dispatch_click`] can route scrollbar clicks (thumb drag, track
-/// page) without per-backend code.
+/// page) without per-backend code. Supports both vertical and
+/// horizontal scrollbars via the `axis` field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceScrollbar {
+    /// Vertical or horizontal. Determines which coordinate axis
+    /// `dispatch_click` uses for grab offset, track-click paging,
+    /// and which `DragTarget` variant is created.
+    pub axis: ScrollAxis,
     /// Full scrollbar track bounds (gutter area).
     pub track_bounds: crate::event::Rect,
     /// Current thumb bounds within the track.
     pub thumb_bounds: crate::event::Rect,
-    /// Total number of scrollable items (lines, rows, etc.).
+    /// Total number of scrollable items (lines, rows, cols, etc.).
     pub total_items: usize,
     /// Number of items visible in the viewport.
     pub visible_items: usize,
     /// Current scroll offset (index of the first visible item).
     pub scroll_offset: usize,
     /// When true, offset 0 means "at the bottom" (scrollback style).
-    /// Propagated to `DragTarget::ScrollbarY::inverted` on thumb
+    /// Propagated to the `DragTarget`'s `inverted` field on thumb
     /// click and used to flip track-click page direction.
     pub inverted: bool,
 }
@@ -456,7 +462,8 @@ pub struct SurfaceScrollbar {
 /// 2. **Click outside every modal, but modal open** → dismiss topmost
 ///    (same as [`dispatch_mouse_down`]).
 /// 3. **Click on a scroll surface's scrollbar thumb** → starts a
-///    [`DragTarget::ScrollbarY`] drag on `drag`, emits
+///    [`DragTarget::ScrollbarY`] or [`DragTarget::ScrollbarX`] drag
+///    (depending on `SurfaceScrollbar::axis`), emits
 ///    `MouseDown { widget: Some(surface_id) }`.
 /// 4. **Click on a scroll surface's scrollbar track** (above or below
 ///    thumb) → emits `ScrollOffsetChanged { widget, new_offset }`
@@ -519,16 +526,33 @@ pub fn dispatch_click(
                     && position.y < sb.thumb_bounds.y + sb.thumb_bounds.height;
 
                 if in_thumb {
-                    let grab_offset = position.y - sb.thumb_bounds.y;
-                    drag.begin(DragTarget::ScrollbarY {
-                        widget: surface.id.clone(),
-                        track_start: sb.track_bounds.y,
-                        track_length: sb.track_bounds.height,
-                        thumb_length: sb.thumb_bounds.height,
-                        max_scroll: sb.total_items.saturating_sub(sb.visible_items),
-                        grab_offset,
-                        inverted: sb.inverted,
-                    });
+                    let max_scroll = sb.total_items.saturating_sub(sb.visible_items);
+                    match sb.axis {
+                        ScrollAxis::Vertical => {
+                            let grab_offset = position.y - sb.thumb_bounds.y;
+                            drag.begin(DragTarget::ScrollbarY {
+                                widget: surface.id.clone(),
+                                track_start: sb.track_bounds.y,
+                                track_length: sb.track_bounds.height,
+                                thumb_length: sb.thumb_bounds.height,
+                                max_scroll,
+                                grab_offset,
+                                inverted: sb.inverted,
+                            });
+                        }
+                        ScrollAxis::Horizontal => {
+                            let grab_offset = position.x - sb.thumb_bounds.x;
+                            drag.begin(DragTarget::ScrollbarX {
+                                widget: surface.id.clone(),
+                                track_start: sb.track_bounds.x,
+                                track_length: sb.track_bounds.width,
+                                thumb_length: sb.thumb_bounds.width,
+                                max_scroll,
+                                grab_offset,
+                                inverted: sb.inverted,
+                            });
+                        }
+                    }
                     return vec![UiEvent::MouseDown {
                         widget: Some(surface.id.clone()),
                         button,
@@ -537,15 +561,18 @@ pub fn dispatch_click(
                     }];
                 }
 
-                // Track click → page up or down. When inverted,
-                // clicking above the thumb pages toward max_offset
-                // (deeper into history) and below pages toward 0.
+                // Track click → page forward or back. For vertical,
+                // "before" = above thumb; for horizontal, "before" =
+                // left of thumb. When inverted, the direction flips.
                 let max_offset = sb.total_items.saturating_sub(sb.visible_items);
-                let above_thumb = position.y < sb.thumb_bounds.y;
+                let before_thumb = match sb.axis {
+                    ScrollAxis::Vertical => position.y < sb.thumb_bounds.y,
+                    ScrollAxis::Horizontal => position.x < sb.thumb_bounds.x,
+                };
                 let page_back = if sb.inverted {
-                    !above_thumb
+                    !before_thumb
                 } else {
-                    above_thumb
+                    before_thumb
                 };
                 let new_offset = if page_back {
                     sb.scroll_offset.saturating_sub(sb.visible_items)
@@ -1183,6 +1210,7 @@ mod tests {
             id: id("log"),
             bounds: rect(0.0, 0.0, 40.0, 30.0),
             scrollbar: Some(SurfaceScrollbar {
+                axis: ScrollAxis::Vertical,
                 track_bounds: rect(39.0, 0.0, 1.0, 30.0),
                 thumb_bounds: rect(39.0, 20.0, 1.0, 8.0),
                 total_items: 100,
@@ -1407,6 +1435,7 @@ mod tests {
             id: id("term"),
             bounds: rect(0.0, 0.0, 40.0, 30.0),
             scrollbar: Some(SurfaceScrollbar {
+                axis: ScrollAxis::Vertical,
                 track_bounds: rect(39.0, 0.0, 1.0, 30.0),
                 thumb_bounds: rect(39.0, 20.0, 1.0, 8.0),
                 total_items: 100,
@@ -1471,6 +1500,143 @@ mod tests {
         );
         match &events[0] {
             UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 30),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    // ── Horizontal scroll surface tests ──────────────────────────────
+
+    fn surface_with_h_scrollbar() -> ScrollSurface {
+        // Horizontal scrollbar at the bottom of a 400×300 surface.
+        // Track spans x=0..400 at y=296, height=4.
+        // Thumb at x=50..90 (40px wide).
+        // 2000 total cols, 200 visible, offset 250.
+        ScrollSurface {
+            id: id("editor"),
+            bounds: rect(0.0, 0.0, 400.0, 300.0),
+            scrollbar: Some(SurfaceScrollbar {
+                axis: ScrollAxis::Horizontal,
+                track_bounds: rect(0.0, 296.0, 400.0, 4.0),
+                thumb_bounds: rect(50.0, 296.0, 40.0, 4.0),
+                total_items: 2000,
+                visible_items: 200,
+                scroll_offset: 250,
+                inverted: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn h_scrollbar_thumb_click_starts_scrollbar_x_drag() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_h_scrollbar()];
+        let mut drag = DragState::new();
+        // Click on the thumb at x=60, y=297
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(60.0, 297.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], UiEvent::MouseDown { widget: Some(w), .. } if w.as_str() == "editor")
+        );
+        assert!(drag.is_active());
+        match drag.target().unwrap() {
+            DragTarget::ScrollbarX {
+                widget,
+                track_start,
+                track_length,
+                thumb_length,
+                max_scroll,
+                grab_offset,
+                ..
+            } => {
+                assert_eq!(widget.as_str(), "editor");
+                assert_eq!(*track_start, 0.0);
+                assert_eq!(*track_length, 400.0);
+                assert_eq!(*thumb_length, 40.0);
+                assert_eq!(*max_scroll, 1800);
+                assert!(*grab_offset > 9.0 && *grab_offset < 11.0); // 60.0 - 50.0 = 10.0
+            }
+            other => panic!("expected ScrollbarX, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn h_scrollbar_track_click_left_of_thumb_pages_back() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_h_scrollbar()];
+        let mut drag = DragState::new();
+        // Click left of thumb (x=10 < thumb x=50)
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(10.0, 297.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        match &events[0] {
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => {
+                assert_eq!(widget.as_str(), "editor");
+                // page back: 250 - 200 = 50
+                assert_eq!(*new_offset, 50);
+            }
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn h_scrollbar_track_click_right_of_thumb_pages_forward() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_h_scrollbar()];
+        let mut drag = DragState::new();
+        // Click right of thumb (x=200 > thumb right x=90)
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(200.0, 297.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        match &events[0] {
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => {
+                assert_eq!(widget.as_str(), "editor");
+                // page forward: 250 + 200 = 450
+                assert_eq!(*new_offset, 450);
+            }
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn h_scrollbar_drag_produces_scroll_offset() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_h_scrollbar()];
+        let mut drag = DragState::new();
+        // Click thumb to start drag
+        dispatch_click(
+            &stack,
+            &surfaces,
+            &mut drag,
+            pt(60.0, 297.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert!(drag.is_active());
+        // Drag cursor to x=370 (near track end)
+        let events = dispatch_mouse_drag(&drag, pt(370.0, 297.0), buttons_mask_left());
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { widget, new_offset } => {
+                assert_eq!(widget.as_str(), "editor");
+                assert_eq!(*new_offset, 1800); // max_scroll
+            }
             other => panic!("expected ScrollOffsetChanged, got {:?}", other),
         }
     }
