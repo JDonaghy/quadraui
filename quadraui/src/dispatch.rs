@@ -46,9 +46,9 @@ pub enum DragTarget {
     /// A vertical scrollbar drag. `track_start` and `track_length`
     /// are in the backend's native units (pixels for GTK; cells for
     /// TUI) and define the track region the thumb can traverse.
-    /// `visible_rows` and `total_items` are counts in rows, so the
-    /// dispatcher can compute `max_scroll = total - visible` without
-    /// assuming the coordinate system. The dispatcher maps a drag
+    /// `max_scroll` is supplied directly by the caller (typically
+    /// `total - visible`) so the dispatcher doesn't need to know
+    /// the unit system. The dispatcher maps a drag
     /// point's y to a scroll offset via linear interpolation:
     ///
     /// ```text
@@ -63,11 +63,15 @@ pub enum DragTarget {
         track_start: f32,
         /// Track length in the backend's native units. Must be > 0.
         track_length: f32,
-        /// Number of items currently fitting inside the scroll
-        /// viewport. Determines `max_scroll = total.saturating_sub(visible)`.
-        visible_rows: usize,
-        /// Total number of items in the scrolled list.
-        total_items: usize,
+        /// Actual painted thumb length in the same units as
+        /// `track_length`. The dispatcher uses this directly for
+        /// `effective_track = track_length - thumb_length` — no
+        /// recomputation from visible/total counts.
+        thumb_length: f32,
+        /// Maximum scroll offset the drag can produce. The caller
+        /// supplies this directly (typically `total - visible`)
+        /// so the dispatcher doesn't need to know the unit system.
+        max_scroll: usize,
         /// Where on the thumb the cursor was at click-down time, as
         /// the cursor's offset from the thumb's top in the backend's
         /// native units. The dispatcher subtracts this from
@@ -88,18 +92,18 @@ pub enum DragTarget {
     /// but operates on the x-axis: `track_start` is the leftmost x of
     /// the track, `track_length` is the track width, and the dispatcher
     /// reads `position.x` (not `position.y`) to compute the offset.
-    /// `visible_cols` / `total_cols` mirror the y-variant's
-    /// `visible_rows` / `total_items` for symmetry.
     ScrollbarX {
         widget: WidgetId,
         /// Track left in the backend's native x-coordinate.
         track_start: f32,
         /// Track length in the backend's native units. Must be > 0.
         track_length: f32,
-        /// Columns currently fitting in the scroll viewport.
-        visible_cols: usize,
-        /// Total scroll-able columns.
-        total_cols: usize,
+        /// Actual painted thumb length. See
+        /// [`DragTarget::ScrollbarY::thumb_length`].
+        thumb_length: f32,
+        /// Maximum scroll offset. See
+        /// [`DragTarget::ScrollbarY::max_scroll`].
+        max_scroll: usize,
         /// Cursor's x-offset from the thumb's left at click-down. See
         /// [`DragTarget::ScrollbarY`] for why this matters.
         grab_offset: f32,
@@ -243,9 +247,8 @@ pub fn dispatch_mouse_down(
 /// # How the offset is computed
 ///
 /// `ratio = ((point.y - track_start) / track_length).clamp(0, 1)`
-/// `new_offset = round(ratio * max_scroll)` where
-/// `max_scroll = total_items.saturating_sub(visible_rows)` and
-/// `visible_rows = track_length as usize` (one row per unit of track).
+/// `new_offset = round(ratio * max_scroll)` where `max_scroll` is
+/// supplied directly by the `DragTarget`.
 ///
 /// This mirrors the math TUI already uses in `mouse.rs`'s
 /// `dragging_picker_sb` branch, extended to f32 so it works for
@@ -263,20 +266,17 @@ pub fn dispatch_mouse_drag(
             widget,
             track_start,
             track_length,
-            visible_rows,
-            total_items,
+            thumb_length,
+            max_scroll,
             grab_offset,
             inverted,
         }) => {
-            if *track_length > 0.0 && *total_items > 0 {
-                let thumb_ratio = (*visible_rows as f32 / *total_items as f32).min(1.0);
-                let thumb_length = (*track_length * thumb_ratio).max(1.0);
-                let effective_track = (*track_length - thumb_length).max(1.0);
+            if *track_length > 0.0 && *max_scroll > 0 {
+                let effective_track = (*track_length - *thumb_length).max(1.0);
                 let rel = (position.y - *track_start - *grab_offset) / effective_track;
                 let clamped = rel.clamp(0.0, 1.0);
                 let clamped = if *inverted { 1.0 - clamped } else { clamped };
-                let max_scroll = total_items.saturating_sub(*visible_rows);
-                let new_offset = (clamped * max_scroll as f32).round() as usize;
+                let new_offset = (clamped * *max_scroll as f32).round() as usize;
                 events.push(UiEvent::ScrollOffsetChanged {
                     widget: widget.clone(),
                     new_offset,
@@ -287,20 +287,17 @@ pub fn dispatch_mouse_drag(
             widget,
             track_start,
             track_length,
-            visible_cols,
-            total_cols,
+            thumb_length,
+            max_scroll,
             grab_offset,
             inverted,
         }) => {
-            if *track_length > 0.0 && *total_cols > 0 {
-                let thumb_ratio = (*visible_cols as f32 / *total_cols as f32).min(1.0);
-                let thumb_length = (*track_length * thumb_ratio).max(1.0);
-                let effective_track = (*track_length - thumb_length).max(1.0);
+            if *track_length > 0.0 && *max_scroll > 0 {
+                let effective_track = (*track_length - *thumb_length).max(1.0);
                 let rel = (position.x - *track_start - *grab_offset) / effective_track;
                 let clamped = rel.clamp(0.0, 1.0);
                 let clamped = if *inverted { 1.0 - clamped } else { clamped };
-                let max_scroll = total_cols.saturating_sub(*visible_cols);
-                let new_offset = (clamped * max_scroll as f32).round() as usize;
+                let new_offset = (clamped * *max_scroll as f32).round() as usize;
                 events.push(UiEvent::ScrollOffsetChanged {
                     widget: widget.clone(),
                     new_offset,
@@ -527,8 +524,8 @@ pub fn dispatch_click(
                         widget: surface.id.clone(),
                         track_start: sb.track_bounds.y,
                         track_length: sb.track_bounds.height,
-                        visible_rows: sb.visible_items,
-                        total_items: sb.total_items,
+                        thumb_length: sb.thumb_bounds.height,
+                        max_scroll: sb.total_items.saturating_sub(sb.visible_items),
                         grab_offset,
                         inverted: sb.inverted,
                     });
@@ -726,8 +723,8 @@ mod tests {
             widget: id("picker"),
             track_start: 100.0,
             track_length: 200.0,
-            visible_rows: 10,
-            total_items: 50,
+            thumb_length: 16.0,
+            max_scroll: 40,
             grab_offset: 0.0,
             inverted: false,
         });
@@ -760,8 +757,8 @@ mod tests {
             widget: id("picker"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_rows: 20,
-            total_items: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 0.0,
             inverted: false,
         });
@@ -785,8 +782,8 @@ mod tests {
             widget: id("p"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_rows: 20,
-            total_items: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 0.0,
             inverted: false,
         });
@@ -816,8 +813,8 @@ mod tests {
             widget: id("p"),
             track_start: 0.0,
             track_length: 0.0,
-            visible_rows: 10,
-            total_items: 100,
+            thumb_length: 0.0,
+            max_scroll: 90,
             grab_offset: 0.0,
             inverted: false,
         });
@@ -833,8 +830,8 @@ mod tests {
             widget: id("p"),
             track_start: 0.0,
             track_length: 10.0,
-            visible_rows: 10,
-            total_items: 20,
+            thumb_length: 5.0,
+            max_scroll: 10,
             grab_offset: 0.0,
             inverted: false,
         });
@@ -857,8 +854,8 @@ mod tests {
             widget: id("p"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_rows: 20,
-            total_items: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 8.0,
             inverted: false,
         });
@@ -879,8 +876,8 @@ mod tests {
             widget: id("editor:hsb"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_cols: 20,
-            total_cols: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 0.0,
             inverted: false,
         });
@@ -904,8 +901,8 @@ mod tests {
             widget: id("editor:hsb"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_cols: 20,
-            total_cols: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 8.0,
             inverted: false,
         });
@@ -913,6 +910,142 @@ mod tests {
         match &events[1] {
             UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 40),
             other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn painted_thumb_length_controls_effective_track() {
+        // Track 400px, 20 visible out of 4000 total.
+        // Painted thumb = 20px → effective = 380; max_scroll = 3980.
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarX {
+            widget: id("editor:hsb"),
+            track_start: 100.0,
+            track_length: 400.0,
+            thumb_length: 20.0,
+            max_scroll: 3980,
+            grab_offset: 0.0,
+            inverted: false,
+        });
+        // Cursor at x = 100 + 380 (end of effective track) → ratio 1.0 → 3980
+        let events = dispatch_mouse_drag(&drag, pt(480.0, 0.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 3980),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+        // Halfway: x = 100 + 190 = 290 → ratio 0.5 → 1990
+        let events = dispatch_mouse_drag(&drag, pt(290.0, 0.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => assert_eq!(*new_offset, 1990),
+            other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    // ── Round-trip: fit_thumb ↔ dispatch agreement ─────────────────
+    //
+    // The rasteriser calls `fit_thumb` to position the thumb. The
+    // dispatcher inverts that position back to a scroll offset.
+    // These tests prove the two agree for every scroll offset
+    // including 0 and max_scroll.
+
+    fn assert_round_trip(
+        label: &str,
+        track_start: f32,
+        track_length: f32,
+        total: usize,
+        visible: usize,
+        min_thumb: f32,
+        scroll: usize,
+    ) {
+        use crate::primitives::scrollbar::fit_thumb;
+        let max_scroll = total.saturating_sub(visible);
+        let (thumb_start, thumb_len) = fit_thumb(
+            scroll as f32,
+            total as f32,
+            visible as f32,
+            track_length,
+            min_thumb,
+        );
+        let grab = thumb_len / 2.0;
+        let cursor_x = track_start + thumb_start + grab;
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarX {
+            widget: id("sb"),
+            track_start,
+            track_length,
+            thumb_length: thumb_len,
+            max_scroll,
+            grab_offset: grab,
+            inverted: false,
+        });
+        let events = dispatch_mouse_drag(&drag, pt(cursor_x, 0.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => {
+                assert_eq!(
+                    *new_offset, scroll,
+                    "{label}: expected offset {scroll}, got {new_offset}"
+                );
+            }
+            other => panic!("{label}: expected ScrollOffsetChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trip_vimcode_numbers_at_max() {
+        assert_round_trip("3609 max", 50.0, 800.0, 3609, 137, 20.0, 3609 - 137);
+    }
+
+    #[test]
+    fn round_trip_vimcode_numbers_at_zero() {
+        assert_round_trip("3609 zero", 50.0, 800.0, 3609, 137, 20.0, 0);
+    }
+
+    #[test]
+    fn round_trip_vimcode_numbers_at_midpoint() {
+        assert_round_trip("3609 mid", 50.0, 800.0, 3609, 137, 20.0, 1736);
+    }
+
+    #[test]
+    fn round_trip_small_content_at_max() {
+        assert_round_trip("small max", 0.0, 100.0, 200, 50, 10.0, 150);
+    }
+
+    #[test]
+    fn round_trip_large_min_thumb_at_max() {
+        // thumb dominates: min_thumb = 40 on 100px track → effective = 60
+        assert_round_trip("big thumb max", 0.0, 100.0, 5000, 50, 40.0, 4950);
+    }
+
+    #[test]
+    fn round_trip_cursor_past_track_end_reaches_max() {
+        use crate::primitives::scrollbar::fit_thumb;
+        let track_start = 50.0;
+        let track_length = 800.0;
+        let total = 3609_usize;
+        let visible = 137_usize;
+        let max_scroll = total - visible;
+        let (_, thumb_len) = fit_thumb(0.0, total as f32, visible as f32, track_length, 20.0);
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::ScrollbarX {
+            widget: id("sb"),
+            track_start,
+            track_length,
+            thumb_length: thumb_len,
+            max_scroll,
+            grab_offset: 0.0,
+            inverted: false,
+        });
+        // Cursor WAY past track end — must still clamp to max_scroll
+        let events = dispatch_mouse_drag(
+            &drag,
+            pt(track_start + track_length + 200.0, 0.0),
+            buttons_mask_left(),
+        );
+        match &events[1] {
+            UiEvent::ScrollOffsetChanged { new_offset, .. } => {
+                assert_eq!(*new_offset, max_scroll);
+            }
+            other => panic!("expected ScrollOffsetChanged, got {other:?}"),
         }
     }
 
@@ -1084,14 +1217,10 @@ mod tests {
         assert!(drag.is_active());
         match drag.target().unwrap() {
             DragTarget::ScrollbarY {
-                widget,
-                visible_rows,
-                total_items,
-                ..
+                widget, max_scroll, ..
             } => {
                 assert_eq!(widget.as_str(), "log");
-                assert_eq!(*visible_rows, 30);
-                assert_eq!(*total_items, 100);
+                assert_eq!(*max_scroll, 70);
             }
             other => panic!("expected ScrollbarY, got {:?}", other),
         }
@@ -1233,8 +1362,8 @@ mod tests {
             widget: id("term"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_rows: 20,
-            total_items: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 0.0,
             inverted: true,
         });
@@ -1261,8 +1390,8 @@ mod tests {
             widget: id("term"),
             track_start: 100.0,
             track_length: 80.0,
-            visible_rows: 20,
-            total_items: 100,
+            thumb_length: 16.0,
+            max_scroll: 80,
             grab_offset: 0.0,
             inverted: true,
         });
