@@ -502,6 +502,19 @@ Iterated three times on #134 before landing the correct fix:
 | After #133 (selection wrap) | 600 |
 | After #134 (drag dispatch) | 607 |
 | After #136 (h-scroll surface) | 611 |
+| After PR #139 (char_width + smoke test) | 611 |
+
+### Additional PRs (no issue number)
+
+| PR | Title | Key deliverable |
+|---|---|---|
+| #139 | Backend::char_width() + monospace default + Pango-measured width | `Backend::char_width()` on trait (TUI=1.0, GTK=Pango-measured). GTK runner default font `Sans 11` → `Monospace 11`. `approximate_char_width()` → `layout.pixel_size()` measurement. Paired `tui_hscroll`/`gtk_hscroll` smoke test (500-char line, $ jumps to end). |
+
+### Bugs found + fixed
+
+1. **GTK runner default font was proportional**: `Sans 11` caused `char_width` to be systematically too narrow — digits rendered wider than the average. `draw_editor`'s `scroll_left * char_width` formula assumes monospace. Fixed by changing default to `Monospace 11`.
+2. **GTK char_width used approximate measurement**: `metrics.approximate_char_width()` doesn't account for font hinting. Over 500 chars the error was ~9 characters. Fixed by measuring via `layout.set_text("0"); layout.pixel_size()`.
+3. **No `char_width()` on Backend trait**: `AppLogic` couldn't compute viewport_cols portably — only `line_height()` was exposed. Added `char_width()` to the trait.
 
 ### Open queue for next session
 
