@@ -413,6 +413,10 @@ impl Backend for TuiBackend {
         1.0
     }
 
+    fn char_width(&self) -> f32 {
+        1.0
+    }
+
     // ─── Drawing ───────────────────────────────────────────────────────────
     //
     // Implementations call into the public `crate::tui::draw_*` free
@@ -1073,6 +1077,9 @@ mod tests {
             Vec::new()
         }
 
+        fn char_width(&self) -> f32 {
+            1.0
+        }
         fn line_height(&self) -> f32 {
             1.0
         }
