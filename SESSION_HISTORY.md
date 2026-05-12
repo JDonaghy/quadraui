@@ -460,6 +460,48 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 
 ### Open queue for next session
 
+*Resolved in session 2026-05-11b/12 below.*
+
+## Session 2026-05-11b/12 — Terminal scrollbar fixes + editor selection wrap + drag dispatch rework
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (3)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 131 | Backend::draw_terminal scrollbar: support inverted mode + configurable width | B (PR #132) | `TerminalScrollbar::inverted` + `width: Option<u16>` + `effective_scroll_offset()` method. GTK scrollbar width 8px default (was line_height ~18px). 8 new tests (5 unit + 3 TUI paint round-trip). |
+| 133 | GTK draw_editor: char selection not painted on wrap-continuation rows | A | Replaced `line_to_view` HashMap lookup (skipped continuations) with direct visual-row iteration for Char and Block selection. Column ranges adjusted by `segment_col_offset` per segment. Removed unused `HashMap` import. |
+| 134 | DragTarget::ScrollbarX/Y should respect minimum thumb length from rasteriser | B (PR #135) | Full Option B rework: replaced `visible_rows`/`total_items`/`visible_cols`/`total_cols` with `thumb_length: f32` + `max_scroll: usize`. Dispatcher does zero recomputation — maps cursor position directly using painted geometry. 6 round-trip tests proving `fit_thumb` ↔ `dispatch_mouse_drag` agreement. |
+
+### API changes
+
+| Change | Scope | Migration |
+|---|---|---|
+| `TerminalScrollbar::inverted` | New field, `#[serde(default)]` | Backward compatible; set `true` for scrollback-style terminals |
+| `TerminalScrollbar::width` | New field, `Option<u16>` | Backward compatible; `None` uses default (8px GTK, 1 cell TUI) |
+| `TerminalScrollbar::effective_scroll_offset()` | New method | Both rasterisers use it; consumers don't call directly |
+| `DragTarget::ScrollbarY` | Breaking: `visible_rows`/`total_items` → `thumb_length`/`max_scroll` | Pass `Scrollbar.thumb_len` + actual scroll range |
+| `DragTarget::ScrollbarX` | Breaking: `visible_cols`/`total_cols` → `thumb_length`/`max_scroll` | Same pattern |
+
+### Bug investigation: h-scrollbar drag range
+
+Iterated three times on #134 before landing the correct fix:
+1. **`min_thumb_length` approach** — added a floor to the recomputed thumb. Still wrong: the recomputation used `visible/total` ratios which could be in different units (chars vs pixels) than the rasteriser.
+2. **`thumb_length` passthrough** — caller passes painted thumb size, no recomputation. Still wrong: dispatcher computed `max_scroll = total - visible` internally, which could use character counts while the actual scroll range was pixel-based.
+3. **Full Option B** — `thumb_length` + `max_scroll` both caller-supplied. Dispatcher does only `effective_track = track_length - thumb_length` and linear interpolation over `[0, max_scroll]`. Round-trip tests prove correctness. Root cause confirmed as unit mismatch on vimcode side.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 592 |
+| After #131 (terminal scrollbar) | 600 |
+| After #133 (selection wrap) | 600 |
+| After #134 (drag dispatch) | 607 |
+
+### Open queue for next session
+
 - #65 — SplitDragController compose helper (deferred)
 - #115 — quadraui-lua bridge crate (future)
 - #118 — quadraui-ipc JSON bridge (future)
