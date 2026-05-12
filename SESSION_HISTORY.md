@@ -466,13 +466,14 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 
 **Agent:** Claude Opus 4.6 (1M context)
 
-### Issues closed (3)
+### Issues closed (4)
 
 | # | Title | Path | Key deliverable |
 |---|---|---|---|
 | 131 | Backend::draw_terminal scrollbar: support inverted mode + configurable width | B (PR #132) | `TerminalScrollbar::inverted` + `width: Option<u16>` + `effective_scroll_offset()` method. GTK scrollbar width 8px default (was line_height ~18px). 8 new tests (5 unit + 3 TUI paint round-trip). |
 | 133 | GTK draw_editor: char selection not painted on wrap-continuation rows | A | Replaced `line_to_view` HashMap lookup (skipped continuations) with direct visual-row iteration for Char and Block selection. Column ranges adjusted by `segment_col_offset` per segment. Removed unused `HashMap` import. |
 | 134 | DragTarget::ScrollbarX/Y should respect minimum thumb length from rasteriser | B (PR #135) | Full Option B rework: replaced `visible_rows`/`total_items`/`visible_cols`/`total_cols` with `thumb_length: f32` + `max_scroll: usize`. Dispatcher does zero recomputation — maps cursor position directly using painted geometry. 6 round-trip tests proving `fit_thumb` ↔ `dispatch_mouse_drag` agreement. |
+| 136 | Horizontal scroll surface: register h-scrollbar as ScrollSurface for automatic dispatch | B (PR #137) | `axis: ScrollAxis` on `SurfaceScrollbar`. `dispatch_click` branches on axis: vertical uses y + `ScrollbarY`, horizontal uses x + `ScrollbarX`. Track-click paging uses left/right for horizontal. 4 new tests. |
 
 ### API changes
 
@@ -483,6 +484,7 @@ No new tests — this was consumer-side example logic + backend service wiring. 
 | `TerminalScrollbar::effective_scroll_offset()` | New method | Both rasterisers use it; consumers don't call directly |
 | `DragTarget::ScrollbarY` | Breaking: `visible_rows`/`total_items` → `thumb_length`/`max_scroll` | Pass `Scrollbar.thumb_len` + actual scroll range |
 | `DragTarget::ScrollbarX` | Breaking: `visible_cols`/`total_cols` → `thumb_length`/`max_scroll` | Same pattern |
+| `SurfaceScrollbar::axis` | New required field | Existing vertical scrollbars add `axis: ScrollAxis::Vertical`; new h-scrollbars use `Horizontal` |
 
 ### Bug investigation: h-scrollbar drag range
 
@@ -499,6 +501,7 @@ Iterated three times on #134 before landing the correct fix:
 | After #131 (terminal scrollbar) | 600 |
 | After #133 (selection wrap) | 600 |
 | After #134 (drag dispatch) | 607 |
+| After #136 (h-scroll surface) | 611 |
 
 ### Open queue for next session
 
