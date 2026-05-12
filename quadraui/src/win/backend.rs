@@ -146,6 +146,10 @@ impl Backend for WinBackend {
         self.current_line_height
     }
 
+    fn char_width(&self) -> f32 {
+        self.current_char_width
+    }
+
     // ─── Drawing ──────────────────────────────────────────────────────
 
     fn draw_tree(&mut self, _rect: Rect, _tree: &TreeView) {

@@ -99,6 +99,15 @@ pub trait Backend {
     /// Win-GUI — all from the same code path.
     fn line_height(&self) -> f32;
 
+    /// Approximate monospace character width in surface-native units.
+    /// TUI returns `1.0` (one cell); GTK returns the Pango
+    /// `approximate_char_width` in DIPs.
+    ///
+    /// Apps use this alongside [`Self::line_height`] for portable
+    /// horizontal layout. Example:
+    /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
+    fn char_width(&self) -> f32;
+
     // ─── Drawing — one method per primitive ────────────────────────────
     //
     // Implementations are thin wrappers around each backend crate's

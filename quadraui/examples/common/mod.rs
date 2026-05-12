@@ -27,6 +27,7 @@
 
 pub mod demo;
 pub mod form_groups;
+pub mod hscroll_editor;
 pub mod indicators_app;
 pub mod menu_bar_app;
 pub mod mini_app;
@@ -39,6 +40,7 @@ pub mod toast_app;
 
 pub use demo::AppState;
 pub use form_groups::FormGroupsApp;
+pub use hscroll_editor::HScrollEditor;
 pub use indicators_app::IndicatorsApp;
 pub use menu_bar_app::MenuBarApp;
 pub use mini_app::MiniApp;

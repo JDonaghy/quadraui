@@ -143,21 +143,28 @@ fn activate<A: AppLogic + 'static>(
         da.set_draw_func(move |da, cr, w, h| {
             let pango_ctx = pcfn::create_context(cr);
             let layout = pg::Layout::new(&pango_ctx);
-            // Default font — system sans, size 11. Resolves to whatever
-            // GTK's default theme provides (Cantarell on GNOME, Segoe UI
-            // on Windows, etc).
-            let font_desc = pg::FontDescription::from_string("Sans 11");
+            // Default font — system monospace, size 11. Monospace is
+            // required because `draw_editor`'s scroll formula
+            // (`scroll_left * char_width`) assumes uniform glyph
+            // width. Resolves to the fontconfig monospace alias
+            // (DejaVu Sans Mono, JetBrains Mono, etc).
+            let font_desc = pg::FontDescription::from_string("Monospace 11");
             layout.set_font_description(Some(&font_desc));
             // Single-line, no wrap. Belt-and-braces over the rasterisers
             // that also call `set_width(-1)` themselves.
             layout.set_width(-1);
 
             // Resolve font metrics for the default font and seed the
-            // backend's per-frame state. Cheap; the font metrics call
-            // is sub-microsecond after Pango caches it.
+            // backend's per-frame state.
             let metrics = pango_ctx.metrics(Some(&font_desc), None);
             let line_h = (metrics.ascent() + metrics.descent()) as f64 / pg::SCALE as f64;
-            let char_w = metrics.approximate_char_width() as f64 / pg::SCALE as f64;
+            // Measure actual laid-out character width instead of
+            // `approximate_char_width()` — the approximate value
+            // doesn't account for font hinting and drifts over long
+            // lines (e.g. 9 chars short at 500-char scroll).
+            layout.set_text("0");
+            let (char_w_px, _) = layout.pixel_size();
+            let char_w = char_w_px as f64;
 
             let mut backend_mut = backend.borrow_mut();
             backend_mut.begin_frame(crate::Viewport::new(w as f32, h as f32, 1.0));

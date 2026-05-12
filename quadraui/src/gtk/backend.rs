@@ -573,6 +573,10 @@ impl Backend for GtkBackend {
         self.current_line_height as f32
     }
 
+    fn char_width(&self) -> f32 {
+        self.current_char_width as f32
+    }
+
     fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
         let (cr, layout) = self
             .current_frame_refs()
