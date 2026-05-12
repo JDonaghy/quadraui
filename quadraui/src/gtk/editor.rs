@@ -44,7 +44,6 @@ use crate::theme::Theme;
 use crate::types::Color;
 use gtk4::cairo::Context;
 use gtk4::pango::{self, AttrColor, AttrList};
-use std::collections::HashMap;
 
 /// Paint an [`Editor`] primitive into the supplied Cairo context.
 ///
@@ -640,23 +639,8 @@ fn draw_visual_selection(
     let (sr, sg, sb) = cairo_rgb(color);
     cr.set_source_rgba(sr, sg, sb, alpha);
 
-    // Build buffer line → view row index mapping. For each buffer line
-    // pick the LAST non-skippable rendered row (skip wrap continuations,
-    // diff padding, and ghost continuations sharing the same line_idx).
-    let mut line_to_view: HashMap<usize, usize> = HashMap::new();
-    for (view_idx, rl) in lines.iter().enumerate() {
-        if rl.is_wrap_continuation || rl.is_ghost_continuation {
-            continue;
-        }
-        if rl.diff_status == Some(DiffLine::Padding) {
-            continue;
-        }
-        line_to_view.insert(rl.line_idx, view_idx);
-    }
     match sel.kind {
         SelectionKind::Line => {
-            // Highlight ALL visual rows (including wrap continuations) for
-            // each selected buffer line so wrapped lines are fully covered.
             for (view_idx, rl) in lines.iter().enumerate() {
                 if rl.line_idx >= sel.start_line
                     && rl.line_idx <= sel.end_line
@@ -671,104 +655,109 @@ fn draw_visual_selection(
             cr.fill().ok();
         }
         SelectionKind::Char => {
-            for line_idx in sel.start_line..=sel.end_line {
-                let Some(&view_idx) = line_to_view.get(&line_idx) else {
+            for (view_idx, rl) in lines.iter().enumerate() {
+                if rl.line_idx < sel.start_line
+                    || rl.line_idx > sel.end_line
+                    || rl.is_ghost_continuation
+                    || rl.diff_status == Some(DiffLine::Padding)
+                {
                     continue;
-                };
-                let rl = &lines[view_idx];
-                let y = rect.y as f64 + view_idx as f64 * line_height;
-                let line_text = &rl.raw_text;
+                }
+                let line_idx = rl.line_idx;
+                let sco = rl.segment_col_offset;
+                let seg_chars = rl.raw_text.chars().count();
 
+                let sel_start = if line_idx == sel.start_line {
+                    sel.start_col
+                } else {
+                    0
+                };
+                let sel_end = if line_idx == sel.end_line {
+                    sel.end_col + 1
+                } else {
+                    usize::MAX
+                };
+
+                let hi_start = sel_start.max(sco).saturating_sub(sco);
+                let hi_end = sel_end.min(sco + seg_chars).saturating_sub(sco);
+                if hi_start >= hi_end {
+                    continue;
+                }
+
+                let line_text = &rl.raw_text;
+                let y = rect.y as f64 + view_idx as f64 * line_height;
                 layout.set_text(line_text);
                 layout.set_attributes(None);
 
-                if sel.start_line == sel.end_line {
-                    let start_byte = line_text
-                        .char_indices()
-                        .nth(sel.start_col)
-                        .map(|(i, _)| i)
-                        .unwrap_or(line_text.len());
-                    let start_pos = layout.index_to_pos(start_byte as i32);
-                    let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
+                let start_byte = line_text
+                    .char_indices()
+                    .nth(hi_start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line_text.len());
+                let start_pos = layout.index_to_pos(start_byte as i32);
+                let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
 
-                    let end_col = (sel.end_col + 1).min(line_text.chars().count());
-                    let end_byte = line_text
-                        .char_indices()
-                        .nth(end_col)
-                        .map(|(i, _)| i)
-                        .unwrap_or(line_text.len());
-                    let end_pos = layout.index_to_pos(end_byte as i32);
-                    let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
-
-                    cr.rectangle(start_x, y, end_x - start_x, line_height);
-                    cr.fill().ok();
-                } else if line_idx == sel.start_line {
-                    let start_byte = line_text
-                        .char_indices()
-                        .nth(sel.start_col)
-                        .map(|(i, _)| i)
-                        .unwrap_or(line_text.len());
-                    let start_pos = layout.index_to_pos(start_byte as i32);
-                    let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
+                if hi_end >= seg_chars && sel_end > sco + seg_chars {
                     let (line_width, _) = layout.pixel_size();
                     cr.rectangle(
                         start_x,
                         y,
-                        text_x_offset + line_width as f64 - start_x,
+                        (text_x_offset + line_width as f64 - start_x).max(0.0),
                         line_height,
                     );
-                    cr.fill().ok();
-                } else if line_idx == sel.end_line {
-                    let end_col = (sel.end_col + 1).min(line_text.chars().count());
+                } else {
                     let end_byte = line_text
                         .char_indices()
-                        .nth(end_col)
+                        .nth(hi_end)
                         .map(|(i, _)| i)
                         .unwrap_or(line_text.len());
                     let end_pos = layout.index_to_pos(end_byte as i32);
                     let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
-                    cr.rectangle(text_x_offset, y, end_x - text_x_offset, line_height);
-                    cr.fill().ok();
-                } else {
-                    let (line_width, _) = layout.pixel_size();
-                    cr.rectangle(text_x_offset, y, line_width as f64, line_height);
-                    cr.fill().ok();
+                    cr.rectangle(start_x, y, end_x - start_x, line_height);
                 }
+                cr.fill().ok();
             }
         }
         SelectionKind::Block => {
-            for line_idx in sel.start_line..=sel.end_line {
-                let Some(&view_idx) = line_to_view.get(&line_idx) else {
+            for (view_idx, rl) in lines.iter().enumerate() {
+                if rl.line_idx < sel.start_line
+                    || rl.line_idx > sel.end_line
+                    || rl.is_ghost_continuation
+                    || rl.diff_status == Some(DiffLine::Padding)
+                {
                     continue;
-                };
-                let rl = &lines[view_idx];
-                let y = rect.y as f64 + view_idx as f64 * line_height;
-                let line_text = &rl.raw_text;
-                let line_len = line_text.chars().count();
+                }
+                let sco = rl.segment_col_offset;
+                let seg_chars = rl.raw_text.chars().count();
 
+                let hi_start = sel.start_col.max(sco).saturating_sub(sco);
+                let hi_end = (sel.end_col + 1).min(sco + seg_chars).saturating_sub(sco);
+                if hi_start >= hi_end {
+                    continue;
+                }
+
+                let line_text = &rl.raw_text;
+                let y = rect.y as f64 + view_idx as f64 * line_height;
                 layout.set_text(line_text);
                 layout.set_attributes(None);
 
-                if sel.start_col < line_len {
-                    let start_byte = line_text
-                        .char_indices()
-                        .nth(sel.start_col)
-                        .map(|(i, _)| i)
-                        .unwrap_or(line_text.len());
-                    let start_pos = layout.index_to_pos(start_byte as i32);
-                    let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
+                let start_byte = line_text
+                    .char_indices()
+                    .nth(hi_start)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line_text.len());
+                let start_pos = layout.index_to_pos(start_byte as i32);
+                let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
 
-                    let block_end_col = (sel.end_col + 1).min(line_len);
-                    let end_byte = line_text
-                        .char_indices()
-                        .nth(block_end_col)
-                        .map(|(i, _)| i)
-                        .unwrap_or(line_text.len());
-                    let end_pos = layout.index_to_pos(end_byte as i32);
-                    let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
+                let end_byte = line_text
+                    .char_indices()
+                    .nth(hi_end)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line_text.len());
+                let end_pos = layout.index_to_pos(end_byte as i32);
+                let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
 
-                    cr.rectangle(start_x, y, end_x - start_x, line_height);
-                }
+                cr.rectangle(start_x, y, end_x - start_x, line_height);
             }
             cr.fill().ok();
         }
