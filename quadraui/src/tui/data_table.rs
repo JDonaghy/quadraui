@@ -49,15 +49,30 @@ pub fn draw_data_table(
         set_cell(buf, area.x + x, header_y, ' ', header_fg, header_bg);
     }
 
+    let sep_fg = ratatui_color(theme.separator);
+    let h_off = table.h_scroll.round() as i16;
+
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() {
             break;
         }
         let col = &table.columns[col_idx];
-        let col_x = area.x + rc.x.round() as u16;
+        let col_x_raw = area.x as i32 + rc.x.round() as i32 - h_off as i32;
+        let col_x_end = col_x_raw + rc.width.round() as i32;
+        if col_x_end <= area.x as i32 || col_x_raw >= (area.x + area.width) as i32 {
+            continue;
+        }
         let col_w = rc.width.round() as u16;
         if col_w == 0 {
             continue;
+        }
+
+        // Column separator on the right edge (skip last column).
+        if col_idx + 1 < table.columns.len() {
+            let sep_cx = col_x_raw + col_w as i32 - 1;
+            if sep_cx >= area.x as i32 && sep_cx < (area.x + area.width) as i32 {
+                set_cell(buf, sep_cx as u16, header_y, '│', sep_fg, header_bg);
+            }
         }
 
         let sort_suffix = match &table.sort {
@@ -68,17 +83,26 @@ pub fn draw_data_table(
             _ => "",
         };
         let title = format!("{}{}", col.title, sort_suffix);
-        let text_len = title.chars().count() as u16;
-        let start = align_offset(col.align, text_len, col_w);
+        let text_len = title.chars().count() as i32;
+        let usable_w = if col_idx + 1 < table.columns.len() {
+            col_w.saturating_sub(1) as i32
+        } else {
+            col_w as i32
+        };
+        let start = align_offset(col.align, text_len as u16, usable_w as u16) as i32;
 
         for (i, ch) in title.chars().enumerate() {
-            let cx = col_x + start + i as u16;
-            if cx >= area.x + area.width {
+            let cx = col_x_raw + start + i as i32;
+            if cx >= col_x_raw + usable_w || cx >= (area.x + area.width) as i32 {
                 break;
             }
-            set_cell(buf, cx, header_y, ch, header_fg, header_bg);
-            if let Some(cell) = buf.cell_mut(ratatui::prelude::Position::new(cx, header_y)) {
-                cell.set_style(ratatui::style::Style::default().add_modifier(Modifier::BOLD));
+            if cx >= area.x as i32 {
+                set_cell(buf, cx as u16, header_y, ch, header_fg, header_bg);
+                if let Some(cell) =
+                    buf.cell_mut(ratatui::prelude::Position::new(cx as u16, header_y))
+                {
+                    cell.set_style(ratatui::style::Style::default().add_modifier(Modifier::BOLD));
+                }
             }
         }
     }
@@ -107,15 +131,18 @@ pub fn draw_data_table(
         }
 
         for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let cell_text: String = row
-                .cells
-                .get(col_idx)
-                .map(|c| c.spans.iter().map(|s| s.text.as_str()).collect())
-                .unwrap_or_default();
-            let text = cell_text.as_str();
-            let col_x = area.x + rc.x.round() as u16;
+            let styled = match row.cells.get(col_idx) {
+                Some(c) if !c.spans.is_empty() => c,
+                _ => continue,
+            };
+            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+            let col_x_raw = area.x as i32 + rc.x.round() as i32 - h_off as i32;
+            let col_x_end = col_x_raw + rc.width.round() as i32;
+            if col_x_end <= area.x as i32 || col_x_raw >= (area.x + area.width) as i32 {
+                continue;
+            }
             let col_w = rc.width.round() as u16;
-            if col_w == 0 || text.is_empty() {
+            if col_w == 0 || full_text.is_empty() {
                 continue;
             }
 
@@ -124,21 +151,27 @@ pub fn draw_data_table(
                 .get(col_idx)
                 .map(|c| c.align)
                 .unwrap_or(ColumnAlign::Left);
-            let text_len = text.chars().count() as u16;
-            let start = align_offset(align, text_len, col_w);
+            let text_len = full_text.chars().count() as u16;
+            let start = align_offset(align, text_len, col_w) as i32;
 
-            let cell_fg = if row.decoration == crate::types::Decoration::Muted {
-                muted_fg
-            } else {
-                row_fg
-            };
-
-            for (i, ch) in text.chars().enumerate() {
-                let cx = col_x + start + i as u16;
-                if cx >= area.x + area.width {
-                    break;
+            let is_muted = row.decoration == crate::types::Decoration::Muted;
+            let mut char_offset = 0i32;
+            for span in &styled.spans {
+                let span_fg = if is_muted {
+                    muted_fg
+                } else {
+                    span.fg.map(ratatui_color).unwrap_or(row_fg)
+                };
+                for ch in span.text.chars() {
+                    let cx = col_x_raw + start + char_offset;
+                    if cx >= (area.x + area.width) as i32 {
+                        break;
+                    }
+                    if cx >= area.x as i32 {
+                        set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                    }
+                    char_offset += 1;
                 }
-                set_cell(buf, cx, y, ch, cell_fg, row_bg);
             }
         }
     }
@@ -164,6 +197,23 @@ pub fn draw_data_table(
             1.0,
         );
         super::draw_scrollbar(buf, &sb, theme, theme.background);
+    }
+
+    // ── Horizontal scrollbar ─────────────────────────────────────────
+    if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
+        let hsb_y = area.y + area.height - layout.h_scrollbar_height.round() as u16;
+        let track_w = (area.width as f32 - layout.scrollbar_width).max(1.0);
+        let hsb_track = crate::event::Rect::new(area.x as f32, hsb_y as f32, track_w, 1.0);
+        let visible_w = (area.width as f32 - layout.scrollbar_width).max(1.0);
+        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
+            table.id.clone(),
+            hsb_track,
+            table.h_scroll,
+            layout.content_width,
+            visible_w,
+            1.0,
+        );
+        super::draw_scrollbar(buf, &hsb, theme, theme.background);
     }
 
     layout
@@ -226,6 +276,8 @@ mod tests {
             sort: Some((0, SortDirection::Ascending)),
             has_focus: true,
             show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
         }
     }
 

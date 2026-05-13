@@ -58,6 +58,7 @@ pub fn draw_data_table(
     cr.fill().ok();
 
     // ── Header text ───────────────────────────────────────────────────
+    let h_off = table.h_scroll as f64;
     set_source(cr, theme.foreground);
     let bold_attrs = pango::AttrList::new();
     bold_attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
@@ -79,7 +80,7 @@ pub fn draw_data_table(
         pango_layout.set_attributes(Some(&bold_attrs));
         let (text_w, _) = pango_layout.pixel_size();
 
-        let col_x = x + rc.x as f64;
+        let col_x = x + rc.x as f64 - h_off;
         let col_w = rc.width as f64;
 
         cr.save().ok();
@@ -96,6 +97,17 @@ pub fn draw_data_table(
         cr.restore().ok();
     }
     pango_layout.set_attributes(None);
+
+    // ── Header column separators ──────────────────────────────────────
+    set_source(cr, theme.separator);
+    for (col_idx, rc) in layout.columns.iter().enumerate() {
+        if col_idx + 1 >= layout.columns.len() {
+            break;
+        }
+        let sep_x = x + (rc.x + rc.width) as f64 - h_off;
+        cr.rectangle(sep_x - 0.5, y, 1.0, header_height);
+        cr.fill().ok();
+    }
 
     // ── Body rows ─────────────────────────────────────────────────────
     let body_y = y + header_height;
@@ -117,24 +129,24 @@ pub fn draw_data_table(
         }
 
         for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let cell_text: String = row
-                .cells
-                .get(col_idx)
-                .map(|c| c.spans.iter().map(|s| s.text.as_str()).collect())
-                .unwrap_or_default();
-            let text = cell_text.as_str();
-            if text.is_empty() || rc.width <= 0.0 {
+            let styled = match row.cells.get(col_idx) {
+                Some(c) if !c.spans.is_empty() => c,
+                _ => continue,
+            };
+            if rc.width <= 0.0 {
                 continue;
             }
 
             let col_w = rc.width as f64;
-            let col_x = x + rc.x as f64;
+            let col_x = x + rc.x as f64 - h_off;
+            let is_muted = row.decoration == crate::types::Decoration::Muted;
 
             cr.save().ok();
             cr.rectangle(col_x, row_y, col_w, line_height);
             cr.clip();
 
-            pango_layout.set_text(text);
+            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+            pango_layout.set_text(&full_text);
             pango_layout.set_attributes(None);
             let (text_w, _) = pango_layout.pixel_size();
 
@@ -149,13 +161,34 @@ pub fn draw_data_table(
                 ColumnAlign::Right => col_x + col_w - text_w as f64,
             };
 
-            if row.decoration == crate::types::Decoration::Muted {
+            // Per-span colored text via Pango attributes.
+            let attrs = pango::AttrList::new();
+            let mut byte_offset = 0u32;
+            for span in &styled.spans {
+                let span_bytes = span.text.len() as u32;
+                if !is_muted {
+                    if let Some(fg) = span.fg {
+                        let mut color_attr = pango::AttrColor::new_foreground(
+                            fg.r as u16 * 257,
+                            fg.g as u16 * 257,
+                            fg.b as u16 * 257,
+                        );
+                        color_attr.set_start_index(byte_offset);
+                        color_attr.set_end_index(byte_offset + span_bytes);
+                        attrs.insert(color_attr);
+                    }
+                }
+                byte_offset += span_bytes;
+            }
+            if is_muted {
                 set_source(cr, theme.muted_fg);
             } else {
                 set_source(cr, theme.foreground);
             }
+            pango_layout.set_attributes(Some(&attrs));
             cr.move_to(text_x, row_y);
             pcfn::show_layout(cr, pango_layout);
+            pango_layout.set_attributes(None);
             cr.restore().ok();
         }
     }
@@ -181,6 +214,28 @@ pub fn draw_data_table(
             line_height as f32,
         );
         super::draw_scrollbar(cr, &sb, theme);
+    }
+
+    // ── Horizontal scrollbar ─────────────────────────────────────────
+    if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
+        let hsb_y = y + height - layout.h_scrollbar_height as f64;
+        let track_w = (width - layout.scrollbar_width as f64).max(1.0);
+        let hsb_track = crate::event::Rect::new(
+            x as f32,
+            hsb_y as f32,
+            track_w as f32,
+            layout.h_scrollbar_height,
+        );
+        let visible_w = track_w as f32;
+        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
+            table.id.clone(),
+            hsb_track,
+            table.h_scroll,
+            layout.content_width,
+            visible_w,
+            line_height as f32,
+        );
+        super::draw_scrollbar(cr, &hsb, theme);
     }
 
     cr.restore().ok();
