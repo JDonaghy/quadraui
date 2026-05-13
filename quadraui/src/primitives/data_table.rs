@@ -105,10 +105,16 @@ pub struct DataTable {
     /// causes the content to be wider than the viewport.
     #[serde(default)]
     pub h_scroll: f32,
+    /// Per-column width overrides from user drag. When set, an override
+    /// replaces the column's `ColumnWidth` strategy with `Fixed(w)`.
+    /// `None` entries mean the column uses its original strategy.
+    /// Must be the same length as `columns` or empty.
+    #[serde(default)]
+    pub column_overrides: Vec<Option<f32>>,
 }
 
 /// Events a `DataTable` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DataTableEvent {
     /// User clicked a column header — app should toggle sort.
     HeaderClicked { col: usize },
@@ -118,6 +124,10 @@ pub enum DataTableEvent {
     RowSelected { idx: usize },
     /// User scrolled the table.
     Scroll { delta: i32, modifiers: Modifiers },
+    /// User dragged a column divider to resize. `col` is the column to
+    /// the left of the divider. `width` is the new width in surface
+    /// units. App should update `column_overrides[col]`.
+    ColumnResized { col: usize, width: f32 },
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────
@@ -255,7 +265,12 @@ impl DataTable {
             Some(min) if min > visible_col_area => min,
             _ => visible_col_area,
         };
-        let resolved = resolve_columns(&self.columns, layout_width, &measure);
+        let resolved = resolve_columns(
+            &self.columns,
+            layout_width,
+            &measure,
+            &self.column_overrides,
+        );
         let content_width = resolved.last().map(|c| c.x + c.width).unwrap_or(0.0);
         let h_scrolling = content_width > visible_col_area + 0.5;
         let h_sb_h = if h_scrolling {
@@ -289,7 +304,12 @@ impl DataTable {
 
 /// Resolve column widths from definitions + viewport width.
 /// Shared logic that TreeTable will also use.
-fn resolve_columns<F>(columns: &[Column], viewport_width: f32, measure: &F) -> Vec<ResolvedColumn>
+fn resolve_columns<F>(
+    columns: &[Column],
+    viewport_width: f32,
+    measure: &F,
+    overrides: &[Option<f32>],
+) -> Vec<ResolvedColumn>
 where
     F: Fn(&Column) -> ColumnMeasure,
 {
@@ -302,7 +322,14 @@ where
     let mut total_flex = 0.0_f32;
 
     // Pass 1: resolve Fixed and Content columns, accumulate flex weight.
-    for col in columns {
+    // Column overrides replace the original strategy with Fixed(w).
+    for (i, col) in columns.iter().enumerate() {
+        if let Some(Some(ow)) = overrides.get(i) {
+            let w = ow.min(remaining).max(0.0);
+            widths.push(w);
+            remaining -= w;
+            continue;
+        }
         match col.width {
             ColumnWidth::Fixed(w) => {
                 let w = w.min(remaining).max(0.0);
@@ -375,6 +402,7 @@ mod tests {
             show_scrollbar: false,
             min_total_width: None,
             h_scroll: 0.0,
+            column_overrides: Vec::new(),
         }
     }
 

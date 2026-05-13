@@ -152,6 +152,7 @@ impl DataTableApp {
             show_scrollbar: true,
             min_total_width: None,
             h_scroll: self.h_scroll,
+            column_overrides: Vec::new(),
         }
     }
 

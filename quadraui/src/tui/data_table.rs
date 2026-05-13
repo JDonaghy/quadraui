@@ -284,6 +284,7 @@ mod tests {
             show_scrollbar: false,
             min_total_width: None,
             h_scroll: 0.0,
+            column_overrides: Vec::new(),
         }
     }
 
