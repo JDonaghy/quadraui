@@ -95,6 +95,7 @@ pub struct TuiBackend {
     /// or ASCII fallbacks (`false`). Apps set this from their own
     /// settings via [`Self::set_nerd_fonts`]; defaults to `true`.
     nerd_fonts_enabled: bool,
+    double_click: super::events::DoubleClickDetector,
 }
 
 impl TuiBackend {
@@ -115,6 +116,7 @@ impl TuiBackend {
             current_frame_ptr: Cell::new(std::ptr::null_mut()),
             current_theme: crate::Theme::default(),
             nerd_fonts_enabled: true,
+            double_click: super::events::DoubleClickDetector::new(),
         }
     }
 
@@ -363,6 +365,7 @@ impl Backend for TuiBackend {
             }
         }
         self.apply_accelerators(&mut out);
+        self.double_click.process(&mut out);
         out
     }
 
@@ -379,6 +382,7 @@ impl Backend for TuiBackend {
             if let Ok(ev) = ratatui::crossterm::event::read() {
                 let mut out = super::events::crossterm_to_uievents(ev);
                 self.apply_accelerators(&mut out);
+                self.double_click.process(&mut out);
                 return out;
             }
         }
