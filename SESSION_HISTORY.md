@@ -518,8 +518,75 @@ Iterated three times on #134 before landing the correct fix:
 
 ### Open queue for next session
 
+*Continued in session 2026-05-12b/13 below.*
+
+## Session 2026-05-12b/13 — StatusBarLayout, DataTable, h-scroll, double-click, Lens assessment
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (5)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 140 | Backend::draw_status_bar returns StatusBarLayout | B (PR #141) | `StatusBarLayout` replaces `Vec<StatusBarHitRegion>`. `StatusBarInteraction` uses `StatusBarLayout::hit_test()`. Smoke-tested via multi_tree Run/Stop buttons. |
+| 142 | DataTable primitive: multi-column sortable table | B (PR #145, worktree) | New primitive: `DataTable`, `Column`, `ColumnWidth` (Fixed/Flex/Content), `DataRow`, `SortDirection`. TUI+GTK rasterisers, Backend trait methods, `resolve_columns()` shared layout. 15 tests. Paired `tui_data_table`/`gtk_data_table` k8s pod list example. |
+| 146 | DataTable v2: separators, scrollbar interaction, h-scroll, cell colors | B (PR #148, worktree) | Column header separators (TUI `│`, GTK 1px line). Per-cell colored text (per-span fg). V-scrollbar thumb drag + track page. H-scroll via `min_total_width` + `h_scroll` fields, half-height h-scrollbar (GTK), TUI i32 coordinate clipping. |
+| 147 | TUI backend: synthesize DoubleClick from repeated MouseDown | B (PR #149) | `DoubleClickDetector` on `TuiBackend` (400ms, ±1.5 cell radius). GTK runner `connect_pressed` fixed to emit DoubleClick on `n_press == 2`. `SidebarSystem` forwards DoubleClick → `RowActivated`. Multi_tree example distinguishes sel/dblclick. |
+| 138 | GTK draw_editor h_scroll_offset drift | closed by vimcode | Root cause was vimcode-side viewport_cols, not quadraui. |
+
+### Issues filed (3)
+
+| # | Title | Status |
+|---|---|---|
+| 142 | DataTable primitive | closed (PR #145) |
+| 143 | Chart primitive: sparkline / line / area | open |
+| 144 | TabGroup compose helper | open |
+
+### Additional PRs
+
+| PR | Title | Key deliverable |
+|---|---|---|
+| #139 | Backend::char_width() + monospace default + Pango-measured width | `Backend::char_width()` on trait. GTK runner `Sans 11` → `Monospace 11`. `approximate_char_width()` → `layout.pixel_size()`. Paired hscroll smoke test. |
+
+### New primitive shipped
+
+| Primitive | Files | Features |
+|---|---|---|
+| DataTable | primitives/data_table.rs, tui/data_table.rs, gtk/data_table.rs | Sortable column headers with ▲/▼ indicators + separator lines, Fixed/Flex/Content column sizing, per-cell colored text (StyledText spans), row selection, vertical scrollbar (thumb drag + track page), horizontal scroll with min_total_width + half-height h-scrollbar, header divider hit-test for column resize |
+
+### Lens assessment
+
+Audited quadraui's 29 primitives against Lens (Kubernetes IDE) features. Found ~90% UI coverage. Key gaps:
+- **DataTable** — shipped this session (#142, #146)
+- **Chart** — filed #143 (sparkline/line/area for metrics)
+- **TabGroup** — filed #144 (compose helper for tabbed split panes)
+
+### Bugs found + fixed
+
+1. **GTK runner default font proportional** (PR #139): `Sans 11` → `Monospace 11`. `approximate_char_width()` → `layout.pixel_size()` for Pango-accurate measurement.
+2. **GTK column text bleed** (#142): no per-column Cairo clip. Fixed with `cr.save()/clip()/restore()` per cell.
+3. **TUI h-scroll columns anchored** (#146): header/body column x-positions used `u16` which couldn't go negative. Fixed with `i32` coordinate math and `cx >= area.x` guard.
+4. **GTK h-scrollbar full row height** (#146): used `row_height` for h-scrollbar. Fixed to `row_height * 0.5` when `row_height > 1.5` (GTK).
+5. **SidebarSystem dropped DoubleClick** (#147): only matched `MouseDown`. Added `double_click()` method forwarding to TreeController → `RowActivated`.
+6. **GTK runner ignored n_press** (#147): `connect_pressed` always emitted `MouseDown`. Fixed to emit `DoubleClick` when `n_press == 2`.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start (from previous) | 611 |
+| After #140 (StatusBarLayout) | 611 |
+| After #142 (DataTable v1) | 626 |
+| After #146 (DataTable v2) | 626 |
+| After PR #139 (char_width) | 626 |
+| After #147 (double-click) | 629 |
+
+### Open queue for next session
+
 - #65 — SplitDragController compose helper (deferred)
 - #115 — quadraui-lua bridge crate (future)
 - #118 — quadraui-ipc JSON bridge (future)
+- #143 — Chart primitive (sparkline / line / area)
+- #144 — TabGroup compose helper
 - Windows milestone (#19–#31)
 - macOS milestone (#32–#44)
