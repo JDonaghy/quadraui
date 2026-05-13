@@ -16,6 +16,7 @@ use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
+use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
@@ -125,6 +126,8 @@ pub trait Backend {
     // primitive in the same PR that adds it to the trait.
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
+    fn draw_data_table(&mut self, rect: Rect, table: &DataTable) -> DataTableLayout;
+    fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 

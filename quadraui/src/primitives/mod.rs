@@ -8,6 +8,7 @@ pub mod activity_bar;
 pub mod command_center;
 pub mod completions;
 pub mod context_menu;
+pub mod data_table;
 pub mod dialog;
 pub mod drop_zone;
 pub mod editor;

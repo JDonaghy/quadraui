@@ -137,6 +137,10 @@ pub use primitives::context_menu::{
     ContextMenu, ContextMenuEvent, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
     ContextMenuLayout, ContextMenuPlacement, ResolvedContextMenuPlacement, VisibleContextMenuItem,
 };
+pub use primitives::data_table::{
+    Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
+    DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
+};
 pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
     DialogSeverity, VisibleDialogButton,
