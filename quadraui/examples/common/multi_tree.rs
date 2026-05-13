@@ -158,9 +158,12 @@ impl AppLogic for DebugSidebar {
                 self.last_action = format!("header→{section}");
                 Reaction::Redraw
             }
-            SidebarEvent::RowSelected { section, path }
-            | SidebarEvent::RowActivated { section, path } => {
-                self.last_action = format!("row→{section} {path:?}");
+            SidebarEvent::RowSelected { section, path } => {
+                self.last_action = format!("sel→{section} {path:?}");
+                Reaction::Redraw
+            }
+            SidebarEvent::RowActivated { section, path } => {
+                self.last_action = format!("dblclick→{section} {path:?}");
                 Reaction::Redraw
             }
             SidebarEvent::ContextMenuRequested {
