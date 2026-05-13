@@ -95,6 +95,16 @@ pub struct DataTable {
     /// Show a vertical scrollbar when rows exceed the viewport.
     #[serde(default)]
     pub show_scrollbar: bool,
+    /// Minimum total width for all columns. When the viewport is
+    /// narrower, columns are laid out at this width and a horizontal
+    /// scrollbar appears. `None` = columns squeeze to fit.
+    #[serde(default)]
+    pub min_total_width: Option<f32>,
+    /// Horizontal scroll offset in surface-native units (pixels for
+    /// GTK, cells for TUI). Only meaningful when `min_total_width`
+    /// causes the content to be wider than the viewport.
+    #[serde(default)]
+    pub h_scroll: f32,
 }
 
 /// Events a `DataTable` emits back to the app.
@@ -156,8 +166,14 @@ pub struct DataTableLayout {
     pub visible_rows: usize,
     pub viewport_width: f32,
     pub viewport_height: f32,
-    /// Width reserved for the scrollbar (0 when hidden).
+    /// Width reserved for the vertical scrollbar (0 when hidden).
     pub scrollbar_width: f32,
+    /// Total content width after column layout. When this exceeds
+    /// `viewport_width`, horizontal scrolling is active.
+    pub content_width: f32,
+    /// Height reserved for the horizontal scrollbar (0 when not
+    /// scrolling horizontally).
+    pub h_scrollbar_height: f32,
 }
 
 /// Grab zone half-width for column divider detection (surface units).
@@ -234,9 +250,24 @@ impl DataTable {
         } else {
             0.0
         };
-        let col_area = (viewport_width - sb_w).max(0.0);
-        let resolved = resolve_columns(&self.columns, col_area, &measure);
-        let body_height = (viewport_height - header_height).max(0.0);
+        let visible_col_area = (viewport_width - sb_w).max(0.0);
+        let layout_width = match self.min_total_width {
+            Some(min) if min > visible_col_area => min,
+            _ => visible_col_area,
+        };
+        let resolved = resolve_columns(&self.columns, layout_width, &measure);
+        let content_width = resolved.last().map(|c| c.x + c.width).unwrap_or(0.0);
+        let h_scrolling = content_width > visible_col_area + 0.5;
+        let h_sb_h = if h_scrolling {
+            if row_height > 1.5 {
+                (row_height * 0.5).round()
+            } else {
+                row_height
+            }
+        } else {
+            0.0
+        };
+        let body_height = (viewport_height - header_height - h_sb_h).max(0.0);
         let visible_rows = if row_height > 0.0 {
             (body_height / row_height).floor() as usize
         } else {
@@ -250,6 +281,8 @@ impl DataTable {
             viewport_width,
             viewport_height,
             scrollbar_width: sb_w,
+            content_width,
+            h_scrollbar_height: h_sb_h,
         }
     }
 }
@@ -340,6 +373,8 @@ mod tests {
             sort: None,
             has_focus: false,
             show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
         }
     }
 

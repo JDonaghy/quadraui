@@ -1047,6 +1047,8 @@ mod tests {
                 viewport_width: 0.0,
                 viewport_height: 0.0,
                 scrollbar_width: 0.0,
+                content_width: 0.0,
+                h_scrollbar_height: 0.0,
             }
         }
         fn data_table_layout(
@@ -1062,6 +1064,8 @@ mod tests {
                 viewport_width: 0.0,
                 viewport_height: 0.0,
                 scrollbar_width: 0.0,
+                content_width: 0.0,
+                h_scrollbar_height: 0.0,
             }
         }
         fn draw_palette(&mut self, rect: QRect, palette: &Palette) {

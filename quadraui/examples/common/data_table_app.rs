@@ -7,6 +7,7 @@
 //! - `d` — toggle sort direction
 //! - `q` / `Esc` — quit
 
+use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableEvent,
     DataTableHit, DataTableLayout, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar,
@@ -20,6 +21,11 @@ pub struct DataTableApp {
     sort_col: Option<usize>,
     sort_asc: bool,
     resize_col: Option<usize>,
+    /// Vertical scrollbar thumb drag: (track_start_y, track_height, thumb_length, grab_offset)
+    sb_drag: Option<(f32, f32, f32, f32)>,
+    /// Horizontal scrollbar thumb drag: (track_start_x, track_width, thumb_length, grab_offset)
+    h_sb_drag: Option<(f32, f32, f32, f32)>,
+    h_scroll: f32,
 }
 
 impl DataTableApp {
@@ -31,6 +37,9 @@ impl DataTableApp {
             sort_col: Some(0),
             sort_asc: true,
             resize_col: None,
+            sb_drag: None,
+            h_sb_drag: None,
+            h_scroll: 0.0,
         }
     }
 
@@ -141,6 +150,8 @@ impl DataTableApp {
             }),
             has_focus: true,
             show_scrollbar: true,
+            min_total_width: None,
+            h_scroll: self.h_scroll,
         }
     }
 
@@ -204,10 +215,36 @@ impl DataTableApp {
     fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
         let vp = backend.viewport();
         let lh = backend.line_height();
+        let cw = backend.char_width();
         let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
         let table_rect = Rect::new(0.0, 0.0, vp.width, vp.height - bar_h);
-        let table = self.build_table();
+        let mut table = self.build_table();
+        table.min_total_width = Some(80.0 * cw);
         backend.data_table_layout(table_rect, &table)
+    }
+
+    fn scrollbar_geometry(&self, backend: &dyn Backend) -> Option<(f32, f32, f32, f32, f32)> {
+        let total = Self::rows().len();
+        let layout = self.table_layout(backend);
+        if !self.build_table().show_scrollbar
+            || total <= layout.visible_rows
+            || layout.scrollbar_width <= 0.0
+        {
+            return None;
+        }
+        let vp = backend.viewport();
+        let lh = backend.line_height();
+        let sb_x = vp.width - layout.scrollbar_width;
+        let track_y = layout.header_height;
+        let track_h = (vp.height - lh.max(1.0) * 1.5 - layout.header_height).max(1.0);
+        let (thumb_start, thumb_len) = fit_thumb(
+            self.scroll_offset as f32,
+            total as f32,
+            layout.visible_rows as f32,
+            track_h,
+            if lh > 1.5 { lh } else { 1.0 },
+        );
+        Some((sb_x, track_y, track_h, thumb_start, thumb_len))
     }
 
     fn ensure_visible(&mut self, backend: &dyn Backend) {
@@ -234,9 +271,11 @@ impl AppLogic for DataTableApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let lh = backend.line_height();
+        let cw = backend.char_width();
         let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
         let table_rect = Rect::new(0.0, 0.0, vp.width, vp.height - bar_h);
-        let table = self.build_table();
+        let mut table = self.build_table();
+        table.min_total_width = Some(80.0 * cw);
         let _layout = backend.draw_data_table(table_rect, &table);
 
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
@@ -275,12 +314,78 @@ impl AppLogic for DataTableApp {
                     Key::Named(NamedKey::End) => {
                         self.selected = Some(total.saturating_sub(1));
                     }
+                    Key::Char('H') | Key::Named(NamedKey::Left) => {
+                        self.h_scroll = (self.h_scroll - 5.0).max(0.0);
+                    }
+                    Key::Char('L') | Key::Named(NamedKey::Right) => {
+                        let layout = self.table_layout(backend);
+                        let max_h = (layout.content_width - layout.viewport_width
+                            + layout.scrollbar_width)
+                            .max(0.0);
+                        self.h_scroll = (self.h_scroll + 5.0).min(max_h);
+                    }
                     _ => return Reaction::Continue,
                 }
                 self.ensure_visible(backend);
                 Reaction::Redraw
             }
             UiEvent::MouseDown { position, .. } => {
+                // Check h-scrollbar first.
+                let layout = self.table_layout(backend);
+                if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
+                    let vp = backend.viewport();
+                    let lh = backend.line_height();
+                    let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
+                    let table_h = vp.height - bar_h;
+                    let hsb_y = table_h - layout.h_scrollbar_height;
+                    if position.y >= hsb_y && position.y < table_h {
+                        let track_w = (vp.width - layout.scrollbar_width).max(1.0);
+                        let visible_w = track_w;
+                        let max_h_scroll = (layout.content_width - visible_w).max(0.0);
+                        let (thumb_start, thumb_len) = fit_thumb(
+                            self.h_scroll,
+                            layout.content_width,
+                            visible_w,
+                            track_w,
+                            if lh > 1.5 { lh } else { 1.0 },
+                        );
+                        let local_x = position.x;
+                        if local_x >= thumb_start && local_x < thumb_start + thumb_len {
+                            self.h_sb_drag = Some((0.0, track_w, thumb_len, local_x - thumb_start));
+                            return Reaction::Continue;
+                        }
+                        // Track click — page left/right.
+                        let page = visible_w;
+                        if local_x < thumb_start {
+                            self.h_scroll = (self.h_scroll - page).max(0.0);
+                        } else {
+                            self.h_scroll = (self.h_scroll + page).min(max_h_scroll);
+                        }
+                        return Reaction::Redraw;
+                    }
+                }
+                // Check v-scrollbar.
+                if let Some((sb_x, track_y, track_h, thumb_start, thumb_len)) =
+                    self.scrollbar_geometry(backend)
+                {
+                    let vis = self.visible_rows(backend);
+                    let max_scroll = total.saturating_sub(vis);
+                    if position.x >= sb_x {
+                        let local_y = position.y - track_y;
+                        if local_y >= thumb_start && local_y < thumb_start + thumb_len {
+                            self.sb_drag =
+                                Some((track_y, track_h, thumb_len, local_y - thumb_start));
+                            return Reaction::Continue;
+                        }
+                        // Track click — page up/down.
+                        if local_y < thumb_start {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(vis);
+                        } else {
+                            self.scroll_offset = (self.scroll_offset + vis).min(max_scroll);
+                        }
+                        return Reaction::Redraw;
+                    }
+                }
                 let layout = self.table_layout(backend);
                 match layout.hit_test(position.x, position.y, self.scroll_offset, total) {
                     DataTableHit::Header { col } => {
@@ -304,6 +409,23 @@ impl AppLogic for DataTableApp {
                 }
             }
             UiEvent::MouseMoved { position, .. } => {
+                if let Some((track_x, track_w, thumb_len, grab_off)) = self.h_sb_drag {
+                    let lay = self.table_layout(backend);
+                    let visible_w = (lay.viewport_width - lay.scrollbar_width).max(1.0);
+                    let max_h_scroll = (lay.content_width - visible_w).max(0.0);
+                    let effective = (track_w - thumb_len).max(1.0);
+                    let rel = ((position.x - track_x - grab_off) / effective).clamp(0.0, 1.0);
+                    self.h_scroll = (rel * max_h_scroll).round().min(max_h_scroll);
+                    return Reaction::Redraw;
+                }
+                if let Some((track_y, track_h, thumb_len, grab_off)) = self.sb_drag {
+                    let vis = self.visible_rows(backend);
+                    let max_scroll = total.saturating_sub(vis);
+                    let effective = (track_h - thumb_len).max(1.0);
+                    let rel = ((position.y - track_y - grab_off) / effective).clamp(0.0, 1.0);
+                    self.scroll_offset = (rel * max_scroll as f32).round() as usize;
+                    return Reaction::Redraw;
+                }
                 if let Some(col) = self.resize_col {
                     let layout = self.table_layout(backend);
                     if col < layout.columns.len() {
@@ -316,12 +438,22 @@ impl AppLogic for DataTableApp {
                 Reaction::Continue
             }
             UiEvent::MouseUp { .. } => {
-                if self.resize_col.take().is_some() {
+                let had_drag = self.resize_col.take().is_some()
+                    || self.sb_drag.take().is_some()
+                    || self.h_sb_drag.take().is_some();
+                if had_drag {
                     return Reaction::Redraw;
                 }
                 Reaction::Continue
             }
             UiEvent::Scroll { delta, .. } => {
+                if delta.x.abs() > 0.01 {
+                    let layout = self.table_layout(backend);
+                    let max_h = (layout.content_width - layout.viewport_width
+                        + layout.scrollbar_width)
+                        .max(0.0);
+                    self.h_scroll = (self.h_scroll - delta.x * 10.0).clamp(0.0, max_h);
+                }
                 let vis = self.visible_rows(backend);
                 if delta.y < 0.0 {
                     self.scroll_offset = self
