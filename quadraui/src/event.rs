@@ -37,8 +37,8 @@ use std::path::PathBuf;
 
 use crate::types::{Modifiers, WidgetId};
 use crate::{
-    ActivityBarEvent, FormEvent, ListViewEvent, PaletteEvent, StatusBarEvent, TabBarEvent,
-    TerminalEvent, TextDisplayEvent, TreeEvent,
+    ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
+    StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, TreeEvent,
 };
 
 // ─── Supporting types ───────────────────────────────────────────────────────
@@ -315,6 +315,8 @@ pub enum UiEvent {
     ActivityBar(WidgetId, ActivityBarEvent),
     Terminal(WidgetId, TerminalEvent),
     TextDisplay(WidgetId, TextDisplayEvent),
+    Chart(WidgetId, ChartEvent),
+    DataTable(WidgetId, DataTableEvent),
 
     // ── Escape hatch ───────────────────────────────────────────────────
     /// Backend-specific event the crate couldn't normalise. Apps ignore

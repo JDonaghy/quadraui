@@ -77,6 +77,14 @@ pub struct Series {
 pub enum ChartEvent {
     /// User clicked the chart body.
     Clicked { id: WidgetId },
+    /// User clicked a specific data point.
+    DataPointClicked {
+        id: WidgetId,
+        series_idx: usize,
+        data_idx: usize,
+    },
+    /// User clicked a legend entry.
+    LegendClicked { id: WidgetId, series_idx: usize },
 }
 
 // ── Layout API ──────────────────────────────────────────────────────────────
