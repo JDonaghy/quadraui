@@ -438,18 +438,61 @@ fn paint_hover_marker(
     chart: &Chart,
     theme: &Theme,
 ) {
-    for &(si, di, sx, sy) in &layout.data_point_positions {
-        if si == series_idx && di == data_idx {
-            let col = sx.round() as u16;
-            let row = sy.round() as u16;
-            let fg = ratatui_color(series_color(chart, si));
-            let bg = ratatui_color(theme.background);
-            let buf_area = buf.area;
-            if col < buf_area.x + buf_area.width && row < buf_area.y + buf_area.height {
-                set_cell(buf, col, row, '●', fg, bg);
-            }
-            return;
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let py = pa.y.round() as u16;
+    let pw = pa.width.round() as u16;
+    let ph = pa.height.round() as u16;
+
+    let s = match chart.series.get(series_idx) {
+        Some(s) if data_idx < s.data.len() => s,
+        _ => return,
+    };
+    let val = s.data[data_idx];
+    let (y_min, y_max) = chart.effective_y_range();
+    let range = y_max - y_min;
+    let norm = if range > 0.0 {
+        ((val - y_min) / range).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let n = s.data.len();
+
+    let fg = ratatui_color(series_color(chart, series_idx));
+    let bg = ratatui_color(theme.background);
+
+    let (col, row) = match chart.kind {
+        ChartKind::Sparkline => {
+            let frac = if pw <= 1 {
+                0.0
+            } else {
+                data_idx as f32 / (n - 1).max(1) as f32
+            };
+            (px + (frac * (pw - 1) as f32).round() as u16, py)
         }
+        ChartKind::Line | ChartKind::Bar => {
+            let plot_cols = pw.saturating_sub(1) as usize;
+            let plot_rows = ph.saturating_sub(1) as usize;
+            if plot_cols == 0 || plot_rows == 0 {
+                return;
+            }
+            let dot_w = plot_cols * 2;
+            let dot_h = plot_rows * 4;
+            let dx = if n <= 1 {
+                0
+            } else {
+                (data_idx * dot_w.saturating_sub(1)) / (n - 1)
+            };
+            let dy = ((1.0 - norm) * dot_h.saturating_sub(1) as f64).round() as usize;
+            let cell_col = dx / 2;
+            let cell_row = dy / 4;
+            (px + 1 + cell_col as u16, py + cell_row as u16)
+        }
+    };
+
+    let buf_area = buf.area;
+    if col < buf_area.x + buf_area.width && row < buf_area.y + buf_area.height {
+        set_cell(buf, col, row, '●', fg, bg);
     }
 }
 
