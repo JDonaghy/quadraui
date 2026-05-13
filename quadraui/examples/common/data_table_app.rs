@@ -26,6 +26,7 @@ pub struct DataTableApp {
     /// Horizontal scrollbar thumb drag: (track_start_x, track_width, thumb_length, grab_offset)
     h_sb_drag: Option<(f32, f32, f32, f32)>,
     h_scroll: f32,
+    hovered_idx: Option<usize>,
 }
 
 impl DataTableApp {
@@ -40,6 +41,7 @@ impl DataTableApp {
             sb_drag: None,
             h_sb_drag: None,
             h_scroll: 0.0,
+            hovered_idx: None,
         }
     }
 
@@ -277,7 +279,7 @@ impl AppLogic for DataTableApp {
         let table_rect = Rect::new(0.0, 0.0, vp.width, vp.height - bar_h);
         let mut table = self.build_table();
         table.min_total_width = Some(80.0 * cw);
-        let _layout = backend.draw_data_table(table_rect, &table, None);
+        let _layout = backend.draw_data_table(table_rect, &table, self.hovered_idx);
 
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let _ = backend.draw_status_bar(bar_rect, &self.status_bar(), None, None);
@@ -434,6 +436,16 @@ impl AppLogic for DataTableApp {
                         let new_w = (position.x - col_x).max(20.0);
                         self.columns[col].width = ColumnWidth::Fixed(new_w);
                     }
+                    return Reaction::Redraw;
+                }
+                let layout = self.table_layout(backend);
+                let total = Self::rows().len();
+                let old = self.hovered_idx;
+                match layout.hit_test(position.x, position.y, self.scroll_offset, total) {
+                    DataTableHit::Row { idx } => self.hovered_idx = Some(idx),
+                    _ => self.hovered_idx = None,
+                }
+                if self.hovered_idx != old {
                     return Reaction::Redraw;
                 }
                 Reaction::Continue

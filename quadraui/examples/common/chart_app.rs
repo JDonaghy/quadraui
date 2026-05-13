@@ -17,6 +17,9 @@ pub struct ChartApp {
     sparkline_data: Vec<f64>,
     active_kind: ChartKind,
     tick: usize,
+    hovered_point: Option<(usize, usize)>,
+    crosshair_x: Option<f64>,
+    last_chart_rect: Rect,
 }
 
 impl ChartApp {
@@ -25,6 +28,9 @@ impl ChartApp {
             sparkline_data: vec![30.0, 45.0, 25.0, 60.0, 50.0, 70.0, 55.0, 80.0, 40.0, 65.0],
             active_kind: ChartKind::Sparkline,
             tick: 0,
+            hovered_point: None,
+            crosshair_x: None,
+            last_chart_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         }
     }
 
@@ -153,16 +159,18 @@ impl AppLogic for ChartApp {
         let lh = backend.line_height();
 
         let chart_rect = Rect::new(1.0, lh, viewport.width - 2.0, viewport.height - lh * 3.0);
+        let hp = self.hovered_point;
+        let cx = self.crosshair_x;
         match self.active_kind {
             ChartKind::Sparkline => {
                 let spark_rect = Rect::new(1.0, lh, viewport.width - 2.0, lh);
-                let _ = backend.draw_chart(spark_rect, &self.sparkline(), None, None);
+                let _ = backend.draw_chart(spark_rect, &self.sparkline(), hp, None);
             }
             ChartKind::Line => {
-                let _ = backend.draw_chart(chart_rect, &self.line_chart(), None, None);
+                let _ = backend.draw_chart(chart_rect, &self.line_chart(), hp, cx);
             }
             ChartKind::Bar => {
-                let _ = backend.draw_chart(chart_rect, &self.bar_chart(), None, None);
+                let _ = backend.draw_chart(chart_rect, &self.bar_chart(), hp, cx);
             }
         }
 
@@ -170,7 +178,7 @@ impl AppLogic for ChartApp {
         let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             UiEvent::KeyPressed {
                 key: Key::Char('q'),
@@ -211,6 +219,33 @@ impl AppLogic for ChartApp {
                 ..
             } => {
                 self.active_kind = ChartKind::Bar;
+                Reaction::Redraw
+            }
+            UiEvent::MouseMoved { position, .. } => {
+                let viewport = backend.viewport();
+                let lh = backend.line_height();
+                let chart_rect = match self.active_kind {
+                    ChartKind::Sparkline => Rect::new(1.0, lh, viewport.width - 2.0, lh),
+                    _ => Rect::new(1.0, lh, viewport.width - 2.0, viewport.height - lh * 3.0),
+                };
+                let chart = match self.active_kind {
+                    ChartKind::Sparkline => self.sparkline(),
+                    ChartKind::Line => self.line_chart(),
+                    ChartKind::Bar => self.bar_chart(),
+                };
+                let layout = backend.chart_layout(chart_rect, &chart);
+                let snap = backend.line_height() * 2.0;
+                self.hovered_point = layout.nearest_point(position.x, position.y, snap);
+                let data_len = chart.max_data_len();
+                if position.x >= layout.plot_area.x
+                    && position.x < layout.plot_area.x + layout.plot_area.width
+                    && position.y >= layout.plot_area.y
+                    && position.y < layout.plot_area.y + layout.plot_area.height
+                {
+                    self.crosshair_x = Some(layout.screen_to_data_x(position.x, data_len));
+                } else {
+                    self.crosshair_x = None;
+                }
                 Reaction::Redraw
             }
             UiEvent::WindowResized { .. } => Reaction::Redraw,
