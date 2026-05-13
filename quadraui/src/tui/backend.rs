@@ -449,13 +449,18 @@ impl Backend for TuiBackend {
         crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
     }
 
-    fn draw_data_table(&mut self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+    fn draw_data_table(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        hovered_idx: Option<usize>,
+    ) -> crate::DataTableLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_data_table called outside enter_frame_scope");
-        crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme)
+        crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme, hovered_idx)
     }
 
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
@@ -931,13 +936,14 @@ impl Backend for TuiBackend {
         &mut self,
         rect: QRect,
         chart: &crate::primitives::chart::Chart,
+        hovered_point: Option<(usize, usize)>,
     ) -> crate::primitives::chart::ChartLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_chart called outside enter_frame_scope");
-        crate::tui::draw_chart(frame.buffer_mut(), area, chart, &theme)
+        crate::tui::draw_chart(frame.buffer_mut(), area, chart, &theme, hovered_point)
     }
 
     fn chart_layout(
@@ -1064,6 +1070,7 @@ mod tests {
             &mut self,
             _rect: QRect,
             _table: &crate::DataTable,
+            _hovered_idx: Option<usize>,
         ) -> crate::DataTableLayout {
             crate::DataTableLayout {
                 header_height: 0.0,
@@ -1404,6 +1411,7 @@ mod tests {
             &mut self,
             _r: QRect,
             chart: &crate::primitives::chart::Chart,
+            _hovered_point: Option<(usize, usize)>,
         ) -> crate::primitives::chart::ChartLayout {
             chart.layout(
                 _r.x,

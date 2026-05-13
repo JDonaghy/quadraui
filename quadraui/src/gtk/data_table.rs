@@ -26,6 +26,7 @@ pub fn draw_data_table(
     table: &DataTable,
     theme: &Theme,
     line_height: f64,
+    hovered_idx: Option<usize>,
 ) -> DataTableLayout {
     let header_height = (line_height * 1.2).round();
     let measure = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
@@ -120,10 +121,16 @@ pub fn draw_data_table(
         let row = &table.rows[abs_idx];
         let row_y = body_y + row_idx as f64 * line_height;
         let is_selected = table.selected_idx == Some(abs_idx);
+        let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
         if is_selected {
             let (sr, sg, sb) = cairo_rgb(theme.selection_bg);
             cr.set_source_rgba(sr, sg, sb, theme.selection_alpha as f64);
+            cr.rectangle(x, row_y, width, line_height);
+            cr.fill().ok();
+        } else if is_hovered {
+            let (hr, hg, hb) = cairo_rgb(theme.tab_bar_bg);
+            cr.set_source_rgba(hr, hg, hb, 0.5);
             cr.rectangle(x, row_y, width, line_height);
             cr.fill().ok();
         }

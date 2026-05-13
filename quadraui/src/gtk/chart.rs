@@ -57,6 +57,7 @@ pub fn draw_chart(
     theme: &Theme,
     line_height: f64,
     char_width: f64,
+    hovered_point: Option<(usize, usize)>,
 ) -> ChartLayout {
     let layout = gtk_chart_layout(chart, x, y, w, h, line_height, char_width);
 
@@ -64,6 +65,10 @@ pub fn draw_chart(
         ChartKind::Sparkline => paint_sparkline(cr, &layout, chart, theme),
         ChartKind::Line => paint_line(cr, pango_layout, &layout, chart, theme),
         ChartKind::Bar => paint_bar(cr, pango_layout, &layout, chart, theme),
+    }
+
+    if let Some((si, di)) = hovered_point {
+        paint_hover_marker_gtk(cr, &layout, si, di, chart);
     }
 
     layout
@@ -363,5 +368,27 @@ fn paint_axis_labels_gtk(
         let ly = layout.plot_area.y as f64;
         cr.move_to(lx, ly);
         pcfn::show_layout(cr, pango_layout);
+    }
+}
+
+fn paint_hover_marker_gtk(
+    cr: &Context,
+    layout: &ChartLayout,
+    series_idx: usize,
+    data_idx: usize,
+    chart: &Chart,
+) {
+    for &(si, di, sx, sy) in &layout.data_point_positions {
+        if si == series_idx && di == data_idx {
+            let color = series_color(chart, si);
+            set_source(cr, color);
+            cr.arc(sx as f64, sy as f64, 5.0, 0.0, 2.0 * std::f64::consts::PI);
+            cr.fill().ok();
+            let (r, g, b) = super::cairo_rgb(color);
+            cr.set_source_rgba(r, g, b, 0.3);
+            cr.arc(sx as f64, sy as f64, 8.0, 0.0, 2.0 * std::f64::consts::PI);
+            cr.fill().ok();
+            return;
+        }
     }
 }

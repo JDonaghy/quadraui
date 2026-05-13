@@ -613,7 +613,12 @@ impl Backend for GtkBackend {
         );
     }
 
-    fn draw_data_table(&mut self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+    fn draw_data_table(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        hovered_idx: Option<usize>,
+    ) -> crate::DataTableLayout {
         let lh = self.current_line_height;
         let theme = self.current_theme;
         let (cr, layout) = self
@@ -629,6 +634,7 @@ impl Backend for GtkBackend {
             table,
             &theme,
             lh,
+            hovered_idx,
         )
     }
 
@@ -1405,6 +1411,7 @@ impl Backend for GtkBackend {
         &mut self,
         rect: QRect,
         chart: &crate::primitives::chart::Chart,
+        hovered_point: Option<(usize, usize)>,
     ) -> crate::primitives::chart::ChartLayout {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -1423,6 +1430,7 @@ impl Backend for GtkBackend {
             &theme,
             line_height,
             char_width,
+            hovered_point,
         )
     }
 

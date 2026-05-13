@@ -37,9 +37,16 @@ pub fn tui_chart_layout(chart: &Chart, area: Rect) -> ChartLayout {
     )
 }
 
-/// Draw a [`Chart`] into `area` on `buf`. Returns the layout for host
-/// click dispatch.
-pub fn draw_chart(buf: &mut Buffer, area: Rect, chart: &Chart, theme: &Theme) -> ChartLayout {
+/// Draw a [`Chart`] into `area` on `buf`. `hovered_point` carries
+/// per-frame hover state so the rasteriser can highlight a data point.
+/// Returns the layout for host click dispatch.
+pub fn draw_chart(
+    buf: &mut Buffer,
+    area: Rect,
+    chart: &Chart,
+    theme: &Theme,
+    hovered_point: Option<(usize, usize)>,
+) -> ChartLayout {
     let layout = tui_chart_layout(chart, area);
 
     if area.width == 0 || area.height == 0 {
@@ -50,6 +57,10 @@ pub fn draw_chart(buf: &mut Buffer, area: Rect, chart: &Chart, theme: &Theme) ->
         ChartKind::Sparkline => paint_sparkline(buf, &layout, chart, theme),
         ChartKind::Line => paint_line(buf, &layout, chart, theme),
         ChartKind::Bar => paint_bar(buf, &layout, chart, theme),
+    }
+
+    if let Some((si, di)) = hovered_point {
+        paint_hover_marker(buf, &layout, si, di, chart, theme);
     }
 
     layout
@@ -367,6 +378,29 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
     }
 }
 
+fn paint_hover_marker(
+    buf: &mut Buffer,
+    layout: &ChartLayout,
+    series_idx: usize,
+    data_idx: usize,
+    chart: &Chart,
+    theme: &Theme,
+) {
+    for &(si, di, sx, sy) in &layout.data_point_positions {
+        if si == series_idx && di == data_idx {
+            let col = sx.round() as u16;
+            let row = sy.round() as u16;
+            let fg = ratatui_color(series_color(chart, si));
+            let bg = ratatui_color(theme.background);
+            let buf_area = buf.area;
+            if col < buf_area.x + buf_area.width && row < buf_area.y + buf_area.height {
+                set_cell(buf, col, row, '●', fg, bg);
+            }
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,7 +434,7 @@ mod tests {
         let area = Rect::new(0, 0, 5, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![0.0, 0.25, 0.5, 0.75, 1.0]);
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
         assert_eq!(cell_char(&buf, 0, 0), '▁');
         assert_eq!(cell_char(&buf, 4, 0), '█');
@@ -417,7 +451,7 @@ mod tests {
         let area = Rect::new(0, 0, 3, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![10.0, 10.0, 10.0]);
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
         // Flat data: all mid-height.
         for col in 0..3 {
             assert_ne!(cell_char(&buf, col, 0), ' ');
@@ -429,7 +463,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![]);
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -452,7 +486,7 @@ mod tests {
             x_range: None,
             show_legend: false,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
         assert!(layout.plot_area.width > 0.0);
         assert!(layout.plot_area.height > 0.0);
@@ -481,7 +515,7 @@ mod tests {
             x_range: None,
             show_legend: false,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
         // Bar for max value (3.0) should have filled cells.
         let pa = &layout.plot_area;
@@ -522,7 +556,7 @@ mod tests {
             x_range: None,
             show_legend: true,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
         let lb = layout.legend_bounds.unwrap();
         assert_eq!(
@@ -543,7 +577,7 @@ mod tests {
         let mut buf = Buffer::empty(buf_area);
         let area = Rect::new(0, 0, 0, 0);
         let chart = spark(vec![1.0, 2.0]);
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default());
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 }

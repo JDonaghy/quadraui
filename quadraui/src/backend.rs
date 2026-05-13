@@ -127,7 +127,12 @@ pub trait Backend {
     // primitive in the same PR that adds it to the trait.
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
-    fn draw_data_table(&mut self, rect: Rect, table: &DataTable) -> DataTableLayout;
+    fn draw_data_table(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        hovered_idx: Option<usize>,
+    ) -> DataTableLayout;
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
@@ -356,10 +361,17 @@ pub trait Backend {
     /// Compute command-center layout without painting.
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 
-    /// Draw a [`Chart`] (sparkline, line, or bar). Returns the
-    /// [`ChartLayout`] so hosts can route clicks to the plot area
-    /// or legend entries.
-    fn draw_chart(&mut self, rect: Rect, chart: &Chart) -> ChartLayout;
+    /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
+    /// carries per-frame hover state (series_idx, data_idx) so the
+    /// rasteriser can highlight the data point under the cursor.
+    /// Returns the [`ChartLayout`] so hosts can route clicks and
+    /// resolve nearest-point from mouse position.
+    fn draw_chart(
+        &mut self,
+        rect: Rect,
+        chart: &Chart,
+        hovered_point: Option<(usize, usize)>,
+    ) -> ChartLayout;
 
     /// Compute chart layout without painting.
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;

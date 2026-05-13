@@ -15,13 +15,16 @@ use crate::primitives::data_table::{
 };
 use crate::theme::Theme;
 
-/// Draw a `DataTable` into `area`. Returns the layout used for
-/// painting so callers can hit-test at the same coordinates.
+/// Draw a `DataTable` into `area`. `hovered_idx` carries per-frame
+/// hover state so the rasteriser can tint the hovered row. Returns
+/// the layout used for painting so callers can hit-test at the same
+/// coordinates.
 pub fn draw_data_table(
     buf: &mut Buffer,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
+    hovered_idx: Option<usize>,
 ) -> DataTableLayout {
     let layout = table.layout(
         area.width as f32,
@@ -118,9 +121,12 @@ pub fn draw_data_table(
         let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
         let is_selected = table.selected_idx == Some(abs_idx);
+        let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
         let (row_fg, row_bg) = if is_selected {
             (body_fg, sel_bg)
+        } else if is_hovered {
+            (body_fg, ratatui_color(theme.tab_bar_bg))
         } else {
             (body_fg, body_bg)
         };
@@ -286,7 +292,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        draw_data_table(&mut buf, area, &table, &Theme::default());
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
 
         // Header row at y=0 should contain "Name" somewhere
         let header: String = (0..40)
@@ -315,7 +321,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        draw_data_table(&mut buf, area, &table, &Theme::default());
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
 
         // Row 0 at y=1 should contain "pod-abc"
         let row0: String = (0..40)
@@ -336,7 +342,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default());
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
 
         // Find "Status" in the header row
         let header: String = (0..40)
@@ -354,7 +360,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default());
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
 
         // Find "pod-xyz" in row 1 (y=2)
         let row1: String = (0..40)

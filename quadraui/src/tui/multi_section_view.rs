@@ -359,7 +359,7 @@ fn paint_body(
         }
         SectionBody::Form(f) => draw_form(buf, area, f, theme),
         SectionBody::Chart(c) => {
-            super::draw_chart(buf, area, c, theme);
+            super::draw_chart(buf, area, c, theme, None);
         }
         SectionBody::MessageList(m) => draw_message_list(buf, area, m, theme.background),
         SectionBody::Terminal(_) => {

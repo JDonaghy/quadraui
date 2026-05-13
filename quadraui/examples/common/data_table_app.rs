@@ -276,7 +276,7 @@ impl AppLogic for DataTableApp {
         let table_rect = Rect::new(0.0, 0.0, vp.width, vp.height - bar_h);
         let mut table = self.build_table();
         table.min_total_width = Some(80.0 * cw);
-        let _layout = backend.draw_data_table(table_rect, &table);
+        let _layout = backend.draw_data_table(table_rect, &table, None);
 
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let _ = backend.draw_status_bar(bar_rect, &self.status_bar(), None, None);

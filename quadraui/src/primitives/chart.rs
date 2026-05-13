@@ -86,7 +86,9 @@ pub struct ChartMeasure {
 /// Classification of a hit-test result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChartHit {
-    /// Click landed on the plot area.
+    /// Click landed on a specific data point.
+    DataPoint(WidgetId, usize, usize),
+    /// Click landed on the plot area (no specific point nearby).
     Body(WidgetId),
     /// Click landed on a legend entry (series index).
     Legend(WidgetId, usize),
@@ -102,6 +104,10 @@ pub struct ChartLayout {
     pub plot_area: Rect,
     pub legend_bounds: Option<Rect>,
     pub hit_regions: Vec<(Rect, ChartHit)>,
+    /// Screen positions of data points: (series_idx, data_idx, x, y).
+    /// Apps use these to anchor tooltips and resolve nearest-point from
+    /// MouseMoved events.
+    pub data_point_positions: Vec<(usize, usize, f32, f32)>,
 }
 
 impl ChartLayout {
@@ -112,6 +118,22 @@ impl ChartLayout {
             }
         }
         ChartHit::Empty
+    }
+
+    /// Find the nearest data point to (x, y) within `snap_distance`.
+    /// Returns `(series_idx, data_idx)`.
+    pub fn nearest_point(&self, x: f32, y: f32, snap_distance: f32) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, usize, f32)> = None;
+        let snap_sq = snap_distance * snap_distance;
+        for &(si, di, px, py) in &self.data_point_positions {
+            let dx = x - px;
+            let dy = y - py;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq <= snap_sq && (best.is_none() || dist_sq < best.unwrap().2) {
+                best = Some((si, di, dist_sq));
+            }
+        }
+        best.map(|(si, di, _)| (si, di))
     }
 }
 
@@ -158,11 +180,30 @@ impl Chart {
         match self.kind {
             ChartKind::Sparkline => {
                 let hit_regions = vec![(bounds, ChartHit::Body(self.id.clone()))];
+                let mut data_point_positions = Vec::new();
+                if let Some(s) = self.series.first() {
+                    let (y_min, y_max) = self.effective_y_range();
+                    let range = y_max - y_min;
+                    let pw = measure.width;
+                    let n = s.data.len();
+                    let start = n.saturating_sub(pw as usize);
+                    for (i, &val) in s.data[start..].iter().enumerate() {
+                        let norm = if range > 0.0 {
+                            ((val - y_min) / range).clamp(0.0, 1.0)
+                        } else {
+                            0.5
+                        };
+                        let sx = origin_x + i as f32;
+                        let sy = origin_y + (1.0 - norm as f32) * measure.height;
+                        data_point_positions.push((0, start + i, sx, sy));
+                    }
+                }
                 ChartLayout {
                     bounds,
                     plot_area: bounds,
                     legend_bounds: None,
                     hit_regions,
+                    data_point_positions,
                 }
             }
             ChartKind::Line | ChartKind::Bar => {
@@ -216,11 +257,33 @@ impl Chart {
                 }
                 hit_regions.push((plot_area, ChartHit::Body(self.id.clone())));
 
+                let (y_min, y_max) = self.effective_y_range();
+                let range = y_max - y_min;
+                let mut data_point_positions = Vec::new();
+                for (si, s) in self.series.iter().enumerate() {
+                    let n = s.data.len();
+                    for (di, &val) in s.data.iter().enumerate() {
+                        let norm = if range > 0.0 {
+                            ((val - y_min) / range).clamp(0.0, 1.0)
+                        } else {
+                            0.5
+                        };
+                        let sx = if n <= 1 {
+                            plot_x
+                        } else {
+                            plot_x + (di as f32 / (n - 1) as f32) * plot_w
+                        };
+                        let sy = plot_y + plot_h - norm as f32 * plot_h;
+                        data_point_positions.push((si, di, sx, sy));
+                    }
+                }
+
                 ChartLayout {
                     bounds,
                     plot_area,
                     legend_bounds,
                     hit_regions,
+                    data_point_positions,
                 }
             }
         }
