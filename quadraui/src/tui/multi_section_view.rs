@@ -358,6 +358,9 @@ fn paint_body(
             }
         }
         SectionBody::Form(f) => draw_form(buf, area, f, theme),
+        SectionBody::Chart(c) => {
+            super::draw_chart(buf, area, c, theme);
+        }
         SectionBody::MessageList(m) => draw_message_list(buf, area, m, theme.background),
         SectionBody::Terminal(_) => {
             // No standalone Terminal rasteriser today — host paints.
@@ -605,6 +608,13 @@ fn body_content_rows(body: &SectionBody) -> usize {
         SectionBody::Tree(t) => t.rows.len(),
         SectionBody::List(l) => l.items.len() + if l.title.is_some() { 1 } else { 0 },
         SectionBody::Form(f) => f.fields.len(),
+        SectionBody::Chart(c) => {
+            if matches!(c.kind, crate::primitives::chart::ChartKind::Sparkline) {
+                1
+            } else {
+                8
+            }
+        }
         SectionBody::MessageList(m) => m.rows.iter().map(|r| 1 + r.text.lines().count()).sum(),
         SectionBody::Terminal(_) => 0,
         SectionBody::Text(lines) => lines.len(),

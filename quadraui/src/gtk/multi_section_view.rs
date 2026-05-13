@@ -87,6 +87,13 @@ fn body_measure(body: &SectionBody, aux: &Option<SectionAux>, line_height: f64) 
             title_h + l.items.len() as f32 * item_h
         }
         SectionBody::Form(f) => f.fields.len() as f32 * item_h,
+        SectionBody::Chart(c) => {
+            if matches!(c.kind, crate::primitives::chart::ChartKind::Sparkline) {
+                line_height as f32
+            } else {
+                item_h * 8.0
+            }
+        }
         SectionBody::MessageList(m) => {
             // 1 header row + body lines per message.
             m.rows
@@ -396,6 +403,22 @@ fn paint_body(
         }
         SectionBody::Form(f) => {
             draw_form(cr, layout, x, y, w, h, f, theme, line_height);
+        }
+        SectionBody::Chart(c) => {
+            layout.set_text("M");
+            let char_width = layout.pixel_size().0 as f64;
+            super::draw_chart(
+                cr,
+                layout,
+                x,
+                y,
+                w,
+                h,
+                c,
+                theme,
+                line_height,
+                char_width.max(1.0),
+            );
         }
         SectionBody::MessageList(m) => {
             draw_message_list(cr, layout, m, x, y, w, y + h, line_height);

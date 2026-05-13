@@ -1400,6 +1400,47 @@ impl Backend for GtkBackend {
             },
         )
     }
+
+    fn draw_chart(
+        &mut self,
+        rect: QRect,
+        chart: &crate::primitives::chart::Chart,
+    ) -> crate::primitives::chart::ChartLayout {
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_chart called outside enter_frame_scope");
+        crate::gtk::draw_chart(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            chart,
+            &theme,
+            line_height,
+            char_width,
+        )
+    }
+
+    fn chart_layout(
+        &self,
+        rect: QRect,
+        chart: &crate::primitives::chart::Chart,
+    ) -> crate::primitives::chart::ChartLayout {
+        crate::gtk::gtk_chart_layout(
+            chart,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+            self.current_char_width,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

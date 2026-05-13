@@ -136,3 +136,13 @@ required-features = ["tui"]
 name = "gtk_form_groups"
 path = "examples/gtk_form_groups.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_chart"
+path = "examples/tui_chart.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_chart"
+path = "examples/gtk_chart.rs"
+required-features = ["gtk"]

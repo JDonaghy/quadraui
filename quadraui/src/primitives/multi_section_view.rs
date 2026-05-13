@@ -33,6 +33,7 @@
 //! body content with their native conventions.
 
 use crate::event::Rect;
+use crate::primitives::chart::Chart;
 use crate::primitives::form::Form;
 use crate::primitives::list::ListView;
 use crate::primitives::message_list::MessageList;
@@ -194,6 +195,8 @@ pub enum SectionBody {
     MessageList(MessageList),
     /// Static styled-line content. One line per `StyledText`.
     Text(Vec<StyledText>),
+    /// Chart (sparkline, line, bar).
+    Chart(Chart),
     /// Welcome / empty-state view.
     Empty(EmptyBody),
     /// Custom widget — host paints in `body_bounds` after consulting

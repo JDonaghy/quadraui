@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
@@ -354,6 +355,14 @@ pub trait Backend {
 
     /// Compute command-center layout without painting.
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
+
+    /// Draw a [`Chart`] (sparkline, line, or bar). Returns the
+    /// [`ChartLayout`] so hosts can route clicks to the plot area
+    /// or legend entries.
+    fn draw_chart(&mut self, rect: Rect, chart: &Chart) -> ChartLayout;
+
+    /// Compute chart layout without painting.
+    fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries

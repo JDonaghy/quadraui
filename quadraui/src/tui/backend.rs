@@ -926,6 +926,28 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_command_center_layout(cc, area)
     }
+
+    fn draw_chart(
+        &mut self,
+        rect: QRect,
+        chart: &crate::primitives::chart::Chart,
+    ) -> crate::primitives::chart::ChartLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_chart called outside enter_frame_scope");
+        crate::tui::draw_chart(frame.buffer_mut(), area, chart, &theme)
+    }
+
+    fn chart_layout(
+        &self,
+        rect: QRect,
+        chart: &crate::primitives::chart::Chart,
+    ) -> crate::primitives::chart::ChartLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_chart_layout(chart, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1374,6 +1396,40 @@ mod tests {
                     gap: 1.0,
                     search_box_width: 0.0,
                     height: 1.0,
+                },
+            )
+        }
+
+        fn draw_chart(
+            &mut self,
+            _r: QRect,
+            chart: &crate::primitives::chart::Chart,
+        ) -> crate::primitives::chart::ChartLayout {
+            chart.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::chart::ChartMeasure {
+                    width: _r.width,
+                    height: _r.height,
+                    char_width: 1.0,
+                    line_height: 1.0,
+                },
+            )
+        }
+
+        fn chart_layout(
+            &self,
+            _r: QRect,
+            chart: &crate::primitives::chart::Chart,
+        ) -> crate::primitives::chart::ChartLayout {
+            chart.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::chart::ChartMeasure {
+                    width: _r.width,
+                    height: _r.height,
+                    char_width: 1.0,
+                    line_height: 1.0,
                 },
             )
         }

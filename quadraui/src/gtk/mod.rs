@@ -26,6 +26,7 @@ use crate::types::Color;
 
 mod activity_bar;
 pub mod backend;
+mod chart;
 mod command_center;
 mod completions;
 mod context_menu;
@@ -60,6 +61,7 @@ mod tree;
 pub use crate::primitives::tab_bar::TabBarHits;
 pub use activity_bar::{draw_activity_bar, ACTIVITY_ROW_PX};
 pub use backend::GtkBackend;
+pub use chart::{draw_chart, gtk_chart_layout};
 pub use command_center::{draw_command_center, gtk_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::draw_context_menu;

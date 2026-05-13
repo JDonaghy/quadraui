@@ -25,6 +25,7 @@
 // unused-import warnings are expected and not actionable here.
 #![allow(dead_code, unused_imports)]
 
+pub mod chart_app;
 pub mod data_table_app;
 pub mod demo;
 pub mod form_groups;
@@ -39,6 +40,7 @@ pub mod sidebar_search;
 pub mod split_app;
 pub mod toast_app;
 
+pub use chart_app::ChartApp;
 pub use data_table_app::DataTableApp;
 pub use demo::AppState;
 pub use form_groups::FormGroupsApp;

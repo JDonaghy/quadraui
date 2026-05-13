@@ -5,6 +5,7 @@
 //! implement rendering and input handling against these types.
 
 pub mod activity_bar;
+pub mod chart;
 pub mod command_center;
 pub mod completions;
 pub mod context_menu;

@@ -126,6 +126,9 @@ pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityItem, ActivitySide, VisibleActivityItem,
 };
+pub use primitives::chart::{
+    Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
+};
 pub use primitives::command_center::{
     CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
 };
