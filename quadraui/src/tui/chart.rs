@@ -95,24 +95,23 @@ fn paint_sparkline(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme:
         let (y_min, y_max) = chart.effective_y_range();
         let range = y_max - y_min;
         let fg = ratatui_color(series_color(chart, 0));
+        let n = s.data.len();
 
-        let start = if s.data.len() > pw as usize {
-            s.data.len() - pw as usize
-        } else {
-            0
-        };
-        for (i, &val) in s.data[start..].iter().enumerate() {
-            let col = px + i as u16;
-            if col >= px + pw {
-                break;
-            }
+        for col_idx in 0..pw as usize {
+            let frac = col_idx as f64 / (pw as usize).saturating_sub(1).max(1) as f64;
+            let data_pos = frac * (n - 1) as f64;
+            let lo = (data_pos.floor() as usize).min(n - 1);
+            let hi = (lo + 1).min(n - 1);
+            let t = data_pos - lo as f64;
+            let val = s.data[lo] * (1.0 - t) + s.data[hi] * t;
+
             let norm = if range > 0.0 {
                 ((val - y_min) / range).clamp(0.0, 1.0)
             } else {
                 0.5
             };
             let idx = ((norm * 7.0).round() as usize).min(7);
-            set_cell(buf, col, py, SPARK_BLOCKS[idx], fg, bg);
+            set_cell(buf, px + col_idx as u16, py, SPARK_BLOCKS[idx], fg, bg);
         }
     }
 }
