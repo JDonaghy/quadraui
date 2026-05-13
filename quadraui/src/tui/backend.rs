@@ -483,10 +483,9 @@ impl Backend for TuiBackend {
         bar: &StatusBar,
         hovered_id: Option<&crate::types::WidgetId>,
         pressed_id: Option<&crate::types::WidgetId>,
-    ) -> Vec<crate::StatusBarHitRegion> {
+    ) -> crate::StatusBarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        // Cell-unit measurer: each char counts as one cell.
         let layout = bar.layout(area.width as f32, 1.0, MIN_GAP_CELLS, |seg| {
             crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         });
@@ -1031,8 +1030,14 @@ mod tests {
             _b: &StatusBar,
             _hovered_id: Option<&crate::types::WidgetId>,
             _pressed_id: Option<&crate::types::WidgetId>,
-        ) -> Vec<crate::StatusBarHitRegion> {
-            Vec::new()
+        ) -> crate::StatusBarLayout {
+            crate::StatusBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_segments: Vec::new(),
+                hit_regions: Vec::new(),
+                resolved_right_start: 0,
+            }
         }
         fn draw_tab_bar(
             &mut self,

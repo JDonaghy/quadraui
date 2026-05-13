@@ -12,9 +12,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::status_bar::{
-    StatusBar, StatusBarHitRegion, StatusBarLayout, StatusSegmentSide,
-};
+use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusSegmentSide};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
@@ -48,9 +46,15 @@ pub fn draw_status_bar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
-) -> Vec<StatusBarHitRegion> {
+) -> StatusBarLayout {
     if area.width == 0 || area.height == 0 {
-        return Vec::new();
+        return StatusBarLayout {
+            bar_width: 0.0,
+            bar_height: 0.0,
+            visible_segments: Vec::new(),
+            hit_regions: Vec::new(),
+            resolved_right_start: 0,
+        };
     }
     let y = area.y;
 
@@ -64,7 +68,6 @@ pub fn draw_status_bar(
         set_cell(buf, area.x + col, y, ' ', fill_bg, fill_bg);
     }
 
-    let mut regions: Vec<StatusBarHitRegion> = Vec::new();
     for vs in &layout.visible_segments {
         let seg = match vs.side {
             StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
@@ -102,16 +105,8 @@ pub fn draw_status_bar(
             }
             cx += 1;
         }
-
-        if let Some(ref id) = seg.action_id {
-            regions.push(StatusBarHitRegion {
-                col: (vs.bounds.x.round() as i64).clamp(0, u16::MAX as i64) as u16,
-                width: (vs.bounds.width.round() as i64).clamp(0, u16::MAX as i64) as u16,
-                id: id.clone(),
-            });
-        }
     }
-    regions
+    layout.clone()
 }
 
 #[cfg(test)]
@@ -257,8 +252,8 @@ mod tests {
             StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         });
         // Zero-width area: function must return without panicking, without
-        // touching the buffer, and with an empty hit-region list.
-        let regions = draw_status_bar(
+        // touching the buffer, and with an empty layout.
+        let result = draw_status_bar(
             &mut buf,
             Rect::new(0, 0, 0, 1),
             &bar,
@@ -268,7 +263,7 @@ mod tests {
             None,
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
-        assert!(regions.is_empty());
+        assert!(result.hit_regions.is_empty());
     }
 
     #[test]
@@ -298,7 +293,7 @@ mod tests {
             StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         });
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
-        let regions = draw_status_bar(
+        let result = draw_status_bar(
             &mut buf,
             Rect::new(0, 0, 20, 1),
             &bar,
@@ -308,13 +303,17 @@ mod tests {
             None,
         );
 
-        // One region for the segment with action_id.
-        assert_eq!(regions.len(), 1);
-        assert_eq!(regions[0].id.as_str(), "middle-action");
-        // Region is in bar-local cell coords: starts after "AAA" (col 3)
-        // and is 4 cells wide ("BBBB").
-        assert_eq!(regions[0].col, 3);
-        assert_eq!(regions[0].width, 4);
+        // One hit region for the segment with action_id.
+        assert_eq!(result.hit_regions.len(), 1);
+        use crate::primitives::status_bar::StatusBarHit;
+        match &result.hit_regions[0].1 {
+            StatusBarHit::Segment(id) => assert_eq!(id.as_str(), "middle-action"),
+            other => panic!("expected Segment, got {:?}", other),
+        }
+        // Region starts after "AAA" (x=3.0) and is 4 cells wide ("BBBB").
+        let r = &result.hit_regions[0].0;
+        assert_eq!(r.x, 3.0);
+        assert_eq!(r.width, 4.0);
     }
 
     fn make_clickable_bar() -> StatusBar {

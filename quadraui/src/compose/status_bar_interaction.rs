@@ -12,13 +12,13 @@
 use std::cell::RefCell;
 
 use crate::event::{MouseButton, Point, Rect, UiEvent};
-use crate::primitives::status_bar::StatusBarHitRegion;
+use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 use crate::types::WidgetId;
 
 /// Tracks hover and pressed state for a status bar's clickable segments.
 #[derive(Debug, Clone, Default)]
 pub struct StatusBarInteraction {
-    hit_regions: RefCell<Vec<StatusBarHitRegion>>,
+    layout: RefCell<Option<StatusBarLayout>>,
     hovered: Option<WidgetId>,
     pressed: Option<WidgetId>,
 }
@@ -39,11 +39,11 @@ impl StatusBarInteraction {
         Self::default()
     }
 
-    /// Update the stored hit regions. Call this after each `draw_status_bar`
-    /// with the returned `Vec<StatusBarHitRegion>`. Takes `&self` so it can
+    /// Update the stored layout. Call this after each `draw_status_bar`
+    /// with the returned `StatusBarLayout`. Takes `&self` so it can
     /// be called from render paths where only a shared reference is available.
-    pub fn set_hit_regions(&self, regions: Vec<StatusBarHitRegion>) {
-        *self.hit_regions.borrow_mut() = regions;
+    pub fn set_layout(&self, layout: StatusBarLayout) {
+        *self.layout.borrow_mut() = Some(layout);
     }
 
     pub fn hovered_id(&self) -> Option<&WidgetId> {
@@ -110,12 +110,13 @@ impl StatusBarInteraction {
         {
             return None;
         }
-        let local_x = (position.x - bar_rect.x) as u16;
-        self.hit_regions
-            .borrow()
-            .iter()
-            .find(|r| local_x >= r.col && local_x < r.col + r.width)
-            .map(|r| r.id.clone())
+        let local_x = position.x - bar_rect.x;
+        let local_y = position.y - bar_rect.y;
+        let guard = self.layout.borrow();
+        match guard.as_ref().map(|l| l.hit_test(local_x, local_y)) {
+            Some(StatusBarHit::Segment(id)) => Some(id),
+            _ => None,
+        }
     }
 }
 
@@ -127,25 +128,29 @@ mod tests {
         Rect::new(0.0, 100.0, 80.0, 1.0)
     }
 
-    fn regions() -> Vec<StatusBarHitRegion> {
-        vec![
-            StatusBarHitRegion {
-                col: 0,
-                width: 10,
-                id: WidgetId::new("run"),
-            },
-            StatusBarHitRegion {
-                col: 10,
-                width: 10,
-                id: WidgetId::new("stop"),
-            },
-        ]
+    fn test_layout() -> StatusBarLayout {
+        StatusBarLayout {
+            bar_width: 80.0,
+            bar_height: 1.0,
+            visible_segments: Vec::new(),
+            hit_regions: vec![
+                (
+                    crate::event::Rect::new(0.0, 0.0, 10.0, 1.0),
+                    StatusBarHit::Segment(WidgetId::new("run")),
+                ),
+                (
+                    crate::event::Rect::new(10.0, 0.0, 10.0, 1.0),
+                    StatusBarHit::Segment(WidgetId::new("stop")),
+                ),
+            ],
+            resolved_right_start: 0,
+        }
     }
 
     #[test]
     fn hover_sets_hovered_id() {
         let mut sbi = StatusBarInteraction::new();
-        sbi.set_hit_regions(regions());
+        sbi.set_layout(test_layout());
         let ev = UiEvent::MouseMoved {
             position: Point { x: 5.0, y: 100.5 },
             buttons: Default::default(),
@@ -158,7 +163,7 @@ mod tests {
     #[test]
     fn hover_outside_clears() {
         let mut sbi = StatusBarInteraction::new();
-        sbi.set_hit_regions(regions());
+        sbi.set_layout(test_layout());
         // Move into "run" first.
         sbi.handle(
             &UiEvent::MouseMoved {
@@ -182,7 +187,7 @@ mod tests {
     #[test]
     fn click_emits_clicked() {
         let mut sbi = StatusBarInteraction::new();
-        sbi.set_hit_regions(regions());
+        sbi.set_layout(test_layout());
         let rect = bar_rect();
         // Mouse down on "stop".
         sbi.handle(
@@ -211,7 +216,7 @@ mod tests {
     #[test]
     fn press_drag_away_does_not_click() {
         let mut sbi = StatusBarInteraction::new();
-        sbi.set_hit_regions(regions());
+        sbi.set_layout(test_layout());
         let rect = bar_rect();
         // Mouse down on "run".
         sbi.handle(
