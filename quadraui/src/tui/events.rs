@@ -127,6 +127,61 @@ pub fn crossterm_mouse_to_uievent(event: MouseEvent) -> Option<UiEvent> {
     }
 }
 
+// ── Double-click synthesis ───────────────────────────────────────────────
+
+use std::time::{Duration, Instant};
+
+const DOUBLE_CLICK_MS: u64 = 400;
+const DOUBLE_CLICK_RADIUS: f32 = 1.5;
+
+/// Detects double-clicks from repeated `MouseDown` events within a
+/// time window at the same position. Stateful — lives on `TuiBackend`.
+#[derive(Default)]
+pub struct DoubleClickDetector {
+    last_click_time: Option<Instant>,
+    last_click_pos: Point,
+    last_click_button: MouseButton,
+}
+
+impl DoubleClickDetector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Process a batch of translated events. Replaces `MouseDown` with
+    /// `DoubleClick` when the same button clicks at the same position
+    /// within the time window.
+    pub fn process(&mut self, events: &mut [UiEvent]) {
+        let now = Instant::now();
+        for ev in events.iter_mut() {
+            if let UiEvent::MouseDown {
+                button, position, ..
+            } = ev
+            {
+                let is_double = self
+                    .last_click_time
+                    .map(|t| now.duration_since(t) < Duration::from_millis(DOUBLE_CLICK_MS))
+                    .unwrap_or(false)
+                    && *button == self.last_click_button
+                    && (position.x - self.last_click_pos.x).abs() <= DOUBLE_CLICK_RADIUS
+                    && (position.y - self.last_click_pos.y).abs() <= DOUBLE_CLICK_RADIUS;
+
+                if is_double {
+                    *ev = UiEvent::DoubleClick {
+                        widget: None,
+                        position: *position,
+                    };
+                    self.last_click_time = None;
+                } else {
+                    self.last_click_time = Some(now);
+                    self.last_click_pos = *position;
+                    self.last_click_button = *button;
+                }
+            }
+        }
+    }
+}
+
 fn crossterm_keycode_to_key(code: KeyCode) -> Option<Key> {
     let named = match code {
         KeyCode::Char(c) => return Some(Key::Char(c)),
@@ -664,5 +719,64 @@ mod tests {
         let ui = crossterm_mouse_to_uievent(original).unwrap();
         let round = synth_mouseevent(&ui).unwrap();
         assert!(matches!(round.kind, MouseEventKind::ScrollUp));
+    }
+
+    // ── DoubleClickDetector tests ────────────────────────────────────
+
+    fn mouse_down(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn double_click_detected_on_same_position() {
+        let mut det = DoubleClickDetector::new();
+        let mut events = vec![mouse_down(5.0, 3.0)];
+        det.process(&mut events);
+        assert!(matches!(events[0], UiEvent::MouseDown { .. }));
+
+        let mut events = vec![mouse_down(5.0, 3.0)];
+        det.process(&mut events);
+        assert!(
+            matches!(events[0], UiEvent::DoubleClick { .. }),
+            "second click at same position should be DoubleClick"
+        );
+    }
+
+    #[test]
+    fn no_double_click_at_different_position() {
+        let mut det = DoubleClickDetector::new();
+        let mut events = vec![mouse_down(5.0, 3.0)];
+        det.process(&mut events);
+
+        let mut events = vec![mouse_down(20.0, 10.0)];
+        det.process(&mut events);
+        assert!(
+            matches!(events[0], UiEvent::MouseDown { .. }),
+            "click at different position should NOT be DoubleClick"
+        );
+    }
+
+    #[test]
+    fn triple_click_resets_to_single() {
+        let mut det = DoubleClickDetector::new();
+        let mut events = vec![mouse_down(5.0, 3.0)];
+        det.process(&mut events);
+
+        let mut events = vec![mouse_down(5.0, 3.0)];
+        det.process(&mut events);
+        assert!(matches!(events[0], UiEvent::DoubleClick { .. }));
+
+        // Third click at same position — resets to single (no triple-click).
+        let mut events = vec![mouse_down(5.0, 3.0)];
+        det.process(&mut events);
+        assert!(
+            matches!(events[0], UiEvent::MouseDown { .. }),
+            "third click should reset to MouseDown"
+        );
     }
 }

@@ -88,8 +88,9 @@ pub enum NamedKey {
 }
 
 /// Mouse button identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum MouseButton {
+    #[default]
     Left,
     Right,
     Middle,
