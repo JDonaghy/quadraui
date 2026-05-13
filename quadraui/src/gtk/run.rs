@@ -225,10 +225,17 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
-        click.connect_pressed(move |gesture, _n_press, x, y| {
+        click.connect_pressed(move |gesture, n_press, x, y| {
             let button = gesture.current_button();
             let modifier = gesture.current_event_state();
-            let ev = gdk_button_to_mouse_down(button, x, y, modifier);
+            let ev = if n_press == 2 {
+                crate::UiEvent::DoubleClick {
+                    widget: None,
+                    position: crate::Point::new(x as f32, y as f32),
+                }
+            } else {
+                gdk_button_to_mouse_down(button, x, y, modifier)
+            };
             let reaction = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
