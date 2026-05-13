@@ -34,6 +34,15 @@ pub struct Chart {
     pub x_range: Option<(f64, f64)>,
     #[serde(default)]
     pub show_legend: bool,
+    /// Number of y-axis tick marks. `None` = auto (5).
+    #[serde(default)]
+    pub y_ticks: Option<usize>,
+    /// Number of x-axis tick marks. `None` = auto.
+    #[serde(default)]
+    pub x_ticks: Option<usize>,
+    /// Show horizontal grid lines at y-tick positions.
+    #[serde(default)]
+    pub show_grid: bool,
 }
 
 /// Chart visualisation kind.
@@ -108,6 +117,10 @@ pub struct ChartLayout {
     /// Apps use these to anchor tooltips and resolve nearest-point from
     /// MouseMoved events.
     pub data_point_positions: Vec<(usize, usize, f32, f32)>,
+    /// Y-axis tick positions: (screen_y, data_value).
+    pub y_tick_positions: Vec<(f32, f64)>,
+    /// X-axis tick positions: (screen_x, data_value).
+    pub x_tick_positions: Vec<(f32, f64)>,
 }
 
 impl ChartLayout {
@@ -204,11 +217,18 @@ impl Chart {
                     legend_bounds: None,
                     hit_regions,
                     data_point_positions,
+                    y_tick_positions: Vec::new(),
+                    x_tick_positions: Vec::new(),
                 }
             }
             ChartKind::Line | ChartKind::Bar => {
-                let y_label_width = if self.y_label.is_some() {
-                    measure.char_width * 6.0
+                let (y_min, y_max) = self.effective_y_range();
+                let y_tick_count = self.y_ticks.unwrap_or(5);
+                let y_label_width = if y_tick_count > 0 || self.y_label.is_some() {
+                    let max_label_len = format_tick_value(y_max)
+                        .len()
+                        .max(format_tick_value(y_min).len());
+                    measure.char_width * (max_label_len as f32 + 1.0)
                 } else {
                     0.0
                 };
@@ -257,7 +277,6 @@ impl Chart {
                 }
                 hit_regions.push((plot_area, ChartHit::Body(self.id.clone())));
 
-                let (y_min, y_max) = self.effective_y_range();
                 let range = y_max - y_min;
                 let mut data_point_positions = Vec::new();
                 for (si, s) in self.series.iter().enumerate() {
@@ -278,15 +297,49 @@ impl Chart {
                     }
                 }
 
+                let mut y_tick_positions = Vec::new();
+                if y_tick_count > 0 && plot_h > 0.0 && range > 0.0 {
+                    for i in 0..=y_tick_count {
+                        let frac = i as f64 / y_tick_count as f64;
+                        let val = y_min + frac * range;
+                        let sy = plot_y + plot_h - frac as f32 * plot_h;
+                        y_tick_positions.push((sy, val));
+                    }
+                }
+
+                let x_tick_count = self.x_ticks.unwrap_or(0);
+                let data_len = self.max_data_len();
+                let mut x_tick_positions = Vec::new();
+                if x_tick_count > 0 && plot_w > 0.0 && data_len > 1 {
+                    for i in 0..=x_tick_count {
+                        let frac = i as f64 / x_tick_count as f64;
+                        let val = frac * (data_len - 1) as f64;
+                        let sx = plot_x + frac as f32 * plot_w;
+                        x_tick_positions.push((sx, val));
+                    }
+                }
+
                 ChartLayout {
                     bounds,
                     plot_area,
                     legend_bounds,
                     hit_regions,
                     data_point_positions,
+                    y_tick_positions,
+                    x_tick_positions,
                 }
             }
         }
+    }
+}
+
+/// Format a tick value for axis labels. Uses integer format when the
+/// value has no fractional part, otherwise one decimal place.
+pub fn format_tick_value(v: f64) -> String {
+    if (v - v.round()).abs() < 0.01 {
+        format!("{}", v as i64)
+    } else {
+        format!("{:.1}", v)
     }
 }
 
@@ -310,6 +363,9 @@ mod tests {
             y_range: None,
             x_range: None,
             show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         }
     }
 
@@ -328,6 +384,9 @@ mod tests {
             y_range: None,
             x_range: None,
             show_legend: true,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         }
     }
 

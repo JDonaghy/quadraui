@@ -348,13 +348,34 @@ fn paint_axis_labels_gtk(
     chart: &Chart,
     theme: &Theme,
 ) {
+    let pa = &layout.plot_area;
+
+    // Y-axis tick labels + grid lines.
+    for &(sy, val) in &layout.y_tick_positions {
+        let label = crate::primitives::chart::format_tick_value(val);
+        pango_layout.set_text(&label);
+        pango_layout.set_attributes(None);
+        let text_w = pango_layout.pixel_size().0 as f64;
+        set_source(cr, theme.muted_fg);
+        cr.move_to(pa.x as f64 - text_w - 4.0, sy as f64 - 6.0);
+        pcfn::show_layout(cr, pango_layout);
+
+        if chart.show_grid && sy > pa.y && sy < pa.y + pa.height {
+            let (r, g, b) = super::cairo_rgb(theme.muted_fg);
+            cr.set_source_rgba(r, g, b, 0.2);
+            cr.set_line_width(0.5);
+            cr.move_to(pa.x as f64, sy as f64);
+            cr.line_to((pa.x + pa.width) as f64, sy as f64);
+            cr.stroke().ok();
+        }
+    }
+
     set_source(cr, theme.foreground);
 
     if let Some(label) = &chart.x_label {
         pango_layout.set_text(label);
         pango_layout.set_attributes(None);
         let text_w = pango_layout.pixel_size().0 as f64;
-        let pa = &layout.plot_area;
         let cx = pa.x as f64 + (pa.width as f64 - text_w) / 2.0;
         let cy = (pa.y + pa.height) as f64;
         cr.move_to(cx, cy);
@@ -365,7 +386,7 @@ fn paint_axis_labels_gtk(
         pango_layout.set_text(label);
         pango_layout.set_attributes(None);
         let lx = layout.bounds.x as f64;
-        let ly = layout.plot_area.y as f64;
+        let ly = pa.y as f64;
         cr.move_to(lx, ly);
         pcfn::show_layout(cr, pango_layout);
     }

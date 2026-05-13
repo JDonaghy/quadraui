@@ -43,6 +43,9 @@ impl ChartApp {
             y_range: Some((0.0, 100.0)),
             x_range: None,
             show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         }
     }
 
@@ -77,6 +80,9 @@ impl ChartApp {
             y_range: Some((0.0, 100.0)),
             x_range: None,
             show_legend: true,
+            y_ticks: Some(5),
+            x_ticks: None,
+            show_grid: true,
         }
     }
 
@@ -95,6 +101,9 @@ impl ChartApp {
             y_range: None,
             x_range: None,
             show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         }
     }
 

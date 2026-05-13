@@ -352,12 +352,32 @@ fn paint_legend(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &T
 fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
     let bg = ratatui_color(theme.background);
     let fg = ratatui_color(theme.foreground);
+    let dim = ratatui_color(theme.muted_fg);
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let pw = pa.width.round() as u16;
+
+    for &(sy, val) in &layout.y_tick_positions {
+        let row = sy.round() as u16;
+        let label = crate::primitives::chart::format_tick_value(val);
+        let gutter_end = px.saturating_sub(1);
+        let label_start = gutter_end.saturating_sub(label.len() as u16);
+        for (i, ch) in label.chars().enumerate() {
+            let col = label_start + i as u16;
+            if col < gutter_end {
+                set_cell(buf, col, row, ch, dim, bg);
+            }
+        }
+        if chart.show_grid && row > pa.y.round() as u16 && row < (pa.y + pa.height).round() as u16 {
+            for col in (px + 1)..(px + pw) {
+                set_cell(buf, col, row, '┄', dim, bg);
+            }
+        }
+    }
 
     if let Some(label) = &chart.x_label {
-        let pa = &layout.plot_area;
         let label_y = (pa.y + pa.height).round() as u16;
-        let label_x =
-            pa.x.round() as u16 + (pa.width.round() as u16).saturating_sub(label.len() as u16) / 2;
+        let label_x = px + pw.saturating_sub(label.len() as u16) / 2;
         for (i, ch) in label.chars().enumerate() {
             let col = label_x + i as u16;
             if col < (layout.bounds.x + layout.bounds.width).round() as u16 {
@@ -368,10 +388,10 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
 
     if let Some(label) = &chart.y_label {
         let label_x = layout.bounds.x.round() as u16;
-        let label_y = layout.plot_area.y.round() as u16;
+        let label_y = pa.y.round() as u16;
         for (i, ch) in label.chars().enumerate() {
             let col = label_x + i as u16;
-            if col < layout.plot_area.x.round() as u16 {
+            if col < px {
                 set_cell(buf, col, label_y, ch, fg, bg);
             }
         }
@@ -422,6 +442,9 @@ mod tests {
             y_range: None,
             x_range: None,
             show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         }
     }
 
@@ -485,6 +508,9 @@ mod tests {
             y_range: None,
             x_range: None,
             show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         };
         let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
@@ -514,6 +540,9 @@ mod tests {
             y_range: None,
             x_range: None,
             show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         };
         let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
@@ -555,6 +584,9 @@ mod tests {
             y_range: None,
             x_range: None,
             show_legend: true,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
         };
         let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None);
 
