@@ -148,6 +148,24 @@ impl ChartLayout {
         }
         best.map(|(si, di, _)| (si, di))
     }
+
+    /// Convert a screen x-coordinate to a data-space x index (fractional).
+    pub fn screen_to_data_x(&self, screen_x: f32, data_len: usize) -> f64 {
+        if data_len <= 1 || self.plot_area.width <= 0.0 {
+            return 0.0;
+        }
+        let frac = ((screen_x - self.plot_area.x) / self.plot_area.width).clamp(0.0, 1.0);
+        frac as f64 * (data_len - 1) as f64
+    }
+
+    /// Convert a data-space x index to a screen x-coordinate.
+    pub fn data_to_screen_x(&self, data_x: f64, data_len: usize) -> f32 {
+        if data_len <= 1 {
+            return self.plot_area.x;
+        }
+        let frac = (data_x / (data_len - 1) as f64).clamp(0.0, 1.0) as f32;
+        self.plot_area.x + frac * self.plot_area.width
+    }
 }
 
 impl Chart {

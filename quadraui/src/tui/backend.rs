@@ -937,13 +937,21 @@ impl Backend for TuiBackend {
         rect: QRect,
         chart: &crate::primitives::chart::Chart,
         hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
     ) -> crate::primitives::chart::ChartLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_chart called outside enter_frame_scope");
-        crate::tui::draw_chart(frame.buffer_mut(), area, chart, &theme, hovered_point)
+        crate::tui::draw_chart(
+            frame.buffer_mut(),
+            area,
+            chart,
+            &theme,
+            hovered_point,
+            crosshair_x,
+        )
     }
 
     fn chart_layout(
@@ -1412,6 +1420,7 @@ mod tests {
             _r: QRect,
             chart: &crate::primitives::chart::Chart,
             _hovered_point: Option<(usize, usize)>,
+            _crosshair_x: Option<f64>,
         ) -> crate::primitives::chart::ChartLayout {
             chart.layout(
                 _r.x,

@@ -58,6 +58,7 @@ pub fn draw_chart(
     line_height: f64,
     char_width: f64,
     hovered_point: Option<(usize, usize)>,
+    crosshair_x: Option<f64>,
 ) -> ChartLayout {
     let layout = gtk_chart_layout(chart, x, y, w, h, line_height, char_width);
 
@@ -65,6 +66,10 @@ pub fn draw_chart(
         ChartKind::Sparkline => paint_sparkline(cr, &layout, chart, theme),
         ChartKind::Line => paint_line(cr, pango_layout, &layout, chart, theme),
         ChartKind::Bar => paint_bar(cr, pango_layout, &layout, chart, theme),
+    }
+
+    if let Some(data_x) = crosshair_x {
+        paint_crosshair_gtk(cr, pango_layout, &layout, chart, theme, data_x);
     }
 
     if let Some((si, di)) = hovered_point {
@@ -390,6 +395,61 @@ fn paint_axis_labels_gtk(
         cr.move_to(lx, ly);
         pcfn::show_layout(cr, pango_layout);
     }
+}
+
+fn paint_crosshair_gtk(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    layout: &ChartLayout,
+    chart: &Chart,
+    theme: &Theme,
+    data_x: f64,
+) {
+    let data_len = chart.max_data_len();
+    let screen_x = layout.data_to_screen_x(data_x, data_len) as f64;
+    let pa = &layout.plot_area;
+
+    if screen_x <= pa.x as f64 || screen_x >= (pa.x + pa.width) as f64 {
+        return;
+    }
+
+    let (r, g, b) = super::cairo_rgb(theme.muted_fg);
+    cr.set_source_rgba(r, g, b, 0.5);
+    cr.set_line_width(1.0);
+    let dashes = [4.0, 4.0];
+    cr.set_dash(&dashes, 0.0);
+    cr.move_to(screen_x, pa.y as f64);
+    cr.line_to(screen_x, (pa.y + pa.height) as f64);
+    cr.stroke().ok();
+    cr.set_dash(&[], 0.0);
+
+    let (y_min, y_max) = chart.effective_y_range();
+    let range = y_max - y_min;
+    for (si, s) in chart.series.iter().enumerate() {
+        if s.data.is_empty() {
+            continue;
+        }
+        let idx = data_x.round() as usize;
+        if idx >= s.data.len() {
+            continue;
+        }
+        let val = s.data[idx];
+        let label = crate::primitives::chart::format_tick_value(val);
+        let color = series_color(chart, si);
+        set_source(cr, color);
+        pango_layout.set_text(&label);
+        pango_layout.set_attributes(None);
+        let norm = if range > 0.0 {
+            ((val - y_min) / range).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let sy = pa.y as f64 + pa.height as f64 - norm * pa.height as f64;
+        cr.move_to(screen_x + 4.0, sy - 8.0);
+        pcfn::show_layout(cr, pango_layout);
+    }
+
+    let _ = theme;
 }
 
 fn paint_hover_marker_gtk(

@@ -156,13 +156,13 @@ impl AppLogic for ChartApp {
         match self.active_kind {
             ChartKind::Sparkline => {
                 let spark_rect = Rect::new(1.0, lh, viewport.width - 2.0, lh);
-                let _ = backend.draw_chart(spark_rect, &self.sparkline(), None);
+                let _ = backend.draw_chart(spark_rect, &self.sparkline(), None, None);
             }
             ChartKind::Line => {
-                let _ = backend.draw_chart(chart_rect, &self.line_chart(), None);
+                let _ = backend.draw_chart(chart_rect, &self.line_chart(), None, None);
             }
             ChartKind::Bar => {
-                let _ = backend.draw_chart(chart_rect, &self.bar_chart(), None);
+                let _ = backend.draw_chart(chart_rect, &self.bar_chart(), None, None);
             }
         }
 

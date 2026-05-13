@@ -419,6 +419,7 @@ fn paint_body(
                 line_height,
                 char_width.max(1.0),
                 None,
+                None,
             );
         }
         SectionBody::MessageList(m) => {

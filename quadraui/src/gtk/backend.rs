@@ -1412,6 +1412,7 @@ impl Backend for GtkBackend {
         rect: QRect,
         chart: &crate::primitives::chart::Chart,
         hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
     ) -> crate::primitives::chart::ChartLayout {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -1431,6 +1432,7 @@ impl Backend for GtkBackend {
             line_height,
             char_width,
             hovered_point,
+            crosshair_x,
         )
     }
 

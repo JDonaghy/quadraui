@@ -371,6 +371,7 @@ pub trait Backend {
         rect: Rect,
         chart: &Chart,
         hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
     ) -> ChartLayout;
 
     /// Compute chart layout without painting.
