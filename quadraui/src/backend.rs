@@ -31,7 +31,7 @@ use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::status_bar::StatusBarHitRegion;
+use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
@@ -150,7 +150,7 @@ pub trait Backend {
         bar: &StatusBar,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
-    ) -> Vec<StatusBarHitRegion>;
+    ) -> StatusBarLayout;
     /// Draw a tab bar. `hovered_close_tab` carries per-frame hover
     /// state so the rasteriser can paint a hover background behind the
     /// hovered tab's close glyph (the primitive itself carries no

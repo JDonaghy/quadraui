@@ -674,7 +674,7 @@ impl Backend for GtkBackend {
         bar: &StatusBar,
         hovered_id: Option<&crate::types::WidgetId>,
         pressed_id: Option<&crate::types::WidgetId>,
-    ) -> Vec<crate::StatusBarHitRegion> {
+    ) -> crate::StatusBarLayout {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");

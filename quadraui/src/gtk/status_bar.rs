@@ -18,7 +18,7 @@ use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
 use crate::primitives::status_bar::{
-    StatusBar, StatusBarHitRegion, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
+    StatusBar, StatusBarLayout, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -59,7 +59,7 @@ pub fn draw_status_bar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
-) -> Vec<StatusBarHitRegion> {
+) -> StatusBarLayout {
     // Reset layout state.
     layout.set_attributes(None);
     layout.set_width(-1);
@@ -101,8 +101,6 @@ pub fn draw_status_bar(
     };
     let bar_layout = bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure);
 
-    // Paint visible segments + build hit regions in a single pass.
-    let mut regions: Vec<StatusBarHitRegion> = Vec::new();
     for vs in &bar_layout.visible_segments {
         let seg = match vs.side {
             StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
@@ -138,19 +136,10 @@ pub fn draw_status_bar(
         set_source(cr, seg.fg);
         cr.move_to(seg_x, y);
         pcfn::show_layout(cr, layout);
-
-        // Hit region for clickable segments.
-        if let Some(ref id) = seg.action_id {
-            regions.push(StatusBarHitRegion {
-                col: (vs.bounds.x.round() as i64).clamp(0, u16::MAX as i64) as u16,
-                width: (vs.bounds.width.round() as i64).clamp(0, u16::MAX as i64) as u16,
-                id: id.clone(),
-            });
-        }
     }
 
     layout.set_attributes(None);
     cr.restore().ok();
 
-    regions
+    bar_layout
 }

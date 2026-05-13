@@ -132,13 +132,13 @@ impl AppLogic for DebugSidebar {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        let regions = backend.draw_status_bar(
+        let layout = backend.draw_status_bar(
             status,
             &self.build_status_bar(),
             self.status_interaction.hovered_id(),
             self.status_interaction.pressed_id(),
         );
-        self.status_interaction.set_hit_regions(regions);
+        self.status_interaction.set_layout(layout);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

@@ -48,7 +48,7 @@ use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::status_bar::StatusBarHitRegion;
+use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
@@ -174,7 +174,7 @@ impl Backend for WinBackend {
         _bar: &StatusBar,
         _hovered_id: Option<&crate::types::WidgetId>,
         _pressed_id: Option<&crate::types::WidgetId>,
-    ) -> Vec<StatusBarHitRegion> {
+    ) -> StatusBarLayout {
         todo!("Direct2D status bar rasteriser")
     }
 
