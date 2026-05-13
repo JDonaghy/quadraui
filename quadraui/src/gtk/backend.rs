@@ -613,6 +613,40 @@ impl Backend for GtkBackend {
         );
     }
 
+    fn draw_data_table(&mut self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+        let lh = self.current_line_height;
+        let theme = self.current_theme;
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_data_table called outside enter_frame_scope");
+        crate::gtk::draw_data_table(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            table,
+            &theme,
+            lh,
+        )
+    }
+
+    fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+        let lh = self.current_line_height;
+        let header_height = (lh * 1.2).round();
+        table.layout(
+            rect.width,
+            rect.height,
+            lh as f32,
+            header_height as f32,
+            8.0,
+            |col| {
+                crate::ColumnMeasure::new(col.title.len() as f32 * self.current_char_width as f32)
+            },
+        )
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let (cr, layout) = self
             .current_frame_refs()

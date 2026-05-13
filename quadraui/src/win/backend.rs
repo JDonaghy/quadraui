@@ -160,6 +160,18 @@ impl Backend for WinBackend {
         todo!("Direct2D list rasteriser")
     }
 
+    fn draw_data_table(
+        &mut self,
+        _rect: Rect,
+        _table: &crate::DataTable,
+    ) -> crate::DataTableLayout {
+        todo!("Direct2D data table rasteriser")
+    }
+
+    fn data_table_layout(&self, _rect: Rect, _table: &crate::DataTable) -> crate::DataTableLayout {
+        todo!("Direct2D data table layout")
+    }
+
     fn draw_form(&mut self, _rect: Rect, _form: &Form) {
         todo!("Direct2D form rasteriser")
     }

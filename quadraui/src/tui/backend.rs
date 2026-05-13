@@ -445,6 +445,27 @@ impl Backend for TuiBackend {
         crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
     }
 
+    fn draw_data_table(&mut self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_data_table called outside enter_frame_scope");
+        crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme)
+    }
+
+    fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+        let area = q_rect_to_ratatui(rect);
+        table.layout(
+            area.width as f32,
+            area.height as f32,
+            1.0,
+            1.0,
+            1.0,
+            |col| crate::ColumnMeasure::new(col.title.chars().count() as f32),
+        )
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -1013,6 +1034,36 @@ mod tests {
             });
         }
 
+        fn draw_data_table(
+            &mut self,
+            _rect: QRect,
+            _table: &crate::DataTable,
+        ) -> crate::DataTableLayout {
+            crate::DataTableLayout {
+                header_height: 0.0,
+                row_height: 0.0,
+                columns: Vec::new(),
+                visible_rows: 0,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                scrollbar_width: 0.0,
+            }
+        }
+        fn data_table_layout(
+            &self,
+            _rect: QRect,
+            _table: &crate::DataTable,
+        ) -> crate::DataTableLayout {
+            crate::DataTableLayout {
+                header_height: 0.0,
+                row_height: 0.0,
+                columns: Vec::new(),
+                visible_rows: 0,
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                scrollbar_width: 0.0,
+            }
+        }
         fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
             self.calls.push(DrawCall::Palette {
                 rect,
