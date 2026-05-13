@@ -463,6 +463,11 @@ impl SidebarSystem {
                 ..
             } => self.right_click(rect, *position, lh, metrics),
 
+            // ── Double-click → forward to TreeController for RowActivated
+            UiEvent::DoubleClick { position, .. } => {
+                self.double_click(rect, position.x, position.y, lh, metrics, backend)
+            }
+
             // ── Mouse drag ────────────────────────────────────────
             UiEvent::MouseMoved {
                 position,
@@ -1069,6 +1074,40 @@ impl SidebarSystem {
                 let max_scroll = (total - rect.height).max(0.0);
                 self.panel_scroll = (self.panel_scroll + rect.height).clamp(0.0, max_scroll);
                 SidebarEvent::Consumed
+            }
+            _ => SidebarEvent::Ignored,
+        }
+    }
+
+    fn double_click(
+        &mut self,
+        rect: Rect,
+        x: f32,
+        y: f32,
+        lh: f32,
+        metrics: &LayoutMetrics,
+        _backend: Option<&dyn Backend>,
+    ) -> SidebarEvent {
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let (view, _) = self.build_view();
+        match layout.hit_test(x, y) {
+            MultiSectionViewHit::Body {
+                section: msv_idx, ..
+            } => {
+                let section = map[msv_idx];
+                let body_b = layout.sections[msv_idx].body_bounds;
+                if let SectionBody::Tree(t) = &view.sections[msv_idx].body {
+                    let tree = t.clone();
+                    let inner = self.compute_tree_layout(body_b, &tree, lh);
+                    if let TreeViewHit::Row(idx) = inner.hit_test(x - body_b.x, y - body_b.y) {
+                        let path = tree.rows[idx].path.clone();
+                        if let SectionController::Tree(tc) = &mut self.sections[section] {
+                            tc.set_selected_path(Some(path.clone()));
+                        }
+                        return SidebarEvent::RowActivated { section, path };
+                    }
+                }
+                SidebarEvent::Ignored
             }
             _ => SidebarEvent::Ignored,
         }
