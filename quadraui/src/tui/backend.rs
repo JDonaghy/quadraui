@@ -1495,6 +1495,7 @@ mod tests {
             total_count: 2,
             has_focus: true,
             show_query: true,
+            create_label: None,
             preview: None,
         }
     }

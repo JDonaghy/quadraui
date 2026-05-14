@@ -163,7 +163,9 @@ pub fn draw_palette(
     };
 
     // Result rows.
-    let items_row_end = y_end - 1;
+    let has_create = palette.create_label.is_some();
+    let create_reserved = if has_create { 1u16 } else { 0 };
+    let items_row_end = (y_end - 1).saturating_sub(create_reserved);
     let visible_rows = items_row_end.saturating_sub(items_row0) as usize;
     let total = palette.items.len();
     let has_scrollbar = total > visible_rows;
@@ -302,6 +304,38 @@ pub fn draw_palette(
         }
     }
 
+    // ── Create action row (pinned below items) ────────────────────────
+    if let Some(ref label) = palette.create_label {
+        let create_row = items_row_end;
+        if create_row < y_end - 1 {
+            let accent_fg = ratatui_color(theme.accent_fg);
+            set_cell(buf, x0, create_row, '│', border_fg, bg);
+            if !has_preview && w >= 2 {
+                set_cell(buf, x0 + w - 1, create_row, '│', border_fg, bg);
+            }
+            let end_col = if has_preview { list_w } else { w - 1 };
+            for col in 1..end_col {
+                set_cell(buf, x0 + col, create_row, ' ', fg, bg);
+            }
+            let prefix = "+ ";
+            let mut col = 1u16;
+            for ch in prefix.chars() {
+                if col >= end_col {
+                    break;
+                }
+                set_cell(buf, x0 + col, create_row, ch, accent_fg, bg);
+                col += 1;
+            }
+            for ch in label.chars() {
+                if col >= end_col {
+                    break;
+                }
+                set_cell(buf, x0 + col, create_row, ch, accent_fg, bg);
+                col += 1;
+            }
+        }
+    }
+
     // ── Preview pane ─────────────────────────────────────────────────
     if let Some(ref preview) = palette.preview {
         let sep_col = preview_x0;
@@ -415,6 +449,7 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             show_query: true,
+            create_label: None,
             total_count: 3,
             preview: None,
         }
@@ -575,6 +610,28 @@ mod tests {
         assert!(has_item, "expected item text at row 1 when query hidden");
         // No separator row (├─┤) should exist at row 2.
         assert_ne!(cell_char(&buf, 0, 2), '├');
+    }
+
+    #[test]
+    fn create_label_renders_pinned_row() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let mut p = make_palette();
+        p.create_label = Some("Create 'foo'".into());
+        draw_palette(
+            &mut buf,
+            Rect::new(0, 0, 30, 10),
+            &p,
+            &Theme::default(),
+            false,
+        );
+        // Create row is pinned at items_row_end (y_end - 1 - 1 = row 8).
+        // It should show "+ Create 'foo'" with accent_fg.
+        let create_row = 8u16;
+        let row_text: String = (1..20).map(|x| cell_char(&buf, x, create_row)).collect();
+        assert!(
+            row_text.contains("+ Create"),
+            "expected create label at pinned row, got: {row_text:?}"
+        );
     }
 
     #[test]
