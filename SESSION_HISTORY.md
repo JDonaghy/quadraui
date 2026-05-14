@@ -667,3 +667,51 @@ Worktree `target/` directories (6.5 GB each) and main repo `target/` (22 GB → 
 - #144 — TabGroup compose helper
 - Windows milestone (#19–#31)
 - macOS milestone (#32–#44)
+
+---
+
+## Session 2026-05-13 — FormController scroll + scrollbar support
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (1)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 155 | Form primitive: built-in scroll + scrollbar support | B (PR #156) | FormController enriched with scroll state, scrollbar rendering, scroll wheel / thumb-drag / track-click handling |
+
+### What shipped
+
+**FormController enrichment** (`compose/form_controller.rs`): Mirrored TreeController's scroll architecture onto FormController. Previously a thin storage wrapper; now owns `scroll_offset`, `scroll_drag`, `has_focus` and exposes `render()` + `handle()`. Apps call `set_form()` per frame, then `render()` draws the form + scrollbar when content overflows, and `handle()` processes scroll wheel, scrollbar thumb-drag, track-click page up/down, and form body clicks.
+
+**FormControllerEvent**: `FormAction(FormEvent)` | `ScrollChanged` | `Consumed` | `Ignored`.
+
+**form_click_event refactor**: Moved from `sidebar_system.rs` into `form_controller.rs` as `pub(crate)` — canonical location shared by both FormController and SidebarSystem.
+
+**Exports**: `FormController` + `FormControllerEvent` now exported from crate root.
+
+**Example pair**: `tui_form_scroll` / `gtk_form_scroll` — 20-toggle settings panel exercising FormController scroll. Status bar shows live scroll offset.
+
+### Bugs fixed during session
+
+1. **GTK scrollbar too wide**: `scrollbar_track_width` used `backend.line_height()` (~20px on GTK). Fixed with `(lh * 0.4).max(1.0).round()` — yields 1 cell on TUI, ~8px on GTK, matching MSV's `scrollbar_size: 8.0` convention.
+
+### Cross-backend portability note
+
+FormController is fully backend-agnostic — calls `Backend::draw_form`, `draw_scrollbar`, `form_layout`, `line_height`. Future macOS/Windows backends get FormController scroll support automatically by implementing the trait.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 663 |
+| Session end | 663 (16 new FormController tests, net zero because form_click_event tests moved from sidebar_system) |
+
+### Open queue for next session
+
+- #65 — SplitDragController compose helper (deferred)
+- #115 — quadraui-lua bridge crate (future)
+- #118 — quadraui-ipc JSON bridge (future)
+- #144 — TabGroup compose helper
+- Windows milestone (#19–#31)
+- macOS milestone (#32–#44)
