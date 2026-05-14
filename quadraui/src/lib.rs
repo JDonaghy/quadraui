@@ -94,6 +94,8 @@ pub mod types;
 // at a time so external apps stop reimplementing the same draw functions.
 #[cfg(feature = "gtk")]
 pub mod gtk;
+#[cfg(all(feature = "macos", target_os = "macos"))]
+pub mod macos;
 #[cfg(feature = "tui")]
 pub mod tui;
 #[cfg(feature = "win")]
