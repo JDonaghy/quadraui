@@ -1,20 +1,19 @@
 //! macOS runner — opens an AppKit window, installs a custom `NSView`
 //! subclass that forwards each `drawRect:` to a Core Graphics fill of
-//! the bounds, and pumps the AppKit run loop.
+//! the bounds, translates mouse / key / scroll responder events to
+//! [`crate::UiEvent`] (#33), and pumps the AppKit run loop.
 //!
-//! Smoke-only for issue #32: there is no `AppLogic` integration, no
-//! event translation, no Core Text. Subsequent tickets layer those on:
+//! Subsequent tickets layer the remaining pieces on:
 //!
-//! - #33 — `NSEvent → UiEvent` translation (overrides on `QuadraView`).
 //! - #34 — Core Text font metrics + `draw_text`.
 //! - #35 — `MacBackend` struct, `Backend` trait impl, and the final
 //!   `pub fn run<A: AppLogic + 'static>(app: A) -> ExitCode` shape that
 //!   threads `app.render(backend, AreaId::default())` through this
-//!   draw callback.
+//!   draw callback. Today translated events `eprintln!` to stderr —
+//!   the backend queue replaces that sink.
 //!
 //! The retina backing factor is read from the window each frame and
-//! packed into [`crate::Viewport::scale`] — the only piece of state
-//! #32 surfaces to its (currently empty) frame body.
+//! packed into [`crate::Viewport::scale`].
 
 use std::cell::Cell;
 
@@ -31,13 +30,15 @@ use objc2::ClassType;
 use objc2::DeclaredClass;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
+    NSEvent, NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
+use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
 use crate::event::Viewport;
+use crate::{ButtonMask, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -168,6 +169,98 @@ declare_class!(
         fn is_flipped(&self) -> bool {
             true
         }
+
+        /// Required for `keyDown:` to be delivered to this view —
+        /// AppKit only routes key events to the first responder, and
+        /// only views that accept first-responder status are eligible.
+        #[method(acceptsFirstResponder)]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        // ── Mouse press / release ────────────────────────────────
+
+        #[method(mouseDown:)]
+        fn objc_mouse_down(&self, event: &NSEvent) {
+            self.handle_mouse_down(event);
+        }
+
+        #[method(rightMouseDown:)]
+        fn objc_right_mouse_down(&self, event: &NSEvent) {
+            self.handle_mouse_down(event);
+        }
+
+        #[method(otherMouseDown:)]
+        fn objc_other_mouse_down(&self, event: &NSEvent) {
+            self.handle_mouse_down(event);
+        }
+
+        #[method(mouseUp:)]
+        fn objc_mouse_up(&self, event: &NSEvent) {
+            self.handle_mouse_up(event);
+        }
+
+        #[method(rightMouseUp:)]
+        fn objc_right_mouse_up(&self, event: &NSEvent) {
+            self.handle_mouse_up(event);
+        }
+
+        #[method(otherMouseUp:)]
+        fn objc_other_mouse_up(&self, event: &NSEvent) {
+            self.handle_mouse_up(event);
+        }
+
+        // ── Mouse move / drag ────────────────────────────────────
+
+        #[method(mouseMoved:)]
+        fn objc_mouse_moved(&self, event: &NSEvent) {
+            self.handle_mouse_moved(event, ButtonMask::default());
+        }
+
+        #[method(mouseDragged:)]
+        fn objc_mouse_dragged(&self, event: &NSEvent) {
+            self.handle_mouse_moved(
+                event,
+                ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        #[method(rightMouseDragged:)]
+        fn objc_right_mouse_dragged(&self, event: &NSEvent) {
+            self.handle_mouse_moved(
+                event,
+                ButtonMask {
+                    right: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        #[method(otherMouseDragged:)]
+        fn objc_other_mouse_dragged(&self, event: &NSEvent) {
+            self.handle_mouse_moved(
+                event,
+                ButtonMask {
+                    middle: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        // ── Scroll wheel + key down ──────────────────────────────
+
+        #[method(scrollWheel:)]
+        fn objc_scroll_wheel(&self, event: &NSEvent) {
+            self.handle_scroll(event);
+        }
+
+        #[method(keyDown:)]
+        fn objc_key_down(&self, event: &NSEvent) {
+            self.handle_key_down(event);
+        }
     }
 );
 
@@ -179,6 +272,67 @@ impl QuadraView {
         });
         unsafe { msg_send_id![super(this), init] }
     }
+
+    /// Convert `NSEvent.locationInWindow` into this view's local
+    /// coordinates and return `(x, y, modifier_flags)`. Because
+    /// `isFlipped` is true the y axis grows downward — matching
+    /// quadraui's [`crate::Point`] convention.
+    fn locate(&self, event: &NSEvent) -> (f64, f64, usize) {
+        // SAFETY: NSResponder callbacks run on the main thread inside
+        // an active event scope; all three field accesses are safe in
+        // that context.
+        let win_pt = unsafe { event.locationInWindow() };
+        let view_pt = self.convertPoint_fromView(win_pt, None);
+        let flags = unsafe { event.modifierFlags() }.0;
+        (view_pt.x, view_pt.y, flags)
+    }
+
+    fn handle_mouse_down(&self, event: &NSEvent) {
+        let (x, y, flags) = self.locate(event);
+        // NSInteger = isize on macOS; the translator takes `i64` so
+        // tests run platform-independently. Conversion is lossless
+        // on every 64-bit target we'd ever care about for AppKit.
+        let button = unsafe { event.buttonNumber() } as i64;
+        dispatch_event(ns_mouse_down(button, x, y, flags));
+    }
+
+    fn handle_mouse_up(&self, event: &NSEvent) {
+        let (x, y, _flags) = self.locate(event);
+        let button = unsafe { event.buttonNumber() } as i64;
+        dispatch_event(ns_mouse_up(button, x, y));
+    }
+
+    fn handle_mouse_moved(&self, event: &NSEvent, buttons: ButtonMask) {
+        let (x, y, _flags) = self.locate(event);
+        dispatch_event(ns_mouse_moved(x, y, buttons));
+    }
+
+    fn handle_scroll(&self, event: &NSEvent) {
+        let (x, y, _flags) = self.locate(event);
+        // SAFETY: scrollingDeltaX/Y are safe to call on a scroll event
+        // delivered to `scrollWheel:`.
+        let dx = unsafe { event.scrollingDeltaX() };
+        let dy = unsafe { event.scrollingDeltaY() };
+        dispatch_event(ns_scroll(dx, dy, x, y));
+    }
+
+    fn handle_key_down(&self, event: &NSEvent) {
+        let flags = unsafe { event.modifierFlags() }.0;
+        let key_code = unsafe { event.keyCode() };
+        let repeat = unsafe { event.isARepeat() };
+        let chars_ns = unsafe { event.characters() };
+        let chars_str = chars_ns.as_ref().map(|s| s.to_string());
+        if let Some(ev) = ns_key_to_uievent(chars_str.as_deref(), key_code, flags, repeat) {
+            dispatch_event(ev);
+        }
+    }
+}
+
+/// Single sink for translated [`UiEvent`]s during the #33 smoke
+/// window. The backend queue replaces this in #35 — every responder
+/// handler routes through here so that swap is a one-line change.
+fn dispatch_event(ev: UiEvent) {
+    eprintln!("[macos] {ev:?}");
 }
 
 declare_class!(
@@ -265,6 +419,15 @@ pub fn run() -> std::process::ExitCode {
 
     let view = QuadraView::new(mtm);
     window.setContentView(Some(&view));
+
+    // `mouseMoved:` only fires when the window opts in; without this
+    // we'd only see `mouseDragged:` events with a button held.
+    window.setAcceptsMouseMovedEvents(true);
+
+    // Promote the view to first responder so `keyDown:` is routed to
+    // our override instead of falling through to the default beep.
+    window.makeFirstResponder(Some(view.as_super()));
+
     window.makeKeyAndOrderFront(None);
 
     // Bring the app to the foreground when launched from a terminal,

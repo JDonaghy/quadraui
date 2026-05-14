@@ -20,6 +20,7 @@
 //!
 //! [milestone]: https://github.com/JDonaghy/quadraui/milestone/4
 
+pub mod events;
 mod run;
 
 pub use run::run;
