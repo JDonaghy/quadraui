@@ -1733,11 +1733,13 @@ mod tests {
                         id: WidgetId::new("next"),
                         label: "Find Next".into(),
                         disabled: false,
+                        icon: None,
                     },
                     ButtonRowItem {
                         id: WidgetId::new("all"),
                         label: "Replace All".into(),
                         disabled: true,
+                        icon: None,
                     },
                 ],
             },

@@ -37,9 +37,23 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                 let start_x = if label_w > 0 { label_w + 2 } else { 1 };
                 let items = buttons
                     .iter()
-                    .map(|b| FormItemMeasure {
-                        id: b.id.clone(),
-                        width: (b.label.chars().count() + 2) as f32,
+                    .map(|b| {
+                        let icon_w = b
+                            .icon
+                            .as_ref()
+                            .map(|i| {
+                                let gw = i.fallback.chars().count();
+                                if b.label.is_empty() {
+                                    gw
+                                } else {
+                                    gw + 1
+                                }
+                            })
+                            .unwrap_or(0);
+                        FormItemMeasure {
+                            id: b.id.clone(),
+                            width: (b.label.chars().count() + icon_w + 2) as f32,
+                        }
                     })
                     .collect();
                 FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
@@ -396,19 +410,32 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                         } else {
                             accent_fg
                         };
-                        let cx = col as u16;
+                        let mut cx = col as u16;
                         if cx < area.x + area.width {
                             set_cell(buf, cx, y, '[', brk_fg, row_bg);
                         }
-                        for (i, ch) in button.label.chars().enumerate() {
-                            let cx = col as u16 + 1 + i as u16;
+                        cx += 1;
+                        if let Some(ref icon) = button.icon {
+                            let glyph = icon.fallback.as_str();
+                            for ch in glyph.chars() {
+                                if cx < area.x + area.width {
+                                    set_cell(buf, cx, y, ch, btn_fg, row_bg);
+                                }
+                                cx += 1;
+                            }
+                            if cx < area.x + area.width && !button.label.is_empty() {
+                                set_cell(buf, cx, y, ' ', btn_fg, row_bg);
+                                cx += 1;
+                            }
+                        }
+                        for ch in button.label.chars() {
                             if cx < area.x + area.width {
                                 set_cell(buf, cx, y, ch, btn_fg, row_bg);
                             }
+                            cx += 1;
                         }
-                        let end = col as u16 + 1 + button.label.chars().count() as u16;
-                        if end < area.x + area.width {
-                            set_cell(buf, end, y, ']', brk_fg, row_bg);
+                        if cx < area.x + area.width {
+                            set_cell(buf, cx, y, ']', brk_fg, row_bg);
                         }
                     }
                 }
@@ -980,16 +1007,19 @@ mod tests {
                             id: WidgetId::new("next"),
                             label: "Next".into(),
                             disabled: false,
+                            icon: None,
                         },
                         ButtonRowItem {
                             id: WidgetId::new("replace"),
                             label: "Repl".into(),
                             disabled: false,
+                            icon: None,
                         },
                         ButtonRowItem {
                             id: WidgetId::new("all"),
                             label: "All".into(),
                             disabled: true,
+                            icon: None,
                         },
                     ],
                 },
