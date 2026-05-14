@@ -66,6 +66,12 @@ pub struct Palette {
     /// Default `true`.
     #[serde(default = "default_true")]
     pub show_query: bool,
+    /// When set, a pinned "create" action row is rendered below the
+    /// scrollable item list (e.g. `"Create branch '{query}'"` in a
+    /// branch picker). The string is the display label — apps
+    /// typically interpolate the query themselves each frame.
+    #[serde(default)]
+    pub create_label: Option<String>,
     /// When present, the palette renders a split layout: item list on
     /// the left, preview content on the right.
     #[serde(default)]
@@ -162,6 +168,8 @@ pub enum PaletteHit {
     Item(usize),
     /// Click landed on the expand/collapse arrow of a tree item.
     ExpandToggle(usize),
+    /// Click landed on the pinned "create" action row.
+    CreateAction,
     /// Click landed on the preview pane area.
     Preview,
     /// Click landed outside any region.
@@ -185,6 +193,8 @@ pub struct PaletteLayout {
     /// Width of the item list column. Equals `viewport_width` when no
     /// preview is present; narrower (~40%) when a preview pane is shown.
     pub item_list_width: f32,
+    /// Pinned create-action row bounds, present when `Palette.create_label` is `Some`.
+    pub create_bounds: Option<Rect>,
     /// Preview pane bounds, present when `Palette.preview` is `Some`.
     pub preview_bounds: Option<Rect>,
 }
@@ -256,6 +266,13 @@ impl Palette {
 
         let items_top = y;
 
+        let create_row_h = if self.create_label.is_some() {
+            measure_item(0).height
+        } else {
+            0.0
+        };
+        let items_bottom = viewport_height - create_row_h;
+
         let resolved_scroll_offset = if self.items.is_empty() {
             0
         } else {
@@ -263,11 +280,11 @@ impl Palette {
         };
 
         for i in resolved_scroll_offset..self.items.len() {
-            if y >= viewport_height {
+            if y >= items_bottom {
                 break;
             }
             let m = measure_item(i);
-            let remaining = viewport_height - y;
+            let remaining = items_bottom - y;
             let height = m.height.min(remaining).max(0.0);
             if height <= 0.0 {
                 break;
@@ -280,6 +297,14 @@ impl Palette {
             hit_regions.push((bounds, PaletteHit::Item(i)));
             y += m.height;
         }
+
+        let create_bounds = if self.create_label.is_some() && items_bottom < viewport_height {
+            let bounds = Rect::new(0.0, items_bottom, item_list_width, create_row_h);
+            hit_regions.push((bounds, PaletteHit::CreateAction));
+            Some(bounds)
+        } else {
+            None
+        };
 
         let preview_bounds = if has_preview {
             let preview_x = item_list_width;
@@ -299,6 +324,7 @@ impl Palette {
             query_bounds,
             visible_items,
             hit_regions,
+            create_bounds,
             resolved_scroll_offset,
             item_list_width,
             preview_bounds,

@@ -77,7 +77,9 @@ pub fn draw_palette(
         let s = y + line_height;
         (s, s)
     };
-    let rows_h_raw = ((y + h) - rows_y - BOTTOM_INSET).max(0.0);
+    let has_create = palette.create_label.is_some();
+    let create_reserved = if has_create { line_height } else { 0.0 };
+    let rows_h_raw = ((y + h) - rows_y - BOTTOM_INSET - create_reserved).max(0.0);
     let visible_rows = (rows_h_raw / line_height) as usize;
     let rows_h = visible_rows as f64 * line_height;
     let total = palette.items.len();
@@ -324,6 +326,26 @@ pub fn draw_palette(
         cr.set_source_rgb(border.0, border.1, border.2);
         cr.rectangle(sb_x + 1.0, thumb_y, SB_W - 2.0, thumb_h);
         cr.fill().ok();
+    }
+
+    // ── Create action row (pinned below items) ────────────────────────
+    if let Some(ref label) = palette.create_label {
+        let create_y = rows_y + rows_h;
+        let accent = cairo_rgb(theme.accent_fg);
+        let prefix = "+ ";
+        cr.set_source_rgb(accent.0, accent.1, accent.2);
+        layout.set_attributes(None);
+        layout.set_text(prefix);
+        let (pw, ph) = layout.pixel_size();
+        cr.move_to(x + 8.0, create_y + (line_height - ph as f64) / 2.0);
+        pcfn::show_layout(cr, layout);
+        layout.set_text(label);
+        let (_, lh) = layout.pixel_size();
+        cr.move_to(
+            x + 8.0 + pw as f64,
+            create_y + (line_height - lh as f64) / 2.0,
+        );
+        pcfn::show_layout(cr, layout);
     }
 
     // ── Preview pane ───────────────────────────────────────────────────

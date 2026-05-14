@@ -481,6 +481,7 @@ mod tests {
             total_count: 42,
             has_focus: true,
             show_query: true,
+            create_label: None,
             preview: None,
         };
         let json = serde_json::to_string(&palette).unwrap();
@@ -2878,6 +2879,7 @@ mod tests {
             total_count: 0,
             has_focus: true,
             show_query: true,
+            create_label: None,
             preview: None,
         }
     }
