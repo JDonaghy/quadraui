@@ -22,5 +22,6 @@
 
 pub mod events;
 mod run;
+pub mod text;
 
 pub use run::run;

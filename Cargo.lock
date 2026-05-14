@@ -291,6 +291,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-text"
+version = "20.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d2790b5c08465d49f8dc05c8bcae9fea467855947db39b0f8145c091aaced5"
+dependencies = [
+ "core-foundation 0.9.4",
+ "core-graphics",
+ "foreign-types",
+ "libc",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1908,7 +1920,9 @@ name = "quadraui"
 version = "0.0.1"
 dependencies = [
  "arboard",
+ "core-foundation 0.9.4",
  "core-graphics",
+ "core-text",
  "crossterm 0.29.0",
  "gtk4",
  "objc2 0.5.2",

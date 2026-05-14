@@ -37,6 +37,7 @@ use objc2_foundation::{
 };
 
 use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
+use super::text::{draw_text, font_metrics, make_font};
 use crate::event::Viewport;
 use crate::{ButtonMask, UiEvent};
 
@@ -160,6 +161,27 @@ declare_class!(
             unsafe {
                 CGContextSetRGBFillColor(cg_ref, 0.12, 0.12, 0.14, 1.0);
                 CGContextFillRect(cg_ref, rect);
+            }
+
+            // Smoke label proving the #34 Core Text path: a single
+            // line of Menlo 14pt showing the live viewport dims,
+            // backing factor, and computed font metrics. #35 will
+            // replace this with whatever the AppLogic renders.
+            if let Some(font) = make_font("Menlo", 14.0) {
+                let m = font_metrics(&font);
+                let label = format!(
+                    "quadraui · macos · {}×{} @ {:.0}x · line_h {:.1}pt · char_w {:.2}pt",
+                    bounds.size.width as u32,
+                    bounds.size.height as u32,
+                    scale,
+                    m.line_height,
+                    m.char_width,
+                );
+                // SAFETY: same lifetime invariant as the fill above —
+                // `cg_ref` is borrowed for the duration of `drawRect:`.
+                unsafe {
+                    draw_text(cg_ref, &font, &label, 16.0, 16.0, (0.78, 0.82, 0.90, 1.0));
+                }
             }
         }
 

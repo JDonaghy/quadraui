@@ -35,6 +35,8 @@ macos = [
     "dep:objc2-app-kit",
     "dep:objc2-foundation",
     "dep:core-graphics",
+    "dep:core-text",
+    "dep:core-foundation",
 ]
 
 [dependencies]
@@ -69,6 +71,8 @@ objc2-foundation = { version = "0.2", optional = true, features = [
     "NSThread",
 ] }
 core-graphics = { version = "0.23", optional = true }
+core-text = { version = "20.1", optional = true }
+core-foundation = { version = "0.9", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
