@@ -132,21 +132,6 @@ pub fn draw_palette(
         }
     }
 
-    // Separator row beneath the query.
-    if h >= 4 {
-        let row = y0 + 2;
-        for col in 0..w {
-            let ch = if col == 0 {
-                '├'
-            } else if col == w - 1 {
-                '┤'
-            } else {
-                '─'
-            };
-            set_cell(buf, x0 + col, row, ch, border_fg, bg);
-        }
-    }
-
     // Preview pane splits the popup horizontally when present.
     let has_preview = palette.preview.is_some();
     let list_w = if has_preview {
@@ -155,6 +140,23 @@ pub fn draw_palette(
         w
     };
     let preview_x0 = x0 + list_w;
+
+    // Separator row beneath the query.
+    if h >= 4 {
+        let row = y0 + 2;
+        for col in 0..w {
+            let ch = if col == 0 {
+                '├'
+            } else if col == w - 1 {
+                '┤'
+            } else if has_preview && x0 + col == preview_x0 {
+                '┬'
+            } else {
+                '─'
+            };
+            set_cell(buf, x0 + col, row, ch, border_fg, bg);
+        }
+    }
 
     // Result rows.
     let items_row0 = y0 + 3;
@@ -309,12 +311,6 @@ pub fn draw_palette(
             set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
         }
 
-        // Separator on the separator row (y0+2) — extend across preview.
-        let sep_row = y0 + 2;
-        if sep_col < x0 + w {
-            set_cell(buf, sep_col, sep_row, '┬', border_fg, bg);
-        }
-
         // Preview title row (reuses separator row area in the preview
         // half, or first content row if no title).
         let mut preview_row0 = items_row0;
@@ -367,12 +363,6 @@ pub fn draw_palette(
                 }
             }
         }
-
-        // Bottom border separator junction.
-        let bottom_row = y_end - 1;
-        if sep_col < x0 + w {
-            set_cell(buf, sep_col, bottom_row, '┴', border_fg, bg);
-        }
     }
 
     // Bottom border.
@@ -382,6 +372,8 @@ pub fn draw_palette(
             '╰'
         } else if col == w - 1 {
             '╯'
+        } else if has_preview && x0 + col == preview_x0 {
+            '┴'
         } else {
             '─'
         };
@@ -483,6 +475,79 @@ mod tests {
         // 'o' at byte 2 of "foo" → second 'o' → f_col + 2.
         let fg2 = buf[(f_col + 2, 3u16)].fg;
         assert_eq!(fg2, ratatui::style::Color::Rgb(99, 99, 99));
+    }
+
+    #[test]
+    fn preview_pane_paints_content_and_separator() {
+        use crate::primitives::palette::PalettePreview;
+        // Wide enough for 40/60 split: 40 cells → list_w=16, preview=24.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 12));
+        let mut p = make_palette();
+        p.preview = Some(PalettePreview {
+            lines: vec![
+                StyledText::plain("line one"),
+                StyledText::plain("line two"),
+                StyledText::plain("line three"),
+            ],
+            title: Some("preview.rs".into()),
+            scroll_offset: 0,
+            highlight_line: Some(1),
+        });
+        draw_palette(
+            &mut buf,
+            Rect::new(0, 0, 40, 12),
+            &p,
+            &Theme::default(),
+            false,
+        );
+        let list_w = ((40.0_f32) * 0.4).round() as u16; // 16
+                                                        // Vertical separator on item rows.
+        assert_eq!(cell_char(&buf, list_w, 3), '│');
+        // Separator junction on the separator row.
+        assert_eq!(cell_char(&buf, list_w, 2), '┬');
+        // Bottom border junction.
+        assert_eq!(cell_char(&buf, list_w, 11), '┴');
+        // Preview title painted (first char of "preview.rs").
+        let title_col = list_w + 2;
+        assert_eq!(cell_char(&buf, title_col, 3), 'p');
+        // Preview content line 0 ("line one") at row 4 (after title).
+        let content_row = 4;
+        let content_col = list_w + 2;
+        assert_eq!(cell_char(&buf, content_col, content_row), 'l');
+        // Highlight line (line 1) uses selected_bg.
+        let highlight_row = 5;
+        let highlight_bg = buf[(content_col, highlight_row)].bg;
+        let sel_bg_color = ratatui_color(Theme::default().selected_bg);
+        assert_eq!(highlight_bg, sel_bg_color);
+    }
+
+    #[test]
+    fn preview_pane_respects_scroll_offset() {
+        use crate::primitives::palette::PalettePreview;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 12));
+        let mut p = make_palette();
+        p.preview = Some(PalettePreview {
+            lines: vec![
+                StyledText::plain("line zero"),
+                StyledText::plain("line one"),
+                StyledText::plain("visible"),
+            ],
+            title: None,
+            scroll_offset: 2,
+            highlight_line: None,
+        });
+        draw_palette(
+            &mut buf,
+            Rect::new(0, 0, 40, 12),
+            &p,
+            &Theme::default(),
+            false,
+        );
+        let list_w = ((40.0_f32) * 0.4).round() as u16;
+        let content_col = list_w + 2;
+        // No title → content starts at items_row0 (row 3).
+        // scroll_offset=2 → first visible line is "visible".
+        assert_eq!(cell_char(&buf, content_col, 3), 'v');
     }
 
     #[test]
