@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 pub struct Dialog {
     pub id: WidgetId,
     pub title: StyledText,
-    pub body: StyledText,
+    /// Body content lines. Each entry is one line rendered top-to-bottom.
+    /// Supports per-line styled spans for keybinding references, help
+    /// text, and other multi-line content.
+    pub body: Vec<StyledText>,
     pub buttons: Vec<DialogButton>,
     /// Optional severity tint — backends may add an icon or edge
     /// accent. `None` = neutral.

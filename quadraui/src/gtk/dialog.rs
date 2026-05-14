@@ -89,12 +89,13 @@ pub fn draw_dialog(
 
     let body_b = dialog_layout.body_bounds;
     cr.set_source_rgb(fg.0, fg.1, fg.2);
-    for (i, line) in flatten(&dialog.body).split('\n').enumerate() {
+    for (i, line) in dialog.body.iter().enumerate() {
         let row_y = body_b.y as f64 + i as f64 * line_height;
         if row_y + line_height > body_b.y as f64 + body_b.height as f64 {
             break;
         }
-        pango_layout.set_text(line);
+        let text = flatten(line);
+        pango_layout.set_text(&text);
         pango_layout.set_attributes(None);
         cr.move_to(body_b.x as f64, row_y);
         pcfn::show_layout(cr, pango_layout);

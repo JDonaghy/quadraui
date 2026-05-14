@@ -1446,7 +1446,7 @@ mod tests {
         let d = Dialog {
             id: WidgetId::new("confirm"),
             title: StyledText::plain("Close unsaved file?"),
-            body: StyledText::plain("You have unsaved changes. Close anyway?"),
+            body: vec![StyledText::plain("You have unsaved changes. Close anyway?")],
             buttons: vec![cancel, ok],
             severity: Some(DialogSeverity::Question),
             vertical_buttons: false,
@@ -1485,7 +1485,7 @@ mod tests {
         let d = Dialog {
             id: WidgetId::new("code-actions"),
             title: StyledText::plain("Code actions"),
-            body: StyledText::default(),
+            body: vec![StyledText::default()],
             buttons: vec![
                 mk_dialog_button("a1", "Add import"),
                 mk_dialog_button("a2", "Use fully qualified path"),
@@ -1522,7 +1522,7 @@ mod tests {
         let d = Dialog {
             id: WidgetId::new("confirm"),
             title: StyledText::plain("T"),
-            body: StyledText::plain("B"),
+            body: vec![StyledText::plain("B")],
             buttons: vec![
                 mk_dialog_button("cancel", "Cancel"),
                 mk_dialog_button("ok", "OK"),
@@ -1568,7 +1568,7 @@ mod tests {
         let d = Dialog {
             id: WidgetId::new("rename"),
             title: StyledText::plain("Rename"),
-            body: StyledText::plain("New name:"),
+            body: vec![StyledText::plain("New name:")],
             buttons: vec![cancel, ok],
             severity: None,
             vertical_buttons: false,
@@ -1608,7 +1608,7 @@ mod tests {
         let d = Dialog {
             id: WidgetId::new("d"),
             title: StyledText::default(),
-            body: StyledText::default(),
+            body: vec![StyledText::default()],
             buttons: vec![cancel, ok],
             severity: None,
             vertical_buttons: false,
