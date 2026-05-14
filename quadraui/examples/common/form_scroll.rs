@@ -128,8 +128,9 @@ impl AppLogic for FormScrollApp {
         }
 
         self.fc.set_form(self.build_form());
+        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle(&event, backend, rect) {
+        match self.fc.handle_cached(&event, rect) {
             FormControllerEvent::FormAction(fe) => {
                 match fe {
                     quadraui::FormEvent::ToggleChanged { ref id, value } => {
