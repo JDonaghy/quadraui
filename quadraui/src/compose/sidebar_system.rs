@@ -24,7 +24,7 @@
 //! offset). Backends normalise their native direction before emitting.
 
 use super::focus_group::FocusGroup;
-use super::form_controller::FormController;
+use super::form_controller::{form_click_event, FormController};
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
 use crate::primitives::form::{
@@ -1335,54 +1335,6 @@ fn form_field_measure(
             FormFieldMeasure::new(row_h * *visible_rows as f32)
         }
         _ => FormFieldMeasure::new(row_h),
-    }
-}
-
-fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
-    for field in &form.fields {
-        if &field.id == clicked_id {
-            return match &field.kind {
-                FieldKind::Toggle { value } => FormEvent::ToggleChanged {
-                    id: clicked_id.clone(),
-                    value: !value,
-                },
-                FieldKind::Button => FormEvent::ButtonClicked {
-                    id: clicked_id.clone(),
-                },
-                _ => FormEvent::FocusChanged {
-                    id: clicked_id.clone(),
-                },
-            };
-        }
-        if let FieldKind::ToggleGroup { toggles } = &field.kind {
-            if let Some(t) = toggles.iter().find(|t| &t.id == clicked_id) {
-                return FormEvent::ToggleChanged {
-                    id: clicked_id.clone(),
-                    value: !t.value,
-                };
-            }
-        }
-        if let FieldKind::ButtonRow { buttons } = &field.kind {
-            if buttons.iter().any(|b| &b.id == clicked_id) {
-                return FormEvent::ButtonClicked {
-                    id: clicked_id.clone(),
-                };
-            }
-        }
-        if let FieldKind::SegmentedControl { .. } = &field.kind {
-            let prefix = format!("{}__seg_", field.id.as_str());
-            if clicked_id.as_str().starts_with(&prefix) {
-                if let Ok(idx) = clicked_id.as_str()[prefix.len()..].parse::<usize>() {
-                    return FormEvent::SegmentedControlChanged {
-                        id: field.id.clone(),
-                        selected_idx: idx,
-                    };
-                }
-            }
-        }
-    }
-    FormEvent::FocusChanged {
-        id: clicked_id.clone(),
     }
 }
 

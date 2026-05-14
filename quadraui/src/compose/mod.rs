@@ -11,6 +11,7 @@
 //! - [`FocusRing`] — Tab/Shift+Tab cycling through widget IDs.
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
+//! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
 
 pub mod focus_group;
@@ -23,6 +24,7 @@ pub mod tree_controller;
 
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
+pub use form_controller::{FormController, FormControllerEvent};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
