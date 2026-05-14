@@ -583,10 +583,87 @@ Audited quadraui's 29 primitives against Lens (Kubernetes IDE) features. Found ~
 
 ### Open queue for next session
 
+*Resolved in session 2026-05-13 below.*
+
+## Session 2026-05-13 — Chart primitive + Chart/DataTable interactivity arc
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (6)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 143 | Chart primitive: sparkline / line / area charts | A | New primitive: `Chart`, `ChartKind` (Sparkline/Line/Bar), `Series` with `fill` for area charts. TUI rasteriser (sparkline=block chars, line=braille dots, bar=block fills). GTK rasteriser (Cairo polylines/rectangles). Backend trait `draw_chart`/`chart_layout`. `SectionBody::Chart` MSV integration. Paired `tui_chart`/`gtk_chart` examples. 15 tests. |
+| 150 | Chart + DataTable: hover state and tooltip integration | A | `ChartHit::DataPoint` variant. `ChartLayout::data_point_positions` + `nearest_point()` helper. `draw_chart` gains `hovered_point` per-frame param. `draw_data_table` gains `hovered_idx` per-frame param. TUI hover marker (`●`), GTK filled circle. DataTable row tint on hover. |
+| 153 | Chart: axis tick marks, value labels, and grid lines | A | `y_ticks`, `x_ticks`, `show_grid` fields on Chart. `ChartLayout::y_tick_positions`/`x_tick_positions`. Dynamic y-label gutter width from tick label widths. TUI tick labels + `┄` grid lines. GTK Pango tick labels + translucent grid lines. |
+| 152 | Chart: crosshair cursor line with value readout | A | `draw_chart` gains `crosshair_x` per-frame param. `ChartLayout::screen_to_data_x`/`data_to_screen_x` helpers. TUI dim `│` crosshair. GTK dashed line + per-series value labels. |
+| 151 | Chart: click-to-drill event with data point identity | A | `ChartEvent::DataPointClicked`/`LegendClicked` variants. `UiEvent::Chart(WidgetId, ChartEvent)` + `UiEvent::DataTable(WidgetId, DataTableEvent)` dispatch pipeline. |
+| 154 | DataTable: column resize drag interaction | A | `column_overrides: Vec<Option<f32>>` on DataTable. `resolve_columns` applies overrides as `Fixed(w)`. `DataTableEvent::ColumnResized` variant. |
+
+### Issues filed (5)
+
+| # | Title | Status |
+|---|---|---|
+| 150 | Chart + DataTable hover state | closed in-session |
+| 151 | Chart click-to-drill events | closed in-session |
+| 152 | Chart crosshair cursor | closed in-session |
+| 153 | Chart axis ticks + grid lines | closed in-session |
+| 154 | DataTable column resize | closed in-session |
+
+### New primitive shipped
+
+| Primitive | Files | Features |
+|---|---|---|
+| Chart | primitives/chart.rs, tui/chart.rs, gtk/chart.rs | Sparkline (Unicode block chars TUI, Cairo polyline GTK), Line (braille dots TUI, Cairo paths GTK), Bar (block fills TUI, Cairo rects GTK). Per-series fill for area charts. Hover marker, crosshair line, axis ticks, grid lines, data point positions for nearest-point resolution. |
+
+### Backend trait changes
+
+| Method | Change |
+|---|---|
+| `draw_chart` | New (from #143), then gained `hovered_point` (#150) + `crosshair_x` (#152) |
+| `chart_layout` | New (#143) |
+| `draw_data_table` | Gained `hovered_idx` parameter (#150) |
+
+### Interactivity features shipped
+
+| Feature | Scope |
+|---|---|
+| Chart hover | Per-frame `hovered_point` param, `data_point_positions` + `nearest_point()` on layout, TUI `●` marker with braille-aligned coordinates, GTK filled circle with glow |
+| DataTable hover | Per-frame `hovered_idx` param, row background tint (TUI `tab_bar_bg`, GTK 50% alpha) |
+| Chart crosshair | Per-frame `crosshair_x` param, `screen_to_data_x`/`data_to_screen_x` helpers, TUI dim `│` column, GTK dashed line + Pango value labels per series |
+| Chart axis ticks | `y_ticks`/`x_ticks`/`show_grid` fields, `y_tick_positions`/`x_tick_positions` on layout, `format_tick_value` helper, dynamic gutter width |
+| Chart click-to-drill | `ChartEvent::DataPointClicked`/`LegendClicked`, `UiEvent::Chart`/`UiEvent::DataTable` |
+| DataTable column resize | `column_overrides` field, `ColumnResized` event, `resolve_columns` override application |
+
+### Bugs found + fixed
+
+1. **TUI sparkline 1-char-per-point**: sparkline rendered data points as 1 char each instead of stretching across the full width. Fixed with linear interpolation across all available columns.
+2. **TUI hover marker offset**: `●` painted ~2 rows below the braille line. Root cause: primitive's `data_point_positions` use full plot_area coordinates, but braille renderer offsets by 1 col (left axis) + 1 row (bottom axis). Fixed by computing marker position directly from data values using braille-grid math (dot_w/dot_h → cell_col/cell_row).
+3. **DataTableEvent Eq derive with f32**: `ColumnResized { width: f32 }` broke `#[derive(Eq)]`. Fixed by dropping `Eq` (keeping `PartialEq`).
+
+### Example updates
+
+- `chart_app.rs`: Wired `MouseMoved` → `nearest_point` → `hovered_point` and `screen_to_data_x` → `crosshair_x` for interactive demos across all chart kinds.
+- `data_table_app.rs`: Wired `MouseMoved` → `hit_test` → `hovered_idx` for row highlight.
+- Line chart example enables `y_ticks: Some(5)` + `show_grid: true` to demonstrate axis features.
+
+### Disk management
+
+Worktree `target/` directories (6.5 GB each) and main repo `target/` (22 GB → 26.6 GB) consumed disk. Cleaned `~/.claude` caches (session logs, file-history, telemetry, stale worktree project dirs) and main `target/` to recover ~37 GB.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 629 |
+| After #143 (Chart primitive) | 644 |
+| Session end (all interactivity) | 644 |
+
+### Open queue for next session
+
 - #65 — SplitDragController compose helper (deferred)
 - #115 — quadraui-lua bridge crate (future)
 - #118 — quadraui-ipc JSON bridge (future)
-- #143 — Chart primitive (sparkline / line / area)
 - #144 — TabGroup compose helper
 - Windows milestone (#19–#31)
 - macOS milestone (#32–#44)
