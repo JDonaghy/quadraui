@@ -79,17 +79,17 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
         set_cell(buf, x + col, y + h - 1, ch, border_fg, bg);
     }
 
-    // Body text — split on \n.
+    // Body text — one StyledText per line.
     let body_x = layout.body_bounds.x.round() as u16;
     let body_y = layout.body_bounds.y.round() as u16;
     let body_w = layout.body_bounds.width.round() as u16;
-    let body_text = flatten(&dialog.body);
-    for (i, line) in body_text.split('\n').enumerate() {
+    for (i, line) in dialog.body.iter().enumerate() {
         let row = body_y + i as u16;
         if row >= body_y + layout.body_bounds.height.round() as u16 {
             break;
         }
-        for (j, ch) in line.chars().enumerate() {
+        let text = flatten(line);
+        for (j, ch) in text.chars().enumerate() {
             let col = body_x + j as u16;
             if col >= body_x + body_w {
                 break;
@@ -151,9 +151,9 @@ mod tests {
             title: StyledText {
                 spans: vec![StyledSpan::plain("Confirm")],
             },
-            body: StyledText {
+            body: vec![StyledText {
                 spans: vec![StyledSpan::plain("Save before quitting?")],
-            },
+            }],
             buttons: vec![
                 DialogButton {
                     id: WidgetId::new("save"),
