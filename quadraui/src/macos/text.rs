@@ -26,6 +26,7 @@
 
 use core_foundation::attributed_string::{CFAttributedString, CFAttributedStringRef};
 use core_foundation::base::{CFAllocatorRef, TCFType};
+use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::base::CGFloat;
@@ -33,7 +34,9 @@ use core_graphics::geometry::CGAffineTransform;
 use core_graphics::sys::CGContextRef;
 use core_text::font::{self, CTFont};
 use core_text::line::CTLine;
-use core_text::string_attributes::kCTFontAttributeName;
+use core_text::string_attributes::{
+    kCTFontAttributeName, kCTForegroundColorFromContextAttributeName,
+};
 
 /// Aggregate font measurements in points.
 ///
@@ -157,8 +160,19 @@ pub unsafe fn draw_text(
 /// so we call `CFAttributedStringCreate` directly via FFI and wrap
 /// the resulting `+1`-retained ref in our own CFAttributedString.
 fn build_ctline(font: &CTFont, text: &str) -> CTLine {
-    let key = unsafe { CFString::wrap_under_get_rule(kCTFontAttributeName) };
-    let attributes = CFDictionary::from_CFType_pairs(&[(key, font.as_CFType())]);
+    let font_key = unsafe { CFString::wrap_under_get_rule(kCTFontAttributeName) };
+    // Tell Core Text to honour the graphics context's current fill
+    // colour for glyph rendering. Without this attribute CT defaults
+    // to **black**, regardless of what `CGContextSetRGBFillColor`
+    // was set to right before `CTLineDraw` — Core Text reads its
+    // foreground from the attributed string, not the context state,
+    // unless this flag is explicitly true.
+    let from_ctx_key =
+        unsafe { CFString::wrap_under_get_rule(kCTForegroundColorFromContextAttributeName) };
+    let attributes = CFDictionary::from_CFType_pairs(&[
+        (font_key, font.as_CFType()),
+        (from_ctx_key, CFBoolean::true_value().as_CFType()),
+    ]);
     let cf_text = CFString::new(text);
     // SAFETY: `cf_text` and `attributes` outlive the call. The create
     // function returns a `+1`-retained ref which `wrap_under_create_rule`
