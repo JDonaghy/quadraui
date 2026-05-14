@@ -68,6 +68,10 @@ pub struct Theme {
     pub surface_fg: Color,
     /// Background of the selected row in a `ListView`.
     pub selected_bg: Color,
+    /// Dimmed selection background for unfocused trees / lists. Indicates
+    /// the selected row without implying keyboard focus (e.g. explorer
+    /// tree highlighting the file matching the active editor tab).
+    pub inactive_selected_bg: Color,
     /// Border-glyph colour for bordered surfaces.
     pub border_fg: Color,
     /// Title text colour drawn over a top border (bordered `ListView`).
@@ -267,6 +271,7 @@ impl Default for Theme {
             surface_bg: Color::rgb(28, 32, 44),
             surface_fg: fg,
             selected_bg: Color::rgb(50, 60, 90),
+            inactive_selected_bg: Color::rgb(35, 40, 58),
             border_fg: Color::rgb(120, 160, 200),
             title_fg: Color::rgb(180, 200, 230),
             header_bg: Color::rgb(40, 44, 56),

@@ -56,6 +56,7 @@ pub fn draw_tree(
     let hdr_fg = ratatui_color(theme.header_fg);
     let item_fg = ratatui_color(theme.foreground);
     let sel_bg = ratatui_color(theme.selected_bg);
+    let inactive_sel_bg = ratatui_color(theme.inactive_selected_bg);
     let text_sel_bg = ratatui_color(theme.selection_bg);
     let dim_fg = ratatui_color(theme.muted_fg);
 
@@ -71,13 +72,15 @@ pub fn draw_tree(
         }
 
         let is_header = matches!(row.decoration, Decoration::Header);
-        let is_selected =
-            tree.has_focus && tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
+        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
+        let is_selected = tree.has_focus && path_selected;
+        let is_inactive_selected = !tree.has_focus && path_selected;
 
-        let (default_fg, bg) = match (is_header, is_selected) {
-            (_, true) => (hdr_fg, sel_bg),
-            (true, false) => (hdr_fg, hdr_bg),
-            (false, false) => (item_fg, row_bg),
+        let (default_fg, bg) = match (is_header, is_selected, is_inactive_selected) {
+            (_, true, _) => (hdr_fg, sel_bg),
+            (_, _, true) => (item_fg, inactive_sel_bg),
+            (true, _, _) => (hdr_fg, hdr_bg),
+            _ => (item_fg, row_bg),
         };
 
         for x in area.x..area.x + area.width {
