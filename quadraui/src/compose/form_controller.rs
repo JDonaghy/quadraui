@@ -7,8 +7,19 @@
 //! per frame via [`FormController::set_form`], call
 //! [`FormController::render`] + [`FormController::handle`], and match
 //! on [`FormControllerEvent`] for semantic actions.
+//!
+//! Two event-handling paths:
+//!
+//! - [`FormController::handle`] — requires `&mut dyn Backend`. Use when
+//!   the event handler has a backend reference (e.g. `AppLogic::handle`).
+//! - [`FormController::handle_cached`] — backend-free. Uses metrics
+//!   cached by [`FormController::render`] or [`FormController::set_backend_info`].
+//!   Use when the event handler runs without a backend (e.g. vimcode's
+//!   TUI mouse handler).
 
-use crate::primitives::form::{FieldKind, Form, FormEvent, FormHit};
+use crate::primitives::form::{
+    FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
+};
 use crate::{Backend, ButtonMask, MouseButton, Rect, Scrollbar, UiEvent, WidgetId};
 
 /// What happened after [`FormController::handle`] processed an event.
@@ -37,6 +48,7 @@ pub struct FormController {
     scroll_offset: usize,
     has_focus: bool,
     scroll_drag: Option<ScrollDrag>,
+    cached_lh: Option<f32>,
 }
 
 impl FormController {
@@ -47,6 +59,7 @@ impl FormController {
             scroll_offset: 0,
             has_focus: false,
             scroll_drag: None,
+            cached_lh: None,
         }
     }
 
@@ -92,19 +105,51 @@ impl FormController {
         self.has_focus = has_focus;
     }
 
+    /// Cache backend metrics so [`Self::handle_cached`] can process
+    /// events without a `Backend` reference. Call once at init, or
+    /// again if `line_height` changes (font/DPI change).
+    ///
+    /// [`Self::render`] caches this automatically, so explicit calls
+    /// are only needed when `handle_cached` must work before the first
+    /// `render`.
+    pub fn set_backend_info(&mut self, line_height: f32) {
+        self.cached_lh = Some(line_height);
+    }
+
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let (form_rect, sb_rect) = self.split_rect(backend, rect);
+        let lh = backend.line_height();
+        // Cache metrics for handle_cached(). The &self receiver prevents
+        // mutation here, so we defer to a post-render cache call pattern:
+        // callers that need handle_cached() should call set_backend_info()
+        // or render_and_cache().
+        let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let form = self.build_form(form_rect);
         backend.draw_form(form_rect, &form);
         if let Some(sb_rect) = sb_rect {
-            let sb = self.build_scrollbar(backend, sb_rect);
+            let sb = build_scrollbar_lh(
+                &self.id,
+                self.field_count(),
+                self.scroll_offset,
+                self.scroll_drag.is_some(),
+                lh,
+                sb_rect,
+            );
             backend.draw_scrollbar(sb_rect, &sb);
         }
     }
 
-    // ── Handle ────────────────────────────────────────────────────────
+    /// Render and cache backend metrics for [`Self::handle_cached`].
+    ///
+    /// Equivalent to calling [`Self::set_backend_info`] then
+    /// [`Self::render`], but in one step.
+    pub fn render_and_cache(&mut self, backend: &mut dyn Backend, rect: Rect) {
+        self.cached_lh = Some(backend.line_height());
+        self.render(backend, rect);
+    }
+
+    // ── Handle (with backend) ────────────────────────────────────────
 
     pub fn handle(
         &mut self,
@@ -112,40 +157,20 @@ impl FormController {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> FormControllerEvent {
-        match event {
-            UiEvent::MouseDown {
-                button: MouseButton::Left,
-                position,
-                ..
-            } => self.click(backend, rect, position.x, position.y),
+        let lh = backend.line_height();
+        self.handle_inner(event, rect, lh, Some(backend))
+    }
 
-            UiEvent::MouseMoved {
-                position,
-                buttons:
-                    ButtonMask {
-                        left: true,
-                        middle: _,
-                        right: _,
-                    },
-            } => self.drag_to(position.y),
+    // ── Handle (cached, no backend) ──────────────────────────────────
 
-            UiEvent::MouseUp {
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.scroll_drag = None;
-                FormControllerEvent::Ignored
-            }
-
-            UiEvent::Scroll { delta, .. } => {
-                let vr = self.viewport_rows(backend, rect);
-                let rows = if delta.y > 0.0 { -1 } else { 1 };
-                self.scroll_by(rows, vr);
-                FormControllerEvent::Consumed
-            }
-
-            _ => FormControllerEvent::Ignored,
-        }
+    /// Backend-free event handler. Requires [`Self::set_backend_info`]
+    /// or [`Self::render_and_cache`] called first. Returns
+    /// [`FormControllerEvent::Ignored`] if metrics aren't cached yet.
+    pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> FormControllerEvent {
+        let Some(lh) = self.cached_lh else {
+            return FormControllerEvent::Ignored;
+        };
+        self.handle_inner(event, rect, lh, None)
     }
 
     // ── Scroll primitives (pub for SidebarSystem reuse) ──────────────
@@ -174,15 +199,52 @@ impl FormController {
     }
 
     pub fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
-        let lh = backend.line_height();
-        if lh <= 0.0 {
-            return self.field_count();
+        viewport_rows_lh(backend.line_height(), rect)
+    }
+
+    // ── Internal: shared handle dispatch ─────────────────────────────
+
+    fn handle_inner(
+        &mut self,
+        event: &UiEvent,
+        rect: Rect,
+        lh: f32,
+        backend: Option<&mut dyn Backend>,
+    ) -> FormControllerEvent {
+        match event {
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => self.click_inner(rect, position.x, position.y, lh, backend),
+
+            UiEvent::MouseMoved {
+                position,
+                buttons:
+                    ButtonMask {
+                        left: true,
+                        middle: _,
+                        right: _,
+                    },
+            } => self.drag_to(position.y),
+
+            UiEvent::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.scroll_drag = None;
+                FormControllerEvent::Ignored
+            }
+
+            UiEvent::Scroll { delta, .. } => {
+                let vr = viewport_rows_lh(lh, rect);
+                let rows = if delta.y > 0.0 { -1 } else { 1 };
+                self.scroll_by(rows, vr);
+                FormControllerEvent::Consumed
+            }
+
+            _ => FormControllerEvent::Ignored,
         }
-        let row_h = (lh * 1.4).round();
-        if row_h <= 0.0 {
-            return self.field_count();
-        }
-        (rect.height / row_h).floor() as usize
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -205,79 +267,36 @@ impl FormController {
         }
     }
 
-    fn scrollbar_track_width(&self, backend: &dyn Backend) -> f32 {
-        // 1 cell on TUI (lh=1.0), ~8px on GTK (lh≈20) — matches MSV's
-        // scrollbar_size convention.
-        (backend.line_height() * 0.4).max(1.0).round()
-    }
-
-    fn needs_scrollbar(&self, backend: &dyn Backend, form_rect: Rect) -> bool {
-        self.field_count() > self.viewport_rows(backend, form_rect)
-    }
-
-    fn split_rect(&self, backend: &dyn Backend, rect: Rect) -> (Rect, Option<Rect>) {
-        let track_w = self.scrollbar_track_width(backend);
-        if rect.width <= track_w {
-            return (rect, None);
-        }
-        let form_rect = Rect::new(rect.x, rect.y, rect.width - track_w, rect.height);
-        if !self.needs_scrollbar(backend, form_rect) {
-            return (rect, None);
-        }
-        let sb_rect = Rect::new(rect.x + rect.width - track_w, rect.y, track_w, rect.height);
-        (form_rect, Some(sb_rect))
-    }
-
-    fn build_scrollbar(&self, backend: &dyn Backend, sb_rect: Rect) -> Scrollbar {
-        let total = self.field_count() as f32;
-        let visible = {
-            let lh = backend.line_height();
-            if lh > 0.0 {
-                let row_h = (lh * 1.4).round();
-                if row_h > 0.0 {
-                    (sb_rect.height / row_h).floor()
-                } else {
-                    total
-                }
-            } else {
-                total
-            }
-        };
-        let min_thumb = backend.line_height().max(1.0);
-        let is_dragging = self.scroll_drag.is_some();
-        let mut sb = Scrollbar::vertical(
-            format!("{}-scrollbar", self.id),
-            sb_rect,
-            self.scroll_offset as f32,
-            total,
-            visible,
-            min_thumb,
-        );
-        sb.dragging = is_dragging;
-        sb
-    }
-
-    fn click(
+    fn click_inner(
         &mut self,
-        backend: &mut dyn Backend,
         rect: Rect,
         x: f32,
         y: f32,
+        lh: f32,
+        backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
         if !rect_contains(rect, x, y) {
             return FormControllerEvent::Ignored;
         }
-        let (form_rect, sb_rect) = self.split_rect(backend, rect);
+        let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
 
         if let Some(sb_rect) = sb_rect {
             if rect_contains(sb_rect, x, y) {
-                return self.click_scrollbar(backend, form_rect, sb_rect, y);
+                return self.click_scrollbar_lh(lh, form_rect, sb_rect, y);
             }
         }
 
         if rect_contains(form_rect, x, y) {
             let form = self.build_form(form_rect);
-            let layout = backend.form_layout(form_rect, &form);
+            let layout = if let Some(be) = backend {
+                be.form_layout(form_rect, &form)
+            } else {
+                let row_h = row_height(lh);
+                let char_w = lh * 0.6;
+                form.layout(form_rect.width, form_rect.height, |i| {
+                    form_field_measure(&form.fields[i], row_h, char_w)
+                })
+            };
             match layout.hit_test(x - form_rect.x, y - form_rect.y) {
                 FormHit::Field(id) => {
                     let event = form_click_event(&form, &id);
@@ -290,20 +309,27 @@ impl FormController {
         }
     }
 
-    fn click_scrollbar(
+    fn click_scrollbar_lh(
         &mut self,
-        backend: &dyn Backend,
+        lh: f32,
         form_rect: Rect,
         sb_rect: Rect,
         y: f32,
     ) -> FormControllerEvent {
-        let viewport_rows = self.viewport_rows(backend, form_rect);
-        let max_offset = self.field_count().saturating_sub(viewport_rows);
+        let vr = viewport_rows_lh(lh, form_rect);
+        let max_offset = self.field_count().saturating_sub(vr);
         if max_offset == 0 {
             return FormControllerEvent::Ignored;
         }
 
-        let sb = self.build_scrollbar(backend, sb_rect);
+        let sb = build_scrollbar_lh(
+            &self.id,
+            self.field_count(),
+            self.scroll_offset,
+            self.scroll_drag.is_some(),
+            lh,
+            sb_rect,
+        );
         let thumb_top = sb_rect.y + sb.thumb_start;
         let thumb_bottom = thumb_top + sb.thumb_len;
 
@@ -317,10 +343,10 @@ impl FormController {
             });
             FormControllerEvent::ScrollChanged
         } else if y < thumb_top {
-            self.page_scroll(-(viewport_rows as isize), viewport_rows);
+            self.page_scroll(-(vr as isize), vr);
             FormControllerEvent::ScrollChanged
         } else {
-            self.page_scroll(viewport_rows as isize, viewport_rows);
+            self.page_scroll(vr as isize, vr);
             FormControllerEvent::ScrollChanged
         }
     }
@@ -344,6 +370,8 @@ impl FormController {
         FormControllerEvent::Consumed
     }
 }
+
+// ── Free functions (shared by FormController + SidebarSystem) ────────
 
 /// Determine the `FormEvent` for a click on a form field.
 ///
@@ -393,6 +421,131 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
     }
     FormEvent::FocusChanged {
         id: clicked_id.clone(),
+    }
+}
+
+// ── Pure helpers (line_height → derived values) ─────────────────────
+
+fn row_height(lh: f32) -> f32 {
+    (lh * 1.4).round()
+}
+
+fn track_width(lh: f32) -> f32 {
+    (lh * 0.4).max(1.0).round()
+}
+
+fn viewport_rows_lh(lh: f32, rect: Rect) -> usize {
+    if lh <= 0.0 {
+        return 0;
+    }
+    let rh = row_height(lh);
+    if rh <= 0.0 {
+        return 0;
+    }
+    (rect.height / rh).floor() as usize
+}
+
+fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>) {
+    let tw = track_width(lh);
+    if rect.width <= tw {
+        return (rect, None);
+    }
+    let form_rect = Rect::new(rect.x, rect.y, rect.width - tw, rect.height);
+    let vr = viewport_rows_lh(lh, form_rect);
+    if field_count <= vr {
+        return (rect, None);
+    }
+    let sb_rect = Rect::new(rect.x + rect.width - tw, rect.y, tw, rect.height);
+    (form_rect, Some(sb_rect))
+}
+
+fn build_scrollbar_lh(
+    id: &str,
+    field_count: usize,
+    scroll_offset: usize,
+    is_dragging: bool,
+    lh: f32,
+    sb_rect: Rect,
+) -> Scrollbar {
+    let total = field_count as f32;
+    let rh = row_height(lh);
+    let visible = if rh > 0.0 {
+        (sb_rect.height / rh).floor()
+    } else {
+        total
+    };
+    let min_thumb = lh.max(1.0);
+    let mut sb = Scrollbar::vertical(
+        format!("{id}-scrollbar"),
+        sb_rect,
+        scroll_offset as f32,
+        total,
+        visible,
+        min_thumb,
+    );
+    sb.dragging = is_dragging;
+    sb
+}
+
+fn form_field_measure(
+    field: &crate::primitives::form::FormField,
+    row_h: f32,
+    char_w: f32,
+) -> FormFieldMeasure {
+    match &field.kind {
+        FieldKind::ToggleGroup { toggles } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = toggles
+                .iter()
+                .map(|t| FormItemMeasure {
+                    id: t.id.clone(),
+                    width: (t.label.chars().count() as f32 + 2.0) * char_w,
+                })
+                .collect();
+            FormFieldMeasure::with_items(row_h, start_x, char_w, items)
+        }
+        FieldKind::ButtonRow { buttons } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = buttons
+                .iter()
+                .map(|b| FormItemMeasure {
+                    id: b.id.clone(),
+                    width: (b.label.chars().count() as f32 + 2.0) * char_w,
+                })
+                .collect();
+            FormFieldMeasure::with_items(row_h, start_x, char_w, items)
+        }
+        FieldKind::SegmentedControl { options, .. } => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = options
+                .iter()
+                .enumerate()
+                .map(|(idx, opt)| FormItemMeasure {
+                    id: WidgetId::new(format!("{}__seg_{idx}", field.id.as_str())),
+                    width: (opt.chars().count() as f32 + 2.0) * char_w,
+                })
+                .collect();
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        FieldKind::TextArea { visible_rows, .. } => {
+            FormFieldMeasure::new(row_h * *visible_rows as f32)
+        }
+        _ => FormFieldMeasure::new(row_h),
     }
 }
 
@@ -622,5 +775,91 @@ mod tests {
         let mut fc = FormController::new("fc".into());
         fc.scroll_by(5, 10);
         assert_eq!(fc.scroll_offset(), 0);
+    }
+
+    // ── handle_cached ───────────────────────────────────────────────
+
+    #[test]
+    fn handle_cached_returns_ignored_without_backend_info() {
+        let mut fc = test_controller(20);
+        let ev = fc.handle_cached(
+            &UiEvent::Scroll {
+                widget: None,
+                delta: crate::ScrollDelta { x: 0.0, y: 1.0 },
+                position: crate::Point { x: 5.0, y: 5.0 },
+            },
+            Rect::new(0.0, 0.0, 40.0, 10.0),
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn handle_cached_scroll_works_after_set_backend_info() {
+        let mut fc = test_controller(20);
+        // TUI: lh=1.0, row_h=1.0, rect height=5 → 5 viewport rows
+        fc.set_backend_info(1.0);
+        let ev = fc.handle_cached(
+            &UiEvent::Scroll {
+                widget: None,
+                delta: crate::ScrollDelta { x: 0.0, y: -1.0 },
+                position: crate::Point { x: 5.0, y: 2.0 },
+            },
+            Rect::new(0.0, 0.0, 40.0, 5.0),
+        );
+        assert_eq!(ev, FormControllerEvent::Consumed);
+        assert_eq!(fc.scroll_offset(), 1);
+    }
+
+    #[test]
+    fn handle_cached_click_uses_fallback_layout() {
+        let mut fc = test_controller(3);
+        fc.set_backend_info(1.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 5.0, y: 0.5 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 40.0, 5.0),
+        );
+        match ev {
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged { id, value }) => {
+                assert_eq!(id.as_str(), "field-0");
+                assert!(value);
+            }
+            other => panic!("expected FormAction(ToggleChanged), got {other:?}"),
+        }
+    }
+
+    // ── Pure helper tests ───────────────────────────────────────────
+
+    #[test]
+    fn viewport_rows_lh_tui() {
+        // TUI: lh=1.0, row_h=round(1.4)=1.0, height=10 → 10 rows
+        assert_eq!(viewport_rows_lh(1.0, Rect::new(0.0, 0.0, 40.0, 10.0)), 10);
+    }
+
+    #[test]
+    fn viewport_rows_lh_gtk() {
+        // GTK: lh=20.0, row_h=round(28.0)=28.0, height=280 → 10 rows
+        assert_eq!(
+            viewport_rows_lh(20.0, Rect::new(0.0, 0.0, 400.0, 280.0)),
+            10
+        );
+    }
+
+    #[test]
+    fn split_rect_lh_no_scrollbar_when_fits() {
+        let (form_rect, sb) = split_rect_lh(5, 1.0, Rect::new(0.0, 0.0, 40.0, 10.0));
+        assert!(sb.is_none());
+        assert_eq!(form_rect.width, 40.0);
+    }
+
+    #[test]
+    fn split_rect_lh_scrollbar_when_overflows() {
+        let (form_rect, sb) = split_rect_lh(20, 1.0, Rect::new(0.0, 0.0, 40.0, 10.0));
+        assert!(sb.is_some());
+        assert!(form_rect.width < 40.0);
     }
 }
