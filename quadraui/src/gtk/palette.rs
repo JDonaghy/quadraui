@@ -70,8 +70,13 @@ pub fn draw_palette(
     let list_w = if has_preview { (w * 0.4).round() } else { w };
 
     const BOTTOM_INSET: f64 = 4.0;
-    let sep_y = y + 2.0 * line_height;
-    let rows_y = sep_y + 1.0;
+    let (sep_y, rows_y) = if palette.show_query {
+        let s = y + 2.0 * line_height;
+        (s, s + 1.0)
+    } else {
+        let s = y + line_height;
+        (s, s)
+    };
     let rows_h_raw = ((y + h) - rows_y - BOTTOM_INSET).max(0.0);
     let visible_rows = (rows_h_raw / line_height) as usize;
     let rows_h = visible_rows as f64 * line_height;
@@ -99,11 +104,16 @@ pub fn draw_palette(
     // visibility-clamped effective value without mutating the caller.
     let mut palette_local = palette.clone();
     palette_local.scroll_offset = effective_offset;
+    let query_h = if palette.show_query {
+        line_height as f32
+    } else {
+        0.0
+    };
     let palette_layout = palette_local.layout(
         w as f32,
         (rows_y + rows_h - y) as f32,
         line_height as f32,
-        line_height as f32,
+        query_h,
         |_| PaletteItemMeasure::new(line_height as f32),
     );
 
@@ -173,11 +183,13 @@ pub fn draw_palette(
     }
 
     // ── Separator row ─────────────────────────────────────────────────
-    cr.set_source_rgb(border.0, border.1, border.2);
-    cr.set_line_width(1.0);
-    cr.move_to(x, sep_y);
-    cr.line_to(x + w, sep_y);
-    cr.stroke().ok();
+    if palette.show_query {
+        cr.set_source_rgb(border.0, border.1, border.2);
+        cr.set_line_width(1.0);
+        cr.move_to(x, sep_y);
+        cr.line_to(x + w, sep_y);
+        cr.stroke().ok();
+    }
 
     // ── Result rows ───────────────────────────────────────────────────
     cr.save().ok();

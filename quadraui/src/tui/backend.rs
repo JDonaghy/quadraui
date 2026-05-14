@@ -1494,6 +1494,7 @@ mod tests {
             scroll_offset: 0,
             total_count: 2,
             has_focus: true,
+            show_query: true,
             preview: None,
         }
     }
