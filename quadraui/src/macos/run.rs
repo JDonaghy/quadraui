@@ -180,7 +180,9 @@ declare_class!(
                 // SAFETY: same lifetime invariant as the fill above —
                 // `cg_ref` is borrowed for the duration of `drawRect:`.
                 unsafe {
-                    draw_text(cg_ref, &font, &label, 16.0, 16.0, (0.78, 0.82, 0.90, 1.0));
+                    // Saturated sky-blue — unambiguous against dark
+                    // grey, so the colour path is visually obvious.
+                    draw_text(cg_ref, &font, &label, 16.0, 16.0, (0.25, 0.65, 1.0, 1.0));
                 }
             }
         }
