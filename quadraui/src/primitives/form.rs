@@ -227,6 +227,10 @@ pub struct ButtonRowItem {
     pub label: String,
     #[serde(default)]
     pub disabled: bool,
+    /// Optional icon rendered before the label. Enables icon-button
+    /// rows (commit, push, pull, fetch) in source-control panels.
+    #[serde(default)]
+    pub icon: Option<crate::types::Icon>,
 }
 
 fn slider_default_step() -> f32 {

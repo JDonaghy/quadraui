@@ -314,6 +314,16 @@ pub fn draw_form(
                     ix += bw as f64;
 
                     cr.set_source_rgb(btn_fg.0, btn_fg.1, btn_fg.2);
+                    if let Some(ref icon) = button.icon {
+                        layout.set_text(icon.fallback.as_str());
+                        let (iw, ih) = layout.pixel_size();
+                        cr.move_to(ix, (y_off + (row_h - ih as f64) / 2.0).round());
+                        pcfn::show_layout(cr, layout);
+                        ix += iw as f64;
+                        if !button.label.is_empty() {
+                            ix += 4.0;
+                        }
+                    }
                     layout.set_text(&button.label);
                     let (lw, lh) = layout.pixel_size();
                     cr.move_to(ix, (y_off + (row_h - lh as f64) / 2.0).round());

@@ -518,9 +518,23 @@ fn form_field_measure(
             };
             let items = buttons
                 .iter()
-                .map(|b| FormItemMeasure {
-                    id: b.id.clone(),
-                    width: (b.label.chars().count() as f32 + 2.0) * char_w,
+                .map(|b| {
+                    let icon_w = b
+                        .icon
+                        .as_ref()
+                        .map(|i| {
+                            let gw = i.fallback.chars().count() as f32;
+                            if b.label.is_empty() {
+                                gw
+                            } else {
+                                gw + 1.0
+                            }
+                        })
+                        .unwrap_or(0.0);
+                    FormItemMeasure {
+                        id: b.id.clone(),
+                        width: (b.label.chars().count() as f32 + icon_w + 2.0) * char_w,
+                    }
                 })
                 .collect();
             FormFieldMeasure::with_items(row_h, start_x, char_w, items)
