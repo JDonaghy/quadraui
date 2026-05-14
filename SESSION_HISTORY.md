@@ -670,45 +670,51 @@ Worktree `target/` directories (6.5 GB each) and main repo `target/` (22 GB → 
 
 ---
 
-## Session 2026-05-13 — FormController scroll + scrollbar support
+## Session 2026-05-13/14 — FormController + vimcode primitive gap batch
 
 **Agent:** Claude Opus 4.6 (1M context)
 
-### Issues closed (1)
+### Issues closed (8)
 
 | # | Title | Path | Key deliverable |
 |---|---|---|---|
-| 155 | Form primitive: built-in scroll + scrollbar support | B (PR #156) | FormController enriched with scroll state, scrollbar rendering, scroll wheel / thumb-drag / track-click handling |
+| 155 | Form scroll + scrollbar support | B (PR #156) | FormController enriched: render() + handle(), scroll wheel/thumb-drag/track-click, scrollbar rendering |
+| 157 | FormController handle_cached() | B (PR #158) | Backend-free event handler using cached line_height; refactored internals to pure functions |
+| 159 | TreeView unfocused selection highlight | A (direct) | `inactive_selected_bg` theme color; dimmed selection when `has_focus=false` |
+| 161 | Palette preview pane rendering | B (PR #168) | TUI + GTK rasterisers paint preview content in 40/60 split with separator, scroll, highlight_line |
+| 162 | Palette popup variant (show_query) | B (PR #169) | `show_query: bool` hides query row + separator for tab-switcher shape |
+| 163 | Form ButtonRowItem icon support | B (PR #170) | `icon: Option<Icon>` on ButtonRowItem; TUI + GTK render icon before label |
+| 164 | Palette create_label action | B (PR #171) | Pinned `+ <label>` row below scrollable items with accent styling; PaletteHit::CreateAction |
+| 165 | Dialog multi-line body | B (PR #172) | `body: Vec<StyledText>` replaces single StyledText; per-line styled spans |
 
 ### What shipped
 
-**FormController enrichment** (`compose/form_controller.rs`): Mirrored TreeController's scroll architecture onto FormController. Previously a thin storage wrapper; now owns `scroll_offset`, `scroll_drag`, `has_focus` and exposes `render()` + `handle()`. Apps call `set_form()` per frame, then `render()` draws the form + scrollbar when content overflows, and `handle()` processes scroll wheel, scrollbar thumb-drag, track-click page up/down, and form body clicks.
+**FormController arc (#155, #157):** Full scroll support mirroring TreeController — owned scroll_offset, scrollbar rendering, scroll wheel / thumb-drag / track-click. `handle_cached()` enables backend-free event handling via cached metrics. GTK scrollbar width convention: `(lh * 0.4).max(1.0).round()` (~8px on GTK, 1 cell on TUI). `form_click_event` moved from sidebar_system to form_controller as canonical location. Example pair `tui_form_scroll` / `gtk_form_scroll` exercises both paths.
 
-**FormControllerEvent**: `FormAction(FormEvent)` | `ScrollChanged` | `Consumed` | `Ignored`.
+**Unfocused selection (#159):** `inactive_selected_bg` theme color (rgb(35,40,58)) — midway between tab_bar_bg and selected_bg. Both tree rasterisers show dimmed highlight when `selected_path` is set but `has_focus` is false.
 
-**form_click_event refactor**: Moved from `sidebar_system.rs` into `form_controller.rs` as `pub(crate)` — canonical location shared by both FormController and SidebarSystem.
-
-**Exports**: `FormController` + `FormControllerEvent` now exported from crate root.
-
-**Example pair**: `tui_form_scroll` / `gtk_form_scroll` — 20-toggle settings panel exercising FormController scroll. Status bar shows live scroll offset.
+**Primitive gap batch (#161–#165):** Five vimcode-filed issues closing gaps that forced bespoke rendering. Palette gained preview pane (40/60 split), popup mode (hidden query), and pinned create-action row. ButtonRowItem gained icon support. Dialog.body became Vec<StyledText> for multi-line content. Together these eliminate ~1400+ lines of bespoke rendering across vimcode's TUI and GTK backends.
 
 ### Bugs fixed during session
 
-1. **GTK scrollbar too wide**: `scrollbar_track_width` used `backend.line_height()` (~20px on GTK). Fixed with `(lh * 0.4).max(1.0).round()` — yields 1 cell on TUI, ~8px on GTK, matching MSV's `scrollbar_size: 8.0` convention.
-
-### Cross-backend portability note
-
-FormController is fully backend-agnostic — calls `Backend::draw_form`, `draw_scrollbar`, `form_layout`, `line_height`. Future macOS/Windows backends get FormController scroll support automatically by implementing the trait.
+1. **GTK scrollbar too wide** (#155): `scrollbar_track_width` used `line_height()` (~20px). Fixed with `(lh * 0.4).max(1.0).round()` matching MSV's `scrollbar_size: 8.0`.
+2. **Palette bottom border overwrites ┴ junction** (#161): Bottom border loop drawn after preview junction, overwriting `┴`. Fixed by incorporating junction into the border loop.
 
 ### Test count progression
 
 | Checkpoint | Lib tests |
 |---|---|
 | Session start | 663 |
-| Session end | 663 (16 new FormController tests, net zero because form_click_event tests moved from sidebar_system) |
+| After #155 (FormController scroll) | 663 (16 new, form_click_event moved) |
+| After #157 (handle_cached) | 670 (+7) |
+| After #161 (palette preview) | 672 (+2) |
+| After #162 (show_query) | 673 (+1) |
+| After #164 (create_label) | 674 (+1) |
+| Session end | 674 |
 
 ### Open queue for next session
 
+- #166 — Folder picker primitive
 - #65 — SplitDragController compose helper (deferred)
 - #115 — quadraui-lua bridge crate (future)
 - #118 — quadraui-ipc JSON bridge (future)
