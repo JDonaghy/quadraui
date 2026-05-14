@@ -20,8 +20,12 @@
 //!
 //! [milestone]: https://github.com/JDonaghy/quadraui/milestone/4
 
+pub mod backend;
 pub mod events;
 mod run;
+pub mod services;
 pub mod text;
 
+pub use backend::MacBackend;
 pub use run::run;
+pub use services::MacPlatformServices;
