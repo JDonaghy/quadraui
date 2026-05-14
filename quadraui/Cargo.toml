@@ -183,3 +183,53 @@ required-features = ["gtk"]
 name = "macos_demo"
 path = "examples/macos_demo.rs"
 required-features = ["macos"]
+
+[[example]]
+name = "tui_data_table"
+path = "examples/tui_data_table.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_data_table"
+path = "examples/gtk_data_table.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_form_scroll"
+path = "examples/tui_form_scroll.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_scroll"
+path = "examples/gtk_form_scroll.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_hscroll"
+path = "examples/tui_hscroll.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_hscroll"
+path = "examples/gtk_hscroll.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_menu_bar"
+path = "examples/tui_menu_bar.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_menu_bar"
+path = "examples/gtk_menu_bar.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_split"
+path = "examples/tui_split.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_split"
+path = "examples/gtk_split.rs"
+required-features = ["gtk"]
