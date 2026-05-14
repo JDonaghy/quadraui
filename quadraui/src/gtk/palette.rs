@@ -66,6 +66,9 @@ pub fn draw_palette(
 
     layout.set_attributes(None);
 
+    let has_preview = palette.preview.is_some();
+    let list_w = if has_preview { (w * 0.4).round() } else { w };
+
     const BOTTOM_INSET: f64 = 4.0;
     let sep_y = y + 2.0 * line_height;
     let rows_y = sep_y + 1.0;
@@ -75,7 +78,7 @@ pub fn draw_palette(
     let total = palette.items.len();
     let has_scrollbar = total > visible_rows;
     const SB_W: f64 = 6.0;
-    let content_w = if has_scrollbar { w - SB_W } else { w };
+    let content_w = if has_scrollbar { list_w - SB_W } else { list_w };
 
     // Clamp so the selected item stays visible AND the visible window
     // stays full when there are enough items above to fill it (mirrors
@@ -288,7 +291,7 @@ pub fn draw_palette(
 
     // ── Scrollbar ─────────────────────────────────────────────────────
     if has_scrollbar && visible_rows > 0 {
-        let sb_x = x + w - SB_W;
+        let sb_x = x + list_w - SB_W;
         let sb_track_y = rows_y;
         let sb_track_h = rows_h;
 
@@ -309,6 +312,76 @@ pub fn draw_palette(
         cr.set_source_rgb(border.0, border.1, border.2);
         cr.rectangle(sb_x + 1.0, thumb_y, SB_W - 2.0, thumb_h);
         cr.fill().ok();
+    }
+
+    // ── Preview pane ───────────────────────────────────────────────────
+    if let Some(ref preview) = palette.preview {
+        let preview_x = x + list_w;
+        let preview_w = w - list_w;
+
+        // Vertical separator between items and preview.
+        cr.set_source_rgb(border.0, border.1, border.2);
+        cr.set_line_width(1.0);
+        cr.move_to(preview_x, rows_y);
+        cr.line_to(preview_x, rows_y + rows_h);
+        cr.stroke().ok();
+
+        // Clip to preview area.
+        cr.save().ok();
+        cr.rectangle(preview_x, rows_y, preview_w, rows_h);
+        cr.clip();
+
+        let content_x = preview_x + 8.0;
+        let content_right = x + w - 8.0;
+        let mut cursor_y = rows_y;
+
+        // Preview title.
+        if let Some(ref title_text) = preview.title {
+            cr.set_source_rgb(dim.0, dim.1, dim.2);
+            layout.set_attributes(None);
+            layout.set_text(title_text);
+            let (_, th) = layout.pixel_size();
+            cr.move_to(content_x, cursor_y + (line_height - th as f64) / 2.0);
+            pcfn::show_layout(cr, layout);
+            cursor_y += line_height;
+        }
+
+        // Preview content lines.
+        let sel_rgb = cairo_rgb(theme.selected_bg);
+        let preview_visible = ((rows_y + rows_h - cursor_y) / line_height) as usize;
+        for (vi, line_idx) in (preview.scroll_offset..).take(preview_visible).enumerate() {
+            let row_y = cursor_y + vi as f64 * line_height;
+            if row_y + line_height > rows_y + rows_h + 0.5 {
+                break;
+            }
+
+            let is_highlight = preview.highlight_line == Some(line_idx);
+            if is_highlight {
+                cr.set_source_rgb(sel_rgb.0, sel_rgb.1, sel_rgb.2);
+                cr.rectangle(preview_x, row_y, preview_w, line_height);
+                cr.fill().ok();
+            }
+
+            if line_idx < preview.lines.len() {
+                let line = &preview.lines[line_idx];
+                let mut cx = content_x;
+                for span in &line.spans {
+                    let span_rgb = span.fg.map(cairo_rgb).unwrap_or(fg);
+                    cr.set_source_rgb(span_rgb.0, span_rgb.1, span_rgb.2);
+                    layout.set_attributes(None);
+                    layout.set_text(&span.text);
+                    let (sw, sh) = layout.pixel_size();
+                    cr.move_to(cx, row_y + (line_height - sh as f64) / 2.0);
+                    pcfn::show_layout(cr, layout);
+                    cx += sw as f64;
+                    if cx > content_right {
+                        break;
+                    }
+                }
+            }
+        }
+
+        cr.restore().ok();
     }
 
     cr.restore().ok();
