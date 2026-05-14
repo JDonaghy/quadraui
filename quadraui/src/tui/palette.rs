@@ -147,13 +147,28 @@ pub fn draw_palette(
         }
     }
 
+    // Preview pane splits the popup horizontally when present.
+    let has_preview = palette.preview.is_some();
+    let list_w = if has_preview {
+        ((w as f32) * 0.4).round() as u16
+    } else {
+        w
+    };
+    let preview_x0 = x0 + list_w;
+
     // Result rows.
     let items_row0 = y0 + 3;
     let items_row_end = y_end - 1;
     let visible_rows = items_row_end.saturating_sub(items_row0) as usize;
     let total = palette.items.len();
     let has_scrollbar = total > visible_rows;
-    let item_end_col = if has_scrollbar { w - 2 } else { w - 1 };
+    let item_end_col = if has_scrollbar {
+        list_w - 1
+    } else if has_preview {
+        list_w
+    } else {
+        w - 1
+    };
 
     // Clamp scroll_offset so the selected item is always visible AND
     // the visible window stays full when there are enough items to
@@ -188,7 +203,7 @@ pub fn draw_palette(
         let row_bg = if is_selected { sel_bg } else { bg };
 
         set_cell(buf, x0, row, '│', border_fg, bg);
-        if w >= 2 {
+        if !has_preview && w >= 2 {
             set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
         }
         for col in 1..item_end_col {
@@ -262,7 +277,7 @@ pub fn draw_palette(
 
         // Scrollbar.
         if has_scrollbar {
-            let sb_col = w - 2;
+            let sb_col = list_w - 1;
             let track_len = visible_rows;
             let thumb_len = (visible_rows * visible_rows / total.max(1)).max(1);
             let thumb_start = effective_offset * track_len / total.max(1);
@@ -277,8 +292,86 @@ pub fn draw_palette(
     let drawn = total.saturating_sub(effective_offset).min(visible_rows) as u16;
     for row in items_row0 + drawn..items_row_end {
         set_cell(buf, x0, row, '│', border_fg, bg);
-        if w >= 2 {
+        if !has_preview && w >= 2 {
             set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
+        }
+    }
+
+    // ── Preview pane ─────────────────────────────────────────────────
+    if let Some(ref preview) = palette.preview {
+        let sep_col = preview_x0;
+        let preview_content_x = sep_col + 1;
+        let _preview_w = (x0 + w).saturating_sub(preview_content_x + 1);
+
+        // Vertical separator + right border for all item/preview rows.
+        for row in items_row0..items_row_end {
+            set_cell(buf, sep_col, row, '│', border_fg, bg);
+            set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
+        }
+
+        // Separator on the separator row (y0+2) — extend across preview.
+        let sep_row = y0 + 2;
+        if sep_col < x0 + w {
+            set_cell(buf, sep_col, sep_row, '┬', border_fg, bg);
+        }
+
+        // Preview title row (reuses separator row area in the preview
+        // half, or first content row if no title).
+        let mut preview_row0 = items_row0;
+
+        if let Some(ref title_text) = preview.title {
+            let row = items_row0;
+            if row < items_row_end {
+                for col in preview_content_x..x0 + w - 1 {
+                    set_cell(buf, col, row, ' ', fg, bg);
+                }
+                let mut col = preview_content_x + 1;
+                for ch in title_text.chars() {
+                    if col + 1 >= x0 + w - 1 {
+                        break;
+                    }
+                    set_cell(buf, col, row, ch, dim_fg, bg);
+                    col += 1;
+                }
+                preview_row0 = items_row0 + 1;
+            }
+        }
+
+        // Preview content lines.
+        let highlight_bg = ratatui_color(theme.selected_bg);
+        let preview_visible = items_row_end.saturating_sub(preview_row0) as usize;
+        for (vi, line_idx) in (preview.scroll_offset..).take(preview_visible).enumerate() {
+            let row = preview_row0 + vi as u16;
+            if row >= items_row_end {
+                break;
+            }
+            let is_highlight = preview.highlight_line == Some(line_idx);
+            let line_bg = if is_highlight { highlight_bg } else { bg };
+
+            for col in preview_content_x..x0 + w - 1 {
+                set_cell(buf, col, row, ' ', fg, line_bg);
+            }
+
+            if line_idx < preview.lines.len() {
+                let line = &preview.lines[line_idx];
+                let mut col = preview_content_x + 1;
+                for span in &line.spans {
+                    let span_fg = span.fg.map(ratatui_color).unwrap_or(fg);
+                    for ch in span.text.chars() {
+                        if col + 1 >= x0 + w - 1 {
+                            break;
+                        }
+                        set_cell(buf, col, row, ch, span_fg, line_bg);
+                        col += 1;
+                    }
+                }
+            }
+        }
+
+        // Bottom border separator junction.
+        let bottom_row = y_end - 1;
+        if sep_col < x0 + w {
+            set_cell(buf, sep_col, bottom_row, '┴', border_fg, bg);
         }
     }
 
