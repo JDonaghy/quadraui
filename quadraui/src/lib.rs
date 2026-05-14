@@ -480,6 +480,7 @@ mod tests {
             scroll_offset: 0,
             total_count: 42,
             has_focus: true,
+            show_query: true,
             preview: None,
         };
         let json = serde_json::to_string(&palette).unwrap();
@@ -2874,6 +2875,7 @@ mod tests {
             scroll_offset: scroll,
             total_count: 0,
             has_focus: true,
+            show_query: true,
             preview: None,
         }
     }

@@ -91,47 +91,6 @@ pub fn draw_palette(
         set_cell(buf, x0 + col, y0, ch, title_fg, bg);
     }
 
-    // Query line.
-    if h >= 3 {
-        let row = y0 + 1;
-        set_cell(buf, x0, row, '│', border_fg, bg);
-        if w >= 2 {
-            set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
-        }
-        let prompt = "> ";
-        let mut col = 1u16;
-        for ch in prompt.chars() {
-            if col + 1 >= w {
-                break;
-            }
-            set_cell(buf, x0 + col, row, ch, query_fg, bg);
-            col += 1;
-        }
-        let query_start = col;
-        for ch in palette.query.chars() {
-            if col + 1 >= w {
-                break;
-            }
-            set_cell(buf, x0 + col, row, ch, query_fg, bg);
-            col += 1;
-        }
-        // Cursor block: byte-offset → visible column.
-        let mut byte = 0usize;
-        let mut char_idx = 0usize;
-        for ch in palette.query.chars() {
-            if byte >= palette.query_cursor {
-                break;
-            }
-            byte += ch.len_utf8();
-            char_idx += 1;
-        }
-        let cursor_col = query_start + char_idx as u16;
-        if cursor_col + 1 < w {
-            let ch = palette.query.chars().nth(char_idx).unwrap_or(' ');
-            set_cell(buf, x0 + cursor_col, row, ch, bg, query_fg);
-        }
-    }
-
     // Preview pane splits the popup horizontally when present.
     let has_preview = palette.preview.is_some();
     let list_w = if has_preview {
@@ -141,25 +100,69 @@ pub fn draw_palette(
     };
     let preview_x0 = x0 + list_w;
 
-    // Separator row beneath the query.
-    if h >= 4 {
-        let row = y0 + 2;
-        for col in 0..w {
-            let ch = if col == 0 {
-                '├'
-            } else if col == w - 1 {
-                '┤'
-            } else if has_preview && x0 + col == preview_x0 {
-                '┬'
-            } else {
-                '─'
-            };
-            set_cell(buf, x0 + col, row, ch, border_fg, bg);
+    // Query line + separator (skipped when show_query is false).
+    let items_row0 = if palette.show_query {
+        if h >= 3 {
+            let row = y0 + 1;
+            set_cell(buf, x0, row, '│', border_fg, bg);
+            if w >= 2 {
+                set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
+            }
+            let prompt = "> ";
+            let mut col = 1u16;
+            for ch in prompt.chars() {
+                if col + 1 >= w {
+                    break;
+                }
+                set_cell(buf, x0 + col, row, ch, query_fg, bg);
+                col += 1;
+            }
+            let query_start = col;
+            for ch in palette.query.chars() {
+                if col + 1 >= w {
+                    break;
+                }
+                set_cell(buf, x0 + col, row, ch, query_fg, bg);
+                col += 1;
+            }
+            let mut byte = 0usize;
+            let mut char_idx = 0usize;
+            for ch in palette.query.chars() {
+                if byte >= palette.query_cursor {
+                    break;
+                }
+                byte += ch.len_utf8();
+                char_idx += 1;
+            }
+            let cursor_col = query_start + char_idx as u16;
+            if cursor_col + 1 < w {
+                let ch = palette.query.chars().nth(char_idx).unwrap_or(' ');
+                set_cell(buf, x0 + cursor_col, row, ch, bg, query_fg);
+            }
         }
-    }
+
+        if h >= 4 {
+            let row = y0 + 2;
+            for col in 0..w {
+                let ch = if col == 0 {
+                    '├'
+                } else if col == w - 1 {
+                    '┤'
+                } else if has_preview && x0 + col == preview_x0 {
+                    '┬'
+                } else {
+                    '─'
+                };
+                set_cell(buf, x0 + col, row, ch, border_fg, bg);
+            }
+        }
+
+        y0 + 3
+    } else {
+        y0 + 1
+    };
 
     // Result rows.
-    let items_row0 = y0 + 3;
     let items_row_end = y_end - 1;
     let visible_rows = items_row_end.saturating_sub(items_row0) as usize;
     let total = palette.items.len();
@@ -411,6 +414,7 @@ mod tests {
             selected_idx: 0,
             scroll_offset: 0,
             has_focus: true,
+            show_query: true,
             total_count: 3,
             preview: None,
         }
@@ -548,6 +552,29 @@ mod tests {
         // No title → content starts at items_row0 (row 3).
         // scroll_offset=2 → first visible line is "visible".
         assert_eq!(cell_char(&buf, content_col, 3), 'v');
+    }
+
+    #[test]
+    fn show_query_false_hides_query_and_separator() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
+        let mut p = make_palette();
+        p.show_query = false;
+        draw_palette(
+            &mut buf,
+            Rect::new(0, 0, 20, 10),
+            &p,
+            &Theme::default(),
+            false,
+        );
+        // Row 1 should be items, not the query prompt.
+        // With show_query=false, items start at y0+1 (right after title).
+        let row1_chars: String = (1..6).map(|x| cell_char(&buf, x, 1)).collect();
+        assert_ne!(row1_chars, "> fo ");
+        // First item "foo" should appear at row 1 (with selection prefix).
+        let has_item = (0..20).any(|x| cell_char(&buf, x, 1) == 'f');
+        assert!(has_item, "expected item text at row 1 when query hidden");
+        // No separator row (├─┤) should exist at row 2.
+        assert_ne!(cell_char(&buf, 0, 2), '├');
     }
 
     #[test]

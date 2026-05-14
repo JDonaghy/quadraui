@@ -61,6 +61,11 @@ pub struct Palette {
     pub total_count: usize,
     #[serde(default)]
     pub has_focus: bool,
+    /// When `false`, the query input row and separator are hidden —
+    /// producing a popup-style list (tab switcher, branch picker).
+    /// Default `true`.
+    #[serde(default = "default_true")]
+    pub show_query: bool,
     /// When present, the palette renders a split layout: item list on
     /// the left, preview content on the right.
     #[serde(default)]
@@ -95,6 +100,10 @@ pub struct PaletteItem {
     /// Arrow direction when `expandable` is true (`▾` vs `▸`).
     #[serde(default)]
     pub expanded: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Preview pane content shown alongside the item list when the palette
