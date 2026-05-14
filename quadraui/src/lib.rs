@@ -251,8 +251,9 @@ pub use event::{
 
 // Phase B.4 re-exports.
 pub use compose::{
-    FocusGroup, FocusRing, FormController, FormControllerEvent, MenuDef, MenuEvent, MenuSystem,
-    NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction,
+    AppShell, AppShellEvent, AppShellLayout, FocusGroup, FocusRing, FormController,
+    FormControllerEvent, MenuDef, MenuEvent, MenuSystem, NavigationMode, PanelDefinition,
+    SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction,
     StatusBarInteraction, TreeController, TreeControllerEvent,
 };
 pub use dispatch::{

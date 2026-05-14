@@ -238,3 +238,13 @@ required-features = ["tui"]
 name = "gtk_split"
 path = "examples/gtk_split.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_shell"
+path = "examples/tui_shell.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_shell"
+path = "examples/gtk_shell.rs"
+required-features = ["gtk"]

@@ -13,7 +13,9 @@
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
+//! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 
+pub mod app_shell;
 pub mod focus_group;
 pub mod focus_ring;
 pub mod form_controller;
@@ -22,6 +24,7 @@ pub mod sidebar_system;
 pub mod status_bar_interaction;
 pub mod tree_controller;
 
+pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
 pub use form_controller::{FormController, FormControllerEvent};

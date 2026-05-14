@@ -20,6 +20,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::{Color, Decoration, StyledText};
 
+mod activity_bar;
 pub mod backend;
 mod chart;
 mod command_center;
@@ -52,6 +53,7 @@ mod toast;
 mod tooltip;
 mod tree;
 
+pub use activity_bar::draw_activity_bar;
 pub use backend::TuiBackend;
 pub use chart::{draw_chart, tui_chart_layout};
 pub use command_center::{draw_command_center, tui_command_center_layout};

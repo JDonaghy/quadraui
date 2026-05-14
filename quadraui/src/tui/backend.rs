@@ -569,11 +569,16 @@ impl Backend for TuiBackend {
 
     fn draw_activity_bar(
         &mut self,
-        _rect: QRect,
-        _bar: &ActivityBar,
-        _hovered_idx: Option<usize>,
+        rect: QRect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
     ) -> Vec<crate::ActivityBarRowHit> {
-        unimplemented!("TuiBackend::draw_activity_bar — TUI uses inline draw; trait reserved")
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_activity_bar called outside enter_frame_scope");
+        crate::tui::draw_activity_bar(frame.buffer_mut(), area, bar, &theme, hovered_idx)
     }
 
     fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {
