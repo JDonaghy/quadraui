@@ -175,16 +175,10 @@ fn action(id: &str, label: &str) -> ContextMenuItem {
     ContextMenuItem {
         id: Some(WidgetId::new(id)),
         label: StyledText::plain(label),
-        detail: None,
-        disabled: false,
+        ..Default::default()
     }
 }
 
 fn separator() -> ContextMenuItem {
-    ContextMenuItem {
-        id: None,
-        label: StyledText::plain(""),
-        detail: None,
-        disabled: false,
-    }
+    ContextMenuItem::default()
 }

@@ -281,6 +281,11 @@ impl MenuSystem {
                     id: m.id.clone(),
                     label: m.label.clone(),
                     disabled: m.disabled,
+                    // MenuSystem manages dropdowns out-of-band via
+                    // build_dropdown(), not through the new declarative
+                    // submenu field. Leaving this `None` keeps the
+                    // existing render path unchanged on TUI/GTK.
+                    submenu: None,
                 })
                 .collect(),
             open_item: self.open_item,
@@ -397,18 +402,12 @@ mod tests {
         ContextMenuItem {
             id: Some(WidgetId::new(id)),
             label: StyledText::plain(label),
-            detail: None,
-            disabled: false,
+            ..Default::default()
         }
     }
 
     fn separator() -> ContextMenuItem {
-        ContextMenuItem {
-            id: None,
-            label: StyledText::default(),
-            detail: None,
-            disabled: false,
-        }
+        ContextMenuItem::default()
     }
 
     fn sample_menus() -> Vec<MenuDef> {

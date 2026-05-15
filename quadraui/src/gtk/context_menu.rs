@@ -14,9 +14,23 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
-use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
+use crate::accelerator::{render_accelerator, Platform};
+use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
+
+/// Right-aligned shortcut text — sourced from `item.detail` (preferred,
+/// back-compat) or rendered from `item.key_equivalent`. Returns `None`
+/// if neither is set.
+fn shortcut_text(item: &ContextMenuItem, platform: Platform) -> Option<String> {
+    if let Some(ref det) = item.detail {
+        let s: String = det.spans.iter().map(|sp| sp.text.as_str()).collect();
+        return Some(s);
+    }
+    item.key_equivalent
+        .as_ref()
+        .map(|acc| render_accelerator(acc, platform))
+}
 
 /// Draw a [`ContextMenu`] popup. Returns the per-clickable-item hit
 /// rectangles in target-surface pixels.
@@ -105,7 +119,17 @@ pub fn draw_context_menu(
         let row_w = vis.bounds.width as f64;
         let row_h = vis.bounds.height as f64;
 
-        let label_text: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
+        // Prefix the label with a check glyph when `checked` is set.
+        // `Some(false)` reserves the slot with spaces so a column of
+        // mixed checked/unchecked items aligns.
+        let prefix = match item.checked {
+            Some(true) => "✓ ",
+            Some(false) => "  ",
+            None => "",
+        };
+        let label_text: String = std::iter::once(prefix.to_string())
+            .chain(item.label.spans.iter().map(|s| s.text.clone()))
+            .collect();
         let label_fg = if vis.clickable { fg } else { dim };
         cr.set_source_rgb(label_fg.0, label_fg.1, label_fg.2);
         layout.set_text(&label_text);
@@ -115,10 +139,9 @@ pub fn draw_context_menu(
         cr.move_to(row_x + 8.0, text_y);
         pcfn::show_layout(cr, layout);
 
-        if let Some(ref det) = item.detail {
-            let det_text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
-            if !det_text.is_empty() {
-                layout.set_text(&det_text);
+        if let Some(shortcut) = shortcut_text(item, Platform::Linux) {
+            if !shortcut.is_empty() {
+                layout.set_text(&shortcut);
                 let (sw, _) = layout.pixel_size();
                 cr.set_source_rgb(dim.0, dim.1, dim.2);
                 cr.move_to(row_x + row_w - sw as f64 - 8.0, text_y);

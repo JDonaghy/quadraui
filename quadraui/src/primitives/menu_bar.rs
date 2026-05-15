@@ -49,6 +49,14 @@ pub struct MenuBarItem {
     /// When true, the item is rendered dimmed and clicks are ignored.
     #[serde(default)]
     pub disabled: bool,
+    /// Declarative dropdown items. When `Some`, native menu installers
+    /// (macOS `NSMenu` via #184 PR 2; future Win32 / GTK installers)
+    /// build the dropdown directly from this list. In-window
+    /// rasterisers (TUI / GTK `draw_menu_bar`) ignore the field today;
+    /// apps that draw their own dropdown via the `MenuSystem` compose
+    /// helper continue to wire that path independently.
+    #[serde(default)]
+    pub submenu: Option<Vec<crate::primitives::context_menu::ContextMenuItem>>,
 }
 
 /// Events a `MenuBar` emits back to the app.

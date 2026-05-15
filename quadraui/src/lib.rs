@@ -1095,6 +1095,7 @@ mod tests {
             id: WidgetId::new(id),
             label: label.to_string(),
             disabled: false,
+            submenu: None,
         }
     }
 
@@ -1151,6 +1152,7 @@ mod tests {
                     id: WidgetId::new("tools"),
                     label: "&Tools".to_string(),
                     disabled: true,
+                    submenu: None,
                 },
             ],
             open_item: None,
@@ -1863,18 +1865,12 @@ mod tests {
         ContextMenuItem {
             id: Some(WidgetId::new(id)),
             label: StyledText::plain(label),
-            detail: None,
-            disabled: false,
+            ..Default::default()
         }
     }
 
     fn cm_separator() -> ContextMenuItem {
-        ContextMenuItem {
-            id: None,
-            label: StyledText::default(),
-            detail: None,
-            disabled: false,
-        }
+        ContextMenuItem::default()
     }
 
     #[test]
