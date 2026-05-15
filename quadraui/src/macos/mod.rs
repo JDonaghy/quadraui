@@ -22,22 +22,34 @@
 
 pub mod activity_bar;
 pub mod backend;
+pub mod chart;
 pub mod command_center;
+pub mod data_table;
+pub mod editor;
 pub mod events;
+pub mod form;
 #[cfg(test)]
 pub mod headless;
+pub mod list;
 pub mod menu_bar;
 mod run;
 pub mod services;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod text;
+pub mod tree;
 
 pub use activity_bar::draw_activity_bar;
 pub use backend::MacBackend;
+pub use chart::{draw_chart, mac_chart_layout};
 pub use command_center::{draw_command_center, mac_command_center_layout};
+pub use data_table::{draw_data_table, mac_data_table_layout};
+pub use editor::draw_editor;
+pub use form::{draw_form, mac_form_layout};
+pub use list::{draw_list, mac_list_layout};
 pub use menu_bar::{draw_menu_bar, mac_menu_bar_layout};
 pub use run::run;
 pub use services::MacPlatformServices;
 pub use status_bar::draw_status_bar;
 pub use tab_bar::draw_tab_bar;
+pub use tree::{draw_tree, mac_tree_layout};
