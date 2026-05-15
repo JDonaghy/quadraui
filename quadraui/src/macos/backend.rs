@@ -7,16 +7,6 @@
 //! the active `CGContextRef` so trait `draw_*` methods can rasterise
 //! inside `drawRect:` without re-querying AppKit.
 //!
-//! ### Issue scope (#35)
-//!
-//! Framework methods (viewport / begin_frame / end_frame / poll_events
-//! / wait_events / register/unregister_accelerator / modal_stack_mut /
-//! services / line_height / char_width) ship as **real** implementations.
-//! Every `draw_*` and `*_layout` method ships as `unimplemented!()`
-//! with a pointer to the ticket that fills it in (#38–#43). The
-//! macro [`mac_unimpl!`] keeps each stub to one line so the file
-//! stays scannable as the rasterisers land one by one.
-//!
 //! ### Frame-scope mechanism
 //!
 //! `drawRect:` receives a `CGContextRef` owned by AppKit for the
@@ -111,9 +101,9 @@ pub struct MacBackend {
     current_cg_ptr: Cell<*const ()>,
     current_theme: Theme,
     /// Set once via [`Self::set_current_font`] during app setup.
-    /// `draw_*` methods (landing in #38–#43) recover this for text
-    /// rendering + measurement. Wrapped in `Option` so apps that
-    /// don't paint text can skip the setup call.
+    /// `draw_*` methods recover this for text rendering +
+    /// measurement. Wrapped in `Option` so apps that don't paint
+    /// text can skip the setup call.
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
@@ -186,9 +176,8 @@ impl MacBackend {
     }
 
     /// The currently-stashed `CGContextRef`, or null outside a frame
-    /// scope. `draw_*` methods (landing in later tickets) panic if
-    /// this returns null — same shape as `GtkBackend::current_cr`.
-    #[allow(dead_code)]
+    /// scope. `draw_*` methods panic if this returns null — same
+    /// shape as `GtkBackend::current_cr`.
     pub(crate) fn current_cg(&self) -> CGContextRef {
         self.current_cg_ptr.get() as CGContextRef
     }
@@ -198,16 +187,6 @@ impl Default for MacBackend {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// One-line stub for an unimplemented trait method. Each stub flags
-/// the ticket that delivers the real implementation so a future agent
-/// can find the work-in-progress arc without digging through the
-/// milestone.
-macro_rules! mac_unimpl {
-    ($method:literal, $ticket:literal) => {
-        unimplemented!(concat!("MacBackend::", $method, " — lands in ", $ticket))
-    };
 }
 
 impl Backend for MacBackend {
@@ -271,11 +250,7 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
-    // ── Drawing stubs ──────────────────────────────────────────────
-    //
-    // All rasterisers land in #38–#43. Each stub is a single
-    // `unimplemented!` so the file stays scannable; the macro
-    // ensures the ticket pointer is consistent across primitives.
+    // ── Drawing ────────────────────────────────────────────────────
 
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
         let ctx = self.current_cg();
@@ -530,14 +505,88 @@ impl Backend for MacBackend {
             )
         }
     }
-    fn draw_terminal(&mut self, _rect: Rect, _term: &Terminal) {
-        mac_unimpl!("draw_terminal", "#43")
+    fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_terminal called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_terminal requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+
+        let sb_width = match &term.scrollbar {
+            Some(sb) => sb.width.map(|w| w as f64).unwrap_or(8.0),
+            None => 0.0,
+        };
+        let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
+
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::terminal::draw_terminal_cells(
+                ctx,
+                font,
+                term,
+                rect.x as f64,
+                rect.y as f64,
+                cell_area_w,
+                line_height,
+                char_width,
+                &theme,
+            );
+        }
+
+        if let Some(ref sb_state) = term.scrollbar {
+            let sb = crate::primitives::scrollbar::Scrollbar::vertical(
+                term.id.clone(),
+                Rect::new(
+                    rect.x + cell_area_w as f32,
+                    rect.y,
+                    sb_width as f32,
+                    rect.height,
+                ),
+                sb_state.effective_scroll_offset() as f32,
+                sb_state.total_lines as f32,
+                sb_state.visible_lines as f32,
+                line_height as f32,
+            );
+            // SAFETY: ctx is non-null inside the frame scope.
+            unsafe { super::scrollbar::draw_scrollbar(ctx, &sb, &theme) }
+        }
     }
-    fn draw_text_display(&mut self, _rect: Rect, _td: &TextDisplay) {
-        mac_unimpl!("draw_text_display", "#43")
+    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_text_display called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_text_display requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text_display::draw_text_display(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                td,
+                &theme,
+                line_height,
+            );
+        }
     }
-    fn text_display_layout(&self, _rect: Rect, _td: &TextDisplay) -> TextDisplayLayout {
-        mac_unimpl!("text_display_layout", "#43")
+    fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
+        super::text_display::mac_text_display_layout(td, rect, self.current_line_height)
     }
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
         let ctx = self.current_cg();
@@ -655,8 +704,30 @@ impl Backend for MacBackend {
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::editor::draw_editor(ctx, font, editor, &theme, char_width, line_height) }
     }
-    fn draw_message_list(&mut self, _rect: Rect, _list: &MessageList) {
-        mac_unimpl!("draw_message_list", "#43")
+    fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_message_list called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_message_list requires set_current_font");
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::message_list::draw_message_list(
+                ctx,
+                font,
+                list,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                (rect.y + rect.height) as f64,
+                line_height,
+            );
+        }
     }
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
         let ctx = self.current_cg();
