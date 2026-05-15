@@ -528,14 +528,40 @@ impl Backend for MacBackend {
     fn draw_dialog(&mut self, _dialog: &Dialog, _layout: &DialogLayout) -> Vec<Rect> {
         mac_unimpl!("draw_dialog", "#41")
     }
-    fn draw_multi_section_view(&mut self, _rect: Rect, _view: &MultiSectionView) {
-        mac_unimpl!("draw_multi_section_view", "#40")
+    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_multi_section_view called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_multi_section_view requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::multi_section_view::draw_multi_section_view(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                view,
+                &theme,
+                line_height,
+                char_width,
+            )
+        }
     }
-    fn msv_layout(&self, _rect: Rect, _view: &MultiSectionView) -> MultiSectionViewLayout {
-        mac_unimpl!("msv_layout", "#40")
+    fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
+        super::multi_section_view::mac_msv_layout(view, rect, self.current_line_height)
     }
     fn msv_metrics(&self) -> LayoutMetrics {
-        mac_unimpl!("msv_metrics", "#40")
+        super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
         super::tree::mac_tree_layout(tree, rect, self.current_line_height)
@@ -571,8 +597,15 @@ impl Backend for MacBackend {
     fn draw_completions(&mut self, _completions: &Completions, _layout: &CompletionsLayout) {
         mac_unimpl!("draw_completions", "#41")
     }
-    fn draw_scrollbar(&mut self, _rect: Rect, _scrollbar: &Scrollbar) {
-        mac_unimpl!("draw_scrollbar", "#40")
+    fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_scrollbar called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::scrollbar::draw_scrollbar(ctx, scrollbar, &theme) }
     }
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         let ctx = self.current_cg();

@@ -210,6 +210,11 @@ path = "examples/macos_form_groups.rs"
 required-features = ["macos"]
 
 [[example]]
+name = "macos_multi_tree"
+path = "examples/macos_multi_tree.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "tui_data_table"
 path = "examples/tui_data_table.rs"
 required-features = ["tui"]
