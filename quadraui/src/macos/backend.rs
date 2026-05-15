@@ -686,7 +686,11 @@ impl Backend for MacBackend {
         super::tree::mac_tree_layout(tree, rect, self.current_line_height)
     }
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
-        super::form::mac_form_layout(form, rect, self.current_line_height)
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::form_layout requires set_current_font");
+        super::form::mac_form_layout(form, rect, self.current_line_height, font)
     }
     fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
         let ctx = self.current_cg();
