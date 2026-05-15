@@ -37,6 +37,7 @@ macos = [
     "dep:core-graphics",
     "dep:core-text",
     "dep:core-foundation",
+    "dep:arboard",
 ]
 
 [dependencies]
@@ -63,12 +64,17 @@ objc2-app-kit = { version = "0.2", optional = true, features = [
     "NSGraphics",
     "NSColor",
     "NSEvent",
+    "NSOpenPanel",
+    "NSPanel",
+    "NSSavePanel",
 ] }
 objc2-foundation = { version = "0.2", optional = true, features = [
+    "NSArray",
     "NSGeometry",
     "NSObject",
     "NSString",
     "NSThread",
+    "NSURL",
 ] }
 core-graphics = { version = "0.23", optional = true }
 core-text = { version = "20.1", optional = true }
