@@ -225,8 +225,7 @@ pub fn build_picker_menu(picker: &Picker, current_orig_idx: Option<usize>) -> Co
                         underline: false,
                     }],
                 },
-                detail: None,
-                disabled: false,
+                ..Default::default()
             }
         })
         .collect();

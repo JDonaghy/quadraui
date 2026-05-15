@@ -16,9 +16,20 @@
 //! (skipping separators); Enter activates the selected item; Escape
 //! emits `Cancelled`.
 
+use crate::accelerator::Accelerator;
 use crate::event::Rect;
 use crate::types::{Color, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
+
+/// Shared menu-row type, used by both [`ContextMenu`] and (via
+/// [`crate::MenuBarItem::submenu`]) the [`crate::MenuBar`] dropdown.
+///
+/// Currently a type alias to [`ContextMenuItem`]. New code should
+/// prefer this name — it reflects that the same shape backs every
+/// menu (right-click context menus, menu-bar dropdowns, NSMenu /
+/// future Win32 menu installers). Existing `ContextMenuItem` usages
+/// continue to compile unchanged.
+pub type MenuItem = ContextMenuItem;
 
 /// Declarative description of a context menu.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,8 +87,15 @@ pub enum ResolvedContextMenuPlacement {
     Above,
 }
 
-/// One entry in a `ContextMenu`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One entry in a `ContextMenu`. Also re-exported as
+/// [`MenuItem`] for use as the shared shape across menu-bar
+/// dropdowns and right-click menus.
+///
+/// Construct items via the struct literal with `..Default::default()`
+/// — only the fields you care about need to be set, the rest
+/// (`detail`, `key_equivalent`, `checked`, `submenu`) default to
+/// `None`, `disabled` to `false`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMenuItem {
     /// `None` = separator (non-interactive); `Some(id)` = action.
     #[serde(default)]
@@ -85,11 +103,39 @@ pub struct ContextMenuItem {
     /// Label for the item. Ignored for separators.
     pub label: StyledText,
     /// Optional right-aligned detail (e.g. keyboard shortcut "Ctrl+C").
+    /// Prefer [`Self::key_equivalent`] for new code — rasterisers
+    /// will render it via `render_accelerator` so the format matches
+    /// the host platform (`⌘S` on macOS, `Ctrl+S` elsewhere). `detail`
+    /// continues to win when both are set, for back-compat.
     #[serde(default)]
     pub detail: Option<StyledText>,
     /// When true, the item is rendered dimmed and click emits no event.
     #[serde(default)]
     pub disabled: bool,
+    /// Structured keyboard shortcut for the item. When `Some` and
+    /// [`Self::detail`] is `None`, rasterisers render
+    /// `render_accelerator(acc, platform)` as the right-aligned
+    /// shortcut hint. The macOS NSMenu installer (#184 PR 2) wires
+    /// this directly to `NSMenuItem.keyEquivalent` + the modifier
+    /// mask so OS-level shortcut dispatch works.
+    #[serde(default)]
+    pub key_equivalent: Option<Accelerator>,
+    /// Checkbox / radio state. `None` = item has no state; `Some(true)`
+    /// renders a leading `✓` and (on macOS) sets `NSMenuItem.state =
+    /// .on`; `Some(false)` reserves the prefix space without filling it
+    /// so a column of items aligns visually.
+    #[serde(default)]
+    pub checked: Option<bool>,
+    /// Nested submenu. When `Some`, activating the item opens the
+    /// submenu rather than firing an action. The macOS NSMenu
+    /// installer wires this as a real nested `NSMenu`. In-window
+    /// rasterisers (TUI/GTK `draw_context_menu`) ignore the field
+    /// today — apps that want multi-level dropdowns inside the
+    /// window use the existing `MenuSystem` compose helper, which
+    /// also doesn't currently expand to nested submenus
+    /// (documented deferral in #184).
+    #[serde(default)]
+    pub submenu: Option<Vec<ContextMenuItem>>,
 }
 
 impl ContextMenuItem {
@@ -403,26 +449,20 @@ mod tests {
         ContextMenuItem {
             id: Some(WidgetId::new(id)),
             label: StyledText::plain(id),
-            detail: None,
-            disabled: false,
+            ..Default::default()
         }
     }
 
     fn separator() -> ContextMenuItem {
-        ContextMenuItem {
-            id: None,
-            label: StyledText::default(),
-            detail: None,
-            disabled: false,
-        }
+        ContextMenuItem::default()
     }
 
     fn disabled(id: &str) -> ContextMenuItem {
         ContextMenuItem {
             id: Some(WidgetId::new(id)),
             label: StyledText::plain(id),
-            detail: None,
             disabled: true,
+            ..Default::default()
         }
     }
 
@@ -489,5 +529,54 @@ mod tests {
     fn move_selection_empty_menu() {
         let m = menu(vec![]);
         assert_eq!(m.move_selection(0, 1), 0);
+    }
+
+    // ── #184 PR 1: shape upgrade ─────────────────────────────────────────
+
+    #[test]
+    fn deserialises_old_shape_without_new_fields() {
+        // Existing on-disk JSON (e.g. plugin manifests) predates the
+        // key_equivalent / checked / submenu fields. Verify it still
+        // parses, with the new fields defaulting to None.
+        let json = r#"{
+            "id": "copy",
+            "label": {"spans":[{"text":"Copy","fg":null,"bg":null,"bold":false,"italic":false,"underline":false}]},
+            "detail": null,
+            "disabled": false
+        }"#;
+        let item: ContextMenuItem = serde_json::from_str(json).expect("old shape parses");
+        assert_eq!(item.id, Some(WidgetId::new("copy")));
+        assert!(item.key_equivalent.is_none());
+        assert!(item.checked.is_none());
+        assert!(item.submenu.is_none());
+    }
+
+    #[test]
+    fn menu_item_type_alias_compiles() {
+        // `MenuItem` is a type alias for `ContextMenuItem`. Any
+        // ContextMenuItem assigns straight to a MenuItem binding —
+        // this test mostly exists to lock in the alias as a
+        // compile-time contract.
+        let item: super::MenuItem = action("save");
+        assert_eq!(item.id, Some(WidgetId::new("save")));
+    }
+
+    #[test]
+    fn nested_submenu_round_trips_through_serde() {
+        let json = r#"{
+            "id": "view",
+            "label": {"spans":[{"text":"View","fg":null,"bg":null,"bold":false,"italic":false,"underline":false}]},
+            "submenu": [
+                {
+                    "id": "toggle_sidebar",
+                    "label": {"spans":[{"text":"Toggle Sidebar","fg":null,"bg":null,"bold":false,"italic":false,"underline":false}]},
+                    "checked": true
+                }
+            ]
+        }"#;
+        let item: ContextMenuItem = serde_json::from_str(json).expect("nested shape parses");
+        let nested = item.submenu.as_ref().expect("submenu present");
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].checked, Some(true));
     }
 }

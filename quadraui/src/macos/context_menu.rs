@@ -11,10 +11,24 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
+use crate::accelerator::{render_accelerator, Platform};
 use crate::event::Rect as QRect;
-use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
+use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
 use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
+
+/// Right-aligned shortcut text for `item` — sourced from `item.detail`
+/// (preferred, back-compat) or rendered from `item.key_equivalent`
+/// using `Platform::Macos` so `⌘S` appears instead of `Ctrl+S`.
+fn shortcut_text(item: &ContextMenuItem) -> Option<String> {
+    if let Some(ref det) = item.detail {
+        let s: String = det.spans.iter().map(|sp| sp.text.as_str()).collect();
+        return Some(s);
+    }
+    item.key_equivalent
+        .as_ref()
+        .map(|acc| render_accelerator(acc, Platform::Macos))
+}
 
 /// Draw a [`ContextMenu`] popup. Returns per-clickable hit
 /// rectangles paired with their item IDs.
@@ -100,7 +114,17 @@ pub unsafe fn draw_context_menu(
         let row_w = vis.bounds.width as f64;
         let row_h = vis.bounds.height as f64;
 
-        let label_text: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
+        // Prefix the label with a check glyph when `checked` is set.
+        // `Some(false)` reserves the slot with spaces so a column of
+        // mixed checked/unchecked items aligns.
+        let prefix = match item.checked {
+            Some(true) => "✓ ",
+            Some(false) => "  ",
+            None => "",
+        };
+        let label_text: String = std::iter::once(prefix.to_string())
+            .chain(item.label.spans.iter().map(|s| s.text.clone()))
+            .collect();
         let label_fg = if vis.clickable {
             theme.foreground
         } else {
@@ -117,14 +141,13 @@ pub unsafe fn draw_context_menu(
             color_to_cg(label_fg),
         );
 
-        if let Some(ref det) = item.detail {
-            let det_text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
-            if !det_text.is_empty() {
-                let (sw, _) = measure_text(font, &det_text);
+        if let Some(shortcut) = shortcut_text(item) {
+            if !shortcut.is_empty() {
+                let (sw, _) = measure_text(font, &shortcut);
                 draw_text(
                     ctx,
                     font,
-                    &det_text,
+                    &shortcut,
                     row_x + row_w - sw - 8.0,
                     text_y,
                     color_to_cg(theme.muted_fg),
@@ -212,18 +235,12 @@ mod tests {
         ContextMenuItem {
             id: Some(WidgetId::new(id)),
             label: StyledText::plain(label),
-            detail: None,
-            disabled: false,
+            ..Default::default()
         }
     }
 
     fn separator() -> ContextMenuItem {
-        ContextMenuItem {
-            id: None,
-            label: StyledText::default(),
-            detail: None,
-            disabled: false,
-        }
+        ContextMenuItem::default()
     }
 
     fn sample_menu() -> ContextMenu {
@@ -305,6 +322,54 @@ mod tests {
                 theme.selected_bg.b
             ),
         );
+    }
+
+    #[test]
+    fn key_equivalent_renders_via_platform_macos() {
+        // macOS renders KeyBinding::Save as ⌘S (vs Ctrl+S elsewhere).
+        // Sanity-check the helper directly — the rasteriser routes
+        // through `shortcut_text` and asserting on bitmap pixels for
+        // a multi-codepoint glyph like ⌘ is brittle.
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
+        let item = ContextMenuItem {
+            id: Some(WidgetId::new("save")),
+            label: StyledText::plain("Save"),
+            key_equivalent: Some(Accelerator {
+                id: AcceleratorId::new("editor.save"),
+                binding: KeyBinding::Save,
+                scope: AcceleratorScope::Global,
+                label: None,
+            }),
+            ..Default::default()
+        };
+        let shortcut = super::shortcut_text(&item).expect("key_equivalent produces a string");
+        assert!(
+            shortcut.contains('⌘'),
+            "macOS shortcut should contain ⌘, got {shortcut:?}",
+        );
+        assert!(
+            shortcut.contains('S'),
+            "macOS shortcut should contain S, got {shortcut:?}",
+        );
+    }
+
+    #[test]
+    fn detail_wins_over_key_equivalent() {
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
+        let item = ContextMenuItem {
+            id: Some(WidgetId::new("save")),
+            label: StyledText::plain("Save"),
+            detail: Some(StyledText::plain("legacy-string")),
+            key_equivalent: Some(Accelerator {
+                id: AcceleratorId::new("editor.save"),
+                binding: KeyBinding::Save,
+                scope: AcceleratorScope::Global,
+                label: None,
+            }),
+            ..Default::default()
+        };
+        let shortcut = super::shortcut_text(&item).expect("detail wins");
+        assert_eq!(shortcut, "legacy-string");
     }
 
     #[test]
