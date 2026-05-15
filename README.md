@@ -16,7 +16,11 @@ This rules out the "paint and click drift" bug class structurally.
 
 `0.0.x` — pre-1.0, breaking changes allowed. The TUI and GTK backends
 are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
-Windows and macOS backends are scaffolded but not implemented yet.
+The Windows backend is scaffolded but not implemented yet. The macOS
+backend has a headless test surface (`BitmapSurface`) and chrome
+rasterisers (StatusBar, TabBar, ActivityBar, CommandCenter, MenuBar)
+landed; content / overlay / container rasterisers in progress (see
+`SESSION_HISTORY.md`).
 
 ## Workspace
 

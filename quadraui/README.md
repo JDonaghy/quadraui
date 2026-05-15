@@ -246,7 +246,10 @@ Battle-testing per backend:
 - **Win-GUI**: SC panel + explorer migrated; tab bar / status bar /
   activity bar / terminal queued (optional A.6/A.7 stages in vimcode's
   plan).
-- **macOS**: not started; planned for v1.x.
+- **macOS**: headless test surface (`BitmapSurface`) + chrome rasterisers
+  (StatusBar / TabBar / ActivityBar / CommandCenter / MenuBar) landed
+  with paired examples; content / overlay / container rasterisers in
+  progress. Planned for v1.x.
 
 ## License
 

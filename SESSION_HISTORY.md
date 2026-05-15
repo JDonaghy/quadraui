@@ -767,7 +767,79 @@ Tests:
 
 ### Open queue for next session
 
-- macOS rasterisers now unblocked: #38 (chrome), #39 (content), #40 (MSV + scrollbar), #41 (overlays), #42 (containers + indicators), #43 (terminal + text_display + message_list). All depend on #37 ✓.
-- #36 — macOS platform services (clipboard, file dialogs, notifications, URL open) — independent of #37, can run in parallel with the rasterisers.
+*Resolved in session 2026-05-15 below for #38.*
+
+## Session 2026-05-15 — macOS chrome rasterisers (#38)
+
+**Agent:** Claude Opus 4.7 (1M context)
+
+**Issue closed (1):**
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 38 | macOS: chrome rasterisers (status_bar, tab_bar, activity_bar, command_center, menu_bar) | B (PR #176) | Five `quadraui::macos::<chrome>::draw_*` rasterisers + matching `mac_*_layout` helpers; `MacBackend` chrome trait methods replace the `mac_unimpl!` stubs; `macos_app` + `macos_demo` examples wired through shared `AppLogic`; `BitmapSurface::write_ppm_and_open` helper. |
+
+### What shipped
+
+Five rasteriser modules (`quadraui/src/macos/{status_bar,tab_bar,activity_bar,command_center,menu_bar}.rs`), wired into `MacBackend` via the `chrome` trait methods and re-exported from `macos::mod`. Each rasteriser is unsafe-CG-FFI inside, exposes a safe layout helper, and ships with mutation-verified paint↔click round-trip tests via `BitmapSurface`.
+
+Backend integration pattern (`backend.rs`):
+
+```rust
+fn draw_menu_bar(&mut self, bounds: Rect, bar: &MenuBar) -> MenuBarLayout {
+    let ctx = self.current_cg();
+    let font = self.current_font.as_ref().expect("font installed in setup");
+    unsafe { super::menu_bar::draw_menu_bar(ctx, font, bounds.x as f64, bounds.y as f64,
+        bounds.width as f64, bounds.height as f64, bar, &self.theme) }
+}
+```
+
+Examples (paired runners against shared `AppLogic`):
+
+- `examples/macos_app.rs` (new) — minimal app using `common::MiniApp` (one `StatusBar`).
+- `examples/macos_demo.rs` (rewritten) — full demo using `common::AppState` (TabBar + StatusBar with focus cycling).
+
+`run.rs` install of `Menlo 14pt` font happens before `AppLogic::setup` so primitives can rely on `font_metrics()` from setup onwards. The previous `drawRect:` Menlo smoke label was removed — its descenders peeked below the 28pt tab bar.
+
+### Tests
+
+17 new rasteriser unit tests in `macos::{status_bar,tab_bar,activity_bar,command_center,menu_bar}::tests` — all use the `BitmapSurface::pixel(x,y)` probe + `Layout::hit_test` round-trip pattern. Notable test-quality moves:
+
+- **Sentinel-segment trick** (status_bar): sample StatusBar prepended with one extra clickable segment whose bg differs from both the bar bg and other segments — mutation of the layout fails the probe instead of trivially passing.
+- **PPM smoke dumps** for the three rasterisers without paired example apps: `#[ignore]`d tests in `activity_bar.rs`, `command_center.rs`, `menu_bar.rs` write `/tmp/quadraui_<name>.ppm` and shell out to `open` for visual confirmation. Helper `BitmapSurface::write_ppm_and_open(path)` extracted from headless.rs's existing dump_smoke_ppm.
+
+Visual confirmation done:
+
+- `cargo run -p quadraui --example macos_app --features macos` — StatusBar
+- `cargo run -p quadraui --example macos_demo --features macos` — TabBar + StatusBar with focus cycle
+- `cargo test -p quadraui --features macos --lib -- --ignored macos::{activity_bar,command_center,menu_bar}::tests::dump_smoke_ppm` — three PPM dumps
+
+### Scope omissions (deferred to a unified text-attribute pass)
+
+These all require threading `CTAttributedString`/`kCTUnderlineStyleAttributeName` through the `macos::text` boundary, which currently only renders plain Menlo. Tracked as a single follow-up:
+
+- **status_bar**: bold first segment.
+- **tab_bar**: italic preview tabs, rounded close-button hover bg.
+- **menu_bar**: Alt-key underline on the marked character.
+- **command_center**: rounded search-box border (needs CG path API, not text attrs — separate concern).
+
+### Bugs caught during development
+
+1. **`as_ptr()` not on `CGContext`**: `foreign_types_shared::ForeignType` is a transitive dep, not direct. Fixed once at the start of #37; resolved before #38 by using raw FFI throughout.
+2. **Weak status_bar round-trip**: bar bg == segment bg meant mutating geometry didn't fail the probe. Fixed with the sentinel segment.
+3. **`menu_bar::hit_test` for disabled items**: disabled items hit `Bar` not `Item` per the primitive contract — test had to expect `Bar` for the View item.
+4. **Pre-existing clippy errors on develop** (`unnecessary_min_or_max`, `redundant_guards`) surfaced when running quality gate. Unrelated to #38; left for a separate cleanup pass (no CI configured on this repo).
+
+### Test count progression
+
+| Checkpoint | macos:: tests |
+|---|---|
+| Session start (after #37) | 12 (+1 ignored) |
+| After #38 | 66 (+4 ignored) |
+
+### Open queue for next session
+
+- macOS content rasterisers next: #39 (Tree/List/Form/Editor/Panel), #40 (MSV + scrollbar), #41 (overlays: ContextMenu/Palette/Tooltip/Dialog), #42 (containers + indicators: Split/Toast/Progress/Spinner), #43 (terminal + text_display + message_list).
+- #36 — macOS platform services (clipboard, file dialogs, notifications, URL open) — independent of rasterisers; can run in parallel.
 - Win-GUI milestone (#19–#31) — nothing started; #19 is the entry point.
 - #166 — Folder picker primitive (vimcode-derived, ~215 lines to consolidate).
