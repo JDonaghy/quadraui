@@ -54,8 +54,9 @@ need a real display, terminal, window manager, or font server.
   layout queries.
 - macOS: `quadraui::macos::headless::BitmapSurface` (CGBitmapContext +
   pixel readback, top-left origin matching `QuadraView`). Integrates
-  with `MacBackend::enter_frame_scope`; rasteriser harnesses (#38–#43)
-  drive the same code paths as the live runner.
+  with `MacBackend::enter_frame_scope`; the full in-window rasteriser
+  surface (chrome / content / MSV / containers / overlays) drives the
+  same code paths as the live runner.
 - Windows (when implemented): `ID2D1Bitmap` as offscreen render target.
 
 New backends ship with their harness on day one.

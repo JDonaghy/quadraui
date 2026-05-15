@@ -839,7 +839,115 @@ These all require threading `CTAttributedString`/`kCTUnderlineStyleAttributeName
 
 ### Open queue for next session
 
-- macOS content rasterisers next: #39 (Tree/List/Form/Editor/Panel), #40 (MSV + scrollbar), #41 (overlays: ContextMenu/Palette/Tooltip/Dialog), #42 (containers + indicators: Split/Toast/Progress/Spinner), #43 (terminal + text_display + message_list).
-- #36 — macOS platform services (clipboard, file dialogs, notifications, URL open) — independent of rasterisers; can run in parallel.
-- Win-GUI milestone (#19–#31) — nothing started; #19 is the entry point.
-- #166 — Folder picker primitive (vimcode-derived, ~215 lines to consolidate).
+*Resolved in session 2026-05-16 below — #39, #40, #41, #42 all landed.*
+
+## Session 2026-05-16 — macOS rasteriser arc: content, MSV, containers, overlays
+
+**Agent:** Claude Opus 4.7 (1M context)
+
+Four macOS rasteriser milestones closed in one session, completing 5 of 7 macOS milestones in total (rasterisers ✓; #36 platform services + #43 terminal/text_display/message_list still open).
+
+### Issues closed (4)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 39 | macOS: content rasterisers (tree, list, form, editor, data_table, chart) | A (rebased + FF-merged) | Six rasterisers + `mac_*_layout` helpers + 3 paired examples (`macos_data_table`, `macos_chart`, `macos_form_groups`). CG path API bindings landed (`CGContextMoveToPoint`, `AddLineToPoint`, `ClosePath`, `StrokePath`, `FillPath`). |
+| 40 | macOS: MSV + scrollbar rasterisers | A | `macos::multi_section_view` (full chrome — header / aux / body dispatch / per-section + panel scrollbar / dividers) + `macos::scrollbar` (overlay alpha-blend matching GTK). `macos_multi_tree` paired example. |
+| 42 | macOS: container + indicator rasterisers (panel, split, toast, progress, spinner) | A | Five rasterisers + 4 paired examples (`macos_split`, `macos_panel`, `macos_toast`, `macos_indicators`). |
+| 41 | macOS: overlay rasterisers (tooltip, context_menu, dialog, palette, completions, find_replace, rich_text_popup) | A | Seven rasterisers covering all in-window overlay primitives. No paired example — overlays are triggered from existing apps. |
+
+### What shipped per ticket
+
+#### #39 — Content rasterisers
+
+- `tree` (5 tests): header pitch `line_height * 1.2`, leaf pitch `line_height * 1.4`, chevron + icon + text + badge, mutation-verified scroll_offset.
+- `list` (5 tests): title strip, decoration-driven fg colour, right-aligned detail.
+- `form` (3 tests): Label / Toggle / TextInput / Button / ReadOnly. Rich field kinds (Slider / ColorPicker / Dropdown / etc.) render label-only for now.
+- `editor` (4 tests): bg + per-line text + line-number gutter + cursorline + per-span fg/bg + Block/Bar/Underline cursor. Selections / diagnostics / indent guides / multi-cursors deferred.
+- `data_table` (4 tests): header sort glyphs, hover/select tints, column separators, vertical + horizontal scrollbars.
+- `chart` (4 tests): Sparkline / Line / Bar via CG path API, legend swatches, axis tick labels, hover marker, crosshair.
+
+Visual fix-up commit (`56e81cd`):
+- data_table cells collapsed all StyledText spans into one fg run → per-span colour painting + per-column clipping (header + body) so titles in narrow `Fixed(8.0)` columns truncate instead of overflowing into neighbours.
+- chart sparkline used the primitive's 1-pixel-per-data-point layout (TUI-cell convention bleeding through) → stretches across full plot width.
+- chart line `fill=true` painted as a fan of vertical bars → proper closed polygon via `CGContextFillPath`.
+- chart bar positioning centred bars on tick marks (first bar's left edge ended up left of plot_x, covering axis labels) → slot-based positioning with 15% gap, matching GTK.
+
+#### #40 — MSV + scrollbar
+
+- `scrollbar` (5 tests): overlay alpha cadence (track 0.20 → 0.35 on hover; thumb 0.50 → 0.70 → 0.85 on hover → drag). Both `ScrollAxis` variants share one impl.
+- `multi_section_view` (5 tests): full MSV chrome including per-section headers (chevron / title / badge / right-aligned actions), aux row (Input / Search / Toolbar / Custom), per-section bodies dispatched to existing macos rasterisers (Tree / List / Form / Chart) with body clip, per-section scrollbar gutters with thumb, dividers, panel-level scrollbar. `mac_msv_metrics` + `mac_msv_layout` deliver the shared paint/click layout.
+- `macos_multi_tree` paired example wires shared `common::DebugSidebar` (`SidebarSystem` compose helper) through `quadraui::macos::run`.
+
+Shift+Tab fix (`d8e5740`): AppKit reports Shift+Tab as the Tab keycode (0x30) + shift modifier, not a separate back-tab keycode the way GTK (`ISO_Left_Tab`) and crossterm (`KeyCode::BackTab`) do. `ns_key_to_uievent` now promotes `Tab + shift` → `NamedKey::BackTab` so backend-neutral consumers (`SidebarSystem`, `FocusRing`) match the same variant on every backend. Caught visually in `macos_multi_tree` — Shift+Tab cycled forward instead of backward.
+
+#### #42 — Containers + indicators
+
+- `split` (5 tests): 4-pt divider matching GTK; both `SplitDirection` variants. Pane content stays the host's responsibility.
+- `panel` (5 tests): title bar (bg + title + right-aligned action buttons), content region exposed via `PanelLayout::content_bounds`.
+- `toast` (5 tests): `ToastStack` corner-positioned boxes, severity tint (Info / Success / Warning / Error), dismiss `×`, optional action button.
+- `progress` (4 tests): track + determinate fill / indeterminate pulse + label + optional cancel `×`.
+- `spinner` (4 tests): braille animation glyph + optional label. Same frame table as TUI/GTK.
+
+#### #41 — Overlays
+
+- `tooltip` (4 tests): bordered rect + plain or styled-line text.
+- `context_menu` (3 tests): rows + separators + selection highlight + detail text. Returns `Vec<(Rect, WidgetId)>`.
+- `dialog` (3 tests): title + body + optional input + button row. Returns `Vec<Rect>`.
+- `completions` (3 tests): autocomplete popup with selected-row highlight.
+- `palette` (3 tests): modal fuzzy picker — title / query+cursor / separator / scrollable items / pinned create row / optional preview pane / scrollbar. `mac_palette_layout` helper.
+- `find_replace` (2 tests): panel anchored top-right; walks `hit_regions` for chevron / inputs / toggles / nav glyphs / dismiss.
+- `rich_text_popup` (2 tests): bordered popup with per-line per-span text. `has_focus` swaps border to `theme.link_fg`.
+
+### Issues filed for follow-up macOS native-feel work (2)
+
+| # | Title | Why |
+|---|---|---|
+| 184 | macOS: native menu bar via NSMenu (and shared MenuBar shape upgrade) | Apps need menus in the system menu bar at top of screen, not in-window. Adds `Backend::install_menu_bar(&MenuBar)` + shared `MenuItem` shape with `key_equivalent` + `checked` + `submenu` fields. The shape upgrade benefits TUI/GTK too (structured shortcuts, checkbox menu items). |
+| 185 | macOS: native right-click context menus via NSMenu.popUpContextMenu | User-triggered right-click should use native `NSMenu::popUpContextMenu`; app-driven dropdowns continue painting via existing `draw_context_menu`. Adds `Backend::show_context_menu(menu, anchor)`. Depends on #184 (shares NSMenu builder + selector bridge). |
+
+The convention to document when #185 lands: `MouseDown { button: Right }` → `backend.show_context_menu(...)` (native on Mac, painted elsewhere); left-click on a UI affordance opening a menu-like dropdown → `draw_context_menu` (painted on all backends).
+
+### Cross-cutting concerns surfaced during the session
+
+- **Unified text-attribute pass remains the largest deferred work.** Bold span attrs, italic preview tabs, Alt-key underline, match-position highlighting, focused-link underline, selection bg + inverted fg in inputs, per-line font scale for markdown headings — all gated on threading `CTAttributedString` attributes through `macos::text::draw_text`. Touches every rasteriser that uses `draw_text`; high leverage for finishing-polish across all 5 macOS milestones.
+- **`Fixed(N)` ColumnWidth in DataTable** carries no unit info — the primitive lets the value mean "cells" or "pixels" depending on backend. Example apps using `Fixed(8.0)` (TUI-sized) get tiny columns on GUI backends. Clip-on-truncate behaviour is now correct on macOS, but the example data needs updating to use `ColumnWidth::Content { min, max }` for cross-backend portability. Tracked implicitly — not yet filed.
+
+### Test count progression
+
+| Checkpoint | macos:: tests | Full lib tests |
+|---|---|---|
+| Session start (after #38) | 66 (+4 ignored) | — |
+| After #39 | 91 (+4 ignored) | — |
+| After #40 | 101 (+4 ignored) | — |
+| After #42 | 126 (+4 ignored) | — |
+| After #41 | 146 (+4 ignored) | 633 |
+
+### macOS milestone status at end of session
+
+| # | Ticket | Status |
+|---|---|---|
+| 37 | headless test surface | ✅ |
+| 38 | chrome (status_bar / tab_bar / activity_bar / command_center / menu_bar) | ✅ |
+| 39 | content (tree / list / form / editor / data_table / chart) | ✅ |
+| 40 | MSV + scrollbar | ✅ |
+| 42 | container + indicator (panel / split / toast / progress / spinner) | ✅ |
+| 41 | overlay (tooltip / context_menu / dialog / palette / completions / find_replace / rich_text_popup) | ✅ |
+| 43 | terminal + text_display + message_list | open *(gated on text-attribute pass)* |
+| 36 | platform services (clipboard / dialogs / notifications / URL open) | open *(independent)* |
+| 44 | port all paired examples | open *(depends on #43)* |
+
+**27 rasterisers, ~150 round-trip tests, 8 paired examples, 5 milestones closed.** macOS apps using `quadraui::macos::run` render every primitive needed for kubeui-class consumers.
+
+### Open queue for next session
+
+- **#36** — macOS platform services. Pure FFI work (`NSPasteboard`, `NSOpenPanel`, `NSSavePanel`, `NSUserNotificationCenter`, `NSWorkspace`). Different muscle group from rasterisers. Natural lead-in to #184 / #185 since both use the same objc2 patterns.
+- **Text-attribute pass** (not yet filed). Threads `CTAttributedString` attributes through `macos::text::draw_text` to unlock bold / italic / underline / per-character fg across every rasteriser. High leverage — completes the polish across all 5 closed milestones. Also unblocks #43.
+- **#43** — terminal + text_display + message_list. Don't pick before the text-attribute pass; terminal cells need bold + per-char colour.
+- **#184** — install_menu_bar via NSMenu. Best after #36 (same FFI shape).
+- **#185** — show_context_menu via popUpContextMenu. Depends on #184.
+- **#44** — port all paired examples. Depends on #43.
+- **Win-GUI milestone (#19–#31)** — nothing started; #19 is the entry point.
+- **#177** — TUI editor block cursor fg/bg swap → `theme.cursor`. ~5-line fix.
+- **#180** — GTK palette scrollbar width 6 → 10 px. One-line constant change.
+- **Future / deferred:** #166, #144, #65, #118, #115.
