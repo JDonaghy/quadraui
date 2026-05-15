@@ -55,7 +55,7 @@ use objc2_foundation::{
 
 use super::backend::MacBackend;
 use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
-use super::text::{draw_text, font_metrics, make_font};
+use super::text::make_font;
 use crate::backend::Backend;
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
@@ -172,32 +172,17 @@ declare_class!(
                 &CGSize::new(bounds.size.width, bounds.size.height),
             );
 
-            // Debug background — flat dark grey so the window is
-            // visibly painted before AppLogic renders. The smoke
-            // label below proves the #34 Core Text path. Both
-            // disappear once any chrome rasteriser ships (#38).
+            // Background fill so the area between rasterised chrome
+            // (e.g. tab_bar at the top + status_bar at the bottom) has
+            // a consistent backdrop until content rasterisers (#39+)
+            // fill the middle. Removed once content rasterisers paint
+            // the full client area.
             //
             // SAFETY: `cg_ref` is a non-null `CGContextRef` borrowed
             // for the duration of this call.
             unsafe {
                 CGContextSetRGBFillColor(cg_ref, 0.12, 0.12, 0.14, 1.0);
                 CGContextFillRect(cg_ref, rect);
-            }
-
-            if let Some(font) = make_font("Menlo", 14.0) {
-                let m = font_metrics(&font);
-                let label = format!(
-                    "quadraui · macos · {}×{} @ {:.0}x · line_h {:.1}pt · char_w {:.2}pt",
-                    bounds.size.width as u32,
-                    bounds.size.height as u32,
-                    scale,
-                    m.line_height,
-                    m.char_width,
-                );
-                // SAFETY: same lifetime invariant as the fill above.
-                unsafe {
-                    draw_text(cg_ref, &font, &label, 16.0, 16.0, (0.25, 0.65, 1.0, 1.0));
-                }
             }
 
             // Now run the app's render via the stored closure.
