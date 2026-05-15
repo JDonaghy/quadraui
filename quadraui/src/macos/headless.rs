@@ -349,9 +349,9 @@ mod tests {
         // immediately obvious.
         let q = 40.0;
         let corners = [
-            (0.0, 0.0, 1.0, 0.0, 0.0),       // top-left, red
-            (W as f64 - q, 0.0, 0.0, 1.0, 0.0), // top-right, green
-            (0.0, H as f64 - q, 0.0, 0.0, 1.0), // bottom-left, blue
+            (0.0, 0.0, 1.0, 0.0, 0.0),                   // top-left, red
+            (W as f64 - q, 0.0, 0.0, 1.0, 0.0),          // top-right, green
+            (0.0, H as f64 - q, 0.0, 0.0, 1.0),          // bottom-left, blue
             (W as f64 - q, H as f64 - q, 1.0, 1.0, 0.0), // bottom-right, yellow
         ];
         // SAFETY: ctx valid for the surface's lifetime.
