@@ -52,8 +52,11 @@ need a real display, terminal, window manager, or font server.
 - TUI: `ratatui::Buffer` (in-memory char + style cells).
 - GTK: `cairo::ImageSurface::create(Format::ARGB32, w, h)` + Pango
   layout queries.
+- macOS: `quadraui::macos::headless::BitmapSurface` (CGBitmapContext +
+  pixel readback, top-left origin matching `QuadraView`). Integrates
+  with `MacBackend::enter_frame_scope`; rasteriser harnesses (#38–#43)
+  drive the same code paths as the live runner.
 - Windows (when implemented): `ID2D1Bitmap` as offscreen render target.
-- macOS (when implemented): `CGBitmapContext`.
 
 New backends ship with their harness on day one.
 

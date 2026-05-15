@@ -721,3 +721,53 @@ Worktree `target/` directories (6.5 GB each) and main repo `target/` (22 GB → 
 - #144 — TabGroup compose helper
 - Windows milestone (#19–#31)
 - macOS milestone (#32–#44)
+
+## Session 2026-05-14 — macOS headless test surface (#37)
+
+**Agent:** Claude Opus 4.7 (1M context)
+
+**Issue closed (1):**
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 37 | macOS: headless test surface (CGBitmapContext) | A (direct, `3b5ce8a`) | `quadraui::macos::headless::BitmapSurface` — `CGBitmapContextCreate` wrapper, top-left origin via CTM flip, RGBA byte order, `pixel(x,y)` readback. Integrates with `MacBackend::enter_frame_scope`. |
+
+### What shipped
+
+`quadraui/src/macos/headless.rs` (~250 lines impl + 6 tests). Gated
+`#[cfg(test)] pub mod headless` so rasteriser tests in #38–#43 can
+reach it from sibling files while it stays out of the public API
+surface until the rasteriser contract is shaken out.
+
+Key invariants:
+
+- **Top-left origin**: constructor applies `translate(0, H)` + `scale(1, -1)` so callers paint in the same coord frame as the live `QuadraView` (which sets `isFlipped: YES`). Buffer scanlines are top-down in memory, so the flipped drawing space aligns directly with row indexing — `pixel()` reads `y` as a memory row with no inversion.
+- **RGBA byte order** via `kCGImageAlphaPremultipliedLast` (matches the `core-graphics` crate's own `create_bitmap_context_test` byte assertions).
+- **Raw FFI throughout** rather than the `core_graphics::context::CGContext` wrapper — the wrapper exposes its raw pointer only via the `foreign_types::ForeignType` trait, which isn't a direct dep. Same style as `macos::text` which already speaks raw CG FFI for `drawRect:`'s borrowed context.
+
+Tests:
+
+- `new_initialises_transparent_black` — zero-fill.
+- `dimensions_reported` — buffer length `W·H·4`.
+- `fill_paints_expected_colour` — RGBA byte order.
+- `top_left_origin_for_partial_fill` — CTM flip + memory layout consistency.
+- `integrates_with_mac_backend_frame_scope` — end-to-end: `BitmapSurface::context_ptr()` → `MacBackend::enter_frame_scope` → CG FFI inside closure → readback. Documents the exact shape #38–#43 rasteriser harnesses will use.
+- `dump_smoke_ppm` (`#[ignore]`) — paints four-corner colour grid + Core Text label, writes `/tmp/quadraui_headless.ppm`, opens in Preview via `open` for visual confirmation.
+
+### Bugs caught during development
+
+1. **Buffer-layout y-inversion confusion**: initial `pixel()` inverted `y` on the assumption that CG bitmap rows ran bottom-up in memory. They don't — scanlines are top-down (the standard image-file convention); only the CG *coordinate* system is bottom-up by default. With the CTM flip applied, top-left coord y directly indexes memory row. Caught by a diagnostic test that dumped raw byte rows after a partial fill.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start | 674 |
+| After #37 | 679 (+5 normal, +1 ignored) |
+
+### Open queue for next session
+
+- macOS rasterisers now unblocked: #38 (chrome), #39 (content), #40 (MSV + scrollbar), #41 (overlays), #42 (containers + indicators), #43 (terminal + text_display + message_list). All depend on #37 ✓.
+- #36 — macOS platform services (clipboard, file dialogs, notifications, URL open) — independent of #37, can run in parallel with the rasterisers.
+- Win-GUI milestone (#19–#31) — nothing started; #19 is the entry point.
+- #166 — Folder picker primitive (vimcode-derived, ~215 lines to consolidate).
