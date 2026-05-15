@@ -143,6 +143,17 @@ pub fn ns_key_to_uievent(
     // `characters` string and a stable `key_code`; the keycode is
     // the only reliable source.
     if let Some(named) = ns_keycode_to_named_key(key_code) {
+        // Shift+Tab on macOS arrives as the same Tab keycode (0x30)
+        // with the shift modifier set; AppKit doesn't have a separate
+        // back-tab keycode the way GTK's `ISO_Left_Tab` and crossterm's
+        // `BackTab` do. Translate to `NamedKey::BackTab` here so
+        // backend-neutral consumers (`SidebarSystem`, `FocusRing`,
+        // etc.) match the same variant on every backend.
+        let named = if matches!(named, NamedKey::Tab) && modifiers.shift {
+            NamedKey::BackTab
+        } else {
+            named
+        };
         return Some(UiEvent::KeyPressed {
             key: Key::Named(named),
             modifiers,
@@ -497,6 +508,41 @@ mod tests {
                 assert!(!repeat);
             }
             other => panic!("expected KeyPressed(Char), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_tab_translates_to_backtab() {
+        // AppKit reports Shift+Tab as Tab keycode (0x30) + shift flag,
+        // not a separate back-tab keycode. The translator promotes it
+        // to NamedKey::BackTab so SidebarSystem / FocusRing see the
+        // same variant as the GTK + TUI translators emit.
+        let ev = ns_key_to_uievent(Some("\u{0019}"), 0x30, NS_FLAG_SHIFT, false);
+        match ev {
+            Some(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::BackTab),
+                modifiers,
+                ..
+            }) => {
+                assert!(modifiers.shift, "shift modifier should still be set");
+            }
+            other => panic!("expected KeyPressed(Named(BackTab)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_tab_unchanged() {
+        // Sanity: plain Tab without shift stays Tab.
+        let ev = ns_key_to_uievent(Some("\t"), 0x30, 0, false);
+        match ev {
+            Some(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers,
+                ..
+            }) => {
+                assert!(!modifiers.shift);
+            }
+            other => panic!("expected KeyPressed(Named(Tab)), got {other:?}"),
         }
     }
 
