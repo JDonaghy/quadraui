@@ -75,6 +75,11 @@ pub struct TreeController {
     scroll_drag: Option<ScrollDrag>,
     vim_keys: bool,
     editing: Option<EditingState>,
+    show_scrollbar: bool,
+    /// When `Some`, overrides the default `line_height()`-based scrollbar
+    /// track width with a fixed native-unit value (e.g. 8.0 px for GTK,
+    /// 1.0 cell for TUI — matching MSV's `scrollbar_size`).
+    scrollbar_width: Option<f32>,
 }
 
 impl TreeController {
@@ -88,6 +93,8 @@ impl TreeController {
             scroll_drag: None,
             vim_keys: true,
             editing: None,
+            show_scrollbar: true,
+            scrollbar_width: None,
         }
     }
 
@@ -138,6 +145,25 @@ impl TreeController {
     /// and call the navigation primitives directly.
     pub fn set_vim_keys(&mut self, enabled: bool) {
         self.vim_keys = enabled;
+    }
+
+    pub fn show_scrollbar(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    /// When `false`, `render()` passes the full rect to `draw_tree()`
+    /// without reserving scrollbar space. Consumers that manage their
+    /// own scrollbar (e.g. through MSV) set this to `false`.
+    pub fn set_show_scrollbar(&mut self, show: bool) {
+        self.show_scrollbar = show;
+    }
+
+    /// Override the scrollbar track width with a fixed native-unit value.
+    /// Pass `Some(8.0)` for GTK (matching MSV's 8px track) or
+    /// `Some(1.0)` for TUI (matching MSV's 1-cell track). `None` falls
+    /// back to `backend.line_height()`.
+    pub fn set_scrollbar_width(&mut self, width: Option<f32>) {
+        self.scrollbar_width = width;
     }
 
     // ── Inline editing ───────────────────────────────────────────────
@@ -763,7 +789,8 @@ impl TreeController {
     }
 
     fn scrollbar_track_width(&self, backend: &dyn Backend) -> f32 {
-        backend.line_height()
+        self.scrollbar_width
+            .unwrap_or_else(|| backend.line_height())
     }
 
     fn needs_scrollbar(&self, backend: &dyn Backend, tree_rect: Rect) -> bool {
@@ -771,6 +798,9 @@ impl TreeController {
     }
 
     fn split_rect(&self, backend: &dyn Backend, rect: Rect) -> (Rect, Option<Rect>) {
+        if !self.show_scrollbar {
+            return (rect, None);
+        }
         let track_w = self.scrollbar_track_width(backend);
         if rect.width <= track_w {
             return (rect, None);
@@ -785,16 +815,14 @@ impl TreeController {
 
     fn build_scrollbar(&self, backend: &dyn Backend, sb_rect: Rect) -> Scrollbar {
         let total = self.rows.len() as f32;
-        let visible = {
-            // Approximate visible rows from height / line_height.
-            let lh = backend.line_height();
-            if lh > 0.0 {
-                (sb_rect.height / lh).floor()
-            } else {
-                total
-            }
+        let lh = backend.line_height();
+        let visible = if lh > 0.0 {
+            (sb_rect.height / lh).floor()
+        } else {
+            total
         };
-        let min_thumb = backend.line_height().max(1.0);
+        let track_w = self.scrollbar_track_width(backend);
+        let min_thumb = track_w.max(1.0);
         let is_dragging = self.scroll_drag.is_some();
         let mut sb = Scrollbar::vertical(
             format!("{}-scrollbar", self.id.0),
@@ -1210,5 +1238,286 @@ mod tests {
         tc.start_editing(vec![0], "main.rs".into(), 4, Some(0), None);
         tc.handle_edit_key_via(&Key::Char('a'), &Modifiers::default());
         assert_eq!(tc.editing_text(), Some("a.rs"));
+    }
+
+    // ── Scrollbar toggle and width ──────────────────────────────────
+
+    #[test]
+    fn show_scrollbar_defaults_to_true() {
+        let tc = TreeController::new("t");
+        assert!(tc.show_scrollbar());
+    }
+
+    #[test]
+    fn set_show_scrollbar_false_suppresses_scrollbar() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 100));
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+        let (tree_rect, sb_rect) = tc.split_rect(&MockBackend, rect);
+        assert!(sb_rect.is_none());
+        assert_eq!(tree_rect.width, 80.0);
+    }
+
+    #[test]
+    fn set_scrollbar_width_overrides_track() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 100));
+        tc.set_scrollbar_width(Some(8.0));
+        let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+        let (tree_rect, sb_rect) = tc.split_rect(&MockBackend, rect);
+        let sb = sb_rect.expect("scrollbar should be present");
+        assert_eq!(sb.width, 8.0);
+        assert_eq!(tree_rect.width, 72.0);
+    }
+
+    #[test]
+    fn default_scrollbar_width_uses_line_height() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 100));
+        let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+        let (tree_rect, sb_rect) = tc.split_rect(&MockBackend, rect);
+        let sb = sb_rect.expect("scrollbar should be present");
+        // MockBackend.line_height() = 1.0
+        assert_eq!(sb.width, 1.0);
+        assert_eq!(tree_rect.width, 79.0);
+    }
+
+    struct MockBackend;
+
+    impl Backend for MockBackend {
+        fn viewport(&self) -> crate::Viewport {
+            crate::Viewport {
+                width: 80.0,
+                height: 24.0,
+                scale: 1.0,
+            }
+        }
+        fn begin_frame(&mut self, _v: crate::Viewport) {}
+        fn end_frame(&mut self) {}
+        fn poll_events(&mut self) -> Vec<UiEvent> {
+            Vec::new()
+        }
+        fn wait_events(&mut self, _t: std::time::Duration) -> Vec<UiEvent> {
+            Vec::new()
+        }
+        fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
+        fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
+        fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
+            unimplemented!()
+        }
+        fn services(&self) -> &dyn crate::backend::PlatformServices {
+            unimplemented!()
+        }
+        fn line_height(&self) -> f32 {
+            1.0
+        }
+        fn char_width(&self) -> f32 {
+            1.0
+        }
+        fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
+        fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
+        fn draw_data_table(
+            &mut self,
+            _r: Rect,
+            _t: &crate::DataTable,
+            _h: Option<usize>,
+        ) -> crate::DataTableLayout {
+            unimplemented!()
+        }
+        fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
+            unimplemented!()
+        }
+        fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
+        fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
+        fn draw_status_bar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::primitives::status_bar::StatusBar,
+            _hovered_id: Option<&WidgetId>,
+            _pressed_id: Option<&WidgetId>,
+        ) -> crate::StatusBarLayout {
+            unimplemented!()
+        }
+        fn draw_tab_bar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _h: Option<usize>,
+        ) -> crate::TabBarHits {
+            unimplemented!()
+        }
+        fn draw_activity_bar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::primitives::activity_bar::ActivityBar,
+            _h: Option<usize>,
+        ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
+            unimplemented!()
+        }
+        fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
+        fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
+        fn text_display_layout(
+            &self,
+            _r: Rect,
+            _t: &crate::TextDisplay,
+        ) -> crate::TextDisplayLayout {
+            unimplemented!()
+        }
+        fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
+        fn draw_context_menu(
+            &mut self,
+            _m: &crate::ContextMenu,
+            _l: &crate::ContextMenuLayout,
+        ) -> Vec<(Rect, WidgetId)> {
+            unimplemented!()
+        }
+        fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
+            unimplemented!()
+        }
+        fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
+        fn msv_layout(
+            &self,
+            _r: Rect,
+            _v: &crate::MultiSectionView,
+        ) -> crate::MultiSectionViewLayout {
+            unimplemented!()
+        }
+        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+            unimplemented!()
+        }
+        fn tree_layout(
+            &self,
+            rect: Rect,
+            tree: &crate::TreeView,
+        ) -> crate::primitives::tree::TreeViewLayout {
+            let lh = self.line_height();
+            let visible: usize = if lh > 0.0 {
+                (rect.height / lh).floor() as usize
+            } else {
+                0
+            };
+            let end = tree.scroll_offset + visible;
+            let rows: Vec<crate::primitives::tree::VisibleTreeRow> = (tree.scroll_offset
+                ..end.min(tree.rows.len()))
+                .enumerate()
+                .map(|(vi, ri)| crate::primitives::tree::VisibleTreeRow {
+                    row_idx: ri,
+                    bounds: Rect::new(0.0, vi as f32 * lh, rect.width, lh),
+                })
+                .collect();
+            crate::primitives::tree::TreeViewLayout {
+                viewport_width: rect.width,
+                viewport_height: rect.height,
+                visible_rows: rows,
+                hit_regions: Vec::new(),
+                resolved_scroll_offset: tree.scroll_offset,
+            }
+        }
+        fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
+            unimplemented!()
+        }
+        fn draw_editor(
+            &mut self,
+            _r: Rect,
+            _e: &crate::primitives::editor::Editor,
+        ) -> crate::backend::EditorPaintResult {
+            Default::default()
+        }
+        fn draw_message_list(
+            &mut self,
+            _r: Rect,
+            _l: &crate::primitives::message_list::MessageList,
+        ) {
+        }
+        fn draw_rich_text_popup(
+            &mut self,
+            _p: &crate::RichTextPopup,
+            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
+        ) {
+        }
+        fn draw_find_replace(
+            &mut self,
+            _r: Rect,
+            _p: &crate::primitives::find_replace::FindReplacePanel,
+        ) {
+        }
+        fn draw_completions(
+            &mut self,
+            _c: &crate::Completions,
+            _l: &crate::primitives::completions::CompletionsLayout,
+        ) {
+        }
+        fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
+        fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
+            unimplemented!()
+        }
+        fn menu_bar_layout(&self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
+            unimplemented!()
+        }
+        fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
+            unimplemented!()
+        }
+        fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
+            unimplemented!()
+        }
+        fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
+            unimplemented!()
+        }
+        fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
+            unimplemented!()
+        }
+        fn draw_toast_stack(
+            &mut self,
+            _r: Rect,
+            _s: &crate::ToastStack,
+        ) -> crate::ToastStackLayout {
+            unimplemented!()
+        }
+        fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
+            unimplemented!()
+        }
+        fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
+            unimplemented!()
+        }
+        fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
+            unimplemented!()
+        }
+        fn draw_spinner(&mut self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
+            unimplemented!()
+        }
+        fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
+            unimplemented!()
+        }
+        fn draw_command_center(
+            &mut self,
+            _r: Rect,
+            _c: &crate::CommandCenter,
+        ) -> crate::CommandCenterLayout {
+            unimplemented!()
+        }
+        fn command_center_layout(
+            &self,
+            _r: Rect,
+            _c: &crate::CommandCenter,
+        ) -> crate::CommandCenterLayout {
+            unimplemented!()
+        }
+        fn draw_chart(
+            &mut self,
+            _r: Rect,
+            _c: &crate::primitives::chart::Chart,
+            _h: Option<(usize, usize)>,
+            _x: Option<f64>,
+        ) -> crate::primitives::chart::ChartLayout {
+            unimplemented!()
+        }
+        fn chart_layout(
+            &self,
+            _r: Rect,
+            _c: &crate::primitives::chart::Chart,
+        ) -> crate::primitives::chart::ChartLayout {
+            unimplemented!()
+        }
     }
 }
