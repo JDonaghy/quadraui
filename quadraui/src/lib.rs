@@ -186,7 +186,7 @@ pub use primitives::multi_section_view::{
 };
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
-    PalettePreview, VisiblePaletteItem,
+    PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
 pub use primitives::panel::{
     Panel, PanelAction, PanelEvent, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
@@ -2890,7 +2890,9 @@ mod tests {
     #[test]
     fn palette_layout_empty() {
         let p = make_palette("Commands", "", vec![], 0, 0);
-        let layout = p.layout(40.0, 20.0, 0.0, 0.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(40.0, 20.0, 0.0, 0.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         assert!(layout.title_bounds.is_none());
         assert!(layout.query_bounds.is_none());
         assert_eq!(layout.visible_items.len(), 0);
@@ -2908,7 +2910,9 @@ mod tests {
             0,
             0,
         );
-        let layout = p.layout(40.0, 10.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(40.0, 10.0, 1.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         // Title at y=0 (h=1), query at y=1 (h=1), items at y=2,3,4.
         assert_eq!(layout.title_bounds.unwrap().y, 0.0);
         assert_eq!(layout.query_bounds.unwrap().y, 1.0);
@@ -2923,7 +2927,9 @@ mod tests {
     #[test]
     fn palette_layout_no_title_query_only() {
         let p = make_palette("", "", vec![make_palette_item("a")], 0, 0);
-        let layout = p.layout(40.0, 10.0, 0.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         assert!(layout.title_bounds.is_none());
         assert_eq!(layout.query_bounds.unwrap().y, 0.0);
         assert_eq!(layout.visible_items[0].bounds.y, 1.0);
@@ -2940,7 +2946,9 @@ mod tests {
             0,
             2,
         );
-        let layout = p.layout(40.0, 10.0, 0.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         // Query at y=0, items from offset 2.
         assert_eq!(layout.visible_items[0].item_idx, 2);
         assert_eq!(layout.visible_items[0].bounds.y, 1.0);
@@ -2958,7 +2966,9 @@ mod tests {
             0,
             0,
         );
-        let layout = p.layout(400.0, 300.0, 32.0, 40.0, |_| PaletteItemMeasure::new(24.0));
+        let layout = p.layout(400.0, 300.0, 32.0, 40.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(24.0)
+        });
         assert_eq!(layout.title_bounds.unwrap().height, 32.0);
         assert_eq!(layout.query_bounds.unwrap().y, 32.0);
         assert_eq!(layout.query_bounds.unwrap().height, 40.0);
@@ -2975,7 +2985,9 @@ mod tests {
             scroll_offset: 0,
             highlight_line: None,
         });
-        let layout = p.layout(100.0, 50.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(100.0, 50.0, 1.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         assert_eq!(layout.item_list_width, 40.0);
         assert_eq!(layout.visible_items[0].bounds.width, 40.0);
         let pb = layout.preview_bounds.unwrap();
@@ -2988,7 +3000,9 @@ mod tests {
     #[test]
     fn palette_layout_without_preview_full_width() {
         let p = make_palette("Cmd", "", vec![make_palette_item("foo")], 0, 0);
-        let layout = p.layout(100.0, 50.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(100.0, 50.0, 1.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         assert_eq!(layout.item_list_width, 100.0);
         assert!(layout.preview_bounds.is_none());
         assert_eq!(layout.visible_items[0].bounds.width, 100.0);
@@ -3003,9 +3017,149 @@ mod tests {
             scroll_offset: 0,
             highlight_line: None,
         });
-        let layout = p.layout(100.0, 50.0, 1.0, 1.0, |_| PaletteItemMeasure::new(1.0));
+        let layout = p.layout(100.0, 50.0, 1.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
         assert_eq!(layout.hit_test(50.0, 10.0), PaletteHit::Preview);
         assert_eq!(layout.hit_test(10.0, 2.5), PaletteHit::Item(0));
+    }
+
+    #[test]
+    fn palette_scrollbar_present_when_overflow() {
+        // 20 items, viewport fits 5 rows (query_h=1, items area = 10 - 1 = 9 rows,
+        // item_h=1 → 9 visible, 20 total → overflow).
+        let p = make_palette(
+            "",
+            "",
+            (0..20)
+                .map(|i| make_palette_item(&format!("i{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 2.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        let sb = layout
+            .scrollbar
+            .as_ref()
+            .expect("scrollbar should be present");
+        assert_eq!(sb.track.x, 38.0); // item_list_width(40) - scrollbar_width(2)
+        assert_eq!(sb.track.y, 1.0); // items_top = after query
+        assert_eq!(sb.track.width, 2.0);
+        assert_eq!(sb.track.height, 9.0); // items_bottom(10) - items_top(1)
+        assert!(sb.thumb.height > 0.0);
+        assert!(sb.thumb.height <= sb.track.height);
+        // Items should be narrowed.
+        assert_eq!(layout.visible_items[0].bounds.width, 38.0);
+    }
+
+    #[test]
+    fn palette_scrollbar_none_when_no_overflow() {
+        let p = make_palette("", "", vec![make_palette_item("a")], 0, 0);
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 2.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        assert!(layout.scrollbar.is_none());
+        // Items keep full width when no scrollbar.
+        assert_eq!(layout.visible_items[0].bounds.width, 40.0);
+    }
+
+    #[test]
+    fn palette_scrollbar_none_when_width_zero() {
+        let p = make_palette(
+            "",
+            "",
+            (0..20)
+                .map(|i| make_palette_item(&format!("i{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        assert!(layout.scrollbar.is_none());
+    }
+
+    #[test]
+    fn palette_scrollbar_hit_test() {
+        let p = make_palette(
+            "",
+            "",
+            (0..20)
+                .map(|i| make_palette_item(&format!("i{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 2.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        let sb = layout.scrollbar.as_ref().unwrap();
+        // Hit the thumb.
+        let thumb_center_y = sb.thumb.y + sb.thumb.height / 2.0;
+        assert_eq!(
+            layout.hit_test(39.0, thumb_center_y),
+            PaletteHit::ScrollbarThumb,
+        );
+        // Hit the track below the thumb.
+        let below_thumb = sb.thumb.y + sb.thumb.height + 0.5;
+        if below_thumb < sb.track.y + sb.track.height {
+            assert_eq!(
+                layout.hit_test(39.0, below_thumb),
+                PaletteHit::ScrollbarTrack,
+            );
+        }
+        // Item area should not cover the scrollbar column.
+        assert_ne!(layout.hit_test(37.0, 1.5), PaletteHit::ScrollbarThumb);
+    }
+
+    #[test]
+    fn palette_scrollbar_thumb_tracks_scroll_offset() {
+        let items: Vec<_> = (0..20)
+            .map(|i| make_palette_item(&format!("i{i}")))
+            .collect();
+        // Scroll at top.
+        let p0 = make_palette("", "", items.clone(), 0, 0);
+        let l0 = p0.layout(40.0, 10.0, 0.0, 1.0, 2.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        let sb0 = l0.scrollbar.as_ref().unwrap();
+        // Scroll near bottom.
+        let p1 = make_palette("", "", items, 15, 11);
+        let l1 = p1.layout(40.0, 10.0, 0.0, 1.0, 2.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        let sb1 = l1.scrollbar.as_ref().unwrap();
+        assert!(
+            sb1.thumb.y > sb0.thumb.y,
+            "thumb should move down with scroll"
+        );
+    }
+
+    #[test]
+    fn palette_scrollbar_pixel_units() {
+        // GTK-like dimensions.
+        let p = make_palette(
+            "Files",
+            "main",
+            (0..50)
+                .map(|i| make_palette_item(&format!("f{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = p.layout(400.0, 600.0, 32.0, 40.0, 6.0, 8.0, |_| {
+            PaletteItemMeasure::new(24.0)
+        });
+        let sb = layout.scrollbar.as_ref().expect("scrollbar present");
+        assert_eq!(sb.track.width, 6.0);
+        assert!(sb.thumb.height >= 8.0, "thumb respects min_thumb_len");
+        assert_eq!(sb.track.y, 72.0); // 32 + 40 = items_top
+                                      // Items narrowed by scrollbar.
+        let content_w = 400.0 - 6.0;
+        assert_eq!(layout.visible_items[0].bounds.width, content_w);
     }
 
     #[test]

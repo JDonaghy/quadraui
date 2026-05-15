@@ -116,6 +116,8 @@ pub fn draw_palette(
         (rows_y + rows_h - y) as f32,
         line_height as f32,
         query_h,
+        SB_W as f32,
+        8.0,
         |_| PaletteItemMeasure::new(line_height as f32),
     );
 

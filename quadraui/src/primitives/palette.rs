@@ -31,6 +31,7 @@
 //! open? If yes, route here instead."
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::fit_thumb;
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -172,8 +173,21 @@ pub enum PaletteHit {
     CreateAction,
     /// Click landed on the preview pane area.
     Preview,
+    /// Click landed on the scrollbar thumb (drag handle).
+    ScrollbarThumb,
+    /// Click landed on the scrollbar track (page-jump area).
+    ScrollbarTrack,
     /// Click landed outside any region.
     Empty,
+}
+
+/// Scrollbar geometry within a palette's item list area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaletteScrollbar {
+    /// Full scrollbar track (background rail).
+    pub track: Rect,
+    /// Draggable thumb within the track.
+    pub thumb: Rect,
 }
 
 /// Fully-resolved palette layout.
@@ -197,6 +211,9 @@ pub struct PaletteLayout {
     pub create_bounds: Option<Rect>,
     /// Preview pane bounds, present when `Palette.preview` is `Some`.
     pub preview_bounds: Option<Rect>,
+    /// Scrollbar track + thumb geometry, present when the item list
+    /// overflows and `scrollbar_width > 0` was passed to `layout()`.
+    pub scrollbar: Option<PaletteScrollbar>,
 }
 
 impl PaletteLayout {
@@ -220,13 +237,20 @@ impl Palette {
     ///   to omit.
     /// - `query_height` — rows reserved for the query input. Pass 0.0
     ///   to omit (unusual — palettes normally show the input).
+    /// - `scrollbar_width` — width reserved for the scrollbar when the
+    ///   item list overflows. Pass 0.0 to skip scrollbar computation.
+    /// - `min_thumb_len` — minimum scrollbar thumb length (1.0 cell for
+    ///   TUI, 8.0 px for GTK). Ignored when `scrollbar_width` is 0.0.
     /// - `measure_item(i)` — height for item `i`.
+    #[allow(clippy::too_many_arguments)]
     pub fn layout<F>(
         &self,
         viewport_width: f32,
         viewport_height: f32,
         title_height: f32,
         query_height: f32,
+        scrollbar_width: f32,
+        min_thumb_len: f32,
         measure_item: F,
     ) -> PaletteLayout
     where
@@ -298,6 +322,45 @@ impl Palette {
             y += m.height;
         }
 
+        let total = self.items.len();
+        let visible_count = visible_items.len();
+        let has_scrollbar = scrollbar_width > 0.0 && total > visible_count;
+
+        let scrollbar = if has_scrollbar {
+            let track_h = items_bottom - items_top;
+            let track = Rect::new(
+                item_list_width - scrollbar_width,
+                items_top,
+                scrollbar_width,
+                track_h,
+            );
+            let (thumb_start, thumb_len) = fit_thumb(
+                resolved_scroll_offset as f32,
+                total as f32,
+                visible_count as f32,
+                track_h,
+                min_thumb_len,
+            );
+            let thumb = Rect::new(track.x, items_top + thumb_start, scrollbar_width, thumb_len);
+
+            let content_width = item_list_width - scrollbar_width;
+            for vi in &mut visible_items {
+                vi.bounds.width = content_width;
+            }
+            for (rect, hit) in &mut hit_regions {
+                if matches!(hit, PaletteHit::Item(_) | PaletteHit::ExpandToggle(_)) {
+                    rect.width = content_width;
+                }
+            }
+
+            hit_regions.push((thumb, PaletteHit::ScrollbarThumb));
+            hit_regions.push((track, PaletteHit::ScrollbarTrack));
+
+            Some(PaletteScrollbar { track, thumb })
+        } else {
+            None
+        };
+
         let create_bounds = if self.create_label.is_some() && items_bottom < viewport_height {
             let bounds = Rect::new(0.0, items_bottom, item_list_width, create_row_h);
             hit_regions.push((bounds, PaletteHit::CreateAction));
@@ -328,6 +391,7 @@ impl Palette {
             resolved_scroll_offset,
             item_list_width,
             preview_bounds,
+            scrollbar,
         }
     }
 }
