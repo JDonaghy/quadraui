@@ -277,25 +277,134 @@ impl Backend for MacBackend {
     // `unimplemented!` so the file stays scannable; the macro
     // ensures the ticket pointer is consistent across primitives.
 
-    fn draw_tree(&mut self, _rect: Rect, _tree: &TreeView) {
-        mac_unimpl!("draw_tree", "#39")
+    fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tree called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_tree requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::tree::draw_tree(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                tree,
+                &theme,
+                line_height,
+            );
+        }
     }
-    fn draw_list(&mut self, _rect: Rect, _list: &ListView) {
-        mac_unimpl!("draw_list", "#39")
+    fn draw_list(&mut self, rect: Rect, list: &ListView) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_list called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_list requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::list::draw_list(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                list,
+                &theme,
+                line_height,
+            );
+        }
     }
     fn draw_data_table(
         &mut self,
-        _rect: Rect,
-        _table: &DataTable,
-        _hovered_idx: Option<usize>,
+        rect: Rect,
+        table: &DataTable,
+        hovered_idx: Option<usize>,
     ) -> DataTableLayout {
-        mac_unimpl!("draw_data_table", "#39")
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_data_table called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_data_table requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::data_table::draw_data_table(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                table,
+                &theme,
+                line_height,
+                hovered_idx,
+            )
+        }
     }
-    fn data_table_layout(&self, _rect: Rect, _table: &DataTable) -> DataTableLayout {
-        mac_unimpl!("data_table_layout", "#39")
+    fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::data_table_layout requires set_current_font");
+        super::data_table::mac_data_table_layout(
+            table,
+            font,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+        )
     }
-    fn draw_form(&mut self, _rect: Rect, _form: &Form) {
-        mac_unimpl!("draw_form", "#39")
+    fn draw_form(&mut self, rect: Rect, form: &Form) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_form called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_form requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::form::draw_form(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                form,
+                &theme,
+                line_height,
+            );
+        }
     }
     fn draw_palette(&mut self, _rect: Rect, _palette: &Palette) {
         mac_unimpl!("draw_palette", "#41")
@@ -428,14 +537,27 @@ impl Backend for MacBackend {
     fn msv_metrics(&self) -> LayoutMetrics {
         mac_unimpl!("msv_metrics", "#40")
     }
-    fn tree_layout(&self, _rect: Rect, _tree: &TreeView) -> TreeViewLayout {
-        mac_unimpl!("tree_layout", "#39")
+    fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
+        super::tree::mac_tree_layout(tree, rect, self.current_line_height)
     }
-    fn form_layout(&self, _rect: Rect, _form: &Form) -> FormLayout {
-        mac_unimpl!("form_layout", "#39")
+    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
+        super::form::mac_form_layout(form, rect, self.current_line_height)
     }
-    fn draw_editor(&mut self, _rect: Rect, _editor: &Editor) -> EditorPaintResult {
-        mac_unimpl!("draw_editor", "#39")
+    fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_editor called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_editor requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::editor::draw_editor(ctx, font, editor, &theme, char_width, line_height) }
     }
     fn draw_message_list(&mut self, _rect: Rect, _list: &MessageList) {
         mac_unimpl!("draw_message_list", "#43")
@@ -564,15 +686,51 @@ impl Backend for MacBackend {
     }
     fn draw_chart(
         &mut self,
-        _rect: Rect,
-        _chart: &Chart,
-        _hovered_point: Option<(usize, usize)>,
-        _crosshair_x: Option<f64>,
+        rect: Rect,
+        chart: &Chart,
+        hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
     ) -> ChartLayout {
-        mac_unimpl!("draw_chart", "#39")
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_chart called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_chart requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::chart::draw_chart(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                chart,
+                &theme,
+                line_height,
+                char_width,
+                hovered_point,
+                crosshair_x,
+            )
+        }
     }
-    fn chart_layout(&self, _rect: Rect, _chart: &Chart) -> ChartLayout {
-        mac_unimpl!("chart_layout", "#39")
+    fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout {
+        super::chart::mac_chart_layout(
+            chart,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 }
 

@@ -195,6 +195,21 @@ path = "examples/macos_demo.rs"
 required-features = ["macos"]
 
 [[example]]
+name = "macos_data_table"
+path = "examples/macos_data_table.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_chart"
+path = "examples/macos_chart.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_form_groups"
+path = "examples/macos_form_groups.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "tui_data_table"
 path = "examples/tui_data_table.rs"
 required-features = ["tui"]
