@@ -646,35 +646,166 @@ impl Backend for MacBackend {
             bar,
         )
     }
-    fn draw_split(&mut self, _rect: Rect, _split: &Split) -> SplitLayout {
-        mac_unimpl!("draw_split", "#42")
+    fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_split called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::split::draw_split(
+                ctx,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                split,
+                &theme,
+            )
+        }
     }
-    fn split_layout(&self, _rect: Rect, _split: &Split) -> SplitLayout {
-        mac_unimpl!("split_layout", "#42")
+    fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
+        super::split::mac_split_layout(
+            split,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
-    fn draw_panel(&mut self, _rect: Rect, _panel: &Panel) -> PanelLayout {
-        mac_unimpl!("draw_panel", "#42")
+    fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_panel called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_panel requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::panel::draw_panel(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                panel,
+                &theme,
+                line_height,
+            )
+        }
     }
-    fn panel_layout(&self, _rect: Rect, _panel: &Panel) -> PanelLayout {
-        mac_unimpl!("panel_layout", "#42")
+    fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
+        super::panel::mac_panel_layout(
+            panel,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+        )
     }
-    fn draw_toast_stack(&mut self, _rect: Rect, _stack: &ToastStack) -> ToastStackLayout {
-        mac_unimpl!("draw_toast_stack", "#42")
+    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_toast_stack called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_toast_stack requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::toast::draw_toast_stack(
+                ctx,
+                font,
+                rect.width as f64,
+                rect.height as f64,
+                stack,
+                &theme,
+                line_height,
+            )
+        }
     }
-    fn toast_stack_layout(&self, _rect: Rect, _stack: &ToastStack) -> ToastStackLayout {
-        mac_unimpl!("toast_stack_layout", "#42")
+    fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::toast_stack_layout requires set_current_font");
+        super::toast::mac_toast_stack_layout(
+            stack,
+            font,
+            rect.width,
+            rect.height,
+            self.current_line_height,
+        )
     }
-    fn draw_progress(&mut self, _rect: Rect, _bar: &ProgressBar) -> ProgressBarLayout {
-        mac_unimpl!("draw_progress", "#42")
+    fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_progress called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_progress requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::progress::draw_progress(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+            )
+        }
     }
-    fn progress_layout(&self, _rect: Rect, _bar: &ProgressBar) -> ProgressBarLayout {
-        mac_unimpl!("progress_layout", "#42")
+    fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
+        super::progress::mac_progress_layout(
+            bar,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
-    fn draw_spinner(&mut self, _rect: Rect, _spinner: &Spinner) -> SpinnerLayout {
-        mac_unimpl!("draw_spinner", "#42")
+    fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_spinner called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_spinner requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::spinner::draw_spinner(ctx, font, rect.x as f64, rect.y as f64, spinner, &theme)
+        }
     }
-    fn spinner_layout(&self, _rect: Rect, _spinner: &Spinner) -> SpinnerLayout {
-        mac_unimpl!("spinner_layout", "#42")
+    fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::spinner_layout requires set_current_font");
+        super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
     }
     fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
         let ctx = self.current_cg();

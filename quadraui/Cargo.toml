@@ -215,6 +215,26 @@ path = "examples/macos_multi_tree.rs"
 required-features = ["macos"]
 
 [[example]]
+name = "macos_split"
+path = "examples/macos_split.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_panel"
+path = "examples/macos_panel.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_toast"
+path = "examples/macos_toast.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_indicators"
+path = "examples/macos_indicators.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "tui_data_table"
 path = "examples/tui_data_table.rs"
 required-features = ["tui"]
