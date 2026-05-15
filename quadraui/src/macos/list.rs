@@ -20,13 +20,21 @@ use crate::theme::Theme;
 use crate::types::{Color, Decoration};
 
 /// Compute the layout the macOS rasteriser would produce for `list`
-/// at `(x, y, w, h)` and `line_height`. Hosts and tests call this to
-/// drive hit-testing without re-deriving row pitch. Title (if any)
-/// takes one `line_height` strip; items use the same.
+/// at `(w, h)` and `line_height`. Hosts and tests call this to drive
+/// hit-testing without re-deriving row pitch. Title (if any) takes
+/// one `line_height` strip; items use the same.
+///
+/// Coordinate frame: `visible_items.bounds`, `title_bounds`, and
+/// `hit_regions` are in **list-local** coords (origin at 0, 0),
+/// matching `tui_list_layout` and `gtk_list_layout`. Hosts must
+/// subtract the list's `area.x` / `area.y` from absolute click coords
+/// before calling [`ListViewLayout::hit_test`]. The `x` / `y` params
+/// are kept in the signature for symmetry with `draw_list` but do not
+/// affect output.
 pub fn mac_list_layout(
     list: &ListView,
-    x: f64,
-    y: f64,
+    _x: f64,
+    _y: f64,
     w: f64,
     h: f64,
     line_height: f64,
@@ -36,27 +44,9 @@ pub fn mac_list_layout(
     } else {
         0.0
     };
-    let mut layout = list.layout(w as f32, h as f32, title_h, |_| {
+    list.layout(w as f32, h as f32, title_h, |_| {
         ListItemMeasure::new(line_height as f32)
-    });
-    // Translate hit regions + bounds from list-local (0,0) origin into
-    // surface coordinates so callers can hit_test screen-space clicks.
-    let (dx, dy) = (x as f32, y as f32);
-    if dx != 0.0 || dy != 0.0 {
-        if let Some(tb) = layout.title_bounds.as_mut() {
-            tb.x += dx;
-            tb.y += dy;
-        }
-        for vi in &mut layout.visible_items {
-            vi.bounds.x += dx;
-            vi.bounds.y += dy;
-        }
-        for (rect, _) in &mut layout.hit_regions {
-            rect.x += dx;
-            rect.y += dy;
-        }
-    }
-    layout
+    })
 }
 
 /// Draw a [`ListView`] into `(x, y, w, h)` on `ctx`. Returns the same
@@ -94,8 +84,9 @@ pub unsafe fn draw_list(
     fill_rect(ctx, x, y, w, h, theme.background);
 
     if let (Some(title_bounds), Some(title)) = (layout.title_bounds, list.title.as_ref()) {
-        let tx = title_bounds.x as f64;
-        let ty = title_bounds.y as f64;
+        // Layout returns local coords; shift to absolute for paint.
+        let tx = title_bounds.x as f64 + x;
+        let ty = title_bounds.y as f64 + y;
         let th = title_bounds.height as f64;
         fill_rect(ctx, tx, ty, w, th, theme.header_bg);
         let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
@@ -112,8 +103,9 @@ pub unsafe fn draw_list(
 
     for vis in &layout.visible_items {
         let item = &list.items[vis.item_idx];
-        let row_x = vis.bounds.x as f64;
-        let row_y = vis.bounds.y as f64;
+        // Layout returns local coords; shift to absolute for paint.
+        let row_x = vis.bounds.x as f64 + x;
+        let row_y = vis.bounds.y as f64 + y;
         let row_w = vis.bounds.width as f64;
         let row_h = vis.bounds.height as f64;
 
@@ -388,6 +380,50 @@ mod tests {
                 ListViewHit::Item(vis.item_idx),
                 "row {} hit-test",
                 vis.item_idx,
+            );
+        }
+    }
+
+    #[test]
+    fn layout_returns_local_coords_when_area_offset() {
+        // Cross-backend contract: visible_items.bounds, title_bounds,
+        // and hit_regions are in list-local coords (origin 0, 0),
+        // regardless of where `mac_list_layout` is called with as its
+        // (x, y) — matching `tui_list_layout` and `gtk_list_layout`.
+        // Hosts subtract area.x/area.y from absolute click coords
+        // before hit_test.
+        //
+        // Regression for #190: prior to the fix, mac_list_layout
+        // shifted hit_regions to absolute coords. Latent today (no
+        // `Backend::list_layout` trait method exposes the layout to
+        // consumers), but ready to bite the moment one is added —
+        // same shape as #44's tree/form click drift.
+        let list = sample_list();
+        // Area offset by (0, 60) — typical when a list lives below
+        // a header / search input.
+        let area_x: f64 = 0.0;
+        let area_y: f64 = 60.0;
+        let layout = mac_list_layout(&list, area_x, area_y, W as f64, H as f64, 16.0);
+        // Locality: title_bounds.y must be 0, not 60.
+        let tb = layout.title_bounds.expect("title present");
+        assert_eq!(
+            tb.y, 0.0,
+            "title_bounds.y must be local (0.0), got {}",
+            tb.y,
+        );
+        // Round-trip: simulate a click at the absolute centre of each
+        // painted row, localise the way AppLogic does, and assert it
+        // hits the right row. Pre-fix this returned the wrong row.
+        for vi in &layout.visible_items {
+            let abs_x = area_x as f32 + vi.bounds.x + vi.bounds.width * 0.5;
+            let abs_y = area_y as f32 + vi.bounds.y + vi.bounds.height * 0.5;
+            let local_x = abs_x - area_x as f32;
+            let local_y = abs_y - area_y as f32;
+            assert_eq!(
+                layout.hit_test(local_x, local_y),
+                ListViewHit::Item(vi.item_idx),
+                "row {} click → wrong hit (coord-frame drift)",
+                vi.item_idx,
             );
         }
     }
