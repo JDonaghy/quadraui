@@ -722,313 +722,54 @@ Worktree `target/` directories (6.5 GB each) and main repo `target/` (22 GB → 
 - Windows milestone (#19–#31)
 - macOS milestone (#32–#44)
 
-## Session 2026-05-14 — macOS headless test surface (#37)
+---
 
-**Agent:** Claude Opus 4.7 (1M context)
+## Session 2026-05-14 — AppShell compose widget
 
-**Issue closed (1):**
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (2)
 
 | # | Title | Path | Key deliverable |
 |---|---|---|---|
-| 37 | macOS: headless test surface (CGBitmapContext) | A (direct, `3b5ce8a`) | `quadraui::macos::headless::BitmapSurface` — `CGBitmapContextCreate` wrapper, top-left origin via CTM flip, RGBA byte order, `pixel(x,y)` readback. Integrates with `MacBackend::enter_frame_scope`. |
+| 167 | AppShell: activity bar + sidebar panel container | A (direct) | Compose widget owning toggle/switch/resize state machine; TUI draw_activity_bar rasteriser; paired examples |
+| 175 | ContextMenu: GTK should use quadraui primitive | Closed (no-op) | quadraui side already complete; remaining work is vimcode-side migration |
 
 ### What shipped
 
-`quadraui/src/macos/headless.rs` (~250 lines impl + 6 tests). Gated
-`#[cfg(test)] pub mod headless` so rasteriser tests in #38–#43 can
-reach it from sibling files while it stays out of the public API
-surface until the rasteriser contract is shaken out.
+**AppShell compose widget (#167):** New `AppShell` in `quadraui::compose::app_shell` — the fourth compose helper (after FocusRing, MenuSystem, SidebarSystem). Owns:
+- Activity bar rendering via `Backend::draw_activity_bar()`
+- Sidebar visibility + active panel state (toggle/switch state machine)
+- Sidebar header chrome + resize divider (via `draw_status_bar` reuse)
+- Resize drag with min/max clamping
+- Left/Right position support (`ShellPosition` enum, extensible to Top/Bottom)
 
-Key invariants:
+All widths stored as **line_height multiples** for cross-backend portability (3 lh = 3 cells TUI, ~48px GTK). Cached activity bar hit regions via `RefCell` for correct cross-backend click dispatch — structural fix for GTK's `ACTIVITY_ROW_PX` (48px) vs `line_height` (16px) mismatch.
 
-- **Top-left origin**: constructor applies `translate(0, H)` + `scale(1, -1)` so callers paint in the same coord frame as the live `QuadraView` (which sets `isFlipped: YES`). Buffer scanlines are top-down in memory, so the flipped drawing space aligns directly with row indexing — `pixel()` reads `y` as a memory row with no inversion.
-- **RGBA byte order** via `kCGImageAlphaPremultipliedLast` (matches the `core-graphics` crate's own `create_bitmap_context_test` byte assertions).
-- **Raw FFI throughout** rather than the `core_graphics::context::CGContext` wrapper — the wrapper exposes its raw pointer only via the `foreign_types::ForeignType` trait, which isn't a direct dep. Same style as `macos::text` which already speaks raw CG FFI for `drawRect:`'s borrowed context.
+**TUI draw_activity_bar:** Implemented the previously `unimplemented!()` `TuiBackend::draw_activity_bar()`. Uses `ActivityBar::layout()` for positioning, paints accent bar + centered icon glyphs + hover/selection highlights.
 
-Tests:
+**Rich paired examples:** `tui_shell` / `gtk_shell` with 3 SidebarSystem-backed panels (Explorer file tree, Search results, Source Control changes) + bottom settings item.
 
-- `new_initialises_transparent_black` — zero-fill.
-- `dimensions_reported` — buffer length `W·H·4`.
-- `fill_paints_expected_colour` — RGBA byte order.
-- `top_left_origin_for_partial_fill` — CTM flip + memory layout consistency.
-- `integrates_with_mac_backend_frame_scope` — end-to-end: `BitmapSurface::context_ptr()` → `MacBackend::enter_frame_scope` → CG FFI inside closure → readback. Documents the exact shape #38–#43 rasteriser harnesses will use.
-- `dump_smoke_ppm` (`#[ignore]`) — paints four-corner colour grid + Core Text label, writes `/tmp/quadraui_headless.ppm`, opens in Preview via `open` for visual confirmation.
+### Bugs fixed during session
 
-### Bugs caught during development
-
-1. **Buffer-layout y-inversion confusion**: initial `pixel()` inverted `y` on the assumption that CG bitmap rows ran bottom-up in memory. They don't — scanlines are top-down (the standard image-file convention); only the CG *coordinate* system is bottom-up by default. With the CTM flip applied, top-left coord y directly indexes memory row. Caught by a diagnostic test that dumped raw byte rows after a partial fill.
+1. **GTK activity bar invisible** (#167): `activity_bar_width` and `sidebar_width` stored as native units — 3px / 30px on GTK. Fixed by storing all widths as lh multiples, resolved in `compute_layout()`.
+2. **GTK activity bar clicks not registering** (#167): `handle()` recomputed layout with `line_height` (16px) item height, but GTK rasteriser paints at `ACTIVITY_ROW_PX` (48px). Fixed by caching `Vec<ActivityBarRowHit>` from `render()` and using cached data in `handle()` — one derivation, two consumers.
 
 ### Test count progression
 
 | Checkpoint | Lib tests |
 |---|---|
 | Session start | 674 |
-| After #37 | 679 (+5 normal, +1 ignored) |
+| After #167 (AppShell) | 698 (+24) |
+| Session end | 698 |
 
 ### Open queue for next session
 
-*Resolved in session 2026-05-15 below for #38.*
-
-## Session 2026-05-15 — macOS chrome rasterisers (#38)
-
-**Agent:** Claude Opus 4.7 (1M context)
-
-**Issue closed (1):**
-
-| # | Title | Path | Key deliverable |
-|---|---|---|---|
-| 38 | macOS: chrome rasterisers (status_bar, tab_bar, activity_bar, command_center, menu_bar) | B (PR #176) | Five `quadraui::macos::<chrome>::draw_*` rasterisers + matching `mac_*_layout` helpers; `MacBackend` chrome trait methods replace the `mac_unimpl!` stubs; `macos_app` + `macos_demo` examples wired through shared `AppLogic`; `BitmapSurface::write_ppm_and_open` helper. |
-
-### What shipped
-
-Five rasteriser modules (`quadraui/src/macos/{status_bar,tab_bar,activity_bar,command_center,menu_bar}.rs`), wired into `MacBackend` via the `chrome` trait methods and re-exported from `macos::mod`. Each rasteriser is unsafe-CG-FFI inside, exposes a safe layout helper, and ships with mutation-verified paint↔click round-trip tests via `BitmapSurface`.
-
-Backend integration pattern (`backend.rs`):
-
-```rust
-fn draw_menu_bar(&mut self, bounds: Rect, bar: &MenuBar) -> MenuBarLayout {
-    let ctx = self.current_cg();
-    let font = self.current_font.as_ref().expect("font installed in setup");
-    unsafe { super::menu_bar::draw_menu_bar(ctx, font, bounds.x as f64, bounds.y as f64,
-        bounds.width as f64, bounds.height as f64, bar, &self.theme) }
-}
-```
-
-Examples (paired runners against shared `AppLogic`):
-
-- `examples/macos_app.rs` (new) — minimal app using `common::MiniApp` (one `StatusBar`).
-- `examples/macos_demo.rs` (rewritten) — full demo using `common::AppState` (TabBar + StatusBar with focus cycling).
-
-`run.rs` install of `Menlo 14pt` font happens before `AppLogic::setup` so primitives can rely on `font_metrics()` from setup onwards. The previous `drawRect:` Menlo smoke label was removed — its descenders peeked below the 28pt tab bar.
-
-### Tests
-
-17 new rasteriser unit tests in `macos::{status_bar,tab_bar,activity_bar,command_center,menu_bar}::tests` — all use the `BitmapSurface::pixel(x,y)` probe + `Layout::hit_test` round-trip pattern. Notable test-quality moves:
-
-- **Sentinel-segment trick** (status_bar): sample StatusBar prepended with one extra clickable segment whose bg differs from both the bar bg and other segments — mutation of the layout fails the probe instead of trivially passing.
-- **PPM smoke dumps** for the three rasterisers without paired example apps: `#[ignore]`d tests in `activity_bar.rs`, `command_center.rs`, `menu_bar.rs` write `/tmp/quadraui_<name>.ppm` and shell out to `open` for visual confirmation. Helper `BitmapSurface::write_ppm_and_open(path)` extracted from headless.rs's existing dump_smoke_ppm.
-
-Visual confirmation done:
-
-- `cargo run -p quadraui --example macos_app --features macos` — StatusBar
-- `cargo run -p quadraui --example macos_demo --features macos` — TabBar + StatusBar with focus cycle
-- `cargo test -p quadraui --features macos --lib -- --ignored macos::{activity_bar,command_center,menu_bar}::tests::dump_smoke_ppm` — three PPM dumps
-
-### Scope omissions (deferred to a unified text-attribute pass)
-
-These all require threading `CTAttributedString`/`kCTUnderlineStyleAttributeName` through the `macos::text` boundary, which currently only renders plain Menlo. Tracked as a single follow-up:
-
-- **status_bar**: bold first segment.
-- **tab_bar**: italic preview tabs, rounded close-button hover bg.
-- **menu_bar**: Alt-key underline on the marked character.
-- **command_center**: rounded search-box border (needs CG path API, not text attrs — separate concern).
-
-### Bugs caught during development
-
-1. **`as_ptr()` not on `CGContext`**: `foreign_types_shared::ForeignType` is a transitive dep, not direct. Fixed once at the start of #37; resolved before #38 by using raw FFI throughout.
-2. **Weak status_bar round-trip**: bar bg == segment bg meant mutating geometry didn't fail the probe. Fixed with the sentinel segment.
-3. **`menu_bar::hit_test` for disabled items**: disabled items hit `Bar` not `Item` per the primitive contract — test had to expect `Bar` for the View item.
-4. **Pre-existing clippy errors on develop** (`unnecessary_min_or_max`, `redundant_guards`) surfaced when running quality gate. Unrelated to #38; left for a separate cleanup pass (no CI configured on this repo).
-
-### Test count progression
-
-| Checkpoint | macos:: tests |
-|---|---|
-| Session start (after #37) | 12 (+1 ignored) |
-| After #38 | 66 (+4 ignored) |
-
-### Open queue for next session
-
-*Resolved in session 2026-05-16 below — #39, #40, #41, #42 all landed.*
-
-## Session 2026-05-16 — macOS rasteriser arc: content, MSV, containers, overlays
-
-**Agent:** Claude Opus 4.7 (1M context)
-
-Four macOS rasteriser milestones closed in one session, completing 5 of 7 macOS milestones in total (rasterisers ✓; #36 platform services + #43 terminal/text_display/message_list still open).
-
-### Issues closed (4)
-
-| # | Title | Path | Key deliverable |
-|---|---|---|---|
-| 39 | macOS: content rasterisers (tree, list, form, editor, data_table, chart) | A (rebased + FF-merged) | Six rasterisers + `mac_*_layout` helpers + 3 paired examples (`macos_data_table`, `macos_chart`, `macos_form_groups`). CG path API bindings landed (`CGContextMoveToPoint`, `AddLineToPoint`, `ClosePath`, `StrokePath`, `FillPath`). |
-| 40 | macOS: MSV + scrollbar rasterisers | A | `macos::multi_section_view` (full chrome — header / aux / body dispatch / per-section + panel scrollbar / dividers) + `macos::scrollbar` (overlay alpha-blend matching GTK). `macos_multi_tree` paired example. |
-| 42 | macOS: container + indicator rasterisers (panel, split, toast, progress, spinner) | A | Five rasterisers + 4 paired examples (`macos_split`, `macos_panel`, `macos_toast`, `macos_indicators`). |
-| 41 | macOS: overlay rasterisers (tooltip, context_menu, dialog, palette, completions, find_replace, rich_text_popup) | A | Seven rasterisers covering all in-window overlay primitives. No paired example — overlays are triggered from existing apps. |
-
-### What shipped per ticket
-
-#### #39 — Content rasterisers
-
-- `tree` (5 tests): header pitch `line_height * 1.2`, leaf pitch `line_height * 1.4`, chevron + icon + text + badge, mutation-verified scroll_offset.
-- `list` (5 tests): title strip, decoration-driven fg colour, right-aligned detail.
-- `form` (3 tests): Label / Toggle / TextInput / Button / ReadOnly. Rich field kinds (Slider / ColorPicker / Dropdown / etc.) render label-only for now.
-- `editor` (4 tests): bg + per-line text + line-number gutter + cursorline + per-span fg/bg + Block/Bar/Underline cursor. Selections / diagnostics / indent guides / multi-cursors deferred.
-- `data_table` (4 tests): header sort glyphs, hover/select tints, column separators, vertical + horizontal scrollbars.
-- `chart` (4 tests): Sparkline / Line / Bar via CG path API, legend swatches, axis tick labels, hover marker, crosshair.
-
-Visual fix-up commit (`56e81cd`):
-- data_table cells collapsed all StyledText spans into one fg run → per-span colour painting + per-column clipping (header + body) so titles in narrow `Fixed(8.0)` columns truncate instead of overflowing into neighbours.
-- chart sparkline used the primitive's 1-pixel-per-data-point layout (TUI-cell convention bleeding through) → stretches across full plot width.
-- chart line `fill=true` painted as a fan of vertical bars → proper closed polygon via `CGContextFillPath`.
-- chart bar positioning centred bars on tick marks (first bar's left edge ended up left of plot_x, covering axis labels) → slot-based positioning with 15% gap, matching GTK.
-
-#### #40 — MSV + scrollbar
-
-- `scrollbar` (5 tests): overlay alpha cadence (track 0.20 → 0.35 on hover; thumb 0.50 → 0.70 → 0.85 on hover → drag). Both `ScrollAxis` variants share one impl.
-- `multi_section_view` (5 tests): full MSV chrome including per-section headers (chevron / title / badge / right-aligned actions), aux row (Input / Search / Toolbar / Custom), per-section bodies dispatched to existing macos rasterisers (Tree / List / Form / Chart) with body clip, per-section scrollbar gutters with thumb, dividers, panel-level scrollbar. `mac_msv_metrics` + `mac_msv_layout` deliver the shared paint/click layout.
-- `macos_multi_tree` paired example wires shared `common::DebugSidebar` (`SidebarSystem` compose helper) through `quadraui::macos::run`.
-
-Shift+Tab fix (`d8e5740`): AppKit reports Shift+Tab as the Tab keycode (0x30) + shift modifier, not a separate back-tab keycode the way GTK (`ISO_Left_Tab`) and crossterm (`KeyCode::BackTab`) do. `ns_key_to_uievent` now promotes `Tab + shift` → `NamedKey::BackTab` so backend-neutral consumers (`SidebarSystem`, `FocusRing`) match the same variant on every backend. Caught visually in `macos_multi_tree` — Shift+Tab cycled forward instead of backward.
-
-#### #42 — Containers + indicators
-
-- `split` (5 tests): 4-pt divider matching GTK; both `SplitDirection` variants. Pane content stays the host's responsibility.
-- `panel` (5 tests): title bar (bg + title + right-aligned action buttons), content region exposed via `PanelLayout::content_bounds`.
-- `toast` (5 tests): `ToastStack` corner-positioned boxes, severity tint (Info / Success / Warning / Error), dismiss `×`, optional action button.
-- `progress` (4 tests): track + determinate fill / indeterminate pulse + label + optional cancel `×`.
-- `spinner` (4 tests): braille animation glyph + optional label. Same frame table as TUI/GTK.
-
-#### #41 — Overlays
-
-- `tooltip` (4 tests): bordered rect + plain or styled-line text.
-- `context_menu` (3 tests): rows + separators + selection highlight + detail text. Returns `Vec<(Rect, WidgetId)>`.
-- `dialog` (3 tests): title + body + optional input + button row. Returns `Vec<Rect>`.
-- `completions` (3 tests): autocomplete popup with selected-row highlight.
-- `palette` (3 tests): modal fuzzy picker — title / query+cursor / separator / scrollable items / pinned create row / optional preview pane / scrollbar. `mac_palette_layout` helper.
-- `find_replace` (2 tests): panel anchored top-right; walks `hit_regions` for chevron / inputs / toggles / nav glyphs / dismiss.
-- `rich_text_popup` (2 tests): bordered popup with per-line per-span text. `has_focus` swaps border to `theme.link_fg`.
-
-### Issues filed for follow-up macOS native-feel work (2)
-
-| # | Title | Why |
-|---|---|---|
-| 184 | macOS: native menu bar via NSMenu (and shared MenuBar shape upgrade) | Apps need menus in the system menu bar at top of screen, not in-window. Adds `Backend::install_menu_bar(&MenuBar)` + shared `MenuItem` shape with `key_equivalent` + `checked` + `submenu` fields. The shape upgrade benefits TUI/GTK too (structured shortcuts, checkbox menu items). |
-| 185 | macOS: native right-click context menus via NSMenu.popUpContextMenu | User-triggered right-click should use native `NSMenu::popUpContextMenu`; app-driven dropdowns continue painting via existing `draw_context_menu`. Adds `Backend::show_context_menu(menu, anchor)`. Depends on #184 (shares NSMenu builder + selector bridge). |
-
-The convention to document when #185 lands: `MouseDown { button: Right }` → `backend.show_context_menu(...)` (native on Mac, painted elsewhere); left-click on a UI affordance opening a menu-like dropdown → `draw_context_menu` (painted on all backends).
-
-### Cross-cutting concerns surfaced during the session
-
-- **Unified text-attribute pass remains the largest deferred work.** Bold span attrs, italic preview tabs, Alt-key underline, match-position highlighting, focused-link underline, selection bg + inverted fg in inputs, per-line font scale for markdown headings — all gated on threading `CTAttributedString` attributes through `macos::text::draw_text`. Touches every rasteriser that uses `draw_text`; high leverage for finishing-polish across all 5 macOS milestones.
-- **`Fixed(N)` ColumnWidth in DataTable** carries no unit info — the primitive lets the value mean "cells" or "pixels" depending on backend. Example apps using `Fixed(8.0)` (TUI-sized) get tiny columns on GUI backends. Clip-on-truncate behaviour is now correct on macOS, but the example data needs updating to use `ColumnWidth::Content { min, max }` for cross-backend portability. Tracked implicitly — not yet filed.
-
-### Test count progression
-
-| Checkpoint | macos:: tests | Full lib tests |
-|---|---|---|
-| Session start (after #38) | 66 (+4 ignored) | — |
-| After #39 | 91 (+4 ignored) | — |
-| After #40 | 101 (+4 ignored) | — |
-| After #42 | 126 (+4 ignored) | — |
-| After #41 | 146 (+4 ignored) | 633 |
-
-### macOS milestone status at end of session
-
-| # | Ticket | Status |
-|---|---|---|
-| 37 | headless test surface | ✅ |
-| 38 | chrome (status_bar / tab_bar / activity_bar / command_center / menu_bar) | ✅ |
-| 39 | content (tree / list / form / editor / data_table / chart) | ✅ |
-| 40 | MSV + scrollbar | ✅ |
-| 42 | container + indicator (panel / split / toast / progress / spinner) | ✅ |
-| 41 | overlay (tooltip / context_menu / dialog / palette / completions / find_replace / rich_text_popup) | ✅ |
-| 43 | terminal + text_display + message_list | open *(gated on text-attribute pass)* |
-| 36 | platform services (clipboard / dialogs / notifications / URL open) | open *(independent)* |
-| 44 | port all paired examples | open *(depends on #43)* |
-
-**27 rasterisers, ~150 round-trip tests, 8 paired examples, 5 milestones closed.** macOS apps using `quadraui::macos::run` render every primitive needed for kubeui-class consumers.
-
-### Open queue for next session
-
-- **#36** — macOS platform services. Pure FFI work (`NSPasteboard`, `NSOpenPanel`, `NSSavePanel`, `NSUserNotificationCenter`, `NSWorkspace`). Different muscle group from rasterisers. Natural lead-in to #184 / #185 since both use the same objc2 patterns.
-- **Text-attribute pass** (not yet filed). Threads `CTAttributedString` attributes through `macos::text::draw_text` to unlock bold / italic / underline / per-character fg across every rasteriser. High leverage — completes the polish across all 5 closed milestones. Also unblocks #43.
-- **#43** — terminal + text_display + message_list. Don't pick before the text-attribute pass; terminal cells need bold + per-char colour.
-- **#184** — install_menu_bar via NSMenu. Best after #36 (same FFI shape).
-- **#185** — show_context_menu via popUpContextMenu. Depends on #184.
-- **#44** — port all paired examples. Depends on #43.
-- **Win-GUI milestone (#19–#31)** — nothing started; #19 is the entry point.
-- **#177** — TUI editor block cursor fg/bg swap → `theme.cursor`. ~5-line fix.
-- **#180** — GTK palette scrollbar width 6 → 10 px. One-line constant change.
-- **Future / deferred:** #166, #144, #65, #118, #115.
-
-## Session 2026-05-17 — macOS terminal + text_display + message_list rasterisers (#43)
-
-**Agent:** Claude Opus 4.7 (1M context)
-
-Closes the macOS in-window rasteriser surface — last three primitives landed without waiting for the text-attribute pass (previous session expected #43 to be gated on it; instead we shipped attribute-less and filed the deferral inline).
-
-### Issues closed (1)
-
-| # | Title | Path | Key deliverable |
-|---|---|---|---|
-| 43 | macOS: terminal + text_display + message_list rasterisers | B (PR #186) | Three rasterisers + `mac_text_display_layout` helper. `MacBackend`'s last four `mac_unimpl!` stubs replaced with real impls; the now-unused macro removed. |
-
-### What shipped
-
-- **`macos::terminal`** (5 tests + 1 PPM dump): cell-grid walk mirroring GTK, cell bg/fg with `is_cursor` / `is_find_active` / `is_find_match` / `selected` overlays, glyph skip for `' '` / `'\0'`, right-edge clip via `cell_area_w`. Scrollbar wiring lives in `MacBackend::draw_terminal` — builds `Scrollbar::vertical` from `TerminalScrollbar::effective_scroll_offset` and delegates to `super::scrollbar::draw_scrollbar`, identical shape to `GtkBackend::draw_terminal`.
-- **`macos::text_display`** (5 tests + 1 PPM dump): optional title strip, body from `resolved_scroll_offset` (auto-scroll honoured by the primitive's `layout()`), per-line `Decoration` tint (Error / Warning / Muted / Normal), optional timestamp prefix in `theme.muted_fg`, optional scrollbar gutter + thumb. `mac_text_display_layout` mirrors `gtk_text_display_layout` shape (body-local coordinates; 12-pt gutter, 8-pt min thumb constants).
-- **`macos::message_list`** (3 tests + 1 PPM dump): walks `rows[scroll_top..]`, paints text at `(x + row.indent, y + i*line_height)` in row's `fg`. Vertically centres glyph within the line-height band. Caller paints panel bg; rasteriser is text-only (matches GTK contract).
-
-### Visual smoke tests added
-
-Following the precedent set by `command_center` / `menu_bar` / `activity_bar` / `headless`, each of the three new rasterisers ships an `#[ignore]`d `dump_smoke_ppm` test that writes `/tmp/quadraui_<name>.ppm` and opens it in Preview. Each test's doc comment lists the visual invariants to eyeball. Run via:
-
-```
-cargo test -p quadraui --no-default-features --features macos -- --ignored --nocapture \
-  macos::terminal::tests::dump_smoke_ppm \
-  macos::text_display::tests::dump_smoke_ppm \
-  macos::message_list::tests::dump_smoke_ppm
-```
-
-The PPMs capture: terminal cursor inversion + find/selection bands + scrollbar; text_display title strip + decoration palette + timestamp run + scrollbar; message_list `You:`/`AI:` chat with indented body rows.
-
-### `MacBackend` cleanup
-
-- Replaced four `mac_unimpl!` stubs (draw_terminal, draw_text_display, text_display_layout, draw_message_list) with real implementations.
-- Removed the now-unused `mac_unimpl!` macro and the `// Drawing stubs` header comment referencing #38–#43.
-- Removed `#[allow(dead_code)]` from `current_cg()` — every rasteriser uses it now.
-
-### Cell attribute deferral
-
-`Terminal` cells carry `bold` / `italic` / `underline` flags. The macOS rasteriser **does not honour them** in this PR — Core Text would need per-cell `CTFont` variants (or attributed-string attributes), and the cell grid is hot enough that we prioritised trait-shape parity. Documented in the module header; the same deferred text-attribute pass from the previous session would unlock these along with bold spans in text_display, italic in code editor previews, etc.
-
-### Test count progression
-
-| Checkpoint | macos:: tests | Full lib tests |
-|---|---|---|
-| Session start (after #41) | 146 (+4 ignored) | 633 |
-| After #43 | 159 (+7 ignored) | 646 |
-
-### macOS milestone status at end of session
-
-| # | Ticket | Status |
-|---|---|---|
-| 37 | headless test surface | ✅ |
-| 38 | chrome (status_bar / tab_bar / activity_bar / command_center / menu_bar) | ✅ |
-| 39 | content (tree / list / form / editor / data_table / chart) | ✅ |
-| 40 | MSV + scrollbar | ✅ |
-| 42 | container + indicator (panel / split / toast / progress / spinner) | ✅ |
-| 41 | overlay (tooltip / context_menu / dialog / palette / completions / find_replace / rich_text_popup) | ✅ |
-| 43 | terminal + text_display + message_list | ✅ |
-| 36 | platform services (clipboard / dialogs / notifications / URL open) | open *(independent)* |
-| 44 | port all paired examples | open *(now unblocked)* |
-| 184 | native menu bar via NSMenu | open *(depends on #36 FFI patterns)* |
-| 185 | native right-click context menus | open *(depends on #184)* |
-
-**Every in-window rasteriser on the `Backend` trait now has a Core Graphics implementation.** macOS apps using `quadraui::macos::run` paint every primitive. The remaining macOS milestones (#36, #44, #184, #185) are integration / native-feel work — no further rasterisers needed.
-
-### Process notes
-
-- Pre-existing clippy warnings on `develop` HEAD (`dispatch.rs` `collapsible_match`, `compose/sidebar_system.rs` + `compose/tree_controller.rs` `3_usize.max(1)`) trip `-D warnings` on every feature flag. Confirmed by stashing the #43 diff and running clippy on the bare branch — same errors. Not in scope for #43.
-- CLAUDE.md says "the round-trip harness IS the smoke test" for primitive paint/click changes. The PPM dump tests added here go beyond that — they catch glyph baseline drift / antialiasing / overlay-flag visual regressions that the pixel-probe harness can't see by itself, and match the established pattern across the macOS rasterisers.
-
-### Open queue for next session
-
-- **#44** — port all paired examples to macOS. Newly unblocked. Many `macos_*` examples already exist (`macos_app`, `macos_demo`, `macos_data_table`, `macos_chart`, `macos_form_groups`, `macos_multi_tree`, `macos_split`, `macos_panel`, `macos_toast`, `macos_indicators`); audit which are missing (none today for terminal / text_display / message_list shapes) and port the gaps.
-- **#36** — macOS platform services. Pure FFI work; natural lead-in to #184 / #185.
-- **Text-attribute pass** (not yet filed). Now unblocking only polish work (bold / italic on terminal cells, span attrs across content rasterisers) — no longer gates feature completeness.
-- **#184** / **#185** — native menus. Depends on #36 FFI shape.
-- **Win-GUI milestone (#19–#31)** — nothing started.
-- **#177** / **#180** — small TUI / GTK fixes still open.
-- **Future / deferred:** #166, #144, #65, #118, #115.
+- #34 — macOS Core Text infrastructure (next on macOS milestone critical path)
+- #166 — Folder picker primitive
+- #144 — TabGroup compose helper
+- #65 — SplitDragController compose helper (deferred)
+- #115 — quadraui-lua bridge crate (future)
+- #118 — quadraui-ipc JSON bridge (future)
+- Windows milestone (#19–#31)
+- macOS milestone (#35–#44, blocked on #34)

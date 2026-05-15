@@ -3,9 +3,10 @@
 //!
 //! Owns the full interaction state machine: activity bar click toggle,
 //! active panel switching, sidebar visibility, and resize drag. Apps
-//! register panels at construction time, match on [`AppShellEvent`]
-//! for semantic actions, and paint their panel content into the bounds
-//! the shell returns.
+//! register panels at construction time or dynamically via
+//! [`AppShell::add_panel`] / [`AppShell::remove_panel`], match on
+//! [`AppShellEvent`] for semantic actions, and paint their panel content
+//! into the bounds the shell returns.
 //!
 //! The shell renders the activity bar, sidebar header chrome, and resize
 //! divider. Panel *content* and the main content area are the consumer's
@@ -180,6 +181,74 @@ impl AppShell {
 
     pub fn set_sidebar_width(&mut self, width: f32) {
         self.sidebar_width = width.clamp(self.min_sidebar_width, self.max_sidebar_width);
+    }
+
+    // ── Dynamic panel registration ──────────────────────────────────
+
+    pub fn panels(&self) -> &[PanelDefinition] {
+        &self.panels
+    }
+
+    pub fn bottom_items(&self) -> &[PanelDefinition] {
+        &self.bottom_items
+    }
+
+    /// Register a panel at runtime. Returns `false` if a panel with the
+    /// same ID already exists (no-op in that case). If this is the first
+    /// panel, it becomes the active panel.
+    pub fn add_panel(&mut self, def: PanelDefinition) -> bool {
+        if self.panels.iter().any(|p| p.id == def.id)
+            || self.bottom_items.iter().any(|p| p.id == def.id)
+        {
+            return false;
+        }
+        self.panels.push(def);
+        if self.panels.len() == 1 {
+            self.active_panel = Some(0);
+        }
+        true
+    }
+
+    /// Unregister a panel by ID. Returns `true` if found and removed.
+    /// Adjusts `active_panel` to keep the same panel selected (or clears
+    /// it if the active panel was the one removed).
+    pub fn remove_panel(&mut self, id: &WidgetId) -> bool {
+        let Some(idx) = self.panels.iter().position(|p| p.id == *id) else {
+            return false;
+        };
+        self.panels.remove(idx);
+        self.active_panel = match self.active_panel {
+            Some(a) if a == idx => {
+                if self.panels.is_empty() {
+                    None
+                } else {
+                    Some(a.min(self.panels.len() - 1))
+                }
+            }
+            Some(a) if a > idx => Some(a - 1),
+            other => other,
+        };
+        true
+    }
+
+    /// Register a bottom-pinned activity bar item at runtime.
+    pub fn add_bottom_item(&mut self, def: PanelDefinition) -> bool {
+        if self.panels.iter().any(|p| p.id == def.id)
+            || self.bottom_items.iter().any(|p| p.id == def.id)
+        {
+            return false;
+        }
+        self.bottom_items.push(def);
+        true
+    }
+
+    /// Unregister a bottom item by ID.
+    pub fn remove_bottom_item(&mut self, id: &WidgetId) -> bool {
+        let Some(idx) = self.bottom_items.iter().position(|p| p.id == *id) else {
+            return false;
+        };
+        self.bottom_items.remove(idx);
+        true
     }
 
     // ── Layout ───────────────────────────────────────────────────────
@@ -850,6 +919,146 @@ mod tests {
         );
         assert_eq!(ev, AppShellEvent::Consumed);
         assert!(s.drag_offset.is_none());
+    }
+
+    // ── Dynamic panel registration ──────────────────────────────────
+
+    #[test]
+    fn add_panel_appends_and_is_reachable() {
+        let mut s = shell();
+        assert_eq!(s.panels().len(), 3);
+        s.add_panel(PanelDefinition {
+            id: WidgetId::new("panel:ext-lua"),
+            icon: "L".into(),
+            tooltip: "Lua".into(),
+            title: "LUA".into(),
+        });
+        assert_eq!(s.panels().len(), 4);
+        s.show_panel(&WidgetId::new("panel:ext-lua"));
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:ext-lua")));
+    }
+
+    #[test]
+    fn add_panel_rejects_duplicate() {
+        let mut s = shell();
+        let ok = s.add_panel(PanelDefinition {
+            id: WidgetId::new("panel:explorer"),
+            icon: "E".into(),
+            tooltip: "Dup".into(),
+            title: "DUP".into(),
+        });
+        assert!(!ok);
+        assert_eq!(s.panels().len(), 3);
+    }
+
+    #[test]
+    fn add_panel_rejects_id_collision_with_bottom() {
+        let mut s = shell();
+        let ok = s.add_panel(PanelDefinition {
+            id: WidgetId::new("panel:settings"),
+            icon: "*".into(),
+            tooltip: "Dup".into(),
+            title: "DUP".into(),
+        });
+        assert!(!ok);
+    }
+
+    #[test]
+    fn add_panel_to_empty_shell_activates_it() {
+        let mut s = AppShell::new(vec![], 30.0);
+        assert!(s.active_panel().is_none());
+        s.add_panel(PanelDefinition {
+            id: WidgetId::new("panel:first"),
+            icon: "1".into(),
+            tooltip: "First".into(),
+            title: "FIRST".into(),
+        });
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:first")));
+    }
+
+    #[test]
+    fn remove_panel_adjusts_active_index() {
+        let mut s = shell();
+        s.show_panel(&WidgetId::new("panel:git"));
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:git")));
+        // Remove "panel:explorer" (index 0) — active was index 2, should shift to 1.
+        s.remove_panel(&WidgetId::new("panel:explorer"));
+        assert_eq!(s.panels().len(), 2);
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:git")));
+    }
+
+    #[test]
+    fn remove_active_panel_selects_neighbor() {
+        let mut s = shell();
+        s.show_panel(&WidgetId::new("panel:search"));
+        s.remove_panel(&WidgetId::new("panel:search"));
+        assert_eq!(s.panels().len(), 2);
+        assert!(s.active_panel().is_some());
+    }
+
+    #[test]
+    fn remove_last_panel_clears_active() {
+        let mut s = AppShell::new(
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:only"),
+                icon: "O".into(),
+                tooltip: "Only".into(),
+                title: "ONLY".into(),
+            }],
+            30.0,
+        );
+        s.remove_panel(&WidgetId::new("panel:only"));
+        assert!(s.active_panel().is_none());
+        assert!(s.panels().is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_panel_returns_false() {
+        let mut s = shell();
+        assert!(!s.remove_panel(&WidgetId::new("panel:nope")));
+    }
+
+    #[test]
+    fn add_bottom_item_shows_in_activity_bar() {
+        let mut s = shell();
+        s.add_bottom_item(PanelDefinition {
+            id: WidgetId::new("panel:debug-console"),
+            icon: "D".into(),
+            tooltip: "Debug".into(),
+            title: "DEBUG".into(),
+        });
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.bottom_items.len(), 2);
+    }
+
+    #[test]
+    fn remove_bottom_item_works() {
+        let mut s = shell();
+        assert!(s.remove_bottom_item(&WidgetId::new("panel:settings")));
+        let bar = s.build_activity_bar();
+        assert!(bar.bottom_items.is_empty());
+    }
+
+    #[test]
+    fn dynamic_panel_toggle_via_activity_click() {
+        let mut s = shell();
+        s.add_panel(PanelDefinition {
+            id: WidgetId::new("panel:ext"),
+            icon: "X".into(),
+            tooltip: "Ext".into(),
+            title: "EXTENSION".into(),
+        });
+        let ev = s.handle_activity_click(&WidgetId::new("panel:ext"));
+        assert_eq!(
+            ev,
+            AppShellEvent::PanelChanged {
+                panel_id: WidgetId::new("panel:ext")
+            }
+        );
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:ext")));
+        // Toggle off.
+        let ev = s.handle_activity_click(&WidgetId::new("panel:ext"));
+        assert_eq!(ev, AppShellEvent::SidebarHidden);
     }
 
     // ── Ignored events ──────────────────────────────────────────────
