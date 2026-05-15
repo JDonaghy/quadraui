@@ -406,8 +406,32 @@ impl Backend for MacBackend {
             );
         }
     }
-    fn draw_palette(&mut self, _rect: Rect, _palette: &Palette) {
-        mac_unimpl!("draw_palette", "#41")
+    fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_palette called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_palette requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::palette::draw_palette(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                palette,
+                &theme,
+                line_height,
+            );
+        }
     }
 
     fn draw_status_bar(
@@ -515,18 +539,64 @@ impl Backend for MacBackend {
     fn text_display_layout(&self, _rect: Rect, _td: &TextDisplay) -> TextDisplayLayout {
         mac_unimpl!("text_display_layout", "#43")
     }
-    fn draw_tooltip(&mut self, _tooltip: &Tooltip, _layout: &TooltipLayout) {
-        mac_unimpl!("draw_tooltip", "#41")
+    fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tooltip called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_tooltip requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::tooltip::draw_tooltip(
+                ctx,
+                font,
+                tooltip,
+                layout,
+                line_height,
+                char_width,
+                &theme,
+            );
+        }
     }
     fn draw_context_menu(
         &mut self,
-        _menu: &ContextMenu,
-        _layout: &ContextMenuLayout,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)> {
-        mac_unimpl!("draw_context_menu", "#41")
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_context_menu called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_context_menu requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::context_menu::draw_context_menu(ctx, font, menu, layout, &theme) }
     }
-    fn draw_dialog(&mut self, _dialog: &Dialog, _layout: &DialogLayout) -> Vec<Rect> {
-        mac_unimpl!("draw_dialog", "#41")
+    fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_dialog called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_dialog requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::dialog::draw_dialog(ctx, font, dialog, layout, line_height, &theme) }
     }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
@@ -588,14 +658,58 @@ impl Backend for MacBackend {
     fn draw_message_list(&mut self, _rect: Rect, _list: &MessageList) {
         mac_unimpl!("draw_message_list", "#43")
     }
-    fn draw_rich_text_popup(&mut self, _popup: &RichTextPopup, _layout: &RichTextPopupLayout) {
-        mac_unimpl!("draw_rich_text_popup", "#41")
+    fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_rich_text_popup called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_rich_text_popup requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }
     }
-    fn draw_find_replace(&mut self, _rect: Rect, _panel: &FindReplacePanel) {
-        mac_unimpl!("draw_find_replace", "#41")
+    fn draw_find_replace(&mut self, _rect: Rect, panel: &FindReplacePanel) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_find_replace called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_find_replace requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::find_replace::draw_find_replace(
+                ctx,
+                font,
+                panel,
+                &theme,
+                line_height,
+                char_width,
+            );
+        }
     }
-    fn draw_completions(&mut self, _completions: &Completions, _layout: &CompletionsLayout) {
-        mac_unimpl!("draw_completions", "#41")
+    fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_completions called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_completions requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::completions::draw_completions(ctx, font, completions, layout, &theme) }
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let ctx = self.current_cg();
