@@ -303,28 +303,99 @@ impl Backend for MacBackend {
 
     fn draw_status_bar(
         &mut self,
-        _rect: Rect,
-        _bar: &StatusBar,
-        _hovered_id: Option<&WidgetId>,
-        _pressed_id: Option<&WidgetId>,
+        rect: Rect,
+        bar: &StatusBar,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
     ) -> StatusBarLayout {
-        mac_unimpl!("draw_status_bar", "#38")
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_status_bar called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_status_bar requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope; the call
+        // chain enforces `enter_frame_scope` via the debug_assert above.
+        unsafe {
+            super::status_bar::draw_status_bar(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                line_height,
+                bar,
+                &theme,
+                hovered_id,
+                pressed_id,
+            )
+        }
     }
     fn draw_tab_bar(
         &mut self,
-        _rect: Rect,
-        _bar: &TabBar,
-        _hovered_close_tab: Option<usize>,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
     ) -> TabBarHits {
-        mac_unimpl!("draw_tab_bar", "#38")
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_tab_bar requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope.
+        unsafe {
+            super::tab_bar::draw_tab_bar(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                hovered_close_tab,
+            )
+        }
     }
     fn draw_activity_bar(
         &mut self,
-        _rect: Rect,
-        _bar: &ActivityBar,
-        _hovered_idx: Option<usize>,
+        rect: Rect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
-        mac_unimpl!("draw_activity_bar", "#38")
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_activity_bar called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_activity_bar requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx non-null inside frame scope.
+        unsafe {
+            super::activity_bar::draw_activity_bar(
+                ctx,
+                font,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                hovered_idx,
+            )
+        }
     }
     fn draw_terminal(&mut self, _rect: Rect, _term: &Terminal) {
         mac_unimpl!("draw_terminal", "#43")
@@ -381,11 +452,44 @@ impl Backend for MacBackend {
     fn draw_scrollbar(&mut self, _rect: Rect, _scrollbar: &Scrollbar) {
         mac_unimpl!("draw_scrollbar", "#40")
     }
-    fn draw_menu_bar(&mut self, _rect: Rect, _bar: &MenuBar) -> MenuBarLayout {
-        mac_unimpl!("draw_menu_bar", "#38")
+    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_menu_bar called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_menu_bar requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx non-null inside frame scope.
+        unsafe {
+            super::menu_bar::draw_menu_bar(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+            )
+        }
     }
-    fn menu_bar_layout(&self, _rect: Rect, _bar: &MenuBar) -> MenuBarLayout {
-        mac_unimpl!("menu_bar_layout", "#38")
+    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::menu_bar_layout requires set_current_font");
+        super::menu_bar::mac_menu_bar_layout(
+            font,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+        )
     }
     fn draw_split(&mut self, _rect: Rect, _split: &Split) -> SplitLayout {
         mac_unimpl!("draw_split", "#42")
@@ -417,11 +521,46 @@ impl Backend for MacBackend {
     fn spinner_layout(&self, _rect: Rect, _spinner: &Spinner) -> SpinnerLayout {
         mac_unimpl!("spinner_layout", "#42")
     }
-    fn draw_command_center(&mut self, _rect: Rect, _cc: &CommandCenter) -> CommandCenterLayout {
-        mac_unimpl!("draw_command_center", "#38")
+    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_command_center called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_command_center requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx non-null inside frame scope.
+        unsafe {
+            super::command_center::draw_command_center(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                cc,
+                &theme,
+                line_height,
+            )
+        }
     }
-    fn command_center_layout(&self, _rect: Rect, _cc: &CommandCenter) -> CommandCenterLayout {
-        mac_unimpl!("command_center_layout", "#38")
+    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::command_center_layout requires set_current_font");
+        super::command_center::mac_command_center_layout(
+            cc,
+            font,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
     fn draw_chart(
         &mut self,

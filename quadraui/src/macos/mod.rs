@@ -20,14 +20,24 @@
 //!
 //! [milestone]: https://github.com/JDonaghy/quadraui/milestone/4
 
+pub mod activity_bar;
 pub mod backend;
+pub mod command_center;
 pub mod events;
 #[cfg(test)]
 pub mod headless;
+pub mod menu_bar;
 mod run;
 pub mod services;
+pub mod status_bar;
+pub mod tab_bar;
 pub mod text;
 
+pub use activity_bar::draw_activity_bar;
 pub use backend::MacBackend;
+pub use command_center::{draw_command_center, mac_command_center_layout};
+pub use menu_bar::{draw_menu_bar, mac_menu_bar_layout};
 pub use run::run;
 pub use services::MacPlatformServices;
+pub use status_bar::draw_status_bar;
+pub use tab_bar::draw_tab_bar;

@@ -185,6 +185,11 @@ path = "examples/gtk_chart.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "macos_app"
+path = "examples/macos_app.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "macos_demo"
 path = "examples/macos_demo.rs"
 required-features = ["macos"]
