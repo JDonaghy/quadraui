@@ -445,6 +445,18 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(MacBackend::new()));
 
+    // ── Default font ──────────────────────────────────────────────
+    // Install Menlo 14pt before `setup` so backend-trait calls inside
+    // the app's setup or first render frame find a font to measure
+    // against. Apps that want a different family / size override via
+    // `MacBackend::set_current_font` from their own `setup` hook —
+    // but the shared backend-agnostic examples (`MiniApp`, `AppState`,
+    // etc.) work with no per-app font wiring this way, matching the
+    // ergonomics of `tui::run` and `gtk::run`.
+    if let Some(font) = make_font("Menlo", 14.0) {
+        backend.borrow_mut().set_current_font(font);
+    }
+
     // ── App setup hook ────────────────────────────────────────────
     // Run `AppLogic::setup` once before the window opens. Accelerator
     // registration / cache warming happens here.
