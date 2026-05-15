@@ -276,4 +276,78 @@ mod tests {
             (magenta.r, magenta.g, magenta.b)
         );
     }
+
+    /// `cargo test -p quadraui --no-default-features --features macos -- --ignored --nocapture macos::terminal::tests::dump_smoke_ppm`
+    ///
+    /// Paints a sample terminal — three rows of mixed cells, a cursor
+    /// cell, two find matches with one active, a selection run, plus a
+    /// scrollbar — and writes `/tmp/quadraui_terminal.ppm`. Open in
+    /// Preview to confirm:
+    /// - Row 0 reads `quadraui terminal` in white on dark.
+    /// - Row 1 has an inverted (white-on-green) cursor inside the
+    ///   word `cursor`.
+    /// - Row 2 shows the orange find-active match and dim find-match
+    ///   highlights, plus a contiguous selection band using
+    ///   `theme.selection_bg`.
+    /// - Right edge has a scrollbar gutter + thumb (~50% down the
+    ///   track, since `scroll_offset = 50` of 100 lines, 16 visible).
+    #[test]
+    #[ignore = "writes /tmp/quadraui_terminal.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        use crate::primitives::terminal::TerminalScrollbar;
+
+        let white = Color::rgb(230, 230, 230);
+        let dark = Color::rgb(20, 20, 30);
+        let green = Color::rgb(60, 200, 90);
+
+        fn row(s: &str, fg: Color, bg: Color) -> Vec<TerminalCell> {
+            s.chars()
+                .map(|ch| TerminalCell {
+                    ch,
+                    fg,
+                    bg,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    selected: false,
+                    is_cursor: false,
+                    is_find_match: false,
+                    is_find_active: false,
+                })
+                .collect()
+        }
+
+        let r0 = row("quadraui terminal", white, dark);
+        let mut r1 = row("  cursor here", white, dark);
+        // Inverted cursor on the 'c' of "cursor".
+        r1[2].fg = green;
+        r1[2].is_cursor = true;
+        let mut r2 = row("  find foo bar foo qux", white, dark);
+        // Active find on first "foo" (chars 7..10), dim match on second
+        // "foo" (chars 15..18).
+        for c in r2.iter_mut().take(10).skip(7) {
+            c.is_find_active = true;
+        }
+        for c in r2.iter_mut().take(18).skip(15) {
+            c.is_find_match = true;
+        }
+        // Selection on " bar " (chars 10..15).
+        for c in r2.iter_mut().take(15).skip(10) {
+            c.selected = true;
+        }
+
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![r0, r1, r2],
+            scrollbar: Some(TerminalScrollbar {
+                total_lines: 100,
+                visible_lines: 16,
+                scroll_offset: 50,
+                inverted: false,
+                width: None,
+            }),
+        };
+        let s = paint(&term);
+        s.write_ppm_and_open("/tmp/quadraui_terminal.ppm");
+    }
 }

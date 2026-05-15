@@ -180,6 +180,40 @@ mod tests {
         assert!(has_paint, "scrolled top band should have row paint");
     }
 
+    /// `cargo test -p quadraui --no-default-features --features macos -- --ignored --nocapture macos::message_list::tests::dump_smoke_ppm`
+    ///
+    /// Paints a sample chat-style scrollback — alternating `You:` /
+    /// `AI:` role labels with indented content — into
+    /// `/tmp/quadraui_message_list.ppm`. Open in Preview to confirm:
+    /// - Role labels (`You:`, `AI:`) sit flush-left in distinct colours
+    ///   (yellow vs cyan).
+    /// - Content rows below each label are indented and rendered in a
+    ///   light grey.
+    /// - Rows are vertically centred within their `line_height` band —
+    ///   glyphs aren't crowding the top edge.
+    #[test]
+    #[ignore = "writes /tmp/quadraui_message_list.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        let you = Color::rgb(255, 220, 0);
+        let ai = Color::rgb(0, 200, 255);
+        let body = Color::rgb(220, 220, 220);
+        let list = MessageList {
+            id: WidgetId::new("ml"),
+            rows: vec![
+                MessageRow::new("You:", you, 0.0),
+                MessageRow::new("how do I list pods?", body, 12.0),
+                MessageRow::new("AI:", ai, 0.0),
+                MessageRow::new("Run `kubectl get pods` to list pods", body, 12.0),
+                MessageRow::new("in the current namespace.", body, 12.0),
+                MessageRow::new("You:", you, 0.0),
+                MessageRow::new("thanks!", body, 12.0),
+            ],
+            scroll_top: 0,
+        };
+        let s = paint(&list);
+        s.write_ppm_and_open("/tmp/quadraui_message_list.ppm");
+    }
+
     #[test]
     fn rows_past_max_y_are_clipped() {
         // 100 rows in a 160-pt viewport at ~16pt line_height → ~10

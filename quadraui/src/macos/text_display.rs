@@ -348,4 +348,67 @@ mod tests {
         assert!(!layout.visible_lines.is_empty());
         assert!(!bare_layout.visible_lines.is_empty());
     }
+
+    /// `cargo test -p quadraui --no-default-features --features macos -- --ignored --nocapture macos::text_display::tests::dump_smoke_ppm`
+    ///
+    /// Paints a sample log-viewer scene — title strip, mix of normal /
+    /// error / warning / muted lines, two lines with timestamps, plus a
+    /// scrollbar — into `/tmp/quadraui_text_display.ppm`. Open in
+    /// Preview to confirm:
+    /// - Top strip reads "Pod logs · default/api-7d" in foreground colour.
+    /// - Body lines below: bright info, red error, amber warning, dim
+    ///   muted — colours from the default theme's decoration palette.
+    /// - Two timestamped rows show `12:34:56` in the muted colour before
+    ///   the spans.
+    /// - Right edge has a scrollbar gutter + thumb at the top (auto-
+    ///   scroll off, scroll_offset = 0).
+    #[test]
+    #[ignore = "writes /tmp/quadraui_text_display.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        fn ln(text: &str, dec: Decoration) -> TextDisplayLine {
+            TextDisplayLine {
+                spans: vec![StyledSpan::plain(text)],
+                decoration: dec,
+                timestamp: None,
+            }
+        }
+        fn ts(text: &str, dec: Decoration) -> TextDisplayLine {
+            TextDisplayLine {
+                spans: vec![StyledSpan::plain(text)],
+                decoration: dec,
+                timestamp: Some("12:34:56".into()),
+            }
+        }
+
+        let td = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![
+                ln("starting reconciler", Decoration::Normal),
+                ts("watching ConfigMap api-7d", Decoration::Normal),
+                ln("backoff retry 1/5", Decoration::Warning),
+                ln("connection refused: 10.0.0.7:6443", Decoration::Error),
+                ts("retrying in 2s", Decoration::Muted),
+                ln("OK · informer sync complete", Decoration::Normal),
+                ln("(20 more lines …)", Decoration::Muted),
+            ],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: Some(StyledText::plain("Pod logs · default/api-7d")),
+            show_scrollbar: true,
+        };
+        // Pad with extra lines so the scrollbar thumb is short and
+        // visually obvious in the gutter.
+        let mut td = td;
+        for i in 0..40 {
+            td.lines.push(ln(
+                &format!("trace #{i} · routine event"),
+                Decoration::Muted,
+            ));
+        }
+
+        let (s, _) = paint(&td);
+        s.write_ppm_and_open("/tmp/quadraui_text_display.ppm");
+    }
 }
