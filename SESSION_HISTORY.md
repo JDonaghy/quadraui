@@ -951,3 +951,84 @@ The convention to document when #185 lands: `MouseDown { button: Right }` → `b
 - **#177** — TUI editor block cursor fg/bg swap → `theme.cursor`. ~5-line fix.
 - **#180** — GTK palette scrollbar width 6 → 10 px. One-line constant change.
 - **Future / deferred:** #166, #144, #65, #118, #115.
+
+## Session 2026-05-17 — macOS terminal + text_display + message_list rasterisers (#43)
+
+**Agent:** Claude Opus 4.7 (1M context)
+
+Closes the macOS in-window rasteriser surface — last three primitives landed without waiting for the text-attribute pass (previous session expected #43 to be gated on it; instead we shipped attribute-less and filed the deferral inline).
+
+### Issues closed (1)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 43 | macOS: terminal + text_display + message_list rasterisers | B (PR #186) | Three rasterisers + `mac_text_display_layout` helper. `MacBackend`'s last four `mac_unimpl!` stubs replaced with real impls; the now-unused macro removed. |
+
+### What shipped
+
+- **`macos::terminal`** (5 tests + 1 PPM dump): cell-grid walk mirroring GTK, cell bg/fg with `is_cursor` / `is_find_active` / `is_find_match` / `selected` overlays, glyph skip for `' '` / `'\0'`, right-edge clip via `cell_area_w`. Scrollbar wiring lives in `MacBackend::draw_terminal` — builds `Scrollbar::vertical` from `TerminalScrollbar::effective_scroll_offset` and delegates to `super::scrollbar::draw_scrollbar`, identical shape to `GtkBackend::draw_terminal`.
+- **`macos::text_display`** (5 tests + 1 PPM dump): optional title strip, body from `resolved_scroll_offset` (auto-scroll honoured by the primitive's `layout()`), per-line `Decoration` tint (Error / Warning / Muted / Normal), optional timestamp prefix in `theme.muted_fg`, optional scrollbar gutter + thumb. `mac_text_display_layout` mirrors `gtk_text_display_layout` shape (body-local coordinates; 12-pt gutter, 8-pt min thumb constants).
+- **`macos::message_list`** (3 tests + 1 PPM dump): walks `rows[scroll_top..]`, paints text at `(x + row.indent, y + i*line_height)` in row's `fg`. Vertically centres glyph within the line-height band. Caller paints panel bg; rasteriser is text-only (matches GTK contract).
+
+### Visual smoke tests added
+
+Following the precedent set by `command_center` / `menu_bar` / `activity_bar` / `headless`, each of the three new rasterisers ships an `#[ignore]`d `dump_smoke_ppm` test that writes `/tmp/quadraui_<name>.ppm` and opens it in Preview. Each test's doc comment lists the visual invariants to eyeball. Run via:
+
+```
+cargo test -p quadraui --no-default-features --features macos -- --ignored --nocapture \
+  macos::terminal::tests::dump_smoke_ppm \
+  macos::text_display::tests::dump_smoke_ppm \
+  macos::message_list::tests::dump_smoke_ppm
+```
+
+The PPMs capture: terminal cursor inversion + find/selection bands + scrollbar; text_display title strip + decoration palette + timestamp run + scrollbar; message_list `You:`/`AI:` chat with indented body rows.
+
+### `MacBackend` cleanup
+
+- Replaced four `mac_unimpl!` stubs (draw_terminal, draw_text_display, text_display_layout, draw_message_list) with real implementations.
+- Removed the now-unused `mac_unimpl!` macro and the `// Drawing stubs` header comment referencing #38–#43.
+- Removed `#[allow(dead_code)]` from `current_cg()` — every rasteriser uses it now.
+
+### Cell attribute deferral
+
+`Terminal` cells carry `bold` / `italic` / `underline` flags. The macOS rasteriser **does not honour them** in this PR — Core Text would need per-cell `CTFont` variants (or attributed-string attributes), and the cell grid is hot enough that we prioritised trait-shape parity. Documented in the module header; the same deferred text-attribute pass from the previous session would unlock these along with bold spans in text_display, italic in code editor previews, etc.
+
+### Test count progression
+
+| Checkpoint | macos:: tests | Full lib tests |
+|---|---|---|
+| Session start (after #41) | 146 (+4 ignored) | 633 |
+| After #43 | 159 (+7 ignored) | 646 |
+
+### macOS milestone status at end of session
+
+| # | Ticket | Status |
+|---|---|---|
+| 37 | headless test surface | ✅ |
+| 38 | chrome (status_bar / tab_bar / activity_bar / command_center / menu_bar) | ✅ |
+| 39 | content (tree / list / form / editor / data_table / chart) | ✅ |
+| 40 | MSV + scrollbar | ✅ |
+| 42 | container + indicator (panel / split / toast / progress / spinner) | ✅ |
+| 41 | overlay (tooltip / context_menu / dialog / palette / completions / find_replace / rich_text_popup) | ✅ |
+| 43 | terminal + text_display + message_list | ✅ |
+| 36 | platform services (clipboard / dialogs / notifications / URL open) | open *(independent)* |
+| 44 | port all paired examples | open *(now unblocked)* |
+| 184 | native menu bar via NSMenu | open *(depends on #36 FFI patterns)* |
+| 185 | native right-click context menus | open *(depends on #184)* |
+
+**Every in-window rasteriser on the `Backend` trait now has a Core Graphics implementation.** macOS apps using `quadraui::macos::run` paint every primitive. The remaining macOS milestones (#36, #44, #184, #185) are integration / native-feel work — no further rasterisers needed.
+
+### Process notes
+
+- Pre-existing clippy warnings on `develop` HEAD (`dispatch.rs` `collapsible_match`, `compose/sidebar_system.rs` + `compose/tree_controller.rs` `3_usize.max(1)`) trip `-D warnings` on every feature flag. Confirmed by stashing the #43 diff and running clippy on the bare branch — same errors. Not in scope for #43.
+- CLAUDE.md says "the round-trip harness IS the smoke test" for primitive paint/click changes. The PPM dump tests added here go beyond that — they catch glyph baseline drift / antialiasing / overlay-flag visual regressions that the pixel-probe harness can't see by itself, and match the established pattern across the macOS rasterisers.
+
+### Open queue for next session
+
+- **#44** — port all paired examples to macOS. Newly unblocked. Many `macos_*` examples already exist (`macos_app`, `macos_demo`, `macos_data_table`, `macos_chart`, `macos_form_groups`, `macos_multi_tree`, `macos_split`, `macos_panel`, `macos_toast`, `macos_indicators`); audit which are missing (none today for terminal / text_display / message_list shapes) and port the gaps.
+- **#36** — macOS platform services. Pure FFI work; natural lead-in to #184 / #185.
+- **Text-attribute pass** (not yet filed). Now unblocking only polish work (bold / italic on terminal cells, span attrs across content rasterisers) — no longer gates feature completeness.
+- **#184** / **#185** — native menus. Depends on #36 FFI shape.
+- **Win-GUI milestone (#19–#31)** — nothing started.
+- **#177** / **#180** — small TUI / GTK fixes still open.
+- **Future / deferred:** #166, #144, #65, #118, #115.

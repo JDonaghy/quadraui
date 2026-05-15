@@ -17,14 +17,15 @@ This rules out the "paint and click drift" bug class structurally.
 `0.0.x` — pre-1.0, breaking changes allowed. The TUI and GTK backends
 are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
 The Windows backend is scaffolded but not implemented yet. The macOS
-backend has the full in-window rasteriser surface landed — chrome
-(StatusBar, TabBar, ActivityBar, CommandCenter, MenuBar), content
-(Tree, List, Form, Editor, DataTable, Chart), MSV + Scrollbar,
-containers + indicators (Panel, Split, Toast, Progress, Spinner),
-overlays (Tooltip, ContextMenu, Dialog, Palette, Completions,
-FindReplace, RichTextPopup). Terminal/MessageList/TextDisplay
-rasterisers and platform services (clipboard, dialogs, native
-menu bar) still open — see `SESSION_HISTORY.md` for details.
+backend has **every in-window rasteriser landed** — chrome (StatusBar,
+TabBar, ActivityBar, CommandCenter, MenuBar), content (Tree, List,
+Form, Editor, DataTable, Chart), MSV + Scrollbar, containers +
+indicators (Panel, Split, Toast, Progress, Spinner), overlays
+(Tooltip, ContextMenu, Dialog, Palette, Completions, FindReplace,
+RichTextPopup), and streaming/cell primitives (Terminal, TextDisplay,
+MessageList). Remaining macOS work is integration / native-feel only:
+platform services (clipboard, file dialogs, notifications) and native
+NSMenu integration. See `SESSION_HISTORY.md` for details.
 
 ## Workspace
 
