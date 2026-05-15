@@ -22,6 +22,8 @@
 
 pub mod backend;
 pub mod events;
+#[cfg(test)]
+pub mod headless;
 mod run;
 pub mod services;
 pub mod text;
