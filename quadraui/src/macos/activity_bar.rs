@@ -285,6 +285,24 @@ mod tests {
         );
     }
 
+    /// `cargo test -p quadraui --features macos -- --ignored --nocapture macos::activity_bar::tests::dump_smoke_ppm`
+    ///
+    /// Paints the sample bar (2 top items + 1 bottom-pinned) into a
+    /// 48 × 240 surface and writes `/tmp/quadraui_activity_bar.ppm`.
+    /// Hover row 1 so the lightened bg is visible. Open in Preview to
+    /// confirm:
+    /// - Top item (active) has a 2-pt accent strip on the left edge.
+    /// - Middle item shows the hover-lightened bg.
+    /// - Bottom item is pinned to the bottom edge.
+    /// - Right-edge has a 1-pt separator column.
+    #[test]
+    #[ignore = "writes /tmp/quadraui_activity_bar.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        let bar = sample_bar();
+        let (surface, _) = paint_via_backend(&bar, Some(1));
+        surface.write_ppm_and_open("/tmp/quadraui_activity_bar.ppm");
+    }
+
     #[test]
     fn hover_lightens_row_background() {
         let bar = sample_bar();

@@ -175,6 +175,32 @@ impl BitmapSurface {
         )
     }
 
+    /// Write the surface to `path` as a P6 PPM (24 bpp RGB, alpha
+    /// dropped) and best-effort launch it via macOS `open` so it shows
+    /// in Preview / Quick Look. Used by `#[ignore]`d smoke tests
+    /// across the chrome rasterisers — the shared visual-confirmation
+    /// path. Failures from `open` (no Preview, sandboxed env) are
+    /// non-fatal; the PPM file is still on disk.
+    pub fn write_ppm_and_open(&self, path: &str) {
+        use std::fs::File;
+        use std::io::Write;
+        let mut f = File::create(path).expect("create ppm file");
+        writeln!(f, "P6").expect("write header");
+        writeln!(f, "{} {}", self.width, self.height).expect("write dims");
+        writeln!(f, "255").expect("write maxval");
+        let bytes = self.bytes();
+        let mut rgb = Vec::with_capacity((self.width * self.height * 3) as usize);
+        for chunk in bytes.chunks_exact(4) {
+            rgb.push(chunk[0]);
+            rgb.push(chunk[1]);
+            rgb.push(chunk[2]);
+        }
+        f.write_all(&rgb).expect("write ppm pixels");
+        drop(f);
+        eprintln!("wrote {} — launching Preview", path);
+        let _ = std::process::Command::new("open").arg(path).status();
+    }
+
     /// Borrow the raw pixel buffer. Row 0 is the **top** scanline
     /// (matches the [`Self::pixel`] coordinate frame and the live
     /// `QuadraView`'s `isFlipped = YES`).
@@ -332,8 +358,6 @@ mod tests {
     #[ignore = "writes /tmp/quadraui_headless.ppm — opt in with --ignored"]
     fn dump_smoke_ppm() {
         use super::super::text::{draw_text, make_font};
-        use std::fs::File;
-        use std::io::Write;
 
         const W: u32 = 200;
         const H: u32 = 120;
@@ -383,26 +407,7 @@ mod tests {
             }
         }
 
-        // Write PPM P6 — Apple Preview reads it natively. Drop the
-        // alpha channel: P6 is RGB only.
-        let path = "/tmp/quadraui_headless.ppm";
-        let mut f = File::create(path).expect("create ppm file");
-        writeln!(f, "P6").unwrap();
-        writeln!(f, "{} {}", W, H).unwrap();
-        writeln!(f, "255").unwrap();
-        let bytes = s.bytes();
-        let mut rgb = Vec::with_capacity((W * H * 3) as usize);
-        for chunk in bytes.chunks_exact(4) {
-            rgb.push(chunk[0]);
-            rgb.push(chunk[1]);
-            rgb.push(chunk[2]);
-        }
-        f.write_all(&rgb).expect("write ppm pixels");
-        drop(f);
-        eprintln!("wrote {} — launching Preview", path);
-        // Best-effort launch via `open`. Failures (no Preview, sandbox)
-        // are non-fatal — the file is on disk either way.
-        let _ = std::process::Command::new("open").arg(path).status();
+        s.write_ppm_and_open("/tmp/quadraui_headless.ppm");
     }
 
     #[test]

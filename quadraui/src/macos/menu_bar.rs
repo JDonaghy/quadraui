@@ -231,6 +231,24 @@ mod tests {
         );
     }
 
+    /// `cargo test -p quadraui --features macos -- --ignored --nocapture macos::menu_bar::tests::dump_smoke_ppm`
+    ///
+    /// Paints the sample bar (File / Edit / View, File open) into a
+    /// 320 × 24 surface and writes `/tmp/quadraui_menu_bar.ppm`. Open
+    /// in Preview to confirm:
+    /// - "File" reads in `tab_active_fg` over `tab_active_bg` (the
+    ///   open-menu highlight).
+    /// - "Edit" reads in `tab_inactive_fg` over the bar's normal bg.
+    /// - "View" (disabled) reads dimmer (`muted_fg`).
+    /// - `&` markers are stripped from rendered text.
+    #[test]
+    #[ignore = "writes /tmp/quadraui_menu_bar.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        let bar = sample_bar();
+        let (surface, _) = paint_via_backend(&bar);
+        surface.write_ppm_and_open("/tmp/quadraui_menu_bar.ppm");
+    }
+
     #[test]
     fn hit_test_resolves_clickable_items_via_layout() {
         let bar = sample_bar();

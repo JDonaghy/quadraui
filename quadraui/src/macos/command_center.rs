@@ -286,6 +286,24 @@ mod tests {
         );
     }
 
+    /// `cargo test -p quadraui --features macos -- --ignored --nocapture macos::command_center::tests::dump_smoke_ppm`
+    ///
+    /// Paints the sample CC (back enabled, forward disabled, "project"
+    /// search) into a 480 × 32 surface and writes
+    /// `/tmp/quadraui_command_center.ppm`. Open in Preview to confirm:
+    /// - Back arrow `◀` is bright (tab_inactive_fg).
+    /// - Forward arrow `▶` is dim (muted_fg).
+    /// - Search box has a 1-pt rectangular border with "project"
+    ///   label inside.
+    /// - Whole strip is centred horizontally within the 480-wide bar.
+    #[test]
+    #[ignore = "writes /tmp/quadraui_command_center.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        let cc = sample_cc();
+        let (surface, _) = paint_via_backend(&cc);
+        surface.write_ppm_and_open("/tmp/quadraui_command_center.ppm");
+    }
+
     #[test]
     fn empty_search_label_omits_search_bounds() {
         let cc = CommandCenter {
