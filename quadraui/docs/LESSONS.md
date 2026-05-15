@@ -156,6 +156,30 @@ Rule: for every `(draw_foo, foo_layout)` pair, audit that they
 pass the same rect/height/width to the underlying layout
 computation.
 
+## Layout helpers must return coords in the same frame across backends
+
+A `*_layout()` helper's `hit_regions` and `visible_*.bounds` must be
+in the **same coordinate frame** as its TUI/GTK twin — typically
+*local to the layout area* (origin `(0, 0)`), so the consumer
+subtracts `area.x` / `area.y` from absolute click coords before
+calling `hit_test`.
+
+First hit: `mac_tree_layout` and `mac_form_layout` both shifted
+their hit_regions by `(area.x, area.y)` to absolute coords (so the
+internal paint loop could iterate `bounds` directly). TUI/GTK twins
+returned local coords, and every consumer (`tree_controller` compose
+helper, `SidebarSystem`, AppLogic) localised position before
+`hit_test` per the documented contract — so on macOS the click
+drifted by `area.y`. Surfaced by `macos_search_panel` (#44) — the
+first non-zero-offset consumer of `mac_tree_layout`. Existing tests
+all used `area=(0, 0)` so the shift was a no-op and the bug
+invisible.
+
+Rule: layout helpers return local-frame coords. Paint loops shift
+inline (`bounds.x + area.x`). Every layout helper needs at least
+one regression test using non-zero `area.y` — `area=(0, 0)` is the
+case where the bug doesn't manifest.
+
 ## Dropdown item sizing must use backend-native units
 
 `MenuSystem::dropdown_layout()` computes item heights from
