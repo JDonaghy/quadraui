@@ -109,23 +109,41 @@ fn series_color(chart: &Chart, idx: usize) -> Color {
 
 unsafe fn paint_sparkline(ctx: CGContextRef, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
     let pa = &layout.plot_area;
-    fill_rect(
-        ctx,
-        pa.x as f64,
-        pa.y as f64,
-        pa.width as f64,
-        pa.height as f64,
-        theme.background,
-    );
+    let px = pa.x as f64;
+    let py = pa.y as f64;
+    let pw = pa.width as f64;
+    let ph = pa.height as f64;
+    fill_rect(ctx, px, py, pw, ph, theme.background);
 
     let Some(series) = chart.series.first() else {
         return;
     };
-    if series.data.is_empty() || pa.width <= 0.0 || pa.height <= 0.0 {
+    if series.data.is_empty() || pw <= 0.0 || ph <= 0.0 {
         return;
     }
-    let color = series_color(chart, 0);
-    stroke_polyline(ctx, &layout.data_point_positions, 0, color, 1.5);
+    // The primitive layout pre-stamps Sparkline data positions at
+    // 1-pixel cadence (TUI-cell convention bleeding into pixel
+    // backends). For a GUI rasteriser we want the polyline stretched
+    // across the full plot width — same approach GTK uses.
+    let (y_min, y_max) = chart.effective_y_range();
+    let range = y_max - y_min;
+    let n = series.data.len();
+    let mut pts = Vec::with_capacity(n);
+    for (i, &val) in series.data.iter().enumerate() {
+        let norm = if range > 0.0 {
+            ((val - y_min) / range).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let sx = if n <= 1 {
+            px
+        } else {
+            px + (i as f64 / (n - 1) as f64) * pw
+        };
+        let sy = py + ph - norm * ph;
+        pts.push((sx, sy));
+    }
+    stroke_path(ctx, &pts, series_color(chart, 0), 1.5);
 }
 
 unsafe fn paint_line(
@@ -160,39 +178,39 @@ unsafe fn paint_line(
     }
 
     // Per-series strokes.
+    let baseline = pa.y as f64 + pa.height as f64;
     for (si, s) in chart.series.iter().enumerate() {
+        let pts: Vec<(f64, f64)> = layout
+            .data_point_positions
+            .iter()
+            .filter_map(|(s_idx, _, x, y)| {
+                if *s_idx == si {
+                    Some((*x as f64, *y as f64))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if pts.is_empty() {
+            continue;
+        }
         let color = series_color(chart, si);
-        stroke_polyline(ctx, &layout.data_point_positions, si, color, 1.5);
-        // Area fill: approximate with a vertical fan of 1px-wide bars
-        // beneath each segment.
-        if s.fill {
+        // Area fill (under-line polygon) painted before the stroke so
+        // the line reads on top.
+        if s.fill && pts.len() > 1 {
             let alpha_color = Color {
                 r: color.r,
                 g: color.g,
                 b: color.b,
-                a: 51, // ~20% alpha
+                a: 38, // ~15% alpha
             };
-            for w in layout
-                .data_point_positions
-                .iter()
-                .filter(|(s, _, _, _)| *s == si)
-                .collect::<Vec<_>>()
-                .windows(2)
-            {
-                let (_, _, x0, y0) = w[0];
-                let (_, _, x1, _y1) = w[1];
-                let baseline = pa.y as f64 + pa.height as f64;
-                let bar_w = (*x1 as f64 - *x0 as f64).max(1.0);
-                fill_rect(
-                    ctx,
-                    *x0 as f64,
-                    *y0 as f64,
-                    bar_w,
-                    baseline - *y0 as f64,
-                    alpha_color,
-                );
-            }
+            let mut poly = pts.clone();
+            // Close the polygon down to the baseline.
+            poly.push((pts.last().unwrap().0, baseline));
+            poly.push((pts.first().unwrap().0, baseline));
+            fill_polygon(ctx, &poly, alpha_color);
         }
+        stroke_path(ctx, &pts, color, 1.5);
     }
 
     paint_axis_labels(ctx, font, layout, chart, theme);
@@ -222,22 +240,32 @@ unsafe fn paint_bar(
     if series.data.is_empty() {
         return;
     }
+    let (y_min, y_max) = chart.effective_y_range();
+    let range = y_max - y_min;
+    let pw = pa.width as f64;
+    let ph = pa.height as f64;
+    let px = pa.x as f64;
+    let py = pa.y as f64;
     let n = series.data.len() as f64;
-    let bar_gap = 2.0_f64;
-    let bar_w = ((pa.width as f64 / n) - bar_gap).max(1.0);
-    let baseline = pa.y as f64 + pa.height as f64;
+    // Slot-based positioning: each bar gets a full slot of width
+    // `pw / n`, with a 15% gap split between left/right edges.
+    let slot_w = pw / n;
+    let gap = (slot_w * 0.15).max(1.0);
+    let effective_bar_w = (slot_w - gap).max(1.0);
+    let baseline = py + ph;
     let color = series_color(chart, 0);
-    for (_si, di, sx, sy) in layout
-        .data_point_positions
-        .iter()
-        .filter(|(si, _, _, _)| *si == 0)
-    {
-        let bx = *sx as f64 - bar_w / 2.0;
-        let bh = baseline - *sy as f64;
-        if bh > 0.0 {
-            fill_rect(ctx, bx, *sy as f64, bar_w, bh, color);
+    for (i, &val) in series.data.iter().enumerate() {
+        let norm = if range > 0.0 {
+            ((val - y_min) / range).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let bar_h = norm * ph;
+        let bx = px + i as f64 * slot_w + gap / 2.0;
+        let by = baseline - bar_h;
+        if bar_h > 0.0 {
+            fill_rect(ctx, bx, by, effective_bar_w, bar_h, color);
         }
-        let _ = di;
     }
 
     paint_axis_labels(ctx, font, layout, chart, theme);
@@ -355,25 +383,8 @@ unsafe fn paint_hover_marker(
     );
 }
 
-/// Stroke a polyline through every point belonging to `series_idx` in
-/// `points` using CG path API.
-unsafe fn stroke_polyline(
-    ctx: CGContextRef,
-    points: &[(usize, usize, f32, f32)],
-    series_idx: usize,
-    color: Color,
-    line_width: f64,
-) {
-    let pts: Vec<(f64, f64)> = points
-        .iter()
-        .filter_map(|(s, _, x, y)| {
-            if *s == series_idx {
-                Some((*x as f64, *y as f64))
-            } else {
-                None
-            }
-        })
-        .collect();
+/// Stroke a polyline through `pts` using the CG path API.
+unsafe fn stroke_path(ctx: CGContextRef, pts: &[(f64, f64)], color: Color, line_width: f64) {
     if pts.len() < 2 {
         return;
     }
@@ -386,6 +397,22 @@ unsafe fn stroke_polyline(
         CGContextAddLineToPoint(ctx, px, py);
     }
     CGContextStrokePath(ctx);
+}
+
+/// Fill a closed polygon defined by `pts`.
+unsafe fn fill_polygon(ctx: CGContextRef, pts: &[(f64, f64)], color: Color) {
+    if pts.len() < 3 {
+        return;
+    }
+    let (r, g, b, a) = color_to_cg(color);
+    CGContextSetRGBFillColor(ctx, r, g, b, a);
+    CGContextBeginPath(ctx);
+    CGContextMoveToPoint(ctx, pts[0].0, pts[0].1);
+    for &(px, py) in &pts[1..] {
+        CGContextAddLineToPoint(ctx, px, py);
+    }
+    CGContextClosePath(ctx);
+    CGContextFillPath(ctx);
 }
 
 fn format_tick(val: f64) -> String {
@@ -432,7 +459,9 @@ extern "C" {
     fn CGContextBeginPath(c: CGContextRef);
     fn CGContextMoveToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
     fn CGContextAddLineToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
+    fn CGContextClosePath(c: CGContextRef);
     fn CGContextStrokePath(c: CGContextRef);
+    fn CGContextFillPath(c: CGContextRef);
 }
 
 #[cfg(test)]

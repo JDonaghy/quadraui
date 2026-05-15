@@ -113,6 +113,11 @@ pub unsafe fn draw_data_table(
             ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
             ColumnAlign::Right => col_x + col_w - text_w,
         };
+        // Clip header text to its column rect so titles that exceed
+        // the column width truncate instead of overflowing into the
+        // neighbour. Matches the GTK rasteriser.
+        CGContextSaveGState(ctx);
+        CGContextClipToRect(ctx, CGRect::new_xywh(col_x, y, col_w, header_height));
         draw_text(
             ctx,
             font,
@@ -121,6 +126,7 @@ pub unsafe fn draw_data_table(
             y + (header_height - measure_text(font, &title).1) / 2.0,
             color_to_cg(theme.foreground),
         );
+        CGContextRestoreGState(ctx);
     }
 
     // Header column separators.
@@ -176,19 +182,33 @@ pub unsafe fn draw_data_table(
                 ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
                 ColumnAlign::Right => col_x + col_w - text_w,
             };
-            let fg = if is_muted {
+            let row_fg = if is_muted {
                 theme.muted_fg
             } else {
                 theme.foreground
             };
-            draw_text(
-                ctx,
-                font,
-                &full_text,
-                text_x,
-                row_y + (line_height - text_h) / 2.0,
-                color_to_cg(fg),
-            );
+            // Clip to the cell rect so text doesn't bleed past a
+            // narrow column when the user shrinks it.
+            CGContextSaveGState(ctx);
+            CGContextClipToRect(ctx, CGRect::new_xywh(col_x, row_y, col_w, line_height));
+
+            // Per-span colouring: paint each span at its measured
+            // x-offset using its own fg. Muted rows override fg
+            // globally per GTK convention.
+            let mut span_x = text_x;
+            let text_y = row_y + (line_height - text_h) / 2.0;
+            for span in &styled.spans {
+                let (sw, _) = measure_text(font, &span.text);
+                let span_fg = if is_muted {
+                    theme.muted_fg
+                } else {
+                    span.fg.unwrap_or(row_fg)
+                };
+                draw_text(ctx, font, &span.text, span_x, text_y, color_to_cg(span_fg));
+                span_x += sw;
+            }
+
+            CGContextRestoreGState(ctx);
         }
     }
 
