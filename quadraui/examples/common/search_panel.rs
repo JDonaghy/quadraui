@@ -240,6 +240,38 @@ impl AppLogic for SearchPanelApp {
                 return Reaction::Redraw;
             }
             UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Left),
+                ..
+            } if self.input_active => {
+                if self.caret > 0 {
+                    self.caret -= 1;
+                }
+                return Reaction::Redraw;
+            }
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Right),
+                ..
+            } if self.input_active => {
+                if self.caret < self.query.len() {
+                    self.caret += 1;
+                }
+                return Reaction::Redraw;
+            }
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Home),
+                ..
+            } if self.input_active => {
+                self.caret = 0;
+                return Reaction::Redraw;
+            }
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::End),
+                ..
+            } if self.input_active => {
+                self.caret = self.query.len();
+                return Reaction::Redraw;
+            }
+            UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Up),
                 ..
             } if !self.input_active => {

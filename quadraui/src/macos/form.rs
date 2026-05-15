@@ -32,25 +32,16 @@ use crate::types::Color;
 /// Compute the layout the macOS rasteriser would produce for `form`
 /// in `area` at `line_height`. Uniform `(line_height * 1.4).round()`
 /// rows.
+///
+/// Coordinate frame: `visible_fields.bounds`, `item_bounds`, and
+/// `hit_regions` are in **form-local** coords (origin at 0, 0),
+/// matching `gtk_form_layout` and the `tree_layout` contract. Hosts
+/// (e.g. `SidebarSystem`, `FormController`) subtract `area.x`/`area.y`
+/// from absolute click coords before calling
+/// [`FormLayout::hit_test`].
 pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64) -> FormLayout {
     let row_h = (line_height * 1.4).round() as f32;
-    let mut layout = form.layout(area.width, area.height, |_| FormFieldMeasure::new(row_h));
-    let (dx, dy) = (area.x, area.y);
-    if dx != 0.0 || dy != 0.0 {
-        for vf in &mut layout.visible_fields {
-            vf.bounds.x += dx;
-            vf.bounds.y += dy;
-            for (_, ib) in &mut vf.item_bounds {
-                ib.x += dx;
-                ib.y += dy;
-            }
-        }
-        for (rect, _) in &mut layout.hit_regions {
-            rect.x += dx;
-            rect.y += dy;
-        }
-    }
-    layout
+    form.layout(area.width, area.height, |_| FormFieldMeasure::new(row_h))
 }
 
 /// Draw a [`Form`] into `(x, y, w, h)` on `ctx`. Returns the same
@@ -85,8 +76,9 @@ pub unsafe fn draw_form(
 
     for vis in &layout.visible_fields {
         let field = &form.fields[vis.field_idx];
-        let row_x = vis.bounds.x as f64;
-        let row_y = vis.bounds.y as f64;
+        // Layout returns local coords; shift to absolute for paint.
+        let row_x = vis.bounds.x as f64 + x;
+        let row_y = vis.bounds.y as f64 + y;
         let row_w = vis.bounds.width as f64;
         let row_h = vis.bounds.height as f64;
 
@@ -419,6 +411,51 @@ mod tests {
                 layout.hit_test(cx, cy),
                 FormHit::Field(vis.id.clone()),
                 "field {:?} hit-test",
+                vis.id,
+            );
+        }
+    }
+
+    #[test]
+    fn layout_returns_local_coords_when_area_offset() {
+        // Cross-backend contract: visible_fields.bounds, item_bounds,
+        // and hit_regions are in form-local coords (origin 0, 0),
+        // regardless of where `area` lives. Hosts (SidebarSystem,
+        // FormController, AppLogic) subtract area.x/area.y from
+        // absolute click coords before hit_test. Matches the
+        // `gtk_form_layout` and `mac_tree_layout` contract.
+        //
+        // Regression for #44 macos_sidebar_search "Find click selects
+        // row above": prior to the fix, mac_form_layout shifted
+        // hit_regions to absolute coords, causing AppLogic that
+        // localised position (per the documented contract) to hit the
+        // field at `position.y - 2*area.y` instead of the one under
+        // the cursor.
+        let form = sample_form();
+        // Area offset by (0, 40) — typical when a form lives below an
+        // MSV section header.
+        let area = QRect::new(0.0, 40.0, 320.0, 120.0);
+        let layout = mac_form_layout(&form, area, 16.0);
+        // Locality: first field's bounds.y must be 0, not 40.
+        let first = &layout.visible_fields[0];
+        assert_eq!(
+            first.bounds.y, 0.0,
+            "visible_fields.bounds.y must be local (0.0), got {}",
+            first.bounds.y,
+        );
+        // Round-trip: simulate a click at the absolute centre of each
+        // painted field, localise the way the AppLogic does, and assert
+        // it hits the right field. Pre-fix this returned the field N
+        // positions earlier.
+        for vis in &layout.visible_fields {
+            let abs_x = area.x + vis.bounds.x + vis.bounds.width * 0.5;
+            let abs_y = area.y + vis.bounds.y + vis.bounds.height * 0.5;
+            let local_x = abs_x - area.x;
+            let local_y = abs_y - area.y;
+            assert_eq!(
+                layout.hit_test(local_x, local_y),
+                FormHit::Field(vis.id.clone()),
+                "field {:?} click → wrong hit (coord-frame drift)",
                 vis.id,
             );
         }

@@ -27,29 +27,24 @@ use crate::types::{Color, Decoration};
 /// in `area` at `line_height`. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch. Header rows use
 /// `(line_height * 1.2).round()`, others use `(line_height * 1.4)`.
+///
+/// Coordinate frame: `visible_rows.bounds` and `hit_regions` are in
+/// **tree-local** coords (origin at 0, 0), matching `tui_tree_layout`
+/// and `gtk_tree_layout`. Hosts must subtract `area.x`/`area.y` from
+/// absolute click coords before calling [`TreeViewLayout::hit_test`]
+/// (the `tree_controller` compose helper and example AppLogic both
+/// follow this convention).
 pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = (line_height * 1.4).round();
-    let mut layout = tree.layout(area.width, area.height, |i| {
+    tree.layout(area.width, area.height, |i| {
         let is_header = matches!(tree.rows[i].decoration, Decoration::Header);
         TreeRowMeasure::new(if is_header {
             header_height as f32
         } else {
             item_height as f32
         })
-    });
-    let (dx, dy) = (area.x, area.y);
-    if dx != 0.0 || dy != 0.0 {
-        for vr in &mut layout.visible_rows {
-            vr.bounds.x += dx;
-            vr.bounds.y += dy;
-        }
-        for (rect, _) in &mut layout.hit_regions {
-            rect.x += dx;
-            rect.y += dy;
-        }
-    }
-    layout
+    })
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
@@ -89,8 +84,9 @@ pub unsafe fn draw_tree(
 
     for vis_row in &layout.visible_rows {
         let row = &tree.rows[vis_row.row_idx];
-        let row_x = vis_row.bounds.x as f64;
-        let row_y = vis_row.bounds.y as f64;
+        // Layout returns local coords; shift to absolute for paint.
+        let row_x = vis_row.bounds.x as f64 + x;
+        let row_y = vis_row.bounds.y as f64 + y;
         let row_w = vis_row.bounds.width as f64;
         let row_h = vis_row.bounds.height as f64;
 
@@ -461,6 +457,49 @@ mod tests {
             layout.hit_test(10.0, first.bounds.y + 2.0),
             TreeViewHit::Row(5),
         );
+    }
+
+    #[test]
+    fn layout_returns_local_coords_when_area_offset() {
+        // Cross-backend contract: hit_regions and visible_rows.bounds
+        // are in tree-local coords (origin 0, 0), regardless of where
+        // `area` lives. Hosts (compose helpers, AppLogic) subtract
+        // area.x/area.y from absolute click coords before hit_test.
+        // This matches `tui_tree_layout` and `gtk_tree_layout`.
+        //
+        // Regression for #44 search-panel click drift: prior to the
+        // fix, mac_tree_layout shifted hit_regions to absolute coords,
+        // causing AppLogic that localised position (per the documented
+        // contract) to hit the row at `position.y - 2*area.y` instead
+        // of the row under the cursor.
+        let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        // Area offset by (0, 60) — typical when a tree lives below an
+        // MSV header + aux input.
+        let area = QRect::new(0.0, 60.0, 240.0, 180.0);
+        let layout = mac_tree_layout(&tree, area, 16.0);
+        // Locality: first row's bounds.y must be 0, not 60.
+        let first = &layout.visible_rows[0];
+        assert_eq!(
+            first.bounds.y, 0.0,
+            "visible_rows.bounds.y must be local (0.0), got {}",
+            first.bounds.y,
+        );
+        // Round-trip: paint geometry → click resolution.
+        // Simulate a click at the absolute centre of each painted row,
+        // localise the way the AppLogic does, and assert it hits the
+        // right row. Pre-fix this returned the row N positions earlier.
+        for vr in &layout.visible_rows {
+            let abs_x = area.x + vr.bounds.x + vr.bounds.width * 0.5;
+            let abs_y = area.y + vr.bounds.y + vr.bounds.height * 0.5;
+            let local_x = abs_x - area.x;
+            let local_y = abs_y - area.y;
+            assert_eq!(
+                layout.hit_test(local_x, local_y),
+                TreeViewHit::Row(vr.row_idx),
+                "row {} click → wrong hit (coord-frame drift)",
+                vr.row_idx,
+            );
+        }
     }
 
     #[test]

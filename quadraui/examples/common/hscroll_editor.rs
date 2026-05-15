@@ -103,7 +103,7 @@ impl HScrollEditor {
             cursor: Some(EditorCursor {
                 pos: EditorCursorPos {
                     view_line: 0,
-                    col: self.cursor_col.saturating_sub(self.scroll_left),
+                    col: self.cursor_col,
                 },
                 shape: EditorCursorShape::Block,
             }),

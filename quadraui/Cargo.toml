@@ -293,3 +293,23 @@ required-features = ["tui"]
 name = "gtk_shell"
 path = "examples/gtk_shell.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "macos_search_panel"
+path = "examples/macos_search_panel.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_sidebar_search"
+path = "examples/macos_sidebar_search.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_menu_bar"
+path = "examples/macos_menu_bar.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_hscroll"
+path = "examples/macos_hscroll.rs"
+required-features = ["macos"]
