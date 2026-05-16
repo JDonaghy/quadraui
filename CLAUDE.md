@@ -96,3 +96,20 @@ Scope is `quadraui` for library changes, `kubeui` / `kubeui-gtk` / `kubeui-core`
 
 - `main` — released/stable. Only updated by release merges from `develop`.
 - `develop` — integration branch. All feature work merges here first.
+
+## Reference consumer: vimcode (`~/src/vimcode`)
+
+**vimcode is quadraui's primary consumer and R&D lab.** Every primitive, rasteriser, hit_test pattern, and compose helper in quadraui was first prototyped as per-backend code in vimcode, then extracted. When building new quadraui features — especially the runtime epics (#202 GTK, #203 TUI, #204 macOS) — **read vimcode's existing implementation first:**
+
+| quadraui feature | vimcode reference code |
+|-----------------|----------------------|
+| `Backend::draw_frame()` (#199) | `src/gtk/draw.rs::draw_editor()` — 3874-line orchestration function that calls each `draw_*` in z-order. This is the spec for what `draw_frame` must do. |
+| `FrameHitMap` / unified click dispatch (#197, #198) | `src/gtk/click.rs::pixel_to_click_target()` — zone detection pipeline using `screen_zone_hit_test` + `window_zone_hit_test`. Shows every click zone the hit map must cover. |
+| GTK widget tree (#202 Stage 1) | `src/gtk/mod.rs::fn init()` (~2122 lines) — creates every GTK widget, event controller, and draw closure. This is the mechanical boilerplate `AppShell` must generate. |
+| Event wiring (#202 Stage 2) | `src/gtk/mod.rs::fn init()` event controller blocks + `enum Msg` (~333 variants) + `fn update()` (~736-line dispatch). Shows every GDK event type that must be translated. |
+| TUI event loop (#203) | `src/tui_main/mod.rs` — crossterm poll loop, `handle_mouse()` dispatch, `draw_frame()` calls. Same structure the TUI runtime must own. |
+| Cached layout hit-test pattern | `CompletionsLayout::hit_test()`, `ContextMenuLayout::hit_test()`, `BottomPanelGeometry` + `resolve_bottom_panel_zone()` — all proven in vimcode Sessions 379. Cache at paint, hit-test at click. |
+| SidebarSystem GTK rasteriser (#200) | `src/gtk/draw.rs::draw_source_control_panel()` (405 lines) — bespoke Cairo rendering that should delegate to quadraui. TUI already delegates via `SidebarSystem`. |
+| Per-panel handlers (#202 Stage 5) | `src/gtk/mod.rs::handle_*_msg()` functions (~1500 lines total) — explorer, SC, extensions, debug, settings, terminal, AI, dialog. Shows what engine methods the runtime must call. |
+
+**How to use this:** Before implementing a quadraui runtime feature, `cd ~/src/vimcode` and read the corresponding backend code. The vimcode implementation is the working prototype — extract the pattern, don't reinvent it. The goal is that vimcode's `src/gtk/` shrinks from 16K lines to ~60 lines as each stage lands.
