@@ -36,6 +36,7 @@ pub mod form;
 pub mod headless;
 pub mod list;
 pub mod menu_bar;
+pub(crate) mod menu_bar_install;
 pub mod message_list;
 pub mod multi_section_view;
 pub mod palette;

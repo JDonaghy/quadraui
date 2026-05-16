@@ -107,6 +107,10 @@ pub struct MacBackend {
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
+    /// Retained installer target from the last [`Backend::install_menu_bar`]
+    /// call. Holds it alive so action selectors on installed `NSMenuItem`s
+    /// don't dangle. Replaced wholesale on each re-install.
+    menu_target: Option<objc2::rc::Retained<super::menu_bar_install::QuadraMenuTarget>>,
 }
 
 impl MacBackend {
@@ -126,6 +130,7 @@ impl MacBackend {
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
+            menu_target: None,
         }
     }
 
@@ -232,6 +237,15 @@ impl Backend for MacBackend {
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
         self.accelerators.remove(id);
+    }
+
+    fn install_menu_bar(&mut self, bar: &crate::primitives::menu_bar::MenuBar) {
+        let mtm = objc2_foundation::MainThreadMarker::new()
+            .expect("MacBackend::install_menu_bar must be called from the main thread");
+        // Replacing wholesale — the previous target drops when this
+        // assignment runs, after the new menu is installed.
+        let target = super::menu_bar_install::install_menu_bar(mtm, bar, self.events.clone());
+        self.menu_target = Some(target);
     }
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {

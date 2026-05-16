@@ -305,6 +305,18 @@ pub enum UiEvent {
         new_offset: usize,
     },
 
+    // ── Native menu activation ────────────────────────────────────────
+    /// A menu item was activated via a native menu installer
+    /// ([`Backend::install_menu_bar`][crate::Backend::install_menu_bar]).
+    /// Carries the activated item's `WidgetId` regardless of nesting
+    /// depth — submenu structure is transparent to the app.
+    ///
+    /// The in-window `MenuBar` primitive emits
+    /// `MenuBarEvent::ItemActivated { idx }` instead; this variant is
+    /// specifically for system-installed menus (macOS NSMenu; future
+    /// Win32 `SetMenu`).
+    MenuActivated(WidgetId),
+
     // ── Primitive-specific events bubble up by WidgetId ───────────────
     Tree(WidgetId, TreeEvent),
     List(WidgetId, ListViewEvent),
