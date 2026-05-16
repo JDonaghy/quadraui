@@ -1099,3 +1099,79 @@ Each wired into `quadraui/Cargo.toml` as `[[example]]` with `required-features =
 - **#177** — TUI editor block cursor fg/bg swap → `theme.cursor`. ~5-line fix.
 - **#180** — GTK palette scrollbar width widening. One-line constant change.
 - **Future / deferred:** #166 (folder picker), #144 (TabGroup), #65 (SplitDragController), #118 (quadraui-ipc), #115 (quadraui-lua).
+
+## Session 2026-05-15b — macOS milestone close-out (6 issues, 7 PRs)
+
+**Agent:** Claude Opus 4.7 (1M context)
+
+Cleared every remaining macOS-specific issue. The macOS backend now matches the GTK/TUI feature set plus a full native-integration layer (platform services, NSMenu menu bar + auto-prepended app menu, native right-click context menus, animated caret blink). Vimcode-on-macOS is now backend-ready — the remaining work is on the vimcode side, not quadraui.
+
+### Issues closed (6)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 190 | macOS list / palette latent shift-to-absolute | A (`00d21f9`) | Drop post-shift from `mac_list_layout` / `mac_palette_layout`; paint shifts inline. Per-primitive regression test (mirrors #44 tree/form). Mutation-verified. |
+| 36 | macOS platform services | B (PR #191) | `arboard` clipboard, `NSOpenPanel` / `NSSavePanel`, `osascript` notifications, `open` URL handler. `MacPlatformServices` is no longer stubbed. |
+| 189 | macOS form chrome (ToggleGroup / SegmentedControl / ButtonRow / PasswordInput) | A (`0f786dd`) | Real paint paths for the four field kinds. `mac_form_layout` grew a `&CTFont` parameter so per-item widths come from real text measurement (mirrors GTK backend's `form_layout` impl). 6 new tests, mutation-verified. |
+| 184 | macOS native NSMenu menu bar (+ shared MenuBar shape upgrade) | B × 2 (PR #194, #195) | **PR 1 (#194)** shipped the primitive shape upgrade: `ContextMenuItem.key_equivalent` / `checked` / `submenu`, `MenuBarItem.submenu`, `MenuItem` re-export, cross-backend render plumbing. **PR 2 (#195)** shipped the installer: `Backend::install_menu_bar`, `macos/menu_bar_install.rs` with Obj-C target subclass, auto-prepended app menu (About / Hide / Quit), `UiEvent::MenuActivated` dispatch, paired `macos_native_menu` example. |
+| 185 | macOS native right-click context menus | A (`217d357`) | `Backend::show_context_menu`, `macos::menu_bar_install::show_context_menu` via `NSMenu.popUpMenuPositioningItem_atLocation_inView`. `MenuKind { Bar, Context }` enum on the shared target subclass routes activations to the right `UiEvent` variant. `UiEvent::ContextMenuItemActivated` + `ContextMenuDismissed`. Paired `macos_right_click_demo` example. |
+| 188 | macOS InlineInput caret blink | A (`341aa97`) | `macos/caret_blink.rs` — Obj-C `QuadraBlinkTarget` driven by an `NSTimer` at ~530 ms. Shared `Rc<Cell<bool>>` on `MacBackend` threaded through `paint_aux`. Keypresses pause the blink for 500 ms. Headless tests pin the phase deterministically via `MacBackend::set_caret_visible`. |
+
+### Issues filed (1)
+
+| # | Title | Status |
+|---|---|---|
+| 192 | macOS platform-services smoke example | open (deprioritised — vimcode port exercises the same surfaces) |
+
+### Architectural decisions
+
+1. **`UiEvent` gets dedicated variants for native-menu dispatch.** `MenuActivated(WidgetId)` for menu-bar activations (#184) and `ContextMenuItemActivated(WidgetId)` + `ContextMenuDismissed` for right-click pop-ups (#185). Apps route the two through separate handlers — the in-window `MenuSystem` compose helper continues to use its own `MenuEvent` (unchanged).
+2. **Shared `QuadraMenuTarget` Obj-C subclass with a `MenuKind` enum** parameterises menu-bar vs context-menu activations. Tag namespaces are per-target so menu bar and context menu can both use tag `1` without colliding.
+3. **Paint-closure drains the event queue.** AppKit responder callbacks dispatch synchronously, but menu action selectors fire outside that path. Solution: the action handler triggers `setNeedsDisplay` on the key window's content view, and the paint closure drains `backend.poll_events()` before painting. Same pattern works for `NSTimer` ticks if needed in future.
+4. **Caret-blink state is shared `Rc<Cell<bool>>` on `MacBackend`.** Avoids a reference cycle between the blink target (needs to toggle the cell + redraw) and the backend (needs to read the cell each frame). The target only holds the cell + a pause-until cell; redraw goes through `NSApp.keyWindow().contentView()`.
+5. **#184 split into two PRs.** Primitive shape (cross-backend, no behavior change) merged independently before the macOS-specific NSMenu installer. Bounded review surface, let downstream `key_equivalent` / `checked` consumers pick up the new fields without waiting on the installer.
+6. **`mac_form_layout` signature now takes `&CTFont`.** Per-item widths for `ToggleGroup` / `SegmentedControl` / `ButtonRow` need real measurement; deferring to a font-aware closure or threading via the backend was the only way to make paint and hit-test agree on per-item rects.
+
+### Bugs found + fixed
+
+1. **Native menu activations sat unhandled.** Action selector pushed `UiEvent::MenuActivated` onto the backend queue, but nothing drained the queue — macOS responder dispatch is synchronous and never polls. Surfaced during #184 PR 2 manual smoke (toggle items didn't flip). Fixed via the `setNeedsDisplay` + paint-closure-drain pattern; reused for #185 dispatch.
+2. **`mac_list_layout` / `mac_palette_layout` had the same shift-to-absolute anti-pattern as the pre-#44 tree/form layouts.** Latent — no `Backend::list_layout` / `Backend::palette_layout` trait method exists today, so consumers never read the buggy output. Closed proactively (#190) before adding a trait method ever surfaces it.
+3. **objc2 `NSArray::from_slice` requires `T: IsRetainable`, which `NSString` doesn't satisfy** (it has an `NSMutableString` subclass). Switched to `NSArray::from_vec(Vec<Retained<T>>)` for the file-dialog allowed-types list — only takes `T: Message`.
+
+### Test count progression
+
+| Checkpoint | Lib tests |
+|---|---|
+| Session start (post-#44) | 849 |
+| After #190 | 853 |
+| After #36 | 851 (2 new ones replace stale stubs) |
+| After #189 | 857 |
+| After #184 PR 1 | 869 |
+| After #184 PR 2 | 875 |
+| After #185 | 878 |
+| After #188 | 881 |
+
+### Cross-repo discovery (end of session)
+
+The session was paused before starting the vimcode-on-macOS port. Key findings to load into next session:
+
+- **vimcode on `develop` already path-deps quadraui** via `quadraui = { path = "../quadraui/quadraui", features = ["tui"] }`. Sibling-checkout pattern; the comment in `vimcode/Cargo.toml` documents it as the established convention.
+- **vimcode's GTK integration is incremental** — per the Cargo.toml comment, "vimcode adopts them one primitive at a time inside `src/gtk/quadraui_gtk.rs`". macOS port should mirror that shape: a `src/mac/` module + `mac` feature + `vimcode-mac` binary, then incremental rasteriser adoption.
+- **No macOS scaffolding exists in vimcode yet.** `grep -rn "macos\|MacBackend" vimcode/src/` returns nothing. Green-field start. Phase 1 ships proof-of-life (AppKit window + minimal `AppLogic` impl); Phase 2+ adopts editor / sidebar / palette / etc.
+- **vimcode has its own `CLAUDE.md` + `PLAN.md`** (referenced in Cargo.toml as "Session 346 extraction"). The session-start protocol for vimcode work is in those files — load them first.
+
+### Open queue for next session
+
+- **vimcode-on-macOS Phase 1.** Add `mac` feature + `vimcode-mac` binary + minimal `src/mac/quadraui_mac.rs` module that opens an AppKit window via `quadraui::macos::run` and renders the simplest possible vimcode surface (StatusBar + some text). Pre-work: read vimcode's `CLAUDE.md` + `PLAN.md` + recent session log.
+- **#192** — macOS platform-services smoke example (still open; deprioritised because the vimcode port exercises clipboard / file dialogs / open_url naturally).
+- **`make-release`** — develop → main → tag, when vimcode's pin should move from path-dep to a published version. Not needed while sibling-checkout is the convention.
+- **Win-GUI milestone (#19–#31)** — nothing started; #19 is the entry point. Not reachable from the current macOS host without a Windows VM / cross-compile target.
+- **Future / deferred:** #166 (folder picker), #144 (TabGroup), #65 (SplitDragController), #118 (quadraui-ipc), #115 (quadraui-lua), #180 (GTK palette scrollbar widening), #177 (TUI editor block cursor color — fix recipe in #177 body).
+
+### Process notes
+
+- **Path A vs Path B split came out roughly even.** Two of the six issues went Path B (PR review): #36 (PR #191, public API surface for clipboard / dialogs / etc.) and #184 (split into PRs #194 + #195 for the primitive-shape change and the installer). The other four took Path A. The recurring trigger for Path B was "this introduces a new public-API surface that downstream consumers will pick up" — matching the CLAUDE.md guideline.
+- **Manual smoke is structurally necessary on macOS.** Headless unit tests verified geometry + dispatch, but the native-menu / right-click / caret-blink work each had at least one bug only mouse-on-screen smoke could surface (the unhandled-queue bug from #184 PR 2 being the canonical example). User ran the macOS examples in a QEMU VM driven from a Windows keyboard, which made ⌘-shortcuts uncomfortable but didn't block mouse-click verification.
+- **Rebase onto remote develop happened once** (issue-189 branch), after PR #193 (TreeController scrollbar) landed on develop in parallel from a different session. Clean rebase, fast-forward push.
+- **Pre-existing 18 clippy errors on develop** continue to gate `-D warnings`. Confirmed unchanged across the session — every PR's clippy check verified the count stayed at 18 (no regressions). Cleanup is a separate sweep, not in scope for any of the macOS work.
+- **GTK build skipped** all session — local machine doesn't have GTK/Pango installed; per `quadraui/docs/TESTING.md` that's a CI concern. TUI + macOS gates ran on every PR locally.

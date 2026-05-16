@@ -16,16 +16,23 @@ This rules out the "paint and click drift" bug class structurally.
 
 `0.0.x` — pre-1.0, breaking changes allowed. The TUI and GTK backends
 are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
-The Windows backend is scaffolded but not implemented yet. The macOS
-backend has **every in-window rasteriser landed** — chrome (StatusBar,
-TabBar, ActivityBar, CommandCenter, MenuBar), content (Tree, List,
-Form, Editor, DataTable, Chart), MSV + Scrollbar, containers +
-indicators (Panel, Split, Toast, Progress, Spinner), overlays
-(Tooltip, ContextMenu, Dialog, Palette, Completions, FindReplace,
-RichTextPopup), and streaming/cell primitives (Terminal, TextDisplay,
-MessageList). Remaining macOS work is integration / native-feel only:
-platform services (clipboard, file dialogs, notifications) and native
-NSMenu integration. See `SESSION_HISTORY.md` for details.
+The Windows backend is scaffolded but not implemented yet.
+
+**The macOS backend is feature-complete.** Every in-window rasteriser
+shipped — chrome (StatusBar, TabBar, ActivityBar, CommandCenter,
+MenuBar), content (Tree, List, Form, Editor, DataTable, Chart), MSV +
+Scrollbar, containers + indicators (Panel, Split, Toast, Progress,
+Spinner), overlays (Tooltip, ContextMenu, Dialog, Palette, Completions,
+FindReplace, RichTextPopup), and streaming/cell primitives (Terminal,
+TextDisplay, MessageList) — plus the native-feel integration layer:
+platform services (clipboard via `arboard`, `NSOpenPanel` /
+`NSSavePanel` file dialogs, `osascript` notifications, `open` URL
+handler), native `NSMenu` menu bar with auto-prepended app menu and
+⌘-shortcuts, native right-click context menus via
+`NSMenu.popUpMenuPositioningItem`, form chrome for ToggleGroup /
+SegmentedControl / ButtonRow / PasswordInput, and animated
+`InlineInput` caret blink driven by an `NSTimer` (~530 ms, pauses for
+500 ms after a keystroke). See `SESSION_HISTORY.md` for details.
 
 ## Workspace
 

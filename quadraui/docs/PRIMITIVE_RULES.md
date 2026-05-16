@@ -52,6 +52,17 @@ Read this when adding or changing a primitive.
    if a primitive isn't on the trait, downstream consumer code has to
    pick a backend explicitly.
 
+## Native-vs-painted menu convention
+
+`ContextMenu` has two display paths and apps pick by trigger, not by
+backend. The split is deliberate — it's what makes "feels native on
+Mac while staying portable" the default outcome.
+
+| Trigger | Path | Why |
+|---|---|---|
+| `MouseDown { button: Right }` on a canvas / row / cell | `backend.show_context_menu(&menu, position)` | User-triggered system menu — gets the platform's fonts, accent colour, Dark Mode, VoiceOver, ⌘-shortcuts. macOS uses `NSMenu.popUpMenuPositioningItem` natively; TUI/GTK fall through to the painted overlay today (stash-and-paint default lands when a consumer asks). Activation arrives as `UiEvent::ContextMenuItemActivated(WidgetId)`; dismissal as `UiEvent::ContextMenuDismissed`. |
+| Left-click on a UI affordance that opens a menu-style dropdown (palette sub-menu, in-window action list) | `Backend::draw_context_menu` in the next render pass | App-controlled rendering, pixel-consistent across backends, positioned relative to a widget rather than the cursor. Use the `MenuSystem` compose helper. |
+
 ## Primitive maturity levels
 
 A primitive file in `primitives/` is not "shipped" until it has all
