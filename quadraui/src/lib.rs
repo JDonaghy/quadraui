@@ -156,9 +156,9 @@ pub use primitives::drop_zone::{
 };
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
-    DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorLine, EditorSelection, GitLineStatus,
-    SelectionKind as EditorSelectionKind, SpellMark, Style as EditorStyle,
-    StyledSpan as EditorStyledSpan,
+    DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorHit, EditorLayout, EditorLine,
+    EditorSelection, GitLineStatus, SelectionKind as EditorSelectionKind, SpellMark,
+    Style as EditorStyle, StyledSpan as EditorStyledSpan,
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,

@@ -364,6 +364,190 @@ fn default_lightbulb_glyph() -> char {
     '!'
 }
 
+// ─── EditorLayout + hit_test ──────────────────────────────────────────────────
+
+/// Classification of a hit-test result within an editor viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorHit {
+    /// Click landed on a text position. `line` is the buffer line index,
+    /// `col` is the character column (accounting for scroll_left and
+    /// tab expansion).
+    BufferPos { line: usize, col: usize },
+    /// Click landed in the gutter region.
+    Gutter { line_idx: usize, gutter_col: usize },
+    /// Click landed on the vertical scrollbar track.
+    VScrollbar,
+    /// Click landed on the horizontal scrollbar track.
+    HScrollbar,
+    /// Click landed outside any meaningful region.
+    Empty,
+}
+
+/// Fully-resolved editor geometry for a single viewport. Produced by
+/// [`Editor::layout`] and used by both rasterisers and click handlers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorLayout {
+    /// Full editor bounds (the rect passed to layout).
+    pub bounds: Rect,
+    /// Gutter region (line numbers, git, diagnostics). `None` when
+    /// `gutter_char_width == 0`.
+    pub gutter_bounds: Option<Rect>,
+    /// Code content region (text area).
+    pub text_bounds: Rect,
+    /// Vertical scrollbar track. `None` when content fits.
+    pub v_scrollbar_bounds: Option<Rect>,
+    /// Horizontal scrollbar track. `None` when content fits.
+    pub h_scrollbar_bounds: Option<Rect>,
+    /// Cell dimensions used for coordinate-to-position conversion.
+    pub cell_width: f32,
+    pub line_height: f32,
+    /// Scroll offsets for buffer-position calculation.
+    pub scroll_top: usize,
+    pub scroll_left: usize,
+    /// Number of visible text rows.
+    pub visible_lines: usize,
+    /// Number of visible text columns.
+    pub visible_cols: usize,
+}
+
+impl EditorLayout {
+    /// Resolve an absolute point to an editor zone with buffer-relative
+    /// positions. Assumes monospace text (character width uniform across
+    /// the viewport — true for code editors).
+    pub fn hit_test(&self, x: f32, y: f32) -> EditorHit {
+        if x < self.bounds.x
+            || x >= self.bounds.x + self.bounds.width
+            || y < self.bounds.y
+            || y >= self.bounds.y + self.bounds.height
+        {
+            return EditorHit::Empty;
+        }
+
+        if let Some(vsb) = self.v_scrollbar_bounds {
+            if x >= vsb.x && x < vsb.x + vsb.width && y >= vsb.y && y < vsb.y + vsb.height {
+                return EditorHit::VScrollbar;
+            }
+        }
+
+        if let Some(hsb) = self.h_scrollbar_bounds {
+            if x >= hsb.x && x < hsb.x + hsb.width && y >= hsb.y && y < hsb.y + hsb.height {
+                return EditorHit::HScrollbar;
+            }
+        }
+
+        if let Some(g) = self.gutter_bounds {
+            if x >= g.x && x < g.x + g.width && y >= g.y && y < g.y + g.height {
+                let row = ((y - g.y) / self.line_height).floor() as usize;
+                let line_idx = self.scroll_top + row;
+                let gutter_col = ((x - g.x) / self.cell_width).floor() as usize;
+                return EditorHit::Gutter {
+                    line_idx,
+                    gutter_col,
+                };
+            }
+        }
+
+        if x >= self.text_bounds.x
+            && x < self.text_bounds.x + self.text_bounds.width
+            && y >= self.text_bounds.y
+            && y < self.text_bounds.y + self.text_bounds.height
+        {
+            let row = ((y - self.text_bounds.y) / self.line_height).floor() as usize;
+            let col_offset = ((x - self.text_bounds.x) / self.cell_width).floor() as usize;
+            let line = self.scroll_top + row;
+            let col = self.scroll_left + col_offset;
+            return EditorHit::BufferPos { line, col };
+        }
+
+        EditorHit::Empty
+    }
+}
+
+impl Editor {
+    /// Compute the viewport geometry for hit-testing and rendering layout.
+    ///
+    /// # Arguments
+    ///
+    /// - `viewport` — the rectangle this editor occupies.
+    /// - `cell_width` — character advance width (1.0 for TUI, font px for GTK).
+    /// - `line_height` — row height (1.0 for TUI, font px for GTK).
+    pub fn layout(&self, viewport: Rect, cell_width: f32, line_height: f32) -> EditorLayout {
+        let gutter_w = self.gutter_char_width as f32 * cell_width;
+        let visible_lines = if line_height > 0.0 {
+            (viewport.height / line_height).floor() as usize
+        } else {
+            0
+        };
+        let has_v_scrollbar =
+            self.total_lines > visible_lines && viewport.width > gutter_w + cell_width;
+        let v_scrollbar_w = if has_v_scrollbar { cell_width } else { 0.0 };
+
+        let text_w = (viewport.width - gutter_w - v_scrollbar_w).max(0.0);
+        let visible_cols = if cell_width > 0.0 {
+            (text_w / cell_width).floor() as usize
+        } else {
+            0
+        };
+        let has_h_scrollbar = self.max_col > visible_cols && viewport.height > line_height;
+        let h_scrollbar_h = if has_h_scrollbar { line_height } else { 0.0 };
+
+        let text_h = (viewport.height - h_scrollbar_h).max(0.0);
+        let visible_lines_final = if line_height > 0.0 {
+            (text_h / line_height).floor() as usize
+        } else {
+            0
+        };
+
+        let gutter_bounds = if gutter_w > 0.0 {
+            Some(Rect::new(viewport.x, viewport.y, gutter_w, text_h))
+        } else {
+            None
+        };
+
+        let text_x = viewport.x + gutter_w;
+        let text_bounds = Rect::new(text_x, viewport.y, text_w, text_h);
+
+        let v_scrollbar_bounds = if has_v_scrollbar {
+            let v_track_h = text_h;
+            Some(Rect::new(
+                viewport.x + viewport.width - v_scrollbar_w,
+                viewport.y,
+                v_scrollbar_w,
+                v_track_h,
+            ))
+        } else {
+            None
+        };
+
+        let h_scrollbar_bounds = if has_h_scrollbar {
+            let h_track_x = viewport.x + gutter_w;
+            let h_track_w = text_w;
+            Some(Rect::new(
+                h_track_x,
+                viewport.y + text_h,
+                h_track_w,
+                h_scrollbar_h,
+            ))
+        } else {
+            None
+        };
+
+        EditorLayout {
+            bounds: viewport,
+            gutter_bounds,
+            text_bounds,
+            v_scrollbar_bounds,
+            h_scrollbar_bounds,
+            cell_width,
+            line_height,
+            scroll_top: self.scroll_top,
+            scroll_left: self.scroll_left,
+            visible_lines: visible_lines_final,
+            visible_cols,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,5 +651,154 @@ mod tests {
         assert!(DiagnosticSeverity::Error < DiagnosticSeverity::Warning);
         assert!(DiagnosticSeverity::Warning < DiagnosticSeverity::Information);
         assert!(DiagnosticSeverity::Information < DiagnosticSeverity::Hint);
+    }
+
+    // ── EditorLayout + hit_test ─────────────────────────────────────
+
+    fn make_editor(gutter_w: usize, total_lines: usize, max_col: usize) -> Editor {
+        Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, 80.0, 24.0),
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines,
+            max_col,
+            gutter_char_width: gutter_w,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: true,
+            lightbulb_glyph: '!',
+        }
+    }
+
+    #[test]
+    fn editor_layout_tui_basic_zones() {
+        let ed = make_editor(4, 100, 40);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        // Gutter: 4 cells wide.
+        let g = l.gutter_bounds.unwrap();
+        assert_eq!(g.x, 0.0);
+        assert_eq!(g.width, 4.0);
+        // Text area: 80 - 4(gutter) - 1(v_scrollbar) = 75
+        assert_eq!(l.text_bounds.x, 4.0);
+        assert_eq!(l.text_bounds.width, 75.0);
+        // V-scrollbar present (100 lines > 24 rows).
+        assert!(l.v_scrollbar_bounds.is_some());
+        let vsb = l.v_scrollbar_bounds.unwrap();
+        assert_eq!(vsb.x, 79.0);
+        assert_eq!(vsb.width, 1.0);
+    }
+
+    #[test]
+    fn editor_layout_no_scrollbar_when_content_fits() {
+        let ed = make_editor(4, 10, 20);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert!(l.v_scrollbar_bounds.is_none());
+        assert!(l.h_scrollbar_bounds.is_none());
+        // Text gets full width minus gutter.
+        assert_eq!(l.text_bounds.width, 76.0);
+    }
+
+    #[test]
+    fn editor_layout_h_scrollbar_present() {
+        let ed = make_editor(4, 10, 200);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert!(l.h_scrollbar_bounds.is_some());
+        let hsb = l.h_scrollbar_bounds.unwrap();
+        assert_eq!(hsb.y, 23.0); // bottom row
+        assert_eq!(hsb.height, 1.0);
+    }
+
+    #[test]
+    fn editor_hit_test_text_area() {
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_top = 10;
+        ed.scroll_left = 5;
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        // Click at text_bounds origin → line=scroll_top, col=scroll_left.
+        assert_eq!(
+            l.hit_test(4.0, 0.0),
+            EditorHit::BufferPos { line: 10, col: 5 }
+        );
+        // Click 3 cols in, 2 rows down.
+        assert_eq!(
+            l.hit_test(7.0, 2.0),
+            EditorHit::BufferPos { line: 12, col: 8 }
+        );
+    }
+
+    #[test]
+    fn editor_hit_test_gutter() {
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_top = 5;
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert_eq!(
+            l.hit_test(1.0, 3.0),
+            EditorHit::Gutter {
+                line_idx: 8,
+                gutter_col: 1
+            }
+        );
+    }
+
+    #[test]
+    fn editor_hit_test_v_scrollbar() {
+        let ed = make_editor(4, 100, 40);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert_eq!(l.hit_test(79.0, 5.0), EditorHit::VScrollbar);
+    }
+
+    #[test]
+    fn editor_hit_test_h_scrollbar() {
+        let ed = make_editor(4, 10, 200);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert_eq!(l.hit_test(10.0, 23.0), EditorHit::HScrollbar);
+    }
+
+    #[test]
+    fn editor_hit_test_outside() {
+        let ed = make_editor(4, 100, 40);
+        let vp = Rect::new(10.0, 10.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert_eq!(l.hit_test(5.0, 5.0), EditorHit::Empty);
+    }
+
+    #[test]
+    fn editor_layout_pixel_units() {
+        let ed = make_editor(4, 500, 200);
+        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let l = ed.layout(vp, 8.0, 16.0);
+        // Gutter: 4 * 8 = 32px.
+        let g = l.gutter_bounds.unwrap();
+        assert_eq!(g.width, 32.0);
+        // V-scrollbar: 8px wide (one cell_width).
+        let vsb = l.v_scrollbar_bounds.unwrap();
+        assert_eq!(vsb.width, 8.0);
+        // Text area: 800 - 32 - 8 = 760px.
+        assert_eq!(l.text_bounds.width, 760.0);
+        // visible_cols = 760 / 8 = 95
+        assert_eq!(l.visible_cols, 95);
+        // visible_lines with h_scrollbar: (600 - 16) / 16 = 36
+        assert_eq!(l.visible_lines, 36);
     }
 }
