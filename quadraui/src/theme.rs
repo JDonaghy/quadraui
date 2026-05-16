@@ -248,6 +248,12 @@ pub struct Theme {
     pub annotation_fg: Color,
     /// Foreground of AI-completion ghost text. Muted by convention.
     pub ghost_text_fg: Color,
+
+    // Command line (`:`, `/`, `?` prompt + message output).
+    /// Background of the command line bar.
+    pub command_line_bg: Color,
+    /// Text colour of the command line bar.
+    pub command_line_fg: Color,
 }
 
 impl Default for Theme {
@@ -327,6 +333,8 @@ impl Default for Theme {
             indent_guide_active_fg: Color::rgb(110, 115, 130),
             annotation_fg: Color::rgb(110, 115, 130),
             ghost_text_fg: Color::rgb(110, 115, 130),
+            command_line_bg: bg,
+            command_line_fg: fg,
         }
     }
 }

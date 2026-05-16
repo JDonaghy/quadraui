@@ -46,9 +46,9 @@ use gtk4::pango;
 
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
-    PlatformServices, Rect as QRect, Split, StatusBar, TabBar, Terminal as TerminalPrim,
-    TextDisplay, TreeView, UiEvent, Viewport,
+    CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
+    ParsedBinding, PlatformServices, Rect as QRect, Split, StatusBar, TabBar,
+    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -834,6 +834,22 @@ impl Backend for GtkBackend {
             rect.height as f64,
             td,
             &self.current_theme,
+            self.current_line_height,
+        );
+    }
+
+    fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_command_line called outside enter_frame_scope");
+        crate::gtk::command_line::draw_command_line(
+            cr,
+            layout,
+            cmd,
+            &self.current_theme,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
             self.current_line_height,
         );
     }

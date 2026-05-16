@@ -134,6 +134,7 @@ pub use primitives::chart::{
 pub use primitives::command_center::{
     CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
 };
+pub use primitives::command_line::CommandLine;
 pub use primitives::completions::{
     CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsEvent,
     CompletionsHit, CompletionsLayout, CompletionsPlacement, VisibleCompletion,

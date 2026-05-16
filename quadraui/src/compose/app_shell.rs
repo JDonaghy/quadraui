@@ -1160,6 +1160,7 @@ mod tests {
         }
         fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
+        fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
         fn text_display_layout(
             &self,
             _r: Rect,

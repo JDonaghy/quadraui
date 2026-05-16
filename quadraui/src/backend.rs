@@ -15,6 +15,7 @@ use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
+use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
@@ -231,6 +232,12 @@ pub trait Backend {
     /// `TextDisplay` itself is non-interactive (selection / scroll
     /// happen at the panel chrome level, not at the line/span level).
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
+
+    /// Draw a [`CommandLine`] bar (editor `:` / `/` / `?` prompt or
+    /// message display). Fills `rect` with the command line background,
+    /// renders text (left- or right-aligned), and optionally draws an
+    /// insert cursor at `cursor_offset`.
+    fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine);
 
     /// Compute the text-display layout the rasteriser would produce for
     /// `td` in `rect`, using the backend's native metrics. Hosts call

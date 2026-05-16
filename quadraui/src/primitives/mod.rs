@@ -7,6 +7,7 @@
 pub mod activity_bar;
 pub mod chart;
 pub mod command_center;
+pub mod command_line;
 pub mod completions;
 pub mod context_menu;
 pub mod data_table;

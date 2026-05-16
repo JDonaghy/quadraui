@@ -46,9 +46,9 @@ use std::time::Duration;
 
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
-    PlatformServices, Rect as QRect, Split, StatusBar, TabBar, Terminal as TerminalPrim,
-    TextDisplay, TreeView, UiEvent, Viewport,
+    CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
+    ParsedBinding, PlatformServices, Rect as QRect, Split, StatusBar, TabBar,
+    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
 };
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -597,6 +597,15 @@ impl Backend for TuiBackend {
             .current_frame_mut()
             .expect("TuiBackend::draw_text_display called outside enter_frame_scope");
         crate::tui::draw_text_display(frame.buffer_mut(), area, td, &theme);
+    }
+
+    fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_command_line called outside enter_frame_scope");
+        crate::tui::command_line::draw_command_line(frame.buffer_mut(), area, cmd, &theme);
     }
 
     fn text_display_layout(
@@ -1158,6 +1167,7 @@ mod tests {
         }
         fn draw_terminal(&mut self, _r: QRect, _t: &TerminalPrim) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
+        fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
         fn text_display_layout(
             &self,
             r: QRect,
