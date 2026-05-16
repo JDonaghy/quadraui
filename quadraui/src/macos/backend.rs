@@ -111,6 +111,17 @@ pub struct MacBackend {
     /// call. Holds it alive so action selectors on installed `NSMenuItem`s
     /// don't dangle. Replaced wholesale on each re-install.
     menu_target: Option<objc2::rc::Retained<super::menu_bar_install::QuadraMenuTarget>>,
+    /// Whether `InlineInput` carets should currently paint their stroke
+    /// (the "on" half of the blink cycle). Shared `Rc<Cell>` so the
+    /// macOS run-loop blink timer can toggle it without holding a
+    /// `MacBackend` reference. Defaults to `true` so headless tests
+    /// (and the first frame after startup) paint a visible caret
+    /// without any timer running.
+    caret_visible: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Until this instant, the blink timer's tick callback skips
+    /// toggling — used to keep the caret solid while the user types.
+    /// Reset on every `KeyPressed` event in `macos::run`.
+    caret_blink_pause_until: std::rc::Rc<std::cell::Cell<std::time::Instant>>,
 }
 
 impl MacBackend {
@@ -131,7 +142,41 @@ impl MacBackend {
             current_line_height: 16.0,
             current_char_width: 8.0,
             menu_target: None,
+            caret_visible: std::rc::Rc::new(std::cell::Cell::new(true)),
+            caret_blink_pause_until: std::rc::Rc::new(std::cell::Cell::new(
+                std::time::Instant::now(),
+            )),
         }
+    }
+
+    /// Shared `Rc<Cell<bool>>` controlling whether `InlineInput` carets
+    /// paint their stroke each frame. The run-loop blink timer clones
+    /// this and toggles the cell to drive the blink animation; tests
+    /// can pin a deterministic phase via [`Self::set_caret_visible`].
+    pub fn caret_visible_handle(&self) -> std::rc::Rc<std::cell::Cell<bool>> {
+        self.caret_visible.clone()
+    }
+
+    /// Shared `Rc<Cell<Instant>>` the blink timer reads to decide
+    /// whether to skip its toggle this tick. `macos::run` resets it to
+    /// `now + 500ms` on every `KeyPressed` so the caret stays solid
+    /// while the user types.
+    pub fn caret_blink_pause_handle(&self) -> std::rc::Rc<std::cell::Cell<std::time::Instant>> {
+        self.caret_blink_pause_until.clone()
+    }
+
+    /// Override the caret-blink phase. Tests pin this to get
+    /// reproducible paint snapshots; live apps let the blink timer
+    /// drive it instead.
+    pub fn set_caret_visible(&mut self, visible: bool) {
+        self.caret_visible.set(visible);
+    }
+
+    /// Current blink phase. Read once per paint; the
+    /// `multi_section_view` rasteriser skips the caret `fill_rect`
+    /// when this is `false`.
+    pub fn caret_visible(&self) -> bool {
+        self.caret_visible.get()
     }
 
     /// Install the font that subsequent `draw_*` calls use for text.
@@ -693,6 +738,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
+        let caret_visible = self.caret_visible.get();
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::multi_section_view::draw_multi_section_view(
@@ -706,6 +752,7 @@ impl Backend for MacBackend {
                 &theme,
                 line_height,
                 char_width,
+                caret_visible,
             )
         }
     }

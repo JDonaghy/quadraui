@@ -476,10 +476,25 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
             backend_mut.end_frame();
         })
     };
+    // Caret-blink state is shared between the backend (read each
+    // frame in paint_aux), the blink timer (toggled every ~530 ms),
+    // and the key handler (which pauses the blink during typing).
+    let caret_visible = backend.borrow().caret_visible_handle();
+    let caret_pause = backend.borrow().caret_blink_pause_handle();
+
     let handle: HandleFn = {
         let app = app.clone();
         let backend = backend.clone();
+        let caret_visible = caret_visible.clone();
+        let caret_pause = caret_pause.clone();
         Box::new(move |ev: UiEvent| -> Reaction {
+            // Pause the caret-blink for ~500 ms after every keypress
+            // so typing leaves the caret solid, matching AppKit's
+            // text-field convention.
+            if matches!(ev, UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_)) {
+                caret_visible.set(true);
+                caret_pause.set(std::time::Instant::now() + std::time::Duration::from_millis(500));
+            }
             let mut backend_mut = backend.borrow_mut();
             let mut app_mut = app.borrow_mut();
             app_mut.handle(ev, &mut *backend_mut)
@@ -515,6 +530,13 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
     window.makeKeyAndOrderFront(None);
+
+    // Drive the InlineInput caret blink (#188). The pair is held as
+    // locals for the lifetime of the app — when this function
+    // eventually returns, the NSTimer's `Retained` drops, the timer
+    // is released by the run loop, and the target finalises.
+    let (_blink_target, _blink_timer) =
+        super::caret_blink::install_blink_timer(mtm, caret_visible, caret_pause);
 
     #[allow(deprecated)]
     ns_app.activateIgnoringOtherApps(true);

@@ -22,6 +22,7 @@
 
 pub mod activity_bar;
 pub mod backend;
+pub(crate) mod caret_blink;
 pub mod chart;
 pub mod command_center;
 pub mod completions;
