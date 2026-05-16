@@ -456,6 +456,17 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
         let app = app.clone();
         let backend = backend.clone();
         Box::new(move |viewport: Viewport, cg_ref: CGContextRef| {
+            // Drain any events queued from non-responder sources
+            // (currently: native menu activations from
+            // `Backend::install_menu_bar`). Each fires through
+            // `AppLogic::handle` exactly like a mouse/keyboard event.
+            // Done before painting so state mutations land in this
+            // frame.
+            let pending: Vec<UiEvent> = backend.borrow_mut().poll_events();
+            for ev in pending {
+                let _ = app.borrow_mut().handle(ev, &mut *backend.borrow_mut());
+            }
+
             let mut backend_mut = backend.borrow_mut();
             backend_mut.begin_frame(viewport);
             backend_mut.enter_frame_scope(cg_ref, |b| {

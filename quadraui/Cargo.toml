@@ -64,6 +64,9 @@ objc2-app-kit = { version = "0.2", optional = true, features = [
     "NSGraphics",
     "NSColor",
     "NSEvent",
+    "NSCell",
+    "NSMenu",
+    "NSMenuItem",
     "NSOpenPanel",
     "NSPanel",
     "NSSavePanel",
@@ -72,6 +75,7 @@ objc2-foundation = { version = "0.2", optional = true, features = [
     "NSArray",
     "NSGeometry",
     "NSObject",
+    "NSProcessInfo",
     "NSString",
     "NSThread",
     "NSURL",
@@ -313,6 +317,11 @@ required-features = ["macos"]
 [[example]]
 name = "macos_menu_bar"
 path = "examples/macos_menu_bar.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_native_menu"
+path = "examples/macos_native_menu.rs"
 required-features = ["macos"]
 
 [[example]]

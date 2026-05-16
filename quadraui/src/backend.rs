@@ -74,6 +74,23 @@ pub trait Backend {
     /// Remove a previously-registered accelerator.
     fn unregister_accelerator(&mut self, id: &AcceleratorId);
 
+    // ─── Native menu installation ──────────────────────────────────────
+    /// Install `bar` as the platform's native menu bar.
+    ///
+    /// macOS (`MacBackend`) walks `bar.items` → `NSMenu` / `NSMenuItem`
+    /// hierarchy and assigns to `NSApp.mainMenu`. A standard app menu
+    /// (Hide / Quit etc.) is auto-prepended. Activations arrive on the
+    /// event queue as [`UiEvent::MenuActivated`].
+    ///
+    /// TUI / GTK / Win-GUI: no-op default. Apps that want an in-window
+    /// menu keep calling `draw_menu_bar` from their render path; native
+    /// installers for Win32 (`SetMenu`) and GTK (`set_menu_bar`) land
+    /// in follow-up tickets when consumers need them.
+    ///
+    /// Apps typically call this once during `AppLogic::setup`. Re-calling
+    /// replaces the previously-installed menu wholesale.
+    fn install_menu_bar(&mut self, _bar: &crate::primitives::menu_bar::MenuBar) {}
+
     // ─── Modal-overlay tracking ────────────────────────────────────────
     /// Mutable handle to the backend's modal stack. Apps push when a
     /// palette / dialog / context-menu opens and pop when it closes;
