@@ -37,17 +37,32 @@ use crate::primitives::context_menu::ContextMenuItem;
 use crate::primitives::menu_bar::{MenuBar, MenuBarItem};
 use crate::types::WidgetId;
 
+/// Which install path created the target — determines which
+/// [`UiEvent`] variant the action selector pushes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuKind {
+    /// Installed via `Backend::install_menu_bar` (system menu bar at
+    /// the top of the screen). Action → `UiEvent::MenuActivated`.
+    Bar,
+    /// Shown via `Backend::show_context_menu` (right-click pop-up).
+    /// Action → `UiEvent::ContextMenuItemActivated`.
+    Context,
+}
+
 /// Per-instance state for [`QuadraMenuTarget`]. Holds the tag-to-ID
-/// map used to identify which item was clicked and the event-queue
-/// handle to push activations onto.
+/// map used to identify which item was clicked, the event-queue
+/// handle to push activations onto, and the install kind so the
+/// action selector knows which `UiEvent` variant to dispatch.
 pub(crate) struct QuadraMenuTargetIvars {
     /// `NSMenuItem.tag` → `WidgetId`. Tags are auto-assigned starting
     /// at 1 (0 is reserved as "no tag" by AppKit). One entry per leaf
     /// item; submenu container items have no tag.
     tag_to_id: RefCell<HashMap<isize, WidgetId>>,
     /// Clone of the backend's event queue. The action selector pushes
-    /// `UiEvent::MenuActivated` here when a tagged item is clicked.
+    /// activations here.
     events: Rc<RefCell<VecDeque<UiEvent>>>,
+    /// Selects which `UiEvent` variant the action selector pushes.
+    kind: MenuKind,
 }
 
 declare_class!(
@@ -90,10 +105,11 @@ declare_class!(
             let tag = unsafe { sender.tag() };
             let id = self.ivars().tag_to_id.borrow().get(&tag).cloned();
             if let Some(id) = id {
-                self.ivars()
-                    .events
-                    .borrow_mut()
-                    .push_back(UiEvent::MenuActivated(id));
+                let event = match self.ivars().kind {
+                    MenuKind::Bar => UiEvent::MenuActivated(id),
+                    MenuKind::Context => UiEvent::ContextMenuItemActivated(id),
+                };
+                self.ivars().events.borrow_mut().push_back(event);
                 let mtm = MainThreadMarker::from(self);
                 let app = NSApplication::sharedApplication(mtm);
                 if let Some(window) = app.keyWindow() {
@@ -107,26 +123,32 @@ declare_class!(
 );
 
 impl QuadraMenuTarget {
-    fn new(mtm: MainThreadMarker, events: Rc<RefCell<VecDeque<UiEvent>>>) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        events: Rc<RefCell<VecDeque<UiEvent>>>,
+        kind: MenuKind,
+    ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(QuadraMenuTargetIvars {
             tag_to_id: RefCell::new(HashMap::new()),
             events,
+            kind,
         });
         unsafe { msg_send_id![super(this), init] }
     }
 
-    /// Test-only accessor — exposes the tag map so unit tests can
-    /// verify the right WidgetIds were registered, and simulate a
-    /// selector dispatch without actually invoking AppKit.
+    /// Test-only accessor — simulates a selector dispatch without
+    /// invoking AppKit. Pushes the same `UiEvent` variant the action
+    /// selector would have pushed.
     #[cfg(test)]
     pub(crate) fn simulate_activation(&self, tag: isize) {
         let id = self.ivars().tag_to_id.borrow().get(&tag).cloned();
         if let Some(id) = id {
-            self.ivars()
-                .events
-                .borrow_mut()
-                .push_back(UiEvent::MenuActivated(id));
+            let event = match self.ivars().kind {
+                MenuKind::Bar => UiEvent::MenuActivated(id),
+                MenuKind::Context => UiEvent::ContextMenuItemActivated(id),
+            };
+            self.ivars().events.borrow_mut().push_back(event);
         }
     }
 
@@ -152,7 +174,7 @@ pub(crate) fn install_menu_bar(
     bar: &MenuBar,
     events: Rc<RefCell<VecDeque<UiEvent>>>,
 ) -> Retained<QuadraMenuTarget> {
-    let target = QuadraMenuTarget::new(mtm, events);
+    let target = QuadraMenuTarget::new(mtm, events, MenuKind::Bar);
 
     // Build the root NSMenu. Title is unused for the main menu bar but
     // assigned for diagnostics in Accessibility Inspector.
@@ -430,6 +452,58 @@ fn shift() -> NSEventModifierFlags {
     NSEventModifierFlags::NSEventModifierFlagShift
 }
 
+/// Show `menu` as a native right-click context menu at view-local
+/// `(x, y)`. Blocks on AppKit's modal pop-up event loop until the
+/// user picks an item or dismisses.
+///
+/// During the modal loop the action selector pushes
+/// `UiEvent::ContextMenuItemActivated(id)` onto the events queue on
+/// activation. After the pop-up dismisses (with or without selection)
+/// this function pushes `UiEvent::ContextMenuDismissed` so apps that
+/// track open-menu state can clear it.
+pub(crate) fn show_context_menu(
+    mtm: MainThreadMarker,
+    menu: &crate::primitives::context_menu::ContextMenu,
+    anchor_x: f64,
+    anchor_y: f64,
+    events: Rc<RefCell<VecDeque<UiEvent>>>,
+) {
+    let target = QuadraMenuTarget::new(mtm, events.clone(), MenuKind::Context);
+    let ns_menu: Retained<NSMenu> = unsafe {
+        msg_send_id![
+            mtm.alloc::<NSMenu>(),
+            initWithTitle: &*NSString::from_str(""),
+        ]
+    };
+
+    let mut next_tag: isize = 1;
+    for item in &menu.items {
+        append_menu_item(mtm, &ns_menu, &target, item, &mut next_tag);
+    }
+
+    // Pop up positioned at `anchor` in the key window's content view
+    // coordinate space (top-left origin, matching QuadraView's
+    // `isFlipped = true`). If no key window is available (e.g. tests
+    // running headless), the pop-up is suppressed and we only push
+    // `Dismissed`.
+    let ns_app = NSApplication::sharedApplication(mtm);
+    if let Some(window) = ns_app.keyWindow() {
+        if let Some(view) = window.contentView() {
+            let location = objc2_foundation::NSPoint::new(anchor_x, anchor_y);
+            // SAFETY: main thread; non-null view borrowed for call.
+            unsafe {
+                ns_menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(&view));
+            }
+        }
+    }
+
+    // Always push Dismissed — apps that only care about activation
+    // ignore this. `target` drops here, after `ns_menu`, so the
+    // menu items' target back-references release cleanly.
+    events.borrow_mut().push_back(UiEvent::ContextMenuDismissed);
+    let _ = target;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,6 +653,126 @@ mod tests {
         assert_eq!(
             target.registered_id(1),
             Some(WidgetId::new("appearance.zoom_in")),
+        );
+    }
+
+    // ── #185 native context menu ─────────────────────────────────
+
+    fn context_menu(items: Vec<ContextMenuItem>) -> crate::primitives::context_menu::ContextMenu {
+        crate::primitives::context_menu::ContextMenu {
+            id: WidgetId::new("ctx"),
+            items,
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        }
+    }
+
+    /// Build a context-menu target the same way `show_context_menu`
+    /// does internally, without invoking AppKit's popup. Lets us
+    /// round-trip the action selector + dispatch logic in unit tests.
+    fn build_context_target(
+        mtm: MainThreadMarker,
+        menu: &crate::primitives::context_menu::ContextMenu,
+        ev: Rc<RefCell<VecDeque<UiEvent>>>,
+    ) -> Retained<QuadraMenuTarget> {
+        let target = QuadraMenuTarget::new(mtm, ev, MenuKind::Context);
+        let ns_menu: Retained<NSMenu> = unsafe {
+            msg_send_id![
+                mtm.alloc::<NSMenu>(),
+                initWithTitle: &*NSString::from_str(""),
+            ]
+        };
+        let mut next_tag: isize = 1;
+        for item in &menu.items {
+            append_menu_item(mtm, &ns_menu, &target, item, &mut next_tag);
+        }
+        target
+    }
+
+    #[test]
+    fn context_menu_activation_pushes_context_variant() {
+        // Same selector machinery as install_menu_bar, but with kind
+        // == Context. The action selector must push
+        // `ContextMenuItemActivated`, NOT `MenuActivated`, so apps
+        // can route the two through different handlers.
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let ev = events();
+        let menu = context_menu(vec![item("ctx.copy", "Copy"), item("ctx.paste", "Paste")]);
+        let target = build_context_target(mtm, &menu, ev.clone());
+
+        target.simulate_activation(1);
+        target.simulate_activation(2);
+
+        let queued: Vec<_> = ev.borrow().iter().cloned().collect();
+        assert_eq!(
+            queued,
+            vec![
+                UiEvent::ContextMenuItemActivated(WidgetId::new("ctx.copy")),
+                UiEvent::ContextMenuItemActivated(WidgetId::new("ctx.paste")),
+            ],
+        );
+    }
+
+    #[test]
+    fn context_menu_separator_does_not_consume_a_tag() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let menu = context_menu(vec![
+            item("ctx.cut", "Cut"),
+            ContextMenuItem::default(), // separator
+            item("ctx.copy", "Copy"),
+        ]);
+        let target = build_context_target(mtm, &menu, events());
+        assert_eq!(target.registered_id(1), Some(WidgetId::new("ctx.cut")));
+        assert_eq!(target.registered_id(2), Some(WidgetId::new("ctx.copy")));
+        assert_eq!(target.registered_id(3), None);
+    }
+
+    #[test]
+    fn menu_bar_and_context_target_share_tag_numbering_independently() {
+        // Each target has its own tag space — installing a menu bar
+        // and showing a context menu later must not collide.
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let bar = MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("file"),
+                label: "File".into(),
+                disabled: false,
+                submenu: Some(vec![item("file.save", "Save")]),
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let menu = context_menu(vec![item("ctx.copy", "Copy")]);
+        let ev = events();
+
+        let bar_target = install_menu_bar(mtm, &bar, ev.clone());
+        let ctx_target = build_context_target(mtm, &menu, ev.clone());
+
+        // Both used tag 1, but each maps to its own WidgetId.
+        assert_eq!(
+            bar_target.registered_id(1),
+            Some(WidgetId::new("file.save")),
+        );
+        assert_eq!(ctx_target.registered_id(1), Some(WidgetId::new("ctx.copy")),);
+
+        bar_target.simulate_activation(1);
+        ctx_target.simulate_activation(1);
+
+        let queued: Vec<_> = ev.borrow().iter().cloned().collect();
+        assert_eq!(
+            queued,
+            vec![
+                UiEvent::MenuActivated(WidgetId::new("file.save")),
+                UiEvent::ContextMenuItemActivated(WidgetId::new("ctx.copy")),
+            ],
         );
     }
 }

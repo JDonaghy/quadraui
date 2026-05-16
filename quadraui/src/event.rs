@@ -317,6 +317,21 @@ pub enum UiEvent {
     /// Win32 `SetMenu`).
     MenuActivated(WidgetId),
 
+    /// A native right-click context menu (shown via
+    /// [`Backend::show_context_menu`][crate::Backend::show_context_menu])
+    /// had one of its items activated. Carries the activated item's
+    /// `WidgetId`. Distinct from [`Self::MenuActivated`] so apps can
+    /// route menu-bar and context-menu activations through different
+    /// handlers when needed.
+    ContextMenuItemActivated(WidgetId),
+
+    /// A native right-click context menu was dismissed — either after
+    /// activation (immediately following the matching
+    /// [`Self::ContextMenuItemActivated`]) or by cancel (Escape /
+    /// click outside / second right-click). Apps that don't track
+    /// open-menu state can ignore this variant.
+    ContextMenuDismissed,
+
     // ── Primitive-specific events bubble up by WidgetId ───────────────
     Tree(WidgetId, TreeEvent),
     List(WidgetId, ListViewEvent),

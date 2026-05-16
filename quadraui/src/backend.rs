@@ -91,6 +91,31 @@ pub trait Backend {
     /// replaces the previously-installed menu wholesale.
     fn install_menu_bar(&mut self, _bar: &crate::primitives::menu_bar::MenuBar) {}
 
+    /// Show `menu` as a native right-click context menu at `anchor`
+    /// (view-local coordinates).
+    ///
+    /// macOS (`MacBackend`) builds an `NSMenu` from `menu.items` and
+    /// runs `popUpMenuPositioningItem_atLocation_inView` — AppKit takes
+    /// over with a modal event loop until the user picks an item or
+    /// dismisses. Activation pushes
+    /// [`UiEvent::ContextMenuItemActivated`]; dismissal pushes
+    /// [`UiEvent::ContextMenuDismissed`].
+    ///
+    /// TUI / GTK / Win-GUI: no-op default. Apps that want a painted
+    /// right-click menu on those backends continue to manage their
+    /// own `ContextMenu` state and call `draw_context_menu` from
+    /// their render path. A stash-and-paint default lands in a
+    /// follow-up ticket if a consumer asks for it.
+    ///
+    /// Apps typically invoke this from a `MouseDown { button: Right }`
+    /// handler.
+    fn show_context_menu(
+        &mut self,
+        _menu: &crate::primitives::context_menu::ContextMenu,
+        _anchor: crate::event::Point,
+    ) {
+    }
+
     // ─── Modal-overlay tracking ────────────────────────────────────────
     /// Mutable handle to the backend's modal stack. Apps push when a
     /// palette / dialog / context-menu opens and pop when it closes;

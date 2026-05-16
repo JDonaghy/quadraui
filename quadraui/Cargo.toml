@@ -325,6 +325,11 @@ path = "examples/macos_native_menu.rs"
 required-features = ["macos"]
 
 [[example]]
+name = "macos_right_click_demo"
+path = "examples/macos_right_click_demo.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "macos_hscroll"
 path = "examples/macos_hscroll.rs"
 required-features = ["macos"]

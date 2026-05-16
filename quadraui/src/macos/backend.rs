@@ -248,6 +248,25 @@ impl Backend for MacBackend {
         self.menu_target = Some(target);
     }
 
+    fn show_context_menu(
+        &mut self,
+        menu: &crate::primitives::context_menu::ContextMenu,
+        anchor: crate::event::Point,
+    ) {
+        let mtm = objc2_foundation::MainThreadMarker::new()
+            .expect("MacBackend::show_context_menu must be called from the main thread");
+        // Blocks on AppKit's modal pop-up loop until the user picks
+        // an item or dismisses; pushes `ContextMenuItemActivated` /
+        // `ContextMenuDismissed` onto the events queue.
+        super::menu_bar_install::show_context_menu(
+            mtm,
+            menu,
+            anchor.x as f64,
+            anchor.y as f64,
+            self.events.clone(),
+        );
+    }
+
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
         &mut self.modal_stack
     }
