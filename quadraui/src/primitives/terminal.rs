@@ -245,7 +245,8 @@ impl Terminal {
 // ── Split-pane layout ───────────────────────────────────────────────────────
 
 /// Layout geometry for a side-by-side terminal split. The divider
-/// occupies one `cell_width` column between the two panes.
+/// occupies one `cell_width` column between the two panes. An optional
+/// scrollbar strip is reserved at the right edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSplitLayout {
     /// Left pane region.
@@ -256,39 +257,75 @@ pub struct TerminalSplitLayout {
     pub divider_x: f32,
     /// Width of the divider column (one `cell_width`).
     pub divider_width: f32,
+    /// Cell dimensions used for coordinate-to-cell conversion.
+    pub cell_size: TerminalCellSize,
+    /// Scrollbar strip bounds (right edge of area). `None` when
+    /// `scrollbar_width` was 0.
+    pub scrollbar: Option<Rect>,
 }
 
 impl TerminalSplitLayout {
     /// Compute a two-pane split layout from a containing area, left
-    /// pane column count, and cell width. The divider is one cell wide.
+    /// pane column count, cell dimensions, and optional scrollbar width.
     ///
-    /// TUI callers pass `cell_width = 1.0`; GTK callers pass the font's
-    /// advance width.
-    pub fn new(area: Rect, left_cols: usize, cell_width: f32) -> Self {
-        let left_w = (left_cols as f32 * cell_width).min(area.width);
+    /// TUI callers pass `cell_width = 1.0, cell_height = 1.0`;
+    /// GTK callers pass the font's advance width and line height.
+    /// Pass `scrollbar_width = 0.0` to omit the scrollbar zone.
+    pub fn new(
+        area: Rect,
+        left_cols: usize,
+        cell_width: f32,
+        cell_height: f32,
+        scrollbar_width: f32,
+    ) -> Self {
+        let sb_w = if scrollbar_width > 0.0 {
+            scrollbar_width.min(area.width)
+        } else {
+            0.0
+        };
+        let usable_w = (area.width - sb_w).max(0.0);
+        let left_w = (left_cols as f32 * cell_width).min(usable_w);
         let divider_x = area.x + left_w;
-        let divider_w = cell_width.min((area.width - left_w).max(0.0));
+        let divider_w = cell_width.min((usable_w - left_w).max(0.0));
         let right_x = divider_x + divider_w;
-        let right_w = (area.width - left_w - divider_w).max(0.0);
+        let right_w = (usable_w - left_w - divider_w).max(0.0);
+        let scrollbar = if sb_w > 0.0 {
+            Some(Rect::new(area.x + usable_w, area.y, sb_w, area.height))
+        } else {
+            None
+        };
         Self {
             left: Rect::new(area.x, area.y, left_w, area.height),
             right: Rect::new(right_x, area.y, right_w, area.height),
             divider_x,
             divider_width: divider_w,
+            cell_size: TerminalCellSize::new(cell_width, cell_height),
+            scrollbar,
         }
     }
 
-    /// Which pane does point `(x, y)` land in?
+    /// Resolve an absolute point to a split zone with pane-relative cell
+    /// coordinates. Converts pixel/cell positions to `(col, row)` within
+    /// the hit pane using the stored `cell_size`.
     pub fn hit_test(&self, x: f32, y: f32) -> TerminalSplitHit {
         if y < self.left.y || y >= self.left.y + self.left.height {
             return TerminalSplitHit::Outside;
         }
+        if let Some(sb) = self.scrollbar {
+            if x >= sb.x && x < sb.x + sb.width {
+                return TerminalSplitHit::Scrollbar;
+            }
+        }
         if x >= self.left.x && x < self.left.x + self.left.width {
-            TerminalSplitHit::Left
+            let col = ((x - self.left.x) / self.cell_size.width).floor() as u16;
+            let row = ((y - self.left.y) / self.cell_size.height).floor() as u16;
+            TerminalSplitHit::LeftPane { col, row }
         } else if x >= self.divider_x && x < self.divider_x + self.divider_width {
             TerminalSplitHit::Divider
         } else if x >= self.right.x && x < self.right.x + self.right.width {
-            TerminalSplitHit::Right
+            let col = ((x - self.right.x) / self.cell_size.width).floor() as u16;
+            let row = ((y - self.right.y) / self.cell_size.height).floor() as u16;
+            TerminalSplitHit::RightPane { col, row }
         } else {
             TerminalSplitHit::Outside
         }
@@ -298,9 +335,10 @@ impl TerminalSplitLayout {
 /// Result of [`TerminalSplitLayout::hit_test`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalSplitHit {
-    Left,
+    LeftPane { col: u16, row: u16 },
+    RightPane { col: u16, row: u16 },
     Divider,
-    Right,
+    Scrollbar,
     Outside,
 }
 
@@ -331,17 +369,18 @@ mod tests {
     #[test]
     fn split_layout_basic() {
         let area = Rect::new(0.0, 0.0, 80.0, 24.0);
-        let sl = TerminalSplitLayout::new(area, 40, 1.0);
+        let sl = TerminalSplitLayout::new(area, 40, 1.0, 1.0, 0.0);
         assert_eq!(sl.left, Rect::new(0.0, 0.0, 40.0, 24.0));
         assert_eq!(sl.divider_x, 40.0);
         assert_eq!(sl.divider_width, 1.0);
         assert_eq!(sl.right, Rect::new(41.0, 0.0, 39.0, 24.0));
+        assert!(sl.scrollbar.is_none());
     }
 
     #[test]
     fn split_layout_pixel_units() {
         let area = Rect::new(10.0, 5.0, 800.0, 600.0);
-        let sl = TerminalSplitLayout::new(area, 40, 8.0);
+        let sl = TerminalSplitLayout::new(area, 40, 8.0, 16.0, 0.0);
         assert_eq!(sl.left, Rect::new(10.0, 5.0, 320.0, 600.0));
         assert_eq!(sl.divider_x, 330.0);
         assert_eq!(sl.divider_width, 8.0);
@@ -351,7 +390,7 @@ mod tests {
     #[test]
     fn split_layout_left_cols_exceed_area() {
         let area = Rect::new(0.0, 0.0, 20.0, 10.0);
-        let sl = TerminalSplitLayout::new(area, 30, 1.0);
+        let sl = TerminalSplitLayout::new(area, 30, 1.0, 1.0, 0.0);
         assert_eq!(sl.left.width, 20.0);
         assert_eq!(sl.divider_width, 0.0);
         assert_eq!(sl.right.width, 0.0);
@@ -360,7 +399,7 @@ mod tests {
     #[test]
     fn split_layout_zero_left_cols() {
         let area = Rect::new(0.0, 0.0, 80.0, 24.0);
-        let sl = TerminalSplitLayout::new(area, 0, 1.0);
+        let sl = TerminalSplitLayout::new(area, 0, 1.0, 1.0, 0.0);
         assert_eq!(sl.left.width, 0.0);
         assert_eq!(sl.divider_x, 0.0);
         assert_eq!(sl.divider_width, 1.0);
@@ -368,14 +407,60 @@ mod tests {
     }
 
     #[test]
-    fn split_hit_test() {
+    fn split_hit_test_cell_coords() {
         let area = Rect::new(0.0, 0.0, 80.0, 24.0);
-        let sl = TerminalSplitLayout::new(area, 40, 1.0);
-        assert_eq!(sl.hit_test(10.0, 5.0), TerminalSplitHit::Left);
+        let sl = TerminalSplitLayout::new(area, 40, 1.0, 1.0, 0.0);
+        assert_eq!(
+            sl.hit_test(10.0, 5.0),
+            TerminalSplitHit::LeftPane { col: 10, row: 5 }
+        );
         assert_eq!(sl.hit_test(40.0, 5.0), TerminalSplitHit::Divider);
-        assert_eq!(sl.hit_test(50.0, 5.0), TerminalSplitHit::Right);
+        assert_eq!(
+            sl.hit_test(50.0, 5.0),
+            TerminalSplitHit::RightPane { col: 9, row: 5 }
+        );
         assert_eq!(sl.hit_test(50.0, 30.0), TerminalSplitHit::Outside);
         assert_eq!(sl.hit_test(-1.0, 5.0), TerminalSplitHit::Outside);
+    }
+
+    #[test]
+    fn split_hit_test_pixel_units() {
+        let area = Rect::new(10.0, 5.0, 800.0, 600.0);
+        let sl = TerminalSplitLayout::new(area, 40, 8.0, 16.0, 0.0);
+        // Click at x=26 (offset 16 from left=10) → col 2
+        assert_eq!(
+            sl.hit_test(26.0, 21.0),
+            TerminalSplitHit::LeftPane { col: 2, row: 1 }
+        );
+        // Right pane starts at 338.0; click at 354.0 → offset 16 → col 2
+        assert_eq!(
+            sl.hit_test(354.0, 37.0),
+            TerminalSplitHit::RightPane { col: 2, row: 2 }
+        );
+    }
+
+    #[test]
+    fn split_layout_with_scrollbar() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let sl = TerminalSplitLayout::new(area, 40, 1.0, 1.0, 1.0);
+        // Scrollbar takes 1 cell from the right edge.
+        let sb = sl.scrollbar.unwrap();
+        assert_eq!(sb.x, 79.0);
+        assert_eq!(sb.width, 1.0);
+        // Right pane is narrower by 1.
+        assert_eq!(sl.right.width, 38.0);
+    }
+
+    #[test]
+    fn split_hit_test_scrollbar() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let sl = TerminalSplitLayout::new(area, 40, 1.0, 1.0, 1.0);
+        assert_eq!(sl.hit_test(79.0, 5.0), TerminalSplitHit::Scrollbar);
+        // Just inside right pane (not scrollbar).
+        assert_eq!(
+            sl.hit_test(78.0, 5.0),
+            TerminalSplitHit::RightPane { col: 37, row: 5 }
+        );
     }
 
     #[test]
