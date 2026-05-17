@@ -194,11 +194,15 @@ impl ListView {
             None
         };
 
-        // Items y starts after the title in flat mode, or after the
-        // top-border inset in bordered mode (the title overlays the
-        // border, not a separate row).
+        // Items start after the title. In bordered mode the title
+        // overlay is title_height tall (line_height on GTK, 1 cell on
+        // TUI); items must clear it so they don't overpaint.
         let items_y_start = if self.bordered {
-            inset_y
+            if title_height > 0.0 {
+                title_height.max(inset_y)
+            } else {
+                inset_y
+            }
         } else {
             title_bounds.map(|b| b.y + b.height).unwrap_or(0.0)
         };

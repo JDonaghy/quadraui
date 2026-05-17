@@ -73,6 +73,12 @@ pub fn draw_list(
     let border_color = cairo_rgb(theme.border_fg);
     let title_color = cairo_rgb(theme.title_fg);
 
+    if list.bordered {
+        cr.save().ok();
+        rounded_rect_path(cr, x, y, w, h, 3.0);
+        cr.clip();
+    }
+
     cr.set_source_rgb(base_bg.0, base_bg.1, base_bg.2);
     cr.rectangle(x, y, w, h);
     cr.fill().ok();
@@ -229,45 +235,22 @@ pub fn draw_list(
     }
 
     if list.bordered {
-        let radius = 3.0_f64;
-        let bx = x + 0.5;
-        let by = y + 0.5;
-        let bw = w - 1.0;
-        let bh = h - 1.0;
-        cr.new_path();
-        cr.arc(
-            bx + bw - radius,
-            by + radius,
-            radius,
-            -std::f64::consts::FRAC_PI_2,
-            0.0,
-        );
-        cr.arc(
-            bx + bw - radius,
-            by + bh - radius,
-            radius,
-            0.0,
-            std::f64::consts::FRAC_PI_2,
-        );
-        cr.arc(
-            bx + radius,
-            by + bh - radius,
-            radius,
-            std::f64::consts::FRAC_PI_2,
-            std::f64::consts::PI,
-        );
-        cr.arc(
-            bx + radius,
-            by + radius,
-            radius,
-            std::f64::consts::PI,
-            3.0 * std::f64::consts::FRAC_PI_2,
-        );
-        cr.close_path();
+        cr.restore().ok();
+        rounded_rect_path(cr, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 3.0);
         cr.set_source_rgb(border_color.0, border_color.1, border_color.2);
         cr.set_line_width(1.0);
         cr.stroke().ok();
     }
 
     layout.set_attributes(None);
+}
+
+fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_path();
+    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
+    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
+    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
 }
