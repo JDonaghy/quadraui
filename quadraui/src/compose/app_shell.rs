@@ -329,18 +329,24 @@ impl AppShell {
         }
 
         if let Some(divider_bounds) = layout.divider_bounds {
-            let divider_bar = StatusBar {
-                id: WidgetId::new("app-shell:divider"),
-                left_segments: vec![StatusBarSegment {
-                    text: " ".repeat(divider_bounds.width.ceil() as usize),
-                    fg: Color::rgb(100, 100, 110),
-                    bg: Color::rgb(100, 100, 110),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let _ = backend.draw_status_bar(divider_bounds, &divider_bar, None, None);
+            let row_text = " ".repeat(divider_bounds.width.ceil() as usize);
+            let rows = (divider_bounds.height / lh).ceil() as usize;
+            for row in 0..rows {
+                let row_y = divider_bounds.y + row as f32 * lh;
+                let row_rect = Rect::new(divider_bounds.x, row_y, divider_bounds.width, lh);
+                let divider_bar = StatusBar {
+                    id: WidgetId::new("app-shell:divider"),
+                    left_segments: vec![StatusBarSegment {
+                        text: row_text.clone(),
+                        fg: Color::rgb(100, 100, 110),
+                        bg: Color::rgb(100, 100, 110),
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                };
+                let _ = backend.draw_status_bar(row_rect, &divider_bar, None, None);
+            }
         }
 
         layout
