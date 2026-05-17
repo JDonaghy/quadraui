@@ -452,9 +452,7 @@ pub fn draw_editor(
                     && cursor_screen_y < buf_area.y + buf_area.height
                 {
                     let cell = &mut buf[(cursor_screen_x, cursor_screen_y)];
-                    let old_fg = cell.fg;
-                    let old_bg = cell.bg;
-                    cell.set_fg(old_bg).set_bg(old_fg);
+                    cell.set_bg(qc(theme.cursor)).set_fg(qc(theme.background));
                 }
             }
             CursorShape::Bar | CursorShape::Underline => {
