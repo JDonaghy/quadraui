@@ -333,8 +333,8 @@ impl AppShell {
                 id: WidgetId::new("app-shell:divider"),
                 left_segments: vec![StatusBarSegment {
                     text: " ".repeat(divider_bounds.width.ceil() as usize),
-                    fg: Color::rgb(60, 60, 60),
-                    bg: Color::rgb(60, 60, 60),
+                    fg: Color::rgb(100, 100, 110),
+                    bg: Color::rgb(100, 100, 110),
                     bold: false,
                     action_id: None,
                 }],
