@@ -1162,11 +1162,52 @@ The session was paused before starting the vimcode-on-macOS port. Key findings t
 
 ### Open queue for next session
 
-- **vimcode-on-macOS Phase 1.** Add `mac` feature + `vimcode-mac` binary + minimal `src/mac/quadraui_mac.rs` module that opens an AppKit window via `quadraui::macos::run` and renders the simplest possible vimcode surface (StatusBar + some text). Pre-work: read vimcode's `CLAUDE.md` + `PLAN.md` + recent session log.
-- **#192** — macOS platform-services smoke example (still open; deprioritised because the vimcode port exercises clipboard / file dialogs / open_url naturally).
-- **`make-release`** — develop → main → tag, when vimcode's pin should move from path-dep to a published version. Not needed while sibling-checkout is the convention.
-- **Win-GUI milestone (#19–#31)** — nothing started; #19 is the entry point. Not reachable from the current macOS host without a Windows VM / cross-compile target.
-- **Future / deferred:** #166 (folder picker), #144 (TabGroup), #65 (SplitDragController), #118 (quadraui-ipc), #115 (quadraui-lua), #180 (GTK palette scrollbar widening), #177 (TUI editor block cursor color — fix recipe in #177 body).
+*Continued in session 2026-05-15/16 below.*
+
+## Session 2026-05-15/16 — Hit-test unification + runtime epic prerequisites
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (8)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 178 | PaletteLayout scrollbar hit-region geometry | A | `PaletteScrollbar` (track+thumb Rects), `ScrollbarThumb`/`ScrollbarTrack` hit variants, item bounds narrowing, `fit_thumb` reuse |
+| 187 | AppShell dynamic panel registration | A | `add_panel`/`remove_panel`/`add_bottom_item`/`remove_bottom_item`, duplicate-ID rejection, active-index adjustment |
+| 193 | TreeController show_scrollbar toggle + scrollbar_width | A | `set_show_scrollbar(false)` suppresses built-in scrollbar, `set_scrollbar_width(Some(8.0))` matches MSV sizing |
+| 196 | TerminalSplitLayout::hit_test() with cell coords | A | `LeftPane { col, row }` / `RightPane { col, row }` / `Scrollbar` variants, `cell_size` + scrollbar fields on layout |
+| 197 | EditorLayout::hit_test() — pixel-to-buffer-position | A | `Editor::layout()`, `EditorHit` enum (BufferPos/Gutter/VScrollbar/HScrollbar/Empty), zone geometry computation |
+| 198 | TabBarLayout::hit_test() | closed (already done) | Full implementation pre-existed: `TabBarHit` enum, hit_regions, comprehensive tests |
+| 200 | GTK SidebarSystem rasteriser | closed (no gap) | `SidebarSystem::render()` → `backend.draw_multi_section_view()` path already complete |
+| 201 | CommandLine primitive | A | New primitive + TUI/GTK rasterisers, `command_line_bg`/`command_line_fg` theme fields, Backend trait method |
+
+### Architectural significance
+
+This session resolved all hit_test prerequisites for the three runtime epics (#202 GTK, #203 TUI, #204 macOS). The dependency chain is now: hit_tests ✓ → `draw_frame` (#199) → runtime loops (#202–204).
+
+### Test count progression
+
+| Checkpoint | New tests added |
+|---|---|
+| #178 PaletteScrollbar | +6 |
+| #187 AppShell dynamic panels | +13 |
+| #193 TreeController scrollbar | +3 |
+| #196 TerminalSplit hit_test | +3 (replaced 5 existing) |
+| #197 EditorLayout | +8 |
+| #201 CommandLine | +2 |
+
+### CLAUDE.md updated
+
+- New **Reference consumer: vimcode** section added (user-driven) — maps quadraui features to vimcode reference implementations for the runtime epics.
+
+### Open queue for next session
+
+- **#199** — `Backend::draw_frame(ScreenLayout)` — single-call frame rendering. Design task: read vimcode's `src/gtk/draw.rs` to understand surface inventory and z-ordering, then design `ScreenLayout` struct.
+- **#202** — Epic: GTK runtime loop (6 stages). Depends on #199.
+- **#203** — Epic: TUI runtime loop (6 stages). Depends on #199.
+- **#204** — Epic: macOS runtime loop. Depends on #202 + #203 patterns.
+- **#205** — GTK context_menu border overdraw (bug fix, small).
+- **Deferred:** #192 (macOS platform services smoke), #184 (macOS menu bar), #180 (GTK palette scrollbar widening), #177 (TUI editor cursor color), #166 (folder picker), #144 (TabGroup), #65 (SplitDragController), #118 (quadraui-ipc), #115 (quadraui-lua), Win-GUI milestone (#19–#31).
 
 ### Process notes
 
