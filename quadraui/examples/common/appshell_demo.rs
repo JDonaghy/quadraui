@@ -7,7 +7,7 @@
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, StatusBar,
+    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
     StatusBarSegment, UiEvent, WidgetId,
 };
 
@@ -101,12 +101,31 @@ impl ShellApp for AppShellDemo {
         backend.draw_status_bar(rect, &main_label, None, None);
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(
+        &mut self,
+        event: UiEvent,
+        _backend: &mut dyn Backend,
+        ctx: &ShellContext,
+    ) -> Reaction {
         match &event {
             UiEvent::KeyPressed { key, .. } => match key {
                 Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
                 _ => Reaction::Continue,
             },
+            UiEvent::MouseDown { position, .. } => {
+                if ctx.in_sidebar(position.x, position.y) {
+                    self.last_event = format!(
+                        "Sidebar click (panel: {})",
+                        ctx.active_panel_id.map(|id| id.as_str()).unwrap_or("none")
+                    );
+                    Reaction::Redraw
+                } else if ctx.in_main(position.x, position.y) {
+                    self.last_event = "Main area click".into();
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
             _ => Reaction::Continue,
         }
     }

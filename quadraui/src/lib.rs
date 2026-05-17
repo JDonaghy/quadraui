@@ -252,7 +252,7 @@ pub use event::{
     Viewport,
 };
 pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
-pub use shell::{ShellApp, ShellConfig};
+pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
 pub use compose::{

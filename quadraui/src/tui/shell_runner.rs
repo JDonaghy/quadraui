@@ -4,7 +4,7 @@
 use crate::compose::app_shell::{AppShell, AppShellEvent, AppShellLayout};
 use crate::event::Rect;
 use crate::runner::{AppLogic, Reaction};
-use crate::shell::{ShellApp, ShellConfig};
+use crate::shell::{ShellApp, ShellConfig, ShellContext};
 use crate::types::WidgetId;
 use crate::{Backend, UiEvent};
 
@@ -56,7 +56,13 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             AppShellEvent::Ignored => {}
         }
 
-        self.app.handle(event, backend)
+        let layout = self.shell.layout(area, backend.line_height());
+        let ctx = ShellContext {
+            active_panel_id: self.active_panel_id.as_ref(),
+            sidebar_visible: self.shell.sidebar_visible(),
+            layout: &layout,
+        };
+        self.app.handle(event, backend, &ctx)
     }
 }
 

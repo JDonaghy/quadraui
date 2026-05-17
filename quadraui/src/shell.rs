@@ -7,6 +7,7 @@
 //! routing — the consumer renders only its own content.
 
 use crate::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
+use crate::event::Rect;
 use crate::types::WidgetId;
 use crate::{Backend, Reaction, UiEvent};
 
@@ -45,6 +46,47 @@ impl ShellConfig {
     }
 }
 
+/// Context passed to [`ShellApp::handle`] so the consumer can route
+/// events by panel without tracking shell state themselves.
+pub struct ShellContext<'a> {
+    /// Currently active sidebar panel, if any.
+    pub active_panel_id: Option<&'a WidgetId>,
+    /// Whether the sidebar is visible.
+    pub sidebar_visible: bool,
+    /// Layout bounds from the last render.
+    pub layout: &'a AppShellLayout,
+}
+
+impl<'a> ShellContext<'a> {
+    /// Check if a mouse position lands inside the sidebar content area.
+    pub fn in_sidebar(&self, x: f32, y: f32) -> bool {
+        if let Some(bounds) = self.layout.sidebar_content_bounds {
+            x >= bounds.x
+                && x < bounds.x + bounds.width
+                && y >= bounds.y
+                && y < bounds.y + bounds.height
+        } else {
+            false
+        }
+    }
+
+    /// Check if a mouse position lands inside the main content area.
+    pub fn in_main(&self, x: f32, y: f32) -> bool {
+        let b = self.layout.main_content_bounds;
+        x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height
+    }
+
+    /// Sidebar content bounds (convenience for coordinate translation).
+    pub fn sidebar_bounds(&self) -> Option<Rect> {
+        self.layout.sidebar_content_bounds
+    }
+
+    /// Main content bounds.
+    pub fn main_bounds(&self) -> Rect {
+        self.layout.main_content_bounds
+    }
+}
+
 /// Application trait for apps that use the AppShell chrome.
 ///
 /// The shell handles: activity bar rendering + clicks, sidebar
@@ -57,10 +99,11 @@ pub trait ShellApp {
     /// the consumer draws sidebar panel content + main content here.
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout);
 
-    /// Handle events the shell didn't consume. Activity bar clicks,
-    /// divider drag, and hover are handled internally; only unhandled
-    /// events reach this method.
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction;
+    /// Handle events the shell didn't consume. The [`ShellContext`]
+    /// provides the active panel ID and layout bounds so the consumer
+    /// can route per-panel without tracking shell state.
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend, ctx: &ShellContext)
+        -> Reaction;
 
     /// Called once after the shell is built. Optional.
     fn setup(&mut self, _backend: &mut dyn Backend) {}
@@ -68,10 +111,4 @@ pub trait ShellApp {
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     fn on_shell_event(&mut self, _event: &AppShellEvent) {}
-
-    /// Access the active panel ID (for content routing in render_content).
-    /// Provided by the shell runner — consumers don't implement this.
-    fn active_panel_id_hint(&self) -> Option<&WidgetId> {
-        None
-    }
 }
