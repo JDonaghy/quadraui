@@ -83,6 +83,7 @@
 //!
 //! Verify all six when adding a new primitive or extending an existing one.
 
+pub mod frame;
 pub mod primitives;
 pub mod theme;
 pub mod types;
@@ -249,6 +250,7 @@ pub use event::{
     BackendNativeEvent, ButtonMask, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent,
     Viewport,
 };
+pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
 
 // Phase B.4 re-exports.
 pub use compose::{
