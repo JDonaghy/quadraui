@@ -67,11 +67,6 @@ pub fn draw_context_menu(
     cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
-    cr.set_source_rgb(border.0, border.1, border.2);
-    cr.set_line_width(1.0);
-    cr.rectangle(bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0);
-    cr.stroke().ok();
-
     let mut rects: Vec<(f64, f64, f64, f64, WidgetId)> = Vec::new();
 
     // Pass 1: backgrounds (separators + selection highlights).
@@ -149,6 +144,12 @@ pub fn draw_context_menu(
             }
         }
     }
+
+    // Pass 3: border on top so selection bg never obscures edges.
+    cr.set_source_rgb(border.0, border.1, border.2);
+    cr.set_line_width(1.0);
+    cr.rectangle(bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0);
+    cr.stroke().ok();
 
     rects
 }
