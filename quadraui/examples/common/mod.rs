@@ -25,6 +25,7 @@
 // unused-import warnings are expected and not actionable here.
 #![allow(dead_code, unused_imports)]
 
+pub mod appshell_demo;
 pub mod chart_app;
 pub mod data_table_app;
 pub mod demo;

@@ -85,6 +85,7 @@
 
 pub mod frame;
 pub mod primitives;
+pub mod shell;
 pub mod theme;
 pub mod types;
 
@@ -251,6 +252,7 @@ pub use event::{
     Viewport,
 };
 pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
+pub use shell::{ShellApp, ShellConfig};
 
 // Phase B.4 re-exports.
 pub use compose::{

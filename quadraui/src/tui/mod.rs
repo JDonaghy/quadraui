@@ -44,6 +44,7 @@ mod rich_text_popup;
 mod run;
 mod scrollbar;
 pub mod services;
+pub mod shell_runner;
 mod spinner;
 mod split;
 mod status_bar;
