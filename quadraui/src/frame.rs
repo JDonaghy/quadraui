@@ -184,13 +184,14 @@ pub enum FrameZone {
 
 /// Hit regions collected during [`ScreenLayout::draw`]. Resolves
 /// absolute coordinates to the highest-z surface that contains them.
+#[derive(Default)]
 pub struct FrameHitMap {
     zones: Vec<(Rect, FrameZone)>,
 }
 
 impl FrameHitMap {
     fn new() -> Self {
-        Self { zones: Vec::new() }
+        Self::default()
     }
 
     fn push(&mut self, rect: Rect, zone: FrameZone) {
