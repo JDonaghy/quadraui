@@ -5,11 +5,9 @@
 //! the same visual contract as the TUI rasteriser; pixel positioning
 //! comes from Pango.
 //!
-//! The `bordered` flag is **not yet honoured** — no GTK consumer
-//! today sets `bordered = true`. If a consumer needs it, add the
-//! rounded-rectangle border + title overlay in this module
-//! (a separate slice of work; see TUI's `tui::list` for the visual
-//! reference).
+//! When [`ListView::bordered`] is `true`, a rounded-rectangle border
+//! is stroked around the list (3px corner radius) with an optional
+//! title overlaid on the top edge. Item rows are inset by the border.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -60,7 +58,11 @@ pub fn draw_list(
         return;
     }
 
-    let bg = cairo_rgb(theme.background);
+    let base_bg = if list.bordered {
+        cairo_rgb(theme.surface_bg)
+    } else {
+        cairo_rgb(theme.background)
+    };
     let hdr_bg = cairo_rgb(theme.header_bg);
     let hdr_fg = cairo_rgb(theme.header_fg);
     let fg = cairo_rgb(theme.surface_fg);
@@ -68,23 +70,45 @@ pub fn draw_list(
     let sel = cairo_rgb(theme.selected_bg);
     let err = cairo_rgb(theme.error_fg);
     let warn = cairo_rgb(theme.warning_fg);
+    let border_color = cairo_rgb(theme.border_fg);
+    let title_color = cairo_rgb(theme.title_fg);
 
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
+    cr.set_source_rgb(base_bg.0, base_bg.1, base_bg.2);
     cr.rectangle(x, y, w, h);
     cr.fill().ok();
 
     layout.set_attributes(None);
 
+    let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
     let title_h = if list.title.is_some() {
         line_height as f32
     } else {
         0.0
     };
-    let list_layout = list.layout(w as f32, h as f32, title_h, |_| {
+    let layout_w = (w - border_inset * 2.0) as f32;
+    let layout_h = (h - border_inset * 2.0) as f32;
+    let list_layout = list.layout(layout_w, layout_h, title_h, |_| {
         ListItemMeasure::new(line_height as f32)
     });
 
-    if let (Some(title_bounds), Some(title)) = (list_layout.title_bounds, list.title.as_ref()) {
+    if list.bordered {
+        if let Some(ref title) = list.title {
+            let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
+            let label = format!(" {} ", title_text.trim());
+            layout.set_text(&label);
+            let (tw, th) = layout.pixel_size();
+            let title_x = x + 8.0;
+            let title_y = y + (line_height - th as f64) / 2.0;
+            cr.set_source_rgb(base_bg.0, base_bg.1, base_bg.2);
+            cr.rectangle(title_x - 2.0, y, tw as f64 + 4.0, line_height);
+            cr.fill().ok();
+            cr.set_source_rgb(title_color.0, title_color.1, title_color.2);
+            cr.move_to(title_x, title_y);
+            pcfn::show_layout(cr, layout);
+        }
+    } else if let (Some(title_bounds), Some(title)) =
+        (list_layout.title_bounds, list.title.as_ref())
+    {
         let ty = y + title_bounds.y as f64;
         let th_px = title_bounds.height as f64;
         cr.set_source_rgb(hdr_bg.0, hdr_bg.1, hdr_bg.2);
@@ -99,9 +123,12 @@ pub fn draw_list(
         pcfn::show_layout(cr, layout);
     }
 
+    let item_x_offset = x + border_inset;
+    let item_y_offset = y + border_inset;
+
     for vis_item in &list_layout.visible_items {
         let item = &list.items[vis_item.item_idx];
-        let row_y = y + vis_item.bounds.y as f64;
+        let row_y = item_y_offset + vis_item.bounds.y as f64;
         let row_w = vis_item.bounds.width as f64;
         let row_h = vis_item.bounds.height as f64;
 
@@ -119,14 +146,14 @@ pub fn draw_list(
         } else if matches!(item.decoration, Decoration::Header) {
             hdr_bg
         } else {
-            bg
+            base_bg
         };
 
         cr.set_source_rgb(row_bg.0, row_bg.1, row_bg.2);
-        cr.rectangle(x, row_y, row_w, row_h);
+        cr.rectangle(item_x_offset, row_y, row_w, row_h);
         cr.fill().ok();
 
-        let mut cursor_x = x + 2.0;
+        let mut cursor_x = item_x_offset + 2.0;
 
         let prefix = if is_selected { "▶ " } else { "  " };
         cr.set_source_rgb(decoration_fg.0, decoration_fg.1, decoration_fg.2);
@@ -157,7 +184,7 @@ pub fn draw_list(
             (detail_text, dw as f64)
         });
         let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
-        let text_right_limit = x + row_w - detail_reserve - 4.0;
+        let text_right_limit = item_x_offset + row_w - detail_reserve - 4.0;
 
         for span in &item.text.spans {
             if cursor_x >= text_right_limit {
@@ -190,7 +217,7 @@ pub fn draw_list(
         }
 
         if let Some((detail_text, dw)) = detail_info {
-            let dx = x + row_w - dw - 4.0;
+            let dx = item_x_offset + row_w - dw - 4.0;
             if dx > cursor_x {
                 cr.set_source_rgb(dim.0, dim.1, dim.2);
                 layout.set_text(&detail_text);
@@ -199,6 +226,47 @@ pub fn draw_list(
                 pcfn::show_layout(cr, layout);
             }
         }
+    }
+
+    if list.bordered {
+        let radius = 3.0_f64;
+        let bx = x + 0.5;
+        let by = y + 0.5;
+        let bw = w - 1.0;
+        let bh = h - 1.0;
+        cr.new_path();
+        cr.arc(
+            bx + bw - radius,
+            by + radius,
+            radius,
+            -std::f64::consts::FRAC_PI_2,
+            0.0,
+        );
+        cr.arc(
+            bx + bw - radius,
+            by + bh - radius,
+            radius,
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+        );
+        cr.arc(
+            bx + radius,
+            by + bh - radius,
+            radius,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+        );
+        cr.arc(
+            bx + radius,
+            by + radius,
+            radius,
+            std::f64::consts::PI,
+            3.0 * std::f64::consts::FRAC_PI_2,
+        );
+        cr.close_path();
+        cr.set_source_rgb(border_color.0, border_color.1, border_color.2);
+        cr.set_line_width(1.0);
+        cr.stroke().ok();
     }
 
     layout.set_attributes(None);
