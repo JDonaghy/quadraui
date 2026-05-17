@@ -1202,12 +1202,50 @@ This session resolved all hit_test prerequisites for the three runtime epics (#2
 
 ### Open queue for next session
 
-- **#199** — `Backend::draw_frame(ScreenLayout)` — single-call frame rendering. Design task: read vimcode's `src/gtk/draw.rs` to understand surface inventory and z-ordering, then design `ScreenLayout` struct.
-- **#202** — Epic: GTK runtime loop (6 stages). Depends on #199.
-- **#203** — Epic: TUI runtime loop (6 stages). Depends on #199.
-- **#204** — Epic: macOS runtime loop. Depends on #202 + #203 patterns.
-- **#205** — GTK context_menu border overdraw (bug fix, small).
-- **Deferred:** #192 (macOS platform services smoke), #184 (macOS menu bar), #180 (GTK palette scrollbar widening), #177 (TUI editor cursor color), #166 (folder picker), #144 (TabGroup), #65 (SplitDragController), #118 (quadraui-ipc), #115 (quadraui-lua), Win-GUI milestone (#19–#31).
+*Continued in session 2026-05-16b below.*
+
+## Session 2026-05-16b — Runtime epics + ScreenLayout + ShellApp
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (6)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 205 | GTK context_menu border overdraw | A | Border stroke moved to Pass 3 (after selection bg) |
+| 177 | TUI editor block cursor color | A | `theme.cursor` / `theme.background` instead of fg/bg swap |
+| 199 | Backend::draw_frame(ScreenLayout) | A | `quadraui::frame` module: `Surface` enum (25 variants), `ScreenLayout` builder, `FrameHitMap::hit_test()` |
+| 202 | Epic: GTK runtime loop (6 stages) | A | All 6 stages resolved via `run_with_shell()` + ShellApp + ShellContext |
+| 203 | Epic: TUI runtime loop (6 stages) | A | Symmetric with #202 — same ShellApp trait drives both backends |
+| — | GTK ListView bordered mode | A | Rounded-rect Cairo border, title overlay, item inset (unblocks vimcode#225) |
+
+### Architecture delivered
+
+**ScreenLayout + FrameHitMap** (`quadraui::frame`):
+- Apps push `Surface` entries in z-order, call `ScreenLayout::draw(backend)`
+- `FrameHitMap::hit_test(x, y)` resolves clicks to the highest-z `FrameZone`
+- Backend trait unchanged — ScreenLayout orchestrates existing draw_* methods
+
+**ShellApp + run_with_shell** (`quadraui::shell` + per-backend runners):
+- `ShellApp` trait: `render_content(backend, layout)` + `handle(event, backend, ctx)`
+- `ShellContext`: `active_panel_id`, `sidebar_visible`, `layout` bounds, `in_sidebar()`/`in_main()` helpers
+- `tui::shell_runner::run_with_shell()` and `gtk::shell_runner::run_with_shell()`
+- Consumer writes ~30 lines; shell owns activity bar, sidebar, divider, panel switching, event routing
+
+**Proven via examples:**
+- `tui_frame_demo` / `gtk_frame_demo` — ScreenLayout rendering + FrameHitMap click dispatch
+- `tui_appshell_demo` / `gtk_appshell_demo` — ShellApp with panel-aware click routing
+
+### Open queue for next session
+
+- **#204** — Epic: macOS runtime loop. Needs macOS backend to be more complete; patterns from #202/#203 are established.
+- **#192** — macOS platform-services smoke example.
+- **#184** — macOS native menu bar via NSMenu.
+- **#180** — GTK Palette scrollbar widening.
+- **#166** — Folder picker primitive.
+- **#144** — TabGroup compose helper.
+- **#65** — SplitDragController.
+- **Deferred:** #118 (quadraui-ipc), #115 (quadraui-lua), Win-GUI milestone (#19–#31).
 
 ### Process notes
 
