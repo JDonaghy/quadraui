@@ -807,13 +807,18 @@ impl Backend for GtkBackend {
             0.0
         };
 
+        let tab_name_widths: Vec<f32> = bar
+            .tabs
+            .iter()
+            .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
+            .collect();
+
         let layout = bar.layout(
             rect.width,
             rect.height,
             0.0, // no scroll arrows — matches the draw path
             |i| {
-                let name_w = self.pango_str_width(&pango_layout, &bar.tabs[i].label, char_w);
-                let total = tab_pad + name_w + close_extra + tab_pad + tab_outer_gap;
+                let total = tab_pad + tab_name_widths[i] + close_extra + tab_pad + tab_outer_gap;
                 let close_w = if bar.show_tab_close {
                     tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap
                 } else {
@@ -827,7 +832,32 @@ impl Backend for GtkBackend {
                 crate::SegmentMeasure::new(text_w)
             },
         );
-        tab_bar_layout_to_hits(&layout, bar)
+
+        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+
+        let active_idx = bar.tabs.iter().position(|t| t.is_active);
+        let reserved_px: f32 = bar
+            .right_segments
+            .iter()
+            .map(|seg| self.pango_str_width(&pango_layout, &seg.text, char_w))
+            .sum();
+        let effective_tab_area = (rect.width - reserved_px).max(0.0);
+
+        hits.correct_scroll_offset = if let Some(active) = active_idx {
+            TabBar::fit_active_scroll_offset(
+                active,
+                bar.tabs.len(),
+                effective_tab_area as usize,
+                |i| {
+                    (tab_pad + tab_name_widths[i] + close_extra + tab_pad + tab_outer_gap).ceil()
+                        as usize
+                },
+            )
+        } else {
+            bar.scroll_offset
+        };
+
+        hits
     }
 
     fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
