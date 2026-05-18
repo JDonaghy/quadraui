@@ -782,7 +782,7 @@ impl Backend for GtkBackend {
         let char_w = self.current_char_width as f32;
         let lh = self.current_line_height as f32;
         let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
-        bar.layout(rect.width, lh, char_w * 2.0, |seg| {
+        bar.layout(rect.width, lh, crate::gtk::MIN_GAP_PX, |seg| {
             let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
             crate::StatusSegmentMeasure::new(text_w)
         })
@@ -790,20 +790,36 @@ impl Backend for GtkBackend {
 
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
         let char_w = self.current_char_width as f32;
-        let lh = self.current_line_height as f32;
         let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+
+        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
+        let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
+
+        let close_glyph_w = if bar.show_tab_close {
+            self.pango_str_width(&pango_layout, "×", char_w)
+        } else {
+            0.0
+        };
+        let close_extra = if bar.show_tab_close {
+            tab_inner_gap + close_glyph_w
+        } else {
+            0.0
+        };
+
         let layout = bar.layout(
             rect.width,
             rect.height,
-            lh * 1.5,
+            0.0, // no scroll arrows — matches the draw path
             |i| {
-                let text_w = self.pango_str_width(&pango_layout, &bar.tabs[i].label, char_w);
+                let name_w = self.pango_str_width(&pango_layout, &bar.tabs[i].label, char_w);
+                let total = tab_pad + name_w + close_extra + tab_pad + tab_outer_gap;
                 let close_w = if bar.show_tab_close {
-                    self.pango_str_width(&pango_layout, " × ", char_w)
+                    tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap
                 } else {
                     0.0
                 };
-                crate::TabMeasure::new(text_w + close_w, close_w)
+                crate::TabMeasure::new(total, close_w)
             },
             |i| {
                 let text_w =
@@ -815,8 +831,7 @@ impl Backend for GtkBackend {
     }
 
     fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
-        let lh = self.current_line_height as f32;
-        activity_bar_hits(rect, bar, lh)
+        activity_bar_hits(rect, bar, crate::gtk::ACTIVITY_ROW_PX as f32)
     }
 
     fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {

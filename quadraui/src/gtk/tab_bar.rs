@@ -1,21 +1,20 @@
 //! GTK rasteriser for [`crate::TabBar`].
 //!
-//! Paints the tab bar onto a [`Context`] using a [`pango::Layout`] for
-//! text measurement. Computes per-tab Pango pixel widths internally
-//! (Pango interior-mutability requires a single layout handle that
-//! both measures and paints, so splitting the work across the call
-//! boundary would force callers to thread the handle through twice).
+//! Calls [`TabBar::layout`] with Pango pixel measurers to produce a
+//! [`TabBarLayout`], then paints from the resolved `visible_tabs` and
+//! `visible_segments`. Paint and hit-test consume one layout — no
+//! independent geometry derivation.
 //!
-//! Returns a generic [`TabBarHits`] so callers can resolve clicks
-//! using their own segment-id conventions; vimcode walks the result
-//! to construct its app-specific `TabBarHitInfo`.
+//! Returns a [`TabBarHits`] (converted from the layout) so callers can
+//! resolve clicks using their own segment-id conventions.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
-use crate::primitives::tab_bar::{TabBar, TabBarHits};
+use crate::backend::tab_bar_layout_to_hits;
+use crate::primitives::tab_bar::{SegmentMeasure, TabBar, TabBarHits, TabMeasure};
 use crate::theme::Theme;
 
 /// Per-tab padding (left + right) inside the tab background fill.
@@ -53,7 +52,7 @@ const TAB_OUTER_GAP: f64 = 1.0;
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tab_bar(
     cr: &Context,
-    layout: &pango::Layout,
+    pango_layout: &pango::Layout,
     width: f64,
     line_height: f64,
     y_offset: f64,
@@ -74,96 +73,77 @@ pub fn draw_tab_bar(
     cr.rectangle(0.0, y_offset, width, tab_row_height);
     cr.fill().ok();
 
-    layout.set_attributes(None);
-    let saved_font = layout.font_description().unwrap_or_default();
+    pango_layout.set_attributes(None);
+    let saved_font = pango_layout.font_description().unwrap_or_default();
     let normal_font = saved_font.clone();
     let mut italic_font = normal_font.clone();
     italic_font.set_style(pango::Style::Italic);
 
-    // ── Right-segment Pango widths (no painting yet) ──────────────────
-    let mut right_widths: Vec<f64> = Vec::with_capacity(bar.right_segments.len());
-    for seg in &bar.right_segments {
-        layout.set_font_description(Some(&normal_font));
-        layout.set_text(&seg.text);
-        let (w, _) = layout.pixel_size();
-        right_widths.push(w as f64);
-    }
-    let reserved_px: f64 = right_widths.iter().sum();
-    let effective_tab_area = (width - reserved_px).max(0.0);
-
-    // ── Per-tab measurement ──────────────────────────────────────────
-    let close_w = if bar.show_tab_close {
-        layout.set_font_description(Some(&normal_font));
-        layout.set_text("×");
-        let (w, _) = layout.pixel_size();
+    // ── Pre-measure close glyph ─────────────────────────────────────
+    let close_glyph_w = if bar.show_tab_close {
+        pango_layout.set_font_description(Some(&normal_font));
+        pango_layout.set_text("×");
+        let (w, _) = pango_layout.pixel_size();
         w as f64
     } else {
         0.0
     };
 
-    // Pre-measure every tab's full slot width (label + padding +
-    // close button + outer gap). Used both to compute the correct
-    // scroll offset AND for the per-tab paint loop below.
     let close_extra = if bar.show_tab_close {
-        tab_inner_gap + close_w
+        tab_inner_gap + close_glyph_w
     } else {
         0.0
     };
-    let tab_slot_widths: Vec<f64> = bar
+
+    // ── Pre-measure tabs → TabMeasure ───────────────────────────────
+    let tab_name_widths: Vec<f64> = bar
         .tabs
         .iter()
         .map(|tab| {
             if tab.is_preview {
-                layout.set_font_description(Some(&italic_font));
+                pango_layout.set_font_description(Some(&italic_font));
             } else {
-                layout.set_font_description(Some(&normal_font));
+                pango_layout.set_font_description(Some(&normal_font));
             }
-            layout.set_text(&tab.label);
-            let (name_w, _) = layout.pixel_size();
-            tab_pad + name_w as f64 + close_extra + tab_pad + tab_outer_gap
+            pango_layout.set_text(&tab.label);
+            let (name_w, _) = pango_layout.pixel_size();
+            name_w as f64
         })
         .collect();
 
-    let active_idx = bar.tabs.iter().position(|t| t.is_active);
-    let correct_scroll_offset = if let Some(active) = active_idx {
-        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
-            tab_slot_widths[i] as usize
-        })
-    } else {
-        bar.scroll_offset
+    let measure_tab = |i: usize| -> TabMeasure {
+        let name_w = tab_name_widths[i] as f32;
+        let total =
+            tab_pad as f32 + name_w + close_extra as f32 + tab_pad as f32 + tab_outer_gap as f32;
+        let close_w = if bar.show_tab_close {
+            (tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap) as f32
+        } else {
+            0.0
+        };
+        TabMeasure::new(total, close_w)
     };
 
-    // ── Tabs paint loop ──────────────────────────────────────────────
-    let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
-    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
-    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
-        slot_positions.push((0.0, 0.0));
-        close_bounds.push(None);
-    }
+    let measure_segment = |i: usize| -> SegmentMeasure {
+        pango_layout.set_font_description(Some(&normal_font));
+        pango_layout.set_text(&bar.right_segments[i].text);
+        let (w, _) = pango_layout.pixel_size();
+        SegmentMeasure::new(w as f32)
+    };
 
-    let mut x = 0.0_f64;
-    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
-        if tab.is_preview {
-            layout.set_font_description(Some(&italic_font));
-        } else {
-            layout.set_font_description(Some(&normal_font));
-        }
-        layout.set_text(&tab.label);
-        let (tab_name_w, _) = layout.pixel_size();
-        let tab_w = tab_name_w as f64;
-        let tab_content_w = tab_pad + tab_w + close_extra + tab_pad;
-        let slot_w = tab_content_w + tab_outer_gap;
-        if x + slot_w > effective_tab_area {
-            break;
-        }
-        slot_positions.push((x, x + slot_w));
-        if bar.show_tab_close {
-            let close_x = x + tab_pad + tab_w + tab_inner_gap;
-            let close_pad = 2.0;
-            close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
-        } else {
-            close_bounds.push(None);
-        }
+    // ── Compute layout — single source of truth ─────────────────────
+    let layout = bar.layout(
+        width as f32,
+        row_height as f32,
+        0.0, // no scroll arrows in GTK
+        measure_tab,
+        measure_segment,
+    );
+
+    // ── Paint tabs from layout ──────────────────────────────────────
+    for vt in &layout.visible_tabs {
+        let tab = &bar.tabs[vt.tab_idx];
+        let tab_x = vt.bounds.x as f64;
+        let tab_visual_w = vt.bounds.width as f64 - tab_outer_gap;
 
         // Tab background.
         let bg_col = if tab.is_active {
@@ -172,7 +152,7 @@ pub fn draw_tab_bar(
             theme.tab_bar_bg
         };
         set_source(cr, bg_col);
-        cr.rectangle(x, y_offset, tab_content_w, tab_row_height);
+        cr.rectangle(tab_x, y_offset, tab_visual_w, tab_row_height);
         cr.fill().ok();
 
         // Top accent line for active tab in focused group.
@@ -180,7 +160,7 @@ pub fn draw_tab_bar(
             if let Some(accent) = bar.active_accent {
                 let (ar, ag, ab) = cairo_rgb(accent);
                 cr.set_source_rgb(ar, ag, ab);
-                cr.rectangle(x, y_offset, tab_content_w, 2.0);
+                cr.rectangle(tab_x, y_offset, tab_visual_w, 2.0);
                 cr.fill().ok();
             }
         }
@@ -193,117 +173,137 @@ pub fn draw_tab_bar(
             (false, false) => theme.tab_inactive_fg,
         };
         set_source(cr, fg_col);
-        layout.set_font_description(Some(if tab.is_preview {
+        pango_layout.set_font_description(Some(if tab.is_preview {
             &italic_font
         } else {
             &normal_font
         }));
-        cr.move_to(x + tab_pad, text_y_offset);
-        pcfn::show_layout(cr, layout);
+        pango_layout.set_text(&tab.label);
+        cr.move_to(tab_x + tab_pad, text_y_offset);
+        pcfn::show_layout(cr, pango_layout);
 
         if bar.show_tab_close {
-            // Close (×) or dirty (●) glyph — with optional rounded hover bg.
-            let close_x = x + tab_pad + tab_w + tab_inner_gap;
-            let is_close_hovered = hovered_close_tab == Some(tab_idx);
-            if is_close_hovered {
-                let pad = 2.0;
-                let rx = close_x - pad;
-                let ry = text_y_offset + pad;
-                let rw = close_w + pad * 2.0;
-                let rh = line_height - pad * 2.0;
-                let (hr, hg, hb) = cairo_rgb(theme.foreground);
-                cr.set_source_rgba(hr, hg, hb, 0.15);
-                let radius = 3.0;
-                cr.new_path();
-                cr.arc(
-                    rx + rw - radius,
-                    ry + radius,
-                    radius,
-                    -std::f64::consts::FRAC_PI_2,
-                    0.0,
-                );
-                cr.arc(
-                    rx + rw - radius,
-                    ry + rh - radius,
-                    radius,
-                    0.0,
-                    std::f64::consts::FRAC_PI_2,
-                );
-                cr.arc(
-                    rx + radius,
-                    ry + rh - radius,
-                    radius,
-                    std::f64::consts::FRAC_PI_2,
-                    std::f64::consts::PI,
-                );
-                cr.arc(
-                    rx + radius,
-                    ry + radius,
-                    radius,
-                    std::f64::consts::PI,
-                    3.0 * std::f64::consts::FRAC_PI_2,
-                );
-                cr.close_path();
-                cr.fill().ok();
-            }
-            let close_glyph = if tab.is_dirty && !is_close_hovered {
-                "●"
-            } else {
-                "×"
-            };
-            let close_fg = if tab.is_dirty || is_close_hovered {
-                theme.foreground
-            } else if tab.is_active {
-                theme.tab_inactive_fg
-            } else {
-                theme.separator
-            };
-            set_source(cr, close_fg);
-            layout.set_font_description(Some(&normal_font));
-            layout.set_text(close_glyph);
-            cr.move_to(close_x, text_y_offset);
-            pcfn::show_layout(cr, layout);
-        }
+            if let Some(cb) = vt.close_bounds {
+                let close_x = cb.x as f64 + tab_inner_gap;
+                let is_close_hovered = hovered_close_tab == Some(vt.tab_idx);
 
-        x += slot_w;
+                // Rounded hover background behind close glyph.
+                if is_close_hovered {
+                    let pad = 2.0;
+                    let rx = close_x - pad;
+                    let ry = text_y_offset + pad;
+                    let rw = close_glyph_w + pad * 2.0;
+                    let rh = line_height - pad * 2.0;
+                    let (hr, hg, hb) = cairo_rgb(theme.foreground);
+                    cr.set_source_rgba(hr, hg, hb, 0.15);
+                    let radius = 3.0;
+                    cr.new_path();
+                    cr.arc(
+                        rx + rw - radius,
+                        ry + radius,
+                        radius,
+                        -std::f64::consts::FRAC_PI_2,
+                        0.0,
+                    );
+                    cr.arc(
+                        rx + rw - radius,
+                        ry + rh - radius,
+                        radius,
+                        0.0,
+                        std::f64::consts::FRAC_PI_2,
+                    );
+                    cr.arc(
+                        rx + radius,
+                        ry + rh - radius,
+                        radius,
+                        std::f64::consts::FRAC_PI_2,
+                        std::f64::consts::PI,
+                    );
+                    cr.arc(
+                        rx + radius,
+                        ry + radius,
+                        radius,
+                        std::f64::consts::PI,
+                        3.0 * std::f64::consts::FRAC_PI_2,
+                    );
+                    cr.close_path();
+                    cr.fill().ok();
+                }
+
+                let close_glyph = if tab.is_dirty && !is_close_hovered {
+                    "●"
+                } else {
+                    "×"
+                };
+                let close_fg = if tab.is_dirty || is_close_hovered {
+                    theme.foreground
+                } else if tab.is_active {
+                    theme.tab_inactive_fg
+                } else {
+                    theme.separator
+                };
+                set_source(cr, close_fg);
+                pango_layout.set_font_description(Some(&normal_font));
+                pango_layout.set_text(close_glyph);
+                cr.move_to(close_x, text_y_offset);
+                pcfn::show_layout(cr, pango_layout);
+            }
+        }
     }
 
-    // ── Right segments paint loop ────────────────────────────────────
-    let right_base = width - reserved_px;
-    let mut right_segment_bounds: Vec<(f64, f64)> = Vec::with_capacity(bar.right_segments.len());
-    let mut sx = right_base;
-    for (i, seg) in bar.right_segments.iter().enumerate() {
-        let seg_w = right_widths[i];
+    // ── Right segments from layout ──────────────────────────────────
+    for vs in &layout.visible_segments {
+        let seg = &bar.right_segments[vs.segment_idx];
         let fg_col = if seg.is_active {
             theme.tab_active_fg
         } else {
             theme.tab_inactive_fg
         };
         set_source(cr, fg_col);
-        layout.set_font_description(Some(&normal_font));
-        layout.set_text(&seg.text);
-        cr.move_to(sx, text_y_offset);
-        pcfn::show_layout(cr, layout);
-        right_segment_bounds.push((sx, sx + seg_w));
-        sx += seg_w;
+        pango_layout.set_font_description(Some(&normal_font));
+        pango_layout.set_text(&seg.text);
+        cr.move_to(vs.bounds.x as f64, text_y_offset);
+        pcfn::show_layout(cr, pango_layout);
     }
 
-    // Sample measurement for char-col estimation. The 15-char string
-    // mirrors what vimcode's pre-lift renderer used.
-    layout.set_font_description(Some(&normal_font));
-    layout.set_text("ABCDabcd0123.:_");
-    let (sample_px, _) = layout.pixel_size();
+    // ── Correct scroll offset (engine feedback) ─────────────────────
+    let active_idx = bar.tabs.iter().position(|t| t.is_active);
+    let seg_widths: Vec<f64> = bar
+        .right_segments
+        .iter()
+        .map(|seg| {
+            pango_layout.set_font_description(Some(&normal_font));
+            pango_layout.set_text(&seg.text);
+            let (w, _) = pango_layout.pixel_size();
+            w as f64
+        })
+        .collect();
+    let reserved_px: f64 = seg_widths.iter().sum();
+    let effective_tab_area = (width - reserved_px).max(0.0);
+
+    let correct_scroll_offset = if let Some(active) = active_idx {
+        let tab_slot_widths: Vec<f64> = (0..bar.tabs.len())
+            .map(|i| tab_name_widths[i] + tab_pad * 2.0 + close_extra + tab_outer_gap)
+            .collect();
+        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
+            tab_slot_widths[i] as usize
+        })
+    } else {
+        bar.scroll_offset
+    };
+
+    // ── Sample measurement for char-col estimation ──────────────────
+    pango_layout.set_font_description(Some(&normal_font));
+    pango_layout.set_text("ABCDabcd0123.:_");
+    let (sample_px, _) = pango_layout.pixel_size();
     let char_w = (sample_px as f64 / 15.0).max(1.0);
     let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
 
     // Restore caller's font.
-    layout.set_font_description(Some(&saved_font));
+    pango_layout.set_font_description(Some(&saved_font));
 
-    TabBarHits {
-        slot_positions,
-        close_bounds,
-        right_segment_bounds,
-        available_cols,
-        correct_scroll_offset,
-    }
+    let mut hits = tab_bar_layout_to_hits(&layout, bar);
+    hits.correct_scroll_offset = correct_scroll_offset;
+    hits.available_cols = available_cols;
+    hits
 }

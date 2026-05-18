@@ -27,7 +27,7 @@ use crate::types::WidgetId;
 /// the existing vimcode GTK behaviour. Right segments are dropped from
 /// the front (least important first) until they fit while preserving
 /// this gap.
-const MIN_GAP_PX: f32 = 16.0;
+pub const MIN_GAP_PX: f32 = 16.0;
 
 /// Draw a [`StatusBar`] into `(x, y, width, line_height)` on `cr`.
 ///
