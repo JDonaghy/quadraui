@@ -44,6 +44,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
@@ -579,6 +580,38 @@ impl Backend for TuiBackend {
             .current_frame_mut()
             .expect("TuiBackend::draw_activity_bar called outside enter_frame_scope");
         crate::tui::draw_activity_bar(frame.buffer_mut(), area, bar, &theme, hovered_idx)
+    }
+
+    fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
+        bar.layout(rect.width, 1.0, MIN_GAP_CELLS, |seg| {
+            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        })
+    }
+
+    fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
+        let close_cols = if bar.show_tab_close {
+            crate::tui::TAB_CLOSE_COLS as usize
+        } else {
+            0
+        };
+        let tab_widths: Vec<usize> = bar
+            .tabs
+            .iter()
+            .map(|t| t.label.chars().count() + close_cols)
+            .collect();
+        let layout = bar.layout(
+            rect.width,
+            rect.height,
+            0.0,
+            |i| crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
+            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+        );
+        tab_bar_layout_to_hits(&layout, bar)
+    }
+
+    fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
+        let lh = 1.0_f32;
+        activity_bar_hits(rect, bar, lh)
     }
 
     fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {
@@ -1168,6 +1201,25 @@ mod tests {
         fn draw_terminal(&mut self, _r: QRect, _t: &TerminalPrim) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
+        fn status_bar_layout(&self, _r: QRect, _b: &StatusBar) -> crate::StatusBarLayout {
+            crate::StatusBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_segments: Vec::new(),
+                hit_regions: Vec::new(),
+                resolved_right_start: 0,
+            }
+        }
+        fn tab_bar_layout(&self, _r: QRect, _b: &TabBar) -> crate::TabBarHits {
+            crate::TabBarHits::default()
+        }
+        fn activity_bar_layout(
+            &self,
+            _r: QRect,
+            _b: &ActivityBar,
+        ) -> Vec<crate::ActivityBarRowHit> {
+            Vec::new()
+        }
         fn text_display_layout(
             &self,
             r: QRect,

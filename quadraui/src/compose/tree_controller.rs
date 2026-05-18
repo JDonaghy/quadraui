@@ -1358,6 +1358,25 @@ mod tests {
         fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
+        fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
+            crate::StatusBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_segments: Vec::new(),
+                hit_regions: Vec::new(),
+                resolved_right_start: 0,
+            }
+        }
+        fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
+            crate::TabBarHits::default()
+        }
+        fn activity_bar_layout(
+            &self,
+            _r: Rect,
+            _b: &crate::primitives::activity_bar::ActivityBar,
+        ) -> Vec<crate::ActivityBarRowHit> {
+            Vec::new()
+        }
         fn text_display_layout(
             &self,
             _r: Rect,

@@ -44,6 +44,7 @@ use std::time::Duration;
 use gtk4::cairo::Context;
 use gtk4::pango;
 
+use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
@@ -775,6 +776,47 @@ impl Backend for GtkBackend {
             &self.current_theme,
             hovered_idx,
         )
+    }
+
+    fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
+        let char_w = self.current_char_width as f32;
+        let lh = self.current_line_height as f32;
+        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        bar.layout(rect.width, lh, char_w * 2.0, |seg| {
+            let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
+            crate::StatusSegmentMeasure::new(text_w)
+        })
+    }
+
+    fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
+        let char_w = self.current_char_width as f32;
+        let lh = self.current_line_height as f32;
+        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let layout = bar.layout(
+            rect.width,
+            rect.height,
+            lh * 1.5,
+            |i| {
+                let text_w = self.pango_str_width(&pango_layout, &bar.tabs[i].label, char_w);
+                let close_w = if bar.show_tab_close {
+                    self.pango_str_width(&pango_layout, " × ", char_w)
+                } else {
+                    0.0
+                };
+                crate::TabMeasure::new(text_w + close_w, close_w)
+            },
+            |i| {
+                let text_w =
+                    self.pango_str_width(&pango_layout, &bar.right_segments[i].text, char_w);
+                crate::SegmentMeasure::new(text_w)
+            },
+        );
+        tab_bar_layout_to_hits(&layout, bar)
+    }
+
+    fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
+        let lh = self.current_line_height as f32;
+        activity_bar_hits(rect, bar, lh)
     }
 
     fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {

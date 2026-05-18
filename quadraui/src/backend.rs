@@ -35,7 +35,7 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-use crate::primitives::tab_bar::TabBarHits;
+use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -223,6 +223,20 @@ pub trait Backend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit>;
+
+    /// Compute the status bar layout without painting. Same measurement
+    /// logic as `draw_status_bar` — call after `ScreenLayout::draw()` to
+    /// recover hit regions for click dispatch.
+    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
+
+    /// Compute the tab bar layout without painting. Returns the same
+    /// `TabBarHits` as `draw_tab_bar` for slot positions, close bounds,
+    /// and scroll-offset reconciliation.
+    fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
+
+    /// Compute activity bar row hit regions without painting.
+    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
+
     /// Draw a terminal cell grid. No hit-region data is returned;
     /// terminal selection is driven by mouse drag against cell
     /// dimensions, which the app already tracks.
@@ -425,6 +439,62 @@ pub trait Backend {
 
     /// Compute chart layout without painting.
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;
+}
+
+// ── Shared layout helpers ───────────────────────────────────────────────
+
+/// Convert a `TabBarLayout` to the legacy `TabBarHits` struct.
+pub fn tab_bar_layout_to_hits(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
+    let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
+    let mut close_bounds = vec![None; bar.tabs.len()];
+    let mut right_segment_bounds = Vec::new();
+
+    for vt in &layout.visible_tabs {
+        let b = vt.bounds;
+        slot_positions[vt.tab_idx] = (b.x as f64, (b.x + b.width) as f64);
+        if let Some(cb) = vt.close_bounds {
+            close_bounds[vt.tab_idx] = Some((cb.x as f64, (cb.x + cb.width) as f64));
+        }
+    }
+    for vs in &layout.visible_segments {
+        let b = vs.bounds;
+        right_segment_bounds.push((b.x as f64, (b.x + b.width) as f64));
+    }
+
+    TabBarHits {
+        slot_positions,
+        close_bounds,
+        right_segment_bounds,
+        available_cols: layout.bar_width as usize,
+        correct_scroll_offset: layout.resolved_scroll_offset,
+    }
+}
+
+/// Compute activity bar hit regions from geometry (no paint).
+pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<ActivityBarRowHit> {
+    let mut hits = Vec::new();
+    let mut y = 0.0_f32;
+    for item in &bar.top_items {
+        hits.push(ActivityBarRowHit {
+            id: item.id.clone(),
+            tooltip: item.tooltip.clone(),
+            y_start: y as f64,
+            y_end: (y + lh) as f64,
+        });
+        y += lh;
+    }
+    let bottom_start = rect.height - bar.bottom_items.len() as f32 * lh;
+    let mut by = bottom_start.max(y);
+    for item in &bar.bottom_items {
+        hits.push(ActivityBarRowHit {
+            id: item.id.clone(),
+            tooltip: item.tooltip.clone(),
+            y_start: by as f64,
+            y_end: (by + lh) as f64,
+        });
+        by += lh;
+    }
+    hits
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries
