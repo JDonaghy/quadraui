@@ -90,7 +90,7 @@ pub use run::run;
 pub use scrollbar::draw_scrollbar;
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::{draw_split, gtk_split_layout};
-pub use status_bar::draw_status_bar;
+pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 pub use tab_bar::draw_tab_bar;
 pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 pub use text_display::{draw_text_display, gtk_text_display_layout};
