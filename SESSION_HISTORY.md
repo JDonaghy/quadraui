@@ -1254,3 +1254,40 @@ This session resolved all hit_test prerequisites for the three runtime epics (#2
 - **Rebase onto remote develop happened once** (issue-189 branch), after PR #193 (TreeController scrollbar) landed on develop in parallel from a different session. Clean rebase, fast-forward push.
 - **Pre-existing 18 clippy errors on develop** continue to gate `-D warnings`. Confirmed unchanged across the session — every PR's clippy check verified the count stayed at 18 (no regressions). Cleanup is a separate sweep, not in scope for any of the macOS work.
 - **GTK build skipped** all session — local machine doesn't have GTK/Pango installed; per `quadraui/docs/TESTING.md` that's a CI concern. TUI + macOS gates ran on every PR locally.
+
+## Session 2026-05-18 — GTK rasteriser layout-first refactor
+
+**Agent:** Claude Opus 4.6 (1M context)
+
+### Issues closed (1)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 211 | GTK rasterisers must consume layout for paint — status_bar, tab_bar, activity_bar | B (PR #212) | draw_tab_bar and draw_activity_bar refactored to call bar.layout() first; _layout() methods aligned |
+
+### Changes delivered
+
+**GTK `draw_tab_bar`** — refactored from inline geometry computation to layout-first:
+- Pre-measures tab widths + close glyph with Pango, builds `TabMeasure`/`SegmentMeasure`
+- Calls `bar.layout()` to get `TabBarLayout` — single source of truth for positions
+- Paints tabs from `layout.visible_tabs`, segments from `layout.visible_segments`
+- Converts to `TabBarHits` via `tab_bar_layout_to_hits()`
+
+**GTK `draw_activity_bar`** — refactored to layout-first:
+- Calls `bar.layout(width, height, ACTIVITY_ROW_PX)` instead of inline row arithmetic
+- Iterates `layout.visible_items` using `ActivitySide::Top/Bottom`
+
+**`_layout()` methods aligned with draw paths:**
+- `activity_bar_layout`: uses `ACTIVITY_ROW_PX` (48px) instead of `current_line_height`
+- `tab_bar_layout`: same padding constants + `scroll_arrow_width=0` as draw path
+- `status_bar_layout`: uses `MIN_GAP_PX` (16px) matching the rasteriser
+
+### Smoke testing notes
+
+- `gtk_demo`: only keyboard controls (arrow keys, n/x/q) — no mouse handlers. Pre-existing.
+- `kubeui-gtk`: tree view click handling never wired up in `resolve_click()`. Pre-existing.
+- Both render correctly after the refactor.
+
+### Open queue for next session
+
+Same as previous session — no new issues filed.
