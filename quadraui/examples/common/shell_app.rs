@@ -201,6 +201,14 @@ impl AppLogic for ShellApp {
                 self.last_message = format!("Sidebar width: {:.0}", new_width);
                 return Reaction::Redraw;
             }
+            AppShellEvent::BottomPanelResized { new_height } => {
+                self.last_message = format!("Bottom panel: {new_height:.0}px");
+                return Reaction::Redraw;
+            }
+            AppShellEvent::BottomPanelHidden => {
+                self.last_message = "Bottom panel hidden".into();
+                return Reaction::Redraw;
+            }
             AppShellEvent::BottomItemClicked { id } => {
                 self.last_message = format!("Settings clicked ({})", id.as_str());
                 return Reaction::Redraw;

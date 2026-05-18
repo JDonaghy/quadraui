@@ -48,6 +48,14 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 self.app.on_shell_event(&shell_ev);
                 return Reaction::Redraw;
             }
+            AppShellEvent::BottomPanelResized { .. } => {
+                self.app.on_shell_event(&shell_ev);
+                return Reaction::Redraw;
+            }
+            AppShellEvent::BottomPanelHidden => {
+                self.app.on_shell_event(&shell_ev);
+                return Reaction::Redraw;
+            }
             AppShellEvent::BottomItemClicked { .. } => {
                 self.app.on_shell_event(&shell_ev);
                 return Reaction::Redraw;
@@ -68,11 +76,29 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 
 /// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
 pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
-    let shell = AppShell::new(config.panels, config.default_sidebar_width)
+    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
         .with_max_width(config.max_sidebar_width)
         .with_position(config.position);
+
+    if config.has_title_bar {
+        shell = shell.with_title_bar(config.title_bar_height_lh);
+    }
+    if config.has_bottom_panel {
+        shell = shell
+            .with_bottom_panel(config.bottom_panel_height_lh)
+            .with_bottom_panel_limits(
+                config.min_bottom_panel_height_lh,
+                config.max_bottom_panel_height_lh,
+            );
+    }
+    if config.has_command_line {
+        shell = shell.with_command_line();
+    }
+    if config.has_status_bar {
+        shell = shell.with_status_bar();
+    }
 
     let active_panel_id = shell.active_panel_id().cloned();
 

@@ -32,6 +32,7 @@ pub mod demo;
 pub mod form_groups;
 pub mod form_scroll;
 pub mod frame_demo;
+pub mod full_chrome_demo;
 pub mod hscroll_editor;
 pub mod indicators_app;
 pub mod menu_bar_app;

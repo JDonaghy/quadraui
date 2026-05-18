@@ -15,19 +15,19 @@
 //!   subsequent frame.
 //! - [`crate::Reaction`] dispatch (Continue / Redraw / Exit).
 //!
-//! ## Single vs multi-area
+//! ## Single-DA model (decided: #217 Stage 1)
 //!
-//! The first runner ships with a **single-area** model: one
-//! `DrawingArea`, one `set_draw_func` callback, one
-//! `app.render(backend, AreaId::default())` invocation per redraw.
+//! The runner uses a **single-DrawingArea** model: one DA, one
+//! `set_draw_func`, one `app.render(backend, AreaId::default())` per
+//! redraw. Zone routing (sidebar, main, status bar, etc.) is handled
+//! entirely by `AppShell::compute_layout` + `FrameHitMap` hit-testing
+//! — not by multiple GTK DAs.
 //!
-//! Apps with multiple independently-painted surfaces (vimcode's
-//! per-DrawingArea model with ~20 distinct DAs) need a richer shape.
-//! The associated-type [`crate::AppLogic::AreaId`] is the trait-level
-//! plumbing for that future work — once a multi-area runner ships,
-//! it will pass the AreaId for whichever DA is repainting and the
-//! single trait method body branches on `area`. Stage B (this file)
-//! proves the trait shape end-to-end on the simple case.
+//! This was a deliberate decision (#217). All vimcode paint paths
+//! already go through quadraui primitives (vimcode#446), so per-zone
+//! DAs add GTK widget-tree complexity without benefit. The
+//! `AppLogic::AreaId` associated type remains in the trait as a
+//! compatibility seam but is always `()` in practice.
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -44,6 +44,8 @@ pub enum AppShellEvent {
     PanelChanged { panel_id: WidgetId },
     SidebarHidden,
     SidebarResized { new_width: f32 },
+    BottomPanelResized { new_height: f32 },
+    BottomPanelHidden,
     BottomItemClicked { id: WidgetId },
     Consumed,
     Ignored,
@@ -52,18 +54,22 @@ pub enum AppShellEvent {
 /// Layout bounds returned by [`AppShell::render`] and [`AppShell::layout`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppShellLayout {
+    pub title_bar_bounds: Option<Rect>,
     pub activity_bar_bounds: Rect,
     pub sidebar_header_bounds: Option<Rect>,
     pub sidebar_content_bounds: Option<Rect>,
     pub divider_bounds: Option<Rect>,
     pub main_content_bounds: Rect,
+    pub bottom_panel_bounds: Option<Rect>,
+    pub command_line_bounds: Option<Rect>,
+    pub status_bar_bounds: Option<Rect>,
 }
 
 // ── AppShell ─────────────────────────────────────────────────────────
 
-/// All width fields are stored as **multiples of `line_height`** so
-/// they are portable across TUI (cells) and GUI (pixels) backends.
-/// `compute_layout()` resolves them: `width_native = field * lh`.
+/// All width/height fields are stored as **multiples of `line_height`**
+/// so they are portable across TUI (cells) and GUI (pixels) backends.
+/// `compute_layout()` resolves them: `dimension_native = field * lh`.
 pub struct AppShell {
     panels: Vec<PanelDefinition>,
     bottom_items: Vec<PanelDefinition>,
@@ -78,6 +84,17 @@ pub struct AppShell {
     position: ShellPosition,
     drag_offset: Option<f32>,
     hovered_activity_idx: Option<usize>,
+    // ── Chrome slot config ───────────────────────────────────────
+    has_title_bar: bool,
+    title_bar_height_lh: f32,
+    has_bottom_panel: bool,
+    bottom_panel_height_lh: f32,
+    min_bottom_panel_height_lh: f32,
+    max_bottom_panel_height_lh: f32,
+    bottom_panel_visible: bool,
+    has_command_line: bool,
+    has_status_bar: bool,
+    bottom_panel_drag_offset: Option<f32>,
     /// Cached hit regions from the last `render()` call. `handle()`
     /// dispatches clicks against these so paint and click agree on
     /// row positions — the structural fix for the GTK ACTIVITY_ROW_PX
@@ -103,6 +120,16 @@ impl AppShell {
             position: ShellPosition::Left,
             drag_offset: None,
             hovered_activity_idx: None,
+            has_title_bar: false,
+            title_bar_height_lh: 1.5,
+            has_bottom_panel: false,
+            bottom_panel_height_lh: 10.0,
+            min_bottom_panel_height_lh: 3.0,
+            max_bottom_panel_height_lh: 30.0,
+            bottom_panel_visible: true,
+            has_command_line: false,
+            has_status_bar: false,
+            bottom_panel_drag_offset: None,
             cached_activity_hits: RefCell::new(Vec::new()),
             cached_activity_bar_bounds: RefCell::new(None),
         }
@@ -130,6 +157,34 @@ impl AppShell {
 
     pub fn with_position(mut self, position: ShellPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    pub fn with_title_bar(mut self, height_lh: f32) -> Self {
+        self.has_title_bar = true;
+        self.title_bar_height_lh = height_lh;
+        self
+    }
+
+    pub fn with_bottom_panel(mut self, height_lh: f32) -> Self {
+        self.has_bottom_panel = true;
+        self.bottom_panel_height_lh = height_lh;
+        self
+    }
+
+    pub fn with_bottom_panel_limits(mut self, min: f32, max: f32) -> Self {
+        self.min_bottom_panel_height_lh = min;
+        self.max_bottom_panel_height_lh = max;
+        self
+    }
+
+    pub fn with_command_line(mut self) -> Self {
+        self.has_command_line = true;
+        self
+    }
+
+    pub fn with_status_bar(mut self) -> Self {
+        self.has_status_bar = true;
         self
     }
 
@@ -181,6 +236,33 @@ impl AppShell {
 
     pub fn set_sidebar_width(&mut self, width: f32) {
         self.sidebar_width = width.clamp(self.min_sidebar_width, self.max_sidebar_width);
+    }
+
+    pub fn bottom_panel_visible(&self) -> bool {
+        self.has_bottom_panel && self.bottom_panel_visible
+    }
+
+    pub fn bottom_panel_height(&self) -> f32 {
+        self.bottom_panel_height_lh
+    }
+
+    pub fn show_bottom_panel(&mut self) {
+        self.bottom_panel_visible = true;
+    }
+
+    pub fn hide_bottom_panel(&mut self) {
+        self.bottom_panel_visible = false;
+    }
+
+    pub fn toggle_bottom_panel(&mut self) {
+        self.bottom_panel_visible = !self.bottom_panel_visible;
+    }
+
+    pub fn set_bottom_panel_height(&mut self, height: f32) {
+        self.bottom_panel_height_lh = height.clamp(
+            self.min_bottom_panel_height_lh,
+            self.max_bottom_panel_height_lh,
+        );
     }
 
     // ── Dynamic panel registration ──────────────────────────────────
@@ -378,6 +460,14 @@ impl AppShell {
                     }
                 }
 
+                if let Some(bp) = layout.bottom_panel_bounds {
+                    let grip = Rect::new(bp.x, bp.y - 3.0, bp.width, 6.0);
+                    if contains(grip, p) {
+                        self.bottom_panel_drag_offset = Some(p.y - bp.y);
+                        return AppShellEvent::Consumed;
+                    }
+                }
+
                 if contains(layout.activity_bar_bounds, p) {
                     if let Some(hit) = self.cached_activity_hit(p) {
                         return self.handle_activity_click(&hit);
@@ -415,6 +505,21 @@ impl AppShell {
                         new_width: clamped * lh,
                     };
                 }
+                if let Some(offset) = self.bottom_panel_drag_offset {
+                    let bottom_edge = area.y + area.height;
+                    let new_native = bottom_edge - (position.y - offset);
+                    let status_lh = if self.has_status_bar { 1.0 } else { 0.0 };
+                    let cmd_lh = if self.has_command_line { 1.0 } else { 0.0 };
+                    let new_lh = new_native / lh - status_lh - cmd_lh;
+                    let clamped = new_lh.clamp(
+                        self.min_bottom_panel_height_lh,
+                        self.max_bottom_panel_height_lh,
+                    );
+                    self.bottom_panel_height_lh = clamped;
+                    return AppShellEvent::BottomPanelResized {
+                        new_height: clamped * lh,
+                    };
+                }
                 self.update_hover(position, &layout, lh);
                 AppShellEvent::Ignored
             }
@@ -431,6 +536,9 @@ impl AppShell {
                 if self.drag_offset.take().is_some() {
                     return AppShellEvent::Consumed;
                 }
+                if self.bottom_panel_drag_offset.take().is_some() {
+                    return AppShellEvent::Consumed;
+                }
                 AppShellEvent::Ignored
             }
 
@@ -442,34 +550,82 @@ impl AppShell {
 
     fn compute_layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
         let lh = line_height.max(1.0);
+
+        // ── Vertical carve: title bar (top), then status/cmd/bottom (bottom) ──
+
+        let mut band_y = area.y;
+        let mut band_h = area.height;
+
+        let title_bar_bounds = if self.has_title_bar {
+            let h = (self.title_bar_height_lh * lh).round();
+            let r = Rect::new(area.x, band_y, area.width, h);
+            band_y += h;
+            band_h -= h;
+            Some(r)
+        } else {
+            None
+        };
+
+        let status_bar_bounds = if self.has_status_bar {
+            let h = lh.round();
+            band_h -= h;
+            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+        } else {
+            None
+        };
+
+        let command_line_bounds = if self.has_command_line {
+            let h = lh.round();
+            band_h -= h;
+            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+        } else {
+            None
+        };
+
+        let bottom_panel_bounds = if self.has_bottom_panel && self.bottom_panel_visible {
+            let h = (self.bottom_panel_height_lh.clamp(
+                self.min_bottom_panel_height_lh,
+                self.max_bottom_panel_height_lh,
+            ) * lh)
+                .round();
+            let h = h.min(band_h * 0.6);
+            band_h -= h;
+            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+        } else {
+            None
+        };
+
+        let band_h = band_h.max(0.0);
+
+        // ── Horizontal carve: activity bar + sidebar + divider + main ──
+
         let ab_w = (self.activity_bar_width * lh).round();
         let divider_w = (lh * 0.25).max(1.0).round().min(4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
             let (ab_bounds, main_bounds) = match self.position {
                 ShellPosition::Left => (
-                    Rect::new(area.x, area.y, ab_w, area.height),
-                    Rect::new(
-                        area.x + ab_w,
-                        area.y,
-                        (area.width - ab_w).max(0.0),
-                        area.height,
-                    ),
+                    Rect::new(area.x, band_y, ab_w, band_h),
+                    Rect::new(area.x + ab_w, band_y, (area.width - ab_w).max(0.0), band_h),
                 ),
                 ShellPosition::Right => {
                     let ab_x = area.x + area.width - ab_w;
                     (
-                        Rect::new(ab_x.max(area.x), area.y, ab_w, area.height),
-                        Rect::new(area.x, area.y, (area.width - ab_w).max(0.0), area.height),
+                        Rect::new(ab_x.max(area.x), band_y, ab_w, band_h),
+                        Rect::new(area.x, band_y, (area.width - ab_w).max(0.0), band_h),
                     )
                 }
             };
             return AppShellLayout {
+                title_bar_bounds,
                 activity_bar_bounds: ab_bounds,
                 sidebar_header_bounds: None,
                 sidebar_content_bounds: None,
                 divider_bounds: None,
                 main_content_bounds: main_bounds,
+                bottom_panel_bounds,
+                command_line_bounds,
+                status_bar_bounds,
             };
         }
 
@@ -484,47 +640,55 @@ impl AppShell {
 
         match self.position {
             ShellPosition::Left => {
-                let ab_bounds = Rect::new(area.x, area.y, ab_w, area.height);
+                let ab_bounds = Rect::new(area.x, band_y, ab_w, band_h);
                 let sidebar_x = area.x + ab_w;
-                let header_bounds = Rect::new(sidebar_x, area.y, sidebar_w, header_h);
-                let content_y = area.y + header_h;
-                let content_h = (area.height - header_h).max(0.0);
+                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
+                let content_y = band_y + header_h;
+                let content_h = (band_h - header_h).max(0.0);
                 let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
                 let div_x = sidebar_x + sidebar_w;
-                let div_bounds = Rect::new(div_x, area.y, divider_w, area.height);
+                let div_bounds = Rect::new(div_x, band_y, divider_w, band_h);
                 let main_x = div_x + divider_w;
                 let main_w = (area.x + area.width - main_x).max(0.0);
-                let main_bounds = Rect::new(main_x, area.y, main_w, area.height);
+                let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
 
                 AppShellLayout {
+                    title_bar_bounds,
                     activity_bar_bounds: ab_bounds,
                     sidebar_header_bounds: Some(header_bounds),
                     sidebar_content_bounds: Some(content_bounds),
                     divider_bounds: Some(div_bounds),
                     main_content_bounds: main_bounds,
+                    bottom_panel_bounds,
+                    command_line_bounds,
+                    status_bar_bounds,
                 }
             }
             ShellPosition::Right => {
                 let ab_x = area.x + area.width - ab_w;
-                let ab_bounds = Rect::new(ab_x.max(area.x), area.y, ab_w, area.height);
+                let ab_bounds = Rect::new(ab_x.max(area.x), band_y, ab_w, band_h);
                 let sidebar_x = ab_x - sidebar_w;
-                let header_bounds = Rect::new(sidebar_x.max(area.x), area.y, sidebar_w, header_h);
-                let content_y = area.y + header_h;
-                let content_h = (area.height - header_h).max(0.0);
+                let header_bounds = Rect::new(sidebar_x.max(area.x), band_y, sidebar_w, header_h);
+                let content_y = band_y + header_h;
+                let content_h = (band_h - header_h).max(0.0);
                 let content_bounds =
                     Rect::new(sidebar_x.max(area.x), content_y, sidebar_w, content_h);
                 let div_x = sidebar_x - divider_w;
-                let div_bounds = Rect::new(div_x.max(area.x), area.y, divider_w, area.height);
+                let div_bounds = Rect::new(div_x.max(area.x), band_y, divider_w, band_h);
                 let main_x = area.x;
                 let main_w = (div_x - area.x).max(0.0);
-                let main_bounds = Rect::new(main_x, area.y, main_w, area.height);
+                let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
 
                 AppShellLayout {
+                    title_bar_bounds,
                     activity_bar_bounds: ab_bounds,
                     sidebar_header_bounds: Some(header_bounds),
                     sidebar_content_bounds: Some(content_bounds),
                     divider_bounds: Some(div_bounds),
                     main_content_bounds: main_bounds,
+                    bottom_panel_bounds,
+                    command_line_bounds,
+                    status_bar_bounds,
                 }
             }
         }
@@ -1082,6 +1246,153 @@ mod tests {
             area(),
         );
         assert_eq!(ev, AppShellEvent::Ignored);
+    }
+
+    // ── Chrome slot layout ─────────────────────────────────────────
+
+    fn full_chrome_shell() -> AppShell {
+        AppShell::new(sample_panels(), 30.0)
+            .with_bottom_items(sample_bottom())
+            .with_title_bar(1.5)
+            .with_bottom_panel(8.0)
+            .with_bottom_panel_limits(3.0, 25.0)
+            .with_command_line()
+            .with_status_bar()
+    }
+
+    #[test]
+    fn chrome_slots_none_when_not_configured() {
+        let s = shell();
+        let l = s.layout(area(), 1.0);
+        assert!(l.title_bar_bounds.is_none());
+        assert!(l.bottom_panel_bounds.is_none());
+        assert!(l.command_line_bounds.is_none());
+        assert!(l.status_bar_bounds.is_none());
+    }
+
+    #[test]
+    fn chrome_slots_present_when_configured() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        assert!(l.title_bar_bounds.is_some());
+        assert!(l.bottom_panel_bounds.is_some());
+        assert!(l.command_line_bounds.is_some());
+        assert!(l.status_bar_bounds.is_some());
+    }
+
+    #[test]
+    fn title_bar_at_top_edge() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let tb = l.title_bar_bounds.unwrap();
+        assert_eq!(tb.y, 0.0);
+        assert_eq!(tb.x, 0.0);
+        assert_eq!(tb.width, area().width);
+    }
+
+    #[test]
+    fn status_bar_at_bottom_edge() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let sb = l.status_bar_bounds.unwrap();
+        let sb_bottom = sb.y + sb.height;
+        assert!((sb_bottom - area().height).abs() < 0.01);
+        assert_eq!(sb.width, area().width);
+    }
+
+    #[test]
+    fn command_line_above_status_bar() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let cl = l.command_line_bounds.unwrap();
+        let sb = l.status_bar_bounds.unwrap();
+        assert!((cl.y + cl.height - sb.y).abs() < 0.01);
+    }
+
+    #[test]
+    fn bottom_panel_above_command_line() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let bp = l.bottom_panel_bounds.unwrap();
+        let cl = l.command_line_bounds.unwrap();
+        assert!((bp.y + bp.height - cl.y).abs() < 0.01);
+    }
+
+    #[test]
+    fn middle_band_between_title_and_bottom() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let tb = l.title_bar_bounds.unwrap();
+        let bp = l.bottom_panel_bounds.unwrap();
+        let ab_top = l.activity_bar_bounds.y;
+        let ab_bottom = l.activity_bar_bounds.y + l.activity_bar_bounds.height;
+        assert!((ab_top - (tb.y + tb.height)).abs() < 0.01);
+        assert!((ab_bottom - bp.y).abs() < 0.01);
+    }
+
+    #[test]
+    fn chrome_vertical_no_overlap_no_gap() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let tb = l.title_bar_bounds.unwrap();
+        let bp = l.bottom_panel_bounds.unwrap();
+        let cl = l.command_line_bounds.unwrap();
+        let sb = l.status_bar_bounds.unwrap();
+        let middle_h = l.activity_bar_bounds.height;
+        let total = tb.height + middle_h + bp.height + cl.height + sb.height;
+        assert!(
+            (total - area().height).abs() < 1.0,
+            "total={total}, expected={}",
+            area().height
+        );
+    }
+
+    #[test]
+    fn bottom_panel_hidden_no_bounds() {
+        let mut s = full_chrome_shell();
+        s.hide_bottom_panel();
+        let l = s.layout(area(), 1.0);
+        assert!(l.bottom_panel_bounds.is_none());
+        assert!(l.command_line_bounds.is_some());
+        assert!(l.status_bar_bounds.is_some());
+    }
+
+    #[test]
+    fn bottom_panel_toggle() {
+        let mut s = full_chrome_shell();
+        assert!(s.bottom_panel_visible());
+        s.toggle_bottom_panel();
+        assert!(!s.bottom_panel_visible());
+        s.toggle_bottom_panel();
+        assert!(s.bottom_panel_visible());
+    }
+
+    #[test]
+    fn set_bottom_panel_height_clamps() {
+        let mut s = full_chrome_shell();
+        s.set_bottom_panel_height(1.0);
+        assert_eq!(s.bottom_panel_height(), 3.0);
+        s.set_bottom_panel_height(999.0);
+        assert_eq!(s.bottom_panel_height(), 25.0);
+    }
+
+    #[test]
+    fn bottom_panel_resize_drag() {
+        let mut s = full_chrome_shell();
+        s.bottom_panel_drag_offset = Some(0.0);
+        let ev = s.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(40.0, 18.0),
+                buttons: ButtonMask {
+                    left: true,
+                    middle: false,
+                    right: false,
+                },
+            },
+            &MockBackend,
+            area(),
+        );
+        assert!(matches!(ev, AppShellEvent::BottomPanelResized { .. }));
     }
 
     // ── Mock backend for handle() tests ─────────────────────────────

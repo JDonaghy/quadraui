@@ -27,16 +27,14 @@
 //! access also gives apps `services()` (clipboard, dialogs) and
 //! `modal_stack_mut()` for free in the event handler.
 //!
-//! # Multi-area shape (#270 Stage B)
+//! # AreaId associated type
 //!
-//! The trait carries an [`AppLogic::AreaId`] associated type so apps
-//! with multiple independently-painted surfaces (typical of GTK with
-//! multiple `DrawingArea` widgets) route paints to the right surface
-//! via [`AppLogic::render(_, area)`].
-//!
-//! Single-area apps (the typical TUI shape — one frame per redraw)
-//! can use `type AreaId = ();` and ignore the parameter. The TUI
-//! runner always passes `Default::default()`.
+//! The trait carries an [`AppLogic::AreaId`] associated type. In
+//! practice all runners (GTK single-DA, TUI) use `type AreaId = ()`
+//! and pass `Default::default()`. The single-DA model was locked in
+//! by #217: zone routing is handled by `AppShell::compute_layout` +
+//! `FrameHitMap` hit-testing, not by multiple GTK DrawingAreas. The
+//! associated type is retained as a compatibility seam.
 
 use crate::backend::Backend;
 use crate::event::UiEvent;
@@ -64,24 +62,10 @@ pub enum Reaction {
 /// and tear-down. The app owns its state (`&mut self`), per-frame
 /// rendering, and event dispatch.
 pub trait AppLogic {
-    /// App-defined identifier for distinct render targets. Single-area
-    /// apps (typical TUI shape) use `type AreaId = ();` and the unit
-    /// type's `Default` impl satisfies the bound. GTK apps with
-    /// multiple `DrawingArea` widgets define a custom enum:
-    ///
-    /// ```ignore
-    /// #[derive(Copy, Clone, Eq, PartialEq, Debug, Default, Hash)]
-    /// enum MyArea {
-    ///     #[default]
-    ///     Editor,
-    ///     Sidebar,
-    ///     StatusBar,
-    /// }
-    /// ```
-    ///
-    /// The TUI runner always passes `Default::default()` to
-    /// [`Self::render`]. Multi-area runners pass the area whose
-    /// surface is being repainted.
+    /// Identifier for distinct render targets. All current runners
+    /// use `type AreaId = ()` — zone routing is handled by
+    /// `AppShell::compute_layout` + `FrameHitMap`, not multiple DAs
+    /// (#217). Retained as a compatibility seam.
     type AreaId: Copy + Eq + std::fmt::Debug + Default;
 
     /// One-time setup hook. Called by the runner after backend

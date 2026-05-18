@@ -20,6 +20,14 @@ pub struct ShellConfig {
     pub min_sidebar_width: f32,
     pub max_sidebar_width: f32,
     pub position: ShellPosition,
+    pub has_title_bar: bool,
+    pub title_bar_height_lh: f32,
+    pub has_bottom_panel: bool,
+    pub bottom_panel_height_lh: f32,
+    pub min_bottom_panel_height_lh: f32,
+    pub max_bottom_panel_height_lh: f32,
+    pub has_command_line: bool,
+    pub has_status_bar: bool,
 }
 
 impl ShellConfig {
@@ -32,6 +40,14 @@ impl ShellConfig {
             min_sidebar_width: 8.0,
             max_sidebar_width: 50.0,
             position: ShellPosition::Left,
+            has_title_bar: false,
+            title_bar_height_lh: 1.5,
+            has_bottom_panel: false,
+            bottom_panel_height_lh: 10.0,
+            min_bottom_panel_height_lh: 3.0,
+            max_bottom_panel_height_lh: 30.0,
+            has_command_line: false,
+            has_status_bar: false,
         }
     }
 
@@ -42,6 +58,34 @@ impl ShellConfig {
 
     pub fn with_position(mut self, position: ShellPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    pub fn with_title_bar(mut self, height_lh: f32) -> Self {
+        self.has_title_bar = true;
+        self.title_bar_height_lh = height_lh;
+        self
+    }
+
+    pub fn with_bottom_panel(mut self, height_lh: f32) -> Self {
+        self.has_bottom_panel = true;
+        self.bottom_panel_height_lh = height_lh;
+        self
+    }
+
+    pub fn with_bottom_panel_limits(mut self, min: f32, max: f32) -> Self {
+        self.min_bottom_panel_height_lh = min;
+        self.max_bottom_panel_height_lh = max;
+        self
+    }
+
+    pub fn with_command_line(mut self) -> Self {
+        self.has_command_line = true;
+        self
+    }
+
+    pub fn with_status_bar(mut self) -> Self {
+        self.has_status_bar = true;
         self
     }
 }
@@ -60,20 +104,32 @@ pub struct ShellContext<'a> {
 impl<'a> ShellContext<'a> {
     /// Check if a mouse position lands inside the sidebar content area.
     pub fn in_sidebar(&self, x: f32, y: f32) -> bool {
-        if let Some(bounds) = self.layout.sidebar_content_bounds {
-            x >= bounds.x
-                && x < bounds.x + bounds.width
-                && y >= bounds.y
-                && y < bounds.y + bounds.height
-        } else {
-            false
-        }
+        rect_contains_opt(self.layout.sidebar_content_bounds, x, y)
     }
 
     /// Check if a mouse position lands inside the main content area.
     pub fn in_main(&self, x: f32, y: f32) -> bool {
-        let b = self.layout.main_content_bounds;
-        x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height
+        rect_contains(self.layout.main_content_bounds, x, y)
+    }
+
+    /// Check if a mouse position lands inside the bottom panel.
+    pub fn in_bottom_panel(&self, x: f32, y: f32) -> bool {
+        rect_contains_opt(self.layout.bottom_panel_bounds, x, y)
+    }
+
+    /// Check if a mouse position lands inside the title bar.
+    pub fn in_title_bar(&self, x: f32, y: f32) -> bool {
+        rect_contains_opt(self.layout.title_bar_bounds, x, y)
+    }
+
+    /// Check if a mouse position lands inside the status bar.
+    pub fn in_status_bar(&self, x: f32, y: f32) -> bool {
+        rect_contains_opt(self.layout.status_bar_bounds, x, y)
+    }
+
+    /// Check if a mouse position lands inside the command line.
+    pub fn in_command_line(&self, x: f32, y: f32) -> bool {
+        rect_contains_opt(self.layout.command_line_bounds, x, y)
     }
 
     /// Sidebar content bounds (convenience for coordinate translation).
@@ -85,6 +141,34 @@ impl<'a> ShellContext<'a> {
     pub fn main_bounds(&self) -> Rect {
         self.layout.main_content_bounds
     }
+
+    /// Bottom panel bounds.
+    pub fn bottom_panel_bounds(&self) -> Option<Rect> {
+        self.layout.bottom_panel_bounds
+    }
+
+    /// Title bar bounds.
+    pub fn title_bar_bounds(&self) -> Option<Rect> {
+        self.layout.title_bar_bounds
+    }
+
+    /// Status bar bounds.
+    pub fn status_bar_bounds(&self) -> Option<Rect> {
+        self.layout.status_bar_bounds
+    }
+
+    /// Command line bounds.
+    pub fn command_line_bounds(&self) -> Option<Rect> {
+        self.layout.command_line_bounds
+    }
+}
+
+fn rect_contains(r: Rect, x: f32, y: f32) -> bool {
+    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+fn rect_contains_opt(r: Option<Rect>, x: f32, y: f32) -> bool {
+    r.is_some_and(|r| rect_contains(r, x, y))
 }
 
 /// Application trait for apps that use the AppShell chrome.
