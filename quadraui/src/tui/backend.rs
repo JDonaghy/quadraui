@@ -606,7 +606,26 @@ impl Backend for TuiBackend {
             |i| crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
-        tab_bar_layout_to_hits(&layout, bar)
+
+        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+
+        let active_idx = bar.tabs.iter().position(|t| t.is_active);
+        let reserved: usize = bar
+            .right_segments
+            .iter()
+            .map(|s| s.width_cells as usize)
+            .sum();
+        let effective_tab_area = (rect.width as usize).saturating_sub(reserved);
+
+        hits.correct_scroll_offset = if let Some(active) = active_idx {
+            TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area, |i| {
+                tab_widths[i]
+            })
+        } else {
+            bar.scroll_offset
+        };
+
+        hits
     }
 
     fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
