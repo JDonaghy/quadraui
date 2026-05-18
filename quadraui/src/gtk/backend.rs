@@ -781,7 +781,8 @@ impl Backend for GtkBackend {
     fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
         let char_w = self.current_char_width as f32;
         let lh = self.current_line_height as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
         bar.layout(rect.width, lh, crate::gtk::MIN_GAP_PX, |seg| {
             let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
             crate::StatusSegmentMeasure::new(text_w)
@@ -790,7 +791,8 @@ impl Backend for GtkBackend {
 
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
 
         let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
