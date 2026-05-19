@@ -132,6 +132,20 @@ fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, b
     }
 }
 
+/// Terminal cell width of a character. Uses the `unicode-width` crate's
+/// UAX#11 tables, with a range-based fallback for the Nerd Font
+/// Supplement PUA range (`U+F0000`–`U+F9999`) which terminals render
+/// as double-width but `unicode-width` returns `None` for.
+fn cell_width(c: char) -> u16 {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(
+        if ('\u{F0000}'..='\u{F9999}').contains(&c) {
+            2
+        } else {
+            1
+        },
+    ) as u16
+}
+
 /// Convert a `quadraui::Color` to a ratatui palette colour, with `qc` as
 /// the short name internal modules use (mirrors vimcode's tui rasteriser
 /// helper of the same name).

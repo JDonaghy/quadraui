@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
-use super::{ratatui_color, set_cell};
+use super::{cell_width, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusSegmentSide};
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -97,13 +97,18 @@ pub fn draw_status_bar(
             if cx >= bar_end {
                 break;
             }
-            set_cell(buf, cx, y, ch, fg, bg);
+            let w = cell_width(ch);
+            if w == 2 && cx + 1 < bar_end {
+                set_cell_wide(buf, cx, y, ch, fg, bg);
+            } else {
+                set_cell(buf, cx, y, ch, fg, bg);
+            }
             if seg.bold {
                 if let Some(cell) = buf.cell_mut(Position::new(cx, y)) {
                     cell.set_style(Style::default().add_modifier(Modifier::BOLD));
                 }
             }
-            cx += 1;
+            cx += w;
         }
     }
     layout.clone()

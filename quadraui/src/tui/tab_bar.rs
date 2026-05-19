@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide};
+use super::{cell_width, ratatui_color, set_cell, set_cell_styled, set_cell_wide};
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout};
 use crate::theme::Theme;
 
@@ -25,20 +25,6 @@ pub const TAB_CLOSE_CHAR: char = '×';
 /// layout pass this as the `close_width` so the layout reserves the
 /// right amount of trailing space.
 pub const TAB_CLOSE_COLS: u16 = 2;
-
-/// Narrow hardcoded set of Private Use Area glyphs that render as 2
-/// cells in terminals and therefore need [`set_cell_wide`]. The wide-glyph
-/// predicate is empirical — extend this list as new wide Nerd Font
-/// icons appear in tab bars / status bars.
-fn is_nerd_wide(c: char) -> bool {
-    matches!(
-        c,
-        '\u{F0932}' // SPLIT_RIGHT
-        | '\u{F0143}' // DIFF_PREV
-        | '\u{F0140}' // DIFF_NEXT
-        | '\u{F0233}' // DIFF_FOLD
-    )
-}
 
 /// Draw a [`TabBar`] into `area` on `buf`. Returns the **tab-content
 /// width** in cells (`area.width - reserved_by_right_segments`) so
@@ -57,8 +43,8 @@ fn is_nerd_wide(c: char) -> bool {
 /// - **Preview tab:** `*_preview_*_fg` and [`Modifier::ITALIC`]; combines
 ///   with the underline accent when active.
 /// - **Right segments:** painted in `tab_inactive_fg` (or
-///   `tab_active_fg` when `seg.is_active`). Glyphs in the
-///   wide-Nerd-Font set use [`set_cell_wide`].
+///   `tab_active_fg` when `seg.is_active`). Double-width glyphs
+///   (per `unicode-width`) use [`set_cell_wide`].
 pub fn draw_tab_bar(
     buf: &mut Buffer,
     area: Rect,
@@ -101,10 +87,8 @@ pub fn draw_tab_bar(
             if cx >= seg_end {
                 break;
             }
-            if ch == ' ' {
-                set_cell(buf, cx, area.y, ' ', fg, bar_bg);
-                cx += 1;
-            } else if is_nerd_wide(ch) {
+            let w = cell_width(ch);
+            if w == 2 {
                 if cx + 1 < seg_end + 1 {
                     set_cell_wide(buf, cx, area.y, ch, fg, bar_bg);
                     cx += 2;
