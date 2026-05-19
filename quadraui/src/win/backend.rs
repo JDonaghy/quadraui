@@ -280,6 +280,10 @@ impl Backend for WinBackend {
         todo!("Direct2D scrollbar rasteriser")
     }
 
+    fn draw_drop_overlay(&mut self, _overlay: &crate::primitives::drop_zone::DropOverlay) {
+        todo!("Direct2D drop overlay rasteriser")
+    }
+
     fn draw_menu_bar(&mut self, _rect: Rect, _bar: &MenuBar) -> MenuBarLayout {
         todo!("Direct2D menu bar rasteriser")
     }

@@ -1568,6 +1568,7 @@ mod tests {
         ) {
         }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
+        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
         fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
             unimplemented!()
         }

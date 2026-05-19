@@ -853,6 +853,14 @@ impl Backend for TuiBackend {
         crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
     }
 
+    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_drop_overlay called outside enter_frame_scope");
+        crate::tui::draw_drop_overlay(frame.buffer_mut(), overlay, &theme);
+    }
+
     fn draw_menu_bar(
         &mut self,
         rect: QRect,
@@ -1346,6 +1354,7 @@ mod tests {
         }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
+        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
 
         fn draw_menu_bar(
             &mut self,
