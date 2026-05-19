@@ -132,6 +132,15 @@ fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, b
     }
 }
 
+/// Terminal cell width of a character. Uses the `unicode-width` crate's
+/// UAX#11 tables, which match what most terminals do internally. Returns
+/// 1 for unassigned / PUA codepoints (including Nerd Font glyphs) since
+/// `UnicodeWidthChar::width()` returns `None` for those — most terminals
+/// render PUA glyphs as single-width unless overridden by a font config.
+fn cell_width(c: char) -> u16 {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u16
+}
+
 /// Convert a `quadraui::Color` to a ratatui palette colour, with `qc` as
 /// the short name internal modules use (mirrors vimcode's tui rasteriser
 /// helper of the same name).
