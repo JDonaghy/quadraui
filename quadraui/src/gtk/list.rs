@@ -13,7 +13,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 use pangocairo::functions as pcfn;
 
-use super::cairo_rgb;
+use super::{cairo_rgb, rounded_rect_path};
 use crate::primitives::list::{ListItemMeasure, ListView};
 use crate::theme::Theme;
 use crate::types::Decoration;
@@ -243,14 +243,4 @@ pub fn draw_list(
     }
 
     layout.set_attributes(None);
-}
-
-fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    use std::f64::consts::{FRAC_PI_2, PI};
-    cr.new_path();
-    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
-    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
-    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
-    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
-    cr.close_path();
 }

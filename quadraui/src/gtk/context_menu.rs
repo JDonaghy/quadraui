@@ -1,7 +1,7 @@
 //! GTK rasteriser for [`crate::ContextMenu`].
 //!
 //! Cairo + Pango equivalent of `quadraui::tui::draw_context_menu`.
-//! Draws a rectangle (background fill + 1 px stroke border), then
+//! Draws a rounded rectangle (3px corner radius, bg fill + 1 px stroke), then
 //! per-item rows (selection bg for the focused item, separator as a
 //! thin horizontal line, optional right-aligned shortcut text).
 //!
@@ -13,7 +13,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 use pangocairo::functions as pcfn;
 
-use super::cairo_rgb;
+use super::{cairo_rgb, rounded_rect_path};
 use crate::accelerator::{render_accelerator, Platform};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
 use crate::theme::Theme;
@@ -63,8 +63,9 @@ pub fn draw_context_menu(
     let sel = cairo_rgb(theme.selected_bg);
     let dim = cairo_rgb(theme.muted_fg);
 
+    let radius = 3.0;
+    rounded_rect_path(cr, bx, by, bw, bh, radius);
     cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
     let mut rects: Vec<(f64, f64, f64, f64, WidgetId)> = Vec::new();
@@ -146,9 +147,9 @@ pub fn draw_context_menu(
     }
 
     // Pass 3: border on top so selection bg never obscures edges.
+    rounded_rect_path(cr, bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0, radius);
     cr.set_source_rgb(border.0, border.1, border.2);
     cr.set_line_width(1.0);
-    cr.rectangle(bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0);
     cr.stroke().ok();
 
     rects

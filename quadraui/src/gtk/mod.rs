@@ -112,6 +112,19 @@ pub fn set_source(cr: &Context, c: Color) {
     cr.set_source_rgb(r, g, b);
 }
 
+/// Build a closed rounded-rectangle Cairo path with corner radius `r`.
+/// Used by rasterisers that need bordered/clipped rounded rects
+/// (context menu, list view, command center).
+pub(crate) fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_path();
+    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
+    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
+    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
+}
+
 /// Re-export so apps can name the Pango layout type without depending
 /// on `gtk4::pango` directly.
 pub use pango::Layout as PangoLayout;
