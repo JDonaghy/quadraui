@@ -275,30 +275,82 @@ pub fn draw_rich_text_popup(
         cr.fill().ok();
     }
 
-    // Restore the layout's font_description so subsequent popup /
-    // overlay paints in the same frame use the editor font, not the
-    // UI font we set above. (#247 second symptom.)
+    // Link hit regions — computed from Pango's index_to_pos so link
+    // rects match the proportional-font glyphs the rasteriser actually
+    // painted. The primitive's layout.link_hit_regions (computed from
+    // the consumer's measure closure) are inaccurate for proportional
+    // fonts (#230). We re-derive them here using the same pango_layout
+    // + attrs the line was rendered with.
+    let mut link_rects: Vec<(f64, f64, f64, f64, String)> = Vec::new();
+    for vis in &layout.visible_lines {
+        let line_idx = vis.line_idx;
+        let line_x = vis.bounds.x as f64;
+        let row_y = vis.bounds.y as f64;
+        let row_h = vis.bounds.height as f64;
+        let raw_text = popup
+            .line_text
+            .get(line_idx)
+            .map(String::as_str)
+            .unwrap_or("");
+
+        let links_on_line: Vec<(usize, &crate::primitives::rich_text_popup::RichTextLink)> = popup
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.line == line_idx)
+            .collect();
+        if links_on_line.is_empty() {
+            continue;
+        }
+
+        // Re-set the line text + attrs so index_to_pos is accurate.
+        pango_layout.set_text(raw_text);
+        pango_layout.set_font_description(Some(ui_font_desc));
+        let attrs = pango::AttrList::new();
+        let line_scale = popup.line_scales.get(line_idx).copied().unwrap_or(1.0);
+        if (line_scale - 1.0).abs() > 0.01 {
+            let mut a = pango::AttrFloat::new_scale(line_scale as f64);
+            a.set_start_index(0);
+            a.set_end_index(raw_text.len() as u32);
+            attrs.insert(a);
+        }
+        if let Some(styled) = popup.lines.get(line_idx) {
+            let mut byte_pos: usize = 0;
+            for span in &styled.spans {
+                let len = span.text.len();
+                let start = byte_pos;
+                let end = byte_pos + len;
+                if span.bold {
+                    let mut a = pango::AttrInt::new_weight(pango::Weight::Bold);
+                    a.set_start_index(start as u32);
+                    a.set_end_index(end as u32);
+                    attrs.insert(a);
+                }
+                if span.italic {
+                    let mut a = pango::AttrInt::new_style(pango::Style::Italic);
+                    a.set_start_index(start as u32);
+                    a.set_end_index(end as u32);
+                    attrs.insert(a);
+                }
+                byte_pos += len;
+            }
+        }
+        pango_layout.set_attributes(Some(&attrs));
+
+        for (_idx, link) in &links_on_line {
+            let start_pos = pango_layout.index_to_pos(link.start_byte as i32);
+            let end_pos = pango_layout.index_to_pos(link.end_byte as i32);
+            let x0 = line_x + start_pos.x() as f64 / pango::SCALE as f64;
+            let x1 = line_x + end_pos.x() as f64 / pango::SCALE as f64;
+            link_rects.push((x0.min(x1), row_y, (x1 - x0).abs(), row_h, link.url.clone()));
+        }
+        pango_layout.set_attributes(None);
+    }
+
+    // Restore font for subsequent paints in the same frame.
     pango_layout.set_font_description(saved_font.as_ref());
 
-    // Link hit regions in (x, y, w, h, url) form.
-    layout
-        .link_hit_regions
-        .iter()
-        .map(|(rect, idx)| {
-            let url = popup
-                .links
-                .get(*idx)
-                .map(|l| l.url.clone())
-                .unwrap_or_default();
-            (
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                url,
-            )
-        })
-        .collect()
+    link_rects
 }
 
 /// Translate a `TextSelection` (in char columns) into the byte range
