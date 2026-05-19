@@ -550,15 +550,40 @@ impl AppShell {
 
     fn compute_layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
         let lh = line_height.max(1.0);
+        let ab_w = (self.activity_bar_width * lh).round();
 
-        // ── Vertical carve: title bar (top), then status/cmd/bottom (bottom) ──
+        // ── Step 1: activity bar column (full height) ───────────────
+        //
+        // The activity bar spans the entire viewport height. Chrome
+        // slots and content areas occupy the remaining width.
+
+        let (ab_bounds, rest_x, rest_w) = match self.position {
+            ShellPosition::Left => (
+                Rect::new(area.x, area.y, ab_w, area.height),
+                area.x + ab_w,
+                (area.width - ab_w).max(0.0),
+            ),
+            ShellPosition::Right => {
+                let ab_x = (area.x + area.width - ab_w).max(area.x);
+                (
+                    Rect::new(ab_x, area.y, ab_w, area.height),
+                    area.x,
+                    (area.width - ab_w).max(0.0),
+                )
+            }
+        };
+
+        // ── Step 2: vertical carve within the remaining width ───────
+        //
+        // Title bar off the top, then status/cmd/bottom off the bottom,
+        // leaving a middle band for sidebar + main.
 
         let mut band_y = area.y;
         let mut band_h = area.height;
 
         let title_bar_bounds = if self.has_title_bar {
             let h = (self.title_bar_height_lh * lh).round();
-            let r = Rect::new(area.x, band_y, area.width, h);
+            let r = Rect::new(rest_x, band_y, rest_w, h);
             band_y += h;
             band_h -= h;
             Some(r)
@@ -569,7 +594,7 @@ impl AppShell {
         let status_bar_bounds = if self.has_status_bar {
             let h = lh.round();
             band_h -= h;
-            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+            Some(Rect::new(rest_x, band_y + band_h, rest_w, h))
         } else {
             None
         };
@@ -577,7 +602,7 @@ impl AppShell {
         let command_line_bounds = if self.has_command_line {
             let h = lh.round();
             band_h -= h;
-            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+            Some(Rect::new(rest_x, band_y + band_h, rest_w, h))
         } else {
             None
         };
@@ -590,32 +615,22 @@ impl AppShell {
                 .round();
             let h = h.min(band_h * 0.6);
             band_h -= h;
-            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+            Some(Rect::new(rest_x, band_y + band_h, rest_w, h))
         } else {
             None
         };
 
         let band_h = band_h.max(0.0);
 
-        // ── Horizontal carve: activity bar + sidebar + divider + main ──
+        // ── Step 3: horizontal carve within the middle band ─────────
+        //
+        // Sidebar + divider + main share the remaining width. The
+        // activity bar column is already carved out.
 
-        let ab_w = (self.activity_bar_width * lh).round();
         let divider_w = (lh * 0.25).max(1.0).round().min(4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
-            let (ab_bounds, main_bounds) = match self.position {
-                ShellPosition::Left => (
-                    Rect::new(area.x, band_y, ab_w, band_h),
-                    Rect::new(area.x + ab_w, band_y, (area.width - ab_w).max(0.0), band_h),
-                ),
-                ShellPosition::Right => {
-                    let ab_x = area.x + area.width - ab_w;
-                    (
-                        Rect::new(ab_x.max(area.x), band_y, ab_w, band_h),
-                        Rect::new(area.x, band_y, (area.width - ab_w).max(0.0), band_h),
-                    )
-                }
-            };
+            let main_bounds = Rect::new(rest_x, band_y, rest_w, band_h);
             return AppShellLayout {
                 title_bar_bounds,
                 activity_bar_bounds: ab_bounds,
@@ -634,14 +649,13 @@ impl AppShell {
             .clamp(self.min_sidebar_width, self.max_sidebar_width)
             * lh)
             .round();
-        let remaining = (area.width - ab_w - divider_w).max(0.0);
+        let remaining = (rest_w - divider_w).max(0.0);
         let sidebar_w = sidebar_w.min(remaining * 0.8);
         let header_h = lh;
 
         match self.position {
             ShellPosition::Left => {
-                let ab_bounds = Rect::new(area.x, band_y, ab_w, band_h);
-                let sidebar_x = area.x + ab_w;
+                let sidebar_x = rest_x;
                 let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
                 let content_y = band_y + header_h;
                 let content_h = (band_h - header_h).max(0.0);
@@ -649,7 +663,7 @@ impl AppShell {
                 let div_x = sidebar_x + sidebar_w;
                 let div_bounds = Rect::new(div_x, band_y, divider_w, band_h);
                 let main_x = div_x + divider_w;
-                let main_w = (area.x + area.width - main_x).max(0.0);
+                let main_w = (rest_x + rest_w - main_x).max(0.0);
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
 
                 AppShellLayout {
@@ -665,18 +679,16 @@ impl AppShell {
                 }
             }
             ShellPosition::Right => {
-                let ab_x = area.x + area.width - ab_w;
-                let ab_bounds = Rect::new(ab_x.max(area.x), band_y, ab_w, band_h);
-                let sidebar_x = ab_x - sidebar_w;
-                let header_bounds = Rect::new(sidebar_x.max(area.x), band_y, sidebar_w, header_h);
+                let sidebar_x = rest_x + rest_w - sidebar_w;
+                let header_bounds = Rect::new(sidebar_x.max(rest_x), band_y, sidebar_w, header_h);
                 let content_y = band_y + header_h;
                 let content_h = (band_h - header_h).max(0.0);
                 let content_bounds =
-                    Rect::new(sidebar_x.max(area.x), content_y, sidebar_w, content_h);
+                    Rect::new(sidebar_x.max(rest_x), content_y, sidebar_w, content_h);
                 let div_x = sidebar_x - divider_w;
-                let div_bounds = Rect::new(div_x.max(area.x), band_y, divider_w, band_h);
-                let main_x = area.x;
-                let main_w = (div_x - area.x).max(0.0);
+                let div_bounds = Rect::new(div_x.max(rest_x), band_y, divider_w, band_h);
+                let main_x = rest_x;
+                let main_w = (div_x - rest_x).max(0.0);
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
 
                 AppShellLayout {
@@ -1286,8 +1298,8 @@ mod tests {
         let l = s.layout(area(), 1.0);
         let tb = l.title_bar_bounds.unwrap();
         assert_eq!(tb.y, 0.0);
-        assert_eq!(tb.x, 0.0);
-        assert_eq!(tb.width, area().width);
+        let ab_right = l.activity_bar_bounds.x + l.activity_bar_bounds.width;
+        assert!((tb.x - ab_right).abs() < 0.01);
     }
 
     #[test]
@@ -1297,7 +1309,6 @@ mod tests {
         let sb = l.status_bar_bounds.unwrap();
         let sb_bottom = sb.y + sb.height;
         assert!((sb_bottom - area().height).abs() < 0.01);
-        assert_eq!(sb.width, area().width);
     }
 
     #[test]
@@ -1319,15 +1330,23 @@ mod tests {
     }
 
     #[test]
+    fn activity_bar_spans_full_height() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        assert_eq!(l.activity_bar_bounds.y, 0.0);
+        assert!((l.activity_bar_bounds.height - area().height).abs() < 0.01);
+    }
+
+    #[test]
     fn middle_band_between_title_and_bottom() {
         let s = full_chrome_shell();
         let l = s.layout(area(), 1.0);
         let tb = l.title_bar_bounds.unwrap();
         let bp = l.bottom_panel_bounds.unwrap();
-        let ab_top = l.activity_bar_bounds.y;
-        let ab_bottom = l.activity_bar_bounds.y + l.activity_bar_bounds.height;
-        assert!((ab_top - (tb.y + tb.height)).abs() < 0.01);
-        assert!((ab_bottom - bp.y).abs() < 0.01);
+        let main_top = l.main_content_bounds.y;
+        let main_bottom = l.main_content_bounds.y + l.main_content_bounds.height;
+        assert!((main_top - (tb.y + tb.height)).abs() < 0.01);
+        assert!((main_bottom - bp.y).abs() < 0.01);
     }
 
     #[test]
@@ -1338,7 +1357,7 @@ mod tests {
         let bp = l.bottom_panel_bounds.unwrap();
         let cl = l.command_line_bounds.unwrap();
         let sb = l.status_bar_bounds.unwrap();
-        let middle_h = l.activity_bar_bounds.height;
+        let middle_h = l.main_content_bounds.height;
         let total = tb.height + middle_h + bp.height + cl.height + sb.height;
         assert!(
             (total - area().height).abs() < 1.0,
