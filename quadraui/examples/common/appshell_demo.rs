@@ -139,6 +139,10 @@ impl ShellApp for AppShellDemo {
             AppShellEvent::SidebarResized { new_width } => {
                 format!("Resized: {new_width:.0}px")
             }
+            AppShellEvent::BottomPanelResized { new_height } => {
+                format!("Bottom panel: {new_height:.0}px")
+            }
+            AppShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
             AppShellEvent::BottomItemClicked { id } => {
                 format!("Bottom: {}", id.as_str())
             }

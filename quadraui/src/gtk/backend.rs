@@ -765,9 +765,9 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_activity_bar called outside enter_frame_scope");
-        // The rasteriser paints from (0, 0) to (width, height); rect.x/y ignored.
-        let _ = rect;
-        crate::gtk::draw_activity_bar(
+        cr.save().ok();
+        cr.translate(rect.x as f64, rect.y as f64);
+        let hits = crate::gtk::draw_activity_bar(
             cr,
             layout,
             rect.width as f64,
@@ -775,7 +775,9 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
             hovered_idx,
-        )
+        );
+        cr.restore().ok();
+        hits
     }
 
     fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
