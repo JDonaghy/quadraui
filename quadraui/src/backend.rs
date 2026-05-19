@@ -20,6 +20,7 @@ use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
@@ -355,6 +356,11 @@ pub trait Backend {
     /// per-section scrollbars MSV paints internally). The backend
     /// pulls cell/pixel background from its current theme.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
+
+    /// Draw a [`DropOverlay`] on top of the current frame during a
+    /// tab drag. Renders the highlight rect (tinted background) and/or
+    /// insertion bar (thin line at the drop position).
+    fn draw_drop_overlay(&mut self, overlay: &DropOverlay);
 
     /// Draw a [`MenuBar`]. The backend computes the layout internally
     /// with native metrics (cells for TUI, Pango pixels for GTK) and

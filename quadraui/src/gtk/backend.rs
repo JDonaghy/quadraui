@@ -1250,6 +1250,14 @@ impl Backend for GtkBackend {
         crate::gtk::draw_scrollbar(cr, scrollbar, &theme);
     }
 
+    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
+        let theme = self.current_theme;
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_drop_overlay called outside enter_frame_scope");
+        crate::gtk::draw_drop_overlay(cr, overlay, &theme);
+    }
+
     fn draw_menu_bar(
         &mut self,
         rect: QRect,

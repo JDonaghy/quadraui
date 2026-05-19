@@ -876,6 +876,10 @@ impl Backend for MacBackend {
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::scrollbar::draw_scrollbar(ctx, scrollbar, &theme) }
     }
+
+    fn draw_drop_overlay(&mut self, _overlay: &crate::primitives::drop_zone::DropOverlay) {
+        // macOS drop overlay rendering: future work.
+    }
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         let ctx = self.current_cg();
         debug_assert!(
