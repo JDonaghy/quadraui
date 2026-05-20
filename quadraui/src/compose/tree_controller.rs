@@ -1384,6 +1384,12 @@ mod tests {
         ) -> crate::TextDisplayLayout {
             unimplemented!()
         }
+        fn draw_text_input(&mut self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
+            unimplemented!()
+        }
+        fn text_input_layout(&self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
+            unimplemented!()
+        }
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,

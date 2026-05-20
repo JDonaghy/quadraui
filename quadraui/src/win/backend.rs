@@ -220,6 +220,22 @@ impl Backend for WinBackend {
         todo!("DirectWrite text display layout")
     }
 
+    fn draw_text_input(
+        &mut self,
+        _rect: Rect,
+        _ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        todo!("Direct2D text input rasteriser")
+    }
+
+    fn text_input_layout(
+        &self,
+        _rect: Rect,
+        _ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        todo!("Direct2D text input layout")
+    }
+
     fn draw_tooltip(&mut self, _tooltip: &Tooltip, _layout: &TooltipLayout) {
         todo!("Direct2D tooltip rasteriser")
     }

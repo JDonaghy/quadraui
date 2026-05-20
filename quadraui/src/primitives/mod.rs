@@ -32,6 +32,7 @@ pub mod status_bar;
 pub mod tab_bar;
 pub mod terminal;
 pub mod text_display;
+pub mod text_input;
 pub mod toast;
 pub mod tooltip;
 pub mod tree;

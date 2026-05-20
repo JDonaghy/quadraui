@@ -45,6 +45,7 @@ pub mod search_panel;
 pub mod shell_app;
 pub mod sidebar_search;
 pub mod split_app;
+pub mod text_input_demo;
 pub mod toast_app;
 
 pub use chart_app::ChartApp;
