@@ -86,13 +86,14 @@ pub fn draw_text_input(
             }
         }
     } else {
+        let h_scroll = layout.resolved_scroll_col;
         for vis in &layout.visible_lines {
             let line = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
             let row_x = vis.bounds.x as u16;
             let row_y = vis.bounds.y as u16;
             let max_w = vis.bounds.width as u16;
             let mut x = row_x;
-            for ch in line.chars().take(max_w as usize) {
+            for ch in line.chars().skip(h_scroll).take(max_w as usize) {
                 set_cell(buf, x, row_y, ch, fg, bg);
                 x += 1;
             }

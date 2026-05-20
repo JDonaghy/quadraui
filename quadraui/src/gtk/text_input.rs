@@ -67,6 +67,30 @@ pub fn draw_text_input(
     );
     cr.stroke().ok();
 
+    // Clip content rendering to the box interior so glyphs that
+    // overhang the rect (proportional fonts, last visible char at the
+    // edge) can't bleed past the border.
+    cr.save().ok();
+    cr.rectangle(
+        rect.x as f64 + 1.0,
+        rect.y as f64 + 1.0,
+        rect.width as f64 - 2.0,
+        rect.height as f64 - 2.0,
+    );
+    cr.clip();
+
+    let h_scroll = li.resolved_scroll_col;
+
+    // Helper: slice a line at char offset `h_scroll` and return the
+    // tail string (the part the user can see given horizontal scroll).
+    let slice_from = |line: &str, off: usize| -> String {
+        if off == 0 {
+            line.to_string()
+        } else {
+            line.chars().skip(off).collect()
+        }
+    };
+
     // Content.
     if li.placeholder_active {
         if let Some(text) = ti.placeholder.as_ref() {
@@ -82,11 +106,12 @@ pub fn draw_text_input(
         }
     } else {
         for vis in &li.visible_lines {
-            let line = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
-            if line.is_empty() {
+            let full = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
+            let visible = slice_from(full, h_scroll);
+            if visible.is_empty() {
                 continue;
             }
-            layout.set_text(line);
+            layout.set_text(&visible);
             layout.set_attributes(None);
             let (_, th) = layout.pixel_size();
             cr.set_source_rgb(fg_r, fg_g, fg_b);
@@ -97,9 +122,8 @@ pub fn draw_text_input(
     }
 
     // Cursor — thin vertical bar at the proportional-font x position.
-    // The primitive's cursor_bounds.x assumes monospace; we override
-    // with Pango's index_to_pos so the cursor aligns with the actual
-    // glyph the user is editing (mirrors Form FieldKind::TextInput).
+    // We re-shape the visible (post-scroll) tail through Pango and use
+    // index_to_pos so the cursor lands on the actual painted glyph.
     if ti.has_focus {
         if let Some(cb) = li.cursor_bounds {
             let cursor_color = if theme.cursor == Color::rgb(0, 0, 0) {
@@ -110,19 +134,21 @@ pub fn draw_text_input(
             let (cr_r, cr_g, cr_b) = cairo_rgb(cursor_color);
 
             // Find the visible line that owns the cursor.
-            let cursor_line_idx = li
+            let cursor_vis = li
                 .visible_lines
                 .iter()
                 .find(|v| (v.bounds.y - cb.y).abs() < 0.5);
-            let cursor_x_px = if let Some(vis) = cursor_line_idx {
-                let line = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
-                // Convert char column to byte offset.
-                let byte_off = line
+            let cursor_x_px = if let Some(vis) = cursor_vis {
+                let full = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
+                let visible = slice_from(full, h_scroll);
+                // Cursor column relative to the visible (post-scroll) string.
+                let rel_col = ti.cursor_col.saturating_sub(h_scroll);
+                let byte_off = visible
                     .char_indices()
-                    .nth(ti.cursor_col)
+                    .nth(rel_col)
                     .map(|(b, _)| b)
-                    .unwrap_or(line.len());
-                layout.set_text(line);
+                    .unwrap_or(visible.len());
+                layout.set_text(&visible);
                 let pos = layout.index_to_pos(byte_off as i32);
                 vis.bounds.x as f64 + pos.x() as f64 / pango::SCALE as f64
             } else {
@@ -134,6 +160,8 @@ pub fn draw_text_input(
             cr.fill().ok();
         }
     }
+
+    cr.restore().ok(); // pop the content clip
 
     li
 }

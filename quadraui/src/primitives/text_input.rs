@@ -40,6 +40,10 @@ pub struct TextInput {
     /// cursor stays inside the viewport.
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Horizontal scroll, in char columns. Applied to *every* line.
+    /// The primitive clamps this so the cursor stays in view.
+    #[serde(default)]
+    pub scroll_col: usize,
     /// Whether the input has keyboard focus. Controls cursor visibility
     /// and border color (rasteriser-defined).
     #[serde(default)]
@@ -55,6 +59,7 @@ impl TextInput {
             cursor_col: 0,
             placeholder: None,
             scroll_offset: 0,
+            scroll_col: 0,
             has_focus: false,
         }
     }
@@ -90,9 +95,13 @@ pub struct TextInputLayout {
     /// the visible window, otherwise `None`. Rasterisers paint a cursor
     /// glyph (TUI) or vertical bar (GTK) at this rect.
     pub cursor_bounds: Option<Rect>,
-    /// Scroll offset after auto-clamp. The primitive guarantees the
-    /// cursor is visible by adjusting this from the input value.
+    /// Vertical scroll offset after auto-clamp. The primitive
+    /// guarantees the cursor is visible by adjusting this.
     pub resolved_scroll_offset: usize,
+    /// Horizontal scroll offset (char columns) after auto-clamp.
+    /// Rasterisers slice each line `[resolved_scroll_col..]` before
+    /// painting.
+    pub resolved_scroll_col: usize,
     /// Per-region hit map for click routing.
     pub hit_regions: Vec<(Rect, TextInputHit)>,
     /// True when the placeholder was rendered (lines empty / single
@@ -129,18 +138,19 @@ impl TextInput {
         let row_h = measure.row_height.max(1.0);
         let char_w = measure.char_width.max(1.0);
 
-        // Border + padding: 1 cell / 1 pixel of border + 1 unit padding.
-        // Rasterisers reserve the same chrome.
+        // Border (1 cell / 1 px) + horizontal padding (1 char column).
+        // Vertical padding is zero so each row neatly fills `row_h`.
         let border = 1.0;
-        let pad = 0.0;
-        let content_x = rect.x + border + pad;
-        let content_y = rect.y + border + pad;
-        let content_w = (rect.width - (border + pad) * 2.0).max(0.0);
-        let content_h = (rect.height - (border + pad) * 2.0).max(0.0);
+        let pad_x = char_w;
+        let content_x = rect.x + border + pad_x;
+        let content_y = rect.y + border;
+        let content_w = (rect.width - (border + pad_x) * 2.0).max(0.0);
+        let content_h = (rect.height - border * 2.0).max(0.0);
         let content_bounds = Rect::new(content_x, content_y, content_w, content_h);
 
         let total_lines = self.lines.len().max(1);
         let max_rows = ((content_h / row_h).floor() as usize).max(1);
+        let visible_cols = ((content_w / char_w).floor() as usize).max(1);
 
         // Clamp cursor line/col to text bounds.
         let cursor_line = self.cursor_line.min(total_lines.saturating_sub(1));
@@ -149,7 +159,7 @@ impl TextInput {
             self.cursor_col.min(line.chars().count())
         };
 
-        // Auto-clamp scroll_offset so the cursor stays in view.
+        // Vertical scroll auto-clamp.
         let max_scroll = total_lines.saturating_sub(max_rows);
         let mut scroll = self.scroll_offset.min(max_scroll);
         if cursor_line < scroll {
@@ -158,6 +168,16 @@ impl TextInput {
             scroll = cursor_line + 1 - max_rows;
         }
         scroll = scroll.min(max_scroll);
+
+        // Horizontal scroll auto-clamp — keep cursor inside [scroll_col,
+        // scroll_col + visible_cols). Reserve one column of slack so the
+        // cursor itself stays visible (not flush against the right edge).
+        let mut scroll_col = self.scroll_col;
+        if cursor_col < scroll_col {
+            scroll_col = cursor_col;
+        } else if cursor_col >= scroll_col + visible_cols {
+            scroll_col = cursor_col + 1 - visible_cols;
+        }
 
         let visible_count = total_lines.saturating_sub(scroll).min(max_rows);
         let mut visible_lines: Vec<VisibleTextInputLine> = Vec::with_capacity(visible_count);
@@ -190,11 +210,9 @@ impl TextInput {
         // Cursor bounds — only when in the visible window.
         let cursor_bounds = if cursor_line >= scroll && cursor_line < scroll + visible_count {
             let row_off = cursor_line - scroll;
-            let cursor_x = content_x + cursor_col as f32 * char_w;
+            let col_off = cursor_col.saturating_sub(scroll_col);
+            let cursor_x = content_x + col_off as f32 * char_w;
             let cursor_y = content_y + row_off as f32 * row_h;
-            // Width: char_width for TUI block cursor; GTK rasteriser may
-            // narrow to a thin bar. We expose char_width so the TUI path
-            // works with set_cell at the right column.
             Some(Rect::new(cursor_x, cursor_y, char_w, row_h))
         } else {
             None
@@ -206,6 +224,7 @@ impl TextInput {
             visible_lines,
             cursor_bounds,
             resolved_scroll_offset: scroll,
+            resolved_scroll_col: scroll_col,
             hit_regions,
             placeholder_active,
         }
@@ -224,6 +243,7 @@ mod tests {
             cursor_col: 0,
             placeholder: None,
             scroll_offset: 0,
+            scroll_col: 0,
             has_focus: true,
         }
     }
@@ -265,8 +285,9 @@ mod tests {
         let ti = TextInput::new(WidgetId::new("ti"));
         let l = ti.layout(rect(20.0, 10.0), measure());
         let cb = l.cursor_bounds.unwrap();
-        // Border is 1 cell -> content starts at (1, 1)
-        assert_eq!(cb.x, 1.0);
+        // Border (1) + horizontal padding (1 char_width) -> content starts at x=2.
+        // Vertical padding is zero so content_y = border = 1.
+        assert_eq!(cb.x, 2.0);
         assert_eq!(cb.y, 1.0);
         assert_eq!(cb.width, 1.0);
         assert_eq!(cb.height, 1.0);
@@ -277,7 +298,7 @@ mod tests {
         let mut ti = input(vec!["hello"]);
         ti.cursor_col = 3;
         let l = ti.layout(rect(20.0, 10.0), measure());
-        assert_eq!(l.cursor_bounds.unwrap().x, 1.0 + 3.0); // border + col
+        assert_eq!(l.cursor_bounds.unwrap().x, 2.0 + 3.0); // content_x + col
     }
 
     #[test]
@@ -285,7 +306,7 @@ mod tests {
         let mut ti = input(vec!["hi"]);
         ti.cursor_col = 99;
         let l = ti.layout(rect(20.0, 10.0), measure());
-        assert_eq!(l.cursor_bounds.unwrap().x, 1.0 + 2.0); // clamped to 2
+        assert_eq!(l.cursor_bounds.unwrap().x, 2.0 + 2.0); // clamped to 2
     }
 
     #[test]
@@ -297,6 +318,38 @@ mod tests {
         // Cursor lands on line index 2 (last available).
         let cb = l.cursor_bounds.unwrap();
         assert_eq!(cb.y, 1.0 + 2.0); // border + 2 rows
+    }
+
+    // ── Horizontal scroll ────────────────────────────────────────────
+
+    #[test]
+    fn h_scroll_auto_pulls_cursor_into_view_rightward() {
+        // Wide line, narrow viewport.
+        let mut ti = input(vec!["abcdefghijklmnopqrstuvwxyz"]);
+        // content_w = 10 - 2(border) - 2(pad) = 6 -> visible_cols = 6.
+        ti.cursor_col = 20;
+        let l = ti.layout(rect(10.0, 5.0), measure());
+        // Cursor should be visible: scroll_col = 20 + 1 - 6 = 15.
+        assert_eq!(l.resolved_scroll_col, 15);
+        // Cursor x = content_x + (cursor_col - scroll_col) * char_w = 2 + 5 = 7.
+        assert_eq!(l.cursor_bounds.unwrap().x, 7.0);
+    }
+
+    #[test]
+    fn h_scroll_auto_pulls_cursor_into_view_leftward() {
+        let mut ti = input(vec!["abcdefghijklmnopqrstuvwxyz"]);
+        ti.cursor_col = 2;
+        ti.scroll_col = 20; // stale — cursor is left of view
+        let l = ti.layout(rect(10.0, 5.0), measure());
+        assert_eq!(l.resolved_scroll_col, 2);
+    }
+
+    #[test]
+    fn h_scroll_zero_when_line_fits() {
+        let mut ti = input(vec!["short"]);
+        ti.cursor_col = 5;
+        let l = ti.layout(rect(20.0, 5.0), measure());
+        assert_eq!(l.resolved_scroll_col, 0);
     }
 
     #[test]
