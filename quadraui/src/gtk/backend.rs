@@ -953,6 +953,33 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_text_display_layout(td, rect, self.current_line_height)
     }
 
+    fn draw_text_input(
+        &mut self,
+        rect: QRect,
+        ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        let theme = self.current_theme;
+        let lh = self.current_line_height;
+        let cw = self.current_char_width;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_text_input called outside enter_frame_scope");
+        crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, lh, cw)
+    }
+
+    fn text_input_layout(
+        &self,
+        rect: QRect,
+        ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        crate::gtk::gtk_text_input_layout(
+            ti,
+            rect,
+            self.current_line_height as f32,
+            self.current_char_width as f32,
+        )
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
         let (cr, pango_layout) = self
             .current_frame_refs()

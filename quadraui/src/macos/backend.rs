@@ -666,6 +666,33 @@ impl Backend for MacBackend {
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
         super::text_display::mac_text_display_layout(td, rect, self.current_line_height)
     }
+    fn draw_text_input(
+        &mut self,
+        rect: Rect,
+        ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        // macOS TextInput rasteriser: future work. Return layout only.
+        ti.layout(
+            rect,
+            crate::primitives::text_input::TextInputMeasure::new(
+                self.current_line_height as f32,
+                self.current_char_width as f32,
+            ),
+        )
+    }
+    fn text_input_layout(
+        &self,
+        rect: Rect,
+        ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        ti.layout(
+            rect,
+            crate::primitives::text_input::TextInputMeasure::new(
+                self.current_line_height as f32,
+                self.current_char_width as f32,
+            ),
+        )
+    }
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
         let ctx = self.current_cg();
         debug_assert!(

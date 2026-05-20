@@ -669,6 +669,28 @@ impl Backend for TuiBackend {
         crate::tui::tui_text_display_layout(td, area)
     }
 
+    fn draw_text_input(
+        &mut self,
+        rect: QRect,
+        ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_text_input called outside enter_frame_scope");
+        crate::tui::draw_text_input(frame.buffer_mut(), area, ti, &theme)
+    }
+
+    fn text_input_layout(
+        &self,
+        rect: QRect,
+        ti: &crate::primitives::text_input::TextInput,
+    ) -> crate::primitives::text_input::TextInputLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_text_input_layout(ti, area)
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout: &crate::TooltipLayout) {
         let theme = self.current_theme;
         let frame = self
@@ -1255,6 +1277,26 @@ mod tests {
             td.layout(r.width, r.height, |_| {
                 crate::primitives::text_display::TextDisplayLineMeasure::new(1.0)
             })
+        }
+        fn draw_text_input(
+            &mut self,
+            r: QRect,
+            ti: &crate::primitives::text_input::TextInput,
+        ) -> crate::primitives::text_input::TextInputLayout {
+            ti.layout(
+                r,
+                crate::primitives::text_input::TextInputMeasure::new(1.0, 1.0),
+            )
+        }
+        fn text_input_layout(
+            &self,
+            r: QRect,
+            ti: &crate::primitives::text_input::TextInput,
+        ) -> crate::primitives::text_input::TextInputLayout {
+            ti.layout(
+                r,
+                crate::primitives::text_input::TextInputMeasure::new(1.0, 1.0),
+            )
         }
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(

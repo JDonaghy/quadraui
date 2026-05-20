@@ -38,6 +38,7 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
+use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
@@ -260,6 +261,15 @@ pub trait Backend {
     /// re-deriving metrics — paint and click consume one layout per
     /// frame, the source-of-truth contract.
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout;
+
+    /// Draw a [`TextInput`] (multi-line text entry) and return the
+    /// resolved layout for hit-testing. Backends paint the border,
+    /// text lines, cursor, and placeholder (when active).
+    fn draw_text_input(&mut self, rect: Rect, ti: &TextInput) -> TextInputLayout;
+
+    /// Compute the layout `draw_text_input` would produce. Used by
+    /// hosts to route clicks without re-rendering.
+    fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout. The
     /// caller computes anchor + viewport + content measurement and
