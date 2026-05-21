@@ -142,6 +142,15 @@ fn run_inner<A: AppLogic>(
                 Reaction::Exit => return Ok(()),
             }
         }
+
+        // Periodic tick — called after every event batch (including
+        // timeout-triggered empty batches). Lets apps drive timer
+        // logic without synthetic event injection.
+        match app.tick(backend) {
+            Reaction::Continue => {}
+            Reaction::Redraw => needs_redraw = true,
+            Reaction::Exit => return Ok(()),
+        }
     }
 }
 
