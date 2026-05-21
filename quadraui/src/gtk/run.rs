@@ -332,6 +332,17 @@ fn activate<A: AppLogic + 'static>(
             };
             apply_reaction(reaction, &drain_da, &drain_window);
         }
+
+        // Periodic tick — called after every queue drain, including
+        // idle ticks where no events arrived. Lets apps drive timer
+        // logic without synthetic event injection.
+        let tick_reaction = {
+            let mut backend_mut = backend.borrow_mut();
+            let mut app_mut = app.borrow_mut();
+            app_mut.tick(&mut *backend_mut)
+        };
+        apply_reaction(tick_reaction, &drain_da, &drain_window);
+
         glib::ControlFlow::Continue
     });
 
