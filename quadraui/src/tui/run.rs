@@ -142,6 +142,14 @@ fn run_inner<A: AppLogic>(
                 Reaction::Exit => return Ok(()),
             }
         }
+
+        // Tick once per batch (fires on empty batches = timeout ticks too).
+        // Apps use this for periodic refresh, animation, etc.
+        match app.tick(backend) {
+            Reaction::Continue => {}
+            Reaction::Redraw => needs_redraw = true,
+            Reaction::Exit => return Ok(()),
+        }
     }
 }
 
