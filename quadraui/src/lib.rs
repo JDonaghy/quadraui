@@ -194,6 +194,10 @@ pub use primitives::palette::{
 pub use primitives::panel::{
     Panel, PanelAction, PanelEvent, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
 };
+pub use primitives::pipeline_view::{
+    PipelineEvent, PipelineHit, PipelineStage, PipelineView, PipelineViewLayout,
+    PipelineViewMeasure, StageBounds, StageStatus,
+};
 pub use primitives::progress::{
     ProgressBar, ProgressBarEvent, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
