@@ -742,8 +742,9 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        // The free fn paints from x=0 to x=width; rect.x ignored.
-        crate::gtk::draw_tab_bar(
+        cr.save().ok();
+        cr.translate(rect.x as f64, 0.0);
+        let hits = crate::gtk::draw_tab_bar(
             cr,
             layout,
             rect.width as f64,
@@ -753,7 +754,9 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
             hovered_close_tab,
-        )
+        );
+        cr.restore().ok();
+        hits
     }
 
     fn draw_activity_bar(
