@@ -1504,6 +1504,20 @@ mod tests {
         fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
             unimplemented!()
         }
+        fn draw_pipeline_view(
+            &mut self,
+            _r: Rect,
+            _v: &crate::PipelineView,
+        ) -> crate::PipelineViewLayout {
+            unimplemented!()
+        }
+        fn pipeline_view_layout(
+            &self,
+            _r: Rect,
+            _v: &crate::PipelineView,
+        ) -> crate::PipelineViewLayout {
+            unimplemented!()
+        }
         fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
             unimplemented!()
         }

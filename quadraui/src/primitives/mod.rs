@@ -23,6 +23,7 @@ pub mod modal;
 pub mod multi_section_view;
 pub mod palette;
 pub mod panel;
+pub mod pipeline_view;
 pub mod progress;
 pub mod rich_text_popup;
 pub mod scrollbar;

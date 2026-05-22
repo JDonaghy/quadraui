@@ -30,6 +30,7 @@ use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::panel::{Panel, PanelLayout};
+use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
@@ -417,6 +418,18 @@ pub trait Backend {
     /// Compute the toast-stack layout without painting. Hosts call
     /// this in click handlers to resolve hits.
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
+
+    /// Draw a [`PipelineView`] (horizontal multi-stage workflow widget).
+    /// The backend paints stage boxes, status icons, labels, optional
+    /// action buttons, and arrow connectors. Returns the
+    /// [`PipelineViewLayout`] so hosts can route clicks via
+    /// `layout.hit_test(x, y)` without re-deriving metrics.
+    fn draw_pipeline_view(&mut self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
+
+    /// Compute pipeline-view layout without painting. Hosts call this in
+    /// click handlers to resolve hits against the same layout that was
+    /// painted — never re-derive with a hand-rolled measurer.
+    fn pipeline_view_layout(&self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
 
     /// Draw a [`ProgressBar`]. The backend paints the track, fill,
     /// optional label, and optional cancel affordance. Returns the

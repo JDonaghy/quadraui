@@ -332,6 +332,22 @@ impl Backend for WinBackend {
         todo!("DirectWrite toast stack layout")
     }
 
+    fn draw_pipeline_view(
+        &mut self,
+        _rect: Rect,
+        _view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        todo!("Direct2D pipeline view rasteriser")
+    }
+
+    fn pipeline_view_layout(
+        &self,
+        _rect: Rect,
+        _view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        todo!("DirectWrite pipeline view layout")
+    }
+
     fn draw_progress(&mut self, _rect: Rect, _bar: &ProgressBar) -> ProgressBarLayout {
         todo!("Direct2D progress bar rasteriser")
     }

@@ -45,6 +45,7 @@ mod message_list;
 mod multi_section_view;
 mod palette;
 mod panel;
+mod pipeline_view;
 mod progress;
 mod rich_text_popup;
 mod run;
@@ -85,6 +86,7 @@ pub use multi_section_view::{
 };
 pub use palette::draw_palette;
 pub use panel::{draw_panel, gtk_panel_layout};
+pub use pipeline_view::{draw_pipeline_view, gtk_pipeline_view_layout};
 pub use progress::{draw_progress, gtk_progress_layout};
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
