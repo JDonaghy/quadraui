@@ -851,7 +851,7 @@ impl MultiSectionView {
                         bounds.height,
                     );
                     let thumb_frac = bounds.height / total_content;
-                    let min_thumb = metrics.scrollbar_size.max(8.0);
+                    let min_thumb = panel_thumb_min(&metrics);
                     let thumb_h = (r.height * thumb_frac).max(min_thumb).min(r.height);
                     let max_scroll = (total_content - bounds.height).max(0.0);
                     let scroll_frac = if max_scroll > 0.0 {
@@ -974,6 +974,28 @@ fn size_bounds(s: &Section) -> (f32, f32) {
     let lo = s.min_size.map(|m| m as f32).unwrap_or(0.0);
     let hi = s.max_size.map(|m| m as f32).unwrap_or(f32::INFINITY);
     (lo, hi)
+}
+
+/// Minimum thumb height for the panel-level scrollbar, in the same
+/// units the rest of the layout uses (cells for TUI, pixels for GTK).
+///
+/// `cell_quantum > 0.0` flags TUI: the painter clamps thumb height to
+/// 1 cell (`.max(1)` in `paint_panel_scrollbar`), so we mirror that
+/// here. GTK keeps the historical 8-pixel floor (clamped up to
+/// `scrollbar_size` when the gutter is wider).
+///
+/// Exposed `pub(crate)` so [`crate::compose::SidebarSystem`]'s drag
+/// init can compute the same `thumb_h` the layout did, keeping
+/// drag-`travel` consistent with the painted thumb's track distance.
+/// Pre-#241 the compose helper used a different floor (`line_height`),
+/// so in TUI the painted thumb moved ~8× faster than the cursor and
+/// the user-facing symptom was "thumb drag does nothing visible".
+pub(crate) fn panel_thumb_min(metrics: &LayoutMetrics) -> f32 {
+    if metrics.cell_quantum > 0.0 {
+        metrics.cell_quantum
+    } else {
+        metrics.scrollbar_size.max(8.0)
+    }
 }
 
 fn body_overflows(s: &Section, content: f32, body_main: f32) -> bool {
