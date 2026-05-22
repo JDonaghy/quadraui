@@ -490,13 +490,27 @@ impl SidebarSystem {
             }
 
             // ── Scroll wheel ──────────────────────────────────────
-            UiEvent::Scroll { delta, .. } => {
+            //
+            // Route to the section under the cursor rather than always
+            // sending to the active section. This is the native
+            // convention on all desktop platforms: scroll goes to the
+            // widget under the pointer, not to the focused widget.
+            //
+            // Fallback: if the cursor position doesn't hit any
+            // scrollable section (e.g. keyboard-driven scroll where
+            // backends emit a default origin, or cursor outside the
+            // MSV bounds), we fall back to scrolling the active section.
+            UiEvent::Scroll {
+                delta, position, ..
+            } => {
                 if self.scroll_mode == ScrollMode::WholePanel {
                     let dy = if delta.y > 0.0 { -lh } else { lh };
                     self.scroll_panel(rect, dy, lh, metrics);
                 } else {
                     let rows = if delta.y > 0.0 { -1 } else { 1 };
-                    self.scroll_active(rect, rows, lh, metrics);
+                    if !self.scroll_section_at(*position, rect, rows, lh, metrics) {
+                        self.scroll_active(rect, rows, lh, metrics);
+                    }
                 }
                 SidebarEvent::Consumed
             }
@@ -1254,6 +1268,45 @@ impl SidebarSystem {
         } else if content_bottom > self.panel_scroll + rect.height {
             self.panel_scroll = (content_bottom - rect.height).clamp(0.0, max);
         }
+    }
+
+    /// Route a scroll-wheel event to the tree section whose bounds
+    /// contain `position`. Returns `true` when a section was hit and
+    /// its scroll offset updated; returns `false` when the position
+    /// lies outside all sections or over a non-tree section (caller
+    /// falls back to active-section scroll).
+    ///
+    /// Used exclusively from the `PerSection` scroll-mode path in
+    /// `handle_inner` so that hovering over section B while section A
+    /// is active scrolls section B — matching the native desktop
+    /// convention (scroll follows cursor, not focus).
+    fn scroll_section_at(
+        &mut self,
+        position: Point,
+        rect: Rect,
+        rows: isize,
+        lh: f32,
+        metrics: &LayoutMetrics,
+    ) -> bool {
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let msv_idx = match layout.hit_test(position.x, position.y) {
+            MultiSectionViewHit::Body { section }
+            | MultiSectionViewHit::Header { section, .. }
+            | MultiSectionViewHit::Scrollbar { section, .. } => section,
+            _ => return false,
+        };
+        let section = map[msv_idx];
+        let body_b = layout.sections[msv_idx].body_bounds;
+        let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
+        let SectionController::Tree(tc) = &mut self.sections[section] else {
+            return false;
+        };
+        let row_count = tc.rows().len();
+        let max = row_count.saturating_sub(viewport_rows) as isize;
+        let cur = tc.scroll_offset() as isize;
+        let new = (cur + rows).max(0).min(max) as usize;
+        tc.set_scroll_offset(new);
+        true
     }
 
     fn scroll_active(&mut self, rect: Rect, delta: isize, lh: f32, metrics: &LayoutMetrics) {
@@ -2748,5 +2801,163 @@ mod tests {
             ss.is_collapsed(0),
             "after 3rd click: should be collapsed again"
         );
+    }
+
+    // ── Scroll-wheel position routing (#240) ───────────────────────────────
+    //
+    // Helpers shared by the scroll routing tests below.
+
+    fn scroll_routing_sidebar() -> SidebarSystem {
+        // Two sections, each with 50 rows so there's plenty of room to
+        // scroll (viewport ≈ 19 rows → max_scroll ≈ 31).
+        let defs = vec![
+            SidebarSectionDef::new("top", "TOP"),
+            SidebarSectionDef::new("bottom", "BOTTOM"),
+        ];
+        let mut ss = SidebarSystem::new(defs);
+        ss.set_rows(0, fake_rows("t", 50));
+        ss.set_rows(1, fake_rows("b", 50));
+        // Start with section 0 active — this is the "wrong" section for
+        // the scroll-routing tests that hover over section 1.
+        ss.set_active_section(Some(0));
+        // Provide backend info so handle_cached works.
+        // lh=1.0, default LayoutMetrics (header_size=1.0, scrollbar_size=1.0).
+        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss
+    }
+
+    /// Compute which y-coordinate lies inside the body of a given section
+    /// for a known rect and layout metrics, so we can construct correct
+    /// scroll-event positions for the routing tests.
+    fn section_body_y(ss: &SidebarSystem, section_idx: usize, rect: Rect) -> f32 {
+        let lh = 1.0_f32;
+        let metrics = LayoutMetrics::default();
+        let (layout, map) = ss.compute_layout(rect, &metrics, lh);
+        let msv_idx = map.iter().position(|&s| s == section_idx).unwrap();
+        let body_b = layout.sections[msv_idx].body_bounds;
+        // Return a y-coordinate in the middle of the body.
+        body_b.y + body_b.height / 2.0
+    }
+
+    #[test]
+    fn scroll_routes_to_section_under_cursor_not_active_section() {
+        // Section 0 is active, cursor is over section 1 body.
+        // Scroll down should advance section 1's offset, not section 0's.
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y1 = section_body_y(&ss, 1, rect);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -1.0), // negative y → scroll down
+            position: Point::new(5.0, y1),
+        };
+        let result = ss.handle_cached(&ev, rect);
+        assert_eq!(result, SidebarEvent::Consumed);
+
+        // Section 1 should have scrolled; section 0 should not have moved.
+        assert_eq!(ss.scroll_offset(0), 0, "active section 0 should not scroll");
+        assert!(
+            ss.scroll_offset(1) > 0,
+            "section 1 under cursor should have scrolled, offset={}",
+            ss.scroll_offset(1)
+        );
+    }
+
+    #[test]
+    fn scroll_routes_to_section_0_when_cursor_over_it() {
+        // Cursor is over section 0. Even though section 1 is active,
+        // section 0 should scroll.
+        let defs = vec![
+            SidebarSectionDef::new("top", "TOP"),
+            SidebarSectionDef::new("bottom", "BOTTOM"),
+        ];
+        let mut ss = SidebarSystem::new(defs);
+        ss.set_rows(0, fake_rows("t", 20));
+        ss.set_rows(1, fake_rows("b", 20));
+        ss.set_active_section(Some(1)); // section 1 is active
+        ss.set_backend_info(1.0, LayoutMetrics::default());
+
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y0 = section_body_y(&ss, 0, rect);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -1.0),
+            position: Point::new(5.0, y0),
+        };
+        ss.handle_cached(&ev, rect);
+
+        assert!(
+            ss.scroll_offset(0) > 0,
+            "section 0 under cursor should scroll"
+        );
+        assert_eq!(ss.scroll_offset(1), 0, "active section 1 should not scroll");
+    }
+
+    #[test]
+    fn scroll_falls_back_to_active_section_when_position_outside_msv() {
+        // Position (0, 0) lies outside the MSV bounds (rect starts at 10, 10).
+        // The fallback path kicks in and scrolls the active section.
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(10.0, 10.0, 20.0, 40.0);
+        ss.set_active_section(Some(0));
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -1.0),
+            position: Point::new(0.0, 0.0), // outside rect
+        };
+        ss.handle_cached(&ev, rect);
+        // Active section 0 receives the scroll via the fallback path.
+        assert!(
+            ss.scroll_offset(0) > 0,
+            "fallback should scroll active section 0"
+        );
+        assert_eq!(ss.scroll_offset(1), 0);
+    }
+
+    #[test]
+    fn scroll_up_decrements_offset_in_section_under_cursor() {
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y1 = section_body_y(&ss, 1, rect);
+
+        // First scroll section 1 down by 5.
+        if let SectionController::Tree(tc) = &mut ss.sections[1] {
+            tc.set_scroll_offset(5);
+        }
+
+        // Now scroll up with cursor over section 1.
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, 1.0), // positive y → scroll up
+            position: Point::new(5.0, y1),
+        };
+        ss.handle_cached(&ev, rect);
+        assert_eq!(ss.scroll_offset(1), 4, "scroll up should decrement offset");
+        assert_eq!(ss.scroll_offset(0), 0, "section 0 should be untouched");
+    }
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn scroll_event_carries_cursor_position_via_gdk_scroll_to_uievent() {
+        // Unit-test that `gdk_scroll_to_uievent` populates the position field
+        // correctly. This is the translation function called by the fixed GTK
+        // runner and `wire_da_events` — the real integration depends on the
+        // shared cursor_pos state, but we can verify the helper signature here.
+        use crate::gtk::events::gdk_scroll_to_uievent;
+        let ev = gdk_scroll_to_uievent(0.0, 1.0, 42.0, 100.0);
+        match ev {
+            UiEvent::Scroll {
+                position, delta, ..
+            } => {
+                assert_eq!(position.x, 42.0, "x from cursor should propagate");
+                assert_eq!(position.y, 100.0, "y from cursor should propagate");
+                // Negative dy convention is still applied (GTK positive = down).
+                assert_eq!(delta.y, -1.0);
+            }
+            _ => panic!("expected Scroll event"),
+        }
     }
 }
