@@ -932,6 +932,9 @@ impl SidebarSystem {
                 if let SectionController::Tree(tc) = &mut self.sections[section] {
                     tc.set_selected_path(None);
                 }
+                if self.allow_collapse {
+                    self.collapsed[section] = !self.collapsed[section];
+                }
                 SidebarEvent::HeaderActivated { section }
             }
             MultiSectionViewHit::Body {
@@ -2251,6 +2254,87 @@ mod tests {
                 id: WidgetId::new("case"),
                 value: false,
             }
+        );
+    }
+
+    // ── Header click-to-collapse tests ──────────────────────────────────
+
+    /// Rect, line-height, and metrics used by all header-click tests.
+    fn collapse_click_setup() -> (Rect, f32, LayoutMetrics) {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 600.0,
+        };
+        let lh = 20.0;
+        // header_size matches lh so section-0 header occupies y ∈ [0, 20).
+        let metrics = LayoutMetrics {
+            header_size: 20.0,
+            divider_size: 0.0,
+            scrollbar_size: 0.0,
+            cell_quantum: 0.0,
+        };
+        (rect, lh, metrics)
+    }
+
+    #[test]
+    fn header_click_toggles_collapsed_when_allow_collapse_true() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_allow_collapse(true);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        assert!(!ss.is_collapsed(0));
+        // Click centre of section-0 header.
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(ss.is_collapsed(0), "first click should collapse section 0");
+    }
+
+    #[test]
+    fn header_click_does_not_toggle_when_allow_collapse_false() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        // allow_collapse is false by default — make it explicit.
+        ss.set_allow_collapse(false);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(
+            !ss.is_collapsed(0),
+            "click without allow_collapse must not toggle collapsed state"
+        );
+    }
+
+    #[test]
+    fn header_click_emits_header_activated_after_toggle() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_allow_collapse(true);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        let ev = ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert_eq!(
+            ev,
+            SidebarEvent::HeaderActivated { section: 0 },
+            "HeaderActivated must still be emitted even when allow_collapse toggles state"
+        );
+    }
+
+    #[test]
+    fn header_click_multiple_toggles_persist_state() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_allow_collapse(true);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        // false → true
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(ss.is_collapsed(0), "after 1st click: should be collapsed");
+        // true → false
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(!ss.is_collapsed(0), "after 2nd click: should be expanded");
+        // false → true again
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(
+            ss.is_collapsed(0),
+            "after 3rd click: should be collapsed again"
         );
     }
 }
