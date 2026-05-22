@@ -29,7 +29,7 @@
 //! `AppLogic::AreaId` associated type remains in the trait as a
 //! compatibility seam but is always `()` in practice.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -269,13 +269,24 @@ fn activate<A: AppLogic + 'static>(
     // from hover motion. Mirrors the TUI side, which translates
     // `crossterm::MouseEventKind::Drag(b)` and `Moved` to the same
     // `MouseMoved` shape.
+    //
+    // `cursor_pos` is shared with the scroll controller below so
+    // that scroll events carry the actual pointer position rather
+    // than a hardcoded (0, 0). GTK's `EventControllerScroll` only
+    // delivers (dx, dy) in its callback — there is no API to query
+    // the pointer position from inside the scroll handler — so the
+    // last position from the motion controller is the correct and
+    // idiomatic way to supply it.
+    let cursor_pos = Rc::new(Cell::new((0.0_f64, 0.0_f64)));
     let motion = EventControllerMotion::new();
     {
         let backend = backend.clone();
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
+        let cursor_pos = cursor_pos.clone();
         motion.connect_motion(move |ctrl, x, y| {
+            cursor_pos.set((x, y));
             let modifier = ctrl.current_event_state();
             let buttons = ButtonMask {
                 left: modifier.contains(gtk4::gdk::ModifierType::BUTTON1_MASK),
@@ -301,7 +312,8 @@ fn activate<A: AppLogic + 'static>(
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
-            let ev = gdk_scroll_to_uievent(dx, dy, 0.0, 0.0);
+            let (x, y) = cursor_pos.get();
+            let ev = gdk_scroll_to_uievent(dx, dy, x, y);
             let reaction = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();

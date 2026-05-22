@@ -254,10 +254,18 @@ where
     }
     da.add_controller(click);
 
+    // `cursor_pos` is shared between the motion and scroll controllers.
+    // GTK's `EventControllerScroll` callback only delivers `(dx, dy)`;
+    // the pointer coordinates are not available from inside the callback.
+    // Tracking the last known position from the motion controller and
+    // reading it in the scroll handler is the standard GTK idiom.
+    let cursor_pos = std::rc::Rc::new(std::cell::Cell::new((0.0_f64, 0.0_f64)));
     let motion = EventControllerMotion::new();
     {
         let on_event = on_event.clone();
+        let cursor_pos = cursor_pos.clone();
         motion.connect_motion(move |ctrl, x, y| {
+            cursor_pos.set((x, y));
             let modifier = ctrl.current_event_state();
             let buttons = crate::ButtonMask {
                 left: modifier.contains(gdk::ModifierType::BUTTON1_MASK),
@@ -273,7 +281,8 @@ where
     {
         let on_event = on_event.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
-            on_event(gdk_scroll_to_uievent(dx, dy, 0.0, 0.0));
+            let (x, y) = cursor_pos.get();
+            on_event(gdk_scroll_to_uievent(dx, dy, x, y));
             glib::Propagation::Stop
         });
     }
