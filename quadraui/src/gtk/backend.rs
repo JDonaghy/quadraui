@@ -1407,6 +1407,41 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn draw_pipeline_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_pipeline_view called outside enter_frame_scope");
+        crate::gtk::draw_pipeline_view(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            view,
+            &theme,
+        )
+    }
+
+    fn pipeline_view_layout(
+        &self,
+        rect: QRect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        crate::gtk::gtk_pipeline_view_layout(
+            view,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
+
     fn draw_progress(
         &mut self,
         rect: QRect,

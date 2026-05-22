@@ -962,6 +962,28 @@ impl Backend for TuiBackend {
         crate::tui::tui_toast_stack_layout(stack, rect.width, rect.height)
     }
 
+    fn draw_pipeline_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_pipeline_view called outside enter_frame_scope");
+        crate::tui::draw_pipeline_view(frame.buffer_mut(), area, view, &theme)
+    }
+
+    fn pipeline_view_layout(
+        &self,
+        rect: QRect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_pipeline_view_layout(view, area)
+    }
+
     fn draw_progress(
         &mut self,
         rect: QRect,
@@ -1470,6 +1492,34 @@ mod tests {
             stack.layout(_r.width, _r.height, 1.0, 1.0, |_| {
                 crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
             })
+        }
+
+        fn draw_pipeline_view(
+            &mut self,
+            _r: QRect,
+            view: &crate::primitives::pipeline_view::PipelineView,
+        ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+            view.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::pipeline_view::PipelineViewMeasure::new(
+                    _r.width, _r.height, 4.0, 10.0,
+                ),
+            )
+        }
+
+        fn pipeline_view_layout(
+            &self,
+            _r: QRect,
+            view: &crate::primitives::pipeline_view::PipelineView,
+        ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+            view.layout(
+                _r.x,
+                _r.y,
+                crate::primitives::pipeline_view::PipelineViewMeasure::new(
+                    _r.width, _r.height, 4.0, 10.0,
+                ),
+            )
         }
 
         fn draw_progress(
