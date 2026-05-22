@@ -742,8 +742,9 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        // The free fn paints from x=0 to x=width; rect.x ignored.
-        crate::gtk::draw_tab_bar(
+        cr.save().ok();
+        cr.translate(rect.x as f64, 0.0);
+        let hits = crate::gtk::draw_tab_bar(
             cr,
             layout,
             rect.width as f64,
@@ -753,7 +754,9 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
             hovered_close_tab,
-        )
+        );
+        cr.restore().ok();
+        hits
     }
 
     fn draw_activity_bar(
@@ -1401,6 +1404,41 @@ impl Backend for GtkBackend {
             stack,
             &theme,
             line_height,
+        )
+    }
+
+    fn draw_pipeline_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_pipeline_view called outside enter_frame_scope");
+        crate::gtk::draw_pipeline_view(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            view,
+            &theme,
+        )
+    }
+
+    fn pipeline_view_layout(
+        &self,
+        rect: QRect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        crate::gtk::gtk_pipeline_view_layout(
+            view,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
         )
     }
 

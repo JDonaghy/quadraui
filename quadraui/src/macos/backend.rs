@@ -1050,6 +1050,48 @@ impl Backend for MacBackend {
             self.current_line_height,
         )
     }
+    fn draw_pipeline_view(
+        &mut self,
+        rect: Rect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_pipeline_view called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_pipeline_view requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::pipeline_view::draw_pipeline_view(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                view,
+                &theme,
+            )
+        }
+    }
+    fn pipeline_view_layout(
+        &self,
+        rect: Rect,
+        view: &crate::primitives::pipeline_view::PipelineView,
+    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
+        super::pipeline_view::mac_pipeline_view_layout(
+            view,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         let ctx = self.current_cg();
         debug_assert!(

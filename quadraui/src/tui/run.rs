@@ -143,8 +143,9 @@ fn run_inner<A: AppLogic>(
             }
         }
 
-        // Tick once per batch (fires on empty batches = timeout ticks too).
-        // Apps use this for periodic refresh, animation, etc.
+        // Periodic tick — called after every event batch (including
+        // timeout-triggered empty batches). Lets apps drive timer
+        // logic without synthetic event injection.
         match app.tick(backend) {
             Reaction::Continue => {}
             Reaction::Redraw => needs_redraw = true,

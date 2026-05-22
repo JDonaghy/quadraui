@@ -94,12 +94,14 @@ pub trait AppLogic {
     /// [`Reaction`] telling the runner what to do next.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction;
 
-    /// Called by the runner once per event batch, including empty
-    /// batches (i.e. on each poll timeout). Apps that need periodic
-    /// background work — auto-refresh, animation ticks — override this.
+    /// Periodic tick. Called by the runner after each event batch
+    /// (including batches where no events arrived — i.e. on every
+    /// `wait_events` timeout). Apps implement this for timer logic,
+    /// auto-refresh, background-task polling, etc., without needing
+    /// synthetic event injection.
     ///
-    /// The default implementation is a no-op returning
-    /// [`Reaction::Continue`], so apps that don't need it pay nothing.
+    /// Default impl is a no-op so apps that don't need periodic
+    /// callbacks don't have to write boilerplate.
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
         Reaction::Continue
     }

@@ -31,7 +31,7 @@ use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormLayout,
 };
 use crate::primitives::multi_section_view::{
-    LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
+    panel_thumb_min, LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
 use crate::primitives::tree::TreeRowMeasure;
 use crate::{
@@ -490,13 +490,27 @@ impl SidebarSystem {
             }
 
             // ── Scroll wheel ──────────────────────────────────────
-            UiEvent::Scroll { delta, .. } => {
+            //
+            // Route to the section under the cursor rather than always
+            // sending to the active section. This is the native
+            // convention on all desktop platforms: scroll goes to the
+            // widget under the pointer, not to the focused widget.
+            //
+            // Fallback: if the cursor position doesn't hit any
+            // scrollable section (e.g. keyboard-driven scroll where
+            // backends emit a default origin, or cursor outside the
+            // MSV bounds), we fall back to scrolling the active section.
+            UiEvent::Scroll {
+                delta, position, ..
+            } => {
                 if self.scroll_mode == ScrollMode::WholePanel {
                     let dy = if delta.y > 0.0 { -lh } else { lh };
                     self.scroll_panel(rect, dy, lh, metrics);
                 } else {
                     let rows = if delta.y > 0.0 { -1 } else { 1 };
-                    self.scroll_active(rect, rows, lh, metrics);
+                    if !self.scroll_section_at(*position, rect, rows, lh, metrics) {
+                        self.scroll_active(rect, rows, lh, metrics);
+                    }
                 }
                 SidebarEvent::Consumed
             }
@@ -932,6 +946,9 @@ impl SidebarSystem {
                 if let SectionController::Tree(tc) = &mut self.sections[section] {
                     tc.set_selected_path(None);
                 }
+                if self.allow_collapse {
+                    self.collapsed[section] = !self.collapsed[section];
+                }
                 SidebarEvent::HeaderActivated { section }
             }
             MultiSectionViewHit::Body {
@@ -1043,11 +1060,26 @@ impl SidebarSystem {
                 kind: ScrollbarHit::Thumb,
             } => {
                 if let Some(sb) = layout.panel_scrollbar {
-                    let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+                    // Total content the panel scrolls through — match
+                    // `MultiSectionView::layout`'s `total_content`
+                    // (sections + dividers) so drag math agrees with
+                    // the painted thumb position. The legacy code
+                    // dropped divider sizes, breaking drag when
+                    // `allow_resize=true`.
+                    let sections_total: f32 =
+                        layout.sections.iter().map(|s| s.resolved_size).sum();
+                    let dividers_total: f32 =
+                        layout.dividers.iter().map(|d| d.bounds.height).sum();
+                    let total = sections_total + dividers_total;
                     let max_scroll = (total - rect.height).max(0.0);
                     let thumb_frac = rect.height / total;
-                    let thumb_h = (sb.height * thumb_frac).max(lh);
+                    // Use the layout's `min_thumb` so drag and hit_test
+                    // see the same thumb dimensions. `panel_thumb_min`
+                    // is unit-aware (1 cell in TUI, 8 pixels in GTK).
+                    let min_thumb = panel_thumb_min(metrics);
+                    let thumb_h = (sb.height * thumb_frac).max(min_thumb).min(sb.height);
                     let travel = (sb.height - thumb_h).max(0.0);
+                    let _ = lh;
                     self.panel_drag = Some(PanelScrollDrag {
                         origin_y: y,
                         origin_scroll: self.panel_scroll,
@@ -1236,6 +1268,45 @@ impl SidebarSystem {
         } else if content_bottom > self.panel_scroll + rect.height {
             self.panel_scroll = (content_bottom - rect.height).clamp(0.0, max);
         }
+    }
+
+    /// Route a scroll-wheel event to the tree section whose bounds
+    /// contain `position`. Returns `true` when a section was hit and
+    /// its scroll offset updated; returns `false` when the position
+    /// lies outside all sections or over a non-tree section (caller
+    /// falls back to active-section scroll).
+    ///
+    /// Used exclusively from the `PerSection` scroll-mode path in
+    /// `handle_inner` so that hovering over section B while section A
+    /// is active scrolls section B — matching the native desktop
+    /// convention (scroll follows cursor, not focus).
+    fn scroll_section_at(
+        &mut self,
+        position: Point,
+        rect: Rect,
+        rows: isize,
+        lh: f32,
+        metrics: &LayoutMetrics,
+    ) -> bool {
+        let (layout, map) = self.compute_layout(rect, metrics, lh);
+        let msv_idx = match layout.hit_test(position.x, position.y) {
+            MultiSectionViewHit::Body { section }
+            | MultiSectionViewHit::Header { section, .. }
+            | MultiSectionViewHit::Scrollbar { section, .. } => section,
+            _ => return false,
+        };
+        let section = map[msv_idx];
+        let body_b = layout.sections[msv_idx].body_bounds;
+        let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
+        let SectionController::Tree(tc) = &mut self.sections[section] else {
+            return false;
+        };
+        let row_count = tc.rows().len();
+        let max = row_count.saturating_sub(viewport_rows) as isize;
+        let cur = tc.scroll_offset() as isize;
+        let new = (cur + rows).max(0).min(max) as usize;
+        tc.set_scroll_offset(new);
+        true
     }
 
     fn scroll_active(&mut self, rect: Rect, delta: isize, lh: f32, metrics: &LayoutMetrics) {
@@ -2039,6 +2110,403 @@ mod tests {
         );
     }
 
+    // ── TUI scrollbar thumb drag (#241) ─────────────────────────────────
+    //
+    // TUI mode passes mouse coordinates in cell units (1 cell per row)
+    // and `LayoutMetrics::scrollbar_size = 1.0`. The drag-travel math in
+    // `drag_to` must produce a non-zero per-section scroll change for a
+    // 1-cell mouse drag, the same way it does for a 1-line GTK drag.
+    //
+    // Pre-fix: the per-section scrollbar thumb did not move under drag in
+    // TUI because the layout produced thumb_bounds with `thumb_h == sb.height`
+    // (no spare travel) when section sizing rounded the resolved body
+    // dimensions to integer cells.
+
+    #[test]
+    fn tui_per_section_scrollbar_thumb_drag_scrolls_active_section() {
+        // TUI metrics: 1-cell rows, 1-cell scrollbar gutter, integer-cell
+        // section heights. Use PerSection scroll mode so the per-section
+        // gutter (and `ScrollDrag`) is exercised.
+        let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
+        ss.set_rows(0, fake_rows("r", 30));
+        ss.set_active_section(Some(0));
+        ss.set_scroll_mode(ScrollMode::PerSection);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+
+        // 21-cell tall sidebar: 1 cell header + 20 cells body. Body shows
+        // 20 of the 30 rows → max_offset = 10, thumb has 6 cells of travel.
+        let rect = Rect::new(0.0, 0.0, 20.0, 21.0);
+
+        // Compute layout to find the painted thumb position.
+        let (layout, _map) = ss.compute_layout(rect, &metrics, 1.0);
+        let sb = layout.sections[0]
+            .scrollbar_bounds
+            .expect("overflow → per-section scrollbar reserved");
+        let thumb = layout.sections[0]
+            .thumb_bounds
+            .expect("Tree body → thumb bounds computed from scroll state");
+
+        // Click on the painted thumb. Mouse coords are integer cells in TUI.
+        // TUI mouse coords come in as integer cells.
+        let click_x = sb.x.round();
+        let click_y = thumb.y.round();
+        let down = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(click_x, click_y),
+            modifiers: Modifiers::default(),
+        };
+        let _ = ss.handle_cached(&down, rect);
+
+        // Drag down 1 cell. In TUI cell units the crossterm Drag event
+        // delivers integer-cell positions — simulate a 1-cell vertical
+        // movement.
+        let move_ev = UiEvent::MouseMoved {
+            position: Point::new(click_x, click_y + 1.0),
+            buttons: ButtonMask {
+                left: true,
+                ..Default::default()
+            },
+        };
+        let _ = ss.handle_cached(&move_ev, rect);
+
+        // The active section's scroll_offset must have advanced. Pre-fix
+        // it stayed at 0 because the cell-precise drag was lost to either
+        // (a) a `travel <= 0.0` guard when `thumb_h >= sb.height`, or
+        // (b) a drow that rounded to 0 rows.
+        let offset = ss.scroll_offset(0);
+        assert!(
+            offset > 0,
+            "1-cell TUI drag on per-section thumb should advance scroll \
+             offset, but it stayed at {offset} (sb={sb:?}, thumb={thumb:?})"
+        );
+    }
+
+    /// Repro of the `examples/common/multi_tree.rs` shape under TUI:
+    /// 4 `Content`-sized sections that together overflow the viewport
+    /// by just 1 row, in `WholePanel` mode. Pre-fix: a 1-cell drag on
+    /// the panel thumb produced no scroll, because the painted thumb
+    /// nearly filled the gutter (travel < 1 cell) AND the drag-math
+    /// guard returned `Ignored` for sub-half-cell `panel_scroll` deltas.
+    #[test]
+    fn tui_panel_drag_works_in_multi_tree_example_shape() {
+        let mut ss = SidebarSystem::new(vec![
+            SidebarSectionDef::new("vars", "VARIABLES"),
+            SidebarSectionDef::new("watch", "WATCH"),
+            SidebarSectionDef::new("stack", "CALL STACK"),
+            SidebarSectionDef::new("bps", "BREAKPOINTS"),
+        ]);
+        ss.set_rows(0, fake_rows("v", 12));
+        ss.set_rows(1, fake_rows("w", 8));
+        ss.set_rows(2, fake_rows("frame", 5));
+        ss.set_rows(3, fake_rows("bp", 0));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+        // 30-row terminal − 2-row status bar = 28 rows. Total content
+        // (13+9+6+1) = 29 → 1 row of overflow.
+        let rect = Rect::new(0.0, 0.0, 30.0, 28.0);
+
+        let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
+        let panel_sb = layout.panel_scrollbar.expect("overflowing → panel sb");
+
+        // Click the painted thumb (top of gutter when panel_scroll=0).
+        let click_x = panel_sb.x.round();
+        let click_y = panel_sb.y.round();
+        let _ = ss.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(click_x, click_y),
+                modifiers: Modifiers::default(),
+            },
+            rect,
+        );
+        let _ = ss.handle_cached(
+            &UiEvent::MouseMoved {
+                position: Point::new(click_x, click_y + 1.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            },
+            rect,
+        );
+        let after = ss.panel_scroll();
+        assert!(
+            after > 0.0,
+            "multi_tree-shaped 1-cell panel drag should scroll, got {after} \
+             (panel_sb={panel_sb:?})"
+        );
+    }
+
+    /// Regression for #241: when the painted thumb fills nearly the whole
+    /// gutter (small overflow), the drag-`travel` value approaches zero
+    /// and the consumer's mouse cell coordinates can no longer move
+    /// `scroll_offset`. Repro: 22 rows in a body that fits 20 rows.
+    #[test]
+    fn tui_per_section_drag_works_with_small_overflow() {
+        let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
+        ss.set_rows(0, fake_rows("r", 22));
+        ss.set_active_section(Some(0));
+        ss.set_scroll_mode(ScrollMode::PerSection);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+        let rect = Rect::new(0.0, 0.0, 20.0, 21.0);
+
+        let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
+        let sb = layout.sections[0].scrollbar_bounds.expect("scrollbar reserved");
+        let thumb = layout.sections[0].thumb_bounds.expect("thumb computed");
+
+        // TUI mouse coords come in as integer cells.
+        let click_x = sb.x.round();
+        let click_y = thumb.y.round();
+        let _ = ss.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(click_x, click_y),
+                modifiers: Modifiers::default(),
+            },
+            rect,
+        );
+        let _ = ss.handle_cached(
+            &UiEvent::MouseMoved {
+                position: Point::new(click_x, click_y + 1.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            },
+            rect,
+        );
+        let offset = ss.scroll_offset(0);
+        assert!(
+            offset > 0,
+            "small-overflow 1-cell drag should advance scroll, got {offset} \
+             (sb={sb:?}, thumb={thumb:?})"
+        );
+    }
+
+    /// Regression for #241: in TUI the panel scrollbar's layout used a
+    /// pixel-shaped `min_thumb = 8.0`, painting a 2-cell thumb while
+    /// the layout reserved an 8-cell hit region. A click at a row
+    /// *below* the painted thumb (in cells 2..8) was treated as a
+    /// thumb-drag start instead of a `TrackAfter` page-scroll, so the
+    /// user "dragged" what looked like empty track and `panel_scroll`
+    /// jumped unexpectedly. Post-fix `panel_thumb_min` honours
+    /// `cell_quantum` (1 cell in TUI), so the layout's thumb hit
+    /// region matches the painted thumb's cells.
+    #[test]
+    fn tui_panel_thumb_hit_region_matches_painted_thumb_cells() {
+        let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
+        // Huge overflow → painted thumb is the minimum size in cells.
+        ss.set_rows(0, fake_rows("r", 200));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        let rect = Rect::new(0.0, 0.0, 30.0, 20.0);
+        let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
+        let panel_sb = layout.panel_scrollbar.expect("overflow → panel sb");
+
+        // The painted thumb (per `paint_panel_scrollbar`) uses
+        // `ceil(height * visible_frac).max(1)`. With height=20, total≈201,
+        // visible_frac≈0.0995, painted thumb_h = ceil(1.99) = 2 cells.
+        // Pre-fix the layout's thumb hit region was 8 cells; post-fix
+        // it should be 2.
+        let mut found_thumb_h: Option<f32> = None;
+        for (rect, hit) in &layout.hit_regions {
+            if matches!(
+                hit,
+                MultiSectionViewHit::PanelScrollbar {
+                    kind: ScrollbarHit::Thumb
+                }
+            ) {
+                found_thumb_h = Some(rect.height);
+                break;
+            }
+        }
+        let thumb_h = found_thumb_h.expect("layout must publish a Thumb hit region");
+        assert!(
+            thumb_h <= 4.0,
+            "TUI panel thumb hit region was {thumb_h} cells (expected ~2 \
+             to match the painted thumb). Pre-fix value was 8.0 cells, \
+             which made the empty track below the painted thumb behave \
+             like a thumb-drag. panel_sb={panel_sb:?}"
+        );
+    }
+
+    /// Regression for #241: when the natural thumb height is smaller
+    /// than the layout's `min_thumb` (8.0 cells in TUI), the painted
+    /// thumb travels a *short* distance per row of scroll. Pre-fix the
+    /// drag init used a different `min` (`lh = 1.0`), so the drag
+    /// produced ~8× too much scroll for each cell of mouse motion —
+    /// quickly clamping to `max_scroll` and visually appearing as
+    /// "thumb jumps to the end" instead of "thumb follows the cursor".
+    /// Post-fix, dragging 1 cell at a time produces a monotonically
+    /// increasing thumb position rather than instant clamp.
+    #[test]
+    fn tui_panel_drag_matches_painted_thumb_under_large_overflow() {
+        let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
+        // Very tall content forces the natural thumb < min_thumb=8.
+        ss.set_rows(0, fake_rows("r", 200));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+        let rect = Rect::new(0.0, 0.0, 30.0, 20.0);
+
+        let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
+        let panel_sb = layout.panel_scrollbar.expect("overflow → panel sb");
+
+        // Click top of panel thumb (panel_scroll=0 → thumb at sb.y).
+        let click_x = panel_sb.x.round();
+        let click_y = panel_sb.y.round();
+        let _ = ss.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(click_x, click_y),
+                modifiers: Modifiers::default(),
+            },
+            rect,
+        );
+
+        // Drag 1 cell, then a second cell. The scroll must increase
+        // monotonically AND not immediately jump to max_scroll on the
+        // first cell — that's the pre-fix smell of using `lh=1` as the
+        // min_thumb while the layout uses 8.0.
+        let _ = ss.handle_cached(
+            &UiEvent::MouseMoved {
+                position: Point::new(click_x, click_y + 1.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            },
+            rect,
+        );
+        let after_one = ss.panel_scroll();
+
+        let _ = ss.handle_cached(
+            &UiEvent::MouseMoved {
+                position: Point::new(click_x, click_y + 2.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            },
+            rect,
+        );
+        let after_two = ss.panel_scroll();
+
+        let total = 200.0_f32 + 1.0; // 200 body rows + 1 header row
+        let max_scroll = (total - rect.height).max(0.0);
+        assert!(
+            after_one > 0.0,
+            "1-cell drag should advance panel_scroll (got {after_one})"
+        );
+        assert!(
+            after_one < max_scroll,
+            "1-cell drag should not instantly clamp to max_scroll \
+             (got {after_one}, max_scroll={max_scroll}) — pre-fix sign \
+             that drag travel was computed against the wrong min_thumb"
+        );
+        assert!(
+            after_two > after_one,
+            "2-cell drag should advance past 1-cell drag \
+             (got after_two={after_two} vs after_one={after_one})"
+        );
+    }
+
+    #[test]
+    fn tui_panel_scrollbar_thumb_drag_scrolls_panel() {
+        // Panel-level scrollbar in WholePanel mode under TUI metrics.
+        // Multiple sections sized by Content overflow the rect → panel
+        // scrollbar reserved on the trailing edge.
+        let mut ss = SidebarSystem::new(vec![
+            SidebarSectionDef::new("a", "A"),
+            SidebarSectionDef::new("b", "B"),
+            SidebarSectionDef::new("c", "C"),
+        ]);
+        ss.set_rows(0, fake_rows("a", 12));
+        ss.set_rows(1, fake_rows("b", 12));
+        ss.set_rows(2, fake_rows("c", 12));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+        let rect = Rect::new(0.0, 0.0, 20.0, 21.0);
+
+        let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
+        let panel_sb = layout
+            .panel_scrollbar
+            .expect("overflowing panel → panel scrollbar reserved");
+
+        // Click somewhere in the panel scrollbar (thumb starts at the top
+        // when panel_scroll == 0). Drag down 1 cell.
+        // TUI mouse coords come in as integer cells.
+        let click_x = panel_sb.x.round();
+        let click_y = panel_sb.y.round();
+        let down = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(click_x, click_y),
+            modifiers: Modifiers::default(),
+        };
+        let _ = ss.handle_cached(&down, rect);
+
+        let move_ev = UiEvent::MouseMoved {
+            position: Point::new(click_x, click_y + 1.0),
+            buttons: ButtonMask {
+                left: true,
+                ..Default::default()
+            },
+        };
+        let _ = ss.handle_cached(&move_ev, rect);
+
+        let after = ss.panel_scroll();
+        assert!(
+            after > 0.0,
+            "1-cell TUI drag on panel thumb should advance panel scroll, \
+             but it stayed at {after} (panel_sb={panel_sb:?})"
+        );
+    }
+
     // ── Header row click precision (#110) ──────────────────────────────
 
     #[test]
@@ -2252,5 +2720,244 @@ mod tests {
                 value: false,
             }
         );
+    }
+
+    // ── Header click-to-collapse tests ──────────────────────────────────
+
+    /// Rect, line-height, and metrics used by all header-click tests.
+    fn collapse_click_setup() -> (Rect, f32, LayoutMetrics) {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 600.0,
+        };
+        let lh = 20.0;
+        // header_size matches lh so section-0 header occupies y ∈ [0, 20).
+        let metrics = LayoutMetrics {
+            header_size: 20.0,
+            divider_size: 0.0,
+            scrollbar_size: 0.0,
+            cell_quantum: 0.0,
+        };
+        (rect, lh, metrics)
+    }
+
+    #[test]
+    fn header_click_toggles_collapsed_when_allow_collapse_true() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_allow_collapse(true);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        assert!(!ss.is_collapsed(0));
+        // Click centre of section-0 header.
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(ss.is_collapsed(0), "first click should collapse section 0");
+    }
+
+    #[test]
+    fn header_click_does_not_toggle_when_allow_collapse_false() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        // allow_collapse is false by default — make it explicit.
+        ss.set_allow_collapse(false);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(
+            !ss.is_collapsed(0),
+            "click without allow_collapse must not toggle collapsed state"
+        );
+    }
+
+    #[test]
+    fn header_click_emits_header_activated_after_toggle() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_allow_collapse(true);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        let ev = ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert_eq!(
+            ev,
+            SidebarEvent::HeaderActivated { section: 0 },
+            "HeaderActivated must still be emitted even when allow_collapse toggles state"
+        );
+    }
+
+    #[test]
+    fn header_click_multiple_toggles_persist_state() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_allow_collapse(true);
+        ss.set_rows(0, fake_rows("v", 3));
+        let (rect, lh, metrics) = collapse_click_setup();
+        // false → true
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(ss.is_collapsed(0), "after 1st click: should be collapsed");
+        // true → false
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(!ss.is_collapsed(0), "after 2nd click: should be expanded");
+        // false → true again
+        ss.click(rect, 5.0, 10.0, lh, &metrics, None);
+        assert!(
+            ss.is_collapsed(0),
+            "after 3rd click: should be collapsed again"
+        );
+    }
+
+    // ── Scroll-wheel position routing (#240) ───────────────────────────────
+    //
+    // Helpers shared by the scroll routing tests below.
+
+    fn scroll_routing_sidebar() -> SidebarSystem {
+        // Two sections, each with 50 rows so there's plenty of room to
+        // scroll (viewport ≈ 19 rows → max_scroll ≈ 31).
+        let defs = vec![
+            SidebarSectionDef::new("top", "TOP"),
+            SidebarSectionDef::new("bottom", "BOTTOM"),
+        ];
+        let mut ss = SidebarSystem::new(defs);
+        ss.set_rows(0, fake_rows("t", 50));
+        ss.set_rows(1, fake_rows("b", 50));
+        // Start with section 0 active — this is the "wrong" section for
+        // the scroll-routing tests that hover over section 1.
+        ss.set_active_section(Some(0));
+        // Provide backend info so handle_cached works.
+        // lh=1.0, default LayoutMetrics (header_size=1.0, scrollbar_size=1.0).
+        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss
+    }
+
+    /// Compute which y-coordinate lies inside the body of a given section
+    /// for a known rect and layout metrics, so we can construct correct
+    /// scroll-event positions for the routing tests.
+    fn section_body_y(ss: &SidebarSystem, section_idx: usize, rect: Rect) -> f32 {
+        let lh = 1.0_f32;
+        let metrics = LayoutMetrics::default();
+        let (layout, map) = ss.compute_layout(rect, &metrics, lh);
+        let msv_idx = map.iter().position(|&s| s == section_idx).unwrap();
+        let body_b = layout.sections[msv_idx].body_bounds;
+        // Return a y-coordinate in the middle of the body.
+        body_b.y + body_b.height / 2.0
+    }
+
+    #[test]
+    fn scroll_routes_to_section_under_cursor_not_active_section() {
+        // Section 0 is active, cursor is over section 1 body.
+        // Scroll down should advance section 1's offset, not section 0's.
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y1 = section_body_y(&ss, 1, rect);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -1.0), // negative y → scroll down
+            position: Point::new(5.0, y1),
+        };
+        let result = ss.handle_cached(&ev, rect);
+        assert_eq!(result, SidebarEvent::Consumed);
+
+        // Section 1 should have scrolled; section 0 should not have moved.
+        assert_eq!(ss.scroll_offset(0), 0, "active section 0 should not scroll");
+        assert!(
+            ss.scroll_offset(1) > 0,
+            "section 1 under cursor should have scrolled, offset={}",
+            ss.scroll_offset(1)
+        );
+    }
+
+    #[test]
+    fn scroll_routes_to_section_0_when_cursor_over_it() {
+        // Cursor is over section 0. Even though section 1 is active,
+        // section 0 should scroll.
+        let defs = vec![
+            SidebarSectionDef::new("top", "TOP"),
+            SidebarSectionDef::new("bottom", "BOTTOM"),
+        ];
+        let mut ss = SidebarSystem::new(defs);
+        ss.set_rows(0, fake_rows("t", 20));
+        ss.set_rows(1, fake_rows("b", 20));
+        ss.set_active_section(Some(1)); // section 1 is active
+        ss.set_backend_info(1.0, LayoutMetrics::default());
+
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y0 = section_body_y(&ss, 0, rect);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -1.0),
+            position: Point::new(5.0, y0),
+        };
+        ss.handle_cached(&ev, rect);
+
+        assert!(
+            ss.scroll_offset(0) > 0,
+            "section 0 under cursor should scroll"
+        );
+        assert_eq!(ss.scroll_offset(1), 0, "active section 1 should not scroll");
+    }
+
+    #[test]
+    fn scroll_falls_back_to_active_section_when_position_outside_msv() {
+        // Position (0, 0) lies outside the MSV bounds (rect starts at 10, 10).
+        // The fallback path kicks in and scrolls the active section.
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(10.0, 10.0, 20.0, 40.0);
+        ss.set_active_section(Some(0));
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -1.0),
+            position: Point::new(0.0, 0.0), // outside rect
+        };
+        ss.handle_cached(&ev, rect);
+        // Active section 0 receives the scroll via the fallback path.
+        assert!(
+            ss.scroll_offset(0) > 0,
+            "fallback should scroll active section 0"
+        );
+        assert_eq!(ss.scroll_offset(1), 0);
+    }
+
+    #[test]
+    fn scroll_up_decrements_offset_in_section_under_cursor() {
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y1 = section_body_y(&ss, 1, rect);
+
+        // First scroll section 1 down by 5.
+        if let SectionController::Tree(tc) = &mut ss.sections[1] {
+            tc.set_scroll_offset(5);
+        }
+
+        // Now scroll up with cursor over section 1.
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, 1.0), // positive y → scroll up
+            position: Point::new(5.0, y1),
+        };
+        ss.handle_cached(&ev, rect);
+        assert_eq!(ss.scroll_offset(1), 4, "scroll up should decrement offset");
+        assert_eq!(ss.scroll_offset(0), 0, "section 0 should be untouched");
+    }
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn scroll_event_carries_cursor_position_via_gdk_scroll_to_uievent() {
+        // Unit-test that `gdk_scroll_to_uievent` populates the position field
+        // correctly. This is the translation function called by the fixed GTK
+        // runner and `wire_da_events` — the real integration depends on the
+        // shared cursor_pos state, but we can verify the helper signature here.
+        use crate::gtk::events::gdk_scroll_to_uievent;
+        let ev = gdk_scroll_to_uievent(0.0, 1.0, 42.0, 100.0);
+        match ev {
+            UiEvent::Scroll {
+                position, delta, ..
+            } => {
+                assert_eq!(position.x, 42.0, "x from cursor should propagate");
+                assert_eq!(position.y, 100.0, "y from cursor should propagate");
+                // Negative dy convention is still applied (GTK positive = down).
+                assert_eq!(delta.y, -1.0);
+            }
+            _ => panic!("expected Scroll event"),
+        }
     }
 }
