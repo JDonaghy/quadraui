@@ -437,6 +437,15 @@ impl SidebarSystem {
         metrics: &LayoutMetrics,
         backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
+        // Snap the rect to the backend's render quantum so paint and
+        // hit-test agree. The TUI rasteriser routes through
+        // `q_rect_to_ratatui` which rounds the rect to integer cells
+        // (half-away-from-zero); SidebarSystem must mirror that or the
+        // overflow / scrollbar-presence decisions drift. See the
+        // `tui_handle_snaps_fractional_rect_height_to_match_paint` test
+        // for the multi_tree shape that surfaces this — the
+        // user-visible #241 retry symptom.
+        let rect = snap_rect_to_quantum(rect, metrics.cell_quantum);
         self.cached_viewport_rows = None;
 
         // Route text input events to the editing section's TreeController.
@@ -1066,10 +1075,8 @@ impl SidebarSystem {
                     // the painted thumb position. The legacy code
                     // dropped divider sizes, breaking drag when
                     // `allow_resize=true`.
-                    let sections_total: f32 =
-                        layout.sections.iter().map(|s| s.resolved_size).sum();
-                    let dividers_total: f32 =
-                        layout.dividers.iter().map(|d| d.bounds.height).sum();
+                    let sections_total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+                    let dividers_total: f32 = layout.dividers.iter().map(|d| d.bounds.height).sum();
                     let total = sections_total + dividers_total;
                     let max_scroll = (total - rect.height).max(0.0);
                     let thumb_frac = rect.height / total;
@@ -1345,6 +1352,30 @@ impl SidebarSystem {
             tc.set_scroll_offset(0);
         }
     }
+}
+
+/// Snap a rect's coordinates to integer multiples of `quantum`, using
+/// the same rounding (`f32::round` — half-away-from-zero) that
+/// [`crate::tui::backend`]'s `q_rect_to_ratatui` applies when it
+/// converts to `ratatui::layout::Rect`'s `u16` fields. Mirroring that
+/// rounding here keeps SidebarSystem's hit-test layout in lock-step
+/// with the rasteriser's paint layout.
+///
+/// When `quantum <= 0.0` (GTK / macOS — pixel coordinates) the rect is
+/// passed through unchanged: those backends paint at fractional
+/// precision and don't suffer the rounding drift TUI's u16 paint area
+/// introduces.
+fn snap_rect_to_quantum(rect: Rect, quantum: f32) -> Rect {
+    if quantum <= 0.0 {
+        return rect;
+    }
+    let snap = |v: f32| (v / quantum).round() * quantum;
+    Rect::new(
+        snap(rect.x.max(0.0)),
+        snap(rect.y.max(0.0)),
+        snap(rect.width).max(0.0),
+        snap(rect.height).max(0.0),
+    )
 }
 
 fn form_field_measure(
@@ -2274,7 +2305,9 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 20.0, 21.0);
 
         let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
-        let sb = layout.sections[0].scrollbar_bounds.expect("scrollbar reserved");
+        let sb = layout.sections[0]
+            .scrollbar_bounds
+            .expect("scrollbar reserved");
         let thumb = layout.sections[0].thumb_bounds.expect("thumb computed");
 
         // TUI mouse coords come in as integer cells.
@@ -2504,6 +2537,160 @@ mod tests {
             after > 0.0,
             "1-cell TUI drag on panel thumb should advance panel scroll, \
              but it stayed at {after} (panel_sb={panel_sb:?})"
+        );
+    }
+
+    /// Regression for #241 (retry): the real-world `examples/common/multi_tree.rs`
+    /// shape reserves a 1.5-cell status bar (`STATUS_BAR_LINES = 1.5`),
+    /// leaving the sidebar rect with a fractional height. On a 30-cell tall
+    /// terminal that's `30 - 1.5 = 28.5`.
+    ///
+    /// The TUI rasteriser converts the rect via `q_rect_to_ratatui` which
+    /// rounds half-away-from-zero — so paint receives `area.height = 29`.
+    /// Pre-fix `SidebarSystem::compute_layout` consumed the raw 28.5
+    /// directly, so its overflow check `total > bounds.height` saw
+    /// `29 > 28.5 = true` and reserved a panel scrollbar in the right
+    /// column. Paint, working from `bounds.height = 29`, saw
+    /// `29 > 29 = false` and painted NO scrollbar.
+    ///
+    /// The visible symptom: clicking the right column starts a
+    /// `PanelScrollbar` drag against a thumb the user can't see — and
+    /// the drag arithmetic computes against the hit-test's tiny 0.5-cell
+    /// travel, so `panel_scroll` jumps around with no painted feedback.
+    /// Closes the "thumb drag not working" issue at the actual
+    /// integration shape, not just round-number bounds.
+    #[test]
+    fn tui_handle_snaps_fractional_rect_height_to_match_paint() {
+        let mut ss = SidebarSystem::new(vec![
+            SidebarSectionDef::new("vars", "VARIABLES"),
+            SidebarSectionDef::new("watch", "WATCH"),
+            SidebarSectionDef::new("stack", "CALL STACK"),
+            SidebarSectionDef::new("bps", "BREAKPOINTS"),
+        ]);
+        ss.set_rows(0, fake_rows("v", 12));
+        ss.set_rows(1, fake_rows("w", 8));
+        ss.set_rows(2, fake_rows("frame", 5));
+        ss.set_rows(3, fake_rows("bp", 0));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+
+        // multi_tree.rs reserves 1.5 cells for the status bar on a
+        // 30-cell terminal → 28.5-cell sidebar rect. Paint (via
+        // q_rect_to_ratatui) rounds this to 29; SidebarSystem must do
+        // the same so its layout agrees with what the user sees.
+        let rect = Rect::new(0.0, 0.0, 30.0, 28.5);
+
+        // 4 sections, 13+9+6+1 = 29 cells of natural content. With
+        // paint's effective height = 29, sections fit exactly: NO
+        // panel scrollbar should be reserved. With the pre-fix raw
+        // 28.5, the hit-test reported a scrollbar in the right
+        // column even though paint never drew one.
+        //
+        // Click in the right column (where a scrollbar WOULD live if
+        // there was overflow) and assert no `PanelScrollbar` drag
+        // gets initiated — i.e. nothing happens or it routes to the
+        // section under the click.
+        let click = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(29.0, 0.5), // rightmost column, top
+            modifiers: Modifiers::default(),
+        };
+        let _ = ss.handle_cached(&click, rect);
+
+        let drag = UiEvent::MouseMoved {
+            position: Point::new(29.0, 5.0),
+            buttons: ButtonMask {
+                left: true,
+                ..Default::default()
+            },
+        };
+        let _ = ss.handle_cached(&drag, rect);
+
+        // panel_scroll must stay at 0 — no overflow means no scrolling.
+        // Pre-fix the 4.5-cell drag against the bogus 0.5-cell travel
+        // produced `panel_scroll ≈ 4.5/0.5 * 0.5 = 4.5`, clamped to
+        // max_scroll = 0.5. Visible: status reported "scrollbar→..."
+        // and nothing painted moved.
+        assert_eq!(
+            ss.panel_scroll(),
+            0.0,
+            "with paint-effective bounds=29 and content=29 there is NO \
+             overflow, so a drag in the rightmost column must NOT advance \
+             panel_scroll. Pre-fix the fractional 28.5 fooled hit-test \
+             into reserving a phantom scrollbar."
+        );
+    }
+
+    /// Companion to the fractional-rect test above: when the rect's
+    /// fractional part DOES push the snapped bounds past content,
+    /// drag must still work normally. With `rect.height = 27.5` (≈ 28-cell
+    /// effective) and the same 29-cell content, paint reserves a panel
+    /// scrollbar (29 > 28) and a 1-cell drag must move `panel_scroll`.
+    /// Locks the fix to a "snap, don't disable" semantic — we mirror
+    /// paint's bounds, we don't drop hit-testing.
+    #[test]
+    fn tui_panel_drag_still_works_when_snapped_bounds_have_overflow() {
+        let mut ss = SidebarSystem::new(vec![
+            SidebarSectionDef::new("vars", "VARIABLES"),
+            SidebarSectionDef::new("watch", "WATCH"),
+            SidebarSectionDef::new("stack", "CALL STACK"),
+            SidebarSectionDef::new("bps", "BREAKPOINTS"),
+        ]);
+        ss.set_rows(0, fake_rows("v", 12));
+        ss.set_rows(1, fake_rows("w", 8));
+        ss.set_rows(2, fake_rows("frame", 5));
+        ss.set_rows(3, fake_rows("bp", 0));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+
+        let metrics = LayoutMetrics {
+            header_size: 1.0,
+            divider_size: 0.0,
+            scrollbar_size: 1.0,
+            cell_quantum: 1.0,
+        };
+        ss.set_backend_info(1.0, metrics);
+
+        // 27.5 rounds to 28 → 29 > 28 → real overflow, scrollbar painted.
+        let rect = Rect::new(0.0, 0.0, 30.0, 27.5);
+        let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
+        let panel_sb = layout
+            .panel_scrollbar
+            .expect("snapped bounds=28 with content=29 should reserve scrollbar");
+
+        let click_x = panel_sb.x.round();
+        let click_y = panel_sb.y.round();
+        let _ = ss.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(click_x, click_y),
+                modifiers: Modifiers::default(),
+            },
+            rect,
+        );
+        let _ = ss.handle_cached(
+            &UiEvent::MouseMoved {
+                position: Point::new(click_x, click_y + 1.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            },
+            rect,
+        );
+        assert!(
+            ss.panel_scroll() > 0.0,
+            "real-overflow drag must still advance panel_scroll \
+             (got {}), panel_sb={panel_sb:?}",
+            ss.panel_scroll()
         );
     }
 
