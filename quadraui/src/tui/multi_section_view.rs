@@ -104,8 +104,14 @@ pub fn draw_multi_section_view(
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
     if let Some(panel_sb) = layout.panel_scrollbar {
-        let total_content: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
-        paint_panel_scrollbar(buf, panel_sb, view.panel_scroll, total_content, theme);
+        // The layout owns the thumb bounds — paint, hit-test, and the
+        // drag handler in `SidebarSystem` all reference the same rect.
+        // Pre-#241-retry the painter re-derived thumb dimensions from
+        // `total_content` / `scroll` independently; with small overflows
+        // its `ceil` rounded the painted thumb up to fill the whole
+        // gutter while the layout (and the drag handler) computed a
+        // smaller thumb. Drag changed state but nothing moved on screen.
+        paint_panel_scrollbar(buf, panel_sb, layout.panel_thumb_bounds, theme);
     }
 }
 
@@ -496,9 +502,17 @@ fn paint_scrollbar(buf: &mut Buffer, gutter: QRect, thumb_bounds: Option<QRect>,
     }
 }
 
-/// Panel-level scrollbar. Computes thumb size + position from the
-/// panel-wide `scroll` and `total_content` heights.
-fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
+/// Panel-level scrollbar. Paints the track over `bounds`, then paints
+/// the thumb at `thumb_bounds` if present. The thumb rect is owned by
+/// `MultiSectionViewLayout::panel_thumb_bounds`; the painter trusts
+/// the layout's quantised thumb position so paint / hit-test / drag
+/// math all reference the same cells.
+fn paint_panel_scrollbar(
+    buf: &mut Buffer,
+    bounds: QRect,
+    thumb_bounds: Option<QRect>,
+    theme: &Theme,
+) {
     let bg = ratatui_color(theme.background);
     let track = ratatui_color(theme.scrollbar_track);
     let thumb = ratatui_color(theme.scrollbar_thumb);
@@ -506,7 +520,7 @@ fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f3
     let x = bounds.x.round() as u16;
     let y_start = bounds.y.round() as u16;
     let height = bounds.height.round() as u16;
-    if height == 0 || total <= 0.0 {
+    if height == 0 {
         return;
     }
 
@@ -519,18 +533,17 @@ fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f3
         set_cell(buf, x, cell_y, '░', track, bg);
     }
 
-    // Thumb position + size.
-    let visible_frac = (height as f32 / total).min(1.0);
-    let scroll_frac = if total > height as f32 {
-        scroll / (total - height as f32)
-    } else {
-        0.0
+    // Thumb — paint exactly the rect the layout computed. Per
+    // *Primitive Authoring Rule #6* the thumb position derives from
+    // state, but the derivation lives in the layout; the rasteriser
+    // just paints.
+    let Some(t) = thumb_bounds else {
+        return;
     };
-    let thumb_h = ((height as f32 * visible_frac).ceil() as u16).max(1);
-    let thumb_track = height.saturating_sub(thumb_h);
-    let thumb_offset = (thumb_track as f32 * scroll_frac).round() as u16;
+    let thumb_y = t.y.round() as u16;
+    let thumb_h = t.height.round().max(1.0) as u16;
     for dy in 0..thumb_h {
-        let cell_y = y_start + thumb_offset + dy;
+        let cell_y = thumb_y + dy;
         if cell_y >= y_start + height {
             break;
         }
@@ -1083,6 +1096,80 @@ mod tests {
                 painted_mid, other
             ),
         }
+    }
+
+    /// Panel-level paint↔layout round-trip: under `WholePanel` scroll
+    /// mode with small overflow, the painted thumb must:
+    ///   1. Have the exact dimensions the layout's `panel_thumb_bounds`
+    ///      reports — painter, hit-test, and drag handler all share
+    ///      one source of truth.
+    ///   2. Reserve at least 1 cell of unused track so a 1-cell drag
+    ///      visibly moves the thumb.
+    ///
+    /// Pre-#241-retry: the painter computed its own thumb_h with
+    /// `ceil(height * height/total).max(1)`, which filled the whole
+    /// gutter when overflow was small. Drag advanced state but the
+    /// painted thumb stayed pinned at the top. This test would have
+    /// caught that mismatch — it asserts the painted '█' rows match
+    /// `panel_thumb_bounds`'s y range exactly AND that there is a
+    /// gap of '░' track cells around the thumb.
+    #[test]
+    fn panel_scrollbar_paint_matches_layout_thumb_bounds() {
+        let area = TuiRect::new(0, 0, 30, 20);
+        let mut buf = Buffer::empty(area);
+        // 25 + 4 = 29 rows of body + 2 headers = 31 rows of content
+        // in a 20-cell viewport → 11 cells of overflow.
+        let mut v = view_with(vec![
+            tree_section(
+                "a",
+                &[
+                    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11",
+                    "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20", "a21", "a22",
+                    "a23", "a24",
+                ],
+                SectionSize::Content,
+            ),
+            tree_section("b", &["b0", "b1", "b2", "b3"], SectionSize::Content),
+        ]);
+        v.scroll_mode = ScrollMode::WholePanel;
+
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+        let panel_sb = layout.panel_scrollbar.expect("overflow → panel sb");
+        let thumb = layout
+            .panel_thumb_bounds
+            .expect("panel_scrollbar set → panel_thumb_bounds also set");
+
+        // Painted thumb row range must equal `panel_thumb_bounds` y
+        // range. Walk the gutter column and collect '█' cells.
+        let gutter_x = panel_sb.x.round() as u16;
+        let mut painted_rows: Vec<u16> = Vec::new();
+        for y in (panel_sb.y.round() as u16)..((panel_sb.y + panel_sb.height).round() as u16) {
+            if cell_char(&buf, gutter_x, y) == '█' {
+                painted_rows.push(y);
+            }
+        }
+        let expected: Vec<u16> =
+            (thumb.y.round() as u16..(thumb.y + thumb.height).round() as u16).collect();
+        assert_eq!(
+            painted_rows, expected,
+            "painted '█' thumb rows must match `panel_thumb_bounds` exactly. \
+             panel_sb={panel_sb:?}, thumb={thumb:?}"
+        );
+
+        // At least one '░' track cell must exist around the thumb (i.e.
+        // travel > 0). Pre-fix, the painter filled the gutter and no
+        // track cells were visible.
+        let mut track_rows: Vec<u16> = Vec::new();
+        for y in (panel_sb.y.round() as u16)..((panel_sb.y + panel_sb.height).round() as u16) {
+            if cell_char(&buf, gutter_x, y) == '░' {
+                track_rows.push(y);
+            }
+        }
+        assert!(
+            !track_rows.is_empty(),
+            "panel scrollbar must show at least one '░' track cell with \
+             overflow (i.e. travel > 0). panel_sb={panel_sb:?}, thumb={thumb:?}"
+        );
     }
 
     /// Hit-test in the gutter column above the painted thumb returns

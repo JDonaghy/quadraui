@@ -196,9 +196,10 @@ pub fn draw_multi_section_view(
     cr.restore().ok();
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
+    // Painter takes the thumb rect from the layout — paint, hit-test
+    // and drag math all reference the same coordinates (#241 retry).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
-        let total_content: f32 = view_layout.sections.iter().map(|s| s.resolved_size).sum();
-        paint_panel_scrollbar(cr, panel_sb, view.panel_scroll, total_content, theme);
+        paint_panel_scrollbar(cr, panel_sb, view_layout.panel_thumb_bounds, theme);
     }
 }
 
@@ -575,7 +576,7 @@ fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, the
 /// so it's actually visible against dark sidebar backgrounds; alpha
 /// blending against unknown panel backgrounds was washing the thumb
 /// out in onedark.
-fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
+fn paint_panel_scrollbar(cr: &Context, bounds: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
     let track = cairo_rgb(theme.scrollbar_track);
     let thumb = cairo_rgb(theme.scrollbar_thumb);
 
@@ -583,7 +584,7 @@ fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, t
     let by = bounds.y as f64;
     let bw = bounds.width as f64;
     let bh = bounds.height as f64;
-    if bh <= 0.0 || total <= 0.0 {
+    if bh <= 0.0 {
         return;
     }
 
@@ -591,17 +592,13 @@ fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, t
     cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
-    let visible_frac = (bh / total as f64).min(1.0);
-    let scroll_frac = if total as f64 > bh {
-        scroll as f64 / (total as f64 - bh)
-    } else {
-        0.0
+    // Trust the layout's thumb rect — paint, hit-test and drag math
+    // share one source of truth.
+    let Some(t) = thumb_bounds else {
+        return;
     };
-    let thumb_h = (bh * visible_frac).max(20.0);
-    let thumb_track = (bh - thumb_h).max(0.0);
-    let thumb_y = by + thumb_track * scroll_frac;
     cr.set_source_rgb(thumb.0, thumb.1, thumb.2);
-    cr.rectangle(bx, thumb_y, bw, thumb_h);
+    cr.rectangle(t.x as f64, t.y as f64, t.width as f64, t.height as f64);
     cr.fill().ok();
 }
 

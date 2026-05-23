@@ -380,6 +380,14 @@ pub struct MultiSectionViewLayout {
     /// Panel-level scrollbar bounds (only present in
     /// [`ScrollMode::WholePanel`] when content overflows).
     pub panel_scrollbar: Option<Rect>,
+    /// Panel-level scrollbar thumb bounds — a sub-rect of
+    /// [`Self::panel_scrollbar`] reflecting `panel_scroll` against
+    /// total content height. `Some` whenever `panel_scrollbar` is
+    /// `Some`. Painters render the thumb at this rect verbatim; the
+    /// drag handler uses `(gutter.height - thumb.height)` as the
+    /// drag travel — paint, hit-test, and drag math all reference
+    /// the same coordinates per *Primitive Authoring Rule #6*.
+    pub panel_thumb_bounds: Option<Rect>,
     /// Ordered hit-region list. Iterated front-to-back by
     /// [`Self::hit_test`].
     pub hit_regions: Vec<(Rect, MultiSectionViewHit)>,
@@ -486,6 +494,7 @@ impl MultiSectionView {
                     sections: Vec::new(),
                     dividers: Vec::new(),
                     panel_scrollbar: None,
+                    panel_thumb_bounds: None,
                     hit_regions: Vec::new(),
                 }
             }
@@ -510,6 +519,7 @@ impl MultiSectionView {
                 sections: Vec::new(),
                 dividers: Vec::new(),
                 panel_scrollbar: None,
+                panel_thumb_bounds: None,
                 hit_regions: Vec::new(),
             };
         }
@@ -839,7 +849,7 @@ impl MultiSectionView {
         }
 
         // Panel-level scrollbar (WholePanel mode only).
-        let panel_scrollbar = match self.scroll_mode {
+        let (panel_scrollbar, panel_thumb_bounds) = match self.scroll_mode {
             ScrollMode::WholePanel => {
                 let total_content: f32 = resolved.iter().sum::<f32>() + dividers_total;
                 if total_content > bounds.height {
@@ -850,32 +860,29 @@ impl MultiSectionView {
                         sb_w,
                         bounds.height,
                     );
-                    let thumb_frac = bounds.height / total_content;
                     let min_thumb = panel_thumb_min(&metrics);
-                    let thumb_h = (r.height * thumb_frac).max(min_thumb).min(r.height);
-                    let max_scroll = (total_content - bounds.height).max(0.0);
-                    let scroll_frac = if max_scroll > 0.0 {
-                        self.panel_scroll.clamp(0.0, max_scroll) / max_scroll
-                    } else {
-                        0.0
-                    };
-                    let travel = (r.height - thumb_h).max(0.0);
-                    let thumb_y = r.y + travel * scroll_frac;
-                    if thumb_y > r.y {
+                    let thumb = compute_panel_thumb_bounds(
+                        r,
+                        self.panel_scroll,
+                        total_content,
+                        min_thumb,
+                        metrics.cell_quantum,
+                    );
+                    if thumb.y > r.y {
                         hit_regions.push((
-                            Rect::new(r.x, r.y, r.width, thumb_y - r.y),
+                            Rect::new(r.x, r.y, r.width, thumb.y - r.y),
                             MultiSectionViewHit::PanelScrollbar {
                                 kind: ScrollbarHit::TrackBefore,
                             },
                         ));
                     }
                     hit_regions.push((
-                        Rect::new(r.x, thumb_y, r.width, thumb_h),
+                        thumb,
                         MultiSectionViewHit::PanelScrollbar {
                             kind: ScrollbarHit::Thumb,
                         },
                     ));
-                    let thumb_bottom = thumb_y + thumb_h;
+                    let thumb_bottom = thumb.y + thumb.height;
                     let track_bottom = r.y + r.height;
                     if thumb_bottom < track_bottom {
                         hit_regions.push((
@@ -885,12 +892,12 @@ impl MultiSectionView {
                             },
                         ));
                     }
-                    Some(r)
+                    (Some(r), Some(thumb))
                 } else {
-                    None
+                    (None, None)
                 }
             }
-            ScrollMode::PerSection => None,
+            ScrollMode::PerSection => (None, None),
         };
 
         MultiSectionViewLayout {
@@ -900,6 +907,7 @@ impl MultiSectionView {
             sections: sections_out,
             dividers,
             panel_scrollbar,
+            panel_thumb_bounds,
             hit_regions,
         }
     }
@@ -981,8 +989,11 @@ fn size_bounds(s: &Section) -> (f32, f32) {
 ///
 /// `cell_quantum > 0.0` flags TUI: the painter clamps thumb height to
 /// 1 cell (`.max(1)` in `paint_panel_scrollbar`), so we mirror that
-/// here. GTK keeps the historical 8-pixel floor (clamped up to
-/// `scrollbar_size` when the gutter is wider).
+/// here. GTK uses a 20-pixel floor — wider than `scrollbar_size`
+/// (8px) so the thumb is comfortably grabable; matches the
+/// historical pre-#241-retry GTK painter, which independently used
+/// `.max(20.0)` even though the layout's hit region was 8px tall.
+/// The mismatch caused paint↔hit-test drift; now both use 20px.
 ///
 /// Exposed `pub(crate)` so [`crate::compose::SidebarSystem`]'s drag
 /// init can compute the same `thumb_h` the layout did, keeping
@@ -994,7 +1005,12 @@ pub(crate) fn panel_thumb_min(metrics: &LayoutMetrics) -> f32 {
     if metrics.cell_quantum > 0.0 {
         metrics.cell_quantum
     } else {
-        metrics.scrollbar_size.max(8.0)
+        // GTK: 20px minimum thumb for comfortable grabbing. Pre-fix the
+        // GTK painter used `.max(20.0)` while the layout used `.max(8.0)`,
+        // so hits below the painted thumb (rows 9-20 visually) routed to
+        // `TrackAfter` instead of `Thumb` — clicks paged instead of
+        // starting a drag.
+        metrics.scrollbar_size.max(20.0)
     }
 }
 
@@ -1034,6 +1050,12 @@ fn body_scroll_state(body: &SectionBody) -> Option<(usize, usize)> {
 /// panel-level scrollbars look the same. Snaps to `cell_quantum` when
 /// set so paint and hit-test agree on integer cells (TUI). Falls
 /// through to fractional bounds when `cell_quantum == 0.0` (GTK).
+///
+/// Always reserves at least `cell_quantum` (1 cell in TUI, 1px in GTK)
+/// of unused track so the user can see the thumb travel during drag.
+/// Pre-#241-retry: with small overflows (e.g. 22 rows in a 20-cell
+/// body) the cell-quantum `ceil` rounded the thumb up to fill the whole
+/// gutter; the user dragged but the painted thumb never moved.
 fn compute_thumb_bounds(
     gutter: Rect,
     scroll_rows: usize,
@@ -1067,14 +1089,96 @@ fn compute_thumb_bounds(
         let start_q = (thumb_start / q).floor() as i32;
         let end_q = ((thumb_start + thumb_len) / q).ceil() as i32;
         let max_end_q = (track_len / q).round() as i32;
+        // Always leave at least 1 cell of unused track so drag produces
+        // a visible thumb movement. Without this cap, ceil quantisation
+        // can fill the whole gutter when overflow is small (e.g. 22-row
+        // content in a 20-cell viewport: raw thumb = 18.18 cells →
+        // ceil = 19 with no room to grow, locking the painted thumb
+        // even though `panel_scroll` / `scroll_offset` advance).
+        let max_len_q = (max_end_q - 1).max(1);
         let end_q = end_q.min(max_end_q);
-        let len_q = (end_q - start_q).max(1);
+        let len_q = (end_q - start_q).max(1).min(max_len_q);
         let start_q = start_q.min(max_end_q - len_q).max(0);
         (start_q as f32 * q, len_q as f32 * q)
     } else {
         (thumb_start, thumb_len)
     };
     Rect::new(gutter.x, gutter.y + thumb_start, gutter.width, thumb_len)
+}
+
+/// Compute thumb bounds for the panel-level scrollbar.
+///
+/// Single source of truth for both painters (TUI / GTK) and the drag
+/// handler in `SidebarSystem`. Replaces the pre-#241-retry pattern
+/// where each painter and the layout independently re-derived the
+/// thumb size — those derivations disagreed when overflow was small.
+///
+/// Always reserves at least `cell_quantum` (TUI) or 1px (GTK) of
+/// unused track when there is overflow, so the user can see the thumb
+/// travel during drag. Snaps to `cell_quantum` in TUI so paint and
+/// hit-test agree on integer cells.
+///
+/// Returns the gutter itself when there is no overflow (caller should
+/// not be calling this in that case — guard with
+/// `total_content > gutter.height` first).
+pub(crate) fn compute_panel_thumb_bounds(
+    gutter: Rect,
+    scroll: f32,
+    total_content: f32,
+    min_thumb: f32,
+    cell_quantum: f32,
+) -> Rect {
+    if gutter.height <= 0.0 || total_content <= 0.0 {
+        return gutter;
+    }
+    if total_content <= gutter.height {
+        // No overflow: thumb is the whole gutter (caller is expected
+        // to skip painting and skip hit-emitting in this case).
+        return gutter;
+    }
+    let visible_frac = (gutter.height / total_content).min(1.0);
+    let travel_floor = if cell_quantum > 0.0 {
+        cell_quantum
+    } else {
+        1.0
+    };
+    // Reserve `travel_floor` of unused track so the thumb visibly
+    // moves under drag. Without this, a 1-cell overflow paints a
+    // thumb filling the whole gutter — state advances but nothing
+    // moves on screen.
+    let max_thumb = (gutter.height - travel_floor).max(min_thumb.min(gutter.height));
+    let raw_thumb_len = (gutter.height * visible_frac).max(min_thumb).min(max_thumb);
+    let max_scroll = (total_content - gutter.height).max(0.0);
+    let scroll_frac = if max_scroll > 0.0 {
+        scroll.clamp(0.0, max_scroll) / max_scroll
+    } else {
+        0.0
+    };
+    let travel = (gutter.height - raw_thumb_len).max(0.0);
+    let raw_thumb_start = travel * scroll_frac;
+    if cell_quantum > 0.0 {
+        let q = cell_quantum;
+        let start_q = (raw_thumb_start / q).floor() as i32;
+        let end_q = ((raw_thumb_start + raw_thumb_len) / q).ceil() as i32;
+        let max_end_q = (gutter.height / q).round() as i32;
+        let max_len_q = (max_end_q - 1).max(1);
+        let end_q = end_q.min(max_end_q);
+        let len_q = (end_q - start_q).max(1).min(max_len_q);
+        let start_q = start_q.min(max_end_q - len_q).max(0);
+        Rect::new(
+            gutter.x,
+            gutter.y + start_q as f32 * q,
+            gutter.width,
+            len_q as f32 * q,
+        )
+    } else {
+        Rect::new(
+            gutter.x,
+            gutter.y + raw_thumb_start,
+            gutter.width,
+            raw_thumb_len,
+        )
+    }
 }
 
 /// Three-pass main-axis size resolution for `ScrollMode::PerSection`.
