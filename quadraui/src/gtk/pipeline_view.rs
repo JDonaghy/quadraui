@@ -6,13 +6,16 @@
 //!
 //! ## Colour mapping (same as TUI)
 //!
-//! | Status   | Icon | Fill                |
-//! |----------|------|---------------------|
-//! | Done     | ✓    | `theme.success`     |
-//! | Active   | ●    | `theme.accent_bg`   |
-//! | Failed   | ✗    | `theme.error`       |
-//! | Pending  | ·    | `theme.muted_fg`    |
-//! | Skipped  | ─    | `theme.muted_fg`    |
+//! | Status   | Icon | Fill tint              | Border                        |
+//! |----------|------|------------------------|-------------------------------|
+//! | Active   | ●    | accent blue (20% α)    | accent (`theme.accent_bg`)    |
+//! | Done     | ✓    | none                   | green (`theme.git_added`)     |
+//! | Failed   | ✗    | dim red (12% α)        | red (`theme.error_fg`)        |
+//! | Pending  | ·    | none                   | muted (`theme.muted_fg`)      |
+//! | Skipped  | ─    | none                   | muted (`theme.muted_fg`)      |
+//!
+//! `Active`, `Done`, and `Failed` use a 2 px border stroke so the status
+//! colour is clearly visible. `Pending`/`Skipped` keep the default 1 px.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -89,18 +92,43 @@ pub fn draw_pipeline_view(
         }
 
         // ── Box fill ─────────────────────────────────────────────────────
+        // Base fill: always surface_bg.
         set_source(cr, theme.surface_bg);
         rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
         cr.fill().ok();
 
+        // Status-specific colour overlay on top of the base fill.
+        match &stage.status {
+            StageStatus::Active => {
+                // Filled blue accent tint — makes the running stage
+                // immediately obvious even at a glance.
+                cr.set_source_rgba(
+                    theme.accent_bg.r as f64 / 255.0,
+                    theme.accent_bg.g as f64 / 255.0,
+                    theme.accent_bg.b as f64 / 255.0,
+                    0.20,
+                );
+                rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
+                cr.fill().ok();
+            }
+            StageStatus::Failed => {
+                // Dim red tint — signals failure with a subtle background wash.
+                cr.set_source_rgba(
+                    theme.error_fg.r as f64 / 255.0,
+                    theme.error_fg.g as f64 / 255.0,
+                    theme.error_fg.b as f64 / 255.0,
+                    0.12,
+                );
+                rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
+                cr.fill().ok();
+            }
+            _ => {}
+        }
+
         // ── Box border ───────────────────────────────────────────────────
-        let border_color = if is_focused {
-            theme.accent_bg
-        } else {
-            theme.muted_fg
-        };
+        let (border_color, border_width) = stage_border_style(&stage.status, is_focused, theme);
         set_source(cr, border_color);
-        cr.set_line_width(BORDER_WIDTH);
+        cr.set_line_width(border_width);
         rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
         cr.stroke().ok();
 
@@ -206,5 +234,28 @@ fn status_icon_color(
         StageStatus::Failed => theme.error_fg,
         StageStatus::Pending => theme.muted_fg,
         StageStatus::Skipped => theme.muted_fg,
+    }
+}
+
+/// Border colour and stroke width for a stage based on its status.
+///
+/// `Active`, `Done`, and `Failed` use a 2 px stroke so the status signal
+/// is clearly visible against the stage background. `Pending`/`Skipped`
+/// keep the quieter 1 px stroke.
+///
+/// `is_focused` overrides the border colour to `theme.accent_bg` for
+/// `Done` and `Pending`/`Skipped` to show keyboard focus.
+fn stage_border_style(status: &StageStatus, is_focused: bool, theme: &Theme) -> (Color, f64) {
+    match status {
+        StageStatus::Active => (theme.accent_bg, 2.0),
+        StageStatus::Done => {
+            let color = if is_focused { theme.accent_bg } else { theme.git_added };
+            (color, 2.0)
+        }
+        StageStatus::Failed => (theme.error_fg, 2.0),
+        StageStatus::Pending | StageStatus::Skipped => {
+            let color = if is_focused { theme.accent_bg } else { theme.muted_fg };
+            (color, BORDER_WIDTH)
+        }
     }
 }

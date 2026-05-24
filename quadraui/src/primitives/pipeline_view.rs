@@ -34,17 +34,30 @@ use serde::{Deserialize, Serialize};
 // ── Data model ───────────────────────────────────────────────────────────────
 
 /// Status of a single pipeline stage.
+///
+/// This is the **colour API** for [`PipelineView`]: backend rasterisers map
+/// each variant to a distinct fill/border scheme so operators can identify a
+/// stage's state at a glance.  To change a stage's appearance, change its
+/// `status` — there is no separate colour field.
+///
+/// | Variant   | TUI fill    | Border        | Icon |
+/// |-----------|-------------|---------------|------|
+/// | `Active`  | accent blue | accent        | ●    |
+/// | `Done`    | default     | success green | ✓    |
+/// | `Failed`  | dim red     | error red     | ✗    |
+/// | `Pending` | default     | muted grey    | ·    |
+/// | `Skipped` | default     | muted grey    | ─    |
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StageStatus {
-    /// Waiting to run — rendered dim.
+    /// Waiting to run — default fill, muted grey border.
     Pending,
-    /// Currently executing — rendered with accent colour (optional spinner).
+    /// Currently executing — filled accent-blue background, accent border.
     Active,
-    /// Completed successfully — rendered with green checkmark (✓).
+    /// Completed successfully — default fill, solid green border (✓).
     Done,
-    /// Execution failed — rendered with red X (✗).
+    /// Execution failed — dim red fill, solid red border (✗).
     Failed,
-    /// Intentionally bypassed — rendered with strikethrough / grey dash (─).
+    /// Intentionally bypassed — default fill, muted grey dash (─).
     Skipped,
 }
 

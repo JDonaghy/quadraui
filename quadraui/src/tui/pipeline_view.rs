@@ -7,15 +7,17 @@
 //!
 //! ## Colour mapping
 //!
-//! | Status   | Icon | Colour                        |
-//! |----------|------|-------------------------------|
-//! | Done     | ✓    | green (`theme.success`)        |
-//! | Active   | ●    | yellow (`theme.accent_bg`)     |
-//! | Failed   | ✗    | red (`theme.error`)            |
-//! | Pending  | ·    | dim (`theme.muted_fg`)         |
-//! | Skipped  | ─    | grey (`theme.muted_fg`)        |
+//! | Status   | Icon | Fill                     | Border                        |
+//! |----------|------|--------------------------|-------------------------------|
+//! | Active   | ●    | accent blue (dark tint)  | accent (`theme.accent_bg`)    |
+//! | Done     | ✓    | default surface          | green (`theme.git_added`)     |
+//! | Failed   | ✗    | dim red tint             | red (`theme.error_fg`)        |
+//! | Pending  | ·    | default surface          | muted (`theme.muted_fg`)      |
+//! | Skipped  | ─    | default surface          | muted (`theme.muted_fg`)      |
 //!
-//! The focused stage (keyboard navigation) receives a highlighted border.
+//! The focused stage (keyboard navigation) receives an accent border,
+//! overriding the status-derived border for `Done` and `Pending`/`Skipped`
+//! stages.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -69,17 +71,11 @@ pub fn draw_pipeline_view(
     let fg = ratatui_color(theme.foreground);
     let muted = ratatui_color(theme.muted_fg);
     let accent = ratatui_color(theme.accent_bg);
-    let border_normal = muted;
-    let border_focus = accent;
 
     for sb in &layout.stages {
         let stage = &view.stages[sb.index];
         let is_focused = view.focused_stage == Some(sb.index);
-        let border_col = if is_focused {
-            border_focus
-        } else {
-            border_normal
-        };
+        let (stage_bg, border_col) = stage_colors(&stage.status, is_focused, theme);
 
         let bx = sb.box_bounds.x.round() as u16;
         let by = sb.box_bounds.y.round() as u16;
@@ -91,39 +87,41 @@ pub fn draw_pipeline_view(
         }
 
         // ── Draw box border ───────────────────────────────────────────────
+        // Border and interior use `stage_bg` so the entire box reads as a
+        // solid coloured region (Active = blue, Failed = dim red, etc.).
         // Top edge.
-        set_cell(buf, bx, by, '┌', border_col, bg);
+        set_cell(buf, bx, by, '┌', border_col, stage_bg);
         for dx in 1..bw.saturating_sub(1) {
-            set_cell(buf, bx + dx, by, '─', border_col, bg);
+            set_cell(buf, bx + dx, by, '─', border_col, stage_bg);
         }
         if bw >= 2 {
-            set_cell(buf, bx + bw - 1, by, '┐', border_col, bg);
+            set_cell(buf, bx + bw - 1, by, '┐', border_col, stage_bg);
         }
 
         // Bottom edge.
         if bh >= 2 {
             let yb = by + bh - 1;
-            set_cell(buf, bx, yb, '└', border_col, bg);
+            set_cell(buf, bx, yb, '└', border_col, stage_bg);
             for dx in 1..bw.saturating_sub(1) {
-                set_cell(buf, bx + dx, yb, '─', border_col, bg);
+                set_cell(buf, bx + dx, yb, '─', border_col, stage_bg);
             }
             if bw >= 2 {
-                set_cell(buf, bx + bw - 1, yb, '┘', border_col, bg);
+                set_cell(buf, bx + bw - 1, yb, '┘', border_col, stage_bg);
             }
         }
 
         // Side edges.
         for dy in 1..bh.saturating_sub(1) {
-            set_cell(buf, bx, by + dy, '│', border_col, bg);
+            set_cell(buf, bx, by + dy, '│', border_col, stage_bg);
             if bw >= 2 {
-                set_cell(buf, bx + bw - 1, by + dy, '│', border_col, bg);
+                set_cell(buf, bx + bw - 1, by + dy, '│', border_col, stage_bg);
             }
         }
 
         // Fill interior background.
         for dy in 1..bh.saturating_sub(1) {
             for dx in 1..bw.saturating_sub(1) {
-                set_cell(buf, bx + dx, by + dy, ' ', fg, bg);
+                set_cell(buf, bx + dx, by + dy, ' ', fg, stage_bg);
             }
         }
 
@@ -133,7 +131,7 @@ pub fn draw_pipeline_view(
         if icon_row < by + bh.saturating_sub(1) {
             let icon_col = bx + bw / 2;
             if icon_col > bx && icon_col < bx + bw - 1 {
-                set_cell(buf, icon_col, icon_row, icon, icon_color, bg);
+                set_cell(buf, icon_col, icon_row, icon, icon_color, stage_bg);
             }
         }
 
@@ -155,7 +153,7 @@ pub fn draw_pipeline_view(
                 if col >= max_col {
                     break;
                 }
-                set_cell(buf, col, label_row, ch, fg, bg);
+                set_cell(buf, col, label_row, ch, fg, stage_bg);
             }
         }
 
@@ -179,7 +177,7 @@ pub fn draw_pipeline_view(
                     if col >= max_col {
                         break;
                     }
-                    set_cell(buf, col, ay, ch, accent, bg);
+                    set_cell(buf, col, ay, ch, accent, stage_bg);
                 }
             }
         }
@@ -215,6 +213,49 @@ fn status_icon(
     }
 }
 
+/// Per-status fill background and border colour for TUI cells.
+///
+/// Returns `(fill_bg, border_fg)`. The same `fill_bg` is applied to both
+/// interior cells and border-character backgrounds so the entire stage box
+/// reads as a solid coloured region.
+///
+/// `is_focused` overrides the border colour to `theme.accent_bg` for
+/// `Done` and `Pending`/`Skipped` stages, giving keyboard-focus feedback
+/// without interfering with the `Active` (always accent) or `Failed`
+/// (always red) indicators.
+fn stage_colors(status: &StageStatus, is_focused: bool, theme: &Theme) -> (RatatuiColor, RatatuiColor) {
+    let default_bg = ratatui_color(theme.surface_bg);
+    let accent = ratatui_color(theme.accent_bg);
+    let green = ratatui_color(theme.git_added);
+    let red = ratatui_color(theme.error_fg);
+    let muted = ratatui_color(theme.muted_fg);
+
+    match status {
+        StageStatus::Active => {
+            // Entire box filled with a dark accent-blue tint — the strongest
+            // possible signal that this is the stage currently running.
+            let active_bg = RatatuiColor::Rgb(15, 38, 72);
+            (active_bg, accent)
+        }
+        StageStatus::Done => {
+            // Solid green border marks completion; default fill.
+            let border = if is_focused { accent } else { green };
+            (default_bg, border)
+        }
+        StageStatus::Failed => {
+            // Dim red fill + solid red border — clearly signals failure even
+            // without reading the icon.
+            let failed_bg = RatatuiColor::Rgb(48, 12, 12);
+            (failed_bg, red)
+        }
+        StageStatus::Pending | StageStatus::Skipped => {
+            // Muted grey border; no fill — recedes visually so Active pops.
+            let border = if is_focused { accent } else { muted };
+            (default_bg, border)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +264,14 @@ mod tests {
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn cell_bg(buf: &Buffer, x: u16, y: u16) -> RatatuiColor {
+        buf[(x, y)].bg
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> RatatuiColor {
+        buf[(x, y)].fg
     }
 
     fn make_view() -> PipelineView {
@@ -290,5 +339,122 @@ mod tests {
         let _layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
         // Buffer should remain empty.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Stage colour tests ───────────────────────────────────────────────
+
+    fn single_stage_view(status: StageStatus) -> PipelineView {
+        PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Stage".into(),
+                status,
+                action: None,
+            }],
+            focused_stage: None,
+        }
+    }
+
+    #[test]
+    fn active_stage_has_blue_fill() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Active);
+        draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+        // Interior cell (1,1) must carry the dark-blue accent fill.
+        assert_eq!(cell_bg(&buf, 1, 1), RatatuiColor::Rgb(15, 38, 72));
+        // Border glyph at (0,0) must also carry the same bg (solid box look).
+        assert_eq!(cell_bg(&buf, 0, 0), RatatuiColor::Rgb(15, 38, 72));
+    }
+
+    #[test]
+    fn active_stage_border_is_accent() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Active);
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        // Top-left corner glyph fg must be accent_bg.
+        assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.accent_bg));
+    }
+
+    #[test]
+    fn done_stage_has_green_border() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Done);
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        // Border glyph fg must be git_added (green).
+        assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.git_added));
+    }
+
+    #[test]
+    fn done_stage_interior_is_default_bg() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Done);
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        // Interior must keep the surface background — no coloured fill.
+        assert_eq!(cell_bg(&buf, 1, 1), ratatui_color(theme.surface_bg));
+    }
+
+    #[test]
+    fn failed_stage_has_dim_red_fill() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Failed);
+        draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+        assert_eq!(cell_bg(&buf, 1, 1), RatatuiColor::Rgb(48, 12, 12));
+    }
+
+    #[test]
+    fn failed_stage_has_red_border() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Failed);
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.error_fg));
+    }
+
+    #[test]
+    fn pending_stage_has_muted_border() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Pending);
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.muted_fg));
+    }
+
+    #[test]
+    fn pending_stage_interior_is_default_bg() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = single_stage_view(StageStatus::Pending);
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        assert_eq!(cell_bg(&buf, 1, 1), ratatui_color(theme.surface_bg));
+    }
+
+    #[test]
+    fn focused_done_stage_gets_accent_border() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Build".into(),
+                status: StageStatus::Done,
+                action: None,
+            }],
+            focused_stage: Some(0),
+        };
+        let theme = Theme::default();
+        draw_pipeline_view(&mut buf, area, &view, &theme);
+        // Focus overrides the green Done border with accent.
+        assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.accent_bg));
     }
 }
