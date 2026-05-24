@@ -72,6 +72,10 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         };
         self.app.handle(event, backend, &ctx)
     }
+
+    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+        self.app.tick(backend)
+    }
 }
 
 /// Run a [`ShellApp`] with AppShell chrome on the TUI backend.

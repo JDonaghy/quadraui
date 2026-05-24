@@ -195,4 +195,12 @@ pub trait ShellApp {
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     fn on_shell_event(&mut self, _event: &AppShellEvent) {}
+
+    /// Periodic callback invoked by the runner on every frame (≈60Hz on
+    /// the TUI backend, GTK timeout on GTK). Use for timer-driven work —
+    /// polling background tasks, expiring caches, draining channels —
+    /// that must happen without a user input event. Default is no-op.
+    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
 }
