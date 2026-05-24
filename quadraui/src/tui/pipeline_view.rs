@@ -75,11 +75,15 @@ pub fn draw_pipeline_view(
     for sb in &layout.stages {
         let stage = &view.stages[sb.index];
         let is_focused = view.focused_stage == Some(sb.index);
-        let border_col = if is_focused {
-            border_focus
-        } else {
-            border_normal
+        // Per-status border so the active / done / failed stage is
+        // distinguishable at a glance. Focus override beats status colour.
+        let status_border = match stage.status {
+            StageStatus::Active => ratatui_color(theme.accent_bg),
+            StageStatus::Done => ratatui_color(theme.git_added),
+            StageStatus::Failed => ratatui_color(theme.error_fg),
+            StageStatus::Pending | StageStatus::Skipped => border_normal,
         };
+        let border_col = if is_focused { border_focus } else { status_border };
 
         let bx = sb.box_bounds.x.round() as u16;
         let by = sb.box_bounds.y.round() as u16;
