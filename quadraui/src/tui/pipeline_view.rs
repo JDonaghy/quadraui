@@ -210,6 +210,7 @@ fn status_icon(
         StageStatus::Failed => ('✗', ratatui_color(theme.error_fg)),
         StageStatus::Pending => ('·', ratatui_color(theme.muted_fg)),
         StageStatus::Skipped => ('─', ratatui_color(theme.muted_fg)),
+        StageStatus::Stale => ('↻', ratatui_color(theme.error_fg)),
     }
 }
 
@@ -252,6 +253,11 @@ fn stage_colors(status: &StageStatus, is_focused: bool, theme: &Theme) -> (Ratat
             // Muted grey border; no fill — recedes visually so Active pops.
             let border = if is_focused { accent } else { muted };
             (default_bg, border)
+        }
+        StageStatus::Stale => {
+            // Rendered identically to Failed so the user knows to Retry.
+            let failed_bg = RatatuiColor::Rgb(48, 12, 12);
+            (failed_bg, red)
         }
     }
 }

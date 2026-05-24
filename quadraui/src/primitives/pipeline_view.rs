@@ -59,6 +59,9 @@ pub enum StageStatus {
     Failed,
     /// Intentionally bypassed — default fill, muted grey dash (─).
     Skipped,
+    /// Completed but upstream was re-dispatched since — result is stale.
+    /// Rendered like Failed (prompts Retry) so the user knows to re-run.
+    Stale,
 }
 
 /// A single stage in a [`PipelineView`].

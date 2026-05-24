@@ -22,6 +22,10 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         self.app.setup(backend);
     }
 
+    fn tick(&mut self, backend: &mut dyn Backend) -> crate::runner::Reaction {
+        self.app.tick(backend)
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);

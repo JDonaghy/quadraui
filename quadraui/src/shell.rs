@@ -195,4 +195,12 @@ pub trait ShellApp {
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     fn on_shell_event(&mut self, _event: &AppShellEvent) {}
+
+    /// Called once per event batch (including empty poll-timeout batches).
+    /// Apps that need periodic background work — auto-refresh, animation
+    /// ticks — override this.  The default is a no-op that returns
+    /// [`Reaction::Continue`].
+    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
 }
