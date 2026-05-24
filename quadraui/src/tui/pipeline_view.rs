@@ -81,7 +81,9 @@ pub fn draw_pipeline_view(
             StageStatus::Active => ratatui_color(theme.accent_bg),
             StageStatus::Done => ratatui_color(theme.git_added),
             StageStatus::Failed => ratatui_color(theme.error_fg),
-            StageStatus::Pending | StageStatus::Skipped => border_normal,
+            // Stale gets a dim border so it visually retreats — the prior
+            // verdict is shown but de-emphasised to signal "no longer trusted."
+            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => border_normal,
         };
         let border_col = if is_focused { border_focus } else { status_border };
 
@@ -216,6 +218,9 @@ fn status_icon(
         StageStatus::Failed => ('✗', ratatui_color(theme.error_fg)),
         StageStatus::Pending => ('·', ratatui_color(theme.muted_fg)),
         StageStatus::Skipped => ('─', ratatui_color(theme.muted_fg)),
+        // ↻ suggests re-running. Stale renders dim like Pending so its
+        // prior verdict doesn't compete with a fresh Done downstream.
+        StageStatus::Stale => ('↻', ratatui_color(theme.muted_fg)),
     }
 }
 

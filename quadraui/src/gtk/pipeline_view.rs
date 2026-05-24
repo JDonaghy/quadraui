@@ -193,6 +193,7 @@ fn status_icon_text(stage: &crate::primitives::pipeline_view::PipelineStage) -> 
         StageStatus::Failed => "✗",
         StageStatus::Pending => "·",
         StageStatus::Skipped => "─",
+        StageStatus::Stale => "↻",
     }
 }
 
@@ -206,5 +207,6 @@ fn status_icon_color(
         StageStatus::Failed => theme.error_fg,
         StageStatus::Pending => theme.muted_fg,
         StageStatus::Skipped => theme.muted_fg,
+        StageStatus::Stale => theme.muted_fg,
     }
 }
