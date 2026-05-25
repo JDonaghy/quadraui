@@ -254,6 +254,10 @@ impl Backend for MacBackend {
         // flush.
     }
 
+    fn set_theme(&mut self, theme: Theme) {
+        self.set_current_theme(theme);
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         self.events.borrow_mut().drain(..).collect()
     }

@@ -62,6 +62,18 @@ pub trait Backend {
     /// Flush the current frame to screen.
     fn end_frame(&mut self);
 
+    // ─── Theming ───────────────────────────────────────────────────────
+    /// Set the active [`crate::Theme`] on the backend.
+    ///
+    /// Apps that use a single theme call this once from `setup()`; apps
+    /// that vary the theme per-pane call it at the start of each pane's
+    /// render pass (e.g. to darken the background of a detail pane).
+    ///
+    /// Default: no-op. Backends that carry a `current_theme` field
+    /// (TUI, GTK, macOS) override this to store the value so subsequent
+    /// `draw_*` calls consume the updated palette.
+    fn set_theme(&mut self, _theme: crate::Theme) {}
+
     // ─── Events + keybindings ──────────────────────────────────────────
     /// Drain all queued native events. Returns a fully-translated
     /// `Vec<UiEvent>` ready for app dispatch. Never blocks.

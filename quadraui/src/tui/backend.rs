@@ -352,6 +352,10 @@ impl Backend for TuiBackend {
         // exists for parity with backends that need explicit flush.
     }
 
+    fn set_theme(&mut self, theme: crate::Theme) {
+        self.set_current_theme(theme);
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain every queued crossterm event; never blocks. Each
         // native event translates to zero, one, or more `UiEvent`s
@@ -1149,6 +1153,7 @@ mod tests {
         modal_stack: ModalStack,
         services: MockServices,
         viewport: Viewport,
+        theme: crate::Theme,
     }
 
     impl MockBackend {
@@ -1158,6 +1163,7 @@ mod tests {
                 modal_stack: ModalStack::new(),
                 services: MockServices::new(),
                 viewport: Viewport::new(80.0, 24.0, 1.0),
+                theme: crate::Theme::default(),
             }
         }
     }
@@ -1170,6 +1176,9 @@ mod tests {
             self.viewport = viewport;
         }
         fn end_frame(&mut self) {}
+        fn set_theme(&mut self, theme: crate::Theme) {
+            self.theme = theme;
+        }
         fn poll_events(&mut self) -> Vec<UiEvent> {
             Vec::new()
         }
