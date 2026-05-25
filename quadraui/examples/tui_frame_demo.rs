@@ -2,6 +2,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-fn main() {
-    quadraui::tui::run(common::FrameDemo::new());
+fn main() -> std::io::Result<()> {
+    quadraui::tui::run(common::FrameDemo::new())
 }
