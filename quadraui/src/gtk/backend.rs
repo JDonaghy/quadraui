@@ -487,6 +487,10 @@ impl Backend for GtkBackend {
         // explicit flush.
     }
 
+    fn set_theme(&mut self, theme: crate::Theme) {
+        self.set_current_theme(theme);
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain the queue without blocking. Stage 4 wires up the
         // signal-callback producers; until then this is always empty.
