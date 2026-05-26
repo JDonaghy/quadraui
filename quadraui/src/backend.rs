@@ -41,6 +41,7 @@ use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
+use crate::primitives::toolbar::{Toolbar, ToolbarLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
@@ -464,6 +465,25 @@ pub trait Backend {
 
     /// Compute command-center layout without painting.
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
+
+    /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
+    /// content area — distinct from `StatusBar` which is read-only).
+    /// `hovered_id` / `pressed_id` carry per-frame mouse state so the
+    /// rasteriser can tint the matching button's background (same
+    /// pattern as `StatusBar`). Returns the [`ToolbarLayout`] so hosts
+    /// can route clicks via `layout.hit_test(x, y)` without re-deriving
+    /// metrics.
+    fn draw_toolbar(
+        &mut self,
+        rect: Rect,
+        bar: &Toolbar,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) -> ToolbarLayout;
+
+    /// Compute toolbar layout without painting. Hosts call this after
+    /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
+    fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
 
     /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
     /// carries per-frame hover state (series_idx, data_idx) so the

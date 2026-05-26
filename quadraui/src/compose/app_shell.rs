@@ -1659,5 +1659,21 @@ mod tests {
         ) -> crate::primitives::chart::ChartLayout {
             unimplemented!()
         }
+        fn draw_toolbar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::primitives::toolbar::Toolbar,
+            _h: Option<&crate::types::WidgetId>,
+            _p: Option<&crate::types::WidgetId>,
+        ) -> crate::primitives::toolbar::ToolbarLayout {
+            unimplemented!()
+        }
+        fn toolbar_layout(
+            &self,
+            _r: Rect,
+            _b: &crate::primitives::toolbar::Toolbar,
+        ) -> crate::primitives::toolbar::ToolbarLayout {
+            unimplemented!()
+        }
     }
 }

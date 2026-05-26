@@ -1635,6 +1635,50 @@ impl Backend for GtkBackend {
             self.current_char_width,
         )
     }
+
+    fn draw_toolbar(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_toolbar called outside enter_frame_scope");
+        crate::gtk::draw_toolbar(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &theme,
+            hovered_id,
+            pressed_id,
+        )
+    }
+
+    fn toolbar_layout(
+        &self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let char_w = self.current_char_width;
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+        crate::gtk::gtk_toolbar_layout(
+            bar,
+            pango_layout.as_ref(),
+            char_w,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

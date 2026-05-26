@@ -234,6 +234,10 @@ pub use primitives::toast::{
     ToastAction, ToastCorner, ToastEvent, ToastHit, ToastItem, ToastMeasure, ToastSeverity,
     ToastStack, ToastStackLayout, VisibleToast,
 };
+pub use primitives::toolbar::{
+    Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarItemKind, ToolbarItemMeasure,
+    ToolbarLayout, VisibleToolbarItem,
+};
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipEvent, TooltipHit, TooltipLayout, TooltipMeasure,
     TooltipPlacement,

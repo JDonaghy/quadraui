@@ -1242,6 +1242,84 @@ impl Backend for MacBackend {
             self.current_char_width,
         )
     }
+
+    fn draw_toolbar(
+        &mut self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_toolbar called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_toolbar requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::toolbar::draw_toolbar(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                hovered_id,
+                pressed_id,
+            )
+        }
+    }
+
+    fn toolbar_layout(
+        &self,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        // Layout-only path: prefer the live font when present, else
+        // synthesise widths from `char_width` to keep the contract
+        // honest without forcing apps to pre-set a font.
+        if let Some(font) = self.current_font.as_ref() {
+            super::toolbar::mac_toolbar_layout(
+                bar,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+            )
+        } else {
+            let cw = self.current_char_width as f32;
+            bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
+                let chars = match btn {
+                    crate::primitives::toolbar::ToolbarButton::Action {
+                        label,
+                        icon,
+                        key_hint,
+                        ..
+                    } => {
+                        let icon_w = icon.as_ref().map(|s| s.chars().count() + 1).unwrap_or(0);
+                        let hint_w = key_hint
+                            .as_ref()
+                            .map(|s| s.chars().count() + 3)
+                            .unwrap_or(0);
+                        icon_w + label.chars().count() + hint_w
+                    }
+                    crate::primitives::toolbar::ToolbarButton::Separator => 2,
+                    crate::primitives::toolbar::ToolbarButton::Label { text, .. } => {
+                        text.chars().count()
+                    }
+                };
+                crate::primitives::toolbar::ToolbarItemMeasure::new(chars as f32 * cw)
+            })
+        }
+    }
 }
 
 #[cfg(test)]

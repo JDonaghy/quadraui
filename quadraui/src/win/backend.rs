@@ -371,4 +371,22 @@ impl Backend for WinBackend {
     fn command_center_layout(&self, _rect: Rect, _cc: &CommandCenter) -> CommandCenterLayout {
         todo!("DirectWrite command center layout")
     }
+
+    fn draw_toolbar(
+        &mut self,
+        _rect: Rect,
+        _bar: &crate::primitives::toolbar::Toolbar,
+        _hovered_id: Option<&crate::types::WidgetId>,
+        _pressed_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        todo!("Direct2D toolbar rasteriser")
+    }
+
+    fn toolbar_layout(
+        &self,
+        _rect: Rect,
+        _bar: &crate::primitives::toolbar::Toolbar,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        todo!("DirectWrite toolbar layout")
+    }
 }

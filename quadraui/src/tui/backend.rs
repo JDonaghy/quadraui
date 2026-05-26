@@ -1084,6 +1084,37 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_chart_layout(chart, area)
     }
+
+    fn draw_toolbar(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_toolbar called outside enter_frame_scope");
+        crate::tui::draw_toolbar(
+            frame.buffer_mut(),
+            area,
+            bar,
+            &theme,
+            hovered_id,
+            pressed_id,
+        )
+    }
+
+    fn toolbar_layout(
+        &self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_toolbar_layout(bar, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1645,6 +1676,28 @@ mod tests {
                     line_height: 1.0,
                 },
             )
+        }
+
+        fn draw_toolbar(
+            &mut self,
+            r: QRect,
+            bar: &crate::primitives::toolbar::Toolbar,
+            _hovered_id: Option<&crate::types::WidgetId>,
+            _pressed_id: Option<&crate::types::WidgetId>,
+        ) -> crate::primitives::toolbar::ToolbarLayout {
+            bar.layout(r.x, r.y, r.width, r.height, |_| {
+                crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+            })
+        }
+
+        fn toolbar_layout(
+            &self,
+            r: QRect,
+            bar: &crate::primitives::toolbar::Toolbar,
+        ) -> crate::primitives::toolbar::ToolbarLayout {
+            bar.layout(r.x, r.y, r.width, r.height, |_| {
+                crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+            })
         }
     }
 

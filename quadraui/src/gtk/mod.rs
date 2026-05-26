@@ -60,6 +60,7 @@ mod terminal;
 mod text_display;
 mod text_input;
 mod toast;
+mod toolbar;
 mod tooltip;
 mod tree;
 
@@ -101,6 +102,7 @@ pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use text_input::{draw_text_input, gtk_text_input_layout};
 pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
+pub use toolbar::{draw_toolbar, gtk_toolbar_layout};
 pub use tooltip::draw_tooltip;
 pub use tree::{draw_tree, gtk_tree_layout};
 

@@ -55,6 +55,7 @@ mod terminal;
 mod text_display;
 mod text_input;
 mod toast;
+mod toolbar;
 mod tooltip;
 mod tree;
 
@@ -90,6 +91,7 @@ pub use terminal::{draw_terminal, draw_terminal_divider};
 pub use text_display::{draw_text_display, tui_text_display_layout};
 pub use text_input::{draw_text_input, tui_text_input_layout};
 pub use toast::{draw_toast_stack, tui_toast_stack_layout};
+pub use toolbar::{draw_toolbar, tui_toolbar_layout};
 pub use tooltip::draw_tooltip;
 pub use tree::{draw_tree, tui_tree_layout};
 

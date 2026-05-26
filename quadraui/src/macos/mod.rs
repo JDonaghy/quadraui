@@ -56,6 +56,7 @@ pub mod terminal;
 pub mod text;
 pub mod text_display;
 pub mod toast;
+pub mod toolbar;
 pub mod tooltip;
 pub mod tree;
 
@@ -89,5 +90,6 @@ pub use tab_bar::draw_tab_bar;
 pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 pub use text_display::{draw_text_display, mac_text_display_layout};
 pub use toast::{draw_toast_stack, mac_toast_stack_layout};
+pub use toolbar::{draw_toolbar, mac_toolbar_layout};
 pub use tooltip::draw_tooltip;
 pub use tree::{draw_tree, mac_tree_layout};
