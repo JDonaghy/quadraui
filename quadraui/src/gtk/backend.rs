@@ -746,11 +746,10 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        cr.save().ok();
-        cr.translate(rect.x as f64, 0.0);
-        let hits = crate::gtk::draw_tab_bar(
+        crate::gtk::draw_tab_bar(
             cr,
             layout,
+            rect.x as f64,
             rect.width as f64,
             self.current_line_height,
             rect.y as f64,
@@ -758,9 +757,7 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
             hovered_close_tab,
-        );
-        cr.restore().ok();
-        hits
+        )
     }
 
     fn draw_activity_bar(

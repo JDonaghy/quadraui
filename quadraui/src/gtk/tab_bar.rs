@@ -24,11 +24,17 @@ const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
 const TAB_OUTER_GAP: f64 = 1.0;
 
-/// Draw a [`TabBar`] into `(0, y_offset, width, row_height)` on `cr`.
+/// Draw a [`TabBar`] into `(x_offset, y_offset, width, row_height)` on `cr`.
 /// Caller is responsible for setting the desired UI font on `layout`
 /// *before* calling — the rasteriser uses
 /// [`pango::Layout::font_description`] as the base font and toggles
 /// to a Pango Italic variant for preview tabs.
+///
+/// `x_offset` is the left edge of the tab bar in Cairo surface
+/// coordinates. Every background fill, tab rectangle, close-button
+/// hover, and text `move_to` is offset by this value, so the rasteriser
+/// paints into the correct column without the caller needing to
+/// pre-translate the Cairo context.
 ///
 /// `row_height` controls the tab bar's vertical extent. Callers that
 /// want padded file-tab spacing pass `(line_height * 1.6).ceil()`;
@@ -38,6 +44,11 @@ const TAB_OUTER_GAP: f64 = 1.0;
 /// `hovered_close_tab` is a per-frame interaction override: when
 /// `Some(i)` the `i`-th tab gets a rounded hover background behind
 /// its close glyph. The primitive itself carries no mouse state.
+///
+/// Returns hit regions in **bar-local coordinates** (relative to
+/// `x_offset` = 0). Callers that need window-absolute click positions
+/// must add `x_offset` to the returned `slot_positions`,
+/// `close_bounds`, and `right_segment_bounds` fields.
 ///
 /// # Visual contract
 ///
@@ -53,6 +64,7 @@ const TAB_OUTER_GAP: f64 = 1.0;
 pub fn draw_tab_bar(
     cr: &Context,
     pango_layout: &pango::Layout,
+    x_offset: f64,
     width: f64,
     line_height: f64,
     y_offset: f64,
@@ -70,7 +82,7 @@ pub fn draw_tab_bar(
 
     // Tab bar background.
     set_source(cr, theme.tab_bar_bg);
-    cr.rectangle(0.0, y_offset, width, tab_row_height);
+    cr.rectangle(x_offset, y_offset, width, tab_row_height);
     cr.fill().ok();
 
     pango_layout.set_attributes(None);
@@ -152,7 +164,7 @@ pub fn draw_tab_bar(
             theme.tab_bar_bg
         };
         set_source(cr, bg_col);
-        cr.rectangle(tab_x, y_offset, tab_visual_w, tab_row_height);
+        cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, tab_row_height);
         cr.fill().ok();
 
         // Top accent line for active tab in focused group.
@@ -160,7 +172,7 @@ pub fn draw_tab_bar(
             if let Some(accent) = bar.active_accent {
                 let (ar, ag, ab) = cairo_rgb(accent);
                 cr.set_source_rgb(ar, ag, ab);
-                cr.rectangle(tab_x, y_offset, tab_visual_w, 2.0);
+                cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, 2.0);
                 cr.fill().ok();
             }
         }
@@ -179,7 +191,7 @@ pub fn draw_tab_bar(
             &normal_font
         }));
         pango_layout.set_text(&tab.label);
-        cr.move_to(tab_x + tab_pad, text_y_offset);
+        cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
         pcfn::show_layout(cr, pango_layout);
 
         if bar.show_tab_close {
@@ -190,7 +202,7 @@ pub fn draw_tab_bar(
                 // Rounded hover background behind close glyph.
                 if is_close_hovered {
                     let pad = 2.0;
-                    let rx = close_x - pad;
+                    let rx = x_offset + close_x - pad;
                     let ry = text_y_offset + pad;
                     let rw = close_glyph_w + pad * 2.0;
                     let rh = line_height - pad * 2.0;
@@ -245,7 +257,7 @@ pub fn draw_tab_bar(
                 set_source(cr, close_fg);
                 pango_layout.set_font_description(Some(&normal_font));
                 pango_layout.set_text(close_glyph);
-                cr.move_to(close_x, text_y_offset);
+                cr.move_to(x_offset + close_x, text_y_offset);
                 pcfn::show_layout(cr, pango_layout);
             }
         }
@@ -262,7 +274,7 @@ pub fn draw_tab_bar(
         set_source(cr, fg_col);
         pango_layout.set_font_description(Some(&normal_font));
         pango_layout.set_text(&seg.text);
-        cr.move_to(vs.bounds.x as f64, text_y_offset);
+        cr.move_to(x_offset + vs.bounds.x as f64, text_y_offset);
         pcfn::show_layout(cr, pango_layout);
     }
 
@@ -306,4 +318,141 @@ pub fn draw_tab_bar(
     hits.correct_scroll_offset = correct_scroll_offset;
     hits.available_cols = available_cols;
     hits
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+//
+// Headless paint test: verify that `draw_tab_bar` respects `x_offset` and
+// never paints tab chrome into columns left of that offset.
+//
+// Uses a Cairo `ImageSurface` (no display required) and reads back pixel
+// data directly. The test is gated on the `gtk` feature so it only runs
+// under `cargo test --features gtk`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::tab_bar::{TabBar, TabBarSegment, TabItem};
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    // Surface dimensions: wide enough to contain the tab bar at x_offset=50,
+    // tall enough for a single row.
+    const W: i32 = 300;
+    const ROW_H: i32 = 24;
+    const LINE_H: f64 = 14.0;
+    const X_OFFSET: f64 = 50.0;
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    ///
+    /// Cairo's `ARgb32` stores each pixel as four bytes in native
+    /// (little-endian) byte order: [B, G, R, A].  The `stride` from
+    /// [`ImageSurface::stride`] is in bytes and may include padding.
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        // ARgb32 byte layout on little-endian: B=off+0, G=off+1, R=off+2
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn make_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("test-tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![TabBarSegment {
+                text: " ⇅ ".to_string(),
+                width_cells: 3,
+                id: None,
+                is_active: false,
+            }],
+            active_accent: None,
+            // Disable close button so the test doesn't depend on
+            // close-glyph measurement.
+            show_tab_close: false,
+            compact: false,
+        }
+    }
+
+    /// Theme with a tab_bar_bg that is clearly distinct from white so we
+    /// can distinguish "untouched background" from "painted tab chrome".
+    fn make_theme() -> Theme {
+        Theme {
+            tab_bar_bg: Color::rgb(40, 44, 52),
+            tab_active_bg: Color::rgb(60, 66, 80),
+            ..Theme::default()
+        }
+    }
+
+    /// Paint a tab bar into a fresh white surface at `x_offset = X_OFFSET`
+    /// and return the surface.
+    fn paint_at_offset() -> ImageSurface {
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            // Fill with white so any pixel left untouched is clearly white.
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bar = make_bar();
+            let theme = make_theme();
+            draw_tab_bar(
+                &cr,
+                &pango_layout,
+                X_OFFSET,
+                (W as f64) - X_OFFSET,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                None,
+            );
+        }
+        surface
+    }
+
+    /// Columns 0..X_OFFSET-1 must be untouched white — the rasteriser must
+    /// not paint any tab chrome left of `x_offset`.
+    #[test]
+    fn tab_bar_does_not_paint_before_x_offset() {
+        let mut surface = paint_at_offset();
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let mid_y = ROW_H / 2;
+        for x in 0..(X_OFFSET as i32) {
+            let px = pixel(&data, stride, x, mid_y);
+            assert_eq!(
+                px,
+                (255, 255, 255),
+                "pixel at x={x} should be untouched white, got {px:?}"
+            );
+        }
+    }
+
+    /// Column X_OFFSET must show the tab bar background fill — confirming
+    /// the rasteriser starts painting exactly at `x_offset`.
+    #[test]
+    fn tab_bar_starts_painting_at_x_offset() {
+        let mut surface = paint_at_offset();
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let mid_y = ROW_H / 2;
+        // x = X_OFFSET is the first pixel of the tab bar; it must differ
+        // from the white fill we applied before painting.
+        let px = pixel(&data, stride, X_OFFSET as i32, mid_y);
+        assert_ne!(
+            px,
+            (255, 255, 255),
+            "pixel at x={X_OFFSET} should be tab bar chrome, not white background"
+        );
+    }
 }
