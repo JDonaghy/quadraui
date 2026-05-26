@@ -270,10 +270,11 @@ pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
 pub use compose::{
-    AppShell, AppShellEvent, AppShellLayout, FocusGroup, FocusRing, FormController,
-    FormControllerEvent, MenuDef, MenuEvent, MenuSystem, NavigationMode, PanelDefinition,
-    SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction,
-    StatusBarInteraction, ToolbarHoverTracker, TreeController, TreeControllerEvent,
+    AppShell, AppShellEvent, AppShellLayout, FocusGroup, FocusRing, FolderPickerController,
+    FolderPickerEvent, FormController, FormControllerEvent, MenuDef, MenuEvent, MenuSystem,
+    NavigationMode, PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef,
+    SidebarSystem, StatusBarAction, StatusBarInteraction, ToolbarHoverTracker, TreeController,
+    TreeControllerEvent, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
