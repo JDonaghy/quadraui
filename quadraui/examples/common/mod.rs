@@ -48,6 +48,7 @@ pub mod sidebar_search;
 pub mod split_app;
 pub mod text_input_demo;
 pub mod toast_app;
+pub mod toolbar_app;
 
 pub use chart_app::ChartApp;
 pub use data_table_app::DataTableApp;
@@ -69,3 +70,4 @@ pub use shell_app::ShellApp;
 pub use sidebar_search::SidebarSearchApp;
 pub use split_app::SplitApp;
 pub use toast_app::ToastApp;
+pub use toolbar_app::ToolbarApp;
