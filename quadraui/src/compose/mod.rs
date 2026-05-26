@@ -14,10 +14,12 @@
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
+//! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 
 pub mod app_shell;
 pub mod focus_group;
 pub mod focus_ring;
+pub mod folder_picker;
 pub mod form_controller;
 pub mod menu_system;
 pub mod sidebar_system;
@@ -28,6 +30,7 @@ pub mod tree_controller;
 pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
+pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
 pub use form_controller::{FormController, FormControllerEvent};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use sidebar_system::{
