@@ -34,6 +34,7 @@ use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
+use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout};
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
@@ -484,6 +485,27 @@ pub trait Backend {
     /// Compute toolbar layout without painting. Hosts call this after
     /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
     fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
+
+    /// Draw a [`SidebarPanel`] — optional header toolbar + content
+    /// region. Backends paint the toolbar slot only; the content rect
+    /// is returned in `SidebarPanelLayout.content_bounds` for the
+    /// host to paint into (tree / list / form / etc). Mirrors the
+    /// `Panel` rasteriser contract.
+    ///
+    /// `hovered_toolbar_id` / `pressed_toolbar_id` are forwarded to
+    /// the nested toolbar paint for hover / pressed tints.
+    fn draw_sidebar_panel(
+        &mut self,
+        rect: Rect,
+        panel: &SidebarPanel,
+        hovered_toolbar_id: Option<&WidgetId>,
+        pressed_toolbar_id: Option<&WidgetId>,
+    ) -> SidebarPanelLayout;
+
+    /// Compute sidebar-panel layout without painting. Hosts call this
+    /// in click handlers to resolve hits to the toolbar / content /
+    /// outside without re-deriving metrics.
+    fn sidebar_panel_layout(&self, rect: Rect, panel: &SidebarPanel) -> SidebarPanelLayout;
 
     /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
     /// carries per-frame hover state (series_idx, data_idx) so the

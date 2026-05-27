@@ -1679,6 +1679,56 @@ impl Backend for GtkBackend {
             rect.height as f64,
         )
     }
+
+    fn draw_sidebar_panel(
+        &mut self,
+        rect: QRect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        hovered_toolbar_id: Option<&crate::types::WidgetId>,
+        pressed_toolbar_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
+        crate::gtk::draw_sidebar_panel(
+            cr,
+            pango_layout,
+            line_height,
+            char_width,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            panel,
+            &theme,
+            hovered_toolbar_id,
+            pressed_toolbar_id,
+        )
+    }
+
+    fn sidebar_panel_layout(
+        &self,
+        rect: QRect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let char_w = self.current_char_width;
+        let line_h = self.current_line_height;
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+        crate::gtk::gtk_sidebar_panel_layout(
+            panel,
+            pango_layout.as_ref(),
+            char_w,
+            line_h,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

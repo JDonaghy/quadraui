@@ -1675,5 +1675,21 @@ mod tests {
         ) -> crate::primitives::toolbar::ToolbarLayout {
             unimplemented!()
         }
+        fn draw_sidebar_panel(
+            &mut self,
+            _r: Rect,
+            _p: &crate::primitives::sidebar_panel::SidebarPanel,
+            _h: Option<&crate::types::WidgetId>,
+            _pr: Option<&crate::types::WidgetId>,
+        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+            unimplemented!()
+        }
+        fn sidebar_panel_layout(
+            &self,
+            _r: Rect,
+            _p: &crate::primitives::sidebar_panel::SidebarPanel,
+        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+            unimplemented!()
+        }
     }
 }

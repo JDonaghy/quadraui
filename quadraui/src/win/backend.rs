@@ -389,4 +389,22 @@ impl Backend for WinBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         todo!("DirectWrite toolbar layout")
     }
+
+    fn draw_sidebar_panel(
+        &mut self,
+        _rect: Rect,
+        _panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        _hovered_toolbar_id: Option<&crate::types::WidgetId>,
+        _pressed_toolbar_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        todo!("Direct2D sidebar-panel rasteriser")
+    }
+
+    fn sidebar_panel_layout(
+        &self,
+        _rect: Rect,
+        _panel: &crate::primitives::sidebar_panel::SidebarPanel,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        todo!("DirectWrite sidebar-panel layout")
+    }
 }

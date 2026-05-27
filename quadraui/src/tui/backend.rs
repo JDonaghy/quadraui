@@ -1115,6 +1115,37 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_toolbar_layout(bar, area)
     }
+
+    fn draw_sidebar_panel(
+        &mut self,
+        rect: QRect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        hovered_toolbar_id: Option<&crate::types::WidgetId>,
+        pressed_toolbar_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_sidebar_panel called outside enter_frame_scope");
+        crate::tui::draw_sidebar_panel(
+            frame.buffer_mut(),
+            area,
+            panel,
+            &theme,
+            hovered_toolbar_id,
+            pressed_toolbar_id,
+        )
+    }
+
+    fn sidebar_panel_layout(
+        &self,
+        rect: QRect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_sidebar_panel_layout(panel, area)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -1698,6 +1729,32 @@ mod tests {
             bar.layout(r.x, r.y, r.width, r.height, |_| {
                 crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
             })
+        }
+
+        fn draw_sidebar_panel(
+            &mut self,
+            r: QRect,
+            panel: &crate::primitives::sidebar_panel::SidebarPanel,
+            _h: Option<&crate::types::WidgetId>,
+            _p: Option<&crate::types::WidgetId>,
+        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+            panel.layout(
+                r,
+                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
+                |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
+            )
+        }
+
+        fn sidebar_panel_layout(
+            &self,
+            r: QRect,
+            panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+            panel.layout(
+                r,
+                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
+                |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
+            )
         }
     }
 

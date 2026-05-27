@@ -207,6 +207,9 @@ pub use primitives::rich_text_popup::{
     VisibleRichTextLine,
 };
 pub use primitives::scrollbar::{fit_thumb, ScrollAxis, Scrollbar};
+pub use primitives::sidebar_panel::{
+    SidebarPanel, SidebarPanelEvent, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
+};
 pub use primitives::spinner::{Spinner, SpinnerEvent, SpinnerHit, SpinnerLayout, SpinnerMeasure};
 pub use primitives::split::{
     Split, SplitDirection, SplitEvent, SplitHit, SplitLayout, SplitMeasure,
@@ -270,7 +273,7 @@ pub use compose::{
     AppShell, AppShellEvent, AppShellLayout, FocusGroup, FocusRing, FormController,
     FormControllerEvent, MenuDef, MenuEvent, MenuSystem, NavigationMode, PanelDefinition,
     SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction,
-    StatusBarInteraction, TreeController, TreeControllerEvent,
+    StatusBarInteraction, ToolbarHoverTracker, TreeController, TreeControllerEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

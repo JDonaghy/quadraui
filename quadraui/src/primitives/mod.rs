@@ -27,6 +27,7 @@ pub mod pipeline_view;
 pub mod progress;
 pub mod rich_text_popup;
 pub mod scrollbar;
+pub mod sidebar_panel;
 pub mod spinner;
 pub mod split;
 pub mod status_bar;

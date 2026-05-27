@@ -1320,6 +1320,74 @@ impl Backend for MacBackend {
             })
         }
     }
+
+    fn draw_sidebar_panel(
+        &mut self,
+        rect: Rect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        hovered_toolbar_id: Option<&crate::types::WidgetId>,
+        pressed_toolbar_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_sidebar_panel requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::sidebar_panel::draw_sidebar_panel(
+                ctx,
+                font,
+                line_height,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                panel,
+                &theme,
+                hovered_toolbar_id,
+                pressed_toolbar_id,
+            )
+        }
+    }
+
+    fn sidebar_panel_layout(
+        &self,
+        rect: Rect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        if let Some(font) = self.current_font.as_ref() {
+            super::sidebar_panel::mac_sidebar_panel_layout(
+                panel,
+                font,
+                self.current_line_height,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+            )
+        } else {
+            // No font yet (called before first draw) — produce the
+            // layout using the toolbar_layout fallback path. Hosts
+            // that need accurate measurement must call this from
+            // inside a frame scope (or after `set_current_font`).
+            let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+            panel.layout(
+                bounds,
+                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(
+                    self.current_line_height as f32,
+                    self.current_char_width as f32,
+                ),
+                |_btn| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
+            )
+        }
+    }
 }
 
 #[cfg(test)]

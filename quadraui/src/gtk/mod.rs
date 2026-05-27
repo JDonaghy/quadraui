@@ -52,6 +52,7 @@ mod run;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
+mod sidebar_panel;
 mod spinner;
 mod split;
 mod status_bar;
@@ -94,6 +95,7 @@ pub use rich_text_popup::{
 };
 pub use run::run;
 pub use scrollbar::draw_scrollbar;
+pub use sidebar_panel::{draw_sidebar_panel, gtk_sidebar_panel_layout};
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::{draw_split, gtk_split_layout};
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};

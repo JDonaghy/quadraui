@@ -22,6 +22,7 @@ pub mod form_controller;
 pub mod menu_system;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
+pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 
 pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
@@ -33,4 +34,5 @@ pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };
 pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
+pub use toolbar_hover_tracker::ToolbarHoverTracker;
 pub use tree_controller::{TreeController, TreeControllerEvent};

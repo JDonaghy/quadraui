@@ -21,16 +21,30 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{qc, set_cell};
+use super::{cell_width, qc, set_cell};
 use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
+/// Cell width of a single character, accounting for double-width
+/// glyphs (CJK, Nerd Font PUA). Tiny wrapper over `super::cell_width`
+/// kept here so the toolbar's measurement is colocated with its paint.
+fn char_cells(c: char) -> usize {
+    cell_width(c) as usize
+}
+
+/// Cell width of a `&str` using UAX#11 double-width detection.
+fn str_cells(s: &str) -> usize {
+    s.chars().map(char_cells).sum()
+}
+
 /// Compute the TUI cell-unit width of a single toolbar item.
 ///
-/// Action: `[ {icon }{label}{ (key)} ]` — 4 cells of wrapper + content.
-/// Separator: 2 cells (` │`).
-/// Label: text width.
+/// Action layout:
+/// - icon-only (label empty): `[ {icon} ]` = 4 + icon_w cells
+/// - normal: `[ {icon }{label}{ (key)} ]` = 4 + icon_block + label_w + hint_block
+///
+/// Separator: 2 cells (` │`). Label: text width (double-width aware).
 pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
     match btn {
         ToolbarButton::Action {
@@ -39,16 +53,24 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
             key_hint,
             ..
         } => {
-            let icon_w = icon.as_ref().map(|s| s.chars().count() + 1).unwrap_or(0);
+            let label_w = str_cells(label);
+            let icon_w = icon.as_ref().map(|s| str_cells(s)).unwrap_or(0);
+            // Icon-only: drop the trailing space after the icon — pack
+            // glyph snug between the brackets.
+            let icon_block = if icon.is_some() && label_w > 0 {
+                icon_w + 1
+            } else {
+                icon_w
+            };
             let hint_w = key_hint
                 .as_ref()
-                .map(|s| s.chars().count() + 3) // " (xxx)"
+                .map(|s| str_cells(s) + 3) // " (xxx)"
                 .unwrap_or(0);
-            // "[ " + icon? + label + hint? + " ]"
-            (4 + icon_w + label.chars().count() + hint_w) as f32
+            // "[ " + icon_block + label + hint_w + " ]"
+            (4 + icon_block + label_w + hint_w) as f32
         }
         ToolbarButton::Separator => 2.0,
-        ToolbarButton::Label { text, .. } => text.chars().count() as f32,
+        ToolbarButton::Label { text, .. } => str_cells(text) as f32,
     }
 }
 
@@ -86,10 +108,18 @@ pub fn draw_toolbar(
     let hover_fg = qc(theme.hover_fg);
     let active_bg = qc(theme.selected_bg);
 
-    // Fill the bar background.
-    let row_y = area.y;
-    for x in 0..area.width {
-        set_cell(buf, area.x + x, row_y, ' ', fg, bar_bg);
+    // Vertically centre text on rects taller than 1 row. With even
+    // heights the row above centre wins (matches GTK's
+    // line_height-based centring).
+    let text_row = area.y + area.height.saturating_sub(1) / 2;
+
+    // Fill every row of the bar background so multi-row hosts (Gap 1)
+    // get a uniform-coloured strip rather than 1 row painted + N-1
+    // rows of stale buffer.
+    for dy in 0..area.height {
+        for dx in 0..area.width {
+            set_cell(buf, area.x + dx, area.y + dy, ' ', fg, bar_bg);
+        }
     }
 
     for vis in &layout.visible_items {
@@ -122,47 +152,79 @@ pub fn draw_toolbar(
                     (fg, bar_bg)
                 };
 
-                // Build the rendered string: `[ {icon }{label}{ (hint)} ]`
-                let mut s = String::with_capacity(item_w as usize);
-                s.push('[');
-                s.push(' ');
+                // Build the rendered cells. Icon-only buttons compact
+                // to `[ icon ]` (no trailing space after the icon).
+                let label_w = str_cells(label);
+                let icon_only = icon.is_some() && label_w == 0;
+                let mut cells: Vec<char> = Vec::with_capacity(item_w as usize);
+                cells.push('[');
+                cells.push(' ');
                 if let Some(icon) = icon {
-                    s.push_str(icon);
-                    s.push(' ');
+                    for ch in icon.chars() {
+                        cells.push(ch);
+                    }
+                    if !icon_only {
+                        cells.push(' ');
+                    }
                 }
-                s.push_str(label);
+                for ch in label.chars() {
+                    cells.push(ch);
+                }
                 if let Some(hint) = key_hint {
-                    s.push_str(" (");
-                    s.push_str(hint);
-                    s.push(')');
+                    cells.push(' ');
+                    cells.push('(');
+                    for ch in hint.chars() {
+                        cells.push(ch);
+                    }
+                    cells.push(')');
                 }
-                s.push(' ');
-                s.push(']');
+                cells.push(' ');
+                cells.push(']');
 
-                // Paint each cell. Background covers full bounds even if
-                // text is shorter than item_w (helps hover highlight read
-                // as one visual unit).
-                for dx in 0..item_w {
-                    let ch = s.chars().nth(dx as usize).unwrap_or(' ');
-                    set_cell(buf, item_x + dx, row_y, ch, cell_fg, cell_bg);
+                // Paint background across every row of the item so the
+                // hover/active highlight reads as one solid button on
+                // multi-row toolbars (Gap 1).
+                for dy in 0..area.height {
+                    for dx in 0..item_w {
+                        set_cell(buf, item_x + dx, area.y + dy, ' ', cell_fg, cell_bg);
+                    }
+                }
+
+                // Paint text on the vertically-centred row, advancing
+                // by the wide-char-aware cell width of each glyph.
+                let mut col: u16 = 0;
+                for ch in cells {
+                    let cw = char_cells(ch) as u16;
+                    if col + cw > item_w {
+                        break;
+                    }
+                    set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
+                    col += cw;
                 }
             }
             ToolbarButton::Separator => {
-                // 2 cells: ` │`
-                if item_w >= 1 {
-                    set_cell(buf, item_x, row_y, ' ', muted, bar_bg);
-                }
-                if item_w >= 2 {
-                    set_cell(buf, item_x + 1, row_y, '│', muted, bar_bg);
+                // 2 cells: ` │`, drawn through every row of the bar so
+                // the divider reads as a single full-height rule on
+                // multi-row toolbars.
+                for dy in 0..area.height {
+                    if item_w >= 1 {
+                        set_cell(buf, item_x, area.y + dy, ' ', muted, bar_bg);
+                    }
+                    if item_w >= 2 {
+                        set_cell(buf, item_x + 1, area.y + dy, '│', muted, bar_bg);
+                    }
                 }
             }
             ToolbarButton::Label { text, fg: label_fg } => {
                 let color = label_fg.map(qc).unwrap_or(muted);
-                for (i, ch) in text.chars().enumerate() {
-                    if i as u16 >= item_w {
+                let mut col: u16 = 0;
+                for ch in text.chars() {
+                    let cw = char_cells(ch) as u16;
+                    if col + cw > item_w {
                         break;
                     }
-                    set_cell(buf, item_x + i as u16, row_y, ch, color, bar_bg);
+                    set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
+                    col += cw;
                 }
             }
         }
@@ -293,5 +355,153 @@ mod tests {
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Gap 1: multi-row rasteriser ─────────────────────────────────────
+
+    #[test]
+    fn multi_row_fills_background_across_all_rows() {
+        // 3-row bar with a single action button. Every cell of every
+        // row must be painted (not just row 0).
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Go", true)],
+            bg: None,
+        };
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+
+        // Row 0 (top): button text painted in centre — but the bg
+        // outside the button text still fills.
+        // Row 1 (middle): button text is here (centred vertically).
+        // Row 2 (bottom): background fill only.
+        //
+        // Pre-Gap-1 behaviour would leave row 1 and row 2 untouched
+        // (default Buffer cell symbol = " " but with default colours
+        // not the bar's). Use any non-text cell (last column past the
+        // button) — it should carry the bar bg every row.
+        for y in 0..area.height {
+            let cell = &buf[(area.width - 1, y)];
+            assert_eq!(
+                cell.symbol(),
+                " ",
+                "row {} last column not background-filled",
+                y
+            );
+        }
+    }
+
+    #[test]
+    fn multi_row_centres_button_text_vertically() {
+        // Height 3 → text on row 1 (middle).
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Go", true)],
+            bg: None,
+        };
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        // Row 1 col 0 should be `[`.
+        assert_eq!(cell_char(&buf, 0, 1), '[');
+        // Rows 0 and 2 should not have the bracket.
+        assert_ne!(cell_char(&buf, 0, 0), '[');
+        assert_ne!(cell_char(&buf, 0, 2), '[');
+    }
+
+    #[test]
+    fn multi_row_click_in_any_row_hits_button() {
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Go", true)],
+            bg: None,
+        };
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let r = layout.visible_items[0].bounds;
+        // Click in each row of the button bounds — every row should
+        // resolve to the button.
+        for dy in 0..3 {
+            let hit = layout.hit_test(r.x + 1.0, r.y + dy as f32);
+            match hit {
+                ToolbarHit::Button(ref id) => assert_eq!(id.as_str(), "a"),
+                _ => panic!("row {dy} did not hit button"),
+            }
+        }
+    }
+
+    #[test]
+    fn multi_row_separator_extends_full_height() {
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Separator],
+            bg: None,
+        };
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        // The │ glyph should appear on every row at column 1.
+        for y in 0..area.height {
+            assert_eq!(cell_char(&buf, 1, y), '│', "row {y} missing pipe");
+        }
+    }
+
+    // ── Gap 4: icon-only buttons + wide-glyph icons ─────────────────────
+
+    #[test]
+    fn icon_only_button_compacts_to_three_plus_icon() {
+        // Icon-only button: `[ X ]` = 5 cells (4 wrapper + 1-cell icon).
+        // The pre-Gap-4 layout would emit `[ X  ]` = 6 cells (trailing
+        // space after the icon).
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "".into(),
+                icon: Some("X".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+        };
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        assert_eq!(layout.visible_items[0].bounds.width, 5.0);
+        // Painted: `[ X ]`
+        assert_eq!(cell_char(&buf, 0, 0), '[');
+        assert_eq!(cell_char(&buf, 1, 0), ' ');
+        assert_eq!(cell_char(&buf, 2, 0), 'X');
+        assert_eq!(cell_char(&buf, 3, 0), ' ');
+        assert_eq!(cell_char(&buf, 4, 0), ']');
+    }
+
+    #[test]
+    fn double_width_icon_reserves_two_cells() {
+        // CJK or emoji glyphs occupy 2 cells. The measurer must
+        // reserve that width so the right bracket lands at the
+        // expected column. Use 一 (U+4E00) — explicit 2-cell width.
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "Go".into(),
+                icon: Some("一".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+        };
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
+        assert_eq!(layout.visible_items[0].bounds.width, 9.0);
     }
 }
