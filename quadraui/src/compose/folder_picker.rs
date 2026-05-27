@@ -65,6 +65,17 @@ use crate::{
 /// ```
 pub const PALETTE_CHROME_ROWS: usize = 4;
 
+/// Default recursion depth for [`FolderPickerController::new`].
+///
+/// Override per-instance with [`FolderPickerController::with_max_depth`].
+pub const DEFAULT_MAX_DEPTH: usize = 5;
+
+/// Default heavy build/dependency directory names that are skipped during
+/// the filesystem walk.
+///
+/// Override per-instance with [`FolderPickerController::with_ignore_dirs`].
+pub const DEFAULT_IGNORE_DIRS: &[&str] = &["target", "node_modules", "__pycache__"];
+
 /// What happened after [`FolderPickerController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FolderPickerEvent {
@@ -116,8 +127,14 @@ pub struct FolderPickerController {
     extra_file_names: Vec<String>,
     /// Ignore directories with these names (heavy build / dependency dirs).
     ///
-    /// Defaults: `["target", "node_modules", "__pycache__"]`.
+    /// Defaults: [`DEFAULT_IGNORE_DIRS`]. Override with
+    /// [`with_ignore_dirs`](Self::with_ignore_dirs).
     ignore_dirs: Vec<String>,
+    /// Maximum recursion depth for the filesystem walk.
+    ///
+    /// Defaults to [`DEFAULT_MAX_DEPTH`]. Override with
+    /// [`with_max_depth`](Self::with_max_depth).
+    max_depth: usize,
 }
 
 impl FolderPickerController {
@@ -134,12 +151,18 @@ impl FolderPickerController {
     ///   only names in `extra_file_names` are surfaced from hidden entries.
     pub fn new(root: impl Into<PathBuf>, extra_file_names: Vec<String>, show_hidden: bool) -> Self {
         let root = root.into();
-        let ignore_dirs = vec![
-            "target".to_string(),
-            "node_modules".to_string(),
-            "__pycache__".to_string(),
-        ];
-        let all_entries = collect_dir_entries(&root, show_hidden, &extra_file_names, &ignore_dirs);
+        let ignore_dirs: Vec<String> = DEFAULT_IGNORE_DIRS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let max_depth = DEFAULT_MAX_DEPTH;
+        let all_entries = collect_dir_entries(
+            &root,
+            show_hidden,
+            &extra_file_names,
+            &ignore_dirs,
+            max_depth,
+        );
         let filtered = all_entries.iter().take(50).cloned().collect();
         Self {
             id: WidgetId::new("folder_picker"),
@@ -152,7 +175,60 @@ impl FolderPickerController {
             show_hidden,
             extra_file_names,
             ignore_dirs,
+            max_depth,
         }
+    }
+
+    /// Override the `WidgetId` used by the rendered `Palette`.
+    ///
+    /// Use this when more than one folder picker may exist in the same
+    /// app, so each one has a distinct ID. Defaults to
+    /// `WidgetId::new("folder_picker")`.
+    ///
+    /// Returns `self` for builder-style chaining.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = WidgetId::new(id.into());
+        self
+    }
+
+    /// Override the list of directory names to skip during the filesystem walk.
+    ///
+    /// Defaults to [`DEFAULT_IGNORE_DIRS`]. Pass an empty `Vec` to walk
+    /// every directory (use with care on large filesystems).
+    ///
+    /// Re-walks the current `root` so the new list takes effect immediately.
+    /// Returns `self` for builder-style chaining.
+    pub fn with_ignore_dirs(mut self, ignore_dirs: Vec<String>) -> Self {
+        self.ignore_dirs = ignore_dirs;
+        self.all_entries = collect_dir_entries(
+            &self.root,
+            self.show_hidden,
+            &self.extra_file_names,
+            &self.ignore_dirs,
+            self.max_depth,
+        );
+        self.refilter();
+        self
+    }
+
+    /// Override the maximum recursion depth for the filesystem walk.
+    ///
+    /// Defaults to [`DEFAULT_MAX_DEPTH`]. Higher values surface deeper
+    /// directories at the cost of a slower initial walk.
+    ///
+    /// Re-walks the current `root` so the new depth takes effect immediately.
+    /// Returns `self` for builder-style chaining.
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self.all_entries = collect_dir_entries(
+            &self.root,
+            self.show_hidden,
+            &self.extra_file_names,
+            &self.ignore_dirs,
+            self.max_depth,
+        );
+        self.refilter();
+        self
     }
 
     // ── State accessors ───────────────────────────────────────────────
@@ -207,6 +283,7 @@ impl FolderPickerController {
             self.show_hidden,
             &self.extra_file_names,
             &self.ignore_dirs,
+            self.max_depth,
         );
         self.filtered = self.all_entries.iter().take(50).cloned().collect();
         self.selected = 0;
@@ -286,13 +363,19 @@ impl FolderPickerController {
     /// `visible_rows` is the number of list rows that fit inside the
     /// palette chrome; compute it as
     /// `popup_height.saturating_sub(PALETTE_CHROME_ROWS)`.
+    ///
+    /// # Canonical typing source
+    ///
+    /// Query characters are sourced from `UiEvent::KeyPressed`'s
+    /// `Key::Char(c)` arm only — never from `UiEvent::CharTyped`. Today
+    /// neither the TUI nor GTK backend emits `CharTyped`, and a future
+    /// backend (e.g. Win/macOS IME) might emit *both* for the same input;
+    /// listening to only `KeyPressed` avoids the double-insert risk. If a
+    /// future backend needs IME-composed input, route it through
+    /// `KeyPressed` as well or call [`push_char`](Self::push_char) directly.
     pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FolderPickerEvent {
         let result = match event {
             UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
-            UiEvent::CharTyped(c) => {
-                self.push_char(*c);
-                FolderPickerEvent::Consumed
-            }
             _ => FolderPickerEvent::Ignored,
         };
 
@@ -306,6 +389,18 @@ impl FolderPickerController {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
+    // Key dispatch.
+    //
+    // Trade-off (intentional, matches vimcode's existing behavior): the vim
+    // shortcuts `-` (parent dir), `k` (up), and `j` (down) are matched
+    // *before* the generic `Key::Char(c) => push_char` arm. That means the
+    // query input can never begin with — or contain — those three
+    // characters: a user typing "kubernetes" cannot start the query with
+    // `k`, nor include `j`/`-` anywhere. This is documented for downstream
+    // consumers; if any consumer needs typing-priority (e.g. searching
+    // codebases with hyphenated names), they can build their own dispatch
+    // by calling the state-mutation methods (`push_char`, `move_up`, …)
+    // directly instead of routing through `handle()`.
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FolderPickerEvent {
         let ctrl = modifiers.ctrl;
         match key {
@@ -374,8 +469,22 @@ impl FolderPickerController {
         // Truncate from the left if the root path is too long.
         // Reserve ~30 cells for palette chrome (borders + count chip + padding).
         let max = (rect.width as usize).saturating_sub(30).max(10);
+        // `r.len()` is bytes; we must split on a UTF-8 char boundary so paths
+        // containing non-ASCII (e.g. Japanese, accented Latin) don't panic.
+        // Approach: walk char_indices() from the start, dropping the leftmost
+        // chars until the remaining suffix fits within `max` bytes.
         let root_display = if r.len() > max {
-            format!("…{}", &r[r.len() - max..])
+            let s: &str = r.as_ref();
+            let target_drop = s.len().saturating_sub(max);
+            // Find the first char boundary >= target_drop bytes from the start.
+            let mut split_at = s.len();
+            for (idx, _) in s.char_indices() {
+                if idx >= target_drop {
+                    split_at = idx;
+                    break;
+                }
+            }
+            format!("…{}", &s[split_at..])
         } else {
             r.into_owned()
         };
@@ -436,7 +545,7 @@ impl FolderPickerController {
 
 // ── Filesystem helpers ────────────────────────────────────────────────────────
 
-/// Walk `root` collecting relative paths of subdirectories (depth ≤ 5).
+/// Walk `root` collecting relative paths of subdirectories (depth ≤ `max_depth`).
 ///
 /// `..` is prepended (unless `root` is a filesystem root) and `.` is always
 /// included so the consumer can open the current directory directly.
@@ -450,6 +559,7 @@ fn collect_dir_entries(
     show_hidden: bool,
     extra_file_names: &[String],
     ignore_dirs: &[String],
+    max_depth: usize,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
     // Prepend ".." so the user can navigate up (omit at filesystem root).
@@ -465,10 +575,12 @@ fn collect_dir_entries(
         show_hidden,
         extra_file_names,
         ignore_dirs,
+        max_depth,
     );
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_dir_entries_recursive(
     root: &Path,
     dir: &Path,
@@ -477,8 +589,9 @@ fn walk_dir_entries_recursive(
     show_hidden: bool,
     extra_file_names: &[String],
     ignore_dirs: &[String],
+    max_depth: usize,
 ) {
-    if depth > 5 {
+    if depth > max_depth {
         return;
     }
     let mut entries: Vec<_> = match std::fs::read_dir(dir) {
@@ -517,6 +630,7 @@ fn walk_dir_entries_recursive(
                 show_hidden,
                 extra_file_names,
                 ignore_dirs,
+                max_depth,
             );
         }
     }
@@ -551,7 +665,9 @@ fn filter_dir_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
 /// query is not a subsequence of `path`.
 ///
 /// Higher scores mean the query characters appear closer together and/or
-/// at word boundaries (`/`, `_`, `-`, `.`).
+/// at word boundaries (`/`, `\`, `_`, `-`, `.`). Both forward and backward
+/// slashes count so that Windows paths get the same boundary bonus as
+/// POSIX paths.
 fn dir_fuzzy_score(path: &str, query: &str) -> Option<i32> {
     let pb = path.as_bytes();
     let qb = query.as_bytes();
@@ -563,7 +679,7 @@ fn dir_fuzzy_score(path: &str, query: &str) -> Option<i32> {
             if qi > 0 {
                 score -= (pi - last_pi - 1) as i32;
             }
-            if pi == 0 || matches!(pb[pi - 1], b'/' | b'_' | b'-' | b'.') {
+            if pi == 0 || matches!(pb[pi - 1], b'/' | b'\\' | b'_' | b'-' | b'.') {
                 score += 5;
             }
             last_pi = pi;
@@ -753,10 +869,11 @@ mod tests {
 
     #[test]
     fn enter_on_dotdot_navigates_up() {
-        let tmp = env::temp_dir();
-        // Create a temporary subdirectory to navigate from.
-        let sub = tmp.join("quadraui_test_nav_up");
-        let _ = std::fs::create_dir_all(&sub);
+        // Use tempfile so parallel test runs don't race on a fixed name and
+        // a crashed prior run can't leak a stale marker directory.
+        let parent = tempfile::tempdir().expect("create parent tempdir");
+        let sub = parent.path().join("nav_up_child");
+        std::fs::create_dir_all(&sub).expect("create child dir");
         let mut picker = FolderPickerController::new(sub.clone(), vec![], false);
         // Select ".." (index 0, always prepended when parent exists).
         picker.selected = 0;
@@ -767,9 +884,8 @@ mod tests {
             repeat: false,
         };
         let result = picker.handle(&ev, 10);
-        let _ = std::fs::remove_dir(&sub);
         assert_eq!(result, FolderPickerEvent::Consumed);
-        assert_eq!(picker.root(), tmp.as_path());
+        assert_eq!(picker.root(), parent.path());
     }
 
     #[test]
@@ -816,12 +932,31 @@ mod tests {
     }
 
     #[test]
-    fn char_typed_appends_to_query() {
+    fn key_char_appends_to_query() {
+        // Query characters arrive via `Key::Char` in `KeyPressed`, *not* via
+        // `CharTyped`. The latter is intentionally ignored to avoid
+        // double-insert when a future backend emits both for the same input.
+        let tmp = env::temp_dir();
+        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let ev = UiEvent::KeyPressed {
+            key: Key::Char('s'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        picker.handle(&ev, 10);
+        assert_eq!(picker.query(), "s");
+    }
+
+    #[test]
+    fn char_typed_is_ignored() {
+        // Documented contract: `CharTyped` is not the canonical typing
+        // source; only `Key::Char` in `KeyPressed` mutates the query.
         let tmp = env::temp_dir();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         let ev = UiEvent::CharTyped('s');
-        picker.handle(&ev, 10);
-        assert_eq!(picker.query(), "s");
+        let result = picker.handle(&ev, 10);
+        assert_eq!(result, FolderPickerEvent::Ignored);
+        assert_eq!(picker.query(), "");
     }
 
     #[test]
@@ -855,9 +990,9 @@ mod tests {
 
     #[test]
     fn dash_key_navigates_up() {
-        let tmp = env::temp_dir();
-        let sub = tmp.join("quadraui_test_dash_nav");
-        let _ = std::fs::create_dir_all(&sub);
+        let parent = tempfile::tempdir().expect("create parent tempdir");
+        let sub = parent.path().join("dash_nav_child");
+        std::fs::create_dir_all(&sub).expect("create child dir");
         let mut picker = FolderPickerController::new(sub.clone(), vec![], false);
         let ev = UiEvent::KeyPressed {
             key: Key::Char('-'),
@@ -865,9 +1000,8 @@ mod tests {
             repeat: false,
         };
         let result = picker.handle(&ev, 10);
-        let _ = std::fs::remove_dir(&sub);
         assert_eq!(result, FolderPickerEvent::Consumed);
-        assert_eq!(picker.root(), tmp.as_path());
+        assert_eq!(picker.root(), parent.path());
     }
 
     #[test]
@@ -899,12 +1033,16 @@ mod tests {
 
     #[test]
     fn extra_file_names_gets_file_icon() {
-        let tmp = env::temp_dir();
-        // Create a marker file named .my-workspace.
-        let marker = tmp.join(".my-workspace");
-        let _ = std::fs::write(&marker, b"");
-        let picker =
-            FolderPickerController::new(tmp.clone(), vec![".my-workspace".to_string()], false);
+        // Isolate the marker file in a fresh tempdir so concurrent test
+        // runs don't race and a crashed prior run can't leak state.
+        let root = tempfile::tempdir().expect("create marker tempdir");
+        let marker = root.path().join(".my-workspace");
+        std::fs::write(&marker, b"").expect("write marker file");
+        let picker = FolderPickerController::new(
+            root.path().to_path_buf(),
+            vec![".my-workspace".to_string()],
+            false,
+        );
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
         // The marker file should appear in items with the ⚙ icon.
@@ -915,7 +1053,111 @@ mod tests {
                 .map(|s| s.text.contains(".my-workspace"))
                 .unwrap_or(false)
         });
-        let _ = std::fs::remove_file(&marker);
         assert!(has_marker, "marker file should appear in palette items");
+    }
+
+    // ── Regression tests for previously-discovered bugs ───────────────
+
+    #[test]
+    fn build_palette_handles_non_ascii_root_path() {
+        // Regression: `build_palette` previously sliced a byte range of the
+        // root path without checking UTF-8 char boundaries, panicking on
+        // non-ASCII paths (e.g. Japanese, accented Latin) once the path
+        // exceeded `viewport.width − 30` chars.
+        //
+        // Concrete trigger: a path of 153 bytes whose byte at index
+        // `len - max == 103` is a continuation byte (the middle byte of a
+        // 3-byte UTF-8 char). The original `&r[r.len() - max..]` slice would
+        // panic with "is not a char boundary"; the new implementation walks
+        // `char_indices()` to find the nearest valid split point.
+        let long_japanese = PathBuf::from(format!("/a/{}", "ト".repeat(50)));
+        let picker = FolderPickerController::new(long_japanese, vec![], false);
+        // Narrow rect forces truncation: max = max(80-30, 10) = 50 bytes.
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        // Must not panic.
+        let palette = picker.build_palette(rect);
+        assert!(palette.title.starts_with("Open Folder "));
+        // Sanity: ellipsis should be present and the suffix should still
+        // be valid UTF-8 (implicit — `format!` would have panicked otherwise).
+        assert!(palette.title.contains('…'));
+    }
+
+    #[test]
+    fn build_palette_handles_accented_root_path() {
+        // Regression: shorter multi-byte (Latin-1 / Latin-Extended) paths
+        // should also be safe.
+        let path = PathBuf::from(
+            "/home/utilisateur/répertoire/sous-répertoire/encore-plus-profond/données",
+        );
+        let picker = FolderPickerController::new(path, vec![], false);
+        let rect = Rect::new(0.0, 0.0, 60.0, 24.0);
+        let palette = picker.build_palette(rect);
+        assert!(palette.title.starts_with("Open Folder "));
+    }
+
+    // ── Windows-style path scoring ────────────────────────────────────
+
+    #[test]
+    fn fuzzy_score_treats_backslash_as_boundary() {
+        // On Windows, paths use `\\` as the separator. Both
+        // `src\\main.rs`-style and `src/main.rs`-style paths should get
+        // the same boundary bonus when matching at a directory boundary.
+        let posix = dir_fuzzy_score("src/main", "m");
+        let windows = dir_fuzzy_score("src\\main", "m");
+        // Both should rank higher than a mid-word match.
+        let mid = dir_fuzzy_score("abcmain", "m");
+        assert!(posix.unwrap() > mid.unwrap());
+        assert!(windows.unwrap() > mid.unwrap());
+        // And they should rank equally (same boundary bonus).
+        assert_eq!(posix.unwrap(), windows.unwrap());
+    }
+
+    // ── Builder-method overrides ──────────────────────────────────────
+
+    #[test]
+    fn with_id_overrides_widget_id() {
+        let tmp = env::temp_dir();
+        let picker = FolderPickerController::new(tmp, vec![], false).with_id("picker_b");
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        assert_eq!(picker.build_palette(rect).id.as_str(), "picker_b");
+    }
+
+    #[test]
+    fn with_ignore_dirs_replaces_default_list() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Create `target` and `keep_me`; default list skips `target`.
+        std::fs::create_dir_all(root.path().join("target")).unwrap();
+        std::fs::create_dir_all(root.path().join("keep_me")).unwrap();
+        // With an empty override, `target` should no longer be skipped.
+        let picker = FolderPickerController::new(root.path().to_path_buf(), vec![], false)
+            .with_ignore_dirs(vec![]);
+        let has_target = picker
+            .all_entries
+            .iter()
+            .any(|p| p == &PathBuf::from("target"));
+        let has_keep = picker
+            .all_entries
+            .iter()
+            .any(|p| p == &PathBuf::from("keep_me"));
+        assert!(
+            has_target,
+            "target should be present after with_ignore_dirs(empty)"
+        );
+        assert!(has_keep);
+    }
+
+    #[test]
+    fn with_max_depth_limits_recursion() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Build a nested chain: depth1/depth2/depth3
+        let d3 = root.path().join("d1").join("d2").join("d3");
+        std::fs::create_dir_all(&d3).unwrap();
+        // depth=0 should only emit the top-level "d1".
+        let picker =
+            FolderPickerController::new(root.path().to_path_buf(), vec![], false).with_max_depth(0);
+        let has_d1 = picker.all_entries.iter().any(|p| p.ends_with("d1"));
+        let has_d2 = picker.all_entries.iter().any(|p| p.ends_with("d2"));
+        assert!(has_d1);
+        assert!(!has_d2, "depth=0 should not surface nested subdirs");
     }
 }

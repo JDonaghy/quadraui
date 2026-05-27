@@ -91,6 +91,9 @@ core-foundation = { version = "0.9", optional = true }
 serde_json = "1.0"
 # For runnable examples that demonstrate the TUI backend pattern.
 crossterm = "0.29"
+# For isolated temp-directory creation in compose-controller tests
+# that touch the filesystem.
+tempfile = "3"
 
 [[example]]
 name = "tui_demo"
