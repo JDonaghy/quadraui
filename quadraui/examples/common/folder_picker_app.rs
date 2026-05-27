@@ -36,7 +36,11 @@ pub struct FolderPickerApp {
 
 impl FolderPickerApp {
     pub fn new() -> Self {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        // Fallback to "." (current dir relative) if `current_dir()` fails.
+        // `PathBuf::from("/")` would be invalid on Windows, so we keep this
+        // platform-neutral. The picker will still walk something sensible
+        // from the process's working directory.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let picker = FolderPickerController::new(cwd, vec![], false);
         Self {
             picker: Some(picker),
@@ -149,7 +153,11 @@ impl AppLogic for FolderPickerApp {
                         return Reaction::Exit;
                     }
                     Key::Char('o') => {
-                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+                        // Fallback to "." (current dir relative) if `current_dir()` fails.
+                        // `PathBuf::from("/")` would be invalid on Windows, so we keep this
+                        // platform-neutral. The picker will still walk something sensible
+                        // from the process's working directory.
+                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                         self.picker = Some(FolderPickerController::new(cwd, vec![], false));
                         self.status =
                             "Open Folder picker — navigate and press Enter to confirm".into();
