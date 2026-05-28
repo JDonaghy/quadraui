@@ -35,6 +35,8 @@ const CORNER_RADIUS: f64 = 4.0;
 const H_PAD: f64 = 8.0;
 /// Border width for stage box outline.
 const BORDER_WIDTH: f64 = 1.0;
+/// Height reserved above stage boxes for the focus indicator (pixels).
+const GTK_FOCUS_INDICATOR_H: f64 = 8.0;
 
 /// Compute the GTK pixel-unit layout for a [`PipelineView`] without painting.
 pub fn gtk_pipeline_view_layout(
@@ -51,8 +53,13 @@ pub fn gtk_pipeline_view_layout(
     };
     view.layout(
         x as f32,
-        y as f32,
-        PipelineViewMeasure::new(w as f32, h as f32, GTK_ARROW_WIDTH_PX, action_h),
+        (y + GTK_FOCUS_INDICATOR_H) as f32,
+        PipelineViewMeasure::new(
+            w as f32,
+            (h - GTK_FOCUS_INDICATOR_H).max(0.0) as f32,
+            GTK_ARROW_WIDTH_PX,
+            action_h,
+        ),
     )
 }
 
@@ -93,16 +100,31 @@ pub fn draw_pipeline_view(
         rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
         cr.fill().ok();
 
-        // ── Box border ───────────────────────────────────────────────────
-        let border_color = if is_focused {
-            theme.accent_bg
-        } else {
-            theme.muted_fg
+        // ── Box border (per-status colour; focus uses an above-box indicator) ──
+        let border_color = match stage.status {
+            StageStatus::Active => theme.accent_bg,
+            StageStatus::Done => theme.git_added,
+            StageStatus::Failed => theme.error_fg,
+            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => theme.muted_fg,
         };
         set_source(cr, border_color);
         cr.set_line_width(BORDER_WIDTH);
         rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
         cr.stroke().ok();
+
+        // ── Focus indicator (small ▼ triangle above the box) ─────────────
+        if is_focused {
+            let ind_x = bx + bw / 2.0;
+            let tri_tip_y = by - 1.0;
+            let tri_base_y = by - GTK_FOCUS_INDICATOR_H + 1.0;
+            let tri_half_w = 5.0;
+            set_source(cr, theme.muted_fg);
+            cr.move_to(ind_x, tri_tip_y);
+            cr.line_to(ind_x - tri_half_w, tri_base_y);
+            cr.line_to(ind_x + tri_half_w, tri_base_y);
+            cr.close_path();
+            cr.fill().ok();
+        }
 
         // ── Status icon (top third of box) ───────────────────────────────
         let icon_text = status_icon_text(stage);

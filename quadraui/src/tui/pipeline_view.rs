@@ -15,7 +15,8 @@
 //! | Pending  | ·    | dim (`theme.muted_fg`)         |
 //! | Skipped  | ─    | grey (`theme.muted_fg`)        |
 //!
-//! The focused stage (keyboard navigation) receives a highlighted border.
+//! The focused stage (keyboard navigation) shows a `▼` caret in the row
+//! reserved above the box; the box border retains its per-status colour.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -31,6 +32,8 @@ use crate::theme::Theme;
 const TUI_ARROW_WIDTH: f32 = 4.0;
 /// Height reserved for the action button row (cells). `0` = no actions.
 const TUI_ACTION_HEIGHT: f32 = 1.0;
+/// Height reserved above stage boxes for the focus indicator (cells).
+const TUI_FOCUS_INDICATOR_H: u16 = 1;
 
 /// Compute the TUI cell-unit layout for a [`PipelineView`] without painting.
 pub fn tui_pipeline_view_layout(view: &PipelineView, area: Rect) -> PipelineViewLayout {
@@ -41,10 +44,10 @@ pub fn tui_pipeline_view_layout(view: &PipelineView, area: Rect) -> PipelineView
     };
     view.layout(
         area.x as f32,
-        area.y as f32,
+        (area.y + TUI_FOCUS_INDICATOR_H) as f32,
         PipelineViewMeasure::new(
             area.width as f32,
-            area.height as f32,
+            area.height.saturating_sub(TUI_FOCUS_INDICATOR_H) as f32,
             TUI_ARROW_WIDTH,
             action_h,
         ),
@@ -69,26 +72,19 @@ pub fn draw_pipeline_view(
     let fg = ratatui_color(theme.foreground);
     let muted = ratatui_color(theme.muted_fg);
     let accent = ratatui_color(theme.accent_bg);
-    let border_normal = muted;
-    let border_focus = accent;
 
     for sb in &layout.stages {
         let stage = &view.stages[sb.index];
         let is_focused = view.focused_stage == Some(sb.index);
-        // Per-status border so the active / done / failed stage is
-        // distinguishable at a glance. Focus override beats status colour.
-        let status_border = match stage.status {
+        // Per-status border colour. Focus no longer overrides it — a ▼
+        // indicator drawn in the reserved row above the box signals focus.
+        let border_col = match stage.status {
             StageStatus::Active => ratatui_color(theme.accent_bg),
             StageStatus::Done => ratatui_color(theme.git_added),
             StageStatus::Failed => ratatui_color(theme.error_fg),
             // Stale gets a dim border so it visually retreats — the prior
             // verdict is shown but de-emphasised to signal "no longer trusted."
-            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => border_normal,
-        };
-        let border_col = if is_focused {
-            border_focus
-        } else {
-            status_border
+            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => muted,
         };
 
         let bx = sb.box_bounds.x.round() as u16;
@@ -207,6 +203,11 @@ pub fn draw_pipeline_view(
                 set_cell(buf, ax + aw - 1, mid_y, '▶', muted, bg);
             }
         }
+
+        // ── Focus indicator (drawn in the reserved row above the box) ────
+        if is_focused && by > 0 {
+            set_cell(buf, bx + bw / 2, by - 1, '▼', muted, bg);
+        }
     }
 
     layout
@@ -263,8 +264,8 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let view = make_view();
         draw_pipeline_view(&mut buf, area, &view, &Theme::default());
-        // Top-left corner of first stage box.
-        assert_eq!(cell_char(&buf, 0, 0), '┌');
+        // Row 0 is reserved for the focus indicator; box starts at row 1.
+        assert_eq!(cell_char(&buf, 0, 1), '┌');
     }
 
     #[test]
@@ -303,5 +304,47 @@ mod tests {
         let _layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
         // Buffer should remain empty.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    /// Focused Done stage: ▼ appears in row 0 and the box border is still drawn.
+    #[test]
+    fn focused_done_stage_shows_indicator_and_retains_border() {
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        let mut view = make_view();
+        view.focused_stage = Some(0); // stage 0 is Done
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let bx = bb.x.round() as u16;
+        let by = bb.y.round() as u16;
+        let bw = bb.width.round() as u16;
+
+        // Box must be pushed down by the indicator row.
+        assert_eq!(by, 1, "box top must be at indicator row + 1");
+
+        // The ▼ caret appears in the reserved row above the box.
+        let ind_col = bx + bw / 2;
+        assert_eq!(cell_char(&buf, ind_col, 0), '▼');
+
+        // The box border is still drawn (status colour, not overridden).
+        assert_eq!(cell_char(&buf, bx, by), '┌');
+    }
+
+    /// When no stage is focused the indicator row stays blank.
+    #[test]
+    fn no_indicator_when_not_focused() {
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        let view = make_view(); // focused_stage = None
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let bx = bb.x.round() as u16;
+        let bw = bb.width.round() as u16;
+        let ind_col = bx + bw / 2;
+
+        // Indicator row should be blank since nothing is focused.
+        assert_eq!(cell_char(&buf, ind_col, 0), ' ');
     }
 }
