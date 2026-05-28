@@ -20,6 +20,9 @@
 //!   N collapsible-tree sections, used by `tui_multi_tree` /
 //!   `gtk_multi_tree`. Demonstrates the consumer pattern for
 //!   per-section scroll/selection state.
+//! - [`ChatDemo`] (in [`chat_demo`]) — `ChatController` overlay with
+//!   scrollable transcript, multi-line input, history, and spinner,
+//!   used by `tui_chat` / `gtk_chat`.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -27,6 +30,7 @@
 
 pub mod appshell_demo;
 pub mod chart_app;
+pub mod chat_demo;
 pub mod data_table_app;
 pub mod demo;
 pub mod folder_picker_app;
@@ -53,6 +57,7 @@ pub mod toast_app;
 pub mod toolbar_app;
 
 pub use chart_app::ChartApp;
+pub use chat_demo::ChatDemo;
 pub use data_table_app::DataTableApp;
 pub use demo::AppState;
 pub use folder_picker_app::FolderPickerApp;

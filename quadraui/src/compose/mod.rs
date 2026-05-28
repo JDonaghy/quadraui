@@ -15,8 +15,11 @@
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
+//! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
+//!   input + status strip.
 
 pub mod app_shell;
+pub mod chat_controller;
 pub mod focus_group;
 pub mod focus_ring;
 pub mod folder_picker;
@@ -28,6 +31,7 @@ pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 
 pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
+pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
 pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
