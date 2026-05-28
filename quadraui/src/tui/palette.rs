@@ -271,13 +271,11 @@ pub fn draw_palette(
             let detail_w = detail_text.chars().count() as u16;
             if item_end_col > text_end_col + detail_w + 1 {
                 let start = item_end_col.saturating_sub(detail_w + 1);
-                let mut dcol = start;
-                for ch in detail_text.chars() {
+                for (dcol, ch) in (start..).zip(detail_text.chars()) {
                     if dcol >= item_end_col {
                         break;
                     }
                     set_cell(buf, x0 + dcol, row, ch, dim_fg, row_bg);
-                    dcol += 1;
                 }
             }
         }
@@ -358,13 +356,11 @@ pub fn draw_palette(
                 for col in preview_content_x..x0 + w - 1 {
                     set_cell(buf, col, row, ' ', fg, bg);
                 }
-                let mut col = preview_content_x + 1;
-                for ch in title_text.chars() {
+                for (col, ch) in (preview_content_x + 1..).zip(title_text.chars()) {
                     if col + 1 >= x0 + w - 1 {
                         break;
                     }
                     set_cell(buf, col, row, ch, dim_fg, bg);
-                    col += 1;
                 }
                 preview_row0 = items_row0 + 1;
             }

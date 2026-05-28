@@ -271,18 +271,16 @@ pub fn dispatch_mouse_drag(
             max_scroll,
             grab_offset,
             inverted,
-        }) => {
-            if *track_length > 0.0 && *max_scroll > 0 {
-                let effective_track = (*track_length - *thumb_length).max(1.0);
-                let rel = (position.y - *track_start - *grab_offset) / effective_track;
-                let clamped = rel.clamp(0.0, 1.0);
-                let clamped = if *inverted { 1.0 - clamped } else { clamped };
-                let new_offset = (clamped * *max_scroll as f32).round() as usize;
-                events.push(UiEvent::ScrollOffsetChanged {
-                    widget: widget.clone(),
-                    new_offset,
-                });
-            }
+        }) if *track_length > 0.0 && *max_scroll > 0 => {
+            let effective_track = (*track_length - *thumb_length).max(1.0);
+            let rel = (position.y - *track_start - *grab_offset) / effective_track;
+            let clamped = rel.clamp(0.0, 1.0);
+            let clamped = if *inverted { 1.0 - clamped } else { clamped };
+            let new_offset = (clamped * *max_scroll as f32).round() as usize;
+            events.push(UiEvent::ScrollOffsetChanged {
+                widget: widget.clone(),
+                new_offset,
+            });
         }
         Some(DragTarget::ScrollbarX {
             widget,
@@ -292,20 +290,18 @@ pub fn dispatch_mouse_drag(
             max_scroll,
             grab_offset,
             inverted,
-        }) => {
-            if *track_length > 0.0 && *max_scroll > 0 {
-                let effective_track = (*track_length - *thumb_length).max(1.0);
-                let rel = (position.x - *track_start - *grab_offset) / effective_track;
-                let clamped = rel.clamp(0.0, 1.0);
-                let clamped = if *inverted { 1.0 - clamped } else { clamped };
-                let new_offset = (clamped * *max_scroll as f32).round() as usize;
-                events.push(UiEvent::ScrollOffsetChanged {
-                    widget: widget.clone(),
-                    new_offset,
-                });
-            }
+        }) if *track_length > 0.0 && *max_scroll > 0 => {
+            let effective_track = (*track_length - *thumb_length).max(1.0);
+            let rel = (position.x - *track_start - *grab_offset) / effective_track;
+            let clamped = rel.clamp(0.0, 1.0);
+            let clamped = if *inverted { 1.0 - clamped } else { clamped };
+            let new_offset = (clamped * *max_scroll as f32).round() as usize;
+            events.push(UiEvent::ScrollOffsetChanged {
+                widget: widget.clone(),
+                new_offset,
+            });
         }
-        None => {}
+        _ => {}
     }
 
     events

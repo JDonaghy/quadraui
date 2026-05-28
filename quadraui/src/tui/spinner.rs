@@ -55,13 +55,11 @@ pub fn draw_spinner(
 
     if !spinner.label.is_empty() {
         let fg = ratatui_color(theme.foreground);
-        let mut col = x + 2;
-        for ch in spinner.label.chars() {
+        for (col, ch) in (x + 2..).zip(spinner.label.chars()) {
             if col >= area.x + area.width {
                 break;
             }
             set_cell(buf, col, y, ch, fg, bg);
-            col += 1;
         }
     }
 

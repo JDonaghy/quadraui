@@ -85,7 +85,11 @@ pub fn draw_pipeline_view(
             // verdict is shown but de-emphasised to signal "no longer trusted."
             StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => border_normal,
         };
-        let border_col = if is_focused { border_focus } else { status_border };
+        let border_col = if is_focused {
+            border_focus
+        } else {
+            status_border
+        };
 
         let bx = sb.box_bounds.x.round() as u16;
         let by = sb.box_bounds.y.round() as u16;

@@ -166,6 +166,10 @@ impl AppLogic for DebugSidebar {
                 self.last_action = format!("dblclick→{section} {path:?}");
                 Reaction::Redraw
             }
+            SidebarEvent::RowToggleExpand { section, path } => {
+                self.last_action = format!("toggle→{section} {path:?}");
+                Reaction::Redraw
+            }
             SidebarEvent::ContextMenuRequested {
                 section,
                 path,

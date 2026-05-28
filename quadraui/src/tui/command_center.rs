@@ -88,13 +88,11 @@ pub fn draw_command_center(
         let sx = sb.x.round() as u16;
         let sw = sb.width.round() as u16;
         set_cell(buf, sx, y, '[', border_fg, bg);
-        let mut col = sx + 1;
-        for ch in cc.search_label.chars() {
+        for (col, ch) in (sx + 1..).zip(cc.search_label.chars()) {
             if col >= sx + sw - 1 {
                 break;
             }
             set_cell(buf, col, y, ch, text_fg, bg);
-            col += 1;
         }
         if sw > 1 {
             set_cell(buf, sx + sw - 1, y, ']', border_fg, bg);

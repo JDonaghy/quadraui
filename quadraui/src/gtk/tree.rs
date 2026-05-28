@@ -30,13 +30,30 @@ use crate::types::Decoration;
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = (line_height * 1.4).round();
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
     tree.layout(area.width, area.height, |i| {
-        let is_header = matches!(tree.rows[i].decoration, Decoration::Header);
-        TreeRowMeasure::new(if is_header {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
             header_height as f32
         } else {
             item_height as f32
-        })
+        };
+        // Approximate chevron end x in tree-local pixels:
+        //   2px left margin + indent levels + estimated chevron glyph width + 4px gap.
+        // Exact Pango metrics are not available here; 0.65×line_height is a
+        // reasonable estimate for a single Unicode chevron glyph at typical font sizes.
+        let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
+            let est_glyph_w = line_height * 0.65;
+            Some((2.0 + row.indent as f64 * indent_px + est_glyph_w + 4.0) as f32)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
     })
 }
 
@@ -675,5 +692,68 @@ mod tests {
             painted.is_some(),
             "editing row interior should contain painted pixels (caret + text)"
         );
+    }
+
+    // ── Chevron hit-test tests ──────────────────────────────────────
+
+    fn branch(idx: u16, label: &str, expanded: bool) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: Some(expanded),
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    /// A click very close to the left edge of a branch row lands on the
+    /// Chevron region (x < chevron_end_x).
+    #[test]
+    fn gtk_chevron_click_returns_chevron_hit() {
+        let tree = make_tree(vec![branch(0, "src", true), leaf(1, "beta")]);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        // At indent=0 with default TreeStyle, chevron_end_x > 2.0.
+        // Clicking at x=1.0 (well inside the chevron region) must give Chevron(0).
+        let hit = layout.hit_test(1.0, layout.visible_rows[0].bounds.y + 1.0);
+        assert!(
+            matches!(hit, TreeViewHit::Chevron(0)),
+            "x=1 on GTK branch row 0 should return Chevron(0), got {:?}",
+            hit
+        );
+    }
+
+    /// A click far to the right of a branch row lands on the Row region.
+    #[test]
+    fn gtk_body_click_returns_row_hit() {
+        let tree = make_tree(vec![branch(0, "src", true)]);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        // The chevron is a small fraction of the row width. x=100 is safely past it.
+        let hit = layout.hit_test(100.0, layout.visible_rows[0].bounds.y + 1.0);
+        assert!(
+            matches!(hit, TreeViewHit::Row(0)),
+            "x=100 past chevron should return Row(0), got {:?}",
+            hit
+        );
+    }
+
+    /// Leaf rows always return Row regardless of x position.
+    #[test]
+    fn gtk_leaf_click_always_row_hit() {
+        let tree = make_tree(vec![leaf(0, "main.rs")]);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        for x in [0.5_f32, 1.0, 5.0, 50.0] {
+            let hit = layout.hit_test(x, layout.visible_rows[0].bounds.y + 1.0);
+            assert!(
+                matches!(hit, TreeViewHit::Row(0)),
+                "leaf click at x={x} should return Row(0), got {:?}",
+                hit
+            );
+        }
     }
 }

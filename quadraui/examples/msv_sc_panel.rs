@@ -217,7 +217,7 @@ impl SCSidebar {
                 );
                 let inner = tui_tree_layout(&tree, body_area);
                 match inner.hit_test(x as f32 - body_b.x, y as f32 - body_b.y) {
-                    TreeViewHit::Row(idx) => {
+                    TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                         let path = tree.rows[idx].path.clone();
                         self.sections[section].selected_path = Some(path.clone());
                         ClickAction::RowSelected { section, path }

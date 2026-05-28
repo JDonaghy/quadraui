@@ -1106,15 +1106,14 @@ mod tests {
             header_h
         );
 
-        // Hit-test bottom pixel of header row → Row(0).
+        // Hit-test bottom pixel of header row → Row(0) or Chevron(0).
+        // The header is a branch row so x=5 may fall in the chevron region — both
+        // Chevron(0) and Row(0) satisfy the row-discrimination requirement.
         let bottom_of_header = header_h as f32 - 0.5;
         match tree_layout.hit_test(5.0, bottom_of_header) {
-            TreeViewHit::Row(idx) => assert_eq!(
-                idx, 0,
-                "click at y={bottom_of_header} (bottom of header) hit row {idx}, expected 0"
-            ),
+            TreeViewHit::Row(0) | TreeViewHit::Chevron(0) => {}
             other => panic!(
-                "click at y={bottom_of_header} returned {:?}, expected Row(0)",
+                "click at y={bottom_of_header} returned {:?}, expected Row(0) or Chevron(0)",
                 other
             ),
         }

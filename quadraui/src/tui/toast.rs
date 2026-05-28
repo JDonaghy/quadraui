@@ -113,30 +113,26 @@ fn paint_toast(
 
     // Title on first row, left-aligned with 1-cell padding.
     let title_y = by;
-    let mut col = bx + 1;
     let text_end = vt
         .action_bounds
         .map(|ab| ab.x.round() as u16)
         .or_else(|| vt.dismiss_bounds.map(|db| db.x.round() as u16))
         .unwrap_or(bx + bw);
-    for ch in toast.title.chars() {
+    for (col, ch) in (bx + 1..).zip(toast.title.chars()) {
         if col >= text_end {
             break;
         }
         set_cell(buf, col, title_y, ch, fg, bg);
-        col += 1;
     }
 
     // Body on second row (if present).
     if !toast.body.is_empty() && bh > 1 {
         let body_y = by + 1;
-        let mut col = bx + 1;
-        for ch in toast.body.chars() {
+        for (col, ch) in (bx + 1..).zip(toast.body.chars()) {
             if col >= text_end {
                 break;
             }
             set_cell(buf, col, body_y, ch, fg, bg);
-            col += 1;
         }
     }
 
@@ -155,13 +151,11 @@ fn paint_toast(
             let ax = ab.x.round() as u16 + 1;
             let ay = ab.y.round() as u16;
             let action_fg = ratatui_color(theme.accent_fg);
-            let mut c = ax;
-            for ch in action.label.chars() {
+            for (c, ch) in (ax..).zip(action.label.chars()) {
                 if c >= bx + bw {
                     break;
                 }
                 set_cell(buf, c, ay, ch, action_fg, bg);
-                c += 1;
             }
         }
     }

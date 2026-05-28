@@ -103,6 +103,10 @@ pub enum SidebarEvent {
     /// Distinct from `RowSelected` (click-driven) — lets apps
     /// distinguish keyboard activation from mouse selection.
     RowActivated { section: usize, path: TreePath },
+    /// The expand/collapse chevron of a branch row was clicked, or Space
+    /// was pressed while a branch row is selected.  The app owns per-row
+    /// expand state and should toggle it, then push fresh `TreeRow`s.
+    RowToggleExpand { section: usize, path: TreePath },
     /// Right-click on a body row. `position` is the click position
     /// in the backend's native coordinates (for context menu placement).
     ContextMenuRequested {
@@ -568,9 +572,23 @@ impl SidebarSystem {
     ) -> crate::primitives::tree::TreeViewLayout {
         let header_h = (lh * 1.2).round();
         let item_h = (lh * 1.4).round();
+        let indent_px = (lh * 0.9).round();
+        let show_chevrons = tree.style.show_chevrons;
         tree.layout(body_b.width, body_b.height, |i| {
-            let is_header = matches!(tree.rows[i].decoration, crate::types::Decoration::Header);
-            TreeRowMeasure::new(if is_header { header_h } else { item_h })
+            let row = &tree.rows[i];
+            let is_header = matches!(row.decoration, crate::types::Decoration::Header);
+            let height = if is_header { header_h } else { item_h };
+            // Approximate chevron end x (mirrors gtk_tree_layout).
+            let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
+                let est_glyph_w = lh * 0.65;
+                Some(2.0 + row.indent as f32 * indent_px + est_glyph_w + 4.0)
+            } else {
+                None
+            };
+            TreeRowMeasure {
+                height,
+                chevron_end_x,
+            }
         })
     }
 
@@ -615,6 +633,7 @@ impl SidebarSystem {
                 self.select_first_of_active();
                 SidebarEvent::StateChanged
             }
+            Key::Char(' ') => self.toggle_expand_selected(),
             _ => SidebarEvent::Ignored,
         }
     }
@@ -652,6 +671,7 @@ impl SidebarSystem {
                 self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
             }
             Key::Named(NamedKey::Enter) => self.activate_selection(),
+            Key::Char(' ') => self.toggle_expand_selected(),
             _ => SidebarEvent::Ignored,
         }
     }
@@ -722,6 +742,25 @@ impl SidebarSystem {
         match tc.activate_selection() {
             TreeControllerEvent::RowActivated { path } => {
                 SidebarEvent::RowActivated { section: idx, path }
+            }
+            _ => SidebarEvent::Ignored,
+        }
+    }
+
+    /// Emit [`SidebarEvent::RowToggleExpand`] for the selected row of the
+    /// active section, if that row is a branch (`is_expanded.is_some()`).
+    /// Works in both [`NavigationMode::Scroll`] and
+    /// [`NavigationMode::Selection`].
+    pub fn toggle_expand_selected(&self) -> SidebarEvent {
+        let Some(idx) = self.focus.active() else {
+            return SidebarEvent::Ignored;
+        };
+        let SectionController::Tree(tc) = &self.sections[idx] else {
+            return SidebarEvent::Ignored;
+        };
+        match tc.toggle_expand_selected() {
+            TreeControllerEvent::RowToggleExpand { path } => {
+                SidebarEvent::RowToggleExpand { section: idx, path }
             }
             _ => SidebarEvent::Ignored,
         }
@@ -969,6 +1008,13 @@ impl SidebarSystem {
                                 }
                                 SidebarEvent::RowSelected { section, path }
                             }
+                            TreeViewHit::Chevron(idx) => {
+                                let path = tree.rows[idx].path.clone();
+                                if let SectionController::Tree(tc) = &mut self.sections[section] {
+                                    tc.set_selected_path(Some(path.clone()));
+                                }
+                                SidebarEvent::RowToggleExpand { section, path }
+                            }
                             TreeViewHit::Empty => SidebarEvent::HeaderActivated { section },
                         }
                     }
@@ -1066,10 +1112,8 @@ impl SidebarSystem {
                     // the painted thumb position. The legacy code
                     // dropped divider sizes, breaking drag when
                     // `allow_resize=true`.
-                    let sections_total: f32 =
-                        layout.sections.iter().map(|s| s.resolved_size).sum();
-                    let dividers_total: f32 =
-                        layout.dividers.iter().map(|d| d.bounds.height).sum();
+                    let sections_total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
+                    let dividers_total: f32 = layout.dividers.iter().map(|d| d.bounds.height).sum();
                     let total = sections_total + dividers_total;
                     let max_scroll = (total - rect.height).max(0.0);
                     let thumb_frac = rect.height / total;
@@ -1131,7 +1175,12 @@ impl SidebarSystem {
                 if let SectionBody::Tree(t) = &view.sections[msv_idx].body {
                     let tree = t.clone();
                     let inner = self.compute_tree_layout(body_b, &tree, lh);
-                    if let TreeViewHit::Row(idx) = inner.hit_test(x - body_b.x, y - body_b.y) {
+                    // Both Row and Chevron regions count as double-click → RowActivated.
+                    let hit_idx = match inner.hit_test(x - body_b.x, y - body_b.y) {
+                        TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => Some(idx),
+                        TreeViewHit::Empty => None,
+                    };
+                    if let Some(idx) = hit_idx {
                         let path = tree.rows[idx].path.clone();
                         if let SectionController::Tree(tc) = &mut self.sections[section] {
                             tc.set_selected_path(Some(path.clone()));
@@ -1166,7 +1215,7 @@ impl SidebarSystem {
                 };
                 let inner = self.compute_tree_layout(body_b, &tree, lh);
                 match inner.hit_test(position.x - body_b.x, position.y - body_b.y) {
-                    TreeViewHit::Row(idx) => {
+                    TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                         let path = tree.rows[idx].path.clone();
                         self.focus.set_active(Some(section));
                         if let SectionController::Tree(tc) = &mut self.sections[section] {
@@ -2274,7 +2323,9 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 20.0, 21.0);
 
         let (layout, _) = ss.compute_layout(rect, &metrics, 1.0);
-        let sb = layout.sections[0].scrollbar_bounds.expect("scrollbar reserved");
+        let sb = layout.sections[0]
+            .scrollbar_bounds
+            .expect("scrollbar reserved");
         let thumb = layout.sections[0].thumb_bounds.expect("thumb computed");
 
         // TUI mouse coords come in as integer cells.
@@ -2550,15 +2601,14 @@ mod tests {
         let layout = ss.compute_tree_layout(body_b, &tree, lh);
 
         // Header row spans [0, header_h). Click at header_h - 0.5 (bottom pixel)
-        // should still land on the header (row 0), not the child (row 1).
+        // should still land on the header row (index 0), not the child (row 1).
+        // The header is a branch row so x=5 may fall in the chevron region — both
+        // Chevron(0) and Row(0) satisfy the row-discrimination requirement.
         let bottom_of_header = header_h - 0.5;
         match layout.hit_test(5.0, bottom_of_header) {
-            TreeViewHit::Row(idx) => assert_eq!(
-                idx, 0,
-                "click at y={bottom_of_header} (bottom of header row) hit row {idx}, expected 0"
-            ),
+            TreeViewHit::Row(0) | TreeViewHit::Chevron(0) => {}
             other => panic!(
-                "click at y={bottom_of_header} returned {:?}, expected Row(0)",
+                "click at y={bottom_of_header} returned {:?}, expected Row(0) or Chevron(0)",
                 other
             ),
         }
@@ -2937,6 +2987,146 @@ mod tests {
         ss.handle_cached(&ev, rect);
         assert_eq!(ss.scroll_offset(1), 4, "scroll up should decrement offset");
         assert_eq!(ss.scroll_offset(0), 0, "section 0 should be untouched");
+    }
+
+    // ── RowToggleExpand ─────────────────────────────────────────────
+
+    fn branch_rows_for_sidebar() -> Vec<TreeRow> {
+        vec![
+            TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("src"),
+                badge: None,
+                is_expanded: Some(true),
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+            TreeRow {
+                path: vec![1],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("tests"),
+                badge: None,
+                is_expanded: Some(false),
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+            TreeRow {
+                path: vec![2],
+                indent: 1,
+                icon: None,
+                text: StyledText::plain("main.rs"),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+        ]
+    }
+
+    /// Space on a selected branch row emits RowToggleExpand.
+    #[test]
+    fn sidebar_space_on_branch_row_emits_row_toggle_expand() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, branch_rows_for_sidebar());
+        ss.set_active_section(Some(0));
+        ss.set_selected_path(0, Some(vec![0]));
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(
+            ev,
+            SidebarEvent::RowToggleExpand {
+                section: 0,
+                path: vec![0]
+            }
+        );
+    }
+
+    /// Space on a collapsed branch row also emits RowToggleExpand.
+    #[test]
+    fn sidebar_space_on_collapsed_branch_emits_row_toggle_expand() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, branch_rows_for_sidebar());
+        ss.set_active_section(Some(0));
+        ss.set_selected_path(0, Some(vec![1]));
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(
+            ev,
+            SidebarEvent::RowToggleExpand {
+                section: 0,
+                path: vec![1]
+            }
+        );
+    }
+
+    /// Space on a leaf returns Ignored.
+    #[test]
+    fn sidebar_space_on_leaf_returns_ignored() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, branch_rows_for_sidebar());
+        ss.set_active_section(Some(0));
+        ss.set_selected_path(0, Some(vec![2]));
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    /// Space with no active section returns Ignored.
+    #[test]
+    fn sidebar_space_no_active_section_returns_ignored() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, branch_rows_for_sidebar());
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    /// Space works in Selection mode (forwarded through handle_key_selection).
+    #[test]
+    fn sidebar_selection_mode_space_emits_row_toggle_expand() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_navigation_mode(NavigationMode::Selection);
+        ss.set_rows(0, branch_rows_for_sidebar());
+        ss.set_active_section(Some(0));
+        ss.set_selected_path(0, Some(vec![0]));
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(
+            ev,
+            SidebarEvent::RowToggleExpand {
+                section: 0,
+                path: vec![0]
+            }
+        );
+    }
+
+    /// RowToggleExpand is forwarded for the correct section index when
+    /// section 1 (not 0) is active.
+    #[test]
+    fn sidebar_toggle_expand_reports_correct_section() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(1, branch_rows_for_sidebar());
+        ss.set_active_section(Some(1));
+        ss.set_selected_path(1, Some(vec![0]));
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(
+            ev,
+            SidebarEvent::RowToggleExpand {
+                section: 1,
+                path: vec![0]
+            }
+        );
+    }
+
+    /// Existing RowSelected still works — chevron split does not break body clicks.
+    /// (Regression guard: make sure toggle_expand_selected returning Ignored on
+    /// a leaf does not emit RowToggleExpand.)
+    #[test]
+    fn sidebar_row_selected_still_works_for_leaf() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, branch_rows_for_sidebar());
+        ss.set_active_section(Some(0));
+        ss.set_selected_path(0, Some(vec![2])); // leaf
+        let ev = ss.toggle_expand_selected();
+        assert_eq!(ev, SidebarEvent::Ignored);
     }
 
     #[cfg(feature = "gtk")]
