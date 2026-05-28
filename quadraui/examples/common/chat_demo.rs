@@ -12,7 +12,7 @@
 //!
 //! Controls:
 //! - Type any text; press `Enter` for newlines in the input.
-//! - `Ctrl+Enter` — submit the message.
+//! - `Ctrl+Enter` or `Alt+Enter` — submit the message.
 //! - `↑` / `↓` — history navigation (when cursor is on the first/last line).
 //! - `PageUp` / `PageDown` — scroll the transcript.
 //! - `Esc` — clear the input, or quit when the input is already empty.
@@ -47,7 +47,7 @@ impl ChatDemo {
     pub fn new() -> Self {
         let mut controller = ChatController::new("demo:chat");
         controller.set_status(StyledText::plain(
-            "Chat demo — Ctrl+Enter to send, q to quit",
+            "Chat demo — Ctrl+Enter or Alt+Enter to send, q to quit",
         ));
         controller.set_model_label("claude-opus-4-5");
         Self {

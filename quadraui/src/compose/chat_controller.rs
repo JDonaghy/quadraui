@@ -10,7 +10,9 @@
 //!
 //! # Keyboard behaviour
 //!
-//! - `Ctrl+Enter` — submit the current input.
+//! - `Ctrl+Enter` or `Alt+Enter` — submit the current input.
+//!   `Alt+Enter` works on all terminals; `Ctrl+Enter` requires the Kitty
+//!   keyboard protocol (supported by kitty, Alacritty ≥0.12, WezTerm, foot).
 //! - `Enter` — insert a newline in the input.
 //! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
 //!   whether to close the overlay.
@@ -66,7 +68,7 @@ pub struct ChatTurn {
 /// Events emitted by [`ChatController::handle`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatControllerEvent {
-    /// User submitted a message (`Ctrl+Enter`). Contains the full input text
+    /// User submitted a message (`Ctrl+Enter` or `Alt+Enter`). Contains the full input text
     /// (with embedded `\n` for multi-line messages). Apps should:
     /// 1. Append the text as a `User` turn to their own transcript.
     /// 2. Call [`ChatController::clear_input`].
@@ -538,7 +540,7 @@ impl ChatController {
             cursor_line,
             cursor_col,
             placeholder: Some(
-                "Type a message\u{2026} (Ctrl+Enter to send, Enter for newline, Esc to cancel)"
+                "Type a message\u{2026} (Ctrl+Enter or Alt+Enter to send, Enter for newline, Esc to cancel)"
                     .into(),
             ),
             scroll_offset: self.input_scroll_offset,
@@ -557,8 +559,9 @@ impl ChatController {
         layout: &ChatLayout,
     ) -> ChatControllerEvent {
         match key {
-            // ── Submit: Ctrl+Enter ─────────────────────────────────────
-            Key::Named(NamedKey::Enter) if modifiers.ctrl => {
+            // ── Submit: Ctrl+Enter or Alt+Enter ───────────────────────
+            // Alt+Enter works on all terminals; Ctrl+Enter needs Kitty protocol.
+            Key::Named(NamedKey::Enter) if modifiers.ctrl || modifiers.alt => {
                 if self.input_buf.is_empty() {
                     return ChatControllerEvent::Ignored;
                 }
@@ -1457,6 +1460,28 @@ mod tests {
             key: Key::Named(NamedKey::Enter),
             modifiers: Modifiers {
                 ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &MockBackend, rect);
+        assert_eq!(
+            ev,
+            ChatControllerEvent::Submit {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn alt_enter_submits_and_emits_event() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        let rect = make_rect();
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers {
+                alt: true,
                 ..Default::default()
             },
             repeat: false,
