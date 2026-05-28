@@ -42,6 +42,11 @@ pub fn tui_pipeline_view_layout(view: &PipelineView, area: Rect) -> PipelineView
     } else {
         0.0
     };
+    // Note: the returned layout (incl. `bounds`) is offset down by
+    // `TUI_FOCUS_INDICATOR_H`, so `bounds.y` starts below the reserved caret
+    // row. The focus caret is drawn in that reserved row (above `bounds.y`);
+    // a host that clips drawing to `layout.bounds` would clip it — clip to the
+    // original `area` instead.
     view.layout(
         area.x as f32,
         (area.y + TUI_FOCUS_INDICATOR_H) as f32,

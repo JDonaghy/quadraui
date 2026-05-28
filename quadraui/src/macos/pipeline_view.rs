@@ -37,6 +37,11 @@ pub fn mac_pipeline_view_layout(
     } else {
         0.0
     };
+    // Note: the returned layout (incl. `bounds`) is offset down by
+    // `MAC_FOCUS_INDICATOR_H`, so `bounds.y` starts below the reserved caret
+    // strip. The focus caret is painted in the gap between the passed-in `y`
+    // and `bounds.y`; a host that clips drawing to `layout.bounds` would clip
+    // the caret — clip to the original `(y, h)` instead.
     view.layout(
         x as f32,
         (y + MAC_FOCUS_INDICATOR_H) as f32,
