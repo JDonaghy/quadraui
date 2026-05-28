@@ -157,13 +157,11 @@ pub fn draw_tree(
                 if badge_start_col > text_start {
                     let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
                     let badge_bg = badge.bg.map(qc).unwrap_or(bg);
-                    let mut bx = badge_start_col;
-                    for ch in badge.text.chars() {
+                    for (bx, ch) in (badge_start_col..).zip(badge.text.chars()) {
                         if bx >= area.width as usize {
                             break;
                         }
                         set_cell(buf, area.x + bx as u16, y, ch, badge_fg, badge_bg);
-                        bx += 1;
                     }
                 }
             }
@@ -187,13 +185,11 @@ fn paint_edit_input(
 ) {
     if edit.text.is_empty() {
         if let Some(ref ph) = edit.placeholder {
-            let mut col = start_col;
-            for ch in ph.chars() {
+            for (col, ch) in (start_col..).zip(ph.chars()) {
                 if col >= area.width as usize {
                     break;
                 }
                 set_cell(buf, area.x + col as u16, y, ch, dim_fg, bg);
-                col += 1;
             }
         }
         // Cursor at position 0 (inverted space).
@@ -209,9 +205,8 @@ fn paint_edit_input(
     };
     let has_selection = sel_hi > sel_lo;
 
-    let mut col = start_col;
     let mut byte = 0usize;
-    for ch in edit.text.chars() {
+    for (col, ch) in (start_col..).zip(edit.text.chars()) {
         if col >= area.width as usize {
             break;
         }
@@ -219,7 +214,6 @@ fn paint_edit_input(
         let cell_bg = if in_sel { sel_bg } else { bg };
         set_cell(buf, area.x + col as u16, y, ch, fg, cell_bg);
         byte += ch.len_utf8();
-        col += 1;
     }
 
     // Block cursor: find char index for cursor byte offset, invert that cell.
@@ -249,9 +243,30 @@ fn paint_edit_input(
 /// TUI rows are uniform 1-cell tall. The layout is in tree-local coords
 /// (origin at 0,0); convert absolute click coords by subtracting
 /// `area.x` / `area.y` before calling [`TreeViewLayout::hit_test`].
+///
+/// Branch rows (`is_expanded.is_some()`) get a split hit region: the
+/// cells covered by the painted chevron glyph + trailing space produce
+/// [`crate::primitives::tree::TreeViewHit::Chevron`]; the rest of the
+/// row produces [`crate::primitives::tree::TreeViewHit::Row`].
 pub fn tui_tree_layout(tree: &TreeView, area: Rect) -> TreeViewLayout {
-    tree.layout(area.width as f32, area.height as f32, |_| {
-        TreeRowMeasure::new(1.0)
+    let indent_cells = tree.style.indent as f32;
+    let chevron_w = if tree.style.show_chevrons {
+        // chevron glyph width (chars) + 1 trailing space cell
+        tree.style.chevron_expanded.chars().count() as f32 + 1.0
+    } else {
+        0.0
+    };
+    tree.layout(area.width as f32, area.height as f32, |i| {
+        let row = &tree.rows[i];
+        let chevron_end_x = if row.is_expanded.is_some() && chevron_w > 0.0 {
+            Some(row.indent as f32 * indent_cells + chevron_w)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: 1.0,
+            chevron_end_x,
+        }
     })
 }
 
@@ -465,8 +480,10 @@ mod tests {
     }
 
     /// Round-trip: paint, find each row's label in the buffer, hit_test
-    /// the same coordinate, assert the hit returns Row(idx) for the
-    /// matching tree.rows index.
+    /// the same coordinate, assert the hit identifies the correct row.
+    /// Accepts both `Row(idx)` and `Chevron(idx)` as valid hits — the
+    /// test verifies row-position consistency, not whether the click
+    /// landed on the chevron or the body.
     #[test]
     fn clicks_land_on_painted_row() {
         let area = Rect::new(0, 0, 30, 8);
@@ -486,17 +503,19 @@ mod tests {
             // TreeView hit_test takes tree-local coords (origin at 0,0).
             let local_y = (painted_y - area.y) as f32;
             let hit = layout.hit_test(0.5, local_y);
-            match hit {
-                TreeViewHit::Row(idx) => assert_eq!(
-                    idx, visible.row_idx,
-                    "row {} ({:?}) painted at y={} but hit_test returned Row({})",
-                    visible.row_idx, needle, painted_y, idx
-                ),
+            // Accept Chevron or Row — both carry the row index.
+            let hit_idx = match hit {
+                TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => idx,
                 other => panic!(
                     "row {} ({:?}) painted at y={} but hit_test returned {:?}",
                     visible.row_idx, needle, painted_y, other
                 ),
-            }
+            };
+            assert_eq!(
+                hit_idx, visible.row_idx,
+                "row {} ({:?}) painted at y={} but hit_test pointed to row {}",
+                visible.row_idx, needle, painted_y, hit_idx
+            );
         }
     }
 
@@ -586,11 +605,147 @@ mod tests {
                 find_row_with(&buf, needle).unwrap_or_else(|| panic!("row {needle:?} not painted"));
             let local_y = (painted_y - area.y) as f32;
             let hit = layout.hit_test(0.5, local_y);
-            assert!(
-                matches!(hit, TreeViewHit::Row(idx) if idx == expected_idx),
-                "row {needle:?} painted at y={painted_y}: expected Row({expected_idx}), got {hit:?}"
+            // Accept both Row and Chevron — the test verifies row identity.
+            let hit_idx = match hit {
+                TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => idx,
+                other => panic!(
+                    "row {needle:?} painted at y={painted_y}: expected Row/Chevron({expected_idx}), got {other:?}"
+                ),
+            };
+            assert_eq!(
+                hit_idx, expected_idx,
+                "row {needle:?} painted at y={painted_y}: expected idx={expected_idx}, got {hit_idx}"
             );
         }
+    }
+
+    // ── Chevron hit-test tests ──────────────────────────────────────
+    //
+    // These tests verify the split hit-region contract: clicking in the
+    // leftmost cells of a branch row returns Chevron(idx); clicking to
+    // the right (past the painted chevron) returns Row(idx); leaf rows
+    // always return Row regardless of x position.
+
+    /// Clicking in the chevron region of a branch row emits Chevron(idx).
+    /// Default TreeStyle: indent=2, chevron_expanded='▾' (1 char) + 1
+    /// space = chevron_end_x=2. So x=0 and x=1 are Chevron, x=2 is Row.
+    #[test]
+    fn chevron_click_on_branch_returns_chevron_hit() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![
+                row(&[0], 0, "src", Some(true)),  // branch, expanded
+                row(&[0, 0], 1, "main.rs", None), // leaf
+            ],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        // indent=0, chevron='▾'(1 char)+1 space → chevron_end_x = 2.0
+        // x=0 is inside [0, 2) → Chevron
+        let hit = layout.hit_test(0.0, 0.0);
+        assert!(
+            matches!(hit, TreeViewHit::Chevron(0)),
+            "x=0 on branch row 0 should return Chevron(0), got {:?}",
+            hit
+        );
+        let hit2 = layout.hit_test(1.5, 0.0);
+        assert!(
+            matches!(hit2, TreeViewHit::Chevron(0)),
+            "x=1.5 on branch row 0 should return Chevron(0), got {:?}",
+            hit2
+        );
+    }
+
+    /// Clicking past the chevron (in the body region) returns Row(idx).
+    #[test]
+    fn body_click_on_branch_returns_row_hit() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![row(&[0], 0, "src", Some(true))],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        // chevron_end_x = 2.0 → x >= 2.0 is Row region
+        let hit = layout.hit_test(5.0, 0.0);
+        assert!(
+            matches!(hit, TreeViewHit::Row(0)),
+            "x=5 past chevron should return Row(0), got {:?}",
+            hit
+        );
+    }
+
+    /// Clicking anywhere on a leaf row returns Row(idx).
+    #[test]
+    fn leaf_click_always_returns_row_hit() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![row(&[0], 0, "main.rs", None)],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        for x in [0.0_f32, 0.5, 1.0, 5.0, 15.0] {
+            let hit = layout.hit_test(x, 0.0);
+            assert!(
+                matches!(hit, TreeViewHit::Row(0)),
+                "leaf click at x={x} should return Row(0), got {:?}",
+                hit
+            );
+        }
+    }
+
+    /// Header rows with is_expanded=Some(_) also get chevron split.
+    #[test]
+    fn header_branch_chevron_click_returns_chevron() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                text: StyledText {
+                    spans: vec![StyledSpan::plain("CHANGES")],
+                },
+                icon: None,
+                badge: None,
+                is_expanded: Some(false),
+                decoration: Decoration::Header,
+                edit: None,
+            }],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        let hit = layout.hit_test(0.0, 0.0);
+        assert!(
+            matches!(hit, TreeViewHit::Chevron(0)),
+            "header branch at x=0 should return Chevron(0), got {:?}",
+            hit
+        );
+        // Body region is Row.
+        let hit_body = layout.hit_test(10.0, 0.0);
+        assert!(
+            matches!(hit_body, TreeViewHit::Row(0)),
+            "header branch body at x=10 should return Row(0), got {:?}",
+            hit_body
+        );
     }
 
     // ── Inline editing paint tests ──────────────────────────────────

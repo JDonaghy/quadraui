@@ -37,13 +37,27 @@ use crate::types::{Color, Decoration};
 pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = (line_height * 1.4).round();
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
     tree.layout(area.width, area.height, |i| {
-        let is_header = matches!(tree.rows[i].decoration, Decoration::Header);
-        TreeRowMeasure::new(if is_header {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
             header_height as f32
         } else {
             item_height as f32
-        })
+        };
+        // Approximate chevron end x in tree-local pixels (mirrors gtk_tree_layout).
+        let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
+            let est_glyph_w = line_height * 0.65;
+            Some((2.0 + row.indent as f64 * indent_px + est_glyph_w + 4.0) as f32)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
     })
 }
 

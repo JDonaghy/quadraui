@@ -158,10 +158,8 @@ impl ToolbarApp {
             }
             "demo:filter" => {
                 self.filter_active = !self.filter_active;
-                self.last_message = format!(
-                    "Filter {}",
-                    if self.filter_active { "on" } else { "off" }
-                );
+                self.last_message =
+                    format!("Filter {}", if self.filter_active { "on" } else { "off" });
             }
             "demo:reset" => {
                 self.filter_active = false;
@@ -245,11 +243,13 @@ impl AppLogic for ToolbarApp {
                     // Honour the toolbar's enabled state — same gate the
                     // hit-test path applies to mouse clicks.
                     let bar = self.toolbar();
-                    let allowed = bar.buttons.iter().any(|btn| matches!(
-                        btn,
-                        ToolbarButton::Action { id: bid, enabled, .. }
-                            if bid.as_str() == id && *enabled
-                    ));
+                    let allowed = bar.buttons.iter().any(|btn| {
+                        matches!(
+                            btn,
+                            ToolbarButton::Action { id: bid, enabled, .. }
+                                if bid.as_str() == id && *enabled
+                        )
+                    });
                     if allowed {
                         self.dispatch(&WidgetId::new(id));
                         return Reaction::Redraw;

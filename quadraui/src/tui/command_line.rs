@@ -23,23 +23,19 @@ pub fn draw_command_line(buf: &mut Buffer, area: Rect, cmd: &CommandLine, theme:
         let chars: Vec<char> = cmd.text.chars().collect();
         let len = chars.len() as u16;
         if len <= area.width {
-            let mut x = area.x + area.width - len;
-            for &ch in &chars {
+            for (x, &ch) in (area.x + area.width - len..).zip(chars.iter()) {
                 if x >= area.x + area.width {
                     break;
                 }
                 set_cell(buf, x, area.y, ch, fg, bg);
-                x += 1;
             }
         }
     } else {
-        let mut x = area.x;
-        for ch in cmd.text.chars() {
+        for (x, ch) in (area.x..).zip(cmd.text.chars()) {
             if x >= area.x + area.width {
                 break;
             }
             set_cell(buf, x, area.y, ch, fg, bg);
-            x += 1;
         }
     }
 

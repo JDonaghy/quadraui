@@ -146,13 +146,11 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                 };
                 if start_col > label_end + 1 || no_label {
                     let input_fg = if *value { accent_fg } else { field_fg };
-                    let mut col = start_col;
-                    for ch in glyph.chars() {
+                    for (col, ch) in (start_col..).zip(glyph.chars()) {
                         if col >= area.width as usize {
                             break;
                         }
                         set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
-                        col += 1;
                     }
                 }
             }
@@ -340,13 +338,11 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                         swatch_fg,
                         row_bg,
                     );
-                    let mut col = start_col + 2;
-                    for ch in hex.chars() {
+                    for (col, ch) in (start_col + 2..).zip(hex.chars()) {
                         if col >= area.width as usize {
                             break;
                         }
                         set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
-                        col += 1;
                     }
                 }
             }
@@ -685,13 +681,11 @@ pub fn draw_settings_chrome(
     for x in area.x..area.x + area.width {
         set_cell(buf, x, header_y, ' ', header_fg, header_bg);
     }
-    let mut x = area.x;
-    for ch in header_text.chars() {
+    for (x, ch) in (area.x..).zip(header_text.chars()) {
         if x >= area.x + area.width {
             break;
         }
         set_cell(buf, x, header_y, ch, header_fg, header_bg);
-        x += 1;
     }
 
     if area.height < 2 {

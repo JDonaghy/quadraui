@@ -88,14 +88,12 @@ pub fn draw_progress(
 
     // Label overlay (left-aligned, 1 cell padding).
     if !bar.label.is_empty() {
-        let mut col = bx + 1;
-        for ch in bar.label.chars() {
+        for (col, ch) in (bx + 1..).zip(bar.label.chars()) {
             if col >= bar_end {
                 break;
             }
             let existing_bg = buf[(col, y)].bg;
             set_cell(buf, col, y, ch, fg, existing_bg);
-            col += 1;
         }
     }
 

@@ -78,10 +78,8 @@ pub fn draw_text_input(
                 let row_x = first.bounds.x as u16;
                 let row_y = first.bounds.y as u16;
                 let max_w = first.bounds.width as u16;
-                let mut x = row_x;
-                for ch in text.chars().take(max_w as usize) {
+                for (x, ch) in (row_x..).zip(text.chars().take(max_w as usize)) {
                     set_cell(buf, x, row_y, ch, muted, bg);
-                    x += 1;
                 }
             }
         }
@@ -92,10 +90,8 @@ pub fn draw_text_input(
             let row_x = vis.bounds.x as u16;
             let row_y = vis.bounds.y as u16;
             let max_w = vis.bounds.width as u16;
-            let mut x = row_x;
-            for ch in line.chars().skip(h_scroll).take(max_w as usize) {
+            for (x, ch) in (row_x..).zip(line.chars().skip(h_scroll).take(max_w as usize)) {
                 set_cell(buf, x, row_y, ch, fg, bg);
-                x += 1;
             }
         }
     }

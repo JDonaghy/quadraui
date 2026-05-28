@@ -199,13 +199,11 @@ fn paint_header(
         }
         let icon_x = right_cursor - action_w + 1; // skip the trailing space
         let action_fg = if action.enabled { fg } else { dim };
-        let mut x = icon_x;
-        for ch in action.icon.fallback.chars() {
+        for (x, ch) in (icon_x..).zip(action.icon.fallback.chars()) {
             if x >= right_cursor {
                 break;
             }
             set_cell(buf, x as u16, row_y, ch, action_fg, bg);
-            x += 1;
         }
         right_cursor -= action_w;
     }
@@ -1368,7 +1366,7 @@ mod tests {
                     );
                     let inner = crate::tui::tui_tree_layout(&tree, body_area);
                     match inner.hit_test(x - body_b.x, y - body_b.y) {
-                        crate::TreeViewHit::Row(idx) => {
+                        crate::TreeViewHit::Row(idx) | crate::TreeViewHit::Chevron(idx) => {
                             self.sections[section].selected_path =
                                 Some(tree.rows[idx].path.clone());
                         }

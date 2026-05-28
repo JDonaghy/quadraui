@@ -35,6 +35,11 @@ pub enum TreeControllerEvent {
     RowSelected { path: TreePath },
     /// Enter pressed on the currently selected row.
     RowActivated { path: TreePath },
+    /// The expand/collapse chevron was clicked, or Space was pressed while
+    /// a branch row (one with `is_expanded.is_some()`) is selected.
+    /// The app owns per-row expand state and should toggle it, then push
+    /// fresh `TreeRow`s on the next frame.
+    RowToggleExpand { path: TreePath },
     /// Scrollbar interaction (drag or page).
     ScrollChanged,
     /// Event consumed (drag update, hover) — caller should redraw.
@@ -362,6 +367,29 @@ impl TreeController {
         }
     }
 
+    /// Emit [`TreeControllerEvent::RowToggleExpand`] for the currently
+    /// selected row, but only if that row is a branch (`is_expanded.is_some()`).
+    /// Returns [`TreeControllerEvent::Ignored`] when there is no selection or
+    /// the selected row is a leaf.
+    ///
+    /// Called by the keyboard Space handler and exposed for consumers that
+    /// implement custom key dispatch (e.g. [`crate::SidebarSystem`]).
+    pub fn toggle_expand_selected(&self) -> TreeControllerEvent {
+        let Some(sel_path) = &self.selected_path else {
+            return TreeControllerEvent::Ignored;
+        };
+        let Some(row) = self.rows.iter().find(|r| &r.path == sel_path) else {
+            return TreeControllerEvent::Ignored;
+        };
+        if row.is_expanded.is_some() {
+            TreeControllerEvent::RowToggleExpand {
+                path: row.path.clone(),
+            }
+        } else {
+            TreeControllerEvent::Ignored
+        }
+    }
+
     pub fn scroll_to_visible(&mut self, row: usize, viewport_rows: usize) {
         if viewport_rows == 0 {
             return;
@@ -428,6 +456,7 @@ impl TreeController {
                 self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
             }
             Key::Named(NamedKey::Enter) => self.activate_selection(),
+            Key::Char(' ') => self.toggle_expand_selected(),
             _ => TreeControllerEvent::Ignored,
         }
     }
@@ -638,6 +667,11 @@ impl TreeController {
                     self.selected_path = Some(path.clone());
                     TreeControllerEvent::RowSelected { path }
                 }
+                TreeViewHit::Chevron(idx) => {
+                    let path = self.rows[idx].path.clone();
+                    self.selected_path = Some(path.clone());
+                    TreeControllerEvent::RowToggleExpand { path }
+                }
                 TreeViewHit::Empty => TreeControllerEvent::Consumed,
             }
         } else {
@@ -659,7 +693,7 @@ impl TreeController {
         let tree = self.build_tree_view(tree_rect);
         let layout = backend.tree_layout(tree_rect, &tree);
         match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
-            TreeViewHit::Row(idx) => {
+            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                 let path = self.rows[idx].path.clone();
                 self.selected_path = Some(path.clone());
                 TreeControllerEvent::RowActivated { path }
@@ -681,7 +715,7 @@ impl TreeController {
         let tree = self.build_tree_view(tree_rect);
         let layout = backend.tree_layout(tree_rect, &tree);
         match layout.hit_test(position.x - tree_rect.x, position.y - tree_rect.y) {
-            TreeViewHit::Row(idx) => {
+            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                 let path = self.rows[idx].path.clone();
                 self.selected_path = Some(path.clone());
                 TreeControllerEvent::ContextMenuRequested { path, position }
@@ -1283,6 +1317,172 @@ mod tests {
         assert_eq!(tree_rect.width, 79.0);
     }
 
+    // ── RowToggleExpand ─────────────────────────────────────────────
+
+    fn branch_rows() -> Vec<crate::TreeRow> {
+        // row 0: branch (expanded), row 1: branch (collapsed), row 2: leaf
+        vec![
+            crate::TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("src"),
+                badge: None,
+                is_expanded: Some(true),
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+            crate::TreeRow {
+                path: vec![1],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("tests"),
+                badge: None,
+                is_expanded: Some(false),
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+            crate::TreeRow {
+                path: vec![2],
+                indent: 1,
+                icon: None,
+                text: StyledText::plain("main.rs"),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            },
+        ]
+    }
+
+    /// Space on a selected branch row emits RowToggleExpand.
+    #[test]
+    fn space_on_branch_row_emits_row_toggle_expand() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(branch_rows());
+        tc.set_selected_path(Some(vec![0]));
+        let ev = tc.toggle_expand_selected();
+        assert_eq!(ev, TreeControllerEvent::RowToggleExpand { path: vec![0] });
+    }
+
+    /// Space on a collapsed branch row also emits RowToggleExpand.
+    #[test]
+    fn space_on_collapsed_branch_emits_row_toggle_expand() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(branch_rows());
+        tc.set_selected_path(Some(vec![1]));
+        let ev = tc.toggle_expand_selected();
+        assert_eq!(ev, TreeControllerEvent::RowToggleExpand { path: vec![1] });
+    }
+
+    /// Space on a leaf row returns Ignored.
+    #[test]
+    fn space_on_leaf_row_returns_ignored() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(branch_rows());
+        tc.set_selected_path(Some(vec![2]));
+        let ev = tc.toggle_expand_selected();
+        assert_eq!(ev, TreeControllerEvent::Ignored);
+    }
+
+    /// Space with no selection returns Ignored.
+    #[test]
+    fn space_with_no_selection_returns_ignored() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(branch_rows());
+        let ev = tc.toggle_expand_selected();
+        assert_eq!(ev, TreeControllerEvent::Ignored);
+    }
+
+    /// Clicking the chevron region (x < chevron_end_x) emits RowToggleExpand
+    /// and selects the row. MockBackend's tree_layout now computes chevron
+    /// regions, so x=0 on a branch at indent=0 lands on Chevron(0).
+    #[test]
+    fn chevron_click_emits_row_toggle_expand() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(branch_rows());
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        // MockBackend: line_height=1, indent=2, chevron='▾'(1ch)+1 → chevron_end_x=2
+        // click at (x=0.5, y=0.5) → Chevron(0)
+        let ev = tc.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position: Point::new(0.5, 0.5),
+                modifiers: Modifiers::default(),
+                widget: None,
+            },
+            &mut MockBackend,
+            rect,
+        );
+        assert_eq!(
+            ev,
+            TreeControllerEvent::RowToggleExpand { path: vec![0] },
+            "chevron click should emit RowToggleExpand"
+        );
+        assert_eq!(tc.selected_path(), Some(&vec![0]));
+    }
+
+    /// Clicking the body region (x > chevron_end_x) of a branch row still
+    /// emits RowSelected.
+    #[test]
+    fn body_click_on_branch_emits_row_selected() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(branch_rows());
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        // chevron_end_x = 2.0; click at x=10 is in the Row region.
+        let ev = tc.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position: Point::new(10.0, 0.5),
+                modifiers: Modifiers::default(),
+                widget: None,
+            },
+            &mut MockBackend,
+            rect,
+        );
+        assert_eq!(
+            ev,
+            TreeControllerEvent::RowSelected { path: vec![0] },
+            "body click on branch should emit RowSelected"
+        );
+    }
+
+    /// Decoration::Header rows with is_expanded=Some also emit RowToggleExpand
+    /// on chevron click — decoration is orthogonal to expand behaviour.
+    #[test]
+    fn header_branch_chevron_click_emits_row_toggle_expand() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(vec![crate::TreeRow {
+            path: vec![0],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain("CHANGES"),
+            badge: None,
+            is_expanded: Some(true),
+            decoration: Decoration::Header,
+            edit: None,
+        }]);
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let ev = tc.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position: Point::new(0.5, 0.5),
+                modifiers: Modifiers::default(),
+                widget: None,
+            },
+            &mut MockBackend,
+            rect,
+        );
+        assert_eq!(
+            ev,
+            TreeControllerEvent::RowToggleExpand { path: vec![0] },
+            "chevron click on Header branch should emit RowToggleExpand"
+        );
+    }
+
     struct MockBackend;
 
     impl Backend for MockBackend {
@@ -1417,28 +1617,28 @@ mod tests {
             rect: Rect,
             tree: &crate::TreeView,
         ) -> crate::primitives::tree::TreeViewLayout {
+            // Delegate to TreeView::layout so hit_regions (including chevron
+            // splits) are computed correctly. MockBackend mimics TUI metrics:
+            // 1 cell per row, chevron occupies (chevron_char_count + 1) cells.
             let lh = self.line_height();
-            let visible: usize = if lh > 0.0 {
-                (rect.height / lh).floor() as usize
+            let indent_cells = tree.style.indent as f32;
+            let chevron_w = if tree.style.show_chevrons {
+                tree.style.chevron_expanded.chars().count() as f32 + 1.0
             } else {
-                0
+                0.0
             };
-            let end = tree.scroll_offset + visible;
-            let rows: Vec<crate::primitives::tree::VisibleTreeRow> = (tree.scroll_offset
-                ..end.min(tree.rows.len()))
-                .enumerate()
-                .map(|(vi, ri)| crate::primitives::tree::VisibleTreeRow {
-                    row_idx: ri,
-                    bounds: Rect::new(0.0, vi as f32 * lh, rect.width, lh),
-                })
-                .collect();
-            crate::primitives::tree::TreeViewLayout {
-                viewport_width: rect.width,
-                viewport_height: rect.height,
-                visible_rows: rows,
-                hit_regions: Vec::new(),
-                resolved_scroll_offset: tree.scroll_offset,
-            }
+            tree.layout(rect.width, rect.height, |i| {
+                let row = &tree.rows[i];
+                let chevron_end_x = if row.is_expanded.is_some() && chevron_w > 0.0 {
+                    Some(row.indent as f32 * indent_cells + chevron_w)
+                } else {
+                    None
+                };
+                crate::primitives::tree::TreeRowMeasure {
+                    height: lh,
+                    chevron_end_x,
+                }
+            })
         }
         fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
             unimplemented!()

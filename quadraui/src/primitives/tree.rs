@@ -105,14 +105,33 @@ pub struct TreeRowEditState {
 /// `height` is the row's height in the backend's native unit — 1 cell for
 /// TUI, `line_height` or `line_height * 1.4` for GTK (leaves vs branches),
 /// similar for other native backends.
+///
+/// `chevron_end_x` — when `Some(w)` and the row has `is_expanded.is_some()`,
+/// [`TreeView::layout`] splits the row's hit region into a
+/// [`TreeViewHit::Chevron`] zone for `x ∈ [0, w)` and a
+/// [`TreeViewHit::Row`] zone for the remainder. Backends set this to the
+/// x coordinate (in tree-local units) where the painted chevron ends.
+/// `None` means no chevron split (leaf rows, or `show_chevrons = false`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TreeRowMeasure {
     pub height: f32,
+    pub chevron_end_x: Option<f32>,
 }
 
 impl TreeRowMeasure {
     pub fn new(height: f32) -> Self {
-        Self { height }
+        Self {
+            height,
+            chevron_end_x: None,
+        }
+    }
+
+    /// Convenience constructor: row with an explicit chevron boundary.
+    pub fn with_chevron(height: f32, chevron_end_x: f32) -> Self {
+        Self {
+            height,
+            chevron_end_x: Some(chevron_end_x),
+        }
     }
 }
 
@@ -126,14 +145,21 @@ pub struct VisibleTreeRow {
     pub bounds: Rect,
 }
 
-/// Classification of a hit-test result. Chevron vs row-body is intentionally
-/// not split in v1 — TUI doesn't distinguish (clicking anywhere on a branch
-/// row toggles it), and GTK's chevron hit-test can be derived from the row's
-/// `bounds` + `indent` levels when it migrates.
+/// Classification of a hit-test result.
+///
+/// When [`TreeRowMeasure::chevron_end_x`] is set for a branch row the layout
+/// emits two adjacent hit regions for that row: a [`Chevron`] region on the
+/// left (covering the painted expand/collapse glyph) and a [`Row`] region for
+/// the remainder. Backends that do not distinguish the two leave
+/// `chevron_end_x` as `None`; clicking anywhere on the row returns `Row`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeViewHit {
-    /// Click landed on a row. Carries the `row_idx` for `TreeView.rows`.
+    /// Click landed on the body portion of a row.
+    /// Carries the `row_idx` into `TreeView.rows`.
     Row(usize),
+    /// Click landed on the expand/collapse chevron of a branch row.
+    /// Carries the same `row_idx` as the companion `Row` region.
+    Chevron(usize),
     /// Click landed in the viewport's empty region (below the last row).
     Empty,
 }
@@ -228,7 +254,21 @@ impl TreeView {
             }
             let bounds = Rect::new(0.0, y, viewport_width, height);
             visible_rows.push(VisibleTreeRow { row_idx: i, bounds });
-            hit_regions.push((bounds, TreeViewHit::Row(i)));
+            // Split the hit region into Chevron + Row when the backend
+            // supplied a chevron boundary for this branch row.
+            let row = &self.rows[i];
+            if let (Some(_), Some(chev_x)) = (row.is_expanded, m.chevron_end_x) {
+                let chev_x = chev_x.clamp(0.0, viewport_width);
+                if chev_x > 0.0 {
+                    hit_regions.push((Rect::new(0.0, y, chev_x, height), TreeViewHit::Chevron(i)));
+                }
+                let body_w = (viewport_width - chev_x).max(0.0);
+                if body_w > 0.0 {
+                    hit_regions.push((Rect::new(chev_x, y, body_w, height), TreeViewHit::Row(i)));
+                }
+            } else {
+                hit_regions.push((bounds, TreeViewHit::Row(i)));
+            }
             y += m.height;
         }
 

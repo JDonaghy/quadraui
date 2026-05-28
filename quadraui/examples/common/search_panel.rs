@@ -309,10 +309,28 @@ impl AppLogic for SearchPanelApp {
                                 let local_x = position.x - sl.body_bounds.x;
                                 let local_y = position.y - sl.body_bounds.y;
                                 match tree_layout.hit_test(local_x, local_y) {
+                                    TreeViewHit::Chevron(row_idx) => {
+                                        // Chevron click always means toggle — only branch rows
+                                        // produce a chevron hit region.
+                                        let row = &tree.rows[row_idx];
+                                        let fi = row.path[0] as usize;
+                                        if fi < self.results.len() {
+                                            self.results[fi].expanded = !self.results[fi].expanded;
+                                            self.last_message = format!(
+                                                "{} {}",
+                                                if self.results[fi].expanded {
+                                                    "Expanded"
+                                                } else {
+                                                    "Collapsed"
+                                                },
+                                                self.results[fi].path
+                                            );
+                                        }
+                                    }
                                     TreeViewHit::Row(row_idx) => {
                                         let row = &tree.rows[row_idx];
                                         if row.is_expanded.is_some() {
-                                            // File header — toggle expand.
+                                            // File header body area — toggle expand.
                                             let fi = row.path[0] as usize;
                                             if fi < self.results.len() {
                                                 self.results[fi].expanded =
