@@ -12,8 +12,9 @@
 //! Controls:
 //! - type in the search input to filter (mock — cycles fake results)
 //! - click a match row to "jump" (logged in status bar)
-//! - click a file header to collapse/expand
-//! - ↑/↓ to scroll results
+//! - click a file header (or its chevron) to collapse/expand
+//! - Esc to leave the input; then ↑/↓ to move selection, Space to
+//!   toggle the selected file group
 //! - q / Esc to quit
 
 use quadraui::{
@@ -112,6 +113,64 @@ impl SearchPanelApp {
             }
         }
         rows
+    }
+
+    /// Move the selected row by `delta` positions through the visible row
+    /// list, following with `scroll_offset` so the selection stays in view
+    /// (assuming the body is at least a handful of rows tall).
+    fn move_selection(&mut self, delta: isize) {
+        let rows = self.build_tree_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let current = self
+            .selected_path
+            .as_ref()
+            .and_then(|p| rows.iter().position(|r| r.path == *p));
+        let next = match current {
+            Some(idx) => {
+                let new = idx as isize + delta;
+                new.clamp(0, rows.len() as isize - 1) as usize
+            }
+            None => {
+                if delta >= 0 {
+                    0
+                } else {
+                    rows.len() - 1
+                }
+            }
+        };
+        self.selected_path = Some(rows[next].path.clone());
+        if next < self.scroll_offset {
+            self.scroll_offset = next;
+        }
+    }
+
+    /// Toggle expand on the selected row if it's a branch (header) row.
+    fn toggle_selected(&mut self) {
+        let Some(path) = self.selected_path.as_ref() else {
+            return;
+        };
+        let rows = self.build_tree_rows();
+        let Some(row) = rows.iter().find(|r| r.path == *path) else {
+            return;
+        };
+        if row.is_expanded.is_none() {
+            return;
+        }
+        let fi = path[0] as usize;
+        if let Some(file) = self.results.get_mut(fi) {
+            file.expanded = !file.expanded;
+            self.last_message = format!(
+                "{} {}",
+                if file.expanded {
+                    "Expanded"
+                } else {
+                    "Collapsed"
+                },
+                file.path
+            );
+        }
     }
 
     fn build_view(&self) -> MultiSectionView {
@@ -275,16 +334,21 @@ impl AppLogic for SearchPanelApp {
                 key: Key::Named(NamedKey::Up),
                 ..
             } if !self.input_active => {
-                if self.scroll_offset > 0 {
-                    self.scroll_offset -= 1;
-                }
+                self.move_selection(-1);
                 return Reaction::Redraw;
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Down),
                 ..
             } if !self.input_active => {
-                self.scroll_offset += 1;
+                self.move_selection(1);
+                return Reaction::Redraw;
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char(' '),
+                ..
+            } if !self.input_active => {
+                self.toggle_selected();
                 return Reaction::Redraw;
             }
             UiEvent::MouseDown { position, .. } => {
