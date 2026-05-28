@@ -21,6 +21,8 @@ const MAC_ARROW_WIDTH_PX: f32 = 32.0;
 const MAC_ACTION_HEIGHT_PX: f32 = 22.0;
 /// Border width for stage box outline.
 const BORDER_WIDTH: f64 = 1.0;
+/// Height reserved above stage boxes for the focus indicator (pixels).
+const MAC_FOCUS_INDICATOR_H: f64 = 8.0;
 
 /// Compute the macOS pixel-unit layout for a [`PipelineView`].
 pub fn mac_pipeline_view_layout(
@@ -37,8 +39,13 @@ pub fn mac_pipeline_view_layout(
     };
     view.layout(
         x as f32,
-        y as f32,
-        PipelineViewMeasure::new(w as f32, h as f32, MAC_ARROW_WIDTH_PX, action_h),
+        (y + MAC_FOCUS_INDICATOR_H) as f32,
+        PipelineViewMeasure::new(
+            w as f32,
+            (h - MAC_FOCUS_INDICATOR_H).max(0.0) as f32,
+            MAC_ARROW_WIDTH_PX,
+            action_h,
+        ),
     )
 }
 
@@ -81,13 +88,28 @@ pub unsafe fn draw_pipeline_view(
         // ── Box fill ─────────────────────────────────────────────────────
         fill_rect(ctx, bx, by, bw, bh, theme.surface_bg);
 
-        // ── Box border ───────────────────────────────────────────────────
-        let border_color = if is_focused {
-            theme.accent_bg
-        } else {
-            theme.muted_fg
+        // ── Box border (per-status colour; focus uses an above-box indicator) ──
+        let border_color = match stage.status {
+            StageStatus::Active => theme.accent_bg,
+            StageStatus::Done => theme.git_added,
+            StageStatus::Failed => theme.error_fg,
+            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => theme.muted_fg,
         };
         stroke_rect(ctx, bx, by, bw, bh, border_color, BORDER_WIDTH);
+
+        // ── Focus indicator (small ▼ triangle above the box) ─────────────
+        if is_focused {
+            let ind_x = bx + bw / 2.0;
+            let tri_tip_y = by - 1.0;
+            let tri_base_y = by - MAC_FOCUS_INDICATOR_H + 1.0;
+            let tri_half_w = 5.0_f64;
+            set_fill_color(ctx, theme.muted_fg);
+            CGContextMoveToPoint(ctx, ind_x, tri_tip_y);
+            CGContextAddLineToPoint(ctx, ind_x - tri_half_w, tri_base_y);
+            CGContextAddLineToPoint(ctx, ind_x + tri_half_w, tri_base_y);
+            CGContextClosePath(ctx);
+            CGContextFillPath(ctx);
+        }
 
         // ── Status icon ───────────────────────────────────────────────────
         let icon_text = status_icon_text(stage);
