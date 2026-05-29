@@ -22,5 +22,5 @@ tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sy
 anyhow = "1.0"
 
 # TUI backend
-ratatui = "0.30"
+ratatui = "0.29"
 crossterm = "0.29"
