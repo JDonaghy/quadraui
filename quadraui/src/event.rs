@@ -305,6 +305,32 @@ pub enum UiEvent {
         new_offset: usize,
     },
 
+    // ── Text selection ────────────────────────────────────────────────
+    /// A mouse text-selection drag extended or finalised its range.
+    /// Emitted by [`crate::dispatch::dispatch_mouse_drag`] while a
+    /// [`crate::DragTarget::TextSelection`] is active.
+    ///
+    /// `anchor` is the screen position where the drag started (set
+    /// once at click-down; does not change during the drag). `focus`
+    /// is the current cursor position. Both are in the backend's
+    /// native units (TUI: cells; GTK/macOS: pixels).
+    ///
+    /// The range `anchor → focus` defines what is currently selected —
+    /// call [`crate::dispatch::text_selection_line_range`] to convert
+    /// the pair to a list of `(row, col_start, col_end)` spans.
+    /// The TUI backend applies selection highlights automatically
+    /// inside the draw loop; other backends may consume this event to
+    /// drive native selection highlight.
+    ///
+    /// If the user releases without moving (plain click), this event
+    /// is never emitted; the app receives a plain `MouseDown + MouseUp`
+    /// pair instead.
+    TextSelectionChanged {
+        region: WidgetId,
+        anchor: Point,
+        focus: Point,
+    },
+
     // ── Native menu activation ────────────────────────────────────────
     /// A menu item was activated via a native menu installer
     /// ([`Backend::install_menu_bar`][crate::Backend::install_menu_bar]).

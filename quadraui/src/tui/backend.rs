@@ -45,11 +45,12 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
+use crate::dispatch::TextRegion;
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
-    ParsedBinding, PlatformServices, Rect as QRect, Split, StatusBar, TabBar,
-    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
+    CommandLine, DragState, DragTarget, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
+    ParsedBinding, PlatformServices, Point, Rect as QRect, Split, StatusBar, TabBar,
+    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -60,6 +61,16 @@ use super::services::TuiPlatformServices;
 /// before priority drop kicks in. Mirrors `crate::gtk::status_bar`'s
 /// `MIN_GAP_PX = 16.0`. Irrelevant for bars without right segments.
 const MIN_GAP_CELLS: f32 = 2.0;
+
+/// Finalised text selection held between frames. Persists after the
+/// mouse button is released until Ctrl-C copies the text or a new
+/// mouse-down clears it.
+#[derive(Debug, Clone)]
+pub(crate) struct TuiTextSelection {
+    pub region: WidgetId,
+    pub anchor: Point,
+    pub focus: Point,
+}
 
 /// TUI backend implementing [`crate::Backend`].
 ///
@@ -97,6 +108,15 @@ pub struct TuiBackend {
     /// settings via [`Self::set_nerd_fonts`]; defaults to `true`.
     nerd_fonts_enabled: bool,
     double_click: super::events::DoubleClickDetector,
+    /// Selectable text regions registered during the current frame via
+    /// [`crate::Backend::register_text_region`]. Cleared at the start
+    /// of each frame by [`Self::begin_frame`].
+    text_regions: Vec<TextRegion>,
+    /// Finalised selection (may persist after mouse-up). `None` when
+    /// no selection is active. Set by [`Self::set_active_text_selection`],
+    /// cleared by [`Self::clear_text_selection`] or on a new
+    /// `MouseDown`.
+    active_selection: Option<TuiTextSelection>,
 }
 
 impl TuiBackend {
@@ -118,6 +138,8 @@ impl TuiBackend {
             current_theme: crate::Theme::default(),
             nerd_fonts_enabled: true,
             double_click: super::events::DoubleClickDetector::new(),
+            text_regions: Vec::new(),
+            active_selection: None,
         }
     }
 
@@ -197,6 +219,120 @@ impl TuiBackend {
     pub fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
         (&mut self.drag_state, &mut self.modal_stack)
     }
+
+    // ── Text selection ─────────────────────────────────────────────────────
+
+    /// Return the current active text selection, if any.
+    pub(crate) fn active_text_selection(&self) -> Option<&TuiTextSelection> {
+        self.active_selection.as_ref()
+    }
+
+    /// Update (or start) the active text selection. Called by the runner
+    /// when a [`UiEvent::TextSelectionChanged`] event arrives.
+    pub(crate) fn set_active_text_selection(
+        &mut self,
+        region: WidgetId,
+        anchor: Point,
+        focus: Point,
+    ) {
+        self.active_selection = Some(TuiTextSelection {
+            region,
+            anchor,
+            focus,
+        });
+    }
+
+    /// Clear the active text selection and, if a `TextSelection` drag is
+    /// in progress, end it. Called by the runner on `MouseDown` or after
+    /// Ctrl-C copies the selection.
+    pub(crate) fn clear_text_selection(&mut self) {
+        self.active_selection = None;
+        if matches!(
+            self.drag_state.target(),
+            Some(DragTarget::TextSelection { .. })
+        ) {
+            self.drag_state.end();
+        }
+    }
+
+    /// Invert (highlight) the cells in the ratatui buffer that fall
+    /// within the active text selection range. Swaps foreground and
+    /// background colour for each selected cell.
+    ///
+    /// Must be called inside `terminal.draw(|frame| …)` after
+    /// `app.render` so that the selection is overlaid on top of the
+    /// app's content.
+    pub(crate) fn apply_selection_highlight(&self, buf: &mut ratatui::buffer::Buffer) {
+        let sel = match &self.active_selection {
+            Some(s) => s,
+            None => return,
+        };
+        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+            Some(r) => r,
+            None => return,
+        };
+        let bounds = crate::event::Rect::new(
+            region.bounds.x,
+            region.bounds.y,
+            region.bounds.width,
+            region.bounds.height,
+        );
+        let ranges = crate::dispatch::text_selection_line_range(sel.anchor, sel.focus, bounds);
+        let area = buf.area;
+        for (row, col_start, col_end) in ranges {
+            for col in col_start..col_end {
+                if col < area.x + area.width && row < area.y + area.height {
+                    let cell = &mut buf[(col, row)];
+                    let fg = cell.fg;
+                    let bg = cell.bg;
+                    cell.fg = bg;
+                    cell.bg = fg;
+                }
+            }
+        }
+    }
+
+    /// Read the selected cells back from `buf`, trim trailing whitespace
+    /// per line, and return the joined text (lines separated by `\n`).
+    ///
+    /// Falls back to an empty `String` when there is no active selection
+    /// or the region id can no longer be found in the registered regions.
+    pub(crate) fn extract_selection_text(&self, buf: &ratatui::buffer::Buffer) -> String {
+        let sel = match &self.active_selection {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+            Some(r) => r,
+            None => return String::new(),
+        };
+        let bounds = crate::event::Rect::new(
+            region.bounds.x,
+            region.bounds.y,
+            region.bounds.width,
+            region.bounds.height,
+        );
+        let ranges = crate::dispatch::text_selection_line_range(sel.anchor, sel.focus, bounds);
+        let area = buf.area;
+        let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
+        for (row, col_start, col_end) in ranges {
+            if row >= area.y + area.height {
+                continue;
+            }
+            let mut line = String::new();
+            for col in col_start..col_end {
+                if col < area.x + area.width {
+                    line.push_str(buf[(col, row)].symbol());
+                }
+            }
+            // Trim trailing whitespace and NUL padding per line.
+            let trimmed = line.trim_end_matches(|c: char| c.is_whitespace() || c == '\0');
+            lines.push(trimmed.to_string());
+        }
+        lines.join("\n")
+    }
+
+    // ── Accelerators ───────────────────────────────────────────────────────
 
     /// Walk `events` and rewrite any `UiEvent::KeyPressed` whose key +
     /// modifiers match a registered `Global`-scope accelerator into
@@ -344,6 +480,13 @@ impl Backend for TuiBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        // Clear per-frame text regions so stale registrations from the
+        // previous frame don't linger.
+        self.text_regions.clear();
+    }
+
+    fn register_text_region(&mut self, region: TextRegion) {
+        self.text_regions.push(region);
     }
 
     fn end_frame(&mut self) {
@@ -2038,5 +2181,111 @@ mod tests {
         backend.apply_accelerators(&mut events);
 
         assert!(matches!(events[0], UiEvent::KeyPressed { .. }));
+    }
+
+    // ── Text selection / highlight round-trip tests ──────────────────────────
+
+    /// Build a minimal ratatui buffer filled with known text, set up a
+    /// text selection, and verify that:
+    ///   1. `apply_selection_highlight` inverts the selected cells.
+    ///   2. `extract_selection_text` returns the trimmed, newline-joined text.
+    #[test]
+    fn selection_highlight_and_extract_round_trip() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+        use ratatui::style::Color as RC;
+
+        // 10 wide × 3 tall buffer filled with known characters.
+        let area = RRect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(area);
+
+        // Row 0: "hello     " (trailing spaces)
+        // Row 1: "world     "
+        // Row 2: "!         "
+        for (col, ch) in "hello     ".chars().enumerate() {
+            buf[(col as u16, 0)]
+                .set_char(ch)
+                .set_fg(RC::White)
+                .set_bg(RC::Black);
+        }
+        for (col, ch) in "world     ".chars().enumerate() {
+            buf[(col as u16, 1)]
+                .set_char(ch)
+                .set_fg(RC::White)
+                .set_bg(RC::Black);
+        }
+        for (col, ch) in "!         ".chars().enumerate() {
+            buf[(col as u16, 2)]
+                .set_char(ch)
+                .set_fg(RC::White)
+                .set_bg(RC::Black);
+        }
+
+        // Register text region and set selection: anchor at (0,0), focus at (0,2).
+        // That covers rows 0–2, starting from col 0.
+        let mut backend = TuiBackend::new();
+        backend.text_regions.push(crate::dispatch::TextRegion {
+            id: WidgetId::new("log:body"),
+            bounds: crate::event::Rect::new(0.0, 0.0, 10.0, 3.0),
+        });
+        backend.set_active_text_selection(
+            WidgetId::new("log:body"),
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 2.0),
+        );
+
+        // 1. Extract text before highlight (cells still normal).
+        let text = backend.extract_selection_text(&buf);
+        // anchor(0,0) → focus(0,2):
+        //   row 0: col 0..10 → "hello     " trimmed → "hello"
+        //   row 1: col 0..10 → "world     " trimmed → "world"
+        //   row 2: col 0..1  → "!" trimmed → "!"
+        assert_eq!(text, "hello\nworld\n!");
+
+        // 2. Apply highlight — selected cells should swap fg/bg.
+        backend.apply_selection_highlight(&mut buf);
+        // Spot-check: (0,0) should be inverted (fg=Black, bg=White).
+        assert_eq!(buf[(0u16, 0u16)].fg, RC::Black);
+        assert_eq!(buf[(0u16, 0u16)].bg, RC::White);
+        // A cell outside the last row's range (col 1 of row 2 is outside
+        // 0..1, so col=1 should be un-inverted).
+        assert_eq!(buf[(1u16, 2u16)].fg, RC::White);
+        assert_eq!(buf[(1u16, 2u16)].bg, RC::Black);
+    }
+
+    #[test]
+    fn selection_clears_on_clear_text_selection() {
+        let mut backend = TuiBackend::new();
+        backend.set_active_text_selection(
+            WidgetId::new("r"),
+            Point::new(0.0, 0.0),
+            Point::new(5.0, 0.0),
+        );
+        assert!(backend.active_text_selection().is_some());
+        backend.clear_text_selection();
+        assert!(backend.active_text_selection().is_none());
+        // Drag state should also be cleared if it was a TextSelection.
+        backend.drag_state.begin(DragTarget::TextSelection {
+            region: WidgetId::new("r"),
+            anchor: Point::new(0.0, 0.0),
+        });
+        backend.clear_text_selection();
+        assert!(!backend.drag_state.is_active());
+    }
+
+    #[test]
+    fn text_regions_cleared_on_begin_frame() {
+        let mut backend = TuiBackend::new();
+        backend.register_text_region(crate::dispatch::TextRegion {
+            id: WidgetId::new("r"),
+            bounds: crate::event::Rect::new(0.0, 0.0, 40.0, 20.0),
+        });
+        assert_eq!(backend.text_regions.len(), 1);
+        backend.begin_frame(Viewport::default());
+        assert_eq!(
+            backend.text_regions.len(),
+            0,
+            "text_regions must be cleared on begin_frame"
+        );
     }
 }

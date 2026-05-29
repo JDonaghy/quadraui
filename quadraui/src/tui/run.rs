@@ -30,6 +30,7 @@ use ratatui::Terminal;
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::tui::backend::TuiBackend;
+use crate::{Key, Modifiers, UiEvent};
 
 /// Default poll timeout — 16 ms ≈ 60 fps. The runner sleeps inside
 /// `wait_events(timeout)` waiting for input; on timeout the loop
@@ -128,6 +129,10 @@ fn run_inner<A: AppLogic>(
                     // the AreaId for whichever surface is repainting.
                     app.render(b, A::AreaId::default());
                 });
+                // After app.render: overlay selection highlight on the
+                // rendered buffer. Done outside enter_frame_scope so the
+                // closure lifetime doesn't conflict with the frame borrow.
+                backend.apply_selection_highlight(frame.buffer_mut());
             })?;
             backend.end_frame();
             needs_redraw = false;
@@ -136,6 +141,46 @@ fn run_inner<A: AppLogic>(
         // Drain events. `wait_events` blocks for up to POLL_TIMEOUT.
         let events = backend.wait_events(POLL_TIMEOUT);
         for event in events {
+            // ── Text-selection event pre-processing ────────────────────
+            // These are handled before the app sees the event so the
+            // runner can update backend state and intercept Ctrl-C.
+            match &event {
+                // Update active selection while dragging.
+                UiEvent::TextSelectionChanged {
+                    region,
+                    anchor,
+                    focus,
+                } => {
+                    backend.set_active_text_selection(region.clone(), *anchor, *focus);
+                    needs_redraw = true;
+                }
+                // Clear active selection on any mouse-down (new click).
+                UiEvent::MouseDown { .. } => {
+                    backend.clear_text_selection();
+                }
+                // Ctrl-C with an active selection → copy to clipboard
+                // and suppress the event (don't pass to app).
+                UiEvent::KeyPressed {
+                    key: Key::Char('c'),
+                    modifiers:
+                        Modifiers {
+                            ctrl: true,
+                            shift: false,
+                            alt: false,
+                            cmd: false,
+                        },
+                    ..
+                } if backend.active_text_selection().is_some() => {
+                    let text = backend.extract_selection_text(terminal.current_buffer_mut());
+                    backend.services().clipboard().write_text(&text);
+                    backend.clear_text_selection();
+                    needs_redraw = true;
+                    // Do NOT pass this Ctrl-C to the app.
+                    continue;
+                }
+                _ => {}
+            }
+            // ── Normal app dispatch ─────────────────────────────────────
             match app.handle(event, backend) {
                 Reaction::Continue => {}
                 Reaction::Redraw => needs_redraw = true,
