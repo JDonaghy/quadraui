@@ -2,9 +2,19 @@
 //!
 //! Clipboard access uses **both** `arboard` (local desktop clipboard)
 //! and OSC 52 (terminal clipboard via escape sequence). Writing via
-//! OSC 52 works over SSH and inside tmux (when `set -g set-clipboard
-//! on` is set), covering environments where arboard cannot reach the
-//! host clipboard.
+//! OSC 52 works over SSH and inside tmux, covering environments where
+//! arboard cannot reach the host clipboard.
+//!
+//! ### tmux
+//!
+//! Inside tmux a bare OSC 52 sequence only reaches the outer terminal
+//! when `set -g set-clipboard on` is configured (with `external`/`off`
+//! tmux drops or swallows the application's sequence). To cover the
+//! other common config, when `$TMUX` is set we *also* emit a copy
+//! wrapped in tmux's DCS passthrough (`ESC P tmux ; … ESC \`), which
+//! tmux forwards verbatim to the outer terminal when `allow-passthrough
+//! on` is set. Emitting both is harmless: each config consumes the form
+//! it understands and ignores the other.
 //!
 //! Other services (file picker, notifications, URL open) remain no-op
 //! stubs — apps that need them supply their own `PlatformServices` or
@@ -52,23 +62,49 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// Emit an OSC 52 clipboard-write sequence for `text` to `writer`.
-///
-/// The sequence is: `ESC ] 52 ; c ; <base64(text)> BEL`.
+/// Build the raw OSC 52 clipboard-write sequence for `text`:
+/// `ESC ] 52 ; c ; <base64(text)> BEL` (ESC ] = OSC introducer; BEL
+/// terminates).
+fn osc52_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
+}
+
+/// Wrap a terminal escape sequence in tmux's DCS passthrough so tmux
+/// forwards it verbatim to the outer terminal: `ESC P tmux ; <seq> ESC \`,
+/// with every inner `ESC` doubled (tmux's escaping rule). Requires
+/// `allow-passthrough on` in the tmux config.
+fn tmux_passthrough_wrap(seq: &str) -> String {
+    let escaped = seq.replace('\x1b', "\x1b\x1b");
+    format!("\x1bPtmux;{}\x1b\\", escaped)
+}
+
+/// Emit an OSC 52 clipboard-write sequence for `text` to `writer`,
+/// additionally emitting a tmux DCS-passthrough copy when `in_tmux`.
 ///
 /// Terminal requirements:
 /// - Most modern terminals (kitty, WezTerm, iTerm2, alacritty, xterm)
 ///   support OSC 52 by default.
-/// - **tmux**: `set -g set-clipboard on` is required for tmux to
-///   forward the sequence to the outer terminal.
+/// - **tmux**: the bare sequence needs `set -g set-clipboard on`; the
+///   passthrough copy (emitted when `in_tmux`) needs `allow-passthrough
+///   on`. Emitting both covers either config.
 /// - **screen**: not widely supported; falls back silently.
 /// - **SSH**: works when the remote terminal supports OSC 52 passthrough
 ///   (most do).
-pub(crate) fn emit_osc52_to(text: &str, writer: &mut dyn std::io::Write) {
-    let encoded = base64_encode(text.as_bytes());
-    // `\x1b]52;c;…\x07` — ESC ] = OSC introducer; BEL = ST alternative.
-    let _ = write!(writer, "\x1b]52;c;{}\x07", encoded);
+pub(crate) fn emit_osc52_with(text: &str, in_tmux: bool, writer: &mut dyn std::io::Write) {
+    let seq = osc52_sequence(text);
+    let _ = writer.write_all(seq.as_bytes());
+    if in_tmux {
+        let _ = writer.write_all(tmux_passthrough_wrap(&seq).as_bytes());
+    }
     let _ = writer.flush();
+}
+
+/// Emit OSC 52 for `text`, auto-detecting tmux from `$TMUX`. Thin
+/// wrapper over [`emit_osc52_with`] used by production code; tests call
+/// `emit_osc52_with` with an explicit `in_tmux` to stay independent of
+/// the ambient environment.
+pub(crate) fn emit_osc52_to(text: &str, writer: &mut dyn std::io::Write) {
+    emit_osc52_with(text, std::env::var_os("TMUX").is_some(), writer);
 }
 
 // ── TuiClipboard ──────────────────────────────────────────────────────────────
@@ -142,7 +178,7 @@ mod tests {
     #[test]
     fn osc52_sequence_correct() {
         let mut out = Vec::new();
-        emit_osc52_to("hello", &mut out);
+        emit_osc52_with("hello", false, &mut out);
         // ESC ] 52 ; c ; aGVsbG8= BEL
         assert_eq!(String::from_utf8(out).unwrap(), "\x1b]52;c;aGVsbG8=\x07");
     }
@@ -150,8 +186,27 @@ mod tests {
     #[test]
     fn osc52_empty_text() {
         let mut out = Vec::new();
-        emit_osc52_to("", &mut out);
+        emit_osc52_with("", false, &mut out);
         assert_eq!(String::from_utf8(out).unwrap(), "\x1b]52;c;\x07");
+    }
+
+    #[test]
+    fn osc52_tmux_emits_raw_then_passthrough() {
+        let mut out = Vec::new();
+        emit_osc52_with("hello", true, &mut out);
+        // Raw sequence first, then the DCS-passthrough copy with the
+        // inner ESC doubled and an `ESC \` terminator.
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\x1b]52;c;aGVsbG8=\x07\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\"
+        );
+    }
+
+    #[test]
+    fn tmux_passthrough_doubles_every_esc() {
+        // A two-ESC payload must come back with four ESCs, wrapped.
+        let wrapped = tmux_passthrough_wrap("\x1bA\x1bB");
+        assert_eq!(wrapped, "\x1bPtmux;\x1b\x1bA\x1b\x1bB\x1b\\");
     }
 }
 
