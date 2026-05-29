@@ -168,7 +168,7 @@ impl AppLogic for PanelApp {
                 };
                 Reaction::Redraw
             }
-            UiEvent::ClipboardPaste(text) => {
+            UiEvent::TextCopied(text) => {
                 let chars: Vec<char> = text.chars().take(40).collect();
                 let preview: String = chars.iter().collect();
                 let suffix = if text.chars().count() > 40 { "…" } else { "" };
