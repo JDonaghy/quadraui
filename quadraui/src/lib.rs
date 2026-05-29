@@ -151,7 +151,7 @@ pub use primitives::data_table::{
 };
 pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
-    DialogSeverity, VisibleDialogButton,
+    DialogSeverity, DialogTextInput, VisibleDialogButton,
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
@@ -1489,7 +1489,9 @@ mod tests {
             button_gap: 8.0,
             padding: 16.0,
         };
-        let layout = d.layout(viewport, measure);
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
 
         // Centered: x = (800 - 400)/2 = 200
         assert_eq!(layout.bounds.x, 200.0);
@@ -1532,7 +1534,9 @@ mod tests {
             button_gap: 0.0,
             padding: 10.0,
         };
-        let layout = d.layout(viewport, measure);
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
         assert_eq!(layout.visible_buttons.len(), 3);
         // Stacked: each 30px tall (90/3); widths equal content_w = 300-20=280.
         for b in &layout.visible_buttons {
@@ -1568,7 +1572,9 @@ mod tests {
             button_gap: 10.0,
             padding: 10.0,
         };
-        let layout = d.layout(viewport, measure);
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
         // Click on the second (right) button — OK.
         let ok_btn = &layout.visible_buttons[1];
         let cx = ok_btn.bounds.x + ok_btn.bounds.width / 2.0;
@@ -1598,11 +1604,11 @@ mod tests {
             buttons: vec![cancel, ok],
             severity: None,
             vertical_buttons: false,
-            input: Some(DialogInput {
+            input: Some(DialogInput::TextInput(DialogTextInput {
                 value: "old_name.rs".to_string(),
                 placeholder: String::new(),
                 cursor: Some(11),
-            }),
+            })),
         };
         let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
         let measure = DialogMeasure {
@@ -1615,7 +1621,9 @@ mod tests {
             button_gap: 10.0,
             padding: 10.0,
         };
-        let layout = d.layout(viewport, measure);
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
         assert!(layout.input_bounds.is_some());
         let ib = layout.input_bounds.unwrap();
         // Input sits between body and buttons.

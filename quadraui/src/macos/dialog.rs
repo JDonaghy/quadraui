@@ -11,7 +11,7 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
-use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
 use crate::theme::Theme;
 use crate::types::{Color, StyledText};
 
@@ -84,38 +84,58 @@ pub unsafe fn draw_dialog(
         );
     }
 
-    if let (Some(input_b), Some(input)) = (dialog_layout.input_bounds, dialog.input.as_ref()) {
-        fill_rect(
-            ctx,
-            input_b.x as f64,
-            input_b.y as f64,
-            input_b.width as f64,
-            input_b.height as f64,
-            theme.input_bg,
-        );
-        stroke_rect(
-            ctx,
-            input_b.x as f64,
-            input_b.y as f64,
-            input_b.width as f64,
-            input_b.height as f64,
-            theme.border_fg,
-            1.0,
-        );
-        let display = if input.value.is_empty() {
-            format!(" {}", input.placeholder)
-        } else {
-            format!(" {}", input.value)
-        };
-        let (_, lh) = measure_text(font, &display);
-        draw_text(
-            ctx,
-            font,
-            &display,
-            input_b.x as f64 + 2.0,
-            input_b.y as f64 + (input_b.height as f64 - lh) / 2.0,
-            color_to_cg(theme.surface_fg),
-        );
+    if let (Some(input_b), Some(input_kind)) = (dialog_layout.input_bounds, dialog.input.as_ref()) {
+        match input_kind {
+            DialogInput::TextInput(input) => {
+                fill_rect(
+                    ctx,
+                    input_b.x as f64,
+                    input_b.y as f64,
+                    input_b.width as f64,
+                    input_b.height as f64,
+                    theme.input_bg,
+                );
+                stroke_rect(
+                    ctx,
+                    input_b.x as f64,
+                    input_b.y as f64,
+                    input_b.width as f64,
+                    input_b.height as f64,
+                    theme.border_fg,
+                    1.0,
+                );
+                let display = if input.value.is_empty() {
+                    format!(" {}", input.placeholder)
+                } else {
+                    format!(" {}", input.value)
+                };
+                let (_, lh) = measure_text(font, &display);
+                draw_text(
+                    ctx,
+                    font,
+                    &display,
+                    input_b.x as f64 + 2.0,
+                    input_b.y as f64 + (input_b.height as f64 - lh) / 2.0,
+                    color_to_cg(theme.surface_fg),
+                );
+            }
+            DialogInput::Toolbar(toolbar) => {
+                // Render the embedded toolbar using the macOS toolbar
+                // rasteriser.
+                super::toolbar::draw_toolbar(
+                    ctx,
+                    font,
+                    input_b.x as f64,
+                    input_b.y as f64,
+                    input_b.width as f64,
+                    input_b.height as f64,
+                    toolbar,
+                    theme,
+                    None,
+                    None,
+                );
+            }
+        }
     }
 
     let mut rects: Vec<QRect> = Vec::with_capacity(dialog_layout.visible_buttons.len());
@@ -272,7 +292,21 @@ mod tests {
             button_gap: 8.0,
             padding: 8.0,
         };
-        dialog.layout(viewport, measure)
+        dialog.layout(viewport, measure, |btn| {
+            use crate::primitives::toolbar::ToolbarItemMeasure;
+            let text_w = match btn {
+                crate::primitives::toolbar::ToolbarButton::Action { label, .. } => {
+                    let (w, _) = measure_text(&make_font("Menlo", 14.0).unwrap(), label);
+                    w + 16.0
+                }
+                crate::primitives::toolbar::ToolbarButton::Separator => 12.0,
+                crate::primitives::toolbar::ToolbarButton::Label { text, .. } => {
+                    let (w, _) = measure_text(&make_font("Menlo", 14.0).unwrap(), text);
+                    w
+                }
+            };
+            ToolbarItemMeasure::new(text_w as f32)
+        })
     }
 
     fn paint_via_backend(dialog: &Dialog, layout: &DialogLayout) -> (BitmapSurface, Vec<QRect>) {

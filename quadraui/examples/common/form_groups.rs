@@ -18,9 +18,9 @@
 //! - `q` / `Esc`            → quit
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField, FormHit, Key,
-    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    ToggleGroupItem, UiEvent, WidgetId,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormEvent, FormField,
+    FormHit, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 pub struct FormGroupsApp {
@@ -31,6 +31,8 @@ pub struct FormGroupsApp {
     regex: bool,
     focus: FocusRing,
     last_action: String,
+    /// Which scope preset is active (0=Workspace, 1=File, 2=Selection).
+    scope: usize,
 }
 
 impl FormGroupsApp {
@@ -41,8 +43,9 @@ impl FormGroupsApp {
             case_sensitive: true,
             whole_word: false,
             regex: false,
-            focus: FocusRing::new(vec!["search", "toggles", "replace", "buttons"]),
+            focus: FocusRing::new(vec!["search", "toggles", "replace", "buttons", "scope"]),
             last_action: "—".into(),
+            scope: 0,
         }
     }
 
@@ -131,6 +134,47 @@ impl FormGroupsApp {
                     disabled: false,
                     validation: None,
                 },
+                // ── Gap B demo: embedded toolbar inside a form field ──────
+                FormField {
+                    id: WidgetId::new("scope"),
+                    label: StyledText::plain("Scope"),
+                    kind: FieldKind::Toolbar(Toolbar {
+                        id: WidgetId::new("scope-toolbar"),
+                        buttons: vec![
+                            ToolbarButton::Action {
+                                id: WidgetId::new("scope-ws"),
+                                label: "Workspace".into(),
+                                icon: None,
+                                key_hint: None,
+                                enabled: true,
+                                is_active: self.scope == 0,
+                                tooltip: "Search entire workspace".into(),
+                            },
+                            ToolbarButton::Action {
+                                id: WidgetId::new("scope-file"),
+                                label: "File".into(),
+                                icon: None,
+                                key_hint: None,
+                                enabled: true,
+                                is_active: self.scope == 1,
+                                tooltip: "Search current file only".into(),
+                            },
+                            ToolbarButton::Action {
+                                id: WidgetId::new("scope-sel"),
+                                label: "Selection".into(),
+                                icon: None,
+                                key_hint: None,
+                                enabled: true,
+                                is_active: self.scope == 2,
+                                tooltip: "Search selected text only".into(),
+                            },
+                        ],
+                        bg: None,
+                    }),
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
             ],
             focused_field: self.focus.current().cloned(),
             scroll_offset: 0,
@@ -174,6 +218,15 @@ impl FormGroupsApp {
                     if !self.search_query.is_empty() {
                         self.last_action = "Replace All".into();
                     }
+                } else if id.as_str() == "scope-ws" {
+                    self.scope = 0;
+                    self.last_action = "scope=Workspace".into();
+                } else if id.as_str() == "scope-file" {
+                    self.scope = 1;
+                    self.last_action = "scope=File".into();
+                } else if id.as_str() == "scope-sel" {
+                    self.scope = 2;
+                    self.last_action = "scope=Selection".into();
                 } else {
                     self.focus.set(id);
                     self.last_action = format!("focus → {}", id.as_str());
