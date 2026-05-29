@@ -281,6 +281,35 @@ impl SidebarSystem {
         self.focus.set_active(section);
     }
 
+    /// Mark a Form section as focused *for rendering purposes only*,
+    /// without changing the active (nav) section.
+    ///
+    /// This decouples two orthogonal concerns: which section receives
+    /// keyboard/nav events ([`Self::active_section`]) versus whether a
+    /// form field renders with a cursor/focus ring. It lets an app show
+    /// a focused text input (e.g. a FILTER box) while a *different*
+    /// section's tree still drives selection and keyboard navigation.
+    ///
+    /// Without this, a form field only renders focused when its section
+    /// is the active one — so rebuilding the `SidebarSystem` while a
+    /// tree section is active (the common per-frame refresh pattern)
+    /// silently strips the form's visible cursor. Call `focus_form`
+    /// after each rebuild to restore it.
+    ///
+    /// No-op if `section` is out of range or hosts a Tree, not a Form.
+    pub fn focus_form(&mut self, section: usize, focused: bool) {
+        if let Some(SectionController::Form(fc)) = self.sections.get_mut(section) {
+            fc.set_has_focus(focused);
+        }
+    }
+
+    /// Whether the Form section at `section` is render-focused via
+    /// [`Self::focus_form`]. Returns `false` for Tree sections, empty
+    /// sections, or out-of-range indices.
+    pub fn form_has_focus(&self, section: usize) -> bool {
+        matches!(self.sections.get(section), Some(SectionController::Form(fc)) if fc.has_focus())
+    }
+
     pub fn set_selected_path(&mut self, section: usize, path: Option<TreePath>) {
         if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
             tc.set_selected_path(path);
@@ -920,15 +949,21 @@ impl SidebarSystem {
                     })
                 }
                 SectionController::Form(fc) => {
+                    // A form renders focused either when its section is
+                    // the active (nav) section, or when the app has
+                    // explicitly marked it render-focused via
+                    // `focus_form` — letting a FILTER box keep its cursor
+                    // while a different section's tree drives navigation.
+                    let form_focus = fc.has_focus() || (is_active && self.has_focus);
                     let form = fc.form().cloned().unwrap_or_else(|| Form {
                         id: fc.default_form_id(),
                         fields: Vec::new(),
                         focused_field: None,
                         scroll_offset: 0,
-                        has_focus: is_active && self.has_focus,
+                        has_focus: form_focus,
                     });
                     SectionBody::Form(Form {
-                        has_focus: is_active && self.has_focus,
+                        has_focus: form_focus,
                         ..form
                     })
                 }
@@ -1976,6 +2011,93 @@ mod tests {
         let (view, _) = ss.build_view();
         match &view.sections[0].body {
             SectionBody::Form(f) => assert!(f.has_focus),
+            _ => panic!("expected Form body"),
+        }
+    }
+
+    #[test]
+    fn focus_form_renders_form_focused_while_tree_section_active() {
+        // Reproduces issue #270: the FILTER form (section 0) should
+        // render with a cursor while a tree section (1) drives nav.
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.set_rows(1, fake_rows("r", 3));
+        // Tree section is the active/nav section.
+        ss.set_active_section(Some(1));
+        // Without focus_form, the form is not render-focused.
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(!f.has_focus),
+            _ => panic!("expected Form body"),
+        }
+        // Mark the form render-focused without changing the nav section.
+        ss.focus_form(0, true);
+        assert_eq!(ss.active_section(), Some(1));
+        assert!(ss.form_has_focus(0));
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(f.has_focus),
+            _ => panic!("expected Form body"),
+        }
+    }
+
+    #[test]
+    fn focus_form_survives_rebuild_via_reapply() {
+        // The app re-creates the SidebarSystem each frame; focus_form is
+        // re-applied after rebuild to keep the cursor visible.
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.set_active_section(Some(1));
+        ss.focus_form(0, true);
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(f.has_focus),
+            _ => panic!("expected Form body"),
+        }
+    }
+
+    #[test]
+    fn focus_form_can_be_cleared() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.set_active_section(Some(1));
+        ss.focus_form(0, true);
+        assert!(ss.form_has_focus(0));
+        ss.focus_form(0, false);
+        assert!(!ss.form_has_focus(0));
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(!f.has_focus),
+            _ => panic!("expected Form body"),
+        }
+    }
+
+    #[test]
+    fn focus_form_on_tree_section_is_noop() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_rows(1, fake_rows("r", 3));
+        ss.focus_form(1, true);
+        assert!(!ss.form_has_focus(1));
+    }
+
+    #[test]
+    fn focus_form_out_of_range_is_noop() {
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.focus_form(99, true);
+        assert!(!ss.form_has_focus(99));
+    }
+
+    #[test]
+    fn active_form_section_still_render_focused_without_focus_form() {
+        // The pre-existing behaviour (active form section renders
+        // focused) must keep working when focus_form was never called.
+        let mut ss = SidebarSystem::new(mixed_defs());
+        ss.set_form(0, sample_form());
+        ss.set_active_section(Some(0));
+        assert!(!ss.form_has_focus(0)); // focus_form not called
+        let (view, _) = ss.build_view();
+        match &view.sections[0].body {
+            SectionBody::Form(f) => assert!(f.has_focus), // active ⇒ focused
             _ => panic!("expected Form body"),
         }
     }
