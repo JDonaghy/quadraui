@@ -11,8 +11,11 @@
 //! # Keyboard behaviour
 //!
 //! - `Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter` — submit the current input.
-//!   `Ctrl+S` and `Alt+Enter` work on all terminals; `Ctrl+Enter` requires Kitty
+//!   `Ctrl+S` and `Alt+Enter` work on most terminals; `Ctrl+Enter` requires Kitty
 //!   keyboard protocol (supported by kitty, Alacritty ≥0.12, WezTerm, foot).
+//!   **Note**: `Ctrl+S` is the XON/XOFF flow-control suspend key in some
+//!   terminal configurations (`stty -ixon` disables it). If `Ctrl+S` appears
+//!   to freeze the terminal, run `stty -ixon` or use `Alt+Enter` instead.
 //! - `Enter` — insert a newline in the input.
 //! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
 //!   whether to close the overlay.
@@ -1528,6 +1531,44 @@ mod tests {
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &MockBackend, rect);
+        assert_eq!(ev, ChatControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn ctrl_s_submits_and_emits_event() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        let rect = make_rect();
+        let event = UiEvent::KeyPressed {
+            key: Key::Char('s'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &MockBackend, rect);
+        assert_eq!(
+            ev,
+            ChatControllerEvent::Submit {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn ctrl_s_on_empty_input_ignored() {
+        let mut cc = ChatController::new("c");
+        let rect = make_rect();
+        let event = UiEvent::KeyPressed {
+            key: Key::Char('s'),
             modifiers: Modifiers {
                 ctrl: true,
                 ..Default::default()

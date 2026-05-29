@@ -90,6 +90,12 @@ fn tmux_passthrough_wrap(seq: &str) -> String {
 /// - **screen**: not widely supported; falls back silently.
 /// - **SSH**: works when the remote terminal supports OSC 52 passthrough
 ///   (most do).
+///
+/// **Payload size limits**: Many terminals cap the OSC 52 base64 payload
+/// at roughly 74–100 KB of encoded data (≈ 55–75 KB of raw text) and
+/// silently drop or truncate sequences that exceed it. Very large
+/// selections may not reach the clipboard; no feedback is given when
+/// this occurs.
 pub(crate) fn emit_osc52_with(text: &str, in_tmux: bool, writer: &mut dyn std::io::Write) {
     let seq = osc52_sequence(text);
     let _ = writer.write_all(seq.as_bytes());
