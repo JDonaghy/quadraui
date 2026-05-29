@@ -112,6 +112,18 @@ pub enum DragTarget {
         /// [`DragTarget::ScrollbarY::inverted`].
         inverted: bool,
     },
+    /// A text-selection drag. `region` is the id of the
+    /// [`TextRegion`] where the drag started; `anchor` is the screen
+    /// position at click-down. The anchor is fixed for the lifetime of
+    /// the drag; [`dispatch_mouse_drag`] reads it to emit
+    /// [`UiEvent::TextSelectionChanged`] with the current cursor as
+    /// the `focus`.
+    TextSelection {
+        /// Which text region is being selected.
+        region: WidgetId,
+        /// Screen position where the drag started.
+        anchor: Point,
+    },
 }
 
 /// One drag in progress, or none. Backends hold one instance; call
@@ -301,6 +313,13 @@ pub fn dispatch_mouse_drag(
                 new_offset,
             });
         }
+        Some(DragTarget::TextSelection { region, anchor }) => {
+            events.push(UiEvent::TextSelectionChanged {
+                region: region.clone(),
+                anchor: *anchor,
+                focus: position,
+            });
+        }
         _ => {}
     }
 
@@ -325,6 +344,102 @@ pub fn dispatch_mouse_up(
         button,
         position,
     }]
+}
+
+// ─── Text region ─────────────────────────────────────────────────────────────
+
+/// A selectable text region registered during paint. Apps push one
+/// entry per selectable text area each frame;
+/// [`dispatch_click`] hit-tests the list to begin a
+/// [`DragTarget::TextSelection`] drag when the user clicks inside.
+///
+/// Push in paint order (back-to-front). The dispatcher walks
+/// last-to-first so the topmost-painted region wins on overlap.
+/// Text regions take priority over [`ScrollSurface`] *bodies* (not
+/// scrollbars) — a text region registered inside a scroll surface body
+/// will capture clicks first.
+///
+/// # Relationship with `ScrollSurface`
+///
+/// A text region is typically co-located with a scroll surface: the
+/// scroll surface owns the scrollbar; the text region owns the content
+/// body. Register them both, and the precedence chain
+/// (scrollbar thumb/track → text region → surface body → none) falls
+/// out automatically.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextRegion {
+    pub id: WidgetId,
+    pub bounds: crate::event::Rect,
+}
+
+/// Compute the screen-cell ranges covered by a line-wise text selection.
+///
+/// Given `anchor` and `focus` in screen coordinates (TUI: cells;
+/// GTK/macOS: pixels) and the `bounds` of the [`TextRegion`], returns
+/// a `Vec` of `(row, col_start, col_end)` tuples (half-open:
+/// `col_start..col_end`) in document order (top-to-bottom).
+///
+/// **Line-wise stream semantics** (same as most terminal selections):
+///
+/// | Position | Range |
+/// |---|---|
+/// | First row | `anchor_col .. region_end_col` |
+/// | Middle rows | `region_start_col .. region_end_col` |
+/// | Last row | `region_start_col .. focus_col + 1` |
+/// | Single row | `min_col .. max_col + 1` |
+///
+/// Coordinates are clamped to `bounds`. Returns an empty `Vec` when
+/// `anchor == focus` (selection collapsed to a point — plain click).
+pub fn text_selection_line_range(
+    anchor: Point,
+    focus: Point,
+    bounds: crate::event::Rect,
+) -> Vec<(u16, u16, u16)> {
+    // Empty when anchor == focus (no movement → collapsed click).
+    let ax = anchor.x.round() as i32;
+    let ay = anchor.y.round() as i32;
+    let fx = focus.x.round() as i32;
+    let fy = focus.y.round() as i32;
+    if ax == fx && ay == fy {
+        return Vec::new();
+    }
+
+    // Put in document order (top-to-bottom, left-to-right).
+    let (start, end) = if ay < fy || (ay == fy && ax <= fx) {
+        (anchor, focus)
+    } else {
+        (focus, anchor)
+    };
+
+    let region_x = bounds.x.round() as u16;
+    let region_end_x = (bounds.x + bounds.width).round() as u16;
+    let region_y = bounds.y.round() as u16;
+    let region_end_y = (bounds.y + bounds.height).round() as u16;
+
+    // Clamp start/end rows and cols to region.
+    let start_row = (start.y.round() as u16).clamp(region_y, region_end_y.saturating_sub(1));
+    let end_row = (end.y.round() as u16).clamp(region_y, region_end_y.saturating_sub(1));
+    let start_col = (start.x.round() as u16).clamp(region_x, region_end_x);
+    // End col is inclusive → add 1 for the half-open range, then clamp.
+    let end_col = ((end.x.round() as u16).saturating_add(1)).clamp(region_x, region_end_x);
+
+    if start_row == end_row {
+        if start_col >= end_col {
+            return Vec::new();
+        }
+        return vec![(start_row, start_col, end_col)];
+    }
+
+    let mut ranges = Vec::with_capacity((end_row - start_row + 1) as usize);
+    // First row: from start_col to region end.
+    ranges.push((start_row, start_col, region_end_x));
+    // Middle rows: full region width.
+    for row in (start_row + 1)..end_row {
+        ranges.push((row, region_x, region_end_x));
+    }
+    // Last row: from region start to end_col.
+    ranges.push((end_row, region_x, end_col));
+    ranges
 }
 
 // ─── Scroll dispatch ──────────────────────────────────────────────────────
@@ -447,8 +562,8 @@ pub struct SurfaceScrollbar {
 
 /// Translate a raw mouse-down event, consulting the modal stack first,
 /// then the registered scroll surfaces (including their scrollbar
-/// regions). Supersedes [`dispatch_mouse_down`] for consumers that
-/// register scroll surfaces.
+/// regions) and text regions. Supersedes [`dispatch_mouse_down`] for
+/// consumers that register scroll surfaces and/or text regions.
 ///
 /// # Returns
 ///
@@ -464,12 +579,17 @@ pub struct SurfaceScrollbar {
 /// 4. **Click on a scroll surface's scrollbar track** (above or below
 ///    thumb) → emits `ScrollOffsetChanged { widget, new_offset }`
 ///    with the offset paged up or down by `visible_items`.
-/// 5. **Click on a scroll surface body** (not scrollbar) →
-///    `MouseDown { widget: Some(surface_id) }`.
-/// 6. **No surface matched** → `MouseDown { widget: None }`.
+/// 5. **Click inside a registered [`TextRegion`]** → starts a
+///    [`DragTarget::TextSelection`] drag, emits
+///    `MouseDown { widget: Some(region_id) }`. Text regions take
+///    priority over scroll surface bodies (not scrollbars).
+/// 6. **Click on a scroll surface body** (not scrollbar, not text
+///    region) → `MouseDown { widget: Some(surface_id) }`.
+/// 7. **No surface or region matched** → `MouseDown { widget: None }`.
 pub fn dispatch_click(
     stack: &ModalStack,
     scroll_surfaces: &[ScrollSurface],
+    text_regions: &[TextRegion],
     drag: &mut DragState,
     position: Point,
     button: MouseButton,
@@ -582,7 +702,24 @@ pub fn dispatch_click(
             }
         }
 
-        // Body click (not on scrollbar).
+        // Case 5: Check text regions before falling through to body click.
+        // Walk last-to-first so the topmost-painted region wins on overlap.
+        for tr in text_regions.iter().rev() {
+            if tr.bounds.contains(position) {
+                drag.begin(DragTarget::TextSelection {
+                    region: tr.id.clone(),
+                    anchor: position,
+                });
+                return vec![UiEvent::MouseDown {
+                    widget: Some(tr.id.clone()),
+                    button,
+                    position,
+                    modifiers,
+                }];
+            }
+        }
+
+        // Case 6: body click (not on scrollbar, not on text region).
         return vec![UiEvent::MouseDown {
             widget: Some(surface.id.clone()),
             button,
@@ -591,7 +728,24 @@ pub fn dispatch_click(
         }];
     }
 
-    // Case 6: no surface matched.
+    // No scroll surface hit. Still check standalone text regions
+    // (not nested inside any scroll surface).
+    for tr in text_regions.iter().rev() {
+        if tr.bounds.contains(position) {
+            drag.begin(DragTarget::TextSelection {
+                region: tr.id.clone(),
+                anchor: position,
+            });
+            return vec![UiEvent::MouseDown {
+                widget: Some(tr.id.clone()),
+                button,
+                position,
+                modifiers,
+            }];
+        }
+    }
+
+    // Case 7: no surface or region matched.
     vec![UiEvent::MouseDown {
         widget: None,
         button,
@@ -755,6 +909,7 @@ mod tests {
         match drag.target().unwrap() {
             DragTarget::ScrollbarY { widget, .. } => assert_eq!(widget, &id("picker")),
             DragTarget::ScrollbarX { .. } => panic!("expected ScrollbarY"),
+            DragTarget::TextSelection { .. } => panic!("expected ScrollbarY"),
         }
         drag.end();
         assert!(!drag.is_active());
@@ -1225,6 +1380,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 22.0),
             MouseButton::Left,
@@ -1259,6 +1415,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 5.0),
             MouseButton::Left,
@@ -1285,6 +1442,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 29.0),
             MouseButton::Left,
@@ -1310,6 +1468,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(10.0, 10.0),
             MouseButton::Left,
@@ -1333,6 +1492,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &[],
+            &[],
             &mut drag,
             pt(50.0, 50.0),
             MouseButton::Left,
@@ -1354,6 +1514,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 22.0),
             MouseButton::Left,
@@ -1450,6 +1611,7 @@ mod tests {
         dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 22.0),
             MouseButton::Left,
@@ -1458,7 +1620,9 @@ mod tests {
         assert!(drag.is_active());
         match drag.target().unwrap() {
             DragTarget::ScrollbarY { inverted, .. } => assert!(*inverted),
-            other => panic!("expected ScrollbarY, got {:?}", other),
+            DragTarget::ScrollbarX { .. } | DragTarget::TextSelection { .. } => {
+                panic!("expected ScrollbarY")
+            }
         }
     }
 
@@ -1473,6 +1637,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 5.0),
             MouseButton::Left,
@@ -1489,6 +1654,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(39.5, 29.0),
             MouseButton::Left,
@@ -1531,6 +1697,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(60.0, 297.0),
             MouseButton::Left,
@@ -1558,7 +1725,9 @@ mod tests {
                 assert_eq!(*max_scroll, 1800);
                 assert!(*grab_offset > 9.0 && *grab_offset < 11.0); // 60.0 - 50.0 = 10.0
             }
-            other => panic!("expected ScrollbarX, got {:?}", other),
+            DragTarget::ScrollbarY { .. } | DragTarget::TextSelection { .. } => {
+                panic!("expected ScrollbarX")
+            }
         }
     }
 
@@ -1571,6 +1740,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(10.0, 297.0),
             MouseButton::Left,
@@ -1595,6 +1765,7 @@ mod tests {
         let events = dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(200.0, 297.0),
             MouseButton::Left,
@@ -1619,6 +1790,7 @@ mod tests {
         dispatch_click(
             &stack,
             &surfaces,
+            &[],
             &mut drag,
             pt(60.0, 297.0),
             MouseButton::Left,
@@ -1634,6 +1806,219 @@ mod tests {
                 assert_eq!(*new_offset, 1800); // max_scroll
             }
             other => panic!("expected ScrollOffsetChanged, got {:?}", other),
+        }
+    }
+
+    // ── TextRegion / text-selection tests ─────────────────────────────
+
+    #[test]
+    fn click_text_region_starts_text_selection_drag() {
+        let stack = ModalStack::new();
+        let mut drag = DragState::new();
+        let text_regions = vec![TextRegion {
+            id: id("log:body"),
+            bounds: rect(0.0, 0.0, 40.0, 30.0),
+        }];
+        let events = dispatch_click(
+            &stack,
+            &[],
+            &text_regions,
+            &mut drag,
+            pt(10.0, 5.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown {
+                widget: Some(w), ..
+            } if w.as_str() == "log:body"
+        ));
+        assert!(drag.is_active());
+        match drag.target().unwrap() {
+            DragTarget::TextSelection { region, anchor } => {
+                assert_eq!(region.as_str(), "log:body");
+                assert_eq!(*anchor, pt(10.0, 5.0));
+            }
+            other => panic!("expected TextSelection, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scrollbar_wins_over_text_region() {
+        let stack = ModalStack::new();
+        let surfaces = vec![surface_with_scrollbar()];
+        let text_regions = vec![TextRegion {
+            id: id("log:body"),
+            // Covers the whole surface including the scrollbar column.
+            bounds: rect(0.0, 0.0, 40.0, 30.0),
+        }];
+        let mut drag = DragState::new();
+        // Click on scrollbar thumb (x=39.5, y=22) — scrollbar must win.
+        dispatch_click(
+            &stack,
+            &surfaces,
+            &text_regions,
+            &mut drag,
+            pt(39.5, 22.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert!(matches!(
+            drag.target().unwrap(),
+            DragTarget::ScrollbarY { .. }
+        ));
+    }
+
+    #[test]
+    fn text_region_wins_over_surface_body() {
+        let stack = ModalStack::new();
+        let surfaces = vec![ScrollSurface {
+            id: id("log"),
+            bounds: rect(0.0, 0.0, 40.0, 30.0),
+            scrollbar: None,
+        }];
+        let text_regions = vec![TextRegion {
+            id: id("log:body"),
+            bounds: rect(0.0, 0.0, 40.0, 30.0),
+        }];
+        let mut drag = DragState::new();
+        let events = dispatch_click(
+            &stack,
+            &surfaces,
+            &text_regions,
+            &mut drag,
+            pt(10.0, 5.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown { widget: Some(w), .. } if w.as_str() == "log:body"
+        ));
+        assert!(matches!(
+            drag.target().unwrap(),
+            DragTarget::TextSelection { .. }
+        ));
+    }
+
+    #[test]
+    fn modal_wins_over_text_region() {
+        let mut stack = ModalStack::new();
+        stack.push(id("dialog"), rect(0.0, 0.0, 100.0, 100.0));
+        let text_regions = vec![TextRegion {
+            id: id("body"),
+            bounds: rect(0.0, 0.0, 100.0, 100.0),
+        }];
+        let mut drag = DragState::new();
+        let events = dispatch_click(
+            &stack,
+            &[],
+            &text_regions,
+            &mut drag,
+            pt(50.0, 50.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        // Modal wins — no TextSelection drag started.
+        assert!(!drag.is_active());
+        assert!(matches!(
+            &events[0],
+            UiEvent::MouseDown { widget: Some(w), .. } if w.as_str() == "dialog"
+        ));
+    }
+
+    #[test]
+    fn dispatch_mouse_drag_text_selection_emits_changed() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::TextSelection {
+            region: id("log:body"),
+            anchor: pt(5.0, 2.0),
+        });
+        let events = dispatch_mouse_drag(&drag, pt(10.0, 5.0), buttons_mask_left());
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
+        match &events[1] {
+            UiEvent::TextSelectionChanged {
+                region,
+                anchor,
+                focus,
+            } => {
+                assert_eq!(region.as_str(), "log:body");
+                assert_eq!(*anchor, pt(5.0, 2.0));
+                assert_eq!(*focus, pt(10.0, 5.0));
+            }
+            other => panic!("expected TextSelectionChanged, got {:?}", other),
+        }
+    }
+
+    // ── text_selection_line_range tests ──────────────────────────────────
+
+    #[test]
+    fn line_range_empty_when_anchor_equals_focus() {
+        let bounds = rect(0.0, 0.0, 40.0, 10.0);
+        let ranges = text_selection_line_range(pt(5.0, 3.0), pt(5.0, 3.0), bounds);
+        assert!(ranges.is_empty(), "collapsed selection must be empty");
+    }
+
+    #[test]
+    fn line_range_single_row() {
+        // Same row, anchor before focus.
+        let bounds = rect(0.0, 0.0, 40.0, 10.0);
+        let ranges = text_selection_line_range(pt(5.0, 3.0), pt(10.0, 3.0), bounds);
+        // Half-open: 5..11 (focus_col 10 is inclusive → +1 = 11).
+        assert_eq!(ranges, vec![(3, 5, 11)]);
+    }
+
+    #[test]
+    fn line_range_single_row_reversed() {
+        // Same row, focus before anchor — must swap to document order.
+        let bounds = rect(0.0, 0.0, 40.0, 10.0);
+        let ranges = text_selection_line_range(pt(10.0, 3.0), pt(5.0, 3.0), bounds);
+        assert_eq!(ranges, vec![(3, 5, 11)]);
+    }
+
+    #[test]
+    fn line_range_multi_row() {
+        let bounds = rect(0.0, 0.0, 40.0, 10.0);
+        // anchor at (2,1), focus at (5,3).
+        let ranges = text_selection_line_range(pt(2.0, 1.0), pt(5.0, 3.0), bounds);
+        // Row 1: 2..40 (start_col to region_end)
+        // Row 2: 0..40 (full width)
+        // Row 3: 0..6  (region_start to focus_col+1)
+        assert_eq!(ranges, vec![(1, 2, 40), (2, 0, 40), (3, 0, 6)]);
+    }
+
+    #[test]
+    fn line_range_multi_row_reversed() {
+        let bounds = rect(0.0, 0.0, 40.0, 10.0);
+        // Swap anchor and focus — must produce same result in document order.
+        let ranges = text_selection_line_range(pt(5.0, 3.0), pt(2.0, 1.0), bounds);
+        assert_eq!(ranges, vec![(1, 2, 40), (2, 0, 40), (3, 0, 6)]);
+    }
+
+    #[test]
+    fn line_range_clamped_to_bounds() {
+        // Region starts at x=5, y=2; anchor/focus way outside — must clamp.
+        let bounds = rect(5.0, 2.0, 20.0, 5.0);
+        let ranges = text_selection_line_range(pt(0.0, 0.0), pt(100.0, 100.0), bounds);
+        // start row clamped to 2, end row clamped to 6 (2+5-1),
+        // start_col clamped to 5, end_col clamped to 25.
+        assert_eq!(
+            ranges[0],
+            (2, 5, 25),
+            "first row: anchor clamped to region x"
+        );
+        assert_eq!(
+            *ranges.last().unwrap(),
+            (6, 5, 25),
+            "last row: focus clamped to region end"
+        );
+        // All middle rows are full region width.
+        for &(_, c_start, c_end) in &ranges[1..ranges.len() - 1] {
+            assert_eq!(c_start, 5);
+            assert_eq!(c_end, 25);
         }
     }
 }

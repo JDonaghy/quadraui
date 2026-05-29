@@ -76,6 +76,27 @@ pub trait Backend {
     /// `draw_*` calls consume the updated palette.
     fn set_theme(&mut self, _theme: crate::Theme) {}
 
+    // ─── Text selection ────────────────────────────────────────────────
+    /// Register a selectable text region for the current frame.
+    ///
+    /// Call once per selectable content area during render (in paint
+    /// order: back regions first, front regions last). The backend
+    /// records the region so that click dispatch via
+    /// [`crate::dispatch::dispatch_click`] can begin a
+    /// [`crate::DragTarget::TextSelection`] drag when the user clicks
+    /// inside the bounds.
+    ///
+    /// The TUI backend additionally applies per-frame selection
+    /// highlights (inverted cells over the selected range) and extracts
+    /// text on Ctrl-C. GTK/macOS backends can use it for native
+    /// selection support. The registration is cleared at the start of
+    /// each frame (`begin_frame`), so apps must call this every frame
+    /// for regions that should be selectable.
+    ///
+    /// Default: no-op. Backends that implement selection highlight
+    /// override this to accumulate regions for the current frame.
+    fn register_text_region(&mut self, _region: crate::dispatch::TextRegion) {}
+
     // ─── Events + keybindings ──────────────────────────────────────────
     /// Drain all queued native events. Returns a fully-translated
     /// `Vec<UiEvent>` ready for app dispatch. Never blocks.
