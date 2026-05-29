@@ -327,8 +327,11 @@ impl TuiBackend {
         }
     }
 
-    /// Return the selection text cached by the last `apply_selection_highlight` call.
-    pub(crate) fn take_cached_selection_text(&self) -> String {
+    /// Return a clone of the selection text cached by the last
+    /// `apply_selection_highlight` call. Named `cached_selection_text`
+    /// rather than `take_*` because the value is cloned, not consumed —
+    /// the cache persists until the selection is cleared.
+    pub(crate) fn cached_selection_text(&self) -> String {
         self.cached_selection_text.clone()
     }
 
@@ -393,11 +396,16 @@ impl TuiBackend {
     /// `MouseDown` on a text region begins a `TextSelection` drag and
     /// `MouseMoved` (with button held) emits `TextSelectionChanged`.
     ///
+    /// # TODO: scrollbar dispatch
+    ///
     /// Scroll-surface arbitration is not wired here yet — scroll surfaces
-    /// are not registered per-frame by `TuiBackend`. That is a TODO for
-    /// the scrollbar dispatch epic; passing an empty slice means text
-    /// regions work correctly today and scrollbar drags are unaffected
-    /// (they continue to be handled by app-side hit-tests as before).
+    /// are not registered per-frame by `TuiBackend`. Passing an empty slice
+    /// to `dispatch_click` means text regions work correctly today and
+    /// scrollbar drags are unaffected (they continue to be handled by
+    /// app-side hit-tests as before). The consequence is that the
+    /// "scrollbar wins over an overlapping text region" acceptance
+    /// criterion is not enforced in TUI. Tracked as a follow-up issue
+    /// (scrollbar dispatch epic).
     fn apply_dispatch(&mut self, raw: Vec<UiEvent>) -> Vec<UiEvent> {
         let mut out = Vec::with_capacity(raw.len());
         for event in raw {

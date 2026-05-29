@@ -27,6 +27,7 @@
 //! | Window (`WindowResized`, `WindowClose`, `WindowFocused`, `DpiChanged`) | Application-global |
 //! | `FilesDropped` | Hit-test at drop position |
 //! | `ClipboardPaste` | Focus |
+//! | `TextCopied` | Broadcast (no target) |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -290,6 +291,21 @@ pub enum UiEvent {
         position: Point,
     },
     ClipboardPaste(String),
+
+    // ── Clipboard copy notification ────────────────────────────────
+    /// Text was copied to the clipboard by the TUI runner's built-in
+    /// text-selection mechanism (click-drag → Ctrl-C). The payload is
+    /// the text that was copied.
+    ///
+    /// This event is **distinct from [`Self::ClipboardPaste`]**. Paste
+    /// means "insert text into the focused input"; `TextCopied` is a
+    /// one-way notification that lets apps display a confirmation badge
+    /// ("Copied!") without any risk of accidentally inserting text into
+    /// an input widget that happens to handle `ClipboardPaste`.
+    ///
+    /// Routing: broadcast (no widget target — it is not input-focus
+    /// routed). Apps that don't need copy confirmation can ignore it.
+    TextCopied(String),
 
     // ── Cross-primitive scroll event ──────────────────────────────────
     /// A scrollbar drag or click resolved to a new offset. Generic

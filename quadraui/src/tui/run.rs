@@ -177,13 +177,17 @@ fn run_inner<A: AppLogic>(
                     && !modifiers.cmd
                     && backend.active_text_selection().is_some() =>
                 {
-                    let text = backend.take_cached_selection_text();
+                    let text = backend.cached_selection_text();
                     backend.services().clipboard().write_text(&text);
                     backend.clear_text_selection();
-                    // Deliver a ClipboardPaste event to the app so it can
-                    // show copy confirmation in its UI. Do NOT pass the
-                    // original Ctrl-C — that would trigger quit/etc.
-                    if app.handle(UiEvent::ClipboardPaste(text), backend) == Reaction::Exit {
+                    // Notify the app via TextCopied so it can show a
+                    // copy-confirmation badge. We use a dedicated event
+                    // rather than ClipboardPaste because ClipboardPaste
+                    // is routed to the focused text input ("insert this
+                    // text"), which is the opposite of what we want here.
+                    // Do NOT forward the original Ctrl-C — that would
+                    // trigger quit/copy-all/etc in app handlers.
+                    if app.handle(UiEvent::TextCopied(text), backend) == Reaction::Exit {
                         return Ok(());
                     }
                     needs_redraw = true;
