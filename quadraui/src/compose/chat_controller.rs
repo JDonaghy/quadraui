@@ -122,6 +122,14 @@ struct ChatLayout {
 /// pattern: the app pushes transcript turns per frame via
 /// [`set_transcript`](Self::set_transcript), and the controller owns only
 /// interaction state (scroll position, input buffer, history ring).
+///
+/// # Wrapping
+///
+/// Transcript turns are **hard-wrapped at the column boundary**, not
+/// word-wrapped: a turn is broken at exactly `floor(width / char_width)`
+/// characters per row, so a long word can split mid-word (e.g. with a
+/// 10-column budget `"implementation"` becomes `"implementa"` + `"tion"`).
+/// Word-aware soft-wrap is deferred to a future pass.
 pub struct ChatController {
     id: WidgetId,
     // ── Per-frame data pushed by the app ──────────────────────────────
@@ -955,7 +963,12 @@ fn build_scrollbar(
     sb
 }
 
-/// Soft-wrap `text` to at most `col_budget` chars per line.
+/// Hard-wrap `text` at the column boundary: break every `col_budget`
+/// characters regardless of word boundaries.
+///
+/// This is a deliberate v1 simplification — words can split mid-word (a
+/// 10-column budget turns `"implementation"` into `"implementa"` + `"tion"`).
+/// Word-aware soft-wrap is deferred to a future pass.
 fn wrap_text(text: &str, col_budget: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
@@ -1916,5 +1929,167 @@ mod tests {
         let cc = ChatController::new("c");
         let layout = cc.compute_layout(&MockBackend, make_rect());
         assert!(layout.spinner.is_none());
+    }
+
+    // ── Backend rendering tests ───────────────────────────────────────
+    //
+    // The tests above exercise state/layout against a `MockBackend` whose
+    // draw calls are no-ops. These two paint the controller through the
+    // real `TuiBackend` / `GtkBackend` trait impls into a backend-owned
+    // headless surface (a `ratatui::Buffer` / `cairo::ImageSurface`) and
+    // assert that the actual `draw_message_list` / `draw_text_input` /
+    // `draw_scrollbar` / `draw_spinner` rasterisers produced output. This
+    // is the golden-style coverage required by the issue acceptance
+    // criteria (TESTING.md "coordinate drift" row).
+
+    /// TUI: paint a populated controller into a `ratatui::Buffer` via the
+    /// `TuiBackend` trait path and assert the painted cells contain the
+    /// expected glyphs — the status label + model chip, the user role
+    /// header `"You"`, an assistant content row, and the input
+    /// placeholder. This proves the real TUI rasterisers ran (not a mock).
+    #[cfg(feature = "tui")]
+    #[test]
+    fn tui_render_paints_glyphs_into_buffer() {
+        use crate::tui::TuiBackend;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        const W: u16 = 48;
+        const H: u16 = 14;
+
+        let mut cc = ChatController::new("chat");
+        cc.set_status(StyledText::plain("Refining issue #264"));
+        cc.set_model_label("claude-opus-4-5");
+        cc.set_transcript(vec![
+            make_turn(ChatRole::User, "Hello there"),
+            make_turn(ChatRole::Assistant, "General Kenobi"),
+        ]);
+
+        let mut terminal = Terminal::new(TestBackend::new(W, H)).expect("construct test terminal");
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(crate::Viewport {
+            width: W as f32,
+            height: H as f32,
+            scale: 1.0,
+        });
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    cc.render(b, rect);
+                });
+            })
+            .expect("draw frame");
+
+        // Flatten the painted buffer to a single string so assertions are
+        // robust to exact cell coordinates.
+        let buf = terminal.backend().buffer();
+        let mut painted = String::new();
+        for y in 0..H {
+            for x in 0..W {
+                painted.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            painted.push('\n');
+        }
+
+        assert!(
+            painted.contains("Refining issue #264"),
+            "status label not painted:\n{painted}"
+        );
+        assert!(
+            painted.contains("claude-opus-4-5"),
+            "model chip not painted:\n{painted}"
+        );
+        assert!(
+            painted.contains("You"),
+            "user role header not painted:\n{painted}"
+        );
+        assert!(
+            painted.contains("General Kenobi"),
+            "assistant content row not painted:\n{painted}"
+        );
+        assert!(
+            painted.contains("Type a message"),
+            "input placeholder not painted:\n{painted}"
+        );
+    }
+
+    /// GTK: paint a populated controller into a `cairo::ImageSurface` via
+    /// the `GtkBackend` trait path against a white background, then assert
+    /// (a) the render inked at least one non-white pixel — proving the GTK
+    /// rasterisers actually drew — and (b) the backend's
+    /// `text_input_layout` returns a non-empty layout for the input zone.
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn gtk_render_inks_surface_and_layout_nonempty() {
+        use crate::gtk::GtkBackend;
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 360;
+        const H: i32 = 220;
+
+        let mut cc = ChatController::new("chat");
+        cc.set_status(StyledText::plain("Plan review for #264"));
+        cc.set_model_label("claude-opus-4-5");
+        cc.set_transcript(vec![
+            make_turn(ChatRole::User, "Hello there"),
+            make_turn(ChatRole::Assistant, "General Kenobi"),
+        ]);
+
+        let mut backend = GtkBackend::new();
+        // White background: any non-white pixel must have come from the
+        // controller's foreground ink (text / borders / scrollbar).
+        backend.set_theme(crate::Theme {
+            background: crate::Color::rgb(255, 255, 255),
+            ..crate::Theme::default()
+        });
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("cairo Context");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().expect("paint white baseline");
+            let layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                cc.render(b, rect);
+            });
+        }
+
+        // (a) The render path inked at least one non-white pixel.
+        let stride = surface.stride() as usize;
+        let inked = {
+            let data = surface.data().expect("surface data");
+            let mut found = false;
+            'scan: for y in 0..H {
+                for x in 0..W {
+                    let off = y as usize * stride + x as usize * 4;
+                    // Cairo ARGB32 on little-endian is BGRA in memory.
+                    let (r, g, b) = (data[off + 2], data[off + 1], data[off]);
+                    if !(r == 255 && g == 255 && b == 255) {
+                        found = true;
+                        break 'scan;
+                    }
+                }
+            }
+            found
+        };
+        assert!(
+            inked,
+            "controller.render painted nothing into the GTK surface"
+        );
+
+        // (b) text_input_layout for the input zone yields a usable layout.
+        let mut ti = TextInput::new(WidgetId::new("probe-input"));
+        ti.lines = vec!["hello".to_string()];
+        ti.cursor_col = 5;
+        ti.has_focus = true;
+        let input_rect = Rect::new(0.0, H as f32 - 80.0, W as f32, 80.0);
+        let ti_layout = backend.text_input_layout(input_rect, &ti);
+        assert!(
+            !ti_layout.visible_lines.is_empty(),
+            "text_input_layout returned no visible lines"
+        );
     }
 }
