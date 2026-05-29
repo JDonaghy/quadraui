@@ -164,7 +164,7 @@ fn run_inner<A: AppLogic>(
                 }
                 // Ctrl-C (any case, any additional modifiers) with an
                 // active selection → copy to clipboard and notify the app
-                // via ClipboardPaste so it can show confirmation feedback.
+                // via TextCopied so it can show confirmation feedback.
                 // Accepts 'C' as well as 'c' (CapsLock), and does not
                 // require shift/alt/cmd to be false (some terminals tag
                 // Ctrl-C with unexpected modifier bits).
