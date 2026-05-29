@@ -21,6 +21,10 @@
 //! - `PageUp` / `PageDown` — scroll the transcript.
 //! - `↑` / `↓` when the cursor is not on the boundary line — move the
 //!   cursor within the input.
+//! - `Ctrl+A` — move the cursor to the beginning of the current line
+//!   (readline convention).
+//! - `Ctrl+E` — move the cursor to the end of the current line
+//!   (readline convention).
 //!
 //! # Scroll behaviour
 //!
@@ -32,11 +36,12 @@ use crate::{
     Backend, ButtonMask, Color, Key, MessageList, MessageRow, Modifiers, MouseButton, NamedKey,
     Rect, Scrollbar, Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
 };
+use serde::{Deserialize, Serialize};
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
 /// Role of a chat participant.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatRole {
     /// A message from the end-user.
     User,
@@ -50,7 +55,7 @@ pub enum ChatRole {
 ///
 /// `text` is a [`StyledText`] so rich markdown-derived colouring can be added
 /// in a future pass. V1 rasterisers simply concatenate span text.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub role: ChatRole,
     pub text: StyledText,
@@ -653,9 +658,15 @@ impl ChatController {
                 ChatControllerEvent::Consumed
             }
 
-            // ── Ctrl+A: jump cursor to end (cheap select-all substitute) ─
+            // ── Ctrl+A: move cursor to beginning of line (readline) ────
             Key::Char('a') if modifiers.ctrl => {
-                self.input_cursor = self.input_buf.len();
+                self.input_move_home();
+                ChatControllerEvent::Consumed
+            }
+
+            // ── Ctrl+E: move cursor to end of line (readline) ──────────
+            Key::Char('e') if modifiers.ctrl => {
+                self.input_move_end();
                 ChatControllerEvent::Consumed
             }
 
@@ -1491,6 +1502,82 @@ mod tests {
         cc.handle(&event, &MockBackend, rect);
         assert_eq!(cc.history.len(), 1);
         assert_eq!(cc.history[0], "hello");
+    }
+
+    // ── Keyboard: Ctrl+A / Ctrl+E line motion ─────────────────────────
+
+    fn ctrl_key(ch: char) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char(ch),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn ctrl_a_moves_cursor_to_line_start() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        // Cursor sits at end of "hello" after insertion.
+        assert_eq!(cc.input_cursor, 5);
+        let ev = cc.handle(&ctrl_key('a'), &MockBackend, make_rect());
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.input_cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_e_moves_cursor_to_line_end() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        // Move to the start first so Ctrl+E has somewhere to travel.
+        cc.handle(&ctrl_key('a'), &MockBackend, make_rect());
+        assert_eq!(cc.input_cursor, 0);
+        let ev = cc.handle(&ctrl_key('e'), &MockBackend, make_rect());
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.input_cursor, 5);
+    }
+
+    #[test]
+    fn ctrl_a_e_respect_current_line_in_multiline() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello\nworld");
+        // Cursor is on the second line, at its end (byte index 11).
+        assert_eq!(cc.input_cursor, 11);
+        // Ctrl+A moves to the start of the *current* line, not the buffer.
+        cc.handle(&ctrl_key('a'), &MockBackend, make_rect());
+        // Cursor lands just after the '\n' (start of "world").
+        assert_eq!(cc.input_cursor, 6);
+        // Ctrl+E moves to the end of the current line (end of buffer here).
+        cc.handle(&ctrl_key('e'), &MockBackend, make_rect());
+        assert_eq!(cc.input_cursor, 11);
+    }
+
+    // ── Serde round-trips ─────────────────────────────────────────────
+
+    #[test]
+    fn chat_turn_serde_roundtrip() {
+        let turn = ChatTurn {
+            role: ChatRole::Assistant,
+            text: StyledText::colored("hi there", Color::rgb(180, 230, 180)),
+            timestamp_unix: Some(1_700_000_000.0),
+        };
+        let json = serde_json::to_string(&turn).expect("serialize ChatTurn");
+        let decoded: ChatTurn = serde_json::from_str(&json).expect("deserialize ChatTurn");
+        assert_eq!(decoded.role, turn.role);
+        assert_eq!(decoded.text, turn.text);
+        assert_eq!(decoded.timestamp_unix, turn.timestamp_unix);
+    }
+
+    #[test]
+    fn chat_role_serde_roundtrip() {
+        for role in [ChatRole::User, ChatRole::Assistant, ChatRole::System] {
+            let json = serde_json::to_string(&role).expect("serialize ChatRole");
+            let decoded: ChatRole = serde_json::from_str(&json).expect("deserialize ChatRole");
+            assert_eq!(decoded, role);
+        }
     }
 
     // ── Keyboard: cancel ──────────────────────────────────────────────

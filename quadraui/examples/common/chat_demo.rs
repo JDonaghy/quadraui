@@ -38,6 +38,9 @@ pub struct ChatDemo {
     /// Pending assistant reply text (set when the user submits, delivered after
     /// the thinking delay).
     pending_reply: Option<String>,
+    /// Monotonically advancing spinner animation frame. Incremented every tick
+    /// while the assistant is "thinking" so the spinner visibly rotates.
+    spinner_frame: usize,
 }
 
 impl ChatDemo {
@@ -52,6 +55,7 @@ impl ChatDemo {
             turns: Vec::new(),
             thinking_ticks: 0,
             pending_reply: None,
+            spinner_frame: 0,
         }
     }
 
@@ -134,12 +138,9 @@ impl AppLogic for ChatDemo {
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
         if self.thinking_ticks > 0 {
             self.thinking_ticks -= 1;
-            // Advance spinner animation.
-            self.controller.set_spinner_frame(
-                self.controller
-                    .transcript_scroll_top() // borrow a stable counter
-                    .wrapping_add(1),
-            );
+            // Advance spinner animation by one frame each tick.
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
+            self.controller.set_spinner_frame(self.spinner_frame);
             if self.thinking_ticks == 0 {
                 // Deliver the simulated reply.
                 if let Some(reply) = self.pending_reply.take() {
