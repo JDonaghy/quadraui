@@ -30,7 +30,7 @@ use ratatui::Terminal;
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::tui::backend::TuiBackend;
-use crate::{Key, Modifiers, UiEvent};
+use crate::{Key, UiEvent};
 
 /// Default poll timeout — 16 ms ≈ 60 fps. The runner sleeps inside
 /// `wait_events(timeout)` waiting for input; on timeout the loop
@@ -154,28 +154,39 @@ fn run_inner<A: AppLogic>(
                     backend.set_active_text_selection(region.clone(), *anchor, *focus);
                     needs_redraw = true;
                 }
-                // Clear active selection on any mouse-down (new click).
+                // Clear the displayed selection highlight on any mouse-down.
+                // Use `clear_selection_display` rather than
+                // `clear_text_selection` so we don't cancel the
+                // `TextSelection` drag that `apply_dispatch` just started
+                // in `wait_events` for this very event.
                 UiEvent::MouseDown { .. } => {
-                    backend.clear_text_selection();
+                    backend.clear_selection_display();
                 }
-                // Ctrl-C with an active selection → copy to clipboard
-                // and suppress the event (don't pass to app).
+                // Ctrl-C (any case, any additional modifiers) with an
+                // active selection → copy to clipboard and notify the app
+                // via ClipboardPaste so it can show confirmation feedback.
+                // Accepts 'C' as well as 'c' (CapsLock), and does not
+                // require shift/alt/cmd to be false (some terminals tag
+                // Ctrl-C with unexpected modifier bits).
                 UiEvent::KeyPressed {
-                    key: Key::Char('c'),
-                    modifiers:
-                        Modifiers {
-                            ctrl: true,
-                            shift: false,
-                            alt: false,
-                            cmd: false,
-                        },
+                    key: Key::Char('c') | Key::Char('C'),
+                    modifiers,
                     ..
-                } if backend.active_text_selection().is_some() => {
-                    let text = backend.extract_selection_text(terminal.current_buffer_mut());
+                } if modifiers.ctrl
+                    && !modifiers.alt
+                    && !modifiers.cmd
+                    && backend.active_text_selection().is_some() =>
+                {
+                    let text = backend.take_cached_selection_text();
                     backend.services().clipboard().write_text(&text);
                     backend.clear_text_selection();
+                    // Deliver a ClipboardPaste event to the app so it can
+                    // show copy confirmation in its UI. Do NOT pass the
+                    // original Ctrl-C — that would trigger quit/etc.
+                    if app.handle(UiEvent::ClipboardPaste(text), backend) == Reaction::Exit {
+                        return Ok(());
+                    }
                     needs_redraw = true;
-                    // Do NOT pass this Ctrl-C to the app.
                     continue;
                 }
                 _ => {}

@@ -117,6 +117,13 @@ pub struct TuiBackend {
     /// cleared by [`Self::clear_text_selection`] or on a new
     /// `MouseDown`.
     active_selection: Option<TuiTextSelection>,
+    /// Text extracted from the last rendered buffer for the active
+    /// selection. Populated by `apply_selection_highlight` (which has
+    /// access to the live buffer inside `terminal.draw`). After the
+    /// draw closure returns ratatui swaps its double-buffer, so
+    /// `terminal.current_buffer_mut()` would return an empty buffer —
+    /// caching here is the only reliable way to get the text.
+    cached_selection_text: String,
 }
 
 impl TuiBackend {
@@ -140,6 +147,7 @@ impl TuiBackend {
             double_click: super::events::DoubleClickDetector::new(),
             text_regions: Vec::new(),
             active_selection: None,
+            cached_selection_text: String::new(),
         }
     }
 
@@ -255,14 +263,22 @@ impl TuiBackend {
         }
     }
 
+    /// Clear only the displayed selection highlight without touching drag
+    /// state. Used by the run loop on `MouseDown` so that the drag just
+    /// initiated by `dispatch_click` is not immediately cancelled.
+    pub(crate) fn clear_selection_display(&mut self) {
+        self.active_selection = None;
+    }
+
     /// Invert (highlight) the cells in the ratatui buffer that fall
-    /// within the active text selection range. Swaps foreground and
-    /// background colour for each selected cell.
+    /// within the active text selection range, and cache the extracted
+    /// text in `self.cached_selection_text`.
     ///
     /// Must be called inside `terminal.draw(|frame| …)` after
-    /// `app.render` so that the selection is overlaid on top of the
-    /// app's content.
-    pub(crate) fn apply_selection_highlight(&self, buf: &mut ratatui::buffer::Buffer) {
+    /// `app.render`. The cache is necessary because ratatui swaps its
+    /// double-buffer after `draw` returns, so `terminal.current_buffer_mut()`
+    /// would return an empty buffer by the time Ctrl-C fires.
+    pub(crate) fn apply_selection_highlight(&mut self, buf: &mut ratatui::buffer::Buffer) {
         let sel = match &self.active_selection {
             Some(s) => s,
             None => return,
@@ -279,6 +295,25 @@ impl TuiBackend {
         );
         let ranges = crate::dispatch::text_selection_line_range(sel.anchor, sel.focus, bounds);
         let area = buf.area;
+
+        // Cache text before inverting so we read the original cell content.
+        let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
+        for &(row, col_start, col_end) in &ranges {
+            if row >= area.y + area.height {
+                continue;
+            }
+            let mut line = String::new();
+            for col in col_start..col_end {
+                if col < area.x + area.width {
+                    line.push_str(buf[(col, row)].symbol());
+                }
+            }
+            let trimmed = line.trim_end_matches(|c: char| c.is_whitespace() || c == '\0');
+            lines.push(trimmed.to_string());
+        }
+        self.cached_selection_text = lines.join("\n");
+
+        // Now invert cells for the highlight.
         for (row, col_start, col_end) in ranges {
             for col in col_start..col_end {
                 if col < area.x + area.width && row < area.y + area.height {
@@ -292,11 +327,21 @@ impl TuiBackend {
         }
     }
 
+    /// Return the selection text cached by the last `apply_selection_highlight` call.
+    pub(crate) fn take_cached_selection_text(&self) -> String {
+        self.cached_selection_text.clone()
+    }
+
     /// Read the selected cells back from `buf`, trim trailing whitespace
     /// per line, and return the joined text (lines separated by `\n`).
     ///
     /// Falls back to an empty `String` when there is no active selection
     /// or the region id can no longer be found in the registered regions.
+    ///
+    /// Only used in tests — production code uses the text cached by
+    /// `apply_selection_highlight` (the live buffer is unavailable after
+    /// `terminal.draw` swaps ratatui's double-buffer).
+    #[cfg(test)]
     pub(crate) fn extract_selection_text(&self, buf: &ratatui::buffer::Buffer) -> String {
         let sel = match &self.active_selection {
             Some(s) => s,
@@ -344,6 +389,58 @@ impl TuiBackend {
     /// backend doesn't know which widget has focus or what mode the app
     /// is in. Apps that want those scopes match against `KeyPressed`
     /// themselves once they have that context.
+    /// Run raw translated events through the dispatch layer so that
+    /// `MouseDown` on a text region begins a `TextSelection` drag and
+    /// `MouseMoved` (with button held) emits `TextSelectionChanged`.
+    ///
+    /// Scroll-surface arbitration is not wired here yet — scroll surfaces
+    /// are not registered per-frame by `TuiBackend`. That is a TODO for
+    /// the scrollbar dispatch epic; passing an empty slice means text
+    /// regions work correctly today and scrollbar drags are unaffected
+    /// (they continue to be handled by app-side hit-tests as before).
+    fn apply_dispatch(&mut self, raw: Vec<UiEvent>) -> Vec<UiEvent> {
+        let mut out = Vec::with_capacity(raw.len());
+        for event in raw {
+            match event {
+                UiEvent::MouseDown {
+                    button,
+                    position,
+                    modifiers,
+                    ..
+                } => {
+                    out.extend(crate::dispatch::dispatch_click(
+                        &self.modal_stack,
+                        &[],
+                        &self.text_regions.clone(),
+                        &mut self.drag_state,
+                        position,
+                        button,
+                        modifiers,
+                    ));
+                }
+                UiEvent::MouseMoved { position, buttons } => {
+                    out.extend(crate::dispatch::dispatch_mouse_drag(
+                        &self.drag_state,
+                        position,
+                        buttons,
+                    ));
+                }
+                UiEvent::MouseUp {
+                    button, position, ..
+                } => {
+                    out.extend(crate::dispatch::dispatch_mouse_up(
+                        &self.modal_stack,
+                        &mut self.drag_state,
+                        position,
+                        button,
+                    ));
+                }
+                other => out.push(other),
+            }
+        }
+        out
+    }
+
     fn apply_accelerators(&self, events: &mut [UiEvent]) {
         if self.parsed_accelerators.is_empty() {
             return;
@@ -503,15 +600,16 @@ impl Backend for TuiBackend {
         // Drain every queued crossterm event; never blocks. Each
         // native event translates to zero, one, or more `UiEvent`s
         // via [`super::events::crossterm_to_uievents`], then runs
-        // through [`Self::apply_accelerators`] so registered bindings
-        // surface as `UiEvent::Accelerator` instead of `KeyPressed`.
-        let mut out = Vec::new();
+        // through the dispatch layer (text-region hit-test, drag state)
+        // and [`Self::apply_accelerators`].
+        let mut raw = Vec::new();
         while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
             match ratatui::crossterm::event::read() {
-                Ok(ev) => out.extend(super::events::crossterm_to_uievents(ev)),
+                Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
                 Err(_) => break,
             }
         }
+        let mut out = self.apply_dispatch(raw);
         self.apply_accelerators(&mut out);
         self.double_click.process(&mut out);
         out
@@ -519,16 +617,13 @@ impl Backend for TuiBackend {
 
     fn wait_events(&mut self, timeout: Duration) -> Vec<UiEvent> {
         // Block up to `timeout` for the next native event, translate it,
-        // match against registered accelerators, and return. Empty `Vec`
-        // on timeout.
-        //
-        // The "one event per call" shape preserves the existing event
-        // loop's `match` semantics: each iteration handles exactly one
-        // event before checking timing-sensitive state (yank highlight
-        // expiry, notification spinner cadence, etc.).
+        // run through the dispatch layer (text-region hit-test, drag
+        // state), match against registered accelerators, and return.
+        // Empty `Vec` on timeout.
         if let Ok(true) = ratatui::crossterm::event::poll(timeout) {
             if let Ok(ev) = ratatui::crossterm::event::read() {
-                let mut out = super::events::crossterm_to_uievents(ev);
+                let raw = super::events::crossterm_to_uievents(ev);
+                let mut out = self.apply_dispatch(raw);
                 self.apply_accelerators(&mut out);
                 self.double_click.process(&mut out);
                 return out;
