@@ -6,9 +6,11 @@
 //! pre-D6 dialog renderer.
 
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect as RRect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
+use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::theme::Theme;
 use crate::types::StyledText;
 
@@ -16,6 +18,37 @@ use crate::types::StyledText;
 /// per-span style overrides today.
 fn flatten(text: &StyledText) -> String {
     text.spans.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// Compute the TUI dialog layout using cell metrics.
+///
+/// Uses the same `tui_item_width` measurer as the toolbar rasteriser so
+/// toolbar button positions agree between paint and hit-test.
+pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> DialogLayout {
+    use super::toolbar::tui_item_width;
+    use crate::primitives::dialog::DialogMeasure;
+
+    // Measure body height as number of body lines (capped to a maximum
+    // to keep the dialog from filling the whole viewport).
+    let body_h = (dialog.body.len() as f32).clamp(0.0, 10.0);
+    let input_h = if dialog.input.is_some() { 1.0 } else { 0.0 };
+    let measure = DialogMeasure {
+        width: (viewport.width * 0.5).clamp(30.0, 60.0),
+        title_height: if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
+            1.0
+        } else {
+            0.0
+        },
+        body_height: body_h,
+        input_height: input_h,
+        button_row_height: 1.0,
+        button_width: 8.0,
+        button_gap: 2.0,
+        padding: 1.0,
+    };
+    dialog.layout(viewport, measure, |btn| {
+        ToolbarItemMeasure::new(tui_item_width(btn))
+    })
 }
 
 /// Draw a [`Dialog`] at its resolved layout.
@@ -98,21 +131,34 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
         }
     }
 
-    // Optional input field.
-    if let (Some(input_bounds), Some(input)) = (layout.input_bounds, &dialog.input) {
+    // Optional input slot — text input or embedded toolbar.
+    if let (Some(input_bounds), Some(input_kind)) = (layout.input_bounds, &dialog.input) {
         let ix = input_bounds.x.round() as u16;
         let iy = input_bounds.y.round() as u16;
         let iw = input_bounds.width.round() as u16;
-        for col in ix..ix + iw {
-            set_cell(buf, col, iy, ' ', fg, input_bg);
-        }
-        let display = format!(" {}", input.value);
-        for (i, ch) in display.chars().enumerate() {
-            let col = ix + i as u16;
-            if col >= ix + iw {
-                break;
+        match input_kind {
+            DialogInput::TextInput(input) => {
+                for col in ix..ix + iw {
+                    set_cell(buf, col, iy, ' ', fg, input_bg);
+                }
+                let display = format!(" {}", input.value);
+                for (i, ch) in display.chars().enumerate() {
+                    let col = ix + i as u16;
+                    if col >= ix + iw {
+                        break;
+                    }
+                    set_cell(buf, col, iy, ch, fg, input_bg);
+                }
             }
-            set_cell(buf, col, iy, ch, fg, input_bg);
+            DialogInput::Toolbar(toolbar) => {
+                // Delegate to the toolbar rasteriser. The toolbar layout
+                // was precomputed in `body_toolbar_layout`; we reconstruct
+                // the area rect from the input_bounds so draw_toolbar can
+                // repaint with hover/pressed state if the caller provides
+                // it. For the dialog paint path we pass `None` for both.
+                let toolbar_area = RRect::new(ix, iy, iw, 1);
+                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
+            }
         }
     }
 
@@ -141,7 +187,7 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::dialog::{Dialog, DialogButton, DialogMeasure};
+    use crate::primitives::dialog::{Dialog, DialogButton, DialogMeasure, DialogTextInput};
     use crate::types::{StyledSpan, WidgetId};
     use ratatui::layout::Rect;
 
@@ -188,7 +234,7 @@ mod tests {
             padding: 1.0,
         };
         let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
-        dialog.layout(viewport, measure)
+        dialog.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0))
     }
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
@@ -236,11 +282,13 @@ mod tests {
     fn renders_input_field_when_present() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
         let mut d = make_dialog();
-        d.input = Some(crate::primitives::dialog::DialogInput {
-            value: "hello".into(),
-            placeholder: String::new(),
-            cursor: Some(5),
-        });
+        d.input = Some(crate::primitives::dialog::DialogInput::TextInput(
+            crate::primitives::dialog::DialogTextInput {
+                value: "hello".into(),
+                placeholder: String::new(),
+                cursor: Some(5),
+            },
+        ));
         let measure = DialogMeasure {
             width: 40.0,
             title_height: 1.0,
@@ -252,7 +300,7 @@ mod tests {
             padding: 1.0,
         };
         let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
-        let layout = d.layout(viewport, measure);
+        let layout = d.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0));
         let theme = Theme {
             input_bg: crate::types::Color::rgb(7, 7, 7),
             ..Theme::default()
@@ -281,8 +329,191 @@ mod tests {
             padding: 0.0,
         };
         let viewport = crate::event::Rect::new(0.0, 0.0, 0.0, 0.0);
-        let layout = d.layout(viewport, measure);
+        let layout = d.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0));
         draw_dialog(&mut buf, &d, &layout, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Gap A: DialogInput::Toolbar paint↔click round-trip ───────────────
+
+    use crate::primitives::dialog::{DialogHit, DialogInput};
+    use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+    fn make_toolbar_dialog() -> Dialog {
+        Dialog {
+            id: WidgetId::new("migrate"),
+            title: StyledText {
+                spans: vec![StyledSpan::plain("Confirm migration")],
+            },
+            body: vec![StyledText {
+                spans: vec![StyledSpan::plain("Choose an action:")],
+            }],
+            buttons: vec![DialogButton {
+                id: WidgetId::new("ok"),
+                label: "OK".into(),
+                is_default: true,
+                is_cancel: false,
+                tint: None,
+            }],
+            severity: None,
+            vertical_buttons: false,
+            input: Some(DialogInput::Toolbar(Toolbar {
+                id: WidgetId::new("body-toolbar"),
+                buttons: vec![
+                    ToolbarButton::Action {
+                        id: WidgetId::new("preview"),
+                        label: "Preview".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                    ToolbarButton::Separator,
+                    ToolbarButton::Action {
+                        id: WidgetId::new("apply"),
+                        label: "Apply".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                ],
+                bg: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn body_toolbar_paints_button_brackets() {
+        let d = make_toolbar_dialog();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
+
+        // The input_bounds slot should be set.
+        assert!(
+            layout.input_bounds.is_some(),
+            "input_bounds should be Some for Toolbar variant"
+        );
+        assert!(
+            layout.body_toolbar_layout.is_some(),
+            "body_toolbar_layout should be Some"
+        );
+
+        // The toolbar should have painted `[` somewhere inside the dialog.
+        let ib = layout.input_bounds.unwrap();
+        let start_y = ib.y.round() as u16;
+        let start_x = ib.x.round() as u16;
+        let end_x = (ib.x + ib.width).round() as u16;
+
+        let mut found_bracket = false;
+        for x in start_x..end_x {
+            if cell_char(&buf, x, start_y) == '[' {
+                found_bracket = true;
+                break;
+            }
+        }
+        assert!(
+            found_bracket,
+            "toolbar `[` bracket should be painted in body slot"
+        );
+    }
+
+    #[test]
+    fn body_toolbar_click_routes_to_body_toolbar_button() {
+        let d = make_toolbar_dialog();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
+
+        let tl = layout
+            .body_toolbar_layout
+            .as_ref()
+            .expect("toolbar layout present");
+        // Find the "Preview" button in the toolbar layout.
+        let preview_vis = tl
+            .visible_items
+            .iter()
+            .find(|v| v.action_id.as_ref().map(|id| id.as_str()) == Some("preview"))
+            .expect("preview button visible");
+        assert!(preview_vis.clickable, "preview should be clickable");
+
+        // Click inside the "Preview" button bounds.
+        let cx = preview_vis.bounds.x + 1.0;
+        let cy = preview_vis.bounds.y;
+        match layout.hit_test(cx, cy) {
+            DialogHit::BodyToolbarButton(id) => {
+                assert_eq!(id.as_str(), "preview");
+            }
+            other => panic!("expected BodyToolbarButton(preview), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn body_toolbar_apply_button_also_routes() {
+        let d = make_toolbar_dialog();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+
+        let tl = layout
+            .body_toolbar_layout
+            .as_ref()
+            .expect("toolbar layout present");
+        let apply_vis = tl
+            .visible_items
+            .iter()
+            .find(|v| v.action_id.as_ref().map(|id| id.as_str()) == Some("apply"))
+            .expect("apply button visible");
+
+        let cx = apply_vis.bounds.x + 1.0;
+        let cy = apply_vis.bounds.y;
+        match layout.hit_test(cx, cy) {
+            DialogHit::BodyToolbarButton(id) => {
+                assert_eq!(id.as_str(), "apply");
+            }
+            other => panic!("expected BodyToolbarButton(apply), got {:?}", other),
+        }
+    }
+
+    // ── Serde round-trip for DialogInput::Toolbar ─────────────────────────
+
+    #[test]
+    fn serde_roundtrip_dialog_input_toolbar() {
+        use crate::types::WidgetId;
+        let input = DialogInput::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                ToolbarButton::Action {
+                    id: WidgetId::new("preview"),
+                    label: "Preview".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Separator,
+            ],
+            bg: None,
+        });
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_dialog_input_text_input() {
+        let input = DialogInput::TextInput(DialogTextInput {
+            value: "hello".into(),
+            placeholder: "placeholder".into(),
+            cursor: Some(5),
+        });
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
     }
 }

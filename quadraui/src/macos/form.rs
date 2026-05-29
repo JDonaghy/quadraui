@@ -88,6 +88,54 @@ pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont
                 // Segments butt up against each other — no inter-item gap.
                 FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
             }
+            FieldKind::Toolbar(toolbar) => {
+                use crate::primitives::toolbar::ToolbarButton;
+                let start_x = {
+                    let label_text: String =
+                        field.label.spans.iter().map(|s| s.text.as_str()).collect();
+                    if label_text.is_empty() {
+                        6.0_f32
+                    } else {
+                        let (lw, _) = measure_text(font, &label_text);
+                        6.0 + lw as f32 + 12.0
+                    }
+                };
+                let items = toolbar
+                    .buttons
+                    .iter()
+                    .map(|btn| {
+                        let id = match btn {
+                            ToolbarButton::Action { id, .. } => id.clone(),
+                            _ => field.id.clone(),
+                        };
+                        let width = match btn {
+                            ToolbarButton::Action {
+                                label,
+                                icon,
+                                key_hint,
+                                ..
+                            } => {
+                                let mut text = String::new();
+                                if let Some(ic) = icon {
+                                    text.push_str(ic);
+                                    text.push(' ');
+                                }
+                                text.push_str(label);
+                                if let Some(hint) = key_hint {
+                                    text.push_str(" (");
+                                    text.push_str(hint);
+                                    text.push(')');
+                                }
+                                (measure_text(font, &text).0 as f32) + 16.0
+                            }
+                            ToolbarButton::Separator => 12.0,
+                            ToolbarButton::Label { text, .. } => measure_text(font, text).0 as f32,
+                        };
+                        FormItemMeasure { id, width }
+                    })
+                    .collect();
+                FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+            }
             _ => FormFieldMeasure::new(row_h),
         }
     })
@@ -413,6 +461,20 @@ pub unsafe fn draw_form(
                             );
                         }
                     }
+                }
+            }
+            FieldKind::Toolbar(toolbar) => {
+                // Delegate to the macOS toolbar rasteriser.
+                let toolbar_x = if no_label {
+                    label_x
+                } else {
+                    label_right + 12.0
+                };
+                let toolbar_w = row_w - (toolbar_x - x);
+                if toolbar_w > 0.0 {
+                    super::toolbar::draw_toolbar(
+                        ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
+                    );
                 }
             }
             // Rich field kinds still without paint paths — label-only

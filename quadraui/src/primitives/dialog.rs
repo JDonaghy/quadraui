@@ -16,6 +16,7 @@
 //! `Cancelled` unconditionally.
 
 use crate::event::Rect;
+use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
 use crate::types::{Color, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -38,17 +39,33 @@ pub struct Dialog {
     /// false, buttons are horizontal, right-aligned.
     #[serde(default)]
     pub vertical_buttons: bool,
-    /// Optional single-line text input rendered between body and
-    /// buttons. Used for rename prompts, input-required confirms.
-    /// Apps own the value; the primitive echoes back typed chars via
-    /// `DialogEvent::InputChanged`.
+    /// Optional content rendered between the body text and the button row.
+    ///
+    /// - [`DialogInput::TextInput`] — single-line text field; used for
+    ///   rename prompts, input-required confirms.
+    /// - [`DialogInput::Toolbar`] — horizontal action strip; used when
+    ///   the dialog wants an inline action bar (e.g. "Preview / Skip /
+    ///   Apply") in addition to the modal OK/Cancel buttons.
+    ///
+    /// Apps own the value; events come back through [`DialogEvent`].
     #[serde(default)]
     pub input: Option<DialogInput>,
 }
 
-/// Text input embedded in a dialog.
+/// Content of the slot rendered between the body text and the button row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DialogInput {
+pub enum DialogInput {
+    /// Single-line text field (rename prompts, input-required confirms).
+    TextInput(DialogTextInput),
+    /// Inline horizontal action strip. Backends render this by calling their
+    /// `draw_toolbar` equivalent inside the body slot. Click events are
+    /// returned as [`DialogEvent::BodyToolbarClicked`].
+    Toolbar(Toolbar),
+}
+
+/// Single-line text input embedded in a dialog body slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogTextInput {
     /// Current input value.
     pub value: String,
     /// Placeholder text shown when `value` is empty.
@@ -98,6 +115,9 @@ pub enum DialogEvent {
     /// User pressed Enter inside the input field — apps typically
     /// treat this like clicking the default button.
     InputCommitted { value: String },
+    /// User clicked an enabled action button inside a
+    /// [`DialogInput::Toolbar`] body slot.
+    BodyToolbarClicked { id: WidgetId },
     /// Dialog dismissed without a specific button (click-outside
     /// where the app allows it). Prefer `ButtonClicked` with the
     /// cancel button when possible.
@@ -153,6 +173,9 @@ pub struct VisibleDialogButton {
 pub enum DialogHit {
     /// Click landed on a button.
     Button(WidgetId),
+    /// Click landed on an enabled action button inside the body toolbar
+    /// ([`DialogInput::Toolbar`]).
+    BodyToolbarButton(WidgetId),
     /// Click landed on the dialog box (not a button) — apps typically
     /// swallow this so it doesn't dismiss.
     Body,
@@ -169,9 +192,15 @@ pub struct DialogLayout {
     pub title_bounds: Option<Rect>,
     /// Body content bounds.
     pub body_bounds: Rect,
-    /// Text-input row bounds (if the dialog has an input and
-    /// `measure.input_height > 0`).
+    /// Bounds of the input slot (text input or toolbar), when present
+    /// and `measure.input_height > 0`. Rasterisers use this to position
+    /// whichever kind of input the dialog carries.
     pub input_bounds: Option<Rect>,
+    /// Pre-computed [`ToolbarLayout`] for the body-slot toolbar, when
+    /// the dialog carries a [`DialogInput::Toolbar`]. `None` for all
+    /// other input kinds. Rasterisers use this to paint the toolbar
+    /// and route click events.
+    pub body_toolbar_layout: Option<ToolbarLayout>,
     /// Button row bounds.
     pub button_row_bounds: Rect,
     pub visible_buttons: Vec<VisibleDialogButton>,
@@ -186,6 +215,14 @@ impl DialogLayout {
             && y < self.bounds.y + self.bounds.height;
         if !inside {
             return DialogHit::Outside;
+        }
+        // Check toolbar hit regions first (finer-grained than the body
+        // slot bounding box in `hit_regions`).
+        if let Some(ref tl) = self.body_toolbar_layout {
+            match tl.hit_test(x, y) {
+                ToolbarHit::Button(id) => return DialogHit::BodyToolbarButton(id),
+                ToolbarHit::Empty => {}
+            }
         }
         for (rect, hit) in &self.hit_regions {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
@@ -206,13 +243,28 @@ impl Dialog {
     /// - `measure` — sub-region widths/heights. Backends measure the
     ///   body text (wrapping to `measure.width`) and set
     ///   `body_height` accordingly; ditto for title and buttons.
+    ///   `input_height` is used for both the text-input and toolbar
+    ///   variants — set it to the desired slot height regardless of
+    ///   which [`DialogInput`] kind is present.
+    /// - `measure_toolbar_item` — per-item width callback for the
+    ///   toolbar variant. When `self.input` is not
+    ///   [`DialogInput::Toolbar`], this callback is never called and
+    ///   may be `|_| ToolbarItemMeasure::new(0.0)`.
     ///
     /// # Centering
     ///
     /// The dialog box is placed at the viewport's horizontal + vertical
     /// center. Button row is at the bottom of the box, right-aligned
     /// (horizontal) or stretched (vertical).
-    pub fn layout(&self, viewport: Rect, measure: DialogMeasure) -> DialogLayout {
+    pub fn layout<F>(
+        &self,
+        viewport: Rect,
+        measure: DialogMeasure,
+        measure_toolbar_item: F,
+    ) -> DialogLayout
+    where
+        F: Fn(&crate::primitives::toolbar::ToolbarButton) -> ToolbarItemMeasure,
+    {
         let total_h = measure.total_height();
         let box_x = viewport.x + (viewport.width - measure.width) * 0.5;
         let box_y = viewport.y + (viewport.height - total_h) * 0.5;
@@ -233,13 +285,21 @@ impl Dialog {
         let body_bounds = Rect::new(content_x, cursor_y, content_w, measure.body_height);
         cursor_y += measure.body_height;
 
-        let input_bounds = if self.input.is_some() && measure.input_height > 0.0 {
-            let b = Rect::new(content_x, cursor_y, content_w, measure.input_height);
-            cursor_y += measure.input_height;
-            Some(b)
-        } else {
-            None
-        };
+        let (input_bounds, body_toolbar_layout) =
+            if self.input.is_some() && measure.input_height > 0.0 {
+                let b = Rect::new(content_x, cursor_y, content_w, measure.input_height);
+                cursor_y += measure.input_height;
+
+                let tl = match &self.input {
+                    Some(DialogInput::Toolbar(toolbar)) => {
+                        Some(toolbar.layout(b.x, b.y, b.width, b.height, &measure_toolbar_item))
+                    }
+                    _ => None,
+                };
+                (Some(b), tl)
+            } else {
+                (None, None)
+            };
 
         let button_row_bounds =
             Rect::new(content_x, cursor_y, content_w, measure.button_row_height);
@@ -286,6 +346,7 @@ impl Dialog {
             title_bounds,
             body_bounds,
             input_bounds,
+            body_toolbar_layout,
             button_row_bounds,
             visible_buttons,
             hit_regions,
@@ -306,5 +367,221 @@ impl Dialog {
     /// `is_cancel = true`).
     pub fn cancel_button_id(&self) -> Option<&WidgetId> {
         self.buttons.iter().find(|b| b.is_cancel).map(|b| &b.id)
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+    use crate::types::WidgetId;
+
+    fn no_measure(_: &crate::primitives::toolbar::ToolbarButton) -> ToolbarItemMeasure {
+        ToolbarItemMeasure::new(0.0)
+    }
+
+    fn viewport() -> Rect {
+        Rect::new(0.0, 0.0, 400.0, 300.0)
+    }
+
+    fn measure_no_input() -> DialogMeasure {
+        DialogMeasure {
+            width: 200.0,
+            title_height: 20.0,
+            body_height: 20.0,
+            input_height: 0.0,
+            button_row_height: 20.0,
+            button_width: 60.0,
+            button_gap: 8.0,
+            padding: 10.0,
+        }
+    }
+
+    fn measure_with_input() -> DialogMeasure {
+        DialogMeasure {
+            input_height: 20.0,
+            ..measure_no_input()
+        }
+    }
+
+    fn btn(id: &str) -> DialogButton {
+        DialogButton {
+            id: WidgetId::new(id),
+            label: id.to_string(),
+            is_default: false,
+            is_cancel: false,
+            tint: None,
+        }
+    }
+
+    fn base_dialog(input: Option<DialogInput>) -> Dialog {
+        Dialog {
+            id: WidgetId::new("d"),
+            title: crate::types::StyledText::plain("Title"),
+            body: vec![crate::types::StyledText::plain("Body")],
+            buttons: vec![btn("ok")],
+            severity: None,
+            vertical_buttons: false,
+            input,
+        }
+    }
+
+    // ── DialogInput::TextInput serde round-trip ───────────────────────────
+
+    #[test]
+    fn serde_dialog_text_input_round_trip() {
+        let input = DialogInput::TextInput(DialogTextInput {
+            value: "hello".into(),
+            placeholder: "type here".into(),
+            cursor: Some(5),
+        });
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
+    }
+
+    // ── DialogInput::Toolbar serde round-trip ─────────────────────────────
+
+    #[test]
+    fn serde_dialog_toolbar_round_trip() {
+        let input = DialogInput::Toolbar(Toolbar {
+            id: WidgetId::new("body-tb"),
+            buttons: vec![
+                ToolbarButton::Action {
+                    id: WidgetId::new("preview"),
+                    label: "Preview".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Separator,
+                ToolbarButton::Action {
+                    id: WidgetId::new("apply"),
+                    label: "Apply".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+            ],
+            bg: None,
+        });
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
+    }
+
+    // ── DialogEvent::BodyToolbarClicked serde round-trip ──────────────────
+
+    #[test]
+    fn serde_dialog_event_body_toolbar_clicked() {
+        let ev = DialogEvent::BodyToolbarClicked {
+            id: WidgetId::new("preview"),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: DialogEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+    }
+
+    // ── Toolbar variant creates body_toolbar_layout ───────────────────────
+
+    #[test]
+    fn layout_toolbar_variant_sets_body_toolbar_layout() {
+        let d = base_dialog(Some(DialogInput::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "A".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+        })));
+        let layout = d.layout(viewport(), measure_with_input(), |_| {
+            ToolbarItemMeasure::new(10.0)
+        });
+        assert!(
+            layout.input_bounds.is_some(),
+            "input_bounds should be Some for Toolbar variant"
+        );
+        assert!(
+            layout.body_toolbar_layout.is_some(),
+            "body_toolbar_layout should be Some for Toolbar variant"
+        );
+        assert!(
+            layout
+                .body_toolbar_layout
+                .as_ref()
+                .unwrap()
+                .visible_items
+                .len()
+                == 1
+        );
+    }
+
+    #[test]
+    fn layout_text_input_variant_does_not_set_body_toolbar_layout() {
+        let d = base_dialog(Some(DialogInput::TextInput(DialogTextInput {
+            value: "x".into(),
+            placeholder: String::new(),
+            cursor: None,
+        })));
+        let layout = d.layout(viewport(), measure_with_input(), no_measure);
+        assert!(layout.input_bounds.is_some());
+        assert!(
+            layout.body_toolbar_layout.is_none(),
+            "body_toolbar_layout should be None for TextInput variant"
+        );
+    }
+
+    // ── BodyToolbarButton hit routing ─────────────────────────────────────
+
+    #[test]
+    fn hit_test_body_toolbar_button_routes_correctly() {
+        let d = base_dialog(Some(DialogInput::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("preview"),
+                label: "Preview".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+        })));
+        let layout = d.layout(viewport(), measure_with_input(), |_| {
+            ToolbarItemMeasure::new(60.0)
+        });
+        let tl = layout.body_toolbar_layout.as_ref().unwrap();
+        let vis = &tl.visible_items[0];
+        // Click inside the toolbar button bounds.
+        let cx = vis.bounds.x + 1.0;
+        let cy = vis.bounds.y;
+        match layout.hit_test(cx, cy) {
+            DialogHit::BodyToolbarButton(id) => {
+                assert_eq!(id.as_str(), "preview");
+            }
+            other => panic!("expected BodyToolbarButton, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hit_test_no_toolbar_no_body_toolbar_hit() {
+        let d = base_dialog(None);
+        let layout = d.layout(viewport(), measure_no_input(), no_measure);
+        // Click inside dialog body — should be Body, not BodyToolbarButton.
+        let cx = layout.body_bounds.x + 5.0;
+        let cy = layout.body_bounds.y + 5.0;
+        assert_eq!(layout.hit_test(cx, cy), DialogHit::Body);
     }
 }

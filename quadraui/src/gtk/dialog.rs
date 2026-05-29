@@ -18,7 +18,7 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
-use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
 use crate::theme::Theme;
 use crate::types::StyledText;
 
@@ -101,28 +101,52 @@ pub fn draw_dialog(
         pcfn::show_layout(cr, pango_layout);
     }
 
-    if let (Some(input_b), Some(input)) = (dialog_layout.input_bounds, dialog.input.as_ref()) {
+    if let (Some(input_b), Some(input_kind)) = (dialog_layout.input_bounds, dialog.input.as_ref()) {
         let ix = input_b.x as f64;
         let iy = input_b.y as f64;
         let iw = input_b.width as f64;
         let ih = input_b.height as f64;
-        cr.set_source_rgb(input_bg.0, input_bg.1, input_bg.2);
-        cr.rectangle(ix, iy, iw, ih);
-        cr.fill().ok();
-        cr.set_source_rgb(border.0, border.1, border.2);
-        cr.rectangle(ix, iy, iw, ih);
-        cr.stroke().ok();
-        cr.set_source_rgb(fg.0, fg.1, fg.2);
-        let display = if input.value.is_empty() {
-            format!(" {}", input.placeholder)
-        } else {
-            format!(" {}", input.value)
-        };
-        pango_layout.set_text(&display);
-        pango_layout.set_attributes(None);
-        let (_, ilh) = pango_layout.pixel_size();
-        cr.move_to(ix + 2.0, iy + (ih - ilh as f64) / 2.0);
-        pcfn::show_layout(cr, pango_layout);
+        match input_kind {
+            DialogInput::TextInput(input) => {
+                cr.set_source_rgb(input_bg.0, input_bg.1, input_bg.2);
+                cr.rectangle(ix, iy, iw, ih);
+                cr.fill().ok();
+                cr.set_source_rgb(border.0, border.1, border.2);
+                cr.rectangle(ix, iy, iw, ih);
+                cr.stroke().ok();
+                cr.set_source_rgb(fg.0, fg.1, fg.2);
+                let display = if input.value.is_empty() {
+                    format!(" {}", input.placeholder)
+                } else {
+                    format!(" {}", input.value)
+                };
+                pango_layout.set_text(&display);
+                pango_layout.set_attributes(None);
+                let (_, ilh) = pango_layout.pixel_size();
+                cr.move_to(ix + 2.0, iy + (ih - ilh as f64) / 2.0);
+                pcfn::show_layout(cr, pango_layout);
+            }
+            DialogInput::Toolbar(toolbar) => {
+                // Render the embedded toolbar using the GTK toolbar
+                // rasteriser. Background fill uses the toolbar's own bg
+                // (or header_bg fallback) so the slot reads as chrome.
+                super::toolbar::draw_toolbar(
+                    cr,
+                    pango_layout,
+                    ix,
+                    iy,
+                    iw,
+                    ih,
+                    toolbar,
+                    theme,
+                    None,
+                    None,
+                );
+                // Restore body font after the toolbar rasteriser may
+                // have swapped it.
+                pango_layout.set_font_description(saved_font.as_ref());
+            }
+        }
     }
 
     // Buttons render in the UI font.

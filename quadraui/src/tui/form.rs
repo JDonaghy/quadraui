@@ -11,6 +11,7 @@ use super::{draw_styled_text, ratatui_color, set_cell};
 use crate::primitives::form::{
     FieldKind, Form, FormFieldMeasure, FormItemMeasure, ValidationState,
 };
+use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
 use crate::types::{Decoration, WidgetId};
 
@@ -59,6 +60,32 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                 FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
             }
             FieldKind::TextArea { visible_rows, .. } => FormFieldMeasure::new(*visible_rows as f32),
+            FieldKind::Toolbar(toolbar) => {
+                use super::toolbar::tui_item_width;
+                let label_w = field.label.visible_width();
+                let start_x = if label_w > 0 { label_w + 2 } else { 0 };
+                // Include ALL toolbar items (actions, separators, labels) in
+                // item_measures so the sequential layout matches `draw_toolbar`'s
+                // left-to-right packing. Separators and labels get the field's
+                // id so clicks on them resolve to `FormHit::Field(field_id)`.
+                let items = toolbar
+                    .buttons
+                    .iter()
+                    .map(|btn| {
+                        let id = match btn {
+                            ToolbarButton::Action { id, .. } => id.clone(),
+                            _ => field.id.clone(),
+                        };
+                        FormItemMeasure {
+                            id,
+                            width: tui_item_width(btn),
+                        }
+                    })
+                    .collect();
+                // item_gap = 0: toolbar buttons pack edge-to-edge, same as
+                // how `Toolbar::layout` places items.
+                FormFieldMeasure::with_items(1.0, start_x as f32, 0.0, items)
+            }
             FieldKind::SegmentedControl { options, .. } => {
                 let label_w = field.label.visible_width();
                 let start_x = if label_w > 0 { label_w + 2 } else { 1 };
@@ -435,6 +462,24 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                         }
                     }
                 }
+            }
+            FieldKind::Toolbar(toolbar) => {
+                // Delegate painting entirely to the toolbar rasteriser.
+                // The toolbar occupies the portion of the row after the
+                // label (items_start_x). We derive the start column from
+                // the first item's form-local x coordinate.
+                let start_col = visible_field
+                    .item_bounds
+                    .first()
+                    .map(|(_, r)| r.x.round() as u16)
+                    .unwrap_or(0);
+                let toolbar_area = Rect::new(
+                    area.x + start_col,
+                    y,
+                    area.width.saturating_sub(start_col),
+                    1,
+                );
+                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
             }
             FieldKind::TextArea {
                 value,
@@ -1371,5 +1416,167 @@ mod tests {
             col0, '\u{26A0}',
             "warning validation should paint warning sign at col 0"
         );
+    }
+
+    // ── FieldKind::Toolbar paint↔click round-trip ────────────────────────
+
+    use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+    fn make_toolbar_form() -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("actions"),
+                label: label(""),
+                kind: FieldKind::Toolbar(Toolbar {
+                    id: WidgetId::new("tb"),
+                    buttons: vec![
+                        ToolbarButton::Action {
+                            id: WidgetId::new("reset"),
+                            label: "Reset".into(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: String::new(),
+                        },
+                        ToolbarButton::Separator,
+                        ToolbarButton::Action {
+                            id: WidgetId::new("export"),
+                            label: "Export".into(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: String::new(),
+                        },
+                    ],
+                    bg: None,
+                }),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    fn toolbar_field_paints_bracket() {
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_toolbar_form();
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.contains('['),
+            "toolbar `[` bracket should be painted; row: {row:?}"
+        );
+        assert!(
+            row.contains("Reset"),
+            "toolbar 'Reset' label should be painted; row: {row:?}"
+        );
+        assert!(
+            row.contains("Export"),
+            "toolbar 'Export' label should be painted; row: {row:?}"
+        );
+    }
+
+    #[test]
+    fn toolbar_field_click_routes_to_action_id() {
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_toolbar_form();
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let layout = tui_form_layout(&f, area);
+
+        // Find where 'R' (first char of "Reset") is painted.
+        let mut reset_col = None;
+        for x in 0..40u16 {
+            if cell_char(&buf, x, 0) == 'R'
+                && x + 4 < 40
+                && cell_char(&buf, x + 1, 0) == 'e'
+                && cell_char(&buf, x + 2, 0) == 's'
+            {
+                reset_col = Some(x);
+                break;
+            }
+        }
+        let reset_col = reset_col.expect("'Reset' must be painted");
+        let hit = layout.hit_test(reset_col as f32, 0.0);
+        assert_eq!(
+            hit,
+            FormHit::Field(WidgetId::new("reset")),
+            "clicking Reset label should hit the reset action id"
+        );
+    }
+
+    #[test]
+    fn toolbar_field_export_click_routes_to_export_id() {
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_toolbar_form();
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let layout = tui_form_layout(&f, area);
+
+        // Find where 'E' (first char of "Export") is painted.
+        let mut export_col = None;
+        for x in 0..40u16 {
+            if cell_char(&buf, x, 0) == 'E'
+                && x + 5 < 40
+                && cell_char(&buf, x + 1, 0) == 'x'
+                && cell_char(&buf, x + 2, 0) == 'p'
+            {
+                export_col = Some(x);
+                break;
+            }
+        }
+        let export_col = export_col.expect("'Export' must be painted");
+        let hit = layout.hit_test(export_col as f32, 0.0);
+        assert_eq!(
+            hit,
+            FormHit::Field(WidgetId::new("export")),
+            "clicking Export label should hit the export action id"
+        );
+    }
+
+    // ── Serde round-trip for FieldKind::Toolbar ───────────────────────────
+
+    #[test]
+    fn serde_roundtrip_field_kind_toolbar() {
+        use crate::primitives::form::FormEvent;
+        let kind = FieldKind::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                ToolbarButton::Action {
+                    id: WidgetId::new("reset"),
+                    label: "Reset".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Separator,
+            ],
+            bg: None,
+        });
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: FieldKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+
+        // FormEvent::ToolbarButtonClicked round-trip.
+        let ev = FormEvent::ToolbarButtonClicked {
+            field_id: WidgetId::new("actions"),
+            button_id: WidgetId::new("reset"),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: FormEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
     }
 }

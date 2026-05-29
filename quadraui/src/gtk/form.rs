@@ -277,6 +277,24 @@ pub fn draw_form(
             FieldKind::Slider { .. }
             | FieldKind::ColorPicker { .. }
             | FieldKind::Dropdown { .. } => {}
+            FieldKind::Toolbar(toolbar) => {
+                // Render the embedded toolbar left-aligned starting at
+                // `label_right + 12.0` (same start as ToggleGroup / ButtonRow).
+                let toolbar_x = if no_label {
+                    x + 6.0
+                } else {
+                    label_right + 12.0
+                };
+                let toolbar_w = x + w - toolbar_x;
+                if toolbar_w > 0.0 {
+                    super::toolbar::draw_toolbar(
+                        cr, layout, toolbar_x, y_off, toolbar_w, row_h, toolbar, theme, None, None,
+                    );
+                    // Restore Pango state — draw_toolbar may have changed
+                    // text width / attributes.
+                    layout.set_attributes(None);
+                }
+            }
             FieldKind::ToggleGroup { toggles } => {
                 let mut ix = label_right + 12.0;
                 for toggle in toggles {

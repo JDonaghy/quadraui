@@ -210,6 +210,16 @@ pub enum FieldKind {
     /// Use for dialog footers, form submit rows, search-panel actions
     /// (Find Next / Replace / Replace All).
     ButtonRow { buttons: Vec<ButtonRowItem> },
+    /// A full [`crate::Toolbar`] strip embedded inside the form as a
+    /// single field row. Renders all toolbar features (icons, key hints,
+    /// separators, active/disabled states, tooltips) inside the field's
+    /// value column. Click emits
+    /// `FormEvent::ToolbarButtonClicked { field_id, button_id }`.
+    ///
+    /// Use for Settings → Reset / Import / Export rows, or any place
+    /// where the toolbar idiom (hover states, separators, key hints) is
+    /// more appropriate than `ButtonRow`'s simple bracketed labels.
+    Toolbar(crate::primitives::toolbar::Toolbar),
 }
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
@@ -448,6 +458,13 @@ pub enum FormEvent {
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.
     ButtonClicked { id: WidgetId },
+    /// An action button inside a [`FieldKind::Toolbar`] field was
+    /// clicked. `field_id` identifies the form field; `button_id`
+    /// identifies the toolbar action within it.
+    ToolbarButtonClicked {
+        field_id: WidgetId,
+        button_id: WidgetId,
+    },
     /// A key was pressed while the form had focus and the primitive did
     /// not consume it. The app may interpret it (e.g. `?` opens help).
     KeyPressed { key: String, modifiers: Modifiers },
