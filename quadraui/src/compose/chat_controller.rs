@@ -10,8 +10,8 @@
 //!
 //! # Keyboard behaviour
 //!
-//! - `Ctrl+Enter` or `Alt+Enter` — submit the current input.
-//!   `Alt+Enter` works on all terminals; `Ctrl+Enter` requires the Kitty
+//! - `Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter` — submit the current input.
+//!   `Ctrl+S` and `Alt+Enter` work on all terminals; `Ctrl+Enter` requires Kitty
 //!   keyboard protocol (supported by kitty, Alacritty ≥0.12, WezTerm, foot).
 //! - `Enter` — insert a newline in the input.
 //! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
@@ -68,7 +68,7 @@ pub struct ChatTurn {
 /// Events emitted by [`ChatController::handle`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatControllerEvent {
-    /// User submitted a message (`Ctrl+Enter` or `Alt+Enter`). Contains the full input text
+    /// User submitted a message (`Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter`). Contains the full input text
     /// (with embedded `\n` for multi-line messages). Apps should:
     /// 1. Append the text as a `User` turn to their own transcript.
     /// 2. Call [`ChatController::clear_input`].
@@ -548,7 +548,7 @@ impl ChatController {
             cursor_line,
             cursor_col,
             placeholder: Some(
-                "Type a message\u{2026} (Ctrl+Enter or Alt+Enter to send, Enter for newline, Esc to cancel)"
+                "Type a message\u{2026} (Ctrl+S or Alt+Enter to send, Enter for newline, Esc to cancel)"
                     .into(),
             ),
             scroll_offset: self.input_scroll_offset,
@@ -567,8 +567,22 @@ impl ChatController {
         layout: &ChatLayout,
     ) -> ChatControllerEvent {
         match key {
-            // ── Submit: Ctrl+Enter or Alt+Enter ───────────────────────
-            // Alt+Enter works on all terminals; Ctrl+Enter needs Kitty protocol.
+            // ── Submit: Ctrl+S, Alt+Enter, or Ctrl+Enter ─────────────────
+            // Ctrl+S works on all terminals.
+            // Alt+Enter works on all terminals (ESC+Enter escape sequence).
+            // Ctrl+Enter needs Kitty protocol — unreliable as the primary affordance.
+            Key::Char('s') if modifiers.ctrl => {
+                if self.input_buf.is_empty() {
+                    return ChatControllerEvent::Ignored;
+                }
+                let text = self.input_buf.clone();
+                if !text.trim().is_empty() && self.history.last() != Some(&text) {
+                    self.history.push(text.clone());
+                }
+                self.history_pos = None;
+                self.saved_input = None;
+                ChatControllerEvent::Submit { text }
+            }
             Key::Named(NamedKey::Enter) if modifiers.ctrl || modifiers.alt => {
                 if self.input_buf.is_empty() {
                     return ChatControllerEvent::Ignored;
