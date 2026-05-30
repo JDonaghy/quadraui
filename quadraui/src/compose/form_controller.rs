@@ -418,6 +418,19 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
                 }
             }
         }
+        if let FieldKind::Toolbar(toolbar) = &field.kind {
+            if toolbar.buttons.iter().any(|btn| {
+                matches!(btn,
+                    crate::primitives::toolbar::ToolbarButton::Action { id, .. }
+                    if id == clicked_id
+                )
+            }) {
+                return FormEvent::ToolbarButtonClicked {
+                    field_id: field.id.clone(),
+                    button_id: clicked_id.clone(),
+                };
+            }
+        }
     }
     FormEvent::FocusChanged {
         id: clicked_id.clone(),
@@ -778,6 +791,92 @@ mod tests {
             ev,
             FormEvent::FocusChanged {
                 id: WidgetId::new("unknown")
+            }
+        );
+    }
+
+    #[test]
+    fn click_toolbar_button_emits_toolbar_button_clicked() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        let mut form = make_form(1);
+        form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                ToolbarButton::Action {
+                    id: WidgetId::new("reset"),
+                    label: "Reset".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+                ToolbarButton::Action {
+                    id: WidgetId::new("export"),
+                    label: "Export".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+            ],
+            bg: None,
+        });
+
+        // Clicking the first button should emit ToolbarButtonClicked with
+        // the owning field_id and the button_id.
+        let ev = form_click_event(&form, &WidgetId::new("reset"));
+        assert_eq!(
+            ev,
+            FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("reset"),
+            },
+            "clicking 'reset' should emit ToolbarButtonClicked"
+        );
+
+        // Clicking the second button should emit ToolbarButtonClicked too.
+        let ev2 = form_click_event(&form, &WidgetId::new("export"));
+        assert_eq!(
+            ev2,
+            FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("export"),
+            },
+            "clicking 'export' should emit ToolbarButtonClicked"
+        );
+    }
+
+    #[test]
+    fn click_toolbar_disabled_button_still_emits_toolbar_button_clicked() {
+        // A click on a disabled action still routes through form_click_event
+        // (the primitive layout marks it non-clickable, so the hit won't
+        // fire in practice). But if a caller does pass a disabled action id
+        // in, we should still recover the field_id correctly.
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        let mut form = make_form(1);
+        form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("noop"),
+                label: "Noop".into(),
+                icon: None,
+                key_hint: None,
+                enabled: false,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+        });
+
+        // form_click_event matches by id, not by enabled state.
+        let ev = form_click_event(&form, &WidgetId::new("noop"));
+        assert_eq!(
+            ev,
+            FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("noop"),
             }
         );
     }

@@ -1156,6 +1156,42 @@ impl Backend for GtkBackend {
                 crate::primitives::form::FieldKind::TextArea { visible_rows, .. } => {
                     crate::primitives::form::FormFieldMeasure::new(row_h * *visible_rows as f32)
                 }
+                crate::primitives::form::FieldKind::Toolbar(toolbar) => {
+                    // Mirror the TUI / macOS measurer: per-button FormItemMeasures
+                    // so FormLayout::hit_test can resolve a click to the button's
+                    // action id. Same `start_x` origin as ToggleGroup / ButtonRow.
+                    // gap=0: toolbar items pack edge-to-edge (same as Toolbar::layout).
+                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
+                    let start_x = if label_w > 0.0 {
+                        6.0 + label_w + 12.0
+                    } else {
+                        6.0
+                    };
+                    let pango_ref = pango_layout.as_ref();
+                    let items = toolbar
+                        .buttons
+                        .iter()
+                        .map(|btn| {
+                            let id = match btn {
+                                crate::primitives::toolbar::ToolbarButton::Action {
+                                    id, ..
+                                } => id.clone(),
+                                _ => field.id.clone(),
+                            };
+                            crate::primitives::form::FormItemMeasure {
+                                id,
+                                width: crate::gtk::toolbar::measure_item(
+                                    pango_ref,
+                                    char_w as f64,
+                                    btn,
+                                ),
+                            }
+                        })
+                        .collect();
+                    crate::primitives::form::FormFieldMeasure::with_items(
+                        row_h, start_x, 0.0, items,
+                    )
+                }
                 _ => crate::primitives::form::FormFieldMeasure::new(row_h),
             }
         })
@@ -1890,6 +1926,100 @@ mod tests {
             Some("terminal.toggle_maximize"),
             "Ctrl+Shift+T (with uppercase T) should match terminal.toggle_maximize, got {:?}",
             max_upper
+        );
+    }
+
+    /// `FieldKind::Toolbar` fields must produce per-button `FormItemMeasure`
+    /// entries so that `FormLayout::hit_test` resolves a click to the
+    /// button's action id (not the field id). This is the GTK side of the
+    /// paint↔click round-trip test that Blocker 2 in the review was about.
+    #[test]
+    fn gtk_form_layout_toolbar_field_produces_per_button_hit_regions() {
+        use crate::primitives::form::{FieldKind, Form, FormField, FormHit};
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::types::StyledText;
+
+        let mut backend = GtkBackend::new();
+        // No Pango context — fallback char-width path is exercised.
+        backend.current_char_width = 8.0;
+        backend.current_line_height = 20.0;
+
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("actions"),
+                label: StyledText::plain(""),
+                kind: FieldKind::Toolbar(Toolbar {
+                    id: WidgetId::new("tb"),
+                    buttons: vec![
+                        ToolbarButton::Action {
+                            id: WidgetId::new("reset"),
+                            label: "Reset".into(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: String::new(),
+                        },
+                        ToolbarButton::Action {
+                            id: WidgetId::new("export"),
+                            label: "Export".into(),
+                            icon: None,
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: String::new(),
+                        },
+                    ],
+                    bg: None,
+                }),
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+
+        let rect = QRect::new(0.0, 0.0, 400.0, 80.0);
+        let layout = backend.form_layout(rect, &form);
+
+        // Must have exactly one visible field.
+        assert_eq!(layout.visible_fields.len(), 1, "expected one visible field");
+        let vf = &layout.visible_fields[0];
+
+        // Must have per-button item_bounds (not empty).
+        assert!(
+            !vf.item_bounds.is_empty(),
+            "FieldKind::Toolbar must produce non-empty item_bounds on GTK"
+        );
+        assert_eq!(
+            vf.item_bounds.len(),
+            2,
+            "expected 2 item_bounds for 2 action buttons"
+        );
+
+        // item_bounds ids must match action ids.
+        assert_eq!(vf.item_bounds[0].0.as_str(), "reset");
+        assert_eq!(vf.item_bounds[1].0.as_str(), "export");
+
+        // Clicking near the left of the first button should resolve to "reset".
+        let first_btn = vf.item_bounds[0].1;
+        let hit = layout.hit_test(first_btn.x + 1.0, first_btn.y + 1.0);
+        assert_eq!(
+            hit,
+            FormHit::Field(WidgetId::new("reset")),
+            "click on first button must resolve to 'reset', not 'actions' (the field id)"
+        );
+
+        // Clicking near the left of the second button should resolve to "export".
+        let second_btn = vf.item_bounds[1].1;
+        let hit2 = layout.hit_test(second_btn.x + 1.0, second_btn.y + 1.0);
+        assert_eq!(
+            hit2,
+            FormHit::Field(WidgetId::new("export")),
+            "click on second button must resolve to 'export'"
         );
     }
 }
