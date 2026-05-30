@@ -67,7 +67,15 @@ fn text_width_px(pango_layout: Option<&pango::Layout>, text: &str, char_width: f
 }
 
 /// Compute the pixel width of a single toolbar item.
-fn measure_item(pango_layout: Option<&pango::Layout>, char_width: f64, btn: &ToolbarButton) -> f32 {
+///
+/// Exposed as `pub(crate)` so `gtk::backend`'s `form_layout` measurer
+/// can reuse the same widths for `FieldKind::Toolbar` fields, guaranteeing
+/// that form paint and hit-test agree on item positions.
+pub(crate) fn measure_item(
+    pango_layout: Option<&pango::Layout>,
+    char_width: f64,
+    btn: &ToolbarButton,
+) -> f32 {
     match btn {
         ToolbarButton::Action {
             label,
