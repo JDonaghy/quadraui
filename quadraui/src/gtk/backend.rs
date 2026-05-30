@@ -45,6 +45,9 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
+use crate::dispatch::TextRegion;
+use crate::event::Point;
+use crate::types::WidgetId;
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
@@ -129,6 +132,23 @@ pub struct GtkBackend {
     /// their settings (vimcode passes `format!("{} {}", ui_font_family,
     /// ui_font_size)`). Falls back to `"Sans 11"` if unset.
     ui_font: String,
+    /// Selectable text regions registered during the current frame via
+    /// [`Backend::register_text_region`]. Cleared at the start of each
+    /// frame by [`Self::begin_frame`]. Parallels `TuiBackend::text_regions`.
+    pub(crate) text_regions: Vec<TextRegion>,
+    /// Active text selection (persists after mouse-up until a new click
+    /// clears it). Set by [`Self::set_active_text_selection`], cleared by
+    /// [`Self::clear_text_selection`] or [`Self::clear_selection_display`].
+    active_selection: Option<GtkTextSelection>,
+}
+
+/// Active text selection state for the GTK backend. Stores the region id
+/// and anchor/focus in pixel coordinates (native GTK units).
+#[derive(Debug, Clone)]
+pub(crate) struct GtkTextSelection {
+    pub region: WidgetId,
+    pub anchor: Point,
+    pub focus: Point,
 }
 
 impl GtkBackend {
@@ -155,6 +175,8 @@ impl GtkBackend {
             pango_ctx: None,
             nerd_fonts_enabled: false,
             ui_font: "Sans 11".to_string(),
+            text_regions: Vec::new(),
+            active_selection: None,
         }
     }
 
@@ -352,6 +374,181 @@ impl GtkBackend {
         })
     }
 
+    // ── Text selection ─────────────────────────────────────────────────────
+
+    /// Return the current active text selection, if any.
+    pub(crate) fn active_text_selection(&self) -> Option<&GtkTextSelection> {
+        self.active_selection.as_ref()
+    }
+
+    /// Update (or start) the active text selection. Called by the runner
+    /// when a [`UiEvent::TextSelectionChanged`] event arrives.
+    pub(crate) fn set_active_text_selection(
+        &mut self,
+        region: WidgetId,
+        anchor: Point,
+        focus: Point,
+    ) {
+        self.active_selection = Some(GtkTextSelection {
+            region,
+            anchor,
+            focus,
+        });
+    }
+
+    /// Clear the active text selection highlight only (does NOT end an
+    /// in-progress `TextSelection` drag). Called before dispatching a new
+    /// mouse-down so the old highlight disappears without interrupting the
+    /// drag that is about to start.
+    pub(crate) fn clear_selection_display(&mut self) {
+        self.active_selection = None;
+    }
+
+    /// Clear the active text selection and end any in-progress
+    /// `TextSelection` drag. Called after Ctrl-C copies the selection or
+    /// on a plain click outside any text region.
+    pub(crate) fn clear_text_selection(&mut self) {
+        self.active_selection = None;
+        let mut drag = self.drag_state.borrow_mut();
+        if matches!(
+            drag.target(),
+            Some(crate::dispatch::DragTarget::TextSelection { .. })
+        ) {
+            drag.end();
+        }
+    }
+
+    /// Paint the active text selection highlight onto `cr`. Must be called
+    /// after `app.render` (so the highlight sits on top of the rendered
+    /// content). Converts the pixel-based anchor/focus into cell-index space
+    /// using `line_height` and `char_width`, calls
+    /// `text_selection_line_range`, then converts back to pixel rectangles.
+    ///
+    /// Paints a semi-transparent blue rectangle over each selected row
+    /// segment — the standard GTK-app selection look. No-op when there is
+    /// no active selection or the region id is not registered this frame.
+    pub(crate) fn apply_selection_highlight(&self, cr: &Context) {
+        let sel = match &self.active_selection {
+            Some(s) => s,
+            None => return,
+        };
+        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let line_h = self.current_line_height as f32;
+        let char_w = self.current_char_width as f32;
+        if line_h <= 0.0 || char_w <= 0.0 {
+            return;
+        }
+
+        // Convert pixel anchor/focus to cell-relative coordinates so that
+        // `text_selection_line_range` can iterate row by row (it assumes
+        // row numbers are consecutive integers).
+        let bx = region.bounds.x;
+        let by = region.bounds.y;
+        let bw = region.bounds.width / char_w;
+        let bh = region.bounds.height / line_h;
+        let cell_bounds = crate::event::Rect::new(0.0, 0.0, bw, bh);
+        let anchor_cell = Point {
+            x: (sel.anchor.x - bx) / char_w,
+            y: (sel.anchor.y - by) / line_h,
+        };
+        let focus_cell = Point {
+            x: (sel.focus.x - bx) / char_w,
+            y: (sel.focus.y - by) / line_h,
+        };
+
+        let ranges =
+            crate::dispatch::text_selection_line_range(anchor_cell, focus_cell, cell_bounds);
+        if ranges.is_empty() {
+            return;
+        }
+
+        // Paint each selected row segment.
+        cr.save().ok();
+        cr.set_source_rgba(0.39, 0.58, 1.0, 0.30);
+        for (row_cell, col_start, col_end) in ranges {
+            let px = bx as f64 + col_start as f64 * char_w as f64;
+            let py = by as f64 + row_cell as f64 * line_h as f64;
+            let pw = (col_end - col_start) as f64 * char_w as f64;
+            let ph = line_h as f64;
+            if pw > 0.0 {
+                cr.rectangle(px, py, pw, ph);
+            }
+        }
+        cr.fill().ok();
+        cr.restore().ok();
+    }
+
+    /// Extract the selected text from the `TextRegion`'s stored lines using
+    /// the current pixel anchor/focus. Returns an empty string when there is
+    /// no active selection, the region is not registered this frame, or the
+    /// region has no `lines` content.
+    ///
+    /// Converts pixel coordinates to row/column indices via `line_height` /
+    /// `char_width`, then slices the stored `lines` accordingly.
+    pub(crate) fn extract_selection_text(&self) -> String {
+        let sel = match &self.active_selection {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+            Some(r) => r,
+            None => return String::new(),
+        };
+
+        if region.lines.is_empty() {
+            return String::new();
+        }
+
+        let line_h = self.current_line_height as f32;
+        let char_w = self.current_char_width as f32;
+        if line_h <= 0.0 || char_w <= 0.0 {
+            return String::new();
+        }
+
+        let bx = region.bounds.x;
+        let by = region.bounds.y;
+        let bw = region.bounds.width / char_w;
+        let bh = region.bounds.height / line_h;
+        let cell_bounds = crate::event::Rect::new(0.0, 0.0, bw, bh);
+        let anchor_cell = Point {
+            x: (sel.anchor.x - bx) / char_w,
+            y: (sel.anchor.y - by) / line_h,
+        };
+        let focus_cell = Point {
+            x: (sel.focus.x - bx) / char_w,
+            y: (sel.focus.y - by) / line_h,
+        };
+
+        let ranges =
+            crate::dispatch::text_selection_line_range(anchor_cell, focus_cell, cell_bounds);
+        let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
+        for (row_cell, col_start, col_end) in ranges {
+            let line_idx = row_cell as usize;
+            let src = match region.lines.get(line_idx) {
+                Some(l) => l,
+                None => continue,
+            };
+            let col_start = col_start as usize;
+            let col_end = col_end as usize;
+            // Extract by character index (col_start..col_end).
+            let chars: Vec<char> = src.chars().collect();
+            let s: String = chars
+                .get(col_start.min(chars.len())..col_end.min(chars.len()))
+                .unwrap_or(&[])
+                .iter()
+                .collect();
+            let trimmed = s.trim_end().to_string();
+            lines.push(trimmed);
+        }
+        lines.join("\n")
+    }
+
+    // ── Accelerators ────────────────────────────────────────────────────────
+
     /// Apply registered accelerators to a slice of UiEvents. Mirrors
     /// `TuiBackend::apply_accelerators`. Replaces matching
     /// `UiEvent::KeyPressed` events with `UiEvent::Accelerator(id, mods)`.
@@ -479,6 +676,13 @@ impl Backend for GtkBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        // Clear per-frame text regions so stale registrations from the
+        // previous frame don't linger. Mirrors TuiBackend::begin_frame.
+        self.text_regions.clear();
+    }
+
+    fn register_text_region(&mut self, region: TextRegion) {
+        self.text_regions.push(region);
     }
 
     fn end_frame(&mut self) {
@@ -2020,6 +2224,247 @@ mod tests {
             hit2,
             FormHit::Field(WidgetId::new("export")),
             "click on second button must resolve to 'export'"
+        );
+    }
+
+    // ── Text selection tests ───────────────────────────────────────────────
+
+    fn text_region(id: &str, x: f32, y: f32, w: f32, h: f32, lines: Vec<&str>) -> TextRegion {
+        TextRegion {
+            id: WidgetId::new(id),
+            bounds: QRect::new(x, y, w, h),
+            lines: lines.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn gtk_text_regions_accumulated_per_frame() {
+        let mut backend = GtkBackend::new();
+        backend.register_text_region(text_region("r1", 0.0, 0.0, 100.0, 50.0, vec![]));
+        backend.register_text_region(text_region("r2", 0.0, 50.0, 100.0, 50.0, vec![]));
+        assert_eq!(backend.text_regions.len(), 2);
+        assert_eq!(backend.text_regions[0].id.as_str(), "r1");
+        assert_eq!(backend.text_regions[1].id.as_str(), "r2");
+    }
+
+    #[test]
+    fn gtk_text_regions_cleared_on_begin_frame() {
+        let mut backend = GtkBackend::new();
+        backend.register_text_region(text_region("r", 0.0, 0.0, 200.0, 100.0, vec![]));
+        assert_eq!(backend.text_regions.len(), 1);
+        backend.begin_frame(crate::Viewport::new(800.0, 600.0, 1.0));
+        assert_eq!(
+            backend.text_regions.len(),
+            0,
+            "text_regions must be cleared on begin_frame"
+        );
+    }
+
+    #[test]
+    fn gtk_active_selection_set_and_cleared() {
+        let mut backend = GtkBackend::new();
+        assert!(backend.active_text_selection().is_none());
+
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point { x: 10.0, y: 0.0 },
+            Point { x: 80.0, y: 16.0 },
+        );
+        assert!(backend.active_text_selection().is_some());
+
+        backend.clear_selection_display();
+        assert!(backend.active_text_selection().is_none());
+    }
+
+    #[test]
+    fn gtk_clear_text_selection_ends_drag() {
+        let mut backend = GtkBackend::new();
+        // Arm a TextSelection drag.
+        backend.drag_state_handle().borrow_mut().begin(
+            crate::dispatch::DragTarget::TextSelection {
+                region: WidgetId::new("body"),
+                anchor: Point { x: 0.0, y: 0.0 },
+            },
+        );
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 50.0, y: 0.0 },
+        );
+        assert!(backend.drag_state_handle().borrow().is_active());
+
+        backend.clear_text_selection();
+        assert!(backend.active_text_selection().is_none());
+        assert!(
+            !backend.drag_state_handle().borrow().is_active(),
+            "clear_text_selection must also end the drag"
+        );
+    }
+
+    #[test]
+    fn gtk_clear_selection_display_does_not_end_drag() {
+        let mut backend = GtkBackend::new();
+        backend.drag_state_handle().borrow_mut().begin(
+            crate::dispatch::DragTarget::TextSelection {
+                region: WidgetId::new("body"),
+                anchor: Point { x: 0.0, y: 0.0 },
+            },
+        );
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 50.0, y: 0.0 },
+        );
+        backend.clear_selection_display();
+        // Drag should still be active — clear_selection_display only removes
+        // the highlight, not the drag state.
+        assert!(
+            backend.drag_state_handle().borrow().is_active(),
+            "clear_selection_display must NOT end the drag"
+        );
+    }
+
+    #[test]
+    fn gtk_extract_selection_text_single_row() {
+        // Region at (0,0), 200×16px. char_width=8, line_height=16.
+        // Anchor at x=0 (col 0), focus at x=40 (col 5 in cell space).
+        // text_selection_line_range adds +1 to focus col (half-open),
+        // so the extracted range is cols 0..6 = "Hello,"
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = 16.0;
+        backend.current_char_width = 8.0;
+        backend.register_text_region(text_region(
+            "body",
+            0.0,
+            0.0,
+            200.0,
+            16.0,
+            vec!["Hello, world!"],
+        ));
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point { x: 0.0, y: 0.0 },  // col 0
+            Point { x: 40.0, y: 0.0 }, // col 5 → range 0..6
+        );
+        let text = backend.extract_selection_text();
+        // cols 0..6 of "Hello, world!" = "Hello," (6 chars)
+        assert_eq!(
+            text, "Hello,",
+            "expected first 6 chars (cols 0..6), got {text:?}"
+        );
+    }
+
+    #[test]
+    fn gtk_extract_selection_text_multi_row() {
+        // Region at (0,0), 200×32px. char_width=8, line_height=16.
+        // Row 0: "ABCDE", Row 1: "FGHIJ".
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = 16.0;
+        backend.current_char_width = 8.0;
+        backend.register_text_region(text_region(
+            "body",
+            0.0,
+            0.0,
+            200.0,
+            32.0,
+            vec!["ABCDE", "FGHIJ"],
+        ));
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point { x: 0.0, y: 0.0 },   // anchor: col 0, row 0
+            Point { x: 40.0, y: 16.0 }, // focus: col 5, row 1
+        );
+        let text = backend.extract_selection_text();
+        // First row: cols 0..25 (region end) → "ABCDE" trimmed.
+        // Last row: cols 0..5 → "FGHIJ".
+        assert!(
+            text.contains("ABCDE"),
+            "expected ABCDE in result, got {text:?}"
+        );
+        assert!(
+            text.contains("FGHIJ"),
+            "expected FGHIJ in result, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn gtk_extract_selection_text_empty_when_no_selection() {
+        let backend = GtkBackend::new();
+        assert_eq!(backend.extract_selection_text(), "");
+    }
+
+    #[test]
+    fn gtk_extract_selection_text_empty_when_no_lines() {
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = 16.0;
+        backend.current_char_width = 8.0;
+        // Register region with no lines (TUI-only path)
+        backend.register_text_region(text_region("body", 0.0, 0.0, 200.0, 32.0, vec![]));
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 40.0, y: 0.0 },
+        );
+        assert_eq!(
+            backend.extract_selection_text(),
+            "",
+            "empty lines → empty extraction"
+        );
+    }
+
+    #[test]
+    fn gtk_selection_highlight_geometry_single_row() {
+        // Verify that selection highlight produces non-empty ranges for a
+        // simple single-row selection. We test via text_selection_line_range
+        // since we cannot drive a real Cairo context in unit tests.
+        //
+        // Region at (10, 20), 200×16px. char_width=8, line_height=16.
+        // Anchor (x=10, y=20) = col 0 in cell space.
+        // Focus  (x=50, y=20) = col 5 in cell space.
+        let line_h = 16.0_f32;
+        let char_w = 8.0_f32;
+        let bounds = QRect::new(10.0, 20.0, 200.0, 16.0);
+        let anchor = Point { x: 10.0, y: 20.0 };
+        let focus = Point { x: 50.0, y: 20.0 };
+
+        let bx = bounds.x;
+        let by = bounds.y;
+        let cell_bounds =
+            crate::event::Rect::new(0.0, 0.0, bounds.width / char_w, bounds.height / line_h);
+        let anchor_cell = Point {
+            x: (anchor.x - bx) / char_w,
+            y: (anchor.y - by) / line_h,
+        };
+        let focus_cell = Point {
+            x: (focus.x - bx) / char_w,
+            y: (focus.y - by) / line_h,
+        };
+        let ranges =
+            crate::dispatch::text_selection_line_range(anchor_cell, focus_cell, cell_bounds);
+
+        // text_selection_line_range adds +1 to focus col (half-open range).
+        // focus at x=50 → cell col 5; col_end = 5 + 1 = 6.
+        assert_eq!(ranges.len(), 1, "single-row selection → 1 range entry");
+        let (row_cell, col_start, col_end) = ranges[0];
+        assert_eq!(row_cell, 0, "row should be cell row 0");
+        assert_eq!(col_start, 0, "col_start should be 0");
+        assert_eq!(col_end, 6, "col_end = focus_col(5) + 1 = 6 (half-open)");
+
+        // Verify pixel coordinates: 6 cols × 8px = 48px wide.
+        let px_x = bounds.x as f64 + col_start as f64 * char_w as f64;
+        let px_y = bounds.y as f64 + row_cell as f64 * line_h as f64;
+        let px_w = (col_end - col_start) as f64 * char_w as f64;
+        assert!(
+            (px_x - 10.0).abs() < 0.5,
+            "pixel x should be 10, got {px_x}"
+        );
+        assert!(
+            (px_y - 20.0).abs() < 0.5,
+            "pixel y should be 20, got {px_y}"
+        );
+        assert!(
+            (px_w - 48.0).abs() < 0.5,
+            "pixel width should be 48 (6 cols × 8px), got {px_w}"
         );
     }
 }
