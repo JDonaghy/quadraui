@@ -92,6 +92,29 @@ cargo fmt --check
 
 Scope is `quadraui` for library changes, `kubeui` / `kubeui-gtk` / `kubeui-core` for demo changes.
 
+## Demos are mandatory for visual features
+
+**Any new primitive, new interaction, or visual behaviour change must ship with a runnable demo.**
+
+- New primitive → new `examples/tui_<name>.rs` (and `examples/gtk_<name>.rs` if GTK is in scope)
+- New interaction on an existing primitive → extend the relevant existing example or add a new one
+- The demo must exercise the changed code path visually — not just compile
+- Name demos after the feature: `tui_list_hscroll.rs`, not `tui_issue276.rs`
+- Verify with `cargo run --example <name> --features tui` (or `--features gtk`) before declaring done
+
+Examples follow a paired pattern: one `AppLogic` impl in `examples/common/<shape>.rs`, one ~10-line runner per backend. See `examples/tui_pipeline.rs` + `examples/gtk_pipeline.rs` as reference.
+
+## Event model: TextCopied vs ClipboardPaste
+
+Two clipboard events that must not be conflated:
+
+| Event | Meaning |
+|---|---|
+| `UiEvent::ClipboardPaste(String)` | User pasted text into an input (bracketed paste). Route to focused text field. |
+| `UiEvent::TextCopied(String)` | Broadcast after text was copied to clipboard. Used for copy-confirmation UI. |
+
+`ClipboardPaste` inserts text. `TextCopied` confirms a copy happened. When implementing Ctrl-C copy in a new backend or primitive, emit `TextCopied` — not `ClipboardPaste`.
+
 ## Branching + releases
 
 - `main` — released/stable. Only updated by release merges from `develop`.
