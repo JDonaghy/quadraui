@@ -2330,6 +2330,7 @@ mod tests {
         backend.text_regions.push(crate::dispatch::TextRegion {
             id: WidgetId::new("log:body"),
             bounds: crate::event::Rect::new(0.0, 0.0, 10.0, 3.0),
+            lines: vec![],
         });
         backend.set_active_text_selection(
             WidgetId::new("log:body"),
@@ -2382,6 +2383,7 @@ mod tests {
         backend.register_text_region(crate::dispatch::TextRegion {
             id: WidgetId::new("r"),
             bounds: crate::event::Rect::new(0.0, 0.0, 40.0, 20.0),
+            lines: vec![],
         });
         assert_eq!(backend.text_regions.len(), 1);
         backend.begin_frame(Viewport::default());

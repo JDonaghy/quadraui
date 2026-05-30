@@ -137,9 +137,13 @@ impl AppLogic for PanelApp {
         let layout = backend.draw_panel(panel_rect, &panel);
 
         let content_bounds = self.fill_content(backend, layout.content_bounds);
+        // Register the selectable text region. Pass `lines` so pixel-based
+        // backends (GTK, macOS) can extract the selected substring at Ctrl-C
+        // time. TUI ignores `lines` and reads cells from its ratatui buffer.
         backend.register_text_region(TextRegion {
             id: WidgetId::new(CONTENT_ID),
             bounds: content_bounds,
+            lines: CONTENT_LINES.iter().map(|s| s.to_string()).collect(),
         });
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);

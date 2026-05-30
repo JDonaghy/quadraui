@@ -366,10 +366,23 @@ pub fn dispatch_mouse_up(
 /// body. Register them both, and the precedence chain
 /// (scrollbar thumb/track → text region → surface body → none) falls
 /// out automatically.
+///
+/// # `lines` field
+///
+/// Optional text content — one `String` per display row. Backends that
+/// cannot read text back from a cell buffer (GTK, macOS) use this to
+/// extract the selected substring when the user copies (Ctrl-C). TUI
+/// ignores this field and reads cells from its ratatui buffer instead.
+/// Leave as `vec![]` for TUI-only apps or when text extraction is not
+/// needed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextRegion {
     pub id: WidgetId,
     pub bounds: crate::event::Rect,
+    /// Source text lines for pixel-based backends (GTK, macOS).
+    /// TUI ignores this (reads from the ratatui cell buffer).
+    /// Empty means no text content is available for extraction.
+    pub lines: Vec<String>,
 }
 
 /// Compute the screen-cell ranges covered by a line-wise text selection.
@@ -1818,6 +1831,7 @@ mod tests {
         let text_regions = vec![TextRegion {
             id: id("log:body"),
             bounds: rect(0.0, 0.0, 40.0, 30.0),
+            lines: vec![],
         }];
         let events = dispatch_click(
             &stack,
@@ -1853,6 +1867,7 @@ mod tests {
             id: id("log:body"),
             // Covers the whole surface including the scrollbar column.
             bounds: rect(0.0, 0.0, 40.0, 30.0),
+            lines: vec![],
         }];
         let mut drag = DragState::new();
         // Click on scrollbar thumb (x=39.5, y=22) — scrollbar must win.
@@ -1882,6 +1897,7 @@ mod tests {
         let text_regions = vec![TextRegion {
             id: id("log:body"),
             bounds: rect(0.0, 0.0, 40.0, 30.0),
+            lines: vec![],
         }];
         let mut drag = DragState::new();
         let events = dispatch_click(
@@ -1910,6 +1926,7 @@ mod tests {
         let text_regions = vec![TextRegion {
             id: id("body"),
             bounds: rect(0.0, 0.0, 100.0, 100.0),
+            lines: vec![],
         }];
         let mut drag = DragState::new();
         let events = dispatch_click(

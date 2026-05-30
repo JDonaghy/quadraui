@@ -43,12 +43,12 @@ use pangocairo::functions as pcfn;
 
 use super::backend::GtkBackend;
 use super::events::{
-    gdk_button_to_mouse_down, gdk_button_to_mouse_up, gdk_key_to_uievent, gdk_motion_to_uievent,
-    gdk_scroll_to_uievent,
+    gdk_button_to_quadraui, gdk_key_to_uievent, gdk_modifiers_to_quadraui, gdk_scroll_to_uievent,
 };
 use crate::backend::Backend;
+use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
-use crate::ButtonMask;
+use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
 
 /// Drive `app` to completion in a basic single-`DrawingArea` GTK
 /// environment.
@@ -192,11 +192,21 @@ fn activate<A: AppLogic + 'static>(
                 // Single-area runner: pass the default `AreaId`.
                 app_ref.render(b, A::AreaId::default());
             });
+
+            // After app.render: overlay selection highlight on top of the
+            // rendered content (mirrors TUI's apply_selection_highlight call
+            // in the terminal.draw closure).
+            backend_mut.apply_selection_highlight(cr);
+
             backend_mut.end_frame();
         });
     }
 
     // ── Keyboard ───────────────────────────────────────────────────
+    //
+    // Intercepts Ctrl-C when a text selection is active: copies the
+    // selected text to the clipboard via arboard and delivers a
+    // `TextCopied` event so apps can confirm (mirrors the TUI runner).
     let key_ctrl = EventControllerKey::new();
     {
         let backend = backend.clone();
@@ -207,6 +217,37 @@ fn activate<A: AppLogic + 'static>(
             let Some(ev) = gdk_key_to_uievent(key, modifier, false) else {
                 return glib::Propagation::Proceed;
             };
+
+            // ── Ctrl-C interception (text selection) ────────────────
+            if let UiEvent::KeyPressed {
+                key: Key::Char('c'),
+                modifiers:
+                    Modifiers {
+                        ctrl: true,
+                        shift: false,
+                        alt: false,
+                        cmd: false,
+                    },
+                ..
+            } = &ev
+            {
+                let mut backend_mut = backend.borrow_mut();
+                if backend_mut.active_text_selection().is_some() {
+                    let text = backend_mut.extract_selection_text();
+                    backend_mut.services().clipboard().write_text(&text);
+                    backend_mut.clear_text_selection();
+                    // Deliver TextCopied so the app can confirm
+                    // (e.g. update a status bar message). Mirrors TUI runner.
+                    let copy_ev = UiEvent::TextCopied(text);
+                    let mut app_mut = app.borrow_mut();
+                    let reaction = app_mut.handle(copy_ev, &mut *backend_mut);
+                    drop(backend_mut);
+                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                    // Suppress original Ctrl-C from reaching the app.
+                    return glib::Propagation::Stop;
+                }
+            }
+
             let reaction = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
@@ -218,7 +259,12 @@ fn activate<A: AppLogic + 'static>(
     }
     window.add_controller(key_ctrl);
 
-    // ── Mouse click (button 1) ─────────────────────────────────────
+    // ── Mouse click ────────────────────────────────────────────────
+    //
+    // Routes mouse-down through `dispatch_click` so registered text
+    // regions receive selection drags. Pre-processes the returned events
+    // for selection-state management before forwarding to the app, mirroring
+    // the TUI runner's text-selection pre-processing.
     let click = GestureClick::builder().button(0).build();
     {
         let backend = backend.clone();
@@ -226,22 +272,71 @@ fn activate<A: AppLogic + 'static>(
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         click.connect_pressed(move |gesture, n_press, x, y| {
-            let button = gesture.current_button();
+            let gdk_button = gesture.current_button();
             let modifier = gesture.current_event_state();
-            let ev = if n_press == 2 {
-                crate::UiEvent::DoubleClick {
-                    widget: None,
-                    position: crate::Point::new(x as f32, y as f32),
-                }
-            } else {
-                gdk_button_to_mouse_down(button, x, y, modifier)
-            };
-            let reaction = {
+            let button = gdk_button_to_quadraui(gdk_button);
+            let modifiers = gdk_modifiers_to_quadraui(modifier);
+            let position = Point::new(x as f32, y as f32);
+
+            if n_press == 2 {
+                // Double-click: clear selection and deliver DoubleClick directly.
                 let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
+                backend_mut.clear_selection_display();
+                let ev = UiEvent::DoubleClick {
+                    widget: None,
+                    position,
+                };
+                let reaction = {
+                    let mut app_mut = app.borrow_mut();
+                    app_mut.handle(ev, &mut *backend_mut)
+                };
+                apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                return;
+            }
+
+            let mut backend_mut = backend.borrow_mut();
+            // Clear the previous selection highlight before dispatch so the
+            // old highlight doesn't flicker while the new drag is starting.
+            backend_mut.clear_selection_display();
+
+            // Route through dispatch_click so text-region clicks begin a
+            // TextSelection drag and scrollbar clicks begin scrollbar drags.
+            let events = {
+                let stack_rc = backend_mut.modal_stack_handle();
+                let drag_rc = backend_mut.drag_state_handle();
+                let stack = stack_rc.borrow();
+                let mut drag = drag_rc.borrow_mut();
+                dispatch_click(
+                    &stack,
+                    &[], // scroll surfaces not tracked in the runner
+                    &backend_mut.text_regions,
+                    &mut drag,
+                    position,
+                    button,
+                    modifiers,
+                )
             };
-            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+
+            let mut needs_redraw = false;
+            for ev in events {
+                // Only `MouseDown` events are emitted by dispatch_click;
+                // pass them to the app.
+                let reaction = {
+                    let mut app_mut = app.borrow_mut();
+                    app_mut.handle(ev, &mut *backend_mut)
+                };
+                match reaction {
+                    Reaction::Continue => {}
+                    Reaction::Redraw => needs_redraw = true,
+                    Reaction::Exit => {
+                        window_for_close.close();
+                        return;
+                    }
+                }
+            }
+            if needs_redraw {
+                da_for_redraw.queue_draw();
+            }
         });
     }
     {
@@ -250,33 +345,37 @@ fn activate<A: AppLogic + 'static>(
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         click.connect_released(move |gesture, _n_press, x, y| {
-            let ev = gdk_button_to_mouse_up(gesture.current_button(), x, y);
-            let reaction = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
+            let mut backend_mut = backend.borrow_mut();
+            let position = Point::new(x as f32, y as f32);
+            let button: MouseButton = gdk_button_to_quadraui(gesture.current_button());
+            let events = {
+                let stack_rc = backend_mut.modal_stack_handle();
+                let drag_rc = backend_mut.drag_state_handle();
+                let stack = stack_rc.borrow();
+                let mut drag = drag_rc.borrow_mut();
+                dispatch_mouse_up(&stack, &mut drag, position, button)
             };
-            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+            for ev in events {
+                let reaction = {
+                    let mut app_mut = app.borrow_mut();
+                    app_mut.handle(ev, &mut *backend_mut)
+                };
+                apply_reaction(reaction, &da_for_redraw, &window_for_close);
+            }
         });
     }
     da.add_controller(click);
 
     // ── Motion ─────────────────────────────────────────────────────
     //
-    // Fires `UiEvent::MouseMoved` on every pointer motion. The
-    // `buttons` mask is read from the controller's current event
-    // state so consumers can distinguish drag motion (button held)
-    // from hover motion. Mirrors the TUI side, which translates
-    // `crossterm::MouseEventKind::Drag(b)` and `Moved` to the same
-    // `MouseMoved` shape.
+    // Routes mouse-move through `dispatch_mouse_drag` so text-selection
+    // drags emit `TextSelectionChanged` events. The runner pre-processes
+    // `TextSelectionChanged` to update backend selection state before
+    // forwarding to the app.
     //
-    // `cursor_pos` is shared with the scroll controller below so
-    // that scroll events carry the actual pointer position rather
-    // than a hardcoded (0, 0). GTK's `EventControllerScroll` only
-    // delivers (dx, dy) in its callback — there is no API to query
-    // the pointer position from inside the scroll handler — so the
-    // last position from the motion controller is the correct and
-    // idiomatic way to supply it.
+    // `cursor_pos` is shared with the scroll controller below so that
+    // scroll events carry the actual pointer position. GTK's
+    // `EventControllerScroll` only delivers (dx, dy) in its callback.
     let cursor_pos = Rc::new(Cell::new((0.0_f64, 0.0_f64)));
     let motion = EventControllerMotion::new();
     {
@@ -293,13 +392,44 @@ fn activate<A: AppLogic + 'static>(
                 middle: modifier.contains(gtk4::gdk::ModifierType::BUTTON2_MASK),
                 right: modifier.contains(gtk4::gdk::ModifierType::BUTTON3_MASK),
             };
-            let ev = gdk_motion_to_uievent(x, y, buttons);
-            let reaction = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
+            let position = Point::new(x as f32, y as f32);
+
+            let mut backend_mut = backend.borrow_mut();
+            let events = {
+                let drag_rc = backend_mut.drag_state_handle();
+                let drag = drag_rc.borrow();
+                dispatch_mouse_drag(&drag, position, buttons)
             };
-            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+
+            let mut needs_redraw = false;
+            for ev in events {
+                // Pre-process: update backend selection state so
+                // `apply_selection_highlight` paints the updated range.
+                if let UiEvent::TextSelectionChanged {
+                    region,
+                    anchor,
+                    focus,
+                } = &ev
+                {
+                    backend_mut.set_active_text_selection(region.clone(), *anchor, *focus);
+                    needs_redraw = true;
+                }
+                let reaction = {
+                    let mut app_mut = app.borrow_mut();
+                    app_mut.handle(ev, &mut *backend_mut)
+                };
+                match reaction {
+                    Reaction::Continue => {}
+                    Reaction::Redraw => needs_redraw = true,
+                    Reaction::Exit => {
+                        window_for_close.close();
+                        return;
+                    }
+                }
+            }
+            if needs_redraw {
+                da_for_redraw.queue_draw();
+            }
         });
     }
     da.add_controller(motion);
