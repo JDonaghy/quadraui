@@ -269,6 +269,7 @@ pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
+pub use compose::markdown::{render_markdown_to_styled, RenderedMarkdown};
 pub use compose::{
     AppShell, AppShellEvent, AppShellLayout, ChatController, ChatControllerEvent, ChatRole,
     ChatTurn, FocusGroup, FocusRing, FolderPickerController, FolderPickerEvent, FormController,
@@ -277,7 +278,6 @@ pub use compose::{
     StatusBarInteraction, ToolbarHoverTracker, TreeController, TreeControllerEvent,
     PALETTE_CHROME_ROWS,
 };
-pub use compose::markdown::{render_markdown_to_styled, RenderedMarkdown};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,

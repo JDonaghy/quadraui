@@ -10,9 +10,24 @@
 //! | `*text*` / `_text_` | [`StyledSpan`] with `italic: true` |
 //! | `` `text` `` | [`StyledSpan`] coloured with [`Theme::accent_fg`] |
 //!
-//! Everything else (lists, links, fenced code blocks, blockquotes, tables,
-//! images) passes through as plain text.  A follow-up issue will extend the
-//! feature set.
+//! # Intentional deferrals (first-cut scope)
+//!
+//! The following are **consciously out of scope** for this first cut and will
+//! be addressed in a follow-up issue:
+//!
+//! * **Bulleted / numbered lists** — currently pass through as literal `- ` /
+//!   `1. ` plain text with no indent or styling.  This was the second motivating
+//!   example in the original issue (coord-tui Review-findings panel).
+//!
+//! * **`code_blocks: Vec<CodeBlockRange>` / `CodeBlockRange` struct** — omitted
+//!   from `RenderedMarkdown` intentionally.  The issue proposed this field so
+//!   tree-sitter-capable callers (vimcode) could opt into per-language syntax
+//!   highlighting.  Because `RenderedMarkdown` is library-constructed (consumers
+//!   only read its fields), adding `code_blocks` later is a non-breaking additive
+//!   change.  Fenced code blocks currently pass through as plain text.
+//!
+//! Everything else (links, blockquotes, tables, images) also passes through as
+//! plain text.
 //!
 //! # Example
 //!
@@ -248,12 +263,7 @@ fn parse_inline(text: &str, bold: bool, italic: bool, theme: &Theme) -> Vec<Styl
 
 /// Construct a [`StyledSpan`] with the given style flags and optional
 /// foreground colour.
-fn make_span(
-    text: &str,
-    bold: bool,
-    italic: bool,
-    fg: Option<crate::types::Color>,
-) -> StyledSpan {
+fn make_span(text: &str, bold: bool, italic: bool, fg: Option<crate::types::Color>) -> StyledSpan {
     StyledSpan {
         text: text.to_string(),
         fg,
@@ -306,7 +316,10 @@ mod tests {
         let theme = Theme::default();
         let r = render_markdown_to_styled("# Hello", &theme);
         assert_eq!(r.lines.len(), 1);
-        assert!((r.line_scales[0] - 2.0).abs() < f32::EPSILON, "H1 scale should be 2.0");
+        assert!(
+            (r.line_scales[0] - 2.0).abs() < f32::EPSILON,
+            "H1 scale should be 2.0"
+        );
         assert!(
             r.lines[0].spans.iter().any(|s| s.bold),
             "H1 should produce at least one bold span"
@@ -318,7 +331,10 @@ mod tests {
     fn h2_produces_scale_1_5_and_bold_span() {
         let theme = Theme::default();
         let r = render_markdown_to_styled("## World", &theme);
-        assert!((r.line_scales[0] - 1.5).abs() < f32::EPSILON, "H2 scale should be 1.5");
+        assert!(
+            (r.line_scales[0] - 1.5).abs() < f32::EPSILON,
+            "H2 scale should be 1.5"
+        );
         assert!(r.lines[0].spans.iter().any(|s| s.bold));
     }
 
@@ -326,7 +342,10 @@ mod tests {
     fn h3_produces_scale_1_2_and_bold_span() {
         let theme = Theme::default();
         let r = render_markdown_to_styled("### Section", &theme);
-        assert!((r.line_scales[0] - 1.2).abs() < f32::EPSILON, "H3 scale should be 1.2");
+        assert!(
+            (r.line_scales[0] - 1.2).abs() < f32::EPSILON,
+            "H3 scale should be 1.2"
+        );
         assert!(r.lines[0].spans.iter().any(|s| s.bold));
     }
 
@@ -334,7 +353,10 @@ mod tests {
     fn body_line_has_scale_1_0() {
         let theme = Theme::default();
         let r = render_markdown_to_styled("Just text", &theme);
-        assert!((r.line_scales[0] - 1.0).abs() < f32::EPSILON, "body scale should be 1.0");
+        assert!(
+            (r.line_scales[0] - 1.0).abs() < f32::EPSILON,
+            "body scale should be 1.0"
+        );
     }
 
     #[test]
@@ -371,7 +393,10 @@ mod tests {
         let r = render_markdown_to_styled("*italic*", &theme);
         assert_eq!(r.lines.len(), 1);
         let italic_spans: Vec<_> = r.lines[0].spans.iter().filter(|s| s.italic).collect();
-        assert!(!italic_spans.is_empty(), "expected at least one italic span");
+        assert!(
+            !italic_spans.is_empty(),
+            "expected at least one italic span"
+        );
         assert!(italic_spans.iter().any(|s| s.text == "italic"));
     }
 
@@ -379,7 +404,10 @@ mod tests {
     fn single_underscore_italic() {
         let theme = Theme::default();
         let r = render_markdown_to_styled("_italic_", &theme);
-        assert!(r.lines[0].spans.iter().any(|s| s.italic && s.text == "italic"));
+        assert!(r.lines[0]
+            .spans
+            .iter()
+            .any(|s| s.italic && s.text == "italic"));
     }
 
     // ── Inline code ────────────────────────────────────────────────────
@@ -522,7 +550,10 @@ mod tests {
         // "#title" without a space after # is not CommonMark heading syntax.
         let theme = Theme::default();
         let r = render_markdown_to_styled("#title", &theme);
-        assert!((r.line_scales[0] - 1.0).abs() < f32::EPSILON, "should be body, not heading");
+        assert!(
+            (r.line_scales[0] - 1.0).abs() < f32::EPSILON,
+            "should be body, not heading"
+        );
         assert_eq!(r.line_text[0], "#title");
     }
 }

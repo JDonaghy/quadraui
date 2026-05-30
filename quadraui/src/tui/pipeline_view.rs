@@ -364,8 +364,12 @@ mod tests {
         let first_row = by + 2.min(bh.saturating_sub(2));
 
         // Collect the rendered glyphs of the two label rows.
-        let row1: String = (0..area.width).map(|x| cell_char(&buf, x, first_row)).collect();
-        let row2: String = (0..area.width).map(|x| cell_char(&buf, x, first_row + 1)).collect();
+        let row1: String = (0..area.width)
+            .map(|x| cell_char(&buf, x, first_row))
+            .collect();
+        let row2: String = (0..area.width)
+            .map(|x| cell_char(&buf, x, first_row + 1))
+            .collect();
 
         // Line 1 holds the stage + turn count; line 2 holds the elapsed time.
         assert!(row1.contains("Review T12"), "row1 = {row1:?}");
