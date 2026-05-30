@@ -269,6 +269,7 @@ pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
+pub use compose::markdown::{render_markdown_to_styled, RenderedMarkdown};
 pub use compose::{
     AppShell, AppShellEvent, AppShellLayout, ChatController, ChatControllerEvent, ChatRole,
     ChatTurn, FocusGroup, FocusRing, FolderPickerController, FolderPickerEvent, FormController,
