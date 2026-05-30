@@ -1155,6 +1155,9 @@ mod tests {
         fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
             unimplemented!()
         }
+        fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
+            None
+        }
         fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
         fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
         fn draw_status_bar(

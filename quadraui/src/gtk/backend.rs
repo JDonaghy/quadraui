@@ -862,6 +862,10 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
+        list.hscrollbar(rect, self.line_height())
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let (cr, layout) = self
             .current_frame_refs()

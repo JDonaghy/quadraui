@@ -436,6 +436,9 @@ impl Backend for MacBackend {
             self.current_line_height,
         )
     }
+    fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
+        list.hscrollbar(rect, self.line_height())
+    }
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         let ctx = self.current_cg();
         debug_assert!(

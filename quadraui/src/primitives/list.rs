@@ -17,6 +17,7 @@
 //! `scroll_offset` for the next frame.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -261,6 +262,149 @@ impl ListView {
             hit_regions,
             resolved_scroll_offset,
         }
+    }
+
+    /// Horizontal scrollbar geometry for this list rendered into `area`.
+    ///
+    /// This is the single source of truth shared by the rasteriser —
+    /// which paints the returned [`Scrollbar`] — and consumers, which
+    /// hit-test the resolved `track` / `thumb_start` / `thumb_len` to
+    /// implement thumb dragging. Keeping it here (rather than inline in
+    /// each backend's `draw_*`) means a consumer never re-derives the
+    /// track rect and so can never drift out of sync with the paint.
+    /// Reach it backend-agnostically via [`crate::Backend::list_hscrollbar`].
+    ///
+    /// Returns `None` when no horizontal scrollbar is needed:
+    /// `max_content_width` is `None`, or the content fits within the
+    /// visible width.
+    ///
+    /// # Arguments
+    ///
+    /// - `area` — the list surface rect, in surface-native units (TUI
+    ///   cells, GTK / macOS pixels).
+    /// - `row_height` — height of one row: `1.0` on TUI, `line_height`
+    ///   on pixel backends. The scrollbar occupies the bottom row of the
+    ///   area (one row above the bottom border in `bordered` mode), and
+    ///   `row_height` also serves as the minimum thumb length.
+    pub fn hscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
+        let total = self.max_content_width? as f32;
+        // Visible content width accounts for the 1-cell bordered inset
+        // on each side, matching `layout`'s `inner_w`.
+        let visible_w = if self.bordered {
+            (area.width - 2.0).max(0.0)
+        } else {
+            area.width
+        };
+        if total <= visible_w {
+            return None;
+        }
+        // Track sits on the bottom row; in bordered mode it moves up one
+        // row so it stays inside the box, above the bottom border.
+        let (track_x, track_w, track_y) = if self.bordered {
+            (
+                area.x + 1.0,
+                (area.width - 2.0).max(0.0),
+                area.y + (area.height - 2.0 * row_height).max(0.0),
+            )
+        } else {
+            (
+                area.x,
+                area.width,
+                area.y + (area.height - row_height).max(0.0),
+            )
+        };
+        let track = Rect::new(track_x, track_y, track_w, row_height);
+        Some(Scrollbar::horizontal(
+            self.id.clone(),
+            track,
+            self.h_scroll as f32,
+            total,
+            visible_w,
+            row_height,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod hscrollbar_tests {
+    use super::*;
+
+    /// Build a flat list whose widest row is `content_width` chars wide,
+    /// scrolled to `h_scroll`. `max` toggles whether `max_content_width`
+    /// is populated.
+    fn list(content_width: usize, h_scroll: usize, max: bool) -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: vec![ListItem {
+                text: StyledText::plain(&"x".repeat(content_width)),
+                detail: None,
+                icon: None,
+                decoration: Decoration::default(),
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll,
+            max_content_width: max.then_some(content_width),
+        }
+    }
+
+    #[test]
+    fn none_when_max_content_width_unset() {
+        let l = list(100, 0, false);
+        assert!(l.hscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn none_when_content_fits() {
+        // content_width 20 == visible 20 → no scrollbar (strictly wider only).
+        let l = list(20, 0, true);
+        assert!(l.hscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn flat_track_spans_bottom_row() {
+        let l = list(40, 0, true);
+        let sb = l
+            .hscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .expect("overflow should yield a scrollbar");
+        // Flat: full width, bottom-most row.
+        assert_eq!(sb.track.x, 0.0);
+        assert_eq!(sb.track.width, 20.0);
+        assert_eq!(sb.track.y, 9.0);
+        assert_eq!(sb.track.height, 1.0);
+        // Thumb starts at the left when h_scroll == 0.
+        assert_eq!(sb.thumb_start, 0.0);
+        assert!(sb.thumb_len > 0.0 && sb.thumb_len < sb.track.width);
+    }
+
+    #[test]
+    fn bordered_track_inset_above_bottom_border() {
+        let mut l = list(40, 0, true);
+        l.bordered = true;
+        let sb = l
+            .hscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .expect("overflow should yield a scrollbar");
+        // Inset 1 cell each side; one row above the bottom border.
+        assert_eq!(sb.track.x, 1.0);
+        assert_eq!(sb.track.width, 18.0);
+        assert_eq!(sb.track.y, 8.0);
+    }
+
+    #[test]
+    fn h_scroll_advances_thumb() {
+        let at_zero = list(40, 0, true)
+            .hscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .unwrap();
+        let scrolled = list(40, 10, true)
+            .hscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .unwrap();
+        assert!(
+            scrolled.thumb_start > at_zero.thumb_start,
+            "scrolling right should move the thumb right"
+        );
     }
 }
 
