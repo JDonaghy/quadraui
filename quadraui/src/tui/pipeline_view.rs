@@ -148,25 +148,33 @@ pub fn draw_pipeline_view(
             }
         }
 
-        // ── Label (row 2 inside box) ─────────────────────────────────────
-        let label_row = by + 2.min(bh.saturating_sub(2));
-        if label_row < by + bh.saturating_sub(1) && !stage.label.is_empty() {
+        // ── Label (rows 2+ inside box) ───────────────────────────────────
+        // The label may carry a newline (e.g. "Review T12\n3:45": stage+turns
+        // on line 1, elapsed mm:ss on line 2). Render each line on its own row,
+        // centred, with char-based (not byte-based) truncation so a stray byte
+        // boundary never splits a multi-byte char and the second line never
+        // overflows row 1 (the cause of the off-box "black gap" glitch).
+        let first_row = by + 2.min(bh.saturating_sub(2));
+        let inner_bottom = by + bh.saturating_sub(1); // border row (exclusive)
+        if first_row < inner_bottom && !stage.label.is_empty() {
             let avail = bw.saturating_sub(2) as usize;
-            let label: &str = &stage.label;
-            let trimmed = if label.len() > avail {
-                &label[..avail]
-            } else {
-                label
-            };
-            let pad = avail.saturating_sub(trimmed.len()) / 2;
-            let start_col = bx + 1 + pad as u16;
             let max_col = bx + bw.saturating_sub(1);
-            for (i, ch) in trimmed.chars().enumerate() {
-                let col = start_col + i as u16;
-                if col >= max_col {
+            for (line_idx, line) in stage.label.split('\n').take(2).enumerate() {
+                let row = first_row + line_idx as u16;
+                if row >= inner_bottom {
                     break;
                 }
-                set_cell(buf, col, label_row, ch, fg, bg);
+                let chars: Vec<char> = line.chars().collect();
+                let take = chars.len().min(avail);
+                let pad = avail.saturating_sub(take) / 2;
+                let start_col = bx + 1 + pad as u16;
+                for (i, ch) in chars.iter().take(take).enumerate() {
+                    let col = start_col + i as u16;
+                    if col >= max_col {
+                        break;
+                    }
+                    set_cell(buf, col, row, *ch, fg, bg);
+                }
             }
         }
 
@@ -176,21 +184,17 @@ pub fn draw_pipeline_view(
             if ay > by && ay < by + bh {
                 let btn_label = format!("[{}]", action_text);
                 let avail = bw.saturating_sub(2) as usize;
-                let btn: &str = &btn_label;
-                let trimmed = if btn.len() > avail {
-                    &btn[..avail]
-                } else {
-                    btn
-                };
-                let pad = avail.saturating_sub(trimmed.len()) / 2;
+                let chars: Vec<char> = btn_label.chars().collect();
+                let take = chars.len().min(avail);
+                let pad = avail.saturating_sub(take) / 2;
                 let start_col = bx + 1 + pad as u16;
                 let max_col = bx + bw.saturating_sub(1);
-                for (i, ch) in trimmed.chars().enumerate() {
+                for (i, ch) in chars.iter().take(take).enumerate() {
                     let col = start_col + i as u16;
                     if col >= max_col {
                         break;
                     }
-                    set_cell(buf, col, ay, ch, accent, bg);
+                    set_cell(buf, col, ay, *ch, accent, bg);
                 }
             }
         }
@@ -334,6 +338,42 @@ mod tests {
 
         // The box border is still drawn (status colour, not overridden).
         assert_eq!(cell_char(&buf, bx, by), '┌');
+    }
+
+    /// A label carrying a newline renders as two centred rows inside the box —
+    /// no literal newline cell on row 1, second line on its own row. Regression
+    /// guard for the off-box "black gap" glitch (coord-tui #280).
+    #[test]
+    fn two_line_label_renders_on_separate_rows() {
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        let view = PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Review T12\n3:45".into(),
+                status: StageStatus::Active,
+                action: None,
+            }],
+            focused_stage: None,
+        };
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let by = bb.y.round() as u16;
+        let bh = bb.height.round() as u16;
+        let first_row = by + 2.min(bh.saturating_sub(2));
+
+        // Collect the rendered glyphs of the two label rows.
+        let row1: String = (0..area.width).map(|x| cell_char(&buf, x, first_row)).collect();
+        let row2: String = (0..area.width).map(|x| cell_char(&buf, x, first_row + 1)).collect();
+
+        // Line 1 holds the stage + turn count; line 2 holds the elapsed time.
+        assert!(row1.contains("Review T12"), "row1 = {row1:?}");
+        assert!(row2.contains("3:45"), "row2 = {row2:?}");
+        // The elapsed segment must NOT bleed onto row 1 (the old glitch).
+        assert!(!row1.contains("3:45"), "elapsed leaked onto row1: {row1:?}");
+        // No literal newline rendered as a cell anywhere on row 1.
+        assert!(!row1.contains('\n'), "newline rendered as a cell: {row1:?}");
     }
 
     /// When no stage is focused the indicator row stays blank.
