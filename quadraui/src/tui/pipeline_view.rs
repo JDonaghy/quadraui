@@ -149,24 +149,21 @@ pub fn draw_pipeline_view(
         }
 
         // ── Label (row 2 inside box) ─────────────────────────────────────
+        // Labels may contain a single '\n' to put a second line below the first
+        // (e.g. "Review T12\n3:45").  We split on the first '\n' and render each
+        // segment on its own row.  Truncation and centering are char-based so
+        // multi-byte characters don't mis-truncate.
         let label_row = by + 2.min(bh.saturating_sub(2));
         if label_row < by + bh.saturating_sub(1) && !stage.label.is_empty() {
-            let avail = bw.saturating_sub(2) as usize;
-            let label: &str = &stage.label;
-            let trimmed = if label.len() > avail {
-                &label[..avail]
-            } else {
-                label
-            };
-            let pad = avail.saturating_sub(trimmed.len()) / 2;
-            let start_col = bx + 1 + pad as u16;
-            let max_col = bx + bw.saturating_sub(1);
-            for (i, ch) in trimmed.chars().enumerate() {
-                let col = start_col + i as u16;
-                if col >= max_col {
+            let inner_bottom = by + bh.saturating_sub(1);
+            for (line_idx, line) in stage.label.splitn(2, '\n').enumerate() {
+                let row = label_row + line_idx as u16;
+                if row >= inner_bottom {
                     break;
                 }
-                set_cell(buf, col, label_row, ch, fg, bg);
+                if !line.is_empty() {
+                    render_centered_line(buf, line, row, bx, bw, fg, bg);
+                }
             }
         }
 
@@ -175,23 +172,7 @@ pub fn draw_pipeline_view(
             let ay = ab.y.round() as u16;
             if ay > by && ay < by + bh {
                 let btn_label = format!("[{}]", action_text);
-                let avail = bw.saturating_sub(2) as usize;
-                let btn: &str = &btn_label;
-                let trimmed = if btn.len() > avail {
-                    &btn[..avail]
-                } else {
-                    btn
-                };
-                let pad = avail.saturating_sub(trimmed.len()) / 2;
-                let start_col = bx + 1 + pad as u16;
-                let max_col = bx + bw.saturating_sub(1);
-                for (i, ch) in trimmed.chars().enumerate() {
-                    let col = start_col + i as u16;
-                    if col >= max_col {
-                        break;
-                    }
-                    set_cell(buf, col, ay, ch, accent, bg);
-                }
+                render_centered_line(buf, &btn_label, ay, bx, bw, accent, bg);
             }
         }
 
@@ -216,6 +197,38 @@ pub fn draw_pipeline_view(
     }
 
     layout
+}
+
+/// Render a single line of text centered within a box's inner width.
+///
+/// Truncates to `avail` **chars** (not bytes) so multi-byte characters don't
+/// cause off-by-one mis-truncation.  The horizontal `pad` is also char-count-
+/// based so centering stays accurate for non-ASCII content.
+fn render_centered_line(
+    buf: &mut Buffer,
+    text: &str,
+    row: u16,
+    bx: u16,
+    bw: u16,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let avail = bw.saturating_sub(2) as usize;
+    // `take(avail)` truncates on char boundary — no byte-slice panic.
+    let chars: Vec<char> = text.chars().take(avail).collect();
+    let pad = avail.saturating_sub(chars.len()) / 2;
+    let start_col = bx + 1 + pad as u16;
+    let max_col = bx + bw.saturating_sub(1);
+    for (i, &ch) in chars.iter().enumerate() {
+        let col = start_col + i as u16;
+        if col >= max_col {
+            break;
+        }
+        set_cell(buf, col, row, ch, fg, bg);
+    }
 }
 
 fn status_icon(
@@ -351,5 +364,80 @@ mod tests {
 
         // Indicator row should be blank since nothing is focused.
         assert_eq!(cell_char(&buf, ind_col, 0), ' ');
+    }
+
+    /// A two-line label ("Review T12\n3:45") must render both segments on
+    /// separate rows with no literal '\n' cell and no overflow past the box.
+    #[test]
+    fn two_line_label_renders_both_rows_no_newline_char() {
+        // Area tall enough for: focus-indicator (1) + top border (1) + icon (1)
+        // + label row 1 (1) + label row 2 (1) + bottom border (1) = 6 min.
+        let area = Rect::new(0, 0, 20, 8);
+        let mut buf = Buffer::empty(area);
+        let view = PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Review T12\n3:45".into(),
+                status: StageStatus::Active,
+                action: None,
+            }],
+            focused_stage: None,
+        };
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let by = bb.y.round() as u16;
+        let bh = bb.height.round() as u16;
+        let label_row = by + 2.min(bh.saturating_sub(2));
+
+        let row0: String = (0..area.width)
+            .map(|x| cell_char(&buf, x, label_row))
+            .collect();
+        let row1: String = (0..area.width)
+            .map(|x| cell_char(&buf, x, label_row + 1))
+            .collect();
+
+        // No literal newline character should appear in either row.
+        assert!(!row0.contains('\n'), "raw newline in label row 0: {row0:?}");
+        assert!(!row1.contains('\n'), "raw newline in label row 1: {row1:?}");
+
+        // Line 1 content on the first label row.
+        assert!(
+            row0.contains("Review T12"),
+            "label line 1 missing from row 0: {row0:?}"
+        );
+
+        // Line 2 content on the second label row.
+        assert!(
+            row1.contains("3:45"),
+            "label line 2 missing from row 1: {row1:?}"
+        );
+    }
+
+    /// A single-line label must keep rendering correctly (no regression).
+    #[test]
+    fn single_line_label_unchanged() {
+        let area = Rect::new(0, 0, 20, 8);
+        let mut buf = Buffer::empty(area);
+        let view = PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Build".into(),
+                status: StageStatus::Done,
+                action: None,
+            }],
+            focused_stage: None,
+        };
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let by = bb.y.round() as u16;
+        let bh = bb.height.round() as u16;
+        let label_row = by + 2.min(bh.saturating_sub(2));
+
+        let row: String = (0..area.width)
+            .map(|x| cell_char(&buf, x, label_row))
+            .collect();
+        assert!(row.contains("Build"), "single-line label missing: {row:?}");
     }
 }
