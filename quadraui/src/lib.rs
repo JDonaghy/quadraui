@@ -277,6 +277,7 @@ pub use compose::{
     StatusBarInteraction, ToolbarHoverTracker, TreeController, TreeControllerEvent,
     PALETTE_CHROME_ROWS,
 };
+pub use compose::markdown::{render_markdown_to_styled, RenderedMarkdown};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
