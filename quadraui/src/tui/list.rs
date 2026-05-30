@@ -9,11 +9,12 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color as RatatuiColor;
 
 use super::{draw_styled_text, ratatui_color, set_cell};
 use crate::primitives::list::{ListItemMeasure, ListView};
 use crate::theme::Theme;
-use crate::types::Decoration;
+use crate::types::{Decoration, StyledText};
 
 /// Draw a [`ListView`] into `area` on `buf`. Honours
 /// [`ListView::bordered`] (rounded box border + title overlay) and
@@ -62,9 +63,31 @@ pub fn draw_list(
     let warn_fg = ratatui_color(theme.warning_fg);
     let border_fg = ratatui_color(theme.border_fg);
     let title_fg = ratatui_color(theme.title_fg);
+    let h_scroll = list.h_scroll;
+
+    // Visible item-content width (accounts for bordered inset).
+    let inner_w: usize = if list.bordered {
+        (area.width as usize).saturating_sub(2)
+    } else {
+        area.width as usize
+    };
+
+    // Reserve the bottom row for a horizontal scrollbar when content
+    // overflows. In bordered mode the scrollbar sits inside the box
+    // (above the bottom border); in flat mode it occupies the last row.
+    let needs_hscrollbar = list
+        .max_content_width
+        .map(|mcw| mcw > inner_w)
+        .unwrap_or(false);
+
+    let viewport_h = if needs_hscrollbar {
+        (area.height as f32 - 1.0).max(0.0)
+    } else {
+        area.height as f32
+    };
 
     let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
-    let layout = list.layout(area.width as f32, area.height as f32, title_h, |_| {
+    let layout = list.layout(area.width as f32, viewport_h, title_h, |_| {
         ListItemMeasure::new(1.0)
     });
 
@@ -153,21 +176,33 @@ pub fn draw_list(
             _ => fg,
         };
 
+        // Fill the entire visible row with the background colour first.
         for x in item_x..item_x + item_w {
             set_cell(buf, x, y, ' ', decoration_fg, bg);
         }
 
-        let mut col = 0u16;
+        // `vcol` is the virtual column index within the full item content
+        // (prefix + icon + text). Characters at vcol < h_scroll are skipped;
+        // at vcol >= h_scroll they map to buf col (vcol - h_scroll).
+        let mut vcol: usize = 0;
 
+        // Selection prefix "▶ " (selected) or "  " (not selected).
         let prefix = if is_selected { "▶ " } else { "  " };
         for ch in prefix.chars() {
-            if col >= item_w {
-                break;
-            }
-            set_cell(buf, item_x + col, y, ch, decoration_fg, bg);
-            col += 1;
+            vcol = put_char_scrolled(
+                buf,
+                vcol,
+                h_scroll,
+                item_x,
+                item_w,
+                y,
+                ch,
+                decoration_fg,
+                bg,
+            );
         }
 
+        // Optional icon glyph + trailing space.
         if let Some(ref icon) = item.icon {
             let glyph = if nerd_fonts_enabled {
                 icon.glyph.as_str()
@@ -175,23 +210,39 @@ pub fn draw_list(
                 icon.fallback.as_str()
             };
             for ch in glyph.chars() {
-                if col >= item_w {
-                    break;
-                }
-                set_cell(buf, item_x + col, y, ch, decoration_fg, bg);
-                col += 1;
+                vcol = put_char_scrolled(
+                    buf,
+                    vcol,
+                    h_scroll,
+                    item_x,
+                    item_w,
+                    y,
+                    ch,
+                    decoration_fg,
+                    bg,
+                );
             }
-            if col < item_w {
-                set_cell(buf, item_x + col, y, ' ', decoration_fg, bg);
-                col += 1;
-            }
+            vcol = put_char_scrolled(
+                buf,
+                vcol,
+                h_scroll,
+                item_x,
+                item_w,
+                y,
+                ' ',
+                decoration_fg,
+                bg,
+            );
         }
 
-        let text_end_col = draw_styled_text(
+        // Main item text — rendered with h_scroll awareness.
+        let vcol_after_text = render_spans_scrolled(
             buf,
-            item_area,
+            vcol,
+            h_scroll,
+            item_x,
+            item_w,
             y,
-            col as usize,
             &item.text,
             decoration_fg,
             bg,
@@ -199,10 +250,20 @@ pub fn draw_list(
             dim_fg,
         );
 
+        // Buffer column past the last text character (clamped to item_w).
+        // Used to ensure detail text doesn't overwrite main text.
+        let text_buf_col_end = if vcol_after_text > h_scroll {
+            (vcol_after_text - h_scroll).min(item_w as usize)
+        } else {
+            0
+        };
+
+        // Detail text — right-aligned and pinned to the visible viewport
+        // (does not scroll with h_scroll, so it remains readable at all offsets).
         if let Some(ref detail) = item.detail {
             let detail_w: usize = detail.spans.iter().map(|s| s.text.chars().count()).sum();
             let start = (item_w as usize).saturating_sub(detail_w + 1);
-            if start > text_end_col + 1 {
+            if start > text_buf_col_end + 1 {
                 draw_styled_text(
                     buf,
                     item_area,
@@ -217,6 +278,113 @@ pub fn draw_list(
             }
         }
     }
+
+    // ── Horizontal scrollbar ──────────────────────────────────────────────
+    // Drawn after items so it overlays the bottom row's background fill.
+    // In bordered mode it sits inside the box (above bottom border);
+    // in flat mode it occupies the final row of the area.
+    //
+    // Hit-test / zone wiring: DataTable wires its h-scrollbar via
+    // `FrameZone`; ListView callers own state and handle Left/Right keys
+    // themselves. Follow the DataTable `FrameZone` pattern if you need
+    // mouse-drag on this scrollbar.
+    if needs_hscrollbar {
+        let mcw = list.max_content_width.unwrap_or(0) as f32;
+        let visible_w = inner_w as f32;
+        let (hsb_y, track_x, track_w, hsb_bg) = if list.bordered {
+            // Inside the box, one row above the bottom border.
+            (
+                area.y + area.height.saturating_sub(2),
+                area.x + 1,
+                (area.width as usize).saturating_sub(2) as f32,
+                theme.surface_bg,
+            )
+        } else {
+            (
+                area.y + area.height - 1,
+                area.x,
+                area.width as f32,
+                theme.background,
+            )
+        };
+        let hsb_track = crate::event::Rect::new(track_x as f32, hsb_y as f32, track_w, 1.0);
+        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
+            list.id.clone(),
+            hsb_track,
+            h_scroll as f32,
+            mcw,
+            visible_w,
+            1.0,
+        );
+        super::draw_scrollbar(buf, &hsb, theme, hsb_bg);
+    }
+}
+
+// ── Private rendering helpers ─────────────────────────────────────────────
+
+/// Write a single character at virtual column `vcol` within a horizontally-
+/// scrolled item row. Characters whose `vcol < h_scroll` are silently
+/// dropped; the rest are mapped to buffer column `vcol - h_scroll` inside
+/// the item's `[item_x, item_x + item_w)` band.
+///
+/// Returns `vcol + 1` so callers can do `vcol = put_char_scrolled(...)`.
+#[allow(clippy::too_many_arguments)]
+fn put_char_scrolled(
+    buf: &mut Buffer,
+    vcol: usize,
+    h_scroll: usize,
+    item_x: u16,
+    item_w: u16,
+    y: u16,
+    ch: char,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+) -> usize {
+    if vcol >= h_scroll {
+        let buf_col = (vcol - h_scroll) as u16;
+        if buf_col < item_w {
+            set_cell(buf, item_x + buf_col, y, ch, fg, bg);
+        }
+    }
+    vcol + 1
+}
+
+/// Render a [`StyledText`]'s spans starting at virtual column `vcol`,
+/// skipping the first `h_scroll` virtual columns. Returns the virtual column
+/// past the last character of `text` (i.e. the next `vcol` for subsequent
+/// content in the same item row).
+///
+/// Span foreground / background and `decoration` semantics mirror
+/// [`super::draw_styled_text`].
+#[allow(clippy::too_many_arguments)]
+fn render_spans_scrolled(
+    buf: &mut Buffer,
+    vcol_start: usize,
+    h_scroll: usize,
+    item_x: u16,
+    item_w: u16,
+    y: u16,
+    text: &StyledText,
+    default_fg: RatatuiColor,
+    bg: RatatuiColor,
+    decoration: Decoration,
+    dim_fg: RatatuiColor,
+) -> usize {
+    let mut vcol = vcol_start;
+    for span in &text.spans {
+        let span_fg = if let Some(c) = span.fg {
+            ratatui_color(c)
+        } else if matches!(decoration, Decoration::Muted) {
+            dim_fg
+        } else {
+            default_fg
+        };
+        let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
+        for ch in span.text.chars() {
+            vcol = put_char_scrolled(buf, vcol, h_scroll, item_x, item_w, y, ch, span_fg, span_bg);
+        }
+    }
+    vcol
 }
 
 #[cfg(test)]
@@ -249,6 +417,8 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
         }
     }
 
@@ -326,6 +496,8 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
         };
         let theme = Theme {
             error_fg: Color::rgb(255, 0, 0),
@@ -352,5 +524,184 @@ mod tests {
             false,
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── h_scroll tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hscroll_zero_renders_identically_to_default() {
+        // h_scroll=0 with max_content_width=None must produce the same output
+        // as the original no-scroll rasteriser.
+        let mut buf_ref = Buffer::empty(Rect::new(0, 0, 20, 3));
+        let mut buf_new = Buffer::empty(Rect::new(0, 0, 20, 3));
+
+        let list_ref = make_list(0); // h_scroll=0, max_content_width=None by construction
+        let list_new = ListView {
+            h_scroll: 0,
+            max_content_width: None,
+            ..make_list(0)
+        };
+
+        draw_list(
+            &mut buf_ref,
+            Rect::new(0, 0, 20, 3),
+            &list_ref,
+            &Theme::default(),
+            false,
+        );
+        draw_list(
+            &mut buf_new,
+            Rect::new(0, 0, 20, 3),
+            &list_new,
+            &Theme::default(),
+            false,
+        );
+
+        assert_eq!(buf_ref, buf_new, "h_scroll=0 must produce identical output");
+        // Sanity: selected row 0 still has '▶' at col 0, 'a' of "alpha" at col 2.
+        assert_eq!(cell_char(&buf_new, 0, 0), '▶');
+        assert_eq!(cell_char(&buf_new, 2, 0), 'a');
+    }
+
+    #[test]
+    fn hscroll_skips_prefix_and_reveals_text_at_col_zero() {
+        // With h_scroll=2 the two-char "  " prefix of a non-selected item
+        // is entirely scrolled off; the first char of the item text appears
+        // at buffer column 0.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        let mut list = make_list(1); // item 0 is NOT selected, no focus marker
+        list.h_scroll = 2;
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 3),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Row 0: item "alpha" — "  " prefix (vcol 0,1) scrolled off → 'a' at buf col 0.
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            'a',
+            "first text char at buf col 0 after skipping prefix"
+        );
+        // Row 1: item "beta" is selected (selected_idx=1), prefix '▶'(vcol 0) is
+        // scrolled off, ' '(vcol 1) is scrolled off → 'b' of "beta" at buf col 0.
+        assert_eq!(
+            cell_char(&buf, 0, 1),
+            'b',
+            "selected item text visible at buf col 0"
+        );
+    }
+
+    #[test]
+    fn hscroll_partial_prefix_visible() {
+        // h_scroll=1: first prefix char scrolled off, second (space) appears at col 0.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        let mut list = make_list(1); // row 0 not selected
+        list.h_scroll = 1;
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 3),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Row 0 non-selected: prefix "  " → vcol 0 skipped, vcol 1 (' ') at buf col 0.
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        // 'a' of "alpha" at buf col 1.
+        assert_eq!(cell_char(&buf, 1, 0), 'a');
+    }
+
+    #[test]
+    fn hscrollbar_visible_when_content_wider_than_area() {
+        // max_content_width=20 with area width=10 → scrollbar appears on last row.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let mut list = make_list(0);
+        list.max_content_width = Some(20);
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 10, 5),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Bottom row (y=4) must contain at least one scrollbar glyph.
+        let has_sb = (0..10u16).any(|x| matches!(cell_char(&buf, x, 4), '▁' | '▄'));
+        assert!(
+            has_sb,
+            "horizontal scrollbar expected on last row when content overflows"
+        );
+        // Items still appear: row 0 should have the selection marker.
+        assert_eq!(cell_char(&buf, 0, 0), '▶');
+    }
+
+    #[test]
+    fn hscrollbar_hidden_when_content_fits() {
+        // max_content_width=5 with area width=20 → no scrollbar.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        let mut list = make_list(0);
+        list.max_content_width = Some(5);
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 5),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        let has_sb = (0..20u16).any(|x| matches!(cell_char(&buf, x, 4), '▁' | '▄'));
+        assert!(
+            !has_sb,
+            "no horizontal scrollbar expected when content fits in viewport"
+        );
+    }
+
+    #[test]
+    fn hscrollbar_inside_bordered_box() {
+        // In bordered mode the scrollbar sits at area.height-2 (above bottom border).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 6));
+        let mut list = make_list(0);
+        list.bordered = true;
+        list.max_content_width = Some(30);
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 10, 6),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Bottom border corners still intact.
+        assert_eq!(cell_char(&buf, 0, 5), '╰');
+        assert_eq!(cell_char(&buf, 9, 5), '╯');
+        // Scrollbar at y=4 in inner columns (x=1..9).
+        let has_sb = (1..9u16).any(|x| matches!(cell_char(&buf, x, 4), '▁' | '▄'));
+        assert!(
+            has_sb,
+            "horizontal scrollbar expected at y=4 inside bordered box"
+        );
+    }
+
+    #[test]
+    fn hscrollbar_max_content_none_never_shows_scrollbar() {
+        // max_content_width=None → never show scrollbar regardless of actual content.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 3));
+        let mut list = make_list(0);
+        list.max_content_width = None;
+        // Item "alpha" (5 chars + 2 prefix = 7) would overflow the 5-wide area,
+        // but without max_content_width set the rasteriser can't know that.
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 5, 3),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        let has_sb = (0..5u16).any(|x| matches!(cell_char(&buf, x, 2), '▁' | '▄'));
+        assert!(!has_sb, "no scrollbar when max_content_width is None");
     }
 }

@@ -467,6 +467,8 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
         };
         let json = serde_json::to_string(&list).unwrap();
         let back: ListView = serde_json::from_str(&json).unwrap();
@@ -3376,6 +3378,8 @@ mod tests {
             scroll_offset: scroll,
             has_focus: true,
             bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
         }
     }
 
