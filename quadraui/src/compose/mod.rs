@@ -24,6 +24,7 @@ pub mod focus_group;
 pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
+pub mod markdown;
 pub mod menu_system;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
