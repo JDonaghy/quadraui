@@ -288,6 +288,8 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
         }
     }
 

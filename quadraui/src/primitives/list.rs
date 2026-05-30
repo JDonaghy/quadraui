@@ -41,6 +41,19 @@ pub struct ListView {
     /// header+rows layout used by quickfix and other inline panels.
     #[serde(default)]
     pub bordered: bool,
+    /// Horizontal scroll offset in chars (number of content columns to skip
+    /// from the left before rendering). Default `0` = no scroll.
+    /// The caller (e.g. coord-tui) increments / decrements this in response
+    /// to Left / Right key events.
+    #[serde(default)]
+    pub h_scroll: usize,
+    /// Total width (in chars) of the widest item row, including the 2-char
+    /// selection prefix, any icon, and the main text. When
+    /// `max_content_width > visible_area_width` the TUI rasteriser reserves
+    /// the bottom row of the list area for a horizontal scrollbar.
+    /// `None` = caller hasn't measured content; no scrollbar shown.
+    #[serde(default)]
+    pub max_content_width: Option<usize>,
 }
 
 /// One row in a `ListView`.

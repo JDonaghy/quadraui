@@ -78,6 +78,8 @@ pub fn build_list(state: &AppState) -> ListView {
         scroll_offset: 0,
         has_focus: state.focus == Focus::Resources,
         bordered: false,
+        h_scroll: 0,
+        max_content_width: None,
     }
 }
 
