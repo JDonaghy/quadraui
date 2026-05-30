@@ -172,6 +172,10 @@ impl Backend for WinBackend {
         todo!("Direct2D data table layout")
     }
 
+    fn list_hscrollbar(&self, _rect: Rect, _list: &ListView) -> Option<crate::Scrollbar> {
+        todo!("Direct2D list hscrollbar geometry")
+    }
+
     fn draw_form(&mut self, _rect: Rect, _form: &Form) {
         todo!("Direct2D form rasteriser")
     }

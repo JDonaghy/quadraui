@@ -65,20 +65,21 @@ pub fn draw_list(
     let title_fg = ratatui_color(theme.title_fg);
     let h_scroll = list.h_scroll;
 
-    // Visible item-content width (accounts for bordered inset).
-    let inner_w: usize = if list.bordered {
-        (area.width as usize).saturating_sub(2)
-    } else {
-        area.width as usize
-    };
-
     // Reserve the bottom row for a horizontal scrollbar when content
-    // overflows. In bordered mode the scrollbar sits inside the box
-    // (above the bottom border); in flat mode it occupies the last row.
-    let needs_hscrollbar = list
-        .max_content_width
-        .map(|mcw| mcw > inner_w)
-        .unwrap_or(false);
+    // overflows. The track + thumb geometry comes from
+    // `ListView::hscrollbar` — the single source of truth also used by
+    // consumers for thumb hit-testing (via `Backend::list_hscrollbar`),
+    // so the painted thumb and the draggable thumb can never drift apart.
+    // In bordered mode the scrollbar sits inside the box (above the bottom
+    // border); in flat mode it occupies the last row.
+    let area_f = crate::event::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    let hscrollbar = list.hscrollbar(area_f, 1.0);
+    let needs_hscrollbar = hscrollbar.is_some();
 
     let viewport_h = if needs_hscrollbar {
         (area.height as f32 - 1.0).max(0.0)
@@ -281,42 +282,16 @@ pub fn draw_list(
 
     // ── Horizontal scrollbar ──────────────────────────────────────────────
     // Drawn after items so it overlays the bottom row's background fill.
-    // In bordered mode it sits inside the box (above bottom border);
-    // in flat mode it occupies the final row of the area.
-    //
-    // Hit-test / zone wiring: DataTable wires its h-scrollbar via
-    // `FrameZone`; ListView callers own state and handle Left/Right keys
-    // themselves. Follow the DataTable `FrameZone` pattern if you need
-    // mouse-drag on this scrollbar.
-    if needs_hscrollbar {
-        let mcw = list.max_content_width.unwrap_or(0) as f32;
-        let visible_w = inner_w as f32;
-        let (hsb_y, track_x, track_w, hsb_bg) = if list.bordered {
-            // Inside the box, one row above the bottom border.
-            (
-                area.y + area.height.saturating_sub(2),
-                area.x + 1,
-                (area.width as usize).saturating_sub(2) as f32,
-                theme.surface_bg,
-            )
+    // Track + thumb geometry was resolved above by `ListView::hscrollbar`;
+    // we just paint it here. Consumers obtain the same `Scrollbar` via
+    // `Backend::list_hscrollbar` and hit-test its thumb for mouse-drag.
+    if let Some(ref hsb) = hscrollbar {
+        let hsb_bg = if list.bordered {
+            theme.surface_bg
         } else {
-            (
-                area.y + area.height - 1,
-                area.x,
-                area.width as f32,
-                theme.background,
-            )
+            theme.background
         };
-        let hsb_track = crate::event::Rect::new(track_x as f32, hsb_y as f32, track_w, 1.0);
-        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
-            list.id.clone(),
-            hsb_track,
-            h_scroll as f32,
-            mcw,
-            visible_w,
-            1.0,
-        );
-        super::draw_scrollbar(buf, &hsb, theme, hsb_bg);
+        super::draw_scrollbar(buf, hsb, theme, hsb_bg);
     }
 }
 

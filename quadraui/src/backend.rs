@@ -215,6 +215,13 @@ pub trait Backend {
         hovered_idx: Option<usize>,
     ) -> DataTableLayout;
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
+    /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
+    /// `None` when its content fits. Each backend supplies its native row
+    /// height; the resolved track + thumb are the same values the
+    /// rasteriser paints, so consumers hit-test the returned thumb to
+    /// implement drag without re-deriving geometry. Mirrors
+    /// [`Backend::data_table_layout`]; see [`ListView::hscrollbar`].
+    fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 
