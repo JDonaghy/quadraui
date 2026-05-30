@@ -85,14 +85,31 @@ pub fn draw_list(
 
     layout.set_attributes(None);
 
+    // Measure a reference glyph for char-to-pixel conversion.  `h_scroll` is
+    // expressed in character columns (same unit as TUI cells); GTK works in
+    // pixels, so we multiply by `char_w` before subtracting from cursor_x.
+    layout.set_text("M");
+    let (cw_px, _) = layout.pixel_size();
+    let char_w = cw_px.max(1) as f64;
+    let h_off_px = list.h_scroll as f64 * char_w;
+
     let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
+    // Visible content width for scrollbar threshold check.
+    let visible_px = (w - border_inset * 2.0).max(0.0);
+    // Reserve the bottom row for a horizontal scrollbar when content overflows
+    // — mirrors the TUI rasteriser's `viewport_h` reduction.
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_w > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+
     let title_h = if list.title.is_some() {
         line_height as f32
     } else {
         0.0
     };
     let layout_w = (w - border_inset * 2.0) as f32;
-    let layout_h = (h - border_inset * 2.0) as f32;
+    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
     let list_layout = list.layout(layout_w, layout_h, title_h, |_| {
         ListItemMeasure::new(line_height as f32)
     });
@@ -159,7 +176,16 @@ pub fn draw_list(
         cr.rectangle(item_x_offset, row_y, row_w, row_h);
         cr.fill().ok();
 
-        let mut cursor_x = item_x_offset + 2.0;
+        // Per-row clip: with h_scroll the cursor starts to the left of
+        // `item_x_offset`, so scrolled-off glyphs would paint outside the row
+        // band without an explicit clipping rectangle.
+        cr.save().ok();
+        cr.rectangle(item_x_offset, row_y, row_w, row_h);
+        cr.clip();
+
+        // Shift cursor left by the horizontal scroll offset so that content
+        // columns < h_scroll are clipped away by the clip set above.
+        let mut cursor_x = item_x_offset + 2.0 - h_off_px;
 
         let prefix = if is_selected { "▶ " } else { "  " };
         cr.set_source_rgb(decoration_fg.0, decoration_fg.1, decoration_fg.2);
@@ -190,6 +216,8 @@ pub fn draw_list(
             (detail_text, dw as f64)
         });
         let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+        // text_right_limit is in absolute pixel coords; the h_scroll shift of
+        // cursor_x does not affect where the detail reserve boundary sits.
         let text_right_limit = item_x_offset + row_w - detail_reserve - 4.0;
 
         for span in &item.text.spans {
@@ -222,8 +250,18 @@ pub fn draw_list(
             cursor_x += sw as f64;
         }
 
+        // Detail text is pinned to the visible viewport (does not scroll with
+        // h_scroll) so it stays readable regardless of the scroll position.
+        // Render it outside the h_scroll-shifted clip region by restoring first,
+        // then clipping only the detail slot.
+        cr.restore().ok();
+
         if let Some((detail_text, dw)) = detail_info {
             let dx = item_x_offset + row_w - dw - 4.0;
+            // Guard: only render detail when it wouldn't overlap scrolled main
+            // text.  `cursor_x` after the span loop is the pixel position of the
+            // last rendered text column (possibly off-screen left when h_scroll is
+            // large, in which case the detail always has room).
             if dx > cursor_x {
                 cr.set_source_rgb(dim.0, dim.1, dim.2);
                 layout.set_text(&detail_text);
@@ -232,6 +270,42 @@ pub fn draw_list(
                 pcfn::show_layout(cr, layout);
             }
         }
+    }
+
+    // ── Horizontal scrollbar ──────────────────────────────────────────────
+    // Painted after items so it overlays the bottom row's background.
+    // `needs_hscrollbar` was resolved above from `max_content_width` and the
+    // char-width measurement, matching the same threshold used to reduce
+    // `layout_h`.  The track geometry mirrors `ListView::hscrollbar` but uses
+    // pixel units throughout — `h_scroll` (chars) is converted to pixels with
+    // `char_w`.
+    if needs_hscrollbar {
+        let content_px = list.max_content_width.unwrap_or(0) as f64 * char_w;
+        let track_y = if list.bordered {
+            y + h - border_inset - line_height
+        } else {
+            y + h - line_height
+        };
+        let (track_x, track_w_sb) = if list.bordered {
+            (x + border_inset, (w - 2.0 * border_inset).max(0.0))
+        } else {
+            (x, w)
+        };
+        let hsb_track = crate::event::Rect::new(
+            track_x as f32,
+            track_y as f32,
+            track_w_sb as f32,
+            line_height as f32,
+        );
+        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
+            list.id.clone(),
+            hsb_track,
+            list.h_scroll as f32 * char_w as f32,
+            content_px as f32,
+            visible_px as f32,
+            line_height as f32,
+        );
+        super::draw_scrollbar(cr, &hsb, theme);
     }
 
     if list.bordered {

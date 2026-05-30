@@ -437,7 +437,33 @@ impl Backend for MacBackend {
         )
     }
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
-        list.hscrollbar(rect, self.line_height())
+        // `ListView::h_scroll` and `max_content_width` are in character columns,
+        // but macOS works in pixels.  Convert with `current_char_width` so the
+        // returned `Scrollbar` track/thumb are in pixel units — matching what
+        // `macos::draw_list` paints and what mouse-event coords use.
+        let char_w = self.current_char_width as f32;
+        let max_w_chars = list.max_content_width? as f32;
+        let content_px = max_w_chars * char_w;
+        // macOS list does not implement bordered rendering yet; treat inset as 0.
+        let visible_px = rect.width;
+        if content_px <= visible_px {
+            return None;
+        }
+        let row_h = self.line_height();
+        let track = Rect::new(
+            rect.x,
+            rect.y + (rect.height - row_h).max(0.0),
+            rect.width,
+            row_h,
+        );
+        Some(crate::Scrollbar::horizontal(
+            list.id.clone(),
+            track,
+            list.h_scroll as f32 * char_w,
+            content_px,
+            visible_px,
+            row_h,
+        ))
     }
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         let ctx = self.current_cg();

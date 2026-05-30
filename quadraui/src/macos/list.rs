@@ -74,7 +74,36 @@ pub unsafe fn draw_list(
         return mac_list_layout(list, x, y, w.max(0.0), h.max(0.0), line_height);
     }
 
-    let layout = mac_list_layout(list, x, y, w, h, line_height);
+    // Measure a reference glyph for char-to-pixel conversion.  `h_scroll` is
+    // expressed in character columns (matching TUI cells); macOS works in
+    // pixels, so we multiply by `char_w` before offsetting cursor positions.
+    let (char_w, _) = measure_text(font, "M");
+    let char_w = char_w.max(1.0);
+    let h_off_px = list.h_scroll as f64 * char_w;
+
+    // Reserve the bottom row for a horizontal scrollbar when content overflows,
+    // matching the TUI rasteriser's `viewport_h` reduction.
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_w > w);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+
+    // Recompute layout with reduced height when a scrollbar will be shown.
+    let layout = if needs_hscrollbar {
+        let title_h = if list.title.is_some() {
+            line_height as f32
+        } else {
+            0.0
+        };
+        list.layout(
+            w as f32,
+            (h - hscrollbar_h).max(0.0) as f32,
+            title_h,
+            |_| ListItemMeasure::new(line_height as f32),
+        )
+    } else {
+        mac_list_layout(list, x, y, w, h, line_height)
+    };
 
     CGContextSaveGState(ctx);
     // Clip to the list rect so right-aligned detail / scroll-overflow
@@ -128,7 +157,16 @@ pub unsafe fn draw_list(
 
         fill_rect(ctx, row_x, row_y, row_w, row_h, row_bg);
 
-        let mut cursor_x = row_x + 2.0;
+        // Per-row clip: with h_scroll the cursor starts to the left of `row_x`,
+        // so scrolled-off glyphs would paint outside the row band.  The list-
+        // level CGContextClipToRect already clips to the list box, but adding a
+        // row-level clip is cheap and makes the intent explicit.
+        CGContextSaveGState(ctx);
+        CGContextClipToRect(ctx, CGRect::new_xywh(row_x, row_y, row_w, row_h));
+
+        // Shift cursor left by the horizontal scroll offset so that content
+        // columns < h_scroll are clipped away by the clip set above.
+        let mut cursor_x = row_x + 2.0 - h_off_px;
 
         let prefix = if is_selected { "▶ " } else { "  " };
         let (pw, _) = measure_text(font, prefix);
@@ -150,6 +188,8 @@ pub unsafe fn draw_list(
             (detail_text, dw)
         });
         let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+        // text_right_limit is in absolute pixel coords; the h_scroll shift of
+        // cursor_x does not affect where the detail reserve boundary sits.
         let text_right_limit = row_x + row_w - detail_reserve - 4.0;
 
         for span in &item.text.spans {
@@ -180,6 +220,11 @@ pub unsafe fn draw_list(
             cursor_x += sw;
         }
 
+        // Detail text is pinned to the visible viewport (does not scroll with
+        // h_scroll).  Restore the per-row clip before rendering it so the detail
+        // slot is unaffected by the h_scroll shift.
+        CGContextRestoreGState(ctx);
+
         if let Some((detail_text, dw)) = detail_info {
             let dx = row_x + row_w - dw - 4.0;
             if dx > cursor_x {
@@ -193,6 +238,24 @@ pub unsafe fn draw_list(
                 );
             }
         }
+    }
+
+    // ── Horizontal scrollbar ─────────────────────────────────────────────
+    // Painted after items so it overlays the bottom row's background fill.
+    if needs_hscrollbar {
+        let content_px = list.max_content_width.unwrap_or(0) as f64 * char_w;
+        let track_y = y + h - line_height;
+        let hsb_track =
+            crate::event::Rect::new(x as f32, track_y as f32, w as f32, line_height as f32);
+        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
+            list.id.clone(),
+            hsb_track,
+            list.h_scroll as f32 * char_w as f32,
+            content_px as f32,
+            w as f32,
+            line_height as f32,
+        );
+        super::draw_scrollbar(ctx, &hsb, theme);
     }
 
     CGContextRestoreGState(ctx);

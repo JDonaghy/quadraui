@@ -659,7 +659,37 @@ impl Backend for GtkBackend {
     }
 
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
-        list.hscrollbar(rect, self.line_height())
+        // `ListView::h_scroll` and `max_content_width` are in character columns,
+        // but GTK works in pixels.  Convert with `current_char_width` so the
+        // returned `Scrollbar` track/thumb are in pixel units — matching what
+        // `gtk::draw_list` paints and what mouse-event coords use.
+        let char_w = self.current_char_width as f32;
+        let max_w_chars = list.max_content_width? as f32;
+        let content_px = max_w_chars * char_w;
+        let border_inset = if list.bordered { char_w } else { 0.0 };
+        let visible_px = (rect.width - 2.0 * border_inset).max(0.0);
+        if content_px <= visible_px {
+            return None;
+        }
+        let row_h = self.line_height();
+        let (track_x, track_w, track_y) = if list.bordered {
+            (
+                rect.x + char_w,
+                (rect.width - 2.0 * char_w).max(0.0),
+                rect.y + (rect.height - 2.0 * row_h).max(0.0),
+            )
+        } else {
+            (rect.x, rect.width, rect.y + (rect.height - row_h).max(0.0))
+        };
+        let track = QRect::new(track_x, track_y, track_w, row_h);
+        Some(crate::Scrollbar::horizontal(
+            list.id.clone(),
+            track,
+            list.h_scroll as f32 * char_w,
+            content_px,
+            visible_px,
+            row_h,
+        ))
     }
 
     fn draw_form(&mut self, rect: QRect, form: &Form) {

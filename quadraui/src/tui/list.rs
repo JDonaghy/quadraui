@@ -661,6 +661,69 @@ mod tests {
     }
 
     #[test]
+    fn detail_pinned_when_hscroll_active() {
+        // With h_scroll > 0 the main text scrolls but the detail span must
+        // remain right-aligned in the viewport — it is pinned, not scrolled.
+        // This test also exercises the `text_buf_col_end` overlap guard:
+        // the detail must not overwrite the last visible chars of main text.
+        //
+        // Layout at width=20, h_scroll=8:
+        //   prefix "  " → vcol 0,1 (both scrolled off)
+        //   text "abcdefghijklmnop" (16 chars) → vcol 2..17
+        //   With h_scroll=8: visible from vcol 8 onwards → buf col 0..11
+        //   buf col 0 = vcol 8 = 'g' (a=vcol2, b=vcol3, …, g=vcol8)
+        //   detail "det" (3 chars): start = 20 - 3 - 1 = 16; buf cols 16..19
+        //   text_buf_col_end = vcol_after_text(18) - h_scroll(8) = 10; detail start(16) > 11 ✓
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items: vec![ListItem {
+                text: StyledText {
+                    spans: vec![StyledSpan::plain("abcdefghijklmnop")],
+                },
+                detail: Some(StyledText {
+                    spans: vec![StyledSpan::plain("det")],
+                }),
+                icon: None,
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 8,
+            max_content_width: None,
+        };
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Main text: vcol 8 = text char at index 8-2=6 → 'g' (a=0,b=1,…,g=6)
+        // appears at buf col 0.
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            'g',
+            "first visible main-text char at buf col 0"
+        );
+        // Detail "det" must be pinned at buf cols 16..18 regardless of h_scroll.
+        assert_eq!(cell_char(&buf, 16, 0), 'd', "detail 'd' at col 16");
+        assert_eq!(cell_char(&buf, 17, 0), 'e', "detail 'e' at col 17");
+        assert_eq!(cell_char(&buf, 18, 0), 't', "detail 't' at col 18");
+        // The cell just before the detail must NOT be 'p' (last char of main
+        // text) — text ends at buf col 10, so col 15 should be blank padding.
+        assert_ne!(
+            cell_char(&buf, 15, 0),
+            'p',
+            "main text must not bleed into detail area"
+        );
+    }
+
+    #[test]
     fn hscrollbar_max_content_none_never_shows_scrollbar() {
         // max_content_width=None → never show scrollbar regardless of actual content.
         let mut buf = Buffer::empty(Rect::new(0, 0, 5, 3));
