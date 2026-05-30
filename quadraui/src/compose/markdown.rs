@@ -10,6 +10,15 @@
 //! | `*text*` / `_text_` | [`StyledSpan`] with `italic: true` |
 //! | `` `text` `` | [`StyledSpan`] coloured with [`Theme::accent_fg`] |
 //!
+//! Emphasis (`*`/`_`) honours a CommonMark-style **flanking** rule, so
+//! `snake_case` identifiers and whitespace-flanked operators are *not*
+//! mistaken for emphasis (`foo_bar` and `a * b * c` render upright).  See
+//! [`can_open`] / [`can_close`].
+//!
+//! A runnable demo lives in `examples/tui_markdown.rs` /
+//! `examples/gtk_markdown.rs` — it renders a document through
+//! [`render_markdown_to_styled`] into a `RichTextPopup`.
+//!
 //! # Intentional deferrals (first-cut scope)
 //!
 //! The following are **consciously out of scope** for this first cut and will
@@ -125,13 +134,25 @@ fn heading_scale(level: u8) -> f32 {
 /// Parse inline markdown in `text` with the given base `bold`/`italic` flags,
 /// returning a flat list of [`StyledSpan`]s.
 ///
-/// Delimiters are matched greedily left-to-right with the following priority:
+/// Delimiters are matched left-to-right with the following priority:
 ///
 /// 1. `` ` ``…`` ` `` — inline code (no further parsing inside)
 /// 2. `**` / `__` — bold (content is recursively parsed)
 /// 3. `*` / `_` — italic (content is recursively parsed)
 ///
-/// Unmatched delimiters are treated as literal plain text.
+/// Emphasis (`*`/`_`) delimiters obey a CommonMark-style **flanking** rule so
+/// that intraword and dangling delimiters are *not* mistaken for emphasis:
+///
+/// * `the foo_bar and baz_qux funcs` — the `_`s are intraword, so no emphasis
+///   fires (critical for `snake_case` identifiers in review-findings bodies).
+/// * `a * b * c` — the `*`s are surrounded by whitespace, so they cannot open
+///   or close emphasis.
+///
+/// A delimiter is only treated as emphasis when it can *open* at its position
+/// **and** a later delimiter that can *close* exists.  Otherwise it is emitted
+/// as literal plain text.  See [`can_open`] / [`can_close`].
+///
+/// Unmatched or non-flanking delimiters are treated as literal plain text.
 ///
 /// The function is not recursive-descent in the pathological sense: real
 /// markdown is shallow (at most a few levels of nesting) and the recursion
@@ -158,11 +179,13 @@ fn parse_inline(text: &str, bold: bool, italic: bool, theme: &Theme) -> Vec<Styl
                 // `accent_fg` is the closest Theme field to "code_fg".
                 // It is a distinct light-blue that reads as "special" text,
                 // consistent with how many dark editors colour inline code.
+                // Inline code keeps the surrounding `bold` (so a code span in a
+                // heading stays bold) but is never italicised.
                 spans.push(StyledSpan {
                     text: code_text.to_string(),
                     fg: Some(theme.accent_fg),
                     bg: None,
-                    bold: false,
+                    bold,
                     italic: false,
                     underline: false,
                 });
@@ -175,77 +198,44 @@ fn parse_inline(text: &str, bold: bool, italic: bool, theme: &Theme) -> Vec<Styl
             continue;
         }
 
-        // ── Bold: **...** ────────────────────────────────────────────────
-        if b == b'*' && pos + 1 < len && bytes[pos + 1] == b'*' {
-            let after = pos + 2;
-            if let Some(close_rel) = text[after..].find("**") {
-                if plain_start < pos {
-                    spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+        // ── Bold: **...** / __...__ ──────────────────────────────────────
+        if (b == b'*' || b == b'_') && pos + 1 < len && bytes[pos + 1] == b {
+            let run_end = pos + 2;
+            if can_open(text, pos, run_end, b) {
+                if let Some(close) = find_emphasis_close(text, run_end, b, 2) {
+                    if plain_start < pos {
+                        spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+                    }
+                    let inner = &text[run_end..close];
+                    spans.extend(parse_inline(inner, true, italic, theme));
+                    pos = close + 2;
+                    plain_start = pos;
+                    continue;
                 }
-                let inner = &text[after..after + close_rel];
-                spans.extend(parse_inline(inner, true, italic, theme));
-                pos = after + close_rel + 2;
-                plain_start = pos;
-                continue;
             }
-            // Unmatched ** — skip both characters as plain text.
+            // Cannot open, or no valid close — emit both chars as plain text.
             pos += 2;
             continue;
         }
 
-        // ── Bold: __...__ ────────────────────────────────────────────────
-        if b == b'_' && pos + 1 < len && bytes[pos + 1] == b'_' {
-            let after = pos + 2;
-            if let Some(close_rel) = text[after..].find("__") {
-                if plain_start < pos {
-                    spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+        // ── Italic: *...* / _..._ ────────────────────────────────────────
+        // This branch only fires when the bold branch above did not match,
+        // i.e. the current character is a lone `*` / `_`.
+        if b == b'*' || b == b'_' {
+            let run_end = pos + 1;
+            if can_open(text, pos, run_end, b) {
+                if let Some(close) = find_emphasis_close(text, run_end, b, 1) {
+                    if plain_start < pos {
+                        spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+                    }
+                    let inner = &text[run_end..close];
+                    spans.extend(parse_inline(inner, bold, true, theme));
+                    pos = close + 1;
+                    plain_start = pos;
+                    continue;
                 }
-                let inner = &text[after..after + close_rel];
-                spans.extend(parse_inline(inner, true, italic, theme));
-                pos = after + close_rel + 2;
-                plain_start = pos;
-                continue;
             }
-            // Unmatched __ — skip both characters as plain text.
-            pos += 2;
-            continue;
-        }
-
-        // ── Italic: *...* ────────────────────────────────────────────────
-        // This branch only fires when the `**` branch above did not match,
-        // i.e. the current character is a lone `*`.
-        if b == b'*' {
-            let after = pos + 1;
-            if let Some(close_rel) = text[after..].find('*') {
-                if plain_start < pos {
-                    spans.push(make_span(&text[plain_start..pos], bold, italic, None));
-                }
-                let inner = &text[after..after + close_rel];
-                spans.extend(parse_inline(inner, bold, true, theme));
-                pos = after + close_rel + 1;
-                plain_start = pos;
-                continue;
-            }
-            // Unmatched * — skip as plain text.
-            pos += 1;
-            continue;
-        }
-
-        // ── Italic: _..._ ────────────────────────────────────────────────
-        // This branch only fires when the `__` branch above did not match.
-        if b == b'_' {
-            let after = pos + 1;
-            if let Some(close_rel) = text[after..].find('_') {
-                if plain_start < pos {
-                    spans.push(make_span(&text[plain_start..pos], bold, italic, None));
-                }
-                let inner = &text[after..after + close_rel];
-                spans.extend(parse_inline(inner, bold, true, theme));
-                pos = after + close_rel + 1;
-                plain_start = pos;
-                continue;
-            }
-            // Unmatched _ — skip as plain text.
+            // Non-flanking or unmatched delimiter — leave as plain text.
             pos += 1;
             continue;
         }
@@ -259,6 +249,111 @@ fn parse_inline(text: &str, bold: bool, italic: bool, theme: &Theme) -> Vec<Styl
     }
 
     spans
+}
+
+// ── Flanking rules (CommonMark-subset) ─────────────────────────────────────
+
+/// The character immediately before byte index `pos` in `text` (None at start).
+fn char_before(text: &str, pos: usize) -> Option<char> {
+    text[..pos].chars().next_back()
+}
+
+/// The character immediately at/after byte index `pos` in `text` (None at end).
+fn char_at(text: &str, pos: usize) -> Option<char> {
+    text[pos..].chars().next()
+}
+
+/// A boundary char (None = start/end of string) counts as whitespace for the
+/// purpose of flanking classification.
+fn is_ws_boundary(c: Option<char>) -> bool {
+    match c {
+        None => true,
+        Some(ch) => ch.is_whitespace(),
+    }
+}
+
+/// ASCII/Unicode punctuation classification used by the flanking rules.
+fn is_punct(c: Option<char>) -> bool {
+    matches!(c, Some(ch) if ch.is_ascii_punctuation())
+}
+
+/// A delimiter run spanning bytes `start..end` is **left-flanking** if it is
+/// not followed by whitespace, and either not followed by punctuation or both
+/// preceded and (effectively) bounded by whitespace/punctuation.
+fn is_left_flanking(text: &str, start: usize, end: usize) -> bool {
+    let after = char_at(text, end);
+    let before = char_before(text, start);
+    if is_ws_boundary(after) {
+        return false;
+    }
+    !is_punct(after) || is_ws_boundary(before) || is_punct(before)
+}
+
+/// A delimiter run spanning bytes `start..end` is **right-flanking** if it is
+/// not preceded by whitespace, and either not preceded by punctuation or both
+/// followed and (effectively) bounded by whitespace/punctuation.
+fn is_right_flanking(text: &str, start: usize, end: usize) -> bool {
+    let before = char_before(text, start);
+    let after = char_at(text, end);
+    if is_ws_boundary(before) {
+        return false;
+    }
+    !is_punct(before) || is_ws_boundary(after) || is_punct(after)
+}
+
+/// Whether a delimiter run of `delim` (`b'*'` or `b'_'`) spanning bytes
+/// `start..end` can *open* emphasis at its position.
+///
+/// `*` may open whenever it is left-flanking (intraword `*` is permitted by
+/// CommonMark).  `_` additionally must not be intraword: it may only open when
+/// it is left-flanking and either not right-flanking or preceded by
+/// punctuation — this is what stops `foo_bar` from italicising.
+fn can_open(text: &str, start: usize, end: usize, delim: u8) -> bool {
+    let left = is_left_flanking(text, start, end);
+    if delim == b'*' {
+        left
+    } else {
+        left && (!is_right_flanking(text, start, end) || is_punct(char_before(text, start)))
+    }
+}
+
+/// Whether a delimiter run of `delim` spanning bytes `start..end` can *close*
+/// emphasis.  Mirror image of [`can_open`].
+fn can_close(text: &str, start: usize, end: usize, delim: u8) -> bool {
+    let right = is_right_flanking(text, start, end);
+    if delim == b'*' {
+        right
+    } else {
+        right && (!is_left_flanking(text, start, end) || is_punct(char_at(text, end)))
+    }
+}
+
+/// Scan forward from byte index `from` for a delimiter run of `delim` whose
+/// length is at least `run` and that satisfies [`can_close`].  Returns the byte
+/// index of the start of the closing run (the last `run` delimiters of it), or
+/// `None` if no valid closer exists.
+fn find_emphasis_close(text: &str, from: usize, delim: u8, run: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = from;
+    while i < len {
+        if bytes[i] == delim {
+            let mut j = i;
+            while j < len && bytes[j] == delim {
+                j += 1;
+            }
+            let this_run = j - i;
+            // A non-empty span is required, so the closer must start after
+            // `from`; `from == i` would mean empty content, skip it.
+            if this_run >= run && i > from && can_close(text, i, j, delim) {
+                return Some(j - run);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// Construct a [`StyledSpan`] with the given style flags and optional
@@ -535,6 +630,85 @@ mod tests {
         assert_eq!(r.line_text[0], "price is $5*2");
         // No italic spans expected.
         assert!(r.lines[0].spans.iter().all(|s| !s.italic));
+    }
+
+    // ── Flanking / intraword emphasis guards ───────────────────────────
+
+    #[test]
+    fn intraword_underscores_do_not_italicise() {
+        // snake_case identifiers must NOT trigger emphasis — the two `_`s here
+        // would otherwise greedily italicise "bar and baz" across two words.
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("the foo_bar and baz_qux funcs", &theme);
+        assert!(
+            r.lines[0].spans.iter().all(|s| !s.italic),
+            "intraword underscores must not italicise; spans: {:?}",
+            r.lines[0].spans
+        );
+        assert_eq!(r.line_text[0], "the foo_bar and baz_qux funcs");
+    }
+
+    #[test]
+    fn whitespace_flanked_asterisks_do_not_italicise() {
+        // `a * b * c` — the asterisks are surrounded by spaces, so they are
+        // neither left- nor right-flanking and cannot open/close emphasis.
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("a * b * c", &theme);
+        assert!(
+            r.lines[0].spans.iter().all(|s| !s.italic),
+            "whitespace-flanked asterisks must not italicise; spans: {:?}",
+            r.lines[0].spans
+        );
+        assert_eq!(r.line_text[0], "a * b * c");
+    }
+
+    #[test]
+    fn single_snake_case_underscore_is_literal() {
+        // A single underscore inside one identifier has no partner and is
+        // intraword — it must stay literal.
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("render_markdown_to_styled does work", &theme);
+        assert!(r.lines[0].spans.iter().all(|s| !s.italic));
+        assert_eq!(r.line_text[0], "render_markdown_to_styled does work");
+    }
+
+    #[test]
+    fn intraword_double_underscore_does_not_bold() {
+        // `foo__bar__baz` — intraword `__` should not produce bold.
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("foo__bar__baz", &theme);
+        assert!(
+            r.lines[0].spans.iter().all(|s| !s.bold),
+            "intraword __ must not bold; spans: {:?}",
+            r.lines[0].spans
+        );
+        assert_eq!(r.line_text[0], "foo__bar__baz");
+    }
+
+    #[test]
+    fn well_formed_emphasis_still_works_after_flanking_guard() {
+        // Regression guard: the flanking rules must not break legitimate
+        // emphasis at word boundaries.
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("use *italic* and _also_ and **bold**", &theme);
+        let spans = &r.lines[0].spans;
+        assert!(spans.iter().any(|s| s.italic && s.text == "italic"));
+        assert!(spans.iter().any(|s| s.italic && s.text == "also"));
+        assert!(spans.iter().any(|s| s.bold && s.text == "bold"));
+    }
+
+    #[test]
+    fn inline_code_in_heading_stays_bold() {
+        // A code span inside a heading should inherit the heading's bold.
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("# the `fn` keyword", &theme);
+        let code_span = r.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.fg == Some(theme.accent_fg))
+            .expect("expected an inline-code span in the heading");
+        assert!(code_span.bold, "inline code in a heading should be bold");
+        assert!(!code_span.italic);
     }
 
     #[test]
