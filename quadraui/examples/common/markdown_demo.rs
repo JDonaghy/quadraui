@@ -83,7 +83,12 @@ impl AppLogic for MarkdownDemo {
         // The viewport origin is (0, 0) in every backend.
         let anchor_x = viewport.width * 0.05;
         let anchor_y = row_h;
-        let measure = RichTextPopupMeasure::new(content_w, row_h);
+        // Opt into proportional row heights on backends that scale text
+        // (GTK) so headings don't overlap; TUI reports false and keeps
+        // 1 cell/row. Consumer stays backend-neutral — it just asks the
+        // backend about its capability.
+        let measure =
+            RichTextPopupMeasure::new(content_w, row_h).with_scale_rows(backend.scales_text_rows());
         let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let layout = popup.layout(anchor_x, anchor_y, vp, measure, |_, start, end| {
             (end - start) as f32 * col_w

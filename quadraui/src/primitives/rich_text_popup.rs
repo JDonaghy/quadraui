@@ -172,16 +172,36 @@ pub enum RichTextPopupEvent {
 pub struct RichTextPopupMeasure {
     /// Width of the popup CONTENT (without borders).
     pub content_width: f32,
-    /// Height of one rendered row in the backend's unit (cells / pixels).
+    /// Height of one *unscaled* row in the backend's unit (cells / pixels).
     pub row_height: f32,
+    /// Whether the backend renders per-line font scale (see
+    /// [`RichTextPopup::line_scales`] and
+    /// [`Backend::scales_text_rows`][crate::Backend::scales_text_rows]).
+    /// When `true`, [`RichTextPopup::layout`] reserves
+    /// `row_height * line_scales[i]` for each row so scaled headings
+    /// don't overlap. When `false` (fixed-cell backends like TUI), every
+    /// row is exactly `row_height` regardless of scale. Set it from
+    /// `backend.scales_text_rows()` so consumer code stays
+    /// backend-neutral.
+    pub scale_rows: bool,
 }
 
 impl RichTextPopupMeasure {
+    /// Construct a measure with `scale_rows = false` (fixed-height rows).
+    /// Use [`Self::with_scale_rows`] to opt a scaling backend in.
     pub fn new(content_width: f32, row_height: f32) -> Self {
         Self {
             content_width,
             row_height,
+            scale_rows: false,
         }
+    }
+
+    /// Set whether scaled rows reserve proportionally more height.
+    /// Pass `backend.scales_text_rows()`.
+    pub fn with_scale_rows(mut self, scale_rows: bool) -> Self {
+        self.scale_rows = scale_rows;
+        self
     }
 }
 
@@ -334,12 +354,35 @@ impl RichTextPopup {
         let visible_count = total_lines
             .saturating_sub(resolved_scroll_offset)
             .min(max_rows);
-        let display_rows = total_lines.min(max_rows);
+
+        // Per-row height. Fixed-cell backends (`scale_rows == false`,
+        // e.g. TUI) keep every row at `row_height`; scaling backends
+        // (GTK) reserve `row_height * line_scales[i]` so larger heading
+        // glyphs don't overlap the rows below. Scales below 1.0 are
+        // clamped so a stray small scale can't shrink a row.
+        let row_height_at = |line_idx: usize| -> f32 {
+            let scale = if measure.scale_rows {
+                self.line_scales
+                    .get(line_idx)
+                    .copied()
+                    .unwrap_or(1.0)
+                    .max(1.0)
+            } else {
+                1.0
+            };
+            measure.row_height * scale
+        };
+
+        // Total content height = sum of the visible window's row heights
+        // (varies with which rows are scrolled into view when scales differ).
+        let content_h: f32 = (0..visible_count)
+            .map(|i| row_height_at(resolved_scroll_offset + i))
+            .sum();
 
         let pad = self.padding.max(0.0);
         let border = 1.0; // 1 cell / 1 pixel each side
         let outer_w = measure.content_width + pad * 2.0 + border * 2.0;
-        let outer_h = display_rows as f32 * measure.row_height + pad * 2.0 + border * 2.0;
+        let outer_h = content_h + pad * 2.0 + border * 2.0;
 
         // Placement: above the anchor when there's room, otherwise below.
         let prefer_above = self.placement == PopupPlacement::Above;
@@ -363,23 +406,21 @@ impl RichTextPopup {
             x + border + pad,
             y + border + pad,
             measure.content_width,
-            display_rows as f32 * measure.row_height,
+            content_h,
         );
 
-        // Visible lines.
+        // Visible lines — accumulate `y` by each row's (possibly scaled)
+        // height so rows never overlap on scaling backends.
         let mut visible_lines: Vec<VisibleRichTextLine> = Vec::with_capacity(visible_count);
+        let mut row_y = content_bounds.y;
         for i in 0..visible_count {
             let line_idx = resolved_scroll_offset + i;
-            let row_y = content_bounds.y + i as f32 * measure.row_height;
+            let row_h = row_height_at(line_idx);
             visible_lines.push(VisibleRichTextLine {
                 line_idx,
-                bounds: Rect::new(
-                    content_bounds.x,
-                    row_y,
-                    content_bounds.width,
-                    measure.row_height,
-                ),
+                bounds: Rect::new(content_bounds.x, row_y, content_bounds.width, row_h),
             });
+            row_y += row_h;
         }
 
         // Scrollbar (1 cell / pixel wide at the right border).
@@ -417,7 +458,7 @@ impl RichTextPopup {
                     vis.bounds.x + pre_w,
                     vis.bounds.y,
                     span_w,
-                    measure.row_height,
+                    vis.bounds.height,
                 );
                 link_hit_regions.push((rect, idx));
             }
@@ -431,5 +472,143 @@ impl RichTextPopup {
             scrollbar,
             link_hit_regions,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::StyledText;
+
+    /// Build a popup with `n` body lines and the given per-line scales.
+    fn popup_with_scales(scales: &[f32]) -> RichTextPopup {
+        let n = scales.len();
+        RichTextPopup {
+            id: WidgetId::new("rtp:test"),
+            lines: (0..n)
+                .map(|i| StyledText::plain(format!("line{i}")))
+                .collect(),
+            line_text: (0..n).map(|i| format!("line{i}")).collect(),
+            line_scales: scales.to_vec(),
+            scroll_top: 0,
+            max_visible_rows: 20,
+            has_focus: false,
+            selection: None,
+            links: Vec::new(),
+            focused_link: None,
+            placement: PopupPlacement::Below,
+            padding: 0.0,
+            fg: None,
+            bg: None,
+        }
+    }
+
+    fn vp() -> Rect {
+        Rect::new(0.0, 0.0, 1000.0, 1000.0)
+    }
+
+    #[test]
+    fn scale_rows_false_keeps_flat_geometry() {
+        // Even with heading scales present, a fixed-cell backend lays
+        // every row out at exactly `row_height` (pre-fix behaviour).
+        let popup = popup_with_scales(&[2.0, 1.5, 1.0]);
+        let measure = RichTextPopupMeasure::new(50.0, 10.0); // scale_rows = false
+        let layout = popup.layout(0.0, 0.0, vp(), measure, |_, s, e| (e - s) as f32);
+        for (i, vis) in layout.visible_lines.iter().enumerate() {
+            assert!(
+                (vis.bounds.height - 10.0).abs() < f32::EPSILON,
+                "row {i} height should be flat 10.0, got {}",
+                vis.bounds.height
+            );
+            let expected_y = layout.content_bounds.y + i as f32 * 10.0;
+            assert!(
+                (vis.bounds.y - expected_y).abs() < f32::EPSILON,
+                "row {i} y should be {expected_y}, got {}",
+                vis.bounds.y
+            );
+        }
+        // content height = 3 flat rows.
+        assert!((layout.content_bounds.height - 30.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scale_rows_true_reserves_proportional_height() {
+        // H1 (2.0x) then body (1.0x): the first row is twice as tall and
+        // the second row starts below it (no overlap).
+        let popup = popup_with_scales(&[2.0, 1.0]);
+        let measure = RichTextPopupMeasure::new(50.0, 10.0).with_scale_rows(true);
+        let layout = popup.layout(0.0, 0.0, vp(), measure, |_, s, e| (e - s) as f32);
+
+        let r0 = layout.visible_lines[0].bounds;
+        let r1 = layout.visible_lines[1].bounds;
+        assert!(
+            (r0.height - 20.0).abs() < f32::EPSILON,
+            "H1 row should be 2 * 10 = 20 tall, got {}",
+            r0.height
+        );
+        assert!(
+            (r1.y - (r0.y + r0.height)).abs() < f32::EPSILON,
+            "body row must start exactly below the H1 row (y={}, expected {})",
+            r1.y,
+            r0.y + r0.height
+        );
+        assert!(
+            (r1.height - 10.0).abs() < f32::EPSILON,
+            "body row should be 1 * 10 = 10 tall, got {}",
+            r1.height
+        );
+        // content height = 20 (H1) + 10 (body) = 30.
+        assert!(
+            (layout.content_bounds.height - 30.0).abs() < f32::EPSILON,
+            "content height should sum scaled rows (30), got {}",
+            layout.content_bounds.height
+        );
+    }
+
+    #[test]
+    fn scale_rows_true_sums_all_three_heading_levels() {
+        // H1/H2/H3/body = 2.0/1.5/1.2/1.0 over a 10px base.
+        let popup = popup_with_scales(&[2.0, 1.5, 1.2, 1.0]);
+        let measure = RichTextPopupMeasure::new(50.0, 10.0).with_scale_rows(true);
+        let layout = popup.layout(0.0, 0.0, vp(), measure, |_, s, e| (e - s) as f32);
+        let heights: Vec<f32> = layout
+            .visible_lines
+            .iter()
+            .map(|v| v.bounds.height)
+            .collect();
+        assert_eq!(heights.len(), 4);
+        let expected = [20.0_f32, 15.0, 12.0, 10.0];
+        for (got, want) in heights.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-4, "row height {got} != {want}");
+        }
+        // Cumulative y positions and total content height.
+        let mut acc = layout.content_bounds.y;
+        for (i, vis) in layout.visible_lines.iter().enumerate() {
+            assert!((vis.bounds.y - acc).abs() < 1e-4, "row {i} y mismatch");
+            acc += vis.bounds.height;
+        }
+        assert!((layout.content_bounds.height - 57.0).abs() < 1e-4); // 20+15+12+10
+    }
+
+    #[test]
+    fn scale_below_one_is_clamped() {
+        // A stray sub-1.0 scale must not shrink a row below row_height.
+        let popup = popup_with_scales(&[0.5]);
+        let measure = RichTextPopupMeasure::new(50.0, 10.0).with_scale_rows(true);
+        let layout = popup.layout(0.0, 0.0, vp(), measure, |_, s, e| (e - s) as f32);
+        assert!((layout.visible_lines[0].bounds.height - 10.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn missing_scale_entry_defaults_to_one() {
+        // Fewer line_scales than lines: missing entries are unscaled.
+        let mut popup = popup_with_scales(&[2.0]);
+        popup.lines.push(StyledText::plain("line1"));
+        popup.line_text.push("line1".to_string());
+        // line_scales has only one entry; line 1 has no scale.
+        let measure = RichTextPopupMeasure::new(50.0, 10.0).with_scale_rows(true);
+        let layout = popup.layout(0.0, 0.0, vp(), measure, |_, s, e| (e - s) as f32);
+        assert!((layout.visible_lines[0].bounds.height - 20.0).abs() < f32::EPSILON);
+        assert!((layout.visible_lines[1].bounds.height - 10.0).abs() < f32::EPSILON);
     }
 }

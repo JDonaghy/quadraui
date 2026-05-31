@@ -191,6 +191,27 @@ pub trait Backend {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Whether this backend can render individual text rows at a larger
+    /// font size (per-line scale), so layouts should reserve taller
+    /// vertical space for scaled rows.
+    ///
+    /// Returns `true` for backends that honour per-line font-size scale
+    /// (GTK applies a Pango scale attr, so a 2.0× heading row draws at
+    /// twice the line height). Returns `false` for fixed-cell backends
+    /// like TUI, where a terminal cell can't grow — those render scaled
+    /// rows at the normal cell height (bold heading text, no extra
+    /// space). Primitives that carry per-line scale (e.g.
+    /// [`RichTextPopup::line_scales`][crate::RichTextPopup]) feed this
+    /// into their `*Measure` so the shared layout reserves the right
+    /// height per backend without the consumer branching on backend
+    /// type.
+    ///
+    /// Default `false` — only backends that actually scale glyphs
+    /// override it.
+    fn scales_text_rows(&self) -> bool {
+        false
+    }
+
     // ─── Drawing — one method per primitive ────────────────────────────
     //
     // Implementations are thin wrappers around each backend crate's

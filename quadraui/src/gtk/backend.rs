@@ -786,6 +786,13 @@ impl Backend for GtkBackend {
         self.current_char_width as f32
     }
 
+    /// GTK applies per-line font scale via a Pango scale attr, so scaled
+    /// rows (e.g. markdown headings) draw taller and layouts must
+    /// reserve the extra height.
+    fn scales_text_rows(&self) -> bool {
+        true
+    }
+
     fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
         let (cr, layout) = self
             .current_frame_refs()
