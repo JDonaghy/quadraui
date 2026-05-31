@@ -227,8 +227,40 @@ impl ChatController {
 
     /// Advance the spinner animation frame. Apps increment this on their own
     /// ticker (~100 ms per frame for a braille-style spinner).
+    ///
+    /// Prefer [`tick`](Self::tick) for new code — it advances the frame and
+    /// returns [`crate::runner::Reaction::Redraw`] only while busy, so
+    /// idle chats don't burn CPU on unconditional redraws.
     pub fn set_spinner_frame(&mut self, frame: usize) {
         self.spinner_frame = frame;
+    }
+
+    /// Advance the chat animation clock by one tick.
+    ///
+    /// Call this once per tick from your tick handler (typically ~100 ms for a
+    /// braille-style spinner). Returns [`crate::runner::Reaction::Redraw`]
+    /// while the controller is busy so the spinner advances visibly; returns
+    /// [`crate::runner::Reaction::Continue`] when idle so the host avoids
+    /// unnecessary full-frame redraws.
+    ///
+    /// The controller owns the frame counter; callers no longer need a
+    /// separate `spinner_frame` variable or unconditional `needs_redraw`
+    /// flag in their tick path.
+    pub fn tick(&mut self) -> crate::runner::Reaction {
+        if self.busy {
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
+            crate::runner::Reaction::Redraw
+        } else {
+            crate::runner::Reaction::Continue
+        }
+    }
+
+    /// Whether the controller is currently in a busy state (spinner active).
+    ///
+    /// Hosts that prefer polling over the [`tick`](Self::tick) return value
+    /// can gate their `needs_redraw` logic on this.
+    pub fn is_busy(&self) -> bool {
+        self.busy
     }
 
     // ── Input accessors ───────────────────────────────────────────────
@@ -291,7 +323,15 @@ impl ChatController {
     /// overlay rect. The controller calls `begin_frame` / `end_frame`
     /// _around_ the draw calls if your app's render path wraps frames
     /// inside the overlay rect — otherwise just call it inline.
+    ///
+    /// The controller fills `rect` with the current theme background before
+    /// drawing its three zones, so the host's previous frame does not bleed
+    /// through a short or empty transcript.
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
+        // Fill the full rect first so the host's previous frame content
+        // doesn't bleed through an empty or short transcript zone.
+        backend.fill_rect(rect);
+
         let layout = self.compute_layout(backend, rect);
 
         // ── 1. Status strip ───────────────────────────────────────────
@@ -1987,6 +2027,129 @@ mod tests {
         let cc = ChatController::new("c");
         let layout = cc.compute_layout(&MockBackend, make_rect());
         assert!(layout.spinner.is_none());
+    }
+
+    // ── tick() / is_busy() ────────────────────────────────────────────
+
+    #[test]
+    fn tick_returns_continue_when_idle() {
+        let mut cc = ChatController::new("c");
+        // Default state: not busy.
+        let r = cc.tick();
+        assert_eq!(r, crate::runner::Reaction::Continue);
+    }
+
+    #[test]
+    fn tick_returns_redraw_when_busy() {
+        let mut cc = ChatController::new("c");
+        cc.set_busy(true);
+        let r = cc.tick();
+        assert_eq!(r, crate::runner::Reaction::Redraw);
+    }
+
+    #[test]
+    fn tick_advances_spinner_frame_when_busy() {
+        let mut cc = ChatController::new("c");
+        cc.set_busy(true);
+        assert_eq!(cc.spinner_frame, 0);
+        cc.tick();
+        assert_eq!(cc.spinner_frame, 1);
+        cc.tick();
+        assert_eq!(cc.spinner_frame, 2);
+    }
+
+    #[test]
+    fn tick_does_not_advance_spinner_frame_when_idle() {
+        let mut cc = ChatController::new("c");
+        // Not busy — spinner should not advance.
+        cc.tick();
+        assert_eq!(cc.spinner_frame, 0);
+    }
+
+    #[test]
+    fn tick_wraps_frame_counter_at_usize_max() {
+        let mut cc = ChatController::new("c");
+        cc.set_busy(true);
+        cc.spinner_frame = usize::MAX;
+        cc.tick();
+        assert_eq!(cc.spinner_frame, 0, "wrapping_add should wrap to 0");
+    }
+
+    #[test]
+    fn is_busy_reflects_set_busy() {
+        let mut cc = ChatController::new("c");
+        assert!(!cc.is_busy());
+        cc.set_busy(true);
+        assert!(cc.is_busy());
+        cc.set_busy(false);
+        assert!(!cc.is_busy());
+    }
+
+    // ── fill_rect: TUI round-trip ─────────────────────────────────────
+    //
+    // Verify that `render()` paints an opaque background across the full
+    // rect even when the transcript is empty. We test via TUI because the
+    // `MockBackend::fill_rect` is a no-op; the TUI backend actually sets
+    // cell background colours we can inspect.
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn tui_render_fills_background_when_transcript_empty() {
+        use crate::tui::TuiBackend;
+        use crate::Color;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        const W: u16 = 40;
+        const H: u16 = 10;
+
+        let cc = ChatController::new("chat-bg");
+
+        let theme = crate::Theme {
+            background: Color::rgb(20, 20, 30),
+            ..crate::Theme::default()
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(W, H)).expect("test terminal");
+        let mut backend = TuiBackend::new();
+        backend.set_theme(theme);
+        backend.begin_frame(crate::Viewport {
+            width: W as f32,
+            height: H as f32,
+            scale: 1.0,
+        });
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    cc.render(b, rect);
+                });
+            })
+            .expect("draw");
+
+        // Compute the transcript zone (middle band, between status strip and
+        // input area). With MockBackend metrics (lh=1, input_rows=4, border=2):
+        //   status_h = 1, input_h = 4+2 = 6, middle_h = 10-1-6 = 3
+        //   transcript y-range: 1..4
+        // Every cell in the transcript zone should have the theme background
+        // colour — not the default terminal Reset that a no-fill render leaves.
+        let expected_bg =
+            ratatui::style::Color::Rgb(theme.background.r, theme.background.g, theme.background.b);
+        let transcript_y_start: u16 = 1; // after status strip
+        let transcript_y_end: u16 = H - 6; // before input (4 rows + 2 border)
+        let buf = terminal.backend().buffer();
+        for y in transcript_y_start..transcript_y_end {
+            for x in 0..W {
+                let cell = &buf[(x, y)];
+                assert_eq!(
+                    cell.bg, expected_bg,
+                    "cell ({x},{y}) in transcript zone has wrong bg {:?}; \
+                     expected theme.background — fill_rect not working?",
+                    cell.bg
+                );
+            }
+        }
     }
 
     // ── Backend rendering tests ───────────────────────────────────────

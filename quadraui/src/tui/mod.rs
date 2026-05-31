@@ -105,6 +105,24 @@ pub fn ratatui_color(c: Color) -> RatatuiColor {
     RatatuiColor::Rgb(c.r, c.g, c.b)
 }
 
+/// Fill a rectangular region of the buffer with a solid background colour.
+///
+/// Every cell in `area` is set to a space character with the given `bg`
+/// colour (fg is set to the same value since there is no visible glyph).
+/// Used by [`crate::tui::backend::TuiBackend::fill_rect`] to paint an
+/// opaque backdrop before overlay controllers draw their sub-zones.
+pub(crate) fn fill_rect_bg(buf: &mut Buffer, area: Rect, bg: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let bg_r = ratatui_color(bg);
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, y, ' ', bg_r, bg_r);
+        }
+    }
+}
+
 /// Set a single buffer cell, clearing modifier and underline_color so the
 /// rasterisers don't leave stale style bits from prior frames. Mirrors
 /// `vimcode::tui_main::set_cell`.

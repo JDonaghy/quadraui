@@ -695,6 +695,21 @@ impl Backend for GtkBackend {
         self.set_current_theme(theme);
     }
 
+    fn fill_rect(&mut self, rect: QRect) {
+        let bg = self.current_theme.background;
+        let (cr, _) = self
+            .current_frame_refs()
+            .expect("GtkBackend::fill_rect called outside enter_frame_scope");
+        crate::gtk::set_source(cr, bg);
+        cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        cr.fill().ok();
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain the queue without blocking. Stage 4 wires up the
         // signal-callback producers; until then this is always empty.

@@ -76,6 +76,20 @@ pub trait Backend {
     /// `draw_*` calls consume the updated palette.
     fn set_theme(&mut self, _theme: crate::Theme) {}
 
+    /// Fill `rect` with the current theme's panel background colour,
+    /// producing an opaque backdrop.
+    ///
+    /// Compose controllers call this at the start of [`crate::Backend::draw_*`]-like
+    /// render passes so that the host's previous frame content doesn't bleed
+    /// through a partially-filled overlay (e.g. a chat transcript shorter than
+    /// the visible area).
+    ///
+    /// Default: no-op. Backends with a pixel/cell surface override this.
+    /// TUI fills every cell in `rect` with `theme.background`; GTK fills
+    /// a solid Cairo rectangle.  Win-GUI / macOS inherit the no-op until
+    /// they opt in.
+    fn fill_rect(&mut self, _rect: Rect) {}
+
     // ─── Text selection ────────────────────────────────────────────────
     /// Register a selectable text region for the current frame.
     ///

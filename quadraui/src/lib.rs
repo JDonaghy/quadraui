@@ -83,6 +83,7 @@
 //!
 //! Verify all six when adding a new primitive or extending an existing one.
 
+pub mod ai;
 pub mod frame;
 pub mod primitives;
 pub mod shell;

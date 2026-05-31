@@ -604,6 +604,15 @@ impl Backend for TuiBackend {
         self.set_current_theme(theme);
     }
 
+    fn fill_rect(&mut self, rect: QRect) {
+        let bg = self.current_theme.background;
+        let area = q_rect_to_ratatui(rect);
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::fill_rect called outside enter_frame_scope");
+        crate::tui::fill_rect_bg(frame.buffer_mut(), area, bg);
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain every queued crossterm event; never blocks. Each
         // native event translates to zero, one, or more `UiEvent`s
