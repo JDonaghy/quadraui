@@ -28,6 +28,7 @@
 // unused-import warnings are expected and not actionable here.
 #![allow(dead_code, unused_imports)]
 
+pub mod ai_transcript;
 pub mod appshell_demo;
 pub mod chart_app;
 pub mod chat_demo;
@@ -57,6 +58,7 @@ pub mod text_input_demo;
 pub mod toast_app;
 pub mod toolbar_app;
 
+pub use ai_transcript::AiTranscript;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
 pub use data_table_app::DataTableApp;
