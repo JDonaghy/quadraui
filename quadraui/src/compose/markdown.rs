@@ -111,11 +111,20 @@ pub struct RenderedMarkdown {
 
 // ── Internal types ─────────────────────────────────────────────────────────
 
-/// A link extracted during inline parsing.  Byte ranges into `line_text` are
-/// resolved later by scanning the concatenated span text.
+/// A link extracted during inline parsing.
+///
+/// `plain_offset` is the byte offset of the link text in the assembled
+/// `inner_plain` string (the concatenation of all span texts returned by
+/// `parse_inline`).  It is recorded *inside* `parse_inline` as spans are
+/// built — not reconstructed by searching afterward — so duplicate link
+/// texts that also appear as plain text before the link always resolve to
+/// the correct position.
 struct RawLink {
     text: String,
     url: String,
+    /// Byte offset of `text` within the `inner_plain` produced by the same
+    /// `parse_inline` call that created this link.
+    plain_offset: usize,
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────
@@ -318,7 +327,7 @@ fn render_regular_line(
         let prefix = "\u{2502} ";
         let prefix_len = prefix.len(); // = 4
         let plain = format!("{prefix}{inner_plain}");
-        let links = resolve_links(&raw_links, &inner_plain, prefix_len);
+        let links = resolve_links(&raw_links, prefix_len);
         let bar_span = StyledSpan {
             text: prefix.to_string(),
             fg: Some(theme.link_fg),
@@ -340,7 +349,7 @@ fn render_regular_line(
         let prefix = "  \u{2022} ";
         let prefix_len = prefix.len(); // = 6
         let plain = format!("{prefix}{inner_plain}");
-        let links = resolve_links(&raw_links, &inner_plain, prefix_len);
+        let links = resolve_links(&raw_links, prefix_len);
         let indent_span = StyledSpan::plain("  ");
         let bullet_span = StyledSpan {
             text: "\u{2022} ".to_string(),
@@ -364,7 +373,7 @@ fn render_regular_line(
         let prefix = format!("  {marker}");
         let prefix_len = prefix.len();
         let plain = format!("{prefix}{inner_plain}");
-        let links = resolve_links(&raw_links, &inner_plain, prefix_len);
+        let links = resolve_links(&raw_links, prefix_len);
         let indent_span = StyledSpan::plain("  ");
         let marker_span = StyledSpan {
             text: marker,
@@ -384,7 +393,7 @@ fn render_regular_line(
     let scale = heading_scale(heading_level);
     let (spans, raw_links) = parse_inline(content, heading_level > 0, false, theme);
     let plain: String = spans.iter().map(|s| s.text.as_str()).collect();
-    let links = resolve_links(&raw_links, &plain, 0);
+    let links = resolve_links(&raw_links, 0);
     (plain, StyledText { spans }, scale, links)
 }
 
@@ -393,11 +402,20 @@ fn render_regular_line(
 /// Detect a blockquote prefix (`> ` or bare `>`).
 ///
 /// Returns the content after the prefix, or `None` if not a blockquote.
+///
+/// Only single-level blockquotes are matched: `"> text"` (canonical CommonMark)
+/// or `">text"` (no space, accepted as a pragmatic extension for AI output).
+/// Bare `">"` (empty blockquote line) is also matched.
+/// Lines that begin with `">>"` or more are **not** matched — nested
+/// blockquotes are intentionally deferred (see module-level deferrals) and
+/// pass through as plain text rather than being silently mis-rendered.
 fn parse_blockquote(line: &str) -> Option<&str> {
     if let Some(rest) = line.strip_prefix("> ") {
         Some(rest)
-    } else if line.starts_with('>') && !line.starts_with(">>>") {
-        // Bare ">" or ">text" (no space) — strip only the leading ">".
+    } else if line.starts_with('>') && !line.starts_with(">>") {
+        // Bare ">" or ">text" (no space after the chevron).
+        // We exclude ">>" and deeper to avoid silently mis-rendering nested
+        // blockquotes as "│ >text" — they should just be plain text.
         Some(&line[1..])
     } else {
         None
@@ -466,32 +484,26 @@ fn heading_scale(level: u8) -> f32 {
 
 // ── Link side-channel helper ───────────────────────────────────────────────
 
-/// Resolve [`RawLink`]s to `(byte_start, byte_end, url)` triples into a line's
-/// plain text.
+/// Resolve [`RawLink`]s to `(byte_start, byte_end, url)` triples into a
+/// line's plain text.
 ///
-/// `inner_plain` is the plain text of the inline content (without any block
-/// prefix).  `prefix_len` is the byte length of the block prefix prepended
-/// before `inner_plain` in the final `plain` string (e.g. `"  • "` = 6 bytes).
+/// `prefix_len` is the byte length of any block-level prefix prepended
+/// before `inner_plain` in the final `plain` string (e.g. `"  • "` = 6
+/// bytes for a bullet item, `0` for body text).
 ///
-/// Links are resolved left-to-right: each link text is searched for in
-/// `inner_plain` starting from after the previous match, so duplicate link
-/// texts resolve to distinct, non-overlapping positions.
-fn resolve_links(
-    raw_links: &[RawLink],
-    inner_plain: &str,
-    prefix_len: usize,
-) -> Vec<(usize, usize, String)> {
-    let mut result = Vec::new();
-    let mut search_from = 0usize;
-    for link in raw_links {
-        if let Some(pos) = inner_plain[search_from..].find(&link.text) {
-            let abs_start = prefix_len + search_from + pos;
-            let abs_end = abs_start + link.text.len();
-            result.push((abs_start, abs_end, link.url.clone()));
-            search_from += pos + link.text.len();
-        }
-    }
-    result
+/// Each link's position comes from the `plain_offset` recorded by
+/// [`parse_inline`] as spans were built — not reconstructed by text
+/// search — so links whose visible text coincidentally appears as prose
+/// earlier on the same line are still resolved to the correct position.
+fn resolve_links(raw_links: &[RawLink], prefix_len: usize) -> Vec<(usize, usize, String)> {
+    raw_links
+        .iter()
+        .map(|link| {
+            let start = prefix_len + link.plain_offset;
+            let end = start + link.text.len();
+            (start, end, link.url.clone())
+        })
+        .collect()
 }
 
 // ── Inline span parser ─────────────────────────────────────────────────────
@@ -531,6 +543,11 @@ fn parse_inline(
     let len = bytes.len();
     let mut pos = 0usize;
     let mut plain_start = 0usize;
+    // `plain_offset` tracks the cumulative byte count of all span text
+    // produced so far.  When a link span is emitted we record its start
+    // offset here so `RawLink::plain_offset` points directly to the right
+    // position — no after-the-fact text search required.
+    let mut plain_offset = 0usize;
 
     while pos < len {
         let b = bytes[pos];
@@ -541,7 +558,9 @@ fn parse_inline(
             if let Some(close_rel) = text[after..].find('`') {
                 // Flush plain text before this code span.
                 if plain_start < pos {
-                    spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+                    let chunk = &text[plain_start..pos];
+                    plain_offset += chunk.len();
+                    spans.push(make_span(chunk, bold, italic, None));
                 }
                 let code_text = &text[after..after + close_rel];
                 // `accent_fg` is the closest Theme field to "code_fg".
@@ -557,6 +576,7 @@ fn parse_inline(
                     italic: false,
                     underline: false,
                 });
+                plain_offset += code_text.len();
                 pos = after + close_rel + 1;
                 plain_start = pos;
                 continue;
@@ -570,8 +590,12 @@ fn parse_inline(
         if b == b'[' {
             if let Some((link_text, url, after)) = parse_link(text, pos) {
                 if plain_start < pos {
-                    spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+                    let chunk = &text[plain_start..pos];
+                    plain_offset += chunk.len();
+                    spans.push(make_span(chunk, bold, italic, None));
                 }
+                // Record the link's start offset *before* advancing plain_offset.
+                let link_start_in_plain = plain_offset;
                 spans.push(StyledSpan {
                     text: link_text.to_string(),
                     fg: Some(theme.link_fg),
@@ -580,9 +604,11 @@ fn parse_inline(
                     italic: false,
                     underline: true,
                 });
+                plain_offset += link_text.len();
                 links.push(RawLink {
                     text: link_text.to_string(),
                     url: url.to_string(),
+                    plain_offset: link_start_in_plain,
                 });
                 pos = after;
                 plain_start = pos;
@@ -599,10 +625,19 @@ fn parse_inline(
             if can_open(text, pos, run_end, b) {
                 if let Some(close) = find_emphasis_close(text, run_end, b, 2) {
                     if plain_start < pos {
-                        spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+                        let chunk = &text[plain_start..pos];
+                        plain_offset += chunk.len();
+                        spans.push(make_span(chunk, bold, italic, None));
                     }
                     let inner = &text[run_end..close];
-                    let (inner_spans, inner_links) = parse_inline(inner, true, italic, theme);
+                    let offset_before_inner = plain_offset;
+                    let (inner_spans, mut inner_links) = parse_inline(inner, true, italic, theme);
+                    // Adjust inner link offsets: they are relative to `inner`'s
+                    // plain text, so add our current plain_offset before them.
+                    for lnk in &mut inner_links {
+                        lnk.plain_offset += offset_before_inner;
+                    }
+                    plain_offset += inner_spans.iter().map(|s| s.text.len()).sum::<usize>();
                     spans.extend(inner_spans);
                     links.extend(inner_links);
                     pos = close + 2;
@@ -623,10 +658,17 @@ fn parse_inline(
             if can_open(text, pos, run_end, b) {
                 if let Some(close) = find_emphasis_close(text, run_end, b, 1) {
                     if plain_start < pos {
-                        spans.push(make_span(&text[plain_start..pos], bold, italic, None));
+                        let chunk = &text[plain_start..pos];
+                        plain_offset += chunk.len();
+                        spans.push(make_span(chunk, bold, italic, None));
                     }
                     let inner = &text[run_end..close];
-                    let (inner_spans, inner_links) = parse_inline(inner, bold, true, theme);
+                    let offset_before_inner = plain_offset;
+                    let (inner_spans, mut inner_links) = parse_inline(inner, bold, true, theme);
+                    for lnk in &mut inner_links {
+                        lnk.plain_offset += offset_before_inner;
+                    }
+                    plain_offset += inner_spans.iter().map(|s| s.text.len()).sum::<usize>();
                     spans.extend(inner_spans);
                     links.extend(inner_links);
                     pos = close + 1;
@@ -1469,6 +1511,54 @@ mod tests {
         assert_eq!(u0, "http://a.com");
         assert_eq!(&r.line_text[0][r1.clone()], "beta");
         assert_eq!(u1, "http://b.com");
+    }
+
+    // ── Link byte-range correctness (duplicate text before the link) ───
+
+    /// Regression test for the `resolve_links` bug: when the link text also
+    /// appears as ordinary prose *before* the actual link on the same line,
+    /// the recorded byte range must point to the link occurrence — not the
+    /// first (plain-text) occurrence.
+    #[test]
+    fn link_range_correct_when_text_appears_before_link() {
+        let theme = Theme::default();
+        // "see foo and [foo](http://example.com)" — "foo" appears twice in the
+        // plain text, but only the second occurrence is the link.
+        let r = render_markdown_to_styled("see foo and [foo](http://example.com)", &theme);
+        assert_eq!(r.links.len(), 1);
+        let (_, ref range, ref url) = r.links[0];
+        // plain text is "see foo and foo" (15 bytes).
+        // The link "foo" must be at 12..15, NOT at 4..7.
+        assert_eq!(
+            &r.line_text[0][range.clone()],
+            "foo",
+            "byte range must point to the link occurrence, not the plain-text occurrence; \
+             line_text={:?}, range={range:?}",
+            r.line_text[0]
+        );
+        let start = range.start;
+        assert_eq!(
+            start, 12,
+            "link must start at byte 12 (after 'see foo and '), got {start}"
+        );
+        assert_eq!(url, "http://example.com");
+    }
+
+    #[test]
+    fn link_range_correct_inside_bold_when_text_appears_before() {
+        let theme = Theme::default();
+        // "alpha **[alpha](url)**" — "alpha" appears as plain prose then as link.
+        let r = render_markdown_to_styled("alpha **[alpha](url)**", &theme);
+        assert_eq!(r.links.len(), 1);
+        let (_, ref range, _) = r.links[0];
+        assert_eq!(
+            &r.line_text[0][range.clone()],
+            "alpha",
+            "byte range must target the bold-link occurrence; line_text={:?}, range={range:?}",
+            r.line_text[0]
+        );
+        // plain text is "alpha alpha" (11 bytes); link must be at 6..11.
+        assert_eq!(range.start, 6, "link must start after leading 'alpha '");
     }
 
     // ── Blockquotes ────────────────────────────────────────────────────
