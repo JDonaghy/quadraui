@@ -168,11 +168,8 @@ impl AppLogic for SplitApp {
                 let split_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
                 let split = self.split();
                 let layout = backend.split_layout(split_rect, &split);
-                match layout.hit_test(position.x, position.y) {
-                    SplitHit::Divider(_) => {
-                        self.dragging = true;
-                    }
-                    _ => {}
+                if let SplitHit::Divider(_) = layout.hit_test(position.x, position.y) {
+                    self.dragging = true;
                 }
                 Reaction::Continue
             }

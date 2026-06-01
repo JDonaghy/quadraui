@@ -174,10 +174,10 @@ impl ShellAppTrait for FullChromeDemo {
         ctx: &ShellContext,
     ) -> Reaction {
         match &event {
-            UiEvent::KeyPressed { key, .. } => match key {
-                Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
-                _ => Reaction::Continue,
-            },
+            UiEvent::KeyPressed {
+                key: Key::Char('q') | Key::Named(NamedKey::Escape),
+                ..
+            } => Reaction::Exit,
             UiEvent::MouseDown { position, .. } => {
                 if ctx.in_title_bar(position.x, position.y) {
                     self.last_event = "Title bar click".into();

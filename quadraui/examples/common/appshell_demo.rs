@@ -108,10 +108,10 @@ impl ShellApp for AppShellDemo {
         ctx: &ShellContext,
     ) -> Reaction {
         match &event {
-            UiEvent::KeyPressed { key, .. } => match key {
-                Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
-                _ => Reaction::Continue,
-            },
+            UiEvent::KeyPressed {
+                key: Key::Char('q') | Key::Named(NamedKey::Escape),
+                ..
+            } => Reaction::Exit,
             UiEvent::MouseDown { position, .. } => {
                 if ctx.in_sidebar(position.x, position.y) {
                     self.last_event = format!(

@@ -117,12 +117,10 @@ impl AppLogic for FormScrollApp {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match &event {
-            UiEvent::KeyPressed { key, .. } => match key {
-                quadraui::Key::Char('q') | quadraui::Key::Named(quadraui::NamedKey::Escape) => {
-                    return Reaction::Exit
-                }
-                _ => {}
-            },
+            UiEvent::KeyPressed {
+                key: quadraui::Key::Char('q') | quadraui::Key::Named(quadraui::NamedKey::Escape),
+                ..
+            } => return Reaction::Exit,
             UiEvent::WindowResized { .. } => return Reaction::Redraw,
             _ => {}
         }
