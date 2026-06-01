@@ -57,9 +57,7 @@
 //! shell runner maps to [`BottomPanelEvent::Resized`] for the app.
 
 pub use crate::backend::BackendWidget;
-use crate::primitives::tab_bar::{
-    SegmentMeasure, TabBar, TabBarHit, TabBarLayout, TabBarSegment, TabItem, TabMeasure,
-};
+use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
 use crate::types::WidgetId;
 use crate::{Backend, Rect};
 
@@ -170,13 +168,12 @@ pub struct BottomPanelController {
     pub height_fraction: f32,
     // ── Internal hit-test cache ─────────────────────────────────────
     tab_scroll_offset: usize,
-    /// Layout computed during the last `render()` call, in *cell* units
-    /// (char-width-normalised). Used by `handle_click` for hit testing.
-    last_layout: Option<TabBarLayout>,
+    /// Hit map from the last `render()` — the authoritative regions the
+    /// backend's `draw_tab_bar` actually painted against, so paint and click
+    /// agree on tab / close-button / maximise positions. Positions are in
+    /// target-surface (viewport-absolute) coordinates, matching the click.
+    last_hits: Option<TabBarHits>,
     last_strip_bounds: Option<Rect>,
-    /// `backend.char_width()` at the last render — used to convert pixel
-    /// click coordinates to cell coordinates for GTK hit testing.
-    last_char_width: f32,
 }
 
 impl BottomPanelController {
@@ -190,9 +187,8 @@ impl BottomPanelController {
             tabs: config.tabs,
             height_fraction: config.height_fraction,
             tab_scroll_offset: 0,
-            last_layout: None,
+            last_hits: None,
             last_strip_bounds: None,
-            last_char_width: 1.0,
         }
     }
 
@@ -244,8 +240,6 @@ impl BottomPanelController {
     /// TUI, pixels for GTK). All returned rects use the same unit.
     pub fn render(&mut self, backend: &mut dyn Backend, panel_bounds: Rect) -> BottomPanelLayout {
         let lh = backend.line_height();
-        let char_w = backend.char_width().max(1.0);
-        self.last_char_width = char_w;
 
         let strip_h = lh;
         let strip = Rect::new(panel_bounds.x, panel_bounds.y, panel_bounds.width, strip_h);
@@ -260,22 +254,14 @@ impl BottomPanelController {
         // Build the TabBar primitive for this frame.
         let tab_bar = self.build_tab_bar();
 
-        // Compute a cell-unit layout for hit testing.
-        // bar_width_cells converts native width to cells (no-op for TUI where char_w=1).
-        let bar_width_cells = (strip.width / char_w).max(1.0);
-        let layout = tab_bar.layout(
-            bar_width_cells,
-            1.0,
-            0.0,
-            |i| self.measure_tab_cells(i),
-            |_i| SegmentMeasure::new(3.0), // maximise " ^ " = 3 cells
-        );
-        self.tab_scroll_offset = layout.resolved_scroll_offset;
-        self.last_layout = Some(layout);
+        // Paint the tab strip and capture the authoritative hit map the
+        // rasteriser actually used. Hit-testing against this (rather than a
+        // re-derived layout with a guessed measurer) guarantees the close-button
+        // and maximise regions line up with the painted glyphs on every backend.
+        let hits = backend.draw_tab_bar(strip, &tab_bar, None);
+        self.tab_scroll_offset = hits.correct_scroll_offset;
+        self.last_hits = Some(hits);
         self.last_strip_bounds = Some(strip);
-
-        // Paint the tab strip using the backend's native rasteriser.
-        backend.draw_tab_bar(strip, &tab_bar, None);
 
         // Render active tab content.
         if content.width > 0.0 && content.height > 0.0 {
@@ -306,23 +292,40 @@ impl BottomPanelController {
         if y < strip.y || y >= strip.y + strip.height {
             return None;
         }
-        let layout = self.last_layout.as_ref()?;
+        let hits = self.last_hits.as_ref()?;
 
-        // Convert viewport-absolute x to bar-local cell coordinates.
-        let local_x_cells = (x - strip.x) / self.last_char_width;
+        // `TabBarHits` positions are in target-surface (viewport-absolute)
+        // coordinates — the same space as the incoming click — so compare
+        // the click `x` directly without re-subtracting the strip origin.
+        let click_x = x as f64;
+        let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
 
-        match layout.hit_test(local_x_cells, 0.0) {
-            TabBarHit::TabClose(idx) => {
-                if let Some(tab) = self.tabs.get(idx) {
-                    if tab.closable {
-                        let id = tab.id.clone();
-                        self.close_tab(&id);
-                        return Some(BottomPanelEvent::TabClosed(id));
+        // Close buttons take precedence over tab bodies — the × sits at the
+        // tab's right edge, inside the body region.
+        for (idx, cb) in hits.close_bounds.iter().enumerate() {
+            if let Some(range) = cb {
+                if in_range(*range) {
+                    if let Some(tab) = self.tabs.get(idx) {
+                        if tab.closable {
+                            let id = tab.id.clone();
+                            self.close_tab(&id);
+                            return Some(BottomPanelEvent::TabClosed(id));
+                        }
                     }
+                    return None;
                 }
-                None
             }
-            TabBarHit::Tab(idx) => {
+        }
+
+        // Right segments — the only one we emit is the maximise toggle.
+        if hits.right_segment_bounds.iter().copied().any(in_range) {
+            self.toggle_maximised();
+            return Some(BottomPanelEvent::MaximiseToggled);
+        }
+
+        // Tab bodies.
+        for (idx, range) in hits.slot_positions.iter().enumerate() {
+            if in_range(*range) {
                 if let Some(tab) = self.tabs.get(idx) {
                     let id = tab.id.clone();
                     if id != self.active_tab_id {
@@ -330,37 +333,13 @@ impl BottomPanelController {
                         return Some(BottomPanelEvent::TabActivated(id));
                     }
                 }
-                None
+                return None;
             }
-            TabBarHit::RightSegment(ref seg_id) if seg_id.as_str() == "bp:maximise" => {
-                self.toggle_maximised();
-                Some(BottomPanelEvent::MaximiseToggled)
-            }
-            _ => None,
         }
+        None
     }
 
     // ── Helpers ────────────────────────────────────────────────────
-
-    /// Measure tab `i` in cell units for the hit-test layout.
-    ///
-    /// Label chars + optional badge suffix + close button (2 cells when
-    /// closable) + 2 cells of padding.
-    fn measure_tab_cells(&self, i: usize) -> TabMeasure {
-        if let Some(tab) = self.tabs.get(i) {
-            let label_w = tab.label.chars().count() as f32;
-            let badge_w = tab
-                .badge
-                .as_deref()
-                .map(|b| b.chars().count() as f32 + 3.0) // " (badge)"
-                .unwrap_or(0.0);
-            let close_w = if tab.closable { 2.0 } else { 0.0 };
-            let total = label_w + badge_w + close_w + 2.0;
-            TabMeasure::new(total, close_w)
-        } else {
-            TabMeasure::new(6.0, 0.0)
-        }
-    }
 
     /// Build the [`TabBar`] primitive from current state.
     fn build_tab_bar(&self) -> TabBar {
@@ -442,12 +421,14 @@ mod tests {
 
     // ── Layout pre-loading helper ─────────────────────────────────────────────
 
-    /// Prime a controller's last_layout + strip bounds so handle_click works
+    /// Prime a controller's hit map + strip bounds so handle_click works
     /// without a real backend render. Measurement: each tab = 6 cells total
-    /// (4 label + 2 padding/close), maximise segment = 3 cells.
+    /// (4 label + 2 padding/close), maximise segment = 3 cells. Converted to
+    /// `TabBarHits` exactly as a backend's `draw_tab_bar` would return them.
     fn prime_layout(ctrl: &mut BottomPanelController, strip_x: f32, strip_y: f32, bar_w: f32) {
-        ctrl.last_char_width = 1.0;
-        ctrl.last_strip_bounds = Some(Rect::new(strip_x, strip_y, bar_w, 1.0));
+        use crate::backend::tab_bar_layout_to_hits;
+        use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
+
         let tab_bar = ctrl.build_tab_bar();
         let n = ctrl.tabs.len();
         let layout = tab_bar.layout(
@@ -463,7 +444,26 @@ mod tests {
             },
             |_| SegmentMeasure::new(3.0),
         );
-        ctrl.last_layout = Some(layout);
+        // Mirror the backends: `TabBarHits` are returned in target-surface
+        // (absolute) coordinates, i.e. offset by the strip's x origin.
+        let mut hits = tab_bar_layout_to_hits(&layout, &tab_bar);
+        let ox = strip_x as f64;
+        for sp in &mut hits.slot_positions {
+            if *sp != (0.0, 0.0) {
+                sp.0 += ox;
+                sp.1 += ox;
+            }
+        }
+        for cb in hits.close_bounds.iter_mut().flatten() {
+            cb.0 += ox;
+            cb.1 += ox;
+        }
+        for rb in &mut hits.right_segment_bounds {
+            rb.0 += ox;
+            rb.1 += ox;
+        }
+        ctrl.last_hits = Some(hits);
+        ctrl.last_strip_bounds = Some(Rect::new(strip_x, strip_y, bar_w, 1.0));
     }
 
     // ── Construction ─────────────────────────────────────────────────────────
@@ -611,6 +611,33 @@ mod tests {
         // so clicking anywhere in [0..6] → Tab(0) → already active → None
         let ev = ctrl.handle_click(5.0, 0.5);
         assert_eq!(ev, None);
+    }
+
+    // ── handle_click: non-zero strip origin (panel docked in main column) ─────
+
+    #[test]
+    fn click_switches_and_closes_when_strip_offset_from_origin() {
+        // Regression: the bottom panel docks in the main column, so the strip's
+        // x origin is non-zero. Hits are in absolute coords, so clicks must be
+        // compared against the raw x — not re-offset by the strip origin.
+        // strip_x=20 → t0=[20..26] (close [24..26]), t1=[26..32] (absolute).
+        let cfg = make_config(
+            vec![tab("t0", "AAAA", true), tab("t1", "BBBB", false)],
+            "t0",
+        );
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 20.0, 0.0, 100.0);
+
+        // Click body of the inactive tab t1 → activates it.
+        let ev = ctrl.handle_click(28.0, 0.5);
+        assert_eq!(ev, Some(BottomPanelEvent::TabActivated("t1".to_string())));
+        assert_eq!(ctrl.active_tab_id, "t1");
+
+        // Click the × of closable t0 (close region [24..26]) → closes it.
+        prime_layout(&mut ctrl, 20.0, 0.0, 100.0);
+        let ev = ctrl.handle_click(25.0, 0.5);
+        assert_eq!(ev, Some(BottomPanelEvent::TabClosed("t0".to_string())));
+        assert_eq!(ctrl.tabs().len(), 1);
     }
 
     // ── handle_click: maximise button ────────────────────────────────────────

@@ -461,7 +461,11 @@ impl AppShell {
                 }
 
                 if let Some(bp) = layout.bottom_panel_bounds {
-                    let grip = Rect::new(bp.x, bp.y - 3.0, bp.width, 6.0);
+                    // Grip sits *above* the panel's top edge only. The panel's
+                    // top row is the tab strip, whose clicks must reach the
+                    // bottom-panel controller — so the grip must not overlap it.
+                    let grip_h = (lh * 0.5).max(1.0).round();
+                    let grip = Rect::new(bp.x, bp.y - grip_h, bp.width, grip_h);
                     if contains(grip, p) {
                         self.bottom_panel_drag_offset = Some(p.y - bp.y);
                         return AppShellEvent::Consumed;
@@ -582,20 +586,35 @@ impl AppShell {
             None
         };
 
-        let bottom_panel_bounds = if self.has_bottom_panel && self.bottom_panel_visible {
+        // Bottom panel height — computed here but *not* subtracted from the
+        // band. The panel docks only under main content (full width minus the
+        // sidebar), so it is carved from the main column after the horizontal
+        // split below. The sidebar and activity bar run the full band height.
+        let bottom_panel_h = if self.has_bottom_panel && self.bottom_panel_visible {
             let h = (self.bottom_panel_height_lh.clamp(
                 self.min_bottom_panel_height_lh,
                 self.max_bottom_panel_height_lh,
             ) * lh)
                 .round();
-            let h = h.min(band_h * 0.6);
-            band_h -= h;
-            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+            Some(h.min(band_h * 0.6))
         } else {
             None
         };
 
         let band_h = band_h.max(0.0);
+
+        // Split a main-column rect into (content_above, bottom_panel).
+        let carve_bottom_panel = |main: Rect| -> (Rect, Option<Rect>) {
+            match bottom_panel_h {
+                Some(h) => {
+                    let h = h.min(main.height);
+                    let above = Rect::new(main.x, main.y, main.width, (main.height - h).max(0.0));
+                    let panel = Rect::new(main.x, main.y + main.height - h, main.width, h);
+                    (above, Some(panel))
+                }
+                None => (main, None),
+            }
+        };
 
         // ── Horizontal carve: activity bar + sidebar + divider + main ──
 
@@ -616,6 +635,7 @@ impl AppShell {
                     )
                 }
             };
+            let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
             return AppShellLayout {
                 title_bar_bounds,
                 activity_bar_bounds: ab_bounds,
@@ -651,6 +671,7 @@ impl AppShell {
                 let main_x = div_x + divider_w;
                 let main_w = (area.x + area.width - main_x).max(0.0);
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
+                let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
 
                 AppShellLayout {
                     title_bar_bounds,
@@ -678,6 +699,7 @@ impl AppShell {
                 let main_x = area.x;
                 let main_w = (div_x - area.x).max(0.0);
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
+                let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
 
                 AppShellLayout {
                     title_bar_bounds,
@@ -1319,15 +1341,32 @@ mod tests {
     }
 
     #[test]
-    fn middle_band_between_title_and_bottom() {
+    fn activity_bar_runs_full_band_height() {
+        // The activity bar (and sidebar) span the full content band down to the
+        // command line — the bottom panel docks only under main content, not
+        // under the sidebar column, so it does not shorten the activity bar.
         let s = full_chrome_shell();
         let l = s.layout(area(), 1.0);
         let tb = l.title_bar_bounds.unwrap();
-        let bp = l.bottom_panel_bounds.unwrap();
+        let cl = l.command_line_bounds.unwrap();
         let ab_top = l.activity_bar_bounds.y;
         let ab_bottom = l.activity_bar_bounds.y + l.activity_bar_bounds.height;
         assert!((ab_top - (tb.y + tb.height)).abs() < 0.01);
-        assert!((ab_bottom - bp.y).abs() < 0.01);
+        assert!((ab_bottom - cl.y).abs() < 0.01);
+    }
+
+    #[test]
+    fn bottom_panel_docks_under_main_only() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        let bp = l.bottom_panel_bounds.unwrap();
+        let main = l.main_content_bounds;
+        // Panel shares the main column's x and width — not the full viewport.
+        assert_eq!(bp.x, main.x);
+        assert_eq!(bp.width, main.width);
+        assert!(bp.width < area().width);
+        // Panel sits directly below the (shortened) main content.
+        assert!((main.y + main.height - bp.y).abs() < 0.01);
     }
 
     #[test]
@@ -1335,11 +1374,12 @@ mod tests {
         let s = full_chrome_shell();
         let l = s.layout(area(), 1.0);
         let tb = l.title_bar_bounds.unwrap();
-        let bp = l.bottom_panel_bounds.unwrap();
         let cl = l.command_line_bounds.unwrap();
         let sb = l.status_bar_bounds.unwrap();
+        // The activity-bar column runs full height; the panel lives in the main
+        // column, so the left-edge vertical stack excludes it.
         let middle_h = l.activity_bar_bounds.height;
-        let total = tb.height + middle_h + bp.height + cl.height + sb.height;
+        let total = tb.height + middle_h + cl.height + sb.height;
         assert!(
             (total - area().height).abs() < 1.0,
             "total={total}, expected={}",
