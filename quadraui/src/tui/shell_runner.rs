@@ -54,13 +54,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
 
     let active_panel_id = shell.active_panel_id().cloned();
 
-    let adapter = ShellAdapter {
-        app,
-        shell,
-        _last_layout: None,
-        active_panel_id,
-        bottom_panel,
-    };
+    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel);
 
     let _ = super::run::run(adapter);
 }

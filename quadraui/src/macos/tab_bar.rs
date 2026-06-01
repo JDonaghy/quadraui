@@ -83,19 +83,23 @@ pub unsafe fn draw_tab_bar(
     let reserved_px: f64 = right_widths.iter().sum();
     let effective_tab_area = (width - reserved_px).max(0.0);
 
-    // Close-glyph width measured once — every tab pays the same width
-    // for the `×` glyph (the `●` dirty variant is the same width in
-    // Menlo and most monospace fonts).
+    // Close-glyph width measured once — individual tabs use it conditionally
+    // based on `bar.show_tab_close && tab.is_closable`. The `●` dirty variant
+    // is the same width in Menlo and most monospace fonts.
     let close_w = if bar.show_tab_close {
         let (w, _) = measure_text(font, "×");
         w
     } else {
         0.0
     };
-    let close_extra = if bar.show_tab_close {
-        tab_inner_gap + close_w
-    } else {
-        0.0
+    // Per-tab close extra: only reserve space for tabs where both the
+    // bar-level flag and the tab's own `is_closable` flag are set.
+    let close_extra_for = |tab_idx: usize| -> f64 {
+        if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
+            tab_inner_gap + close_w
+        } else {
+            0.0
+        }
     };
 
     // Pre-measure every tab's full slot width — used both for scroll
@@ -103,9 +107,10 @@ pub unsafe fn draw_tab_bar(
     let tab_slot_widths: Vec<f64> = bar
         .tabs
         .iter()
-        .map(|tab| {
+        .enumerate()
+        .map(|(i, tab)| {
             let (name_w, _) = measure_text(font, &tab.label);
-            tab_pad + name_w + close_extra + tab_pad + tab_outer_gap
+            tab_pad + name_w + close_extra_for(i) + tab_pad + tab_outer_gap
         })
         .collect();
 
@@ -128,7 +133,9 @@ pub unsafe fn draw_tab_bar(
 
     let mut x = 0.0_f64;
     for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
+        let has_close = bar.show_tab_close && tab.is_closable;
         let (tab_name_w, _) = measure_text(font, &tab.label);
+        let close_extra = close_extra_for(tab_idx);
         let tab_content_w = tab_pad + tab_name_w + close_extra + tab_pad;
         let slot_w = tab_content_w + tab_outer_gap;
         if x + slot_w > effective_tab_area {
@@ -137,7 +144,7 @@ pub unsafe fn draw_tab_bar(
         slot_positions.push((x, x + slot_w));
 
         let close_x = x + tab_pad + tab_name_w + tab_inner_gap;
-        if bar.show_tab_close {
+        if has_close {
             let close_pad = 2.0;
             close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
         } else {
@@ -175,8 +182,10 @@ pub unsafe fn draw_tab_bar(
             color_to_cg(fg_col),
         );
 
-        // Close glyph (× or ● for dirty), tinted on hover.
-        if bar.show_tab_close {
+        // Close glyph (× or ● for dirty), tinted on hover. Only painted
+        // when both the bar-level flag and the tab's own `is_closable`
+        // flag are set, matching the measurement above.
+        if has_close {
             let is_close_hovered = hovered_close_tab == Some(tab_idx);
             let close_glyph = if tab.is_dirty && !is_close_hovered {
                 "●"
@@ -454,6 +463,60 @@ mod tests {
             "dirty `●` glyph should ink more rows ({}) than active `×` ({})",
             dirty_ink,
             active_ink,
+        );
+    }
+
+    #[test]
+    fn non_closable_tab_has_no_close_bounds_even_when_bar_show_close_is_true() {
+        // Regression: `bar.show_tab_close = true` is a bar-level flag, but
+        // individual tabs may opt out via `is_closable = false`. The macOS
+        // rasteriser must consult both — otherwise non-closable tabs render
+        // a phantom × that triggers no action when clicked.
+        // Use identical labels so the *only* width difference between the
+        // two slots is the close-glyph reservation, isolating the regression.
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "tab.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                TabItem {
+                    label: "tab.rs".into(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let (_surface, hits) = paint_via_backend(&bar, None);
+        assert!(
+            hits.close_bounds[0].is_some(),
+            "closable tab must have close bounds",
+        );
+        assert!(
+            hits.close_bounds[1].is_none(),
+            "non-closable tab must have no close bounds even when bar.show_tab_close is true",
+        );
+        // The non-closable tab's slot must also be narrower (no close-glyph
+        // reservation), so the two slot widths differ in proportion to the
+        // close glyph + inner gap.
+        let (s0, e0) = hits.slot_positions[0];
+        let (s1, e1) = hits.slot_positions[1];
+        let closable_slot = e0 - s0;
+        let pinned_slot = e1 - s1;
+        assert!(
+            closable_slot > pinned_slot,
+            "closable tab slot ({closable_slot}) should reserve more width than pinned slot ({pinned_slot})",
         );
     }
 

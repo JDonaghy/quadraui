@@ -29,15 +29,41 @@ use crate::{Backend, MouseButton, UiEvent};
 
 /// Adapts a [`ShellApp`] into an [`AppLogic`] by composing it with an
 /// [`AppShell`] and an optional [`BottomPanelController`].
-pub struct ShellAdapter<A: ShellApp> {
-    pub app: A,
-    pub shell: AppShell,
-    pub _last_layout: Option<AppShellLayout>,
-    pub active_panel_id: Option<WidgetId>,
+///
+/// The struct and its fields are `pub(crate)` so only the in-crate shell
+/// runners can construct it. Downstream consumers drive the shell through
+/// [`crate::tui::shell_runner::run_with_shell`] /
+/// [`crate::gtk::shell_runner::run_with_shell`] + [`ShellApp`] callbacks —
+/// they never touch the adapter directly.
+pub(crate) struct ShellAdapter<A: ShellApp> {
+    pub(crate) app: A,
+    pub(crate) shell: AppShell,
+    pub(crate) _last_layout: Option<AppShellLayout>,
+    pub(crate) active_panel_id: Option<WidgetId>,
     /// Optional bottom-panel controller. Present when `ShellConfig.bottom_panel`
     /// was `Some`. Wrapped in `RefCell` because `render(&self)` must mutate it
     /// to cache hit regions and render tab content.
-    pub bottom_panel: Option<RefCell<BottomPanelController>>,
+    pub(crate) bottom_panel: Option<RefCell<BottomPanelController>>,
+}
+
+impl<A: ShellApp> ShellAdapter<A> {
+    /// Construct a new [`ShellAdapter`] from its parts. Only called by the
+    /// in-crate TUI / GTK shell runners; downstream consumers should use
+    /// `run_with_shell` rather than building an adapter directly.
+    pub(crate) fn new(
+        app: A,
+        shell: AppShell,
+        active_panel_id: Option<WidgetId>,
+        bottom_panel: Option<RefCell<BottomPanelController>>,
+    ) -> Self {
+        Self {
+            app,
+            shell,
+            _last_layout: None,
+            active_panel_id,
+            bottom_panel,
+        }
+    }
 }
 
 impl<A: ShellApp> AppLogic for ShellAdapter<A> {
@@ -125,7 +151,11 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
             AppShellEvent::BottomPanelResized { new_height } => {
                 // Forward as BottomPanelEvent::Resized to app when a controller is present.
-                if let Some(ref _ctrl_cell) = self.bottom_panel {
+                // Also update `height_fraction` so a subsequent WindowResized doesn't snap
+                // the panel back to its initial proportion: the drag is the new intent.
+                if let Some(ref ctrl_cell) = self.bottom_panel {
+                    let new_fraction = resized_to_fraction(*new_height, viewport.height);
+                    ctrl_cell.borrow_mut().height_fraction = new_fraction;
                     let ev = BottomPanelEvent::Resized(*new_height);
                     self.app.on_bottom_panel_event(&ev);
                 }
@@ -177,5 +207,86 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
         self.app.tick(backend)
+    }
+}
+
+/// Recover the bottom-panel `height_fraction` after a drag-resize.
+///
+/// `new_height` arrives in the backend's native units (cells for TUI, pixels
+/// for GTK) from `AppShellEvent::BottomPanelResized`; `viewport_height` is
+/// in the same native units (from `Backend::viewport()`). Dividing yields the
+/// proportion of the viewport the panel now occupies, clamped to `[0, 1]`.
+///
+/// Centralised so the in-line `handle()` branch and the regression test
+/// stay in lockstep: a missed update here is what made the panel snap back
+/// to the initial 30 % on the next `WindowResized`.
+fn resized_to_fraction(new_height: f32, viewport_height: f32) -> f32 {
+    let h = viewport_height.max(1.0);
+    (new_height / h).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resized_to_fraction_recovers_proportion() {
+        // Drag the panel to 18 cells in a 60-cell viewport → 30 %.
+        assert!((resized_to_fraction(18.0, 60.0) - 0.30).abs() < 1e-5);
+        // Drag to 36 cells in the same viewport → 60 %.
+        assert!((resized_to_fraction(36.0, 60.0) - 0.60).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resized_to_fraction_clamps_negative_to_zero() {
+        // Negative heights would otherwise propagate a bogus fraction
+        // into the next viewport recalc.
+        assert_eq!(resized_to_fraction(-5.0, 60.0), 0.0);
+    }
+
+    #[test]
+    fn resized_to_fraction_clamps_over_full_viewport_to_one() {
+        // If the drag math overshoots the viewport, cap at 100 %.
+        assert_eq!(resized_to_fraction(120.0, 60.0), 1.0);
+    }
+
+    #[test]
+    fn resized_to_fraction_handles_zero_viewport_safely() {
+        // A zero-height viewport (pre-init / minimised) must not divide
+        // by zero — the clamp keeps the output finite.
+        let f = resized_to_fraction(10.0, 0.0);
+        assert!(f.is_finite());
+    }
+
+    /// Regression for the bug: dragging the panel to a new height must
+    /// update `height_fraction` so a subsequent `WindowResized` reuses
+    /// the dragged proportion instead of snapping back to the initial
+    /// 30 %. This exercises the same arithmetic the `handle()` branch
+    /// uses for `AppShellEvent::BottomPanelResized`.
+    #[test]
+    fn drag_then_window_resize_preserves_user_intent() {
+        // Initial state: viewport 100 cells tall, fraction 0.30
+        // → panel 30 cells.
+        let mut height_fraction = 0.30_f32;
+        let viewport_h_initial = 100.0_f32;
+        let initial_panel = viewport_h_initial * height_fraction;
+        assert!((initial_panel - 30.0).abs() < 1e-4);
+
+        // User drags to 60 cells. The adapter updates the fraction.
+        let dragged_native = 60.0_f32;
+        height_fraction = resized_to_fraction(dragged_native, viewport_h_initial);
+        assert!((height_fraction - 0.60).abs() < 1e-5);
+
+        // Window then resizes to 50 cells tall. The adapter recalculates
+        // panel height from the (now-updated) fraction: 50 * 0.6 = 30 cells.
+        let viewport_h_resized = 50.0_f32;
+        let recalculated_panel = viewport_h_resized * height_fraction;
+        assert!(
+            (recalculated_panel - 30.0).abs() < 1e-4,
+            "post-resize panel height ({}) should reflect dragged proportion (0.60), \
+             not initial 0.30 (which would give {})",
+            recalculated_panel,
+            viewport_h_resized * 0.30,
+        );
     }
 }
