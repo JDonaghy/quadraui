@@ -37,6 +37,9 @@
 //! transcript by 3 rows per tick. Backends normalise their native
 //! scroll direction before emitting [`crate::UiEvent::Scroll`].
 
+use crate::compose::markdown::render_markdown_to_styled;
+use crate::theme::Theme;
+use crate::types::StyledSpan;
 use crate::{
     Backend, ButtonMask, Color, Key, MessageList, MessageRow, Modifiers, MouseButton, NamedKey,
     Rect, Scrollbar, Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
@@ -271,6 +274,58 @@ impl ChatController {
     /// `None` (default) falls back to `backend.line_height()`.
     pub fn set_scrollbar_width(&mut self, width: Option<f32>) {
         self.scrollbar_width = width;
+    }
+
+    // ── Transcript push helpers ───────────────────────────────────────
+
+    /// Append a pre-styled turn to the controller's internal transcript.
+    ///
+    /// This is an alternative to [`set_transcript`] for apps that build the
+    /// transcript incrementally rather than replacing it each frame.  Do not
+    /// mix `push_turn` and `set_transcript` on the same controller — use one
+    /// model consistently.
+    ///
+    /// For markdown-formatted assistant messages, prefer
+    /// [`push_turn_markdown`].
+    pub fn push_turn(&mut self, role: ChatRole, text: StyledText) {
+        self.transcript.push(ChatTurn {
+            role,
+            text,
+            timestamp_unix: None,
+        });
+    }
+
+    /// Append a turn whose body is markdown text.
+    ///
+    /// This is the **recommended API for assistant-role messages**.  The
+    /// markdown adapter ([`render_markdown_to_styled`]) converts headings,
+    /// bold, italic, inline code, bulleted and numbered lists, blockquotes,
+    /// links, and fenced code blocks to a [`StyledText`] with colours and
+    /// decorations baked in.  The resulting [`ChatTurn`] is appended to the
+    /// controller's internal transcript.
+    ///
+    /// Use [`set_transcript`] instead if your app maintains its own
+    /// transcript vector and passes it each frame.  Do not mix `push_turn*`
+    /// and `set_transcript` on the same controller.
+    ///
+    /// Markdown lines are interleaved into a single [`StyledText`] with
+    /// `'\n'` separator spans so the transcript renderer can split them for
+    /// wrapping, preserving the structure produced by the adapter (list
+    /// markers, blockquote rules, etc.) as plain-text cues.
+    pub fn push_turn_markdown(&mut self, role: ChatRole, markdown: &str, theme: &Theme) {
+        let rendered = render_markdown_to_styled(markdown, theme);
+        let mut spans: Vec<StyledSpan> = Vec::new();
+        for (i, line) in rendered.lines.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(StyledSpan::plain("\n"));
+            }
+            spans.extend(line.spans);
+        }
+        self.transcript.push(ChatTurn {
+            role,
+            text: StyledText { spans },
+            timestamp_unix: None,
+        });
     }
 
     /// Current transcript scroll offset (first visible wrapped row).
