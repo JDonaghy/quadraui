@@ -24,7 +24,15 @@ const DOC: &str = "\
 Body text with **bold**, *italic*, _also italic_, and `inline_code`.
 Identifiers like foo_bar and baz_qux stay upright (no intraword emphasis).
 Arithmetic like a * b * c is left alone too.
-Use `render_markdown_to_styled` to convert this into styled lines.";
+Use `render_markdown_to_styled` to convert this into styled lines.
+
+Fenced code blocks render with a language header and a `┃` rail:
+
+```rust
+fn main() {
+    println!(\"no raw backticks here\");
+}
+```";
 
 pub struct MarkdownDemo {
     scroll_top: usize,
@@ -68,7 +76,7 @@ impl AppLogic for MarkdownDemo {
             line_text: rendered.line_text,
             line_scales: rendered.line_scales,
             scroll_top: self.scroll_top,
-            max_visible_rows: 12,
+            max_visible_rows: 16,
             has_focus: true,
             selection: None,
             links: Vec::new(),

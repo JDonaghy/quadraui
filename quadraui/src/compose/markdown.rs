@@ -11,7 +11,7 @@
 //! | `` `text` `` | [`StyledSpan`] coloured with [`Theme::accent_fg`] |
 //! | `- item` / `* item` | indent + `•` marker span in [`Theme::accent_fg`] |
 //! | `1. item` | indent + `N.` marker span in [`Theme::accent_fg`] |
-//! | `` ```lang … ``` `` | dim-bg spans; `code_blocks` side-channel populated |
+//! | `` ```lang … ``` `` | `lang` dim header + per-line `┃` code rail; the `` ``` `` fences are **not** shown; `code_blocks` side-channel populated |
 //! | `[text](url)` | underlined [`Theme::link_fg`] span; `links` side-channel populated |
 //! | `> text` | `│ ` rule in [`Theme::link_fg`] + parsed inline content |
 //!
@@ -143,13 +143,15 @@ pub fn render_markdown_to_styled(input: &str, theme: &Theme) -> RenderedMarkdown
         if in_code_block {
             // Inside a fenced code block — check for closing fence first.
             if detect_fence(raw_line).is_some() {
-                // Closing fence.
+                // Closing fence — rendered as a blank row (the ``` delimiter
+                // is never shown; the code rail above already delimits the
+                // block).
                 result.code_blocks.push(CodeBlockRange {
                     fence_open: open_fence_idx.unwrap_or(line_idx),
                     fence_close: Some(line_idx),
                     lang: open_fence_lang.take(),
                 });
-                let (plain, styled) = render_fence_line(raw_line, theme);
+                let (plain, styled) = render_fence_close();
                 result.lines.push(styled);
                 result.line_text.push(plain);
                 result.line_scales.push(1.0);
@@ -163,8 +165,9 @@ pub fn render_markdown_to_styled(input: &str, theme: &Theme) -> RenderedMarkdown
                 result.line_scales.push(1.0);
             }
         } else if let Some(lang) = detect_fence(raw_line) {
-            // Opening fence.
-            let (plain, styled) = render_fence_line(raw_line, theme);
+            // Opening fence — rendered as a dim language header (or a blank
+            // row when untagged).  The ``` delimiter is never shown.
+            let (plain, styled) = render_fence_open(lang.as_deref(), theme);
             result.lines.push(styled);
             result.line_text.push(plain);
             result.line_scales.push(1.0);
@@ -219,43 +222,82 @@ fn detect_fence(line: &str) -> Option<Option<String>> {
 
 // ── Code block line rendering ──────────────────────────────────────────────
 
-/// Render a fence delimiter line (`` ```lang `` or `` ``` ``).
+/// Left "code rail" prefix prepended to every code-block content line:
+/// 2-space indent + `┃` (U+2503, HEAVY VERTICAL) + space.  Deliberately a
+/// *heavy* bar so it reads as distinct from the blockquote rule (`│`,
+/// U+2502, light) even in plain-text transcripts that discard span colour.
+const CODE_RAIL: &str = "  \u{2503} ";
+
+/// Render the opening fence as a dim language header (e.g. `  rust`), or a
+/// blank row when the fence carries no language tag.
 ///
-/// Styled with [`Theme::muted_fg`] on a [`Theme::surface_bg`] tint to
-/// visually distinguish it from body text.
-fn render_fence_line(line: &str, theme: &Theme) -> (String, StyledText) {
-    let plain = line.to_string();
-    let styled = StyledText {
-        spans: vec![StyledSpan {
-            text: plain.clone(),
+/// The `` ``` `` delimiter itself is **never** emitted — code blocks read as
+/// a block via this header plus the per-line rail from [`render_code_content`],
+/// which survives even in plain-text contexts (the chat transcript discards
+/// span colour and background, so a textual cue is the only thing that shows).
+fn render_fence_open(lang: Option<&str>, theme: &Theme) -> (String, StyledText) {
+    match lang {
+        Some(lang) if !lang.is_empty() => {
+            let plain = format!("  {lang}");
+            let styled = StyledText {
+                spans: vec![
+                    StyledSpan::plain("  "),
+                    StyledSpan {
+                        text: lang.to_string(),
+                        fg: Some(theme.muted_fg),
+                        bg: None,
+                        bold: false,
+                        italic: true,
+                        underline: false,
+                    },
+                ],
+            };
+            (plain, styled)
+        }
+        _ => blank_line(),
+    }
+}
+
+/// Render the closing fence as a blank row — the `` ``` `` delimiter is never
+/// shown; the rail above already delimits the block.
+fn render_fence_close() -> (String, StyledText) {
+    blank_line()
+}
+
+/// An empty rendered line (no spans, empty plain text).
+fn blank_line() -> (String, StyledText) {
+    (String::new(), StyledText { spans: Vec::new() })
+}
+
+/// Render one content line inside a fenced code block, prefixed with the
+/// [`CODE_RAIL`] gutter.
+///
+/// No emphasis parsing is done.  The rail uses [`Theme::muted_fg`]; the code
+/// text uses [`Theme::foreground`].  Both carry a [`Theme::surface_bg`] tint
+/// so styling-aware backends paint a contiguous dimmed block; plain-text
+/// consumers fall back to the rail glyph as the block cue.
+fn render_code_content(line: &str, theme: &Theme) -> (String, StyledText) {
+    let plain = format!("{CODE_RAIL}{line}");
+    let spans = vec![
+        StyledSpan::plain("  "),
+        StyledSpan {
+            text: "\u{2503} ".to_string(),
             fg: Some(theme.muted_fg),
             bg: Some(theme.surface_bg),
             bold: false,
             italic: false,
             underline: false,
-        }],
-    };
-    (plain, styled)
-}
-
-/// Render one content line inside a fenced code block.
-///
-/// No emphasis parsing is done.  Text colour is [`Theme::foreground`] on a
-/// [`Theme::surface_bg`] tint — matching the fence lines — so the whole block
-/// reads as a contiguous dimmed-bg region.
-fn render_code_content(line: &str, theme: &Theme) -> (String, StyledText) {
-    let plain = line.to_string();
-    let styled = StyledText {
-        spans: vec![StyledSpan {
-            text: plain.clone(),
+        },
+        StyledSpan {
+            text: line.to_string(),
             fg: Some(theme.foreground),
             bg: Some(theme.surface_bg),
             bold: false,
             italic: false,
             underline: false,
-        }],
-    };
-    (plain, styled)
+        },
+    ];
+    (plain, StyledText { spans })
 }
 
 // ── Per-line rendering (regular lines) ────────────────────────────────────
@@ -1247,15 +1289,65 @@ mod tests {
     }
 
     #[test]
-    fn code_block_fence_line_uses_muted_fg() {
+    fn code_block_open_fence_shows_language_header() {
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("```rust\ncode\n```", &theme);
+        // The opening fence renders the language as a dim header — NOT the
+        // raw ``` delimiter.
+        assert_eq!(r.line_text[0], "  rust");
+        assert!(
+            r.lines[0]
+                .spans
+                .iter()
+                .any(|s| s.fg == Some(theme.muted_fg) && s.text == "rust"),
+            "opening fence must show the language in muted_fg; spans: {:?}",
+            r.lines[0].spans
+        );
+    }
+
+    #[test]
+    fn code_block_open_fence_without_lang_is_blank() {
         let theme = Theme::default();
         let r = render_markdown_to_styled("```\ncode\n```", &theme);
-        // First and last lines are fence lines — muted_fg.
-        let fence_open = &r.lines[0].spans[0];
-        assert_eq!(
-            fence_open.fg,
-            Some(theme.muted_fg),
-            "fence line must use muted_fg"
+        // An untagged fence has no header text — just a blank cap row.
+        assert_eq!(r.line_text[0], "");
+        assert!(r.lines[0].spans.is_empty());
+    }
+
+    #[test]
+    fn code_block_close_fence_is_blank() {
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("```rust\ncode\n```", &theme);
+        // The closing fence is a blank row — the ``` delimiter is never shown.
+        assert_eq!(r.line_text[2], "");
+        assert!(r.lines[2].spans.is_empty());
+    }
+
+    #[test]
+    fn code_block_never_emits_raw_backtick_fences() {
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("```rust\nlet x = 1;\n```", &theme);
+        // No rendered line may contain the literal ``` fence delimiter.
+        assert!(
+            r.line_text.iter().all(|l| !l.contains("```")),
+            "raw ``` fences must not leak into rendered text; got: {:?}",
+            r.line_text
+        );
+    }
+
+    #[test]
+    fn code_block_content_has_code_rail() {
+        let theme = Theme::default();
+        let r = render_markdown_to_styled("```\nlet x = 1;\n```", &theme);
+        // Content lines are prefixed with the heavy-bar code rail.
+        assert_eq!(r.line_text[1], "  \u{2503} let x = 1;");
+        assert!(
+            r.lines[1]
+                .spans
+                .iter()
+                .any(|s| s.fg == Some(theme.muted_fg) && s.text.contains('\u{2503}')),
+            "expected a muted_fg rail span; spans: {:?}",
+            r.lines[1].spans
         );
     }
 
@@ -1263,7 +1355,11 @@ mod tests {
     fn code_block_content_line_uses_foreground() {
         let theme = Theme::default();
         let r = render_markdown_to_styled("```\ncontent\n```", &theme);
-        let content = &r.lines[1].spans[0];
+        let content = r.lines[1]
+            .spans
+            .iter()
+            .find(|s| s.text == "content")
+            .expect("expected a span carrying the code content");
         assert_eq!(
             content.fg,
             Some(theme.foreground),
@@ -1280,7 +1376,8 @@ mod tests {
             r.lines[1].spans.iter().all(|s| !s.bold),
             "content inside code block must not be emphasis-parsed"
         );
-        assert_eq!(r.line_text[1], "**not bold**");
+        // The rail prefix is added but the code text is otherwise verbatim.
+        assert_eq!(r.line_text[1], "  \u{2503} **not bold**");
     }
 
     #[test]
