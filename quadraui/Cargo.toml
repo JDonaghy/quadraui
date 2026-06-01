@@ -389,3 +389,83 @@ required-features = ["tui"]
 name = "gtk_diff_view"
 path = "examples/gtk_diff_view.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_ai_transcript"
+path = "examples/tui_ai_transcript.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_ai_transcript"
+path = "examples/gtk_ai_transcript.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_appshell_demo"
+path = "examples/tui_appshell_demo.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_appshell_demo"
+path = "examples/gtk_appshell_demo.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_frame_demo"
+path = "examples/tui_frame_demo.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_frame_demo"
+path = "examples/gtk_frame_demo.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_full_chrome_demo"
+path = "examples/tui_full_chrome_demo.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_full_chrome_demo"
+path = "examples/gtk_full_chrome_demo.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_pipeline"
+path = "examples/tui_pipeline.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_pipeline"
+path = "examples/gtk_pipeline.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_sidebar_panel"
+path = "examples/tui_sidebar_panel.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_sidebar_panel"
+path = "examples/gtk_sidebar_panel.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_text_input"
+path = "examples/tui_text_input.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_text_input"
+path = "examples/gtk_text_input.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_toolbar"
+path = "examples/tui_toolbar.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_toolbar"
+path = "examples/gtk_toolbar.rs"
+required-features = ["gtk"]
