@@ -7,6 +7,7 @@
 //! routing — the consumer renders only its own content.
 
 use crate::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
+use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
 use crate::types::WidgetId;
 use crate::{Backend, Reaction, UiEvent};
@@ -28,6 +29,15 @@ pub struct ShellConfig {
     pub max_bottom_panel_height_lh: f32,
     pub has_command_line: bool,
     pub has_status_bar: bool,
+    /// Optional tabbed bottom panel. `None` (the default) preserves the
+    /// existing no-panel layout. When `Some`, the shell runner creates a
+    /// [`crate::compose::bottom_panel::BottomPanelController`] that renders
+    /// the tab strip and delegates content to each tab's `BackendWidget`.
+    ///
+    /// Setting this field automatically enables an AppShell bottom panel
+    /// region — no need to also call [`Self::with_bottom_panel`] unless you
+    /// want to tune the height via the old API as well.
+    pub bottom_panel: Option<BottomPanelConfig>,
 }
 
 impl ShellConfig {
@@ -48,6 +58,7 @@ impl ShellConfig {
             max_bottom_panel_height_lh: 30.0,
             has_command_line: false,
             has_status_bar: false,
+            bottom_panel: None,
         }
     }
 
@@ -86,6 +97,20 @@ impl ShellConfig {
 
     pub fn with_status_bar(mut self) -> Self {
         self.has_status_bar = true;
+        self
+    }
+
+    /// Attach a tabbed bottom panel.
+    ///
+    /// This is the preferred way to add a bottom panel when you want tab
+    /// switching, close buttons, and per-tab [`crate::compose::bottom_panel::BackendWidget`]
+    /// content. It automatically enables the AppShell bottom panel region;
+    /// the initial height comes from [`BottomPanelConfig::height_fraction`].
+    ///
+    /// Use [`Self::with_bottom_panel`] + [`Self::with_bottom_panel_limits`]
+    /// instead when you only need a bare unstyled region below main content.
+    pub fn with_bottom_panel_config(mut self, config: BottomPanelConfig) -> Self {
+        self.bottom_panel = Some(config);
         self
     }
 }
@@ -195,6 +220,18 @@ pub trait ShellApp {
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     fn on_shell_event(&mut self, _event: &AppShellEvent) {}
+
+    /// Notified when the bottom panel tab strip emits an event
+    /// (tab activation, close, maximise toggle, or resize).
+    ///
+    /// Only called when `ShellConfig.bottom_panel` is `Some`. The
+    /// [`crate::compose::bottom_panel::BottomPanelController`] has already
+    /// applied the state change (switched active tab, removed a closed tab,
+    /// toggled maximised) before this method is called. Use it for any
+    /// higher-level bookkeeping — re-rendering is triggered automatically.
+    ///
+    /// Default: no-op.
+    fn on_bottom_panel_event(&mut self, _event: &BottomPanelEvent) {}
 
     /// Periodic callback invoked by the runner on every frame (≈60Hz on
     /// the TUI backend, GTK timeout on GTK). Use for timer-driven work —

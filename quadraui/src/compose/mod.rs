@@ -19,6 +19,7 @@
 //!   input + status strip.
 
 pub mod app_shell;
+pub mod bottom_panel;
 pub mod chat_controller;
 pub mod focus_group;
 pub mod focus_ring;
@@ -32,6 +33,10 @@ pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 
 pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
+pub use bottom_panel::{
+    BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
+    BottomPanelTab,
+};
 pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;

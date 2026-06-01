@@ -644,6 +644,41 @@ pub struct EditorPaintResult {
     pub cursor_position: Option<(u16, u16)>,
 }
 
+/// Trait for content that can render itself into a rect using any backend.
+///
+/// Implement this on your tab-content types and place them in
+/// [`crate::compose::bottom_panel::BottomPanelTab::content`] to supply
+/// the body that renders inside the panel when the tab is active.
+///
+/// # Rules
+///
+/// - Implementations **must not** borrow app state — each render is a
+///   snapshot draw, same rule as every other `draw_*` primitive.
+/// - Implementations **must be `Send + 'static`** so they can be stored
+///   inside `ShellAdapter` which the runner moves into a thread.
+///
+/// # Example
+///
+/// ```ignore
+/// struct LogPanel { lines: Vec<String> }
+///
+/// impl BackendWidget for LogPanel {
+///     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
+///         let td = TextDisplay { id: "log".into(), lines: self.lines.iter()
+///             .map(|l| TextDisplayLine { spans: vec![StyledSpan::plain(l)], .. })
+///             .collect(), .. };
+///         backend.draw_text_display(rect, &td);
+///     }
+/// }
+/// ```
+pub trait BackendWidget: Send + 'static {
+    /// Render this widget's content into `rect` using `backend`.
+    ///
+    /// Called once per frame when this tab is the active tab in a
+    /// [`crate::compose::bottom_panel::BottomPanelConfig`].
+    fn render(&self, backend: &mut dyn Backend, rect: Rect);
+}
+
 /// Platform services the backend exposes to apps: clipboard, file dialogs,
 /// notifications, URL opening.
 pub trait PlatformServices {
