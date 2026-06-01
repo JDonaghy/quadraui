@@ -122,6 +122,13 @@ pub struct TabItem {
     pub is_dirty: bool,
     #[serde(default)]
     pub is_preview: bool,
+    /// When `true`, this tab renders an individual `×` / `●` close button
+    /// (subject to [`TabBar::show_tab_close`] also being `true`). When
+    /// `false`, the backend omits the close button for this tab even when
+    /// `show_tab_close` is set on the bar — no space is reserved and no
+    /// glyph is rendered. Defaults to `true` for backward compatibility.
+    #[serde(default = "default_true")]
+    pub is_closable: bool,
 }
 
 /// One right-aligned segment in a `TabBar`. Either a clickable button
@@ -639,12 +646,14 @@ mod hit_test_diff_tests {
                     is_active: true,
                     is_dirty: false,
                     is_preview: false,
+                    is_closable: true,
                 },
                 TabItem {
                     label: "lib.rs".into(),
                     is_active: false,
                     is_dirty: false,
                     is_preview: false,
+                    is_closable: true,
                 },
             ],
             right_segments: vec![

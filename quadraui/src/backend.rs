@@ -296,8 +296,11 @@ pub trait Backend {
     fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
 
     /// Compute the tab bar layout without painting. Returns the same
-    /// `TabBarHits` as `draw_tab_bar` for slot positions, close bounds,
-    /// and scroll-offset reconciliation.
+    /// `TabBarHits` as `draw_tab_bar` — slot positions, close bounds, and
+    /// right-segment bounds are all in **target-surface (absolute)
+    /// coordinates**, i.e. shifted by `rect.x` / `rect.y` so callers can
+    /// compare them directly against raw click coordinates without any
+    /// further adjustment.
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute activity bar row hit regions without painting.

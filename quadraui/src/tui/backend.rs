@@ -810,6 +810,8 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         // Cell-unit measurer mirrors `render_impl::render_tab_bar`.
+        // Respect per-tab `is_closable`: non-closable tabs get no close-column
+        // reservation even when `show_tab_close` is set on the bar.
         let close_cols = if bar.show_tab_close {
             crate::tui::TAB_CLOSE_COLS as usize
         } else {
@@ -818,13 +820,27 @@ impl Backend for TuiBackend {
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
-            .map(|t| t.label.chars().count() + close_cols)
+            .map(|t| {
+                let tab_close = if bar.show_tab_close && t.is_closable {
+                    close_cols
+                } else {
+                    0
+                };
+                t.label.chars().count() + tab_close
+            })
             .collect();
         let layout = bar.layout(
             area.width as f32,
             area.height as f32,
             0.0, // no scroll arrows in TUI
-            |i| crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
+            |i| {
+                let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
+                    close_cols
+                } else {
+                    0
+                };
+                crate::TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
+            },
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
         let frame = self
@@ -859,16 +875,32 @@ impl Backend for TuiBackend {
         } else {
             0
         };
+        // Compute per-tab widths respecting `is_closable`: non-closable tabs
+        // get no close-column reservation even when `show_tab_close` is set.
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
-            .map(|t| t.label.chars().count() + close_cols)
+            .map(|t| {
+                let tab_close = if bar.show_tab_close && t.is_closable {
+                    close_cols
+                } else {
+                    0
+                };
+                t.label.chars().count() + tab_close
+            })
             .collect();
         let layout = bar.layout(
             rect.width,
             rect.height,
             0.0,
-            |i| crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
+            |i| {
+                let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
+                    close_cols
+                } else {
+                    0
+                };
+                crate::TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
+            },
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
 

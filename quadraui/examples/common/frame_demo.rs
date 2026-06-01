@@ -83,6 +83,7 @@ impl FrameDemo {
                     is_active: i == self.active_tab,
                     is_dirty: false,
                     is_preview: false,
+                    is_closable: true,
                 })
                 .collect(),
             scroll_offset: 0,

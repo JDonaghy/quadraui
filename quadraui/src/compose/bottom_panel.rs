@@ -180,9 +180,24 @@ impl BottomPanelController {
     /// Create from an initial configuration. The config is consumed; its
     /// mutable parts (active tab, maximised flag, tabs) live in the
     /// controller from here on.
+    ///
+    /// If `config.active_tab_id` does not match any tab in `config.tabs`,
+    /// the first tab's `id` is used instead (or an empty string when there
+    /// are no tabs). This implements the documented fallback.
     pub fn new(config: BottomPanelConfig) -> Self {
+        // Implement the active_tab_id fallback: if the provided id doesn't
+        // exist in the tab list, fall back to the first tab.
+        let active_tab_id = if config.tabs.iter().any(|t| t.id == config.active_tab_id) {
+            config.active_tab_id
+        } else {
+            config
+                .tabs
+                .first()
+                .map(|t| t.id.clone())
+                .unwrap_or_default()
+        };
         Self {
-            active_tab_id: config.active_tab_id,
+            active_tab_id,
             maximised: config.maximised,
             tabs: config.tabs,
             height_fraction: config.height_fraction,
@@ -356,6 +371,10 @@ impl BottomPanelController {
                     is_active: t.id == self.active_tab_id,
                     is_dirty: false,
                     is_preview: false,
+                    // Propagate per-tab closability so rasterisers can suppress
+                    // the × glyph and close-button hit region for non-closable
+                    // tabs even when `show_tab_close` is set on the bar.
+                    is_closable: t.closable,
                 }
             })
             .collect();
@@ -675,5 +694,85 @@ mod tests {
         ctrl.maximised = true;
         let bar = ctrl.build_tab_bar();
         assert_eq!(bar.right_segments[0].text, " v ");
+    }
+
+    // ── Per-tab closability ───────────────────────────────────────────────────
+
+    /// When a mix of closable and non-closable tabs is present, only the
+    /// closable tab should have `is_closable = true` in the built `TabBar`.
+    /// This ensures rasterisers can suppress the × glyph for non-closable tabs.
+    #[test]
+    fn build_tab_bar_propagates_per_tab_closability() {
+        let cfg = make_config(
+            vec![tab("t0", "TERM", false), tab("t1", "LOGS", true)],
+            "t0",
+        );
+        let ctrl = BottomPanelController::new(cfg);
+        let bar = ctrl.build_tab_bar();
+        assert!(
+            !bar.tabs[0].is_closable,
+            "non-closable tab should have is_closable=false"
+        );
+        assert!(
+            bar.tabs[1].is_closable,
+            "closable tab should have is_closable=true"
+        );
+    }
+
+    /// In a mixed configuration, clicking the close region of a non-closable tab
+    /// (which has no close bounds) falls through to tab-body click → returns None
+    /// (already active). A closable tab's close region still emits TabClosed.
+    #[test]
+    fn mixed_closable_tabs_only_closable_tab_emits_close_event() {
+        // t0: non-closable (close_w=0 → no close bounds)
+        // t1: closable (close_w=2 → close region [10..12] in strip [0..80])
+        // Layout: t0=[0..6] no close, t1=[6..12] with close [10..12]
+        let cfg = make_config(
+            vec![tab("t0", "AAAA", false), tab("t1", "BBBB", true)],
+            "t0",
+        );
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+
+        // Click anywhere in t0's region — body click on already-active tab → None.
+        let ev = ctrl.handle_click(3.0, 0.5);
+        assert_eq!(ev, None, "click on non-closable active tab body → None");
+
+        // Activate t1 first so t0 is inactive, then re-prime.
+        ctrl.activate_tab("t1".to_string());
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+
+        // Click t0's body → activates it (no close event even though t0 is non-closable).
+        let ev = ctrl.handle_click(3.0, 0.5);
+        assert_eq!(ev, Some(BottomPanelEvent::TabActivated("t0".to_string())));
+
+        // Re-prime and click t1's close region.
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        let ev = ctrl.handle_click(11.0, 0.5); // x=11 → close region of t1 [10..12]
+        assert_eq!(ev, Some(BottomPanelEvent::TabClosed("t1".to_string())));
+        assert_eq!(ctrl.tabs().len(), 1, "t1 removed; only t0 remains");
+    }
+
+    // ── active_tab_id fallback ────────────────────────────────────────────────
+
+    /// When `active_tab_id` does not match any tab, the constructor falls
+    /// back to the first tab's id — implementing the documented behaviour.
+    #[test]
+    fn new_falls_back_to_first_tab_when_active_id_unknown() {
+        let cfg = make_config(
+            vec![tab("t0", "A", false), tab("t1", "B", false)],
+            "no-such-id",
+        );
+        let ctrl = BottomPanelController::new(cfg);
+        assert_eq!(ctrl.active_tab_id, "t0", "should fall back to first tab");
+    }
+
+    /// When the tab list is empty and active_tab_id is unknown, the constructor
+    /// uses an empty string (the only sensible sentinel for "no active tab").
+    #[test]
+    fn new_uses_empty_string_when_no_tabs_and_unknown_id() {
+        let cfg = make_config(vec![], "no-such-id");
+        let ctrl = BottomPanelController::new(cfg);
+        assert_eq!(ctrl.active_tab_id, "", "no tabs → empty active_tab_id");
     }
 }

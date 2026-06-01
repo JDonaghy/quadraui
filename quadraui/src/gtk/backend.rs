@@ -1054,11 +1054,6 @@ impl Backend for GtkBackend {
         } else {
             0.0
         };
-        let close_extra = if bar.show_tab_close {
-            tab_inner_gap + close_glyph_w
-        } else {
-            0.0
-        };
 
         let tab_name_widths: Vec<f32> = bar
             .tabs
@@ -1071,8 +1066,17 @@ impl Backend for GtkBackend {
             rect.height,
             0.0, // no scroll arrows — matches the draw path
             |i| {
-                let total = tab_pad + tab_name_widths[i] + close_extra + tab_pad + tab_outer_gap;
-                let close_w = if bar.show_tab_close {
+                // Respect per-tab `is_closable`: only reserve close-button
+                // space for tabs that will actually render a × glyph.
+                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+                let tab_close_extra = if has_close {
+                    tab_inner_gap + close_glyph_w
+                } else {
+                    0.0
+                };
+                let total =
+                    tab_pad + tab_name_widths[i] + tab_close_extra + tab_pad + tab_outer_gap;
+                let close_w = if has_close {
                     tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap
                 } else {
                     0.0
@@ -1097,18 +1101,44 @@ impl Backend for GtkBackend {
         let effective_tab_area = (rect.width - reserved_px).max(0.0);
 
         hits.correct_scroll_offset = if let Some(active) = active_idx {
+            // Use per-tab close_extra for the scroll fit calculation too.
             TabBar::fit_active_scroll_offset(
                 active,
                 bar.tabs.len(),
                 effective_tab_area as usize,
                 |i| {
-                    (tab_pad + tab_name_widths[i] + close_extra + tab_pad + tab_outer_gap).ceil()
-                        as usize
+                    let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+                    let tab_close_extra = if has_close {
+                        tab_inner_gap + close_glyph_w
+                    } else {
+                        0.0
+                    };
+                    (tab_pad + tab_name_widths[i] + tab_close_extra + tab_pad + tab_outer_gap)
+                        .ceil() as usize
                 },
             )
         } else {
             bar.scroll_offset
         };
+
+        // Apply `rect.x` offset so hit positions are in target-surface
+        // (absolute) coordinates — the same space as `draw_tab_bar` returns,
+        // as required by the Backend trait contract.
+        let x_off = rect.x as f64;
+        for sp in &mut hits.slot_positions {
+            if *sp != (0.0, 0.0) {
+                sp.0 += x_off;
+                sp.1 += x_off;
+            }
+        }
+        for cb in hits.close_bounds.iter_mut().flatten() {
+            cb.0 += x_off;
+            cb.1 += x_off;
+        }
+        for rb in &mut hits.right_segment_bounds {
+            rb.0 += x_off;
+            rb.1 += x_off;
+        }
 
         hits
     }
