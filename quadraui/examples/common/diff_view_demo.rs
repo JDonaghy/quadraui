@@ -70,6 +70,8 @@ impl DiffViewApp {
         let hunks = compute_hunks(LEFT, RIGHT);
         let view = DiffView {
             id: WidgetId::new("diff-view-demo"),
+            left: LEFT.to_string(),
+            right: RIGHT.to_string(),
             left_label: Some("original".to_string()),
             right_label: Some("modified".to_string()),
             hunks,
