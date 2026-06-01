@@ -1884,6 +1884,94 @@ mod tests {
         assert_eq!(cc.transcript_scroll_top(), 5);
     }
 
+    // ── push_turn / push_turn_markdown ───────────────────────────────
+
+    #[test]
+    fn push_turn_appends_turn_to_transcript() {
+        let mut cc = ChatController::new("c");
+        cc.push_turn(ChatRole::User, StyledText::plain("hello"));
+        assert_eq!(cc.transcript.len(), 1);
+        assert_eq!(cc.transcript[0].role, ChatRole::User);
+        let text: String = cc.transcript[0]
+            .text
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn push_turn_multiple_turns_accumulate() {
+        let mut cc = ChatController::new("c");
+        cc.push_turn(ChatRole::User, StyledText::plain("first"));
+        cc.push_turn(ChatRole::Assistant, StyledText::plain("second"));
+        assert_eq!(cc.transcript.len(), 2);
+        assert_eq!(cc.transcript[0].role, ChatRole::User);
+        assert_eq!(cc.transcript[1].role, ChatRole::Assistant);
+    }
+
+    #[test]
+    fn push_turn_markdown_joins_lines_with_newline() {
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::Assistant, "line one\nline two", &theme);
+        assert_eq!(cc.transcript.len(), 1);
+        assert_eq!(cc.transcript[0].role, ChatRole::Assistant);
+        // Span texts joined must contain both lines with a '\n' separator.
+        let text: String = cc.transcript[0]
+            .text
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(
+            text.contains("line one"),
+            "first line must be present; got: {text:?}"
+        );
+        assert!(
+            text.contains("line two"),
+            "second line must be present; got: {text:?}"
+        );
+        assert!(
+            text.contains('\n'),
+            "lines must be joined with a newline separator; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn push_turn_markdown_structural_glyphs_survive_in_plain_text() {
+        // The ChatController renders transcript rows by concatenating span
+        // text — structural glyphs (bullets, blockquote bars) must survive
+        // so they appear as text cues in the rendered transcript.
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::Assistant, "- item one\n- item two", &theme);
+        let text: String = cc.transcript[0]
+            .text
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(
+            text.contains('\u{2022}'),
+            "bullet glyph must survive as a structural text cue; got: {text:?}"
+        );
+        assert!(
+            text.contains("item one"),
+            "first item content must be present; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn push_turn_markdown_empty_string_produces_one_turn_no_panic() {
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        // Empty markdown must not panic and must append exactly one turn.
+        cc.push_turn_markdown(ChatRole::System, "", &theme);
+        assert_eq!(cc.transcript.len(), 1);
+    }
+
     // ── Transcript row building ───────────────────────────────────────
 
     #[test]

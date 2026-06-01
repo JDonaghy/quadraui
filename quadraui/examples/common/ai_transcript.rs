@@ -7,10 +7,13 @@
 //! `inline_code`, bulleted / numbered lists, fenced code blocks, links, and
 //! blockquotes to a [`StyledText`] stored inside the [`ChatTurn`].
 //!
-//! The `ChatController` renders the structured plain text in the transcript
-//! (list bullets `•`, blockquote bars `│`, and code-block content are all
-//! visible as text cues).  Backends that support per-span colour (GTK) also
-//! show bold, italic, and link underlines.
+//! The `ChatController` renders the structured plain text in the transcript.
+//! Structural glyphs — list bullets `•`, blockquote bars `│`, and code-block
+//! content — survive as literal Unicode text cues in every backend.
+//! Per-span attributes (bold, italic, underline, foreground colour) are **not**
+//! preserved in the transcript renderer: `build_transcript_rows` extracts
+//! uniform plain text and applies a single `content_fg` per role.  Per-span
+//! colour rendering in the transcript is a planned future improvement.
 //!
 //! Controls:
 //! - `Ctrl+S` or `Alt+Enter` — submit (sends the next canned prompt).
