@@ -369,3 +369,13 @@ required-features = ["macos"]
 name = "macos_hscroll"
 path = "examples/macos_hscroll.rs"
 required-features = ["macos"]
+
+[[example]]
+name = "tui_bottom_panel"
+path = "examples/tui_bottom_panel.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_bottom_panel"
+path = "examples/gtk_bottom_panel.rs"
+required-features = ["gtk"]

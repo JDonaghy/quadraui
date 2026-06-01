@@ -1,24 +1,40 @@
 //! GTK shell runner: `run_with_shell()` wraps a [`ShellApp`] in an
 //! AppShell and drives it through the standard GTK event loop.
 
+use std::cell::RefCell;
+
 use crate::compose::app_shell::{AppShell, AppShellEvent, AppShellLayout};
+use crate::compose::bottom_panel::{BottomPanelController, BottomPanelEvent};
 use crate::event::Rect;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig, ShellContext};
 use crate::types::WidgetId;
-use crate::{Backend, UiEvent};
+use crate::{Backend, MouseButton, UiEvent};
 
 struct ShellAdapter<A: ShellApp> {
     app: A,
     shell: AppShell,
     _last_layout: Option<AppShellLayout>,
     active_panel_id: Option<WidgetId>,
+    /// Optional bottom-panel controller. Present when `ShellConfig.bottom_panel`
+    /// was `Some`. Wrapped in `RefCell` because `render(&self)` must mutate it
+    /// to cache hit regions and render tab content.
+    bottom_panel: Option<RefCell<BottomPanelController>>,
 }
 
 impl<A: ShellApp> AppLogic for ShellAdapter<A> {
     type AreaId = ();
 
     fn setup(&mut self, backend: &mut dyn Backend) {
+        // Initialise bottom panel height from height_fraction on first setup.
+        if let Some(ref ctrl_cell) = self.bottom_panel {
+            let ctrl = ctrl_cell.borrow();
+            let viewport = backend.viewport();
+            let lh = backend.line_height().max(1.0);
+            let panel_lh = (viewport.height / lh * ctrl.height_fraction).clamp(3.0, 30.0);
+            drop(ctrl);
+            self.shell.set_bottom_panel_height(panel_lh);
+        }
         self.app.setup(backend);
     }
 
@@ -26,12 +42,53 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let layout = self.shell.render(backend, area);
-        self.app.render_content(backend, &layout);
+
+        if let Some(ref ctrl_cell) = self.bottom_panel {
+            let maximised = ctrl_cell.borrow().maximised;
+
+            if maximised {
+                // Expand panel to cover main content area too.
+                let main = layout.main_content_bounds;
+                let bp_h = layout.bottom_panel_bounds.map(|r| r.height).unwrap_or(0.0);
+                let full_panel = Rect::new(main.x, main.y, main.width, main.height + bp_h);
+                ctrl_cell.borrow_mut().render(backend, full_panel);
+
+                // Pass a layout with zeroed main area so app skips rendering it.
+                let maximised_layout = AppShellLayout {
+                    main_content_bounds: Rect::new(
+                        main.x,
+                        main.y + main.height + bp_h,
+                        main.width,
+                        0.0,
+                    ),
+                    bottom_panel_bounds: Some(full_panel),
+                    ..layout
+                };
+                self.app.render_content(backend, &maximised_layout);
+            } else if let Some(panel_bounds) = layout.bottom_panel_bounds {
+                ctrl_cell.borrow_mut().render(backend, panel_bounds);
+                self.app.render_content(backend, &layout);
+            } else {
+                self.app.render_content(backend, &layout);
+            }
+        } else {
+            self.app.render_content(backend, &layout);
+        }
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+
+        // On viewport resize, recalculate the bottom panel height from fraction.
+        if matches!(event, UiEvent::WindowResized { .. }) {
+            if let Some(ref ctrl_cell) = self.bottom_panel {
+                let height_fraction = ctrl_cell.borrow().height_fraction;
+                let lh = backend.line_height().max(1.0);
+                let panel_lh = (viewport.height / lh * height_fraction).clamp(3.0, 30.0);
+                self.shell.set_bottom_panel_height(panel_lh);
+            }
+        }
 
         let shell_ev = self.shell.handle(&event, backend, area);
         match &shell_ev {
@@ -48,7 +105,12 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 self.app.on_shell_event(&shell_ev);
                 return Reaction::Redraw;
             }
-            AppShellEvent::BottomPanelResized { .. } => {
+            AppShellEvent::BottomPanelResized { new_height } => {
+                // Forward as BottomPanelEvent::Resized to app when a controller is present.
+                if let Some(ref _ctrl_cell) = self.bottom_panel {
+                    let ev = BottomPanelEvent::Resized(*new_height);
+                    self.app.on_bottom_panel_event(&ev);
+                }
                 self.app.on_shell_event(&shell_ev);
                 return Reaction::Redraw;
             }
@@ -62,6 +124,22 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
             AppShellEvent::Consumed => return Reaction::Redraw,
             AppShellEvent::Ignored => {}
+        }
+
+        // If the shell didn't consume the event, check the bottom panel tab strip.
+        if let Some(ref ctrl_cell) = self.bottom_panel {
+            if let UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } = &event
+            {
+                let bp_ev = ctrl_cell.borrow_mut().handle_click(position.x, position.y);
+                if let Some(bp_ev) = bp_ev {
+                    self.app.on_bottom_panel_event(&bp_ev);
+                    return Reaction::Redraw;
+                }
+            }
         }
 
         let layout = self.shell.layout(area, backend.line_height());
@@ -104,6 +182,18 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
         shell = shell.with_status_bar();
     }
 
+    // When a BottomPanelConfig is present, enable the bottom panel region
+    // and create the controller. Initial height is set in setup() once we
+    // have the backend's viewport + line_height.
+    let bottom_panel = if let Some(bp_config) = config.bottom_panel {
+        shell = shell
+            .with_bottom_panel(10.0)
+            .with_bottom_panel_limits(3.0, 40.0);
+        Some(RefCell::new(BottomPanelController::new(bp_config)))
+    } else {
+        None
+    };
+
     let active_panel_id = shell.active_panel_id().cloned();
 
     let adapter = ShellAdapter {
@@ -111,6 +201,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
         shell,
         _last_layout: None,
         active_panel_id,
+        bottom_panel,
     };
 
     super::run::run(adapter);

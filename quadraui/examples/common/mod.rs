@@ -30,6 +30,7 @@
 
 pub mod ai_transcript;
 pub mod appshell_demo;
+pub mod bottom_panel_demo;
 pub mod chart_app;
 pub mod chat_demo;
 pub mod data_table_app;
