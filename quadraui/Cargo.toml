@@ -379,3 +379,13 @@ required-features = ["tui"]
 name = "gtk_bottom_panel"
 path = "examples/gtk_bottom_panel.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_diff_view"
+path = "examples/tui_diff_view.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_diff_view"
+path = "examples/gtk_diff_view.rs"
+required-features = ["gtk"]

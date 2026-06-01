@@ -20,6 +20,7 @@ use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
@@ -496,6 +497,11 @@ pub trait Backend {
     /// click handlers to resolve hits against the same layout that was
     /// painted — never re-derive with a hand-rolled measurer.
     fn pipeline_view_layout(&self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
+
+    /// Draw a [`DiffView`] (two-pane side-by-side or unified diff viewer).
+    /// Hunks are app-computed via [`crate::diff::compute_hunks`]; the backend
+    /// only rasterises. Returns [`DiffViewLayout`] for scroll clamping.
+    fn draw_diff_view(&mut self, rect: Rect, view: &DiffView) -> DiffViewLayout;
 
     /// Draw a [`ProgressBar`]. The backend paints the track, fill,
     /// optional label, and optional cancel affordance. Returns the

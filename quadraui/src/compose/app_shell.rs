@@ -1734,5 +1734,16 @@ mod tests {
         ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
             unimplemented!()
         }
+
+        fn draw_diff_view(
+            &mut self,
+            _r: Rect,
+            view: &crate::primitives::diff_view::DiffView,
+        ) -> crate::primitives::diff_view::DiffViewLayout {
+            crate::primitives::diff_view::DiffViewLayout {
+                visible_rows: 0,
+                total_rows: view.total_rows(),
+            }
+        }
     }
 }

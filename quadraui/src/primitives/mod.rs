@@ -12,6 +12,7 @@ pub mod completions;
 pub mod context_menu;
 pub mod data_table;
 pub mod dialog;
+pub mod diff_view;
 pub mod drop_zone;
 pub mod editor;
 pub mod find_replace;

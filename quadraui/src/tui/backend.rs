@@ -1439,6 +1439,19 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_sidebar_panel_layout(panel, area)
     }
+
+    fn draw_diff_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::diff_view::DiffView,
+    ) -> crate::primitives::diff_view::DiffViewLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_diff_view called outside enter_frame_scope");
+        crate::tui::draw_diff_view(frame.buffer_mut(), area, view, &theme)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -2051,6 +2064,17 @@ mod tests {
                 crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
                 |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
             )
+        }
+
+        fn draw_diff_view(
+            &mut self,
+            _r: QRect,
+            view: &crate::primitives::diff_view::DiffView,
+        ) -> crate::primitives::diff_view::DiffViewLayout {
+            crate::primitives::diff_view::DiffViewLayout {
+                visible_rows: 0,
+                total_rows: view.total_rows(),
+            }
         }
     }
 

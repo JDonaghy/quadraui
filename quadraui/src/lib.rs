@@ -83,6 +83,7 @@
 //!
 //! Verify all six when adding a new primitive or extending an existing one.
 
+pub mod diff;
 pub mod frame;
 pub mod primitives;
 pub mod shell;
@@ -127,6 +128,7 @@ pub mod modal_stack;
 pub mod runner;
 pub mod shell_adapter;
 
+pub use diff::compute_hunks;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityItem, ActivitySide, VisibleActivityItem,
@@ -153,6 +155,10 @@ pub use primitives::data_table::{
 pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
     DialogSeverity, DialogTextInput, VisibleDialogButton,
+};
+pub use primitives::diff_view::{
+    DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewEvent,
+    DiffViewLayout,
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
