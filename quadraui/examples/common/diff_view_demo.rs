@@ -107,7 +107,9 @@ impl AppLogic for DiffViewApp {
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         let visible = self.last_layout.get().visible_rows.max(1);
-        let total = self.view.total_rows();
+        // Use layout.total_rows (not view.total_rows()) so the scroll
+        // ceiling accounts for @@ header lines in unified mode.
+        let total = self.last_layout.get().total_rows;
 
         match event {
             // Scroll down — j or Down arrow.
