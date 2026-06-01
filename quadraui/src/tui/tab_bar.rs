@@ -221,12 +221,14 @@ mod tests {
                     is_active: active_idx == 0,
                     is_dirty: false,
                     is_preview: false,
+                    is_closable: true,
                 },
                 TabItem {
                     label: "lib.rs".into(),
                     is_active: active_idx == 1,
                     is_dirty: true,
                     is_preview: false,
+                    is_closable: true,
                 },
             ],
             right_segments: vec![],
@@ -299,6 +301,7 @@ mod tests {
                 is_active: true,
                 is_dirty: false,
                 is_preview: false,
+                is_closable: true,
             }],
             right_segments: vec![TabBarSegment {
                 id: Some(WidgetId::new("seg:0")),

@@ -125,6 +125,7 @@ pub mod modal_stack;
 // runners (in `quadraui::tui::run`, `quadraui::gtk::run`) drive against.
 // See `docs/BACKEND_SETUP_AUDIT.md` (#260) for design rationale.
 pub mod runner;
+pub mod shell_adapter;
 
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
@@ -1031,18 +1032,21 @@ mod tests {
                     is_active: true,
                     is_dirty: false,
                     is_preview: false,
+                    is_closable: true,
                 },
                 TabItem {
                     label: " 2: lib.rs ".to_string(),
                     is_active: false,
                     is_dirty: true,
                     is_preview: false,
+                    is_closable: true,
                 },
                 TabItem {
                     label: " 3: render.rs ".to_string(),
                     is_active: false,
                     is_dirty: false,
                     is_preview: true,
+                    is_closable: true,
                 },
             ],
             scroll_offset: 0,
@@ -3867,6 +3871,7 @@ mod tests {
             is_active,
             is_dirty: false,
             is_preview: false,
+            is_closable: true,
         }
     }
 

@@ -45,10 +45,11 @@ const TAB_OUTER_GAP: f64 = 1.0;
 /// `Some(i)` the `i`-th tab gets a rounded hover background behind
 /// its close glyph. The primitive itself carries no mouse state.
 ///
-/// Returns hit regions in **bar-local coordinates** (relative to
-/// `x_offset` = 0). Callers that need window-absolute click positions
-/// must add `x_offset` to the returned `slot_positions`,
-/// `close_bounds`, and `right_segment_bounds` fields.
+/// Returns hit regions in **target-surface (absolute) coordinates** —
+/// the same coordinate space as raw click `x` values. `x_offset` is
+/// applied internally, so callers compare click positions directly
+/// against the returned `slot_positions`, `close_bounds`, and
+/// `right_segment_bounds` without any further adjustment.
 ///
 /// # Visual contract
 ///
@@ -92,17 +93,13 @@ pub fn draw_tab_bar(
     italic_font.set_style(pango::Style::Italic);
 
     // ── Pre-measure close glyph ─────────────────────────────────────
+    // Measure the × glyph width once; individual tabs use it conditionally
+    // based on `bar.show_tab_close && tab.is_closable`.
     let close_glyph_w = if bar.show_tab_close {
         pango_layout.set_font_description(Some(&normal_font));
         pango_layout.set_text("×");
         let (w, _) = pango_layout.pixel_size();
         w as f64
-    } else {
-        0.0
-    };
-
-    let close_extra = if bar.show_tab_close {
-        tab_inner_gap + close_glyph_w
     } else {
         0.0
     };
@@ -125,9 +122,20 @@ pub fn draw_tab_bar(
 
     let measure_tab = |i: usize| -> TabMeasure {
         let name_w = tab_name_widths[i] as f32;
-        let total =
-            tab_pad as f32 + name_w + close_extra as f32 + tab_pad as f32 + tab_outer_gap as f32;
-        let close_w = if bar.show_tab_close {
+        // Per-tab closability: only reserve space for the × glyph when both
+        // `show_tab_close` (bar-level) and `is_closable` (tab-level) are set.
+        let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+        let tab_close_extra = if has_close {
+            tab_inner_gap + close_glyph_w
+        } else {
+            0.0
+        };
+        let total = tab_pad as f32
+            + name_w
+            + tab_close_extra as f32
+            + tab_pad as f32
+            + tab_outer_gap as f32;
+        let close_w = if has_close {
             (tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap) as f32
         } else {
             0.0
@@ -194,7 +202,9 @@ pub fn draw_tab_bar(
         cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
         pcfn::show_layout(cr, pango_layout);
 
-        if bar.show_tab_close {
+        // Paint the close glyph only when both the bar-level flag and the
+        // per-tab `is_closable` flag are set — matching the measurement above.
+        if bar.show_tab_close && tab.is_closable {
             if let Some(cb) = vt.close_bounds {
                 let close_x = cb.x as f64 + tab_inner_gap;
                 let is_close_hovered = hovered_close_tab == Some(vt.tab_idx);
@@ -295,7 +305,16 @@ pub fn draw_tab_bar(
 
     let correct_scroll_offset = if let Some(active) = active_idx {
         let tab_slot_widths: Vec<f64> = (0..bar.tabs.len())
-            .map(|i| tab_name_widths[i] + tab_pad * 2.0 + close_extra + tab_outer_gap)
+            .map(|i| {
+                // Use per-tab close_extra to match the measurement in measure_tab.
+                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+                let per_tab_close_extra = if has_close {
+                    tab_inner_gap + close_glyph_w
+                } else {
+                    0.0
+                };
+                tab_name_widths[i] + tab_pad * 2.0 + per_tab_close_extra + tab_outer_gap
+            })
             .collect();
         TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
             tab_slot_widths[i] as usize
@@ -381,6 +400,7 @@ mod tests {
                 is_active: true,
                 is_dirty: false,
                 is_preview: false,
+                is_closable: true,
             }],
             scroll_offset: 0,
             right_segments: vec![TabBarSegment {

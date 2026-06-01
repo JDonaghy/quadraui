@@ -118,6 +118,7 @@ pub fn build_tab_bar(state: &AppState) -> TabBar {
             is_active: i == state.active_tab,
             is_dirty: false,
             is_preview: false,
+            is_closable: true,
         })
         .collect();
     TabBar {
