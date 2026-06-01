@@ -103,7 +103,7 @@ impl BottomPanelDemo {
             BottomPanelTab {
                 id: "bp:terminal".into(),
                 label: "TERMINAL".into(),
-                closable: false,
+                closable: true,
                 badge: None,
                 content: Box::new(TerminalContent {
                     lines: vec!["echo hello".into()],

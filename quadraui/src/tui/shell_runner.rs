@@ -136,6 +136,12 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             {
                 let bp_ev = ctrl_cell.borrow_mut().handle_click(position.x, position.y);
                 if let Some(bp_ev) = bp_ev {
+                    // Auto-hide the panel once its last tab is closed.
+                    if matches!(bp_ev, BottomPanelEvent::TabClosed(_))
+                        && ctrl_cell.borrow().tabs().is_empty()
+                    {
+                        self.shell.hide_bottom_panel();
+                    }
                     self.app.on_bottom_panel_event(&bp_ev);
                     return Reaction::Redraw;
                 }

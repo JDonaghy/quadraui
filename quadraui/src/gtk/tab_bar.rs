@@ -315,6 +315,24 @@ pub fn draw_tab_bar(
     pango_layout.set_font_description(Some(&saved_font));
 
     let mut hits = tab_bar_layout_to_hits(&layout, bar);
+    // `tab_bar_layout_to_hits` yields bar-relative positions, but the
+    // `TabBarHits` contract is target-surface coordinates (matching the TUI
+    // rasteriser and the painted glyphs above, which all add `x_offset`).
+    // Shift every hit range so consumers can hit-test against raw click x.
+    for sp in &mut hits.slot_positions {
+        if *sp != (0.0, 0.0) {
+            sp.0 += x_offset;
+            sp.1 += x_offset;
+        }
+    }
+    for cb in hits.close_bounds.iter_mut().flatten() {
+        cb.0 += x_offset;
+        cb.1 += x_offset;
+    }
+    for rb in &mut hits.right_segment_bounds {
+        rb.0 += x_offset;
+        rb.1 += x_offset;
+    }
     hits.correct_scroll_offset = correct_scroll_offset;
     hits.available_cols = available_cols;
     hits
