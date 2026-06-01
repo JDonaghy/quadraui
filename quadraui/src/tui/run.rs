@@ -8,14 +8,25 @@
 //! - Best-effort kitty keyboard-protocol push (REPORT_ALL_KEYS_AS_ESCAPE_CODES
 //!   so Ctrl+Shift+L is unambiguous from Ctrl+L).
 //! - `Terminal::new` + `TuiBackend` construction.
-//! - Frame loop: `terminal.draw(|f| backend.enter_frame_scope(f, |b|
-//!   app.render(b)))`.
-//! - Event drain via [`crate::Backend::wait_events`].
+//! - Frame loop: [`render_frame`] (`terminal.draw(|f|
+//!   backend.enter_frame_scope(f, |b| app.render(b)))`).
+//! - Event drain via [`crate::Backend::wait_events`], dispatched through
+//!   [`dispatch_event`].
 //! - [`Reaction`] dispatch (Continue / Redraw / Exit).
 //!
 //! The app implements [`crate::AppLogic`] and calls
 //! [`run`] with its instance. See `examples/tui_app.rs` for an
 //! end-to-end usage.
+//!
+//! ## Shared with the headless test driver
+//!
+//! [`render_frame`] and [`dispatch_event`] are `pub(crate)` so the
+//! in-process [`crate::tui::testing::TuiDriver`] renders + dispatches
+//! through the *exact same* code as the live runner. The driver swaps
+//! `CrosstermBackend` for ratatui's `TestBackend` and supplies scripted
+//! events instead of polling crossterm — but the frame paint and the
+//! event pre-processing (text selection, Ctrl-C copy) cannot drift,
+//! because there is only one implementation of each.
 
 use std::io;
 use std::time::Duration;
@@ -116,90 +127,17 @@ fn run_inner<A: AppLogic>(
     let mut needs_redraw = true;
     loop {
         if needs_redraw {
-            let size = terminal.size()?;
-            backend.begin_frame(crate::Viewport::new(
-                size.width as f32,
-                size.height as f32,
-                1.0,
-            ));
-            terminal.draw(|frame| {
-                backend.enter_frame_scope(frame, |b| {
-                    // TUI is single-area; always pass the app's
-                    // default `AreaId`. Multi-area runners (GTK) pass
-                    // the AreaId for whichever surface is repainting.
-                    app.render(b, A::AreaId::default());
-                });
-                // After app.render: overlay selection highlight on the
-                // rendered buffer. Done outside enter_frame_scope so the
-                // closure lifetime doesn't conflict with the frame borrow.
-                backend.apply_selection_highlight(frame.buffer_mut());
-            })?;
-            backend.end_frame();
+            render_frame(terminal, backend, app)?;
             needs_redraw = false;
         }
 
         // Drain events. `wait_events` blocks for up to POLL_TIMEOUT.
         let events = backend.wait_events(POLL_TIMEOUT);
         for event in events {
-            // ── Text-selection event pre-processing ────────────────────
-            // These are handled before the app sees the event so the
-            // runner can update backend state and intercept Ctrl-C.
-            match &event {
-                // Update active selection while dragging.
-                UiEvent::TextSelectionChanged {
-                    region,
-                    anchor,
-                    focus,
-                } => {
-                    backend.set_active_text_selection(region.clone(), *anchor, *focus);
-                    needs_redraw = true;
-                }
-                // Clear the displayed selection highlight on any mouse-down.
-                // Use `clear_selection_display` rather than
-                // `clear_text_selection` so we don't cancel the
-                // `TextSelection` drag that `apply_dispatch` just started
-                // in `wait_events` for this very event.
-                UiEvent::MouseDown { .. } => {
-                    backend.clear_selection_display();
-                }
-                // Ctrl-C (any case, any additional modifiers) with an
-                // active selection → copy to clipboard and notify the app
-                // via TextCopied so it can show confirmation feedback.
-                // Accepts 'C' as well as 'c' (CapsLock), and does not
-                // require shift/alt/cmd to be false (some terminals tag
-                // Ctrl-C with unexpected modifier bits).
-                UiEvent::KeyPressed {
-                    key: Key::Char('c') | Key::Char('C'),
-                    modifiers,
-                    ..
-                } if modifiers.ctrl
-                    && !modifiers.alt
-                    && !modifiers.cmd
-                    && backend.active_text_selection().is_some() =>
-                {
-                    let text = backend.cached_selection_text();
-                    backend.services().clipboard().write_text(&text);
-                    backend.clear_text_selection();
-                    // Notify the app via TextCopied so it can show a
-                    // copy-confirmation badge. We use a dedicated event
-                    // rather than ClipboardPaste because ClipboardPaste
-                    // is routed to the focused text input ("insert this
-                    // text"), which is the opposite of what we want here.
-                    // Do NOT forward the original Ctrl-C — that would
-                    // trigger quit/copy-all/etc in app handlers.
-                    if app.handle(UiEvent::TextCopied(text), backend) == Reaction::Exit {
-                        return Ok(());
-                    }
-                    needs_redraw = true;
-                    continue;
-                }
-                _ => {}
-            }
-            // ── Normal app dispatch ─────────────────────────────────────
-            match app.handle(event, backend) {
-                Reaction::Continue => {}
-                Reaction::Redraw => needs_redraw = true,
-                Reaction::Exit => return Ok(()),
+            match dispatch_event(event, backend, app) {
+                EventOutcome::Continue => {}
+                EventOutcome::Redraw => needs_redraw = true,
+                EventOutcome::Exit => return Ok(()),
             }
         }
 
@@ -211,6 +149,131 @@ fn run_inner<A: AppLogic>(
             Reaction::Redraw => needs_redraw = true,
             Reaction::Exit => return Ok(()),
         }
+    }
+}
+
+/// Render one frame.
+///
+/// Syncs the viewport from the terminal size, runs `app.render` inside
+/// the backend's frame scope, overlays the active text-selection
+/// highlight, and finalises the frame. Generic over the ratatui backend
+/// `B` so the live runner (`CrosstermBackend`) and the headless test
+/// driver (`TestBackend`) share one paint path.
+pub(crate) fn render_frame<A, B>(
+    terminal: &mut Terminal<B>,
+    backend: &mut TuiBackend,
+    app: &A,
+) -> io::Result<()>
+where
+    A: AppLogic,
+    B: ratatui::backend::Backend,
+{
+    let size = terminal.size()?;
+    backend.begin_frame(crate::Viewport::new(
+        size.width as f32,
+        size.height as f32,
+        1.0,
+    ));
+    terminal.draw(|frame| {
+        backend.enter_frame_scope(frame, |b| {
+            // TUI is single-area; always pass the app's default
+            // `AreaId`. Multi-area runners (GTK) pass the AreaId for
+            // whichever surface is repainting.
+            app.render(b, A::AreaId::default());
+        });
+        // After app.render: overlay selection highlight on the rendered
+        // buffer. Done outside enter_frame_scope so the closure lifetime
+        // doesn't conflict with the frame borrow.
+        backend.apply_selection_highlight(frame.buffer_mut());
+    })?;
+    backend.end_frame();
+    Ok(())
+}
+
+/// What the frame loop should do after [`dispatch_event`] handles one
+/// event.
+pub(crate) enum EventOutcome {
+    /// No redraw needed; keep looping.
+    Continue,
+    /// State changed; schedule a redraw before the next event drain.
+    Redraw,
+    /// The app requested exit.
+    Exit,
+}
+
+/// Dispatch one [`UiEvent`] through the app, applying the runner's
+/// built-in pre-processing first.
+///
+/// Pre-processing handled here (before — or instead of — the app's
+/// `handle`):
+/// - [`UiEvent::TextSelectionChanged`]: update the backend's active
+///   selection, then still forward the event to the app and force a
+///   redraw.
+/// - [`UiEvent::MouseDown`]: clear the displayed selection highlight,
+///   then forward.
+/// - Ctrl-C with an active selection: copy the selection to the
+///   clipboard and emit [`UiEvent::TextCopied`] to the app (so it can
+///   show copy-confirmation UI) **instead of** forwarding the Ctrl-C —
+///   forwarding it could trigger quit/copy-all handlers, and
+///   `ClipboardPaste` would wrongly insert text.
+pub(crate) fn dispatch_event<A: AppLogic>(
+    event: UiEvent,
+    backend: &mut TuiBackend,
+    app: &mut A,
+) -> EventOutcome {
+    let mut force_redraw = false;
+    match &event {
+        // Update active selection while dragging.
+        UiEvent::TextSelectionChanged {
+            region,
+            anchor,
+            focus,
+        } => {
+            backend.set_active_text_selection(region.clone(), *anchor, *focus);
+            force_redraw = true;
+        }
+        // Clear the displayed selection highlight on any mouse-down. Use
+        // `clear_selection_display` rather than `clear_text_selection`
+        // so we don't cancel the `TextSelection` drag that `wait_events`
+        // may have just started for this very event.
+        UiEvent::MouseDown { .. } => {
+            backend.clear_selection_display();
+        }
+        // Ctrl-C (any case, any extra modifiers) with an active
+        // selection → copy to clipboard and notify the app via
+        // TextCopied. Accepts 'C' (CapsLock) and tolerates stray
+        // modifier bits some terminals attach to Ctrl-C.
+        UiEvent::KeyPressed {
+            key: Key::Char('c') | Key::Char('C'),
+            modifiers,
+            ..
+        } if modifiers.ctrl
+            && !modifiers.alt
+            && !modifiers.cmd
+            && backend.active_text_selection().is_some() =>
+        {
+            let text = backend.cached_selection_text();
+            backend.services().clipboard().write_text(&text);
+            backend.clear_text_selection();
+            return match app.handle(UiEvent::TextCopied(text), backend) {
+                Reaction::Exit => EventOutcome::Exit,
+                _ => EventOutcome::Redraw,
+            };
+        }
+        _ => {}
+    }
+
+    // ── Normal app dispatch ─────────────────────────────────────
+    match app.handle(event, backend) {
+        Reaction::Continue => {
+            if force_redraw {
+                EventOutcome::Redraw
+            } else {
+                EventOutcome::Continue
+            }
+        }
+        Reaction::Redraw => EventOutcome::Redraw,
+        Reaction::Exit => EventOutcome::Exit,
     }
 }
 

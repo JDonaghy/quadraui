@@ -35,14 +35,50 @@ no per-issue restatement needed.
 | **Coordinate drift** between paint and click | Paint/click round-trip — paint into the backend's headless surface, find a painted glyph, hit_test that exact coordinate, assert the hit identifies the painted element. | `tui/<name>.rs::tests` and `gtk/<name>.rs::tests`. |
 | **Consumer-side click-routing drift** | Consumer-state round-trip — paint, simulate the consumer's click handler, assert the host's state mutation matches the painted UI. | Adjacent to the consumer pattern. Template: `tui::multi_section_view::tests`. |
 | **State-derived paint geometry** | Painted-indicator test — set state to a known value, paint, find the indicator in the buffer/surface, assert it lands at the position the formula predicts. | Same module as the rasteriser. |
+| **Example / app-wiring drift** | Example-driver round-trip — drive the *whole* `AppLogic` through the headless driver, script real `UiEvent`s, assert on the re-rendered screen. Catches mis-routed handlers, missing `Reaction::Redraw`, stale state — none of which (1)–(3) can see. | `tests/tui_example_driver.rs`. |
 
 Every primitive needs (1). Primitives with consumer-pattern recipes
-need (2). Primitives with state-derived indicators need (3).
+need (2). Primitives with state-derived indicators need (3). Every
+runnable example should have at least one (4) covering its core
+interaction.
 
 **Each test must be empirically verified by mutation.** Break the
 contract (zero out the offset, swap a +/-, paint at the wrong y),
 observe at least one test fail, restore. A green test that doesn't
 catch its bug class is theatre.
+
+## Example-driver tests (end-to-end, in-process)
+
+`quadraui::tui::testing::TuiDriver` drives a whole `AppLogic` impl — the
+same type the `tui_*` examples instantiate — through the real
+event → `handle` → `render` path, against ratatui's in-memory
+`TestBackend`. No TTY, no pty: deterministic and `cargo test`-native.
+
+```rust
+let mut d = TuiDriver::new(PipelineApp::new(), 100, 30);
+let (x, y) = d.find("Go").unwrap();   // locate the painted action button
+d.click(x, y);                         // MouseDown in cell coords — no escape math
+assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test→handle→render
+```
+
+- **Why it's distinct from the round-trips above.** Those test one
+  `draw_*` fn on a hand-built struct; this tests the example's wiring.
+- **No drift from production.** `render`/`dispatch` call the same
+  `tui::run::render_frame` / `dispatch_event` the live runner uses, so
+  the test path renders + pre-processes events (text selection, Ctrl-C)
+  identically to `tui::run`.
+- **Mouse is a `UiEvent::MouseDown` in backend coordinates** — no SGR
+  escape-sequence math, the ergonomic win over a pty runner for
+  click-heavy primitives.
+- **Generalizes across backends.** Because `AppLogic` is
+  backend-neutral, a future `GtkDriver` can feed identical scripted
+  events to the identical app and snapshot the Cairo surface — true
+  cross-backend parity from one event script.
+
+**Limitation:** the driver renders into a `TestBackend` buffer, so it
+does *not* exercise real ANSI/escape emission — terminal-protocol bugs
+(raw-mode setup, escape parsing, SGR mouse decoding; e.g. #293) are out
+of scope and need a pty-based smoke test instead.
 
 ## Backend testability requirement
 
