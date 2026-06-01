@@ -165,11 +165,12 @@ fn draw_side_by_side(
             cr.set_source_rgb(left_fg.0, left_fg.1, left_fg.2);
             pango_layout.set_text(text);
             let (_, text_h) = pango_layout.pixel_size();
-            cr.move_to(x + 4.0, row_y + (line_height - text_h as f64) / 2.0);
-            // Clip to left pane.
+            // Clip to left pane. NOTE: cr.clip() clears the current path
+            // (including the current point), so move_to MUST come after clip.
             cr.save().ok();
             cr.rectangle(x, row_y, left_w, line_height);
             cr.clip();
+            cr.move_to(x + 4.0, row_y + (line_height - text_h as f64) / 2.0);
             pcfn::show_layout(cr, pango_layout);
             cr.restore().ok();
         }
@@ -179,13 +180,13 @@ fn draw_side_by_side(
             cr.set_source_rgb(right_fg.0, right_fg.1, right_fg.2);
             pango_layout.set_text(text);
             let (_, text_h) = pango_layout.pixel_size();
+            cr.save().ok();
+            cr.rectangle(divider_x + divider_px, row_y, right_w, line_height);
+            cr.clip();
             cr.move_to(
                 divider_x + divider_px + 4.0,
                 row_y + (line_height - text_h as f64) / 2.0,
             );
-            cr.save().ok();
-            cr.rectangle(divider_x + divider_px, row_y, right_w, line_height);
-            cr.clip();
             pcfn::show_layout(cr, pango_layout);
             cr.restore().ok();
         }
@@ -256,10 +257,10 @@ fn draw_unified(
                 cr.set_source_rgb(fg.0, fg.1, fg.2);
                 pango_layout.set_text(header_text);
                 let (_, text_h) = pango_layout.pixel_size();
-                cr.move_to(x + 2.0, row_y + (line_height - text_h as f64) / 2.0);
                 cr.save().ok();
                 cr.rectangle(x, row_y, w, line_height);
                 cr.clip();
+                cr.move_to(x + 2.0, row_y + (line_height - text_h as f64) / 2.0);
                 pcfn::show_layout(cr, pango_layout);
                 cr.restore().ok();
             }
@@ -302,10 +303,10 @@ fn draw_unified(
                 pango_layout.set_text(text);
                 let (_, text_h2) = pango_layout.pixel_size();
                 let text_x = x + 2.0 + pw as f64 + 4.0;
-                cr.move_to(text_x, row_y + (line_height - text_h2 as f64) / 2.0);
                 cr.save().ok();
                 cr.rectangle(text_x, row_y, (w - (text_x - x)).max(0.0), line_height);
                 cr.clip();
+                cr.move_to(text_x, row_y + (line_height - text_h2 as f64) / 2.0);
                 pcfn::show_layout(cr, pango_layout);
                 cr.restore().ok();
             }
