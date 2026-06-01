@@ -178,12 +178,16 @@ fn draw_unified(buf: &mut Buffer, area: Rect, view: &DiffView, theme: &Theme) ->
 
     let mut lines: Vec<UnifiedLine<'_>> = Vec::new();
     for hunk in &view.hunks {
+        // Unified-diff header line counts: `-n` is the number of lines
+        // sourced from the LEFT file (rows where `left.is_some()`), `+m`
+        // is the number sourced from the RIGHT (`right.is_some()`).
+        // These differ from `hunk.rows.len()` whenever a change run
+        // produces padding rows (unequal removed/added counts).
+        let left_count = hunk.rows.iter().filter(|r| r.left.is_some()).count();
+        let right_count = hunk.rows.iter().filter(|r| r.right.is_some()).count();
         let header = format!(
             "@@ -{},{} +{},{} @@",
-            hunk.left_start,
-            hunk.rows.len(),
-            hunk.right_start,
-            hunk.rows.len()
+            hunk.left_start, left_count, hunk.right_start, right_count
         );
         lines.push(UnifiedLine::Header(header));
         for row in &hunk.rows {
@@ -346,6 +350,8 @@ mod tests {
     fn make_view(mode: DiffMode) -> DiffView {
         DiffView {
             id: WidgetId::new("test"),
+            left: String::new(),
+            right: String::new(),
             left_label: None,
             right_label: None,
             hunks: vec![
@@ -504,6 +510,65 @@ mod tests {
         assert!(
             row1.contains("delta"),
             "expected 'delta' on screen row 1 at max_offset={max_offset}, got: {row1:?}"
+        );
+    }
+
+    /// Regression guard for the unified `@@` header line counts. A hunk
+    /// with 2 removed + 1 added (one padding row) must emit
+    /// `@@ -L,2 +R,1 @@`, not `@@ -L,3 +R,3 @@`. The previous
+    /// implementation used `hunk.rows.len()` for both numbers, which
+    /// inflated both counts whenever padding rows were present.
+    #[test]
+    fn unified_header_counts_exclude_padding() {
+        let view = DiffView {
+            id: WidgetId::new("hdr"),
+            left: String::new(),
+            right: String::new(),
+            left_label: None,
+            right_label: None,
+            hunks: vec![crate::primitives::diff_view::DiffHunk {
+                left_start: 5,
+                right_start: 7,
+                rows: vec![
+                    // 2 removed + 1 added = 3 aligned rows (1 padding).
+                    DiffRow {
+                        left: Some("old1".into()),
+                        right: Some("new1".into()),
+                        kind: DiffRowKind::Changed,
+                    },
+                    DiffRow {
+                        left: Some("old2".into()),
+                        right: None,
+                        kind: DiffRowKind::Removed,
+                    },
+                    DiffRow {
+                        left: None,
+                        right: Some("new3".into()),
+                        kind: DiffRowKind::Added,
+                    },
+                ],
+            }],
+            mode: DiffMode::Unified,
+            editability: DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: DiffPane::Left,
+            has_focus: false,
+        };
+        // Left rows = 2 (Changed has left + Removed has left).
+        // Right rows = 2 (Changed has right + Added has right).
+        let area = Rect::new(0, 0, 40, 4);
+        let mut buf = Buffer::empty(area);
+        draw_diff_view(&mut buf, area, &view, &Theme::default());
+
+        let row0 = cell_row_str(&buf, 0, area.width);
+        assert!(
+            row0.contains("@@ -5,2 +7,2 @@"),
+            "expected header '@@ -5,2 +7,2 @@', got: {row0:?}"
+        );
+        // The buggy header would have read "@@ -5,3 +7,3 @@".
+        assert!(
+            !row0.contains("@@ -5,3 +7,3 @@"),
+            "header still reports raw row count: {row0:?}"
         );
     }
 }

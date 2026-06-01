@@ -17,11 +17,13 @@
 //!
 //! # Editability
 //!
-//! `DiffEditability::RightEditable` enables the right pane on TUI:
-//! the backend emits `DiffViewEvent::RightChanged` when the user edits
-//! the right pane content. Full text-input machinery (cursor, insertion,
-//! deletion) is a follow-up story; on GTK v1 the right pane remains
-//! read-only regardless of this setting.
+//! `DiffEditability::RightEditable` signals to consumers that the right
+//! pane should accept edits on TUI. Events in this architecture flow
+//! from `AppLogic::handle`, not from rasterisers — the app processes key
+//! input, mutates `DiffView::right`, recomputes hunks, and emits
+//! `DiffViewEvent::RightChanged` itself. Full text-input machinery
+//! (cursor, insertion, deletion) is a follow-up story; on GTK v1 the
+//! right pane remains read-only regardless of this setting.
 //!
 //! # Distinct from `Editor` with `diff_status`
 //!
@@ -86,17 +88,22 @@ pub enum DiffMode {
 
 /// Whether the right pane of the diff is editable.
 ///
-/// `RightEditable` activates TUI right-pane editing; the TUI backend will
-/// emit `DiffViewEvent::RightChanged` when the content changes.  Full
-/// text-input machinery (cursor, insertion, deletion) ships in a follow-up.
-/// On GTK v1 this setting is accepted but the right pane renders read-only.
+/// `RightEditable` signals to consumers that the right pane should accept
+/// edits on TUI. Events in this architecture flow from `AppLogic::handle`,
+/// not from rasterisers — the app processes key input and emits
+/// `DiffViewEvent::RightChanged` itself after mutating the right text.
+/// Full text-input machinery (cursor, insertion, deletion) ships in a
+/// follow-up. On GTK v1 this setting is accepted but the right pane
+/// renders read-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DiffEditability {
     /// Both panes are read-only (default).
     #[default]
     ReadOnly,
-    /// Right pane accepts edits on TUI (emits `DiffViewEvent::RightChanged`).
-    /// GTK v1 renders as read-only; full editing machinery is a follow-up.
+    /// Right pane accepts edits on TUI; the app emits
+    /// `DiffViewEvent::RightChanged` from `AppLogic::handle` after
+    /// processing each edit key. GTK v1 renders as read-only; full
+    /// editing machinery is a follow-up.
     RightEditable,
 }
 
@@ -123,9 +130,11 @@ pub enum DiffViewEvent {
     PaneSwitched { pane: DiffPane },
     /// Text was copied from the view.
     Copied { text: String },
-    /// The right pane content changed (emitted only when
-    /// [`DiffEditability::RightEditable`] is set and the TUI backend
-    /// processes an edit key). The payload is the new right-pane text.
+    /// The right pane content changed. The app emits this from
+    /// `AppLogic::handle` after processing an edit key when
+    /// [`DiffEditability::RightEditable`] is set; the payload is the new
+    /// right-pane text (the same value the app should also write back
+    /// into [`DiffView::right`]).
     RightChanged(String),
 }
 
@@ -160,12 +169,23 @@ pub struct DiffViewLayout {
 pub struct DiffView {
     /// Stable identifier for this widget instance.
     pub id: WidgetId,
+    /// Original (left-side) text. Source for `compute_hunks`.
+    ///
+    /// Carried alongside the pre-computed `hunks` so the view is the
+    /// canonical single-struct state: an edited-right consumer can
+    /// reconstruct the new right buffer and re-diff against `left`
+    /// without threading extra strings out-of-band, and a serialised
+    /// `DiffView` can re-compute `hunks` if the cached copy is stale.
+    pub left: String,
+    /// Proposed (right-side) text. Source for `compute_hunks`. Mutated
+    /// by the app when `editability == RightEditable`.
+    pub right: String,
     /// Optional label shown above the left pane (e.g. file path / branch name).
     pub left_label: Option<String>,
     /// Optional label shown above the right pane.
     pub right_label: Option<String>,
     /// Pre-computed diff hunks. Set by calling
-    /// `quadraui::diff::compute_hunks(left, right)`.
+    /// `quadraui::diff::compute_hunks(&self.left, &self.right)`.
     pub hunks: Vec<DiffHunk>,
     /// Display mode — side-by-side (default) or unified.
     pub mode: DiffMode,
@@ -202,6 +222,8 @@ mod tests {
     fn diff_view_field_defaults() {
         let view = DiffView {
             id: WidgetId::new("test"),
+            left: String::new(),
+            right: String::new(),
             left_label: None,
             right_label: None,
             hunks: vec![],
@@ -235,6 +257,8 @@ mod tests {
         };
         let view = DiffView {
             id: WidgetId::new("t"),
+            left: String::new(),
+            right: String::new(),
             left_label: None,
             right_label: None,
             hunks: vec![make_hunk(3), make_hunk(5)],
@@ -245,5 +269,33 @@ mod tests {
             has_focus: false,
         };
         assert_eq!(view.total_rows(), 8);
+    }
+
+    /// The acceptance-criterion construction from issue #294 must compile
+    /// and behave: the user writes `left` + `right` strings, calls
+    /// `compute_hunks`, and the resulting struct carries everything.
+    #[test]
+    fn acceptance_criterion_constructor_compiles_and_runs() {
+        use crate::diff::compute_hunks;
+        let left = "a\nb\n";
+        let right = "a\nc\n";
+        let view = DiffView {
+            id: WidgetId::new("acceptance"),
+            left: left.into(),
+            right: right.into(),
+            left_label: None,
+            right_label: None,
+            hunks: compute_hunks(left, right),
+            mode: DiffMode::SideBySide,
+            editability: DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: DiffPane::Left,
+            has_focus: false,
+        };
+        // Sanity: hunks were computed and the source strings round-trip
+        // through the struct without modification.
+        assert!(!view.hunks.is_empty(), "expected at least one hunk");
+        assert_eq!(view.left, "a\nb\n");
+        assert_eq!(view.right, "a\nc\n");
     }
 }

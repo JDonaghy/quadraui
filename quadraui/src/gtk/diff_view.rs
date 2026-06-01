@@ -223,12 +223,16 @@ fn draw_unified(
 
     let mut lines: Vec<UnifiedLine<'_>> = Vec::new();
     for hunk in &view.hunks {
+        // Unified-diff header line counts: `-n` is the number of lines
+        // sourced from the LEFT file (rows where `left.is_some()`), `+m`
+        // is the number sourced from the RIGHT (`right.is_some()`).
+        // These differ from `hunk.rows.len()` whenever a change run
+        // produces padding rows (unequal removed/added counts).
+        let left_count = hunk.rows.iter().filter(|r| r.left.is_some()).count();
+        let right_count = hunk.rows.iter().filter(|r| r.right.is_some()).count();
         let header = format!(
             "@@ -{},{} +{},{} @@",
-            hunk.left_start,
-            hunk.rows.len(),
-            hunk.right_start,
-            hunk.rows.len()
+            hunk.left_start, left_count, hunk.right_start, right_count
         );
         lines.push(UnifiedLine::Header(header));
         for row in &hunk.rows {
