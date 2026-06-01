@@ -17,8 +17,11 @@
 //!
 //! # Editability
 //!
-//! `DiffEditability::RightEditable` is defined in the API but renders
-//! as read-only on GTK v1. Full in-widget editing is a follow-up story.
+//! `DiffEditability::RightEditable` enables the right pane on TUI:
+//! the backend emits `DiffViewEvent::RightChanged` when the user edits
+//! the right pane content. Full text-input machinery (cursor, insertion,
+//! deletion) is a follow-up story; on GTK v1 the right pane remains
+//! read-only regardless of this setting.
 //!
 //! # Distinct from `Editor` with `diff_status`
 //!
@@ -83,15 +86,17 @@ pub enum DiffMode {
 
 /// Whether the right pane of the diff is editable.
 ///
-/// `RightEditable` is defined here for future use but all v1 backends
-/// render it as read-only — full in-widget editing is a follow-up story.
+/// `RightEditable` activates TUI right-pane editing; the TUI backend will
+/// emit `DiffViewEvent::RightChanged` when the content changes.  Full
+/// text-input machinery (cursor, insertion, deletion) ships in a follow-up.
+/// On GTK v1 this setting is accepted but the right pane renders read-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DiffEditability {
     /// Both panes are read-only (default).
     #[default]
     ReadOnly,
-    /// Right pane accepts edits (reserved for v2; currently rendered
-    /// read-only by all backends).
+    /// Right pane accepts edits on TUI (emits `DiffViewEvent::RightChanged`).
+    /// GTK v1 renders as read-only; full editing machinery is a follow-up.
     RightEditable,
 }
 
@@ -118,6 +123,10 @@ pub enum DiffViewEvent {
     PaneSwitched { pane: DiffPane },
     /// Text was copied from the view.
     Copied { text: String },
+    /// The right pane content changed (emitted only when
+    /// [`DiffEditability::RightEditable`] is set and the TUI backend
+    /// processes an edit key). The payload is the new right-pane text.
+    RightChanged(String),
 }
 
 /// Layout information returned by `draw_diff_view`.
@@ -127,7 +136,18 @@ pub enum DiffViewEvent {
 pub struct DiffViewLayout {
     /// Number of content rows that fit on screen (after the optional header row).
     pub visible_rows: usize,
-    /// Total number of display rows across all hunks.
+    /// Total number of display lines the backend used for rendering.
+    ///
+    /// In **side-by-side** mode this equals `DiffView::total_rows()` (one
+    /// display line per `DiffRow`).
+    ///
+    /// In **unified** mode each hunk contributes an extra `@@ … @@` header
+    /// line, so `total_rows = view.total_rows() + hunk_count`.  Always use
+    /// this field — not `DiffView::total_rows()` — when clamping scroll:
+    /// ```ignore
+    /// view.scroll_offset = view.scroll_offset
+    ///     .min(layout.total_rows.saturating_sub(layout.visible_rows));
+    /// ```
     pub total_rows: usize,
 }
 
@@ -156,6 +176,9 @@ pub struct DiffView {
     /// Which pane currently has keyboard focus.
     pub focused_pane: DiffPane,
     /// Whether the widget as a whole has keyboard focus.
+    ///
+    /// **Currently unused by all backends.** Reserved for a future focus
+    /// border; setting this to `true` produces no visual change in v1.
     pub has_focus: bool,
 }
 

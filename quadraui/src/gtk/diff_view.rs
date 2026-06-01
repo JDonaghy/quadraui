@@ -57,9 +57,7 @@ pub fn draw_diff_view(
         DiffMode::SideBySide => {
             draw_side_by_side(cr, layout, x, y, w, h, view, theme, line_height, total_rows)
         }
-        DiffMode::Unified => {
-            draw_unified(cr, layout, x, y, w, h, view, theme, line_height, total_rows)
-        }
+        DiffMode::Unified => draw_unified(cr, layout, x, y, w, h, view, theme, line_height),
     }
 }
 
@@ -211,7 +209,6 @@ fn draw_unified(
     view: &DiffView,
     theme: &Theme,
     line_height: f64,
-    total_rows: usize,
 ) -> DiffViewLayout {
     // Fill background.
     set_source(cr, theme.background);
@@ -313,9 +310,11 @@ fn draw_unified(
         }
     }
 
+    // Return total_display (content rows + one @@ header per hunk) so
+    // callers can clamp scroll_offset correctly in unified mode.
     DiffViewLayout {
         visible_rows,
-        total_rows,
+        total_rows: total_display,
     }
 }
 

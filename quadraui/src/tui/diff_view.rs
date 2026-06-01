@@ -53,7 +53,7 @@ pub fn draw_diff_view(
 
     match view.mode {
         DiffMode::SideBySide => draw_side_by_side(buf, area, view, theme, total_rows),
-        DiffMode::Unified => draw_unified(buf, area, view, theme, total_rows),
+        DiffMode::Unified => draw_unified(buf, area, view, theme),
     }
 }
 
@@ -167,13 +167,7 @@ fn draw_side_by_side(
 
 // ── Unified ───────────────────────────────────────────────────────────────────
 
-fn draw_unified(
-    buf: &mut Buffer,
-    area: Rect,
-    view: &DiffView,
-    theme: &Theme,
-    total_rows: usize,
-) -> DiffViewLayout {
+fn draw_unified(buf: &mut Buffer, area: Rect, view: &DiffView, theme: &Theme) -> DiffViewLayout {
     // In unified mode every hunk contributes its rows plus a `@@` header line.
     // We build a flat list of "lines to display" (header or content).
     #[derive(Clone)]
@@ -267,9 +261,11 @@ fn draw_unified(
         }
     }
 
+    // Return total_display (content rows + one @@ header per hunk) so
+    // callers can clamp scroll_offset correctly in unified mode.
     DiffViewLayout {
         visible_rows,
-        total_rows,
+        total_rows: total_display,
     }
 }
 
@@ -329,5 +325,185 @@ fn draw_text_in(
             break;
         }
         set_cell(buf, x + col, y, ch, fg, bg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::diff_view::{DiffEditability, DiffHunk, DiffPane, DiffRow, DiffRowKind};
+    use crate::types::WidgetId;
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn cell_row_str(buf: &Buffer, y: u16, width: u16) -> String {
+        (0..width).map(|x| cell_char(buf, x, y)).collect()
+    }
+
+    /// Build a minimal `DiffView` with two hunks (2 rows each) in the given mode.
+    fn make_view(mode: DiffMode) -> DiffView {
+        DiffView {
+            id: WidgetId::new("test"),
+            left_label: None,
+            right_label: None,
+            hunks: vec![
+                DiffHunk {
+                    left_start: 1,
+                    right_start: 1,
+                    rows: vec![
+                        DiffRow {
+                            left: Some("alpha".into()),
+                            right: Some("ALPHA".into()),
+                            kind: DiffRowKind::Changed,
+                        },
+                        DiffRow {
+                            left: Some("beta".into()),
+                            right: Some("beta".into()),
+                            kind: DiffRowKind::Same,
+                        },
+                    ],
+                },
+                DiffHunk {
+                    left_start: 10,
+                    right_start: 10,
+                    rows: vec![
+                        DiffRow {
+                            left: Some("gamma".into()),
+                            right: None,
+                            kind: DiffRowKind::Removed,
+                        },
+                        DiffRow {
+                            left: None,
+                            right: Some("delta".into()),
+                            kind: DiffRowKind::Added,
+                        },
+                    ],
+                },
+            ],
+            mode,
+            editability: DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: DiffPane::Left,
+            has_focus: false,
+        }
+    }
+
+    // ── Zero-size guard ───────────────────────────────────────────────────────
+
+    /// Zero-width area must not panic and must return empty layout.
+    #[test]
+    fn zero_size_area_side_by_side_returns_empty_layout_without_panic() {
+        let buf_area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(buf_area);
+        let view = make_view(DiffMode::SideBySide);
+        let layout = draw_diff_view(&mut buf, Rect::new(0, 0, 0, 0), &view, &Theme::default());
+        assert_eq!(layout.visible_rows, 0);
+        assert_eq!(layout.total_rows, view.total_rows());
+    }
+
+    /// Zero-height area in unified mode must not panic and must return empty layout.
+    #[test]
+    fn zero_size_area_unified_returns_empty_layout_without_panic() {
+        let buf_area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(buf_area);
+        let view = make_view(DiffMode::Unified);
+        let layout = draw_diff_view(&mut buf, Rect::new(0, 0, 0, 0), &view, &Theme::default());
+        assert_eq!(layout.visible_rows, 0);
+        assert_eq!(layout.total_rows, view.total_rows());
+    }
+
+    // ── Side-by-side scroll ───────────────────────────────────────────────────
+
+    /// With `scroll_offset = 0`, the first row's left text starts on screen row 0.
+    #[test]
+    fn scroll_offset_zero_paints_first_row_at_top() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let view = make_view(DiffMode::SideBySide);
+        draw_diff_view(&mut buf, area, &view, &Theme::default());
+
+        // "alpha" should appear somewhere on row 0 (the left pane).
+        let row0 = cell_row_str(&buf, 0, area.width);
+        assert!(
+            row0.contains("alpha"),
+            "expected 'alpha' on row 0, got: {row0:?}"
+        );
+    }
+
+    /// With `scroll_offset = 1`, the second row's left text starts on screen row 0.
+    #[test]
+    fn scroll_offset_one_paints_second_row_at_top() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let mut view = make_view(DiffMode::SideBySide);
+        view.scroll_offset = 1;
+        draw_diff_view(&mut buf, area, &view, &Theme::default());
+
+        // Row 1 is "beta" — it should now be on screen row 0.
+        let row0 = cell_row_str(&buf, 0, area.width);
+        assert!(
+            row0.contains("beta"),
+            "expected 'beta' on row 0 at offset=1, got: {row0:?}"
+        );
+        // "alpha" (offset=0 row) must NOT appear.
+        assert!(
+            !row0.contains("alpha"),
+            "unexpected 'alpha' on row 0 at offset=1: {row0:?}"
+        );
+    }
+
+    // ── Unified mode ──────────────────────────────────────────────────────────
+
+    /// In unified mode, the `@@` header for the first hunk appears on screen row 0.
+    #[test]
+    fn unified_hunk_header_appears_before_first_row() {
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        let view = make_view(DiffMode::Unified);
+        draw_diff_view(&mut buf, area, &view, &Theme::default());
+
+        let row0 = cell_row_str(&buf, 0, area.width);
+        assert!(
+            row0.contains("@@"),
+            "expected '@@ header' on row 0 in unified mode, got: {row0:?}"
+        );
+    }
+
+    /// In unified mode, `layout.total_rows` counts hunk headers too, so
+    /// scrolling to the last offset exposes the final content row.
+    ///
+    /// This is the regression guard for review finding #1: `total_rows` was
+    /// previously `view.total_rows()` (content only) instead of
+    /// `total_display` (content + headers), making the last N rows
+    /// unreachable.
+    #[test]
+    fn unified_scroll_reaches_last_row() {
+        // 2 hunks × 2 rows = 4 content rows + 2 headers = 6 display lines.
+        // With visible_rows = 2, max valid offset = 6 - 2 = 4.
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        let view = make_view(DiffMode::Unified);
+
+        // First pass: capture the correct total from the layout.
+        let layout = draw_diff_view(&mut buf, area, &view, &Theme::default());
+        assert_eq!(layout.total_rows, 6, "2 hunks × 2 rows + 2 headers = 6");
+        assert_eq!(layout.visible_rows, 2);
+
+        // Scroll to the maximum valid offset and verify last content is visible.
+        let max_offset = layout.total_rows.saturating_sub(layout.visible_rows);
+        let mut buf2 = Buffer::empty(area);
+        let mut view2 = make_view(DiffMode::Unified);
+        view2.scroll_offset = max_offset;
+        draw_diff_view(&mut buf2, area, &view2, &Theme::default());
+
+        // The last display line is the "delta" Added row (row index 5).
+        // At offset = 4, screen row 1 should show "delta".
+        let row1 = cell_row_str(&buf2, 1, area.width);
+        assert!(
+            row1.contains("delta"),
+            "expected 'delta' on screen row 1 at max_offset={max_offset}, got: {row1:?}"
+        );
     }
 }
