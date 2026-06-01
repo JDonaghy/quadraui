@@ -2037,6 +2037,29 @@ impl Backend for GtkBackend {
             rect.height as f64,
         )
     }
+
+    fn draw_diff_view(
+        &mut self,
+        rect: QRect,
+        view: &crate::primitives::diff_view::DiffView,
+    ) -> crate::primitives::diff_view::DiffViewLayout {
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_diff_view called outside enter_frame_scope");
+        crate::gtk::draw_diff_view(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            view,
+            &theme,
+            line_height,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

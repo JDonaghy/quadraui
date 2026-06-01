@@ -1386,6 +1386,17 @@ impl Backend for MacBackend {
         }
     }
 
+    fn draw_diff_view(
+        &mut self,
+        _rect: Rect,
+        view: &crate::primitives::diff_view::DiffView,
+    ) -> crate::primitives::diff_view::DiffViewLayout {
+        crate::primitives::diff_view::DiffViewLayout {
+            visible_rows: 0,
+            total_rows: view.total_rows(),
+        }
+    }
+
     fn sidebar_panel_layout(
         &self,
         rect: Rect,

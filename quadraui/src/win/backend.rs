@@ -411,4 +411,12 @@ impl Backend for WinBackend {
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         todo!("DirectWrite sidebar-panel layout")
     }
+
+    fn draw_diff_view(
+        &mut self,
+        _rect: Rect,
+        _view: &crate::primitives::diff_view::DiffView,
+    ) -> crate::primitives::diff_view::DiffViewLayout {
+        todo!("Direct2D DiffView rasteriser")
+    }
 }
