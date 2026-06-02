@@ -369,14 +369,18 @@ shared Rust rasteriser pay for itself.
 - **D4 — Web metrics: pixel-ish, GTK-like. RESOLVED (2026-06-02).**
   `line_height()`/`char_width()` return CSS px; reuse shared `*Measure`
   helpers for layout. The `macos` backend proves the pixel-metric path.
+- **D5 — Frontend stack: vanilla TS + Web Components. RESOLVED (2026-06-02).**
+  No micro-framework for v0 — keeps the build trivial and dependency-free.
+  Revisit only if the per-primitive component set outgrows hand-rolled
+  custom elements. (Gates #324 / W5.)
+- **D6 — Theme bridge: ship serde `Theme`, resolve to CSS vars in the
+  browser. RESOLVED (2026-06-02).** The server sends the `Theme` struct
+  as-is; the frontend maps it to CSS custom properties. Keeps the server
+  backend-agnostic and lets the browser restyle without a server
+  round-trip. (Gates #323 / W4.)
 
 **Open questions**
 
-- Q1 — Frontend stack: vanilla TS + Web Components, or a micro-framework
-  (lit / preact)? Leaning vanilla for v0 to keep the build trivial.
-- Q2 — Theme bridge: map `Theme` → CSS custom properties on the server,
-  or ship `Theme` and resolve in the browser? (Leaning: ship serde
-  `Theme`, resolve to CSS vars in the browser.)
 - Q3 — Does any non-serde type in `primitives/mod.rs` need to cross the
   wire? (Audit during Phase 1.)
 - Q4 — Frame diffing: needed for a phone link, or is full-frame send
