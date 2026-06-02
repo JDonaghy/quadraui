@@ -62,13 +62,27 @@ pub enum ChatRole {
 /// A single turn in the chat transcript.
 ///
 /// `text` is a [`StyledText`] so rich markdown-derived colouring can be added
-/// in a future pass. V1 rasterisers simply concatenate span text.
+/// in a future pass. When `line_scales` is non-empty (turns created via
+/// [`ChatController::push_turn_markdown`]), the transcript renderer builds
+/// styled [`MessageRow`]s with per-span fg/bold/italic and per-line heading
+/// scale; otherwise it falls back to concatenating span text (the flat path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub role: ChatRole,
     pub text: StyledText,
     /// Unix epoch seconds; `None` when not recorded.
     pub timestamp_unix: Option<f64>,
+    /// Per-line font-scale factors, parallel to the logical lines in `text`.
+    ///
+    /// Non-empty only for turns created by [`ChatController::push_turn_markdown`]
+    /// (where the markdown adapter supplies one scale per input line).  `1.0` for
+    /// body lines; `2.0` / `1.5` / `1.2` for H1 / H2 / H3 headings.
+    ///
+    /// When empty the transcript renderer uses the flat (legacy) path so that
+    /// turns created via [`ChatController::push_turn`] or
+    /// [`ChatController::set_transcript`] are visually unchanged.
+    #[serde(default)]
+    pub line_scales: Vec<f32>,
 }
 
 /// Events emitted by [`ChatController::handle`].
@@ -292,6 +306,7 @@ impl ChatController {
             role,
             text,
             timestamp_unix: None,
+            line_scales: Vec::new(),
         });
     }
 
@@ -314,6 +329,9 @@ impl ChatController {
     /// markers, blockquote rules, etc.) as plain-text cues.
     pub fn push_turn_markdown(&mut self, role: ChatRole, markdown: &str, theme: &Theme) {
         let rendered = render_markdown_to_styled(markdown, theme);
+        // Preserve line-scale metadata so the transcript renderer can build
+        // styled rows with heading sizes.
+        let line_scales = rendered.line_scales.clone();
         let mut spans: Vec<StyledSpan> = Vec::new();
         for (i, line) in rendered.lines.into_iter().enumerate() {
             if i > 0 {
@@ -325,6 +343,7 @@ impl ChatController {
             role,
             text: StyledText { spans },
             timestamp_unix: None,
+            line_scales,
         });
     }
 
@@ -579,11 +598,40 @@ impl ChatController {
             // Role header row (no indent).
             rows.push(MessageRow::new(role_label, role_fg, 0.0));
 
-            // Content rows: wrap each raw line from the turn's plain text.
-            let plain: String = turn.text.spans.iter().map(|s| s.text.as_str()).collect();
-            for raw_line in plain.split('\n') {
-                for wrapped in wrap_text(raw_line, col_budget.saturating_sub(2)) {
-                    rows.push(MessageRow::new(wrapped, content_fg, 2.0));
+            let content_budget = col_budget.saturating_sub(2);
+
+            if !turn.line_scales.is_empty() {
+                // ── Styled path ──────────────────────────────────────────
+                // Turns created by `push_turn_markdown` carry per-line span
+                // lists (separated by plain `\n` spans) and matching scale
+                // factors.  Build styled MessageRows so rasterisers can apply
+                // per-span fg/bold/italic and heading font sizes.
+                let lines_spans = split_spans_by_newline(&turn.text.spans);
+                for (i, line_spans) in lines_spans.iter().enumerate() {
+                    let scale = turn.line_scales.get(i).copied().unwrap_or(1.0);
+                    let wrapped_groups = wrap_spans(line_spans, content_budget);
+                    for group in wrapped_groups {
+                        let text: String = group.iter().map(|s| s.text.as_str()).collect();
+                        rows.push(MessageRow {
+                            text,
+                            fg: content_fg,
+                            indent: 2.0,
+                            spans: group,
+                            scale,
+                        });
+                    }
+                }
+            } else {
+                // ── Flat path (unchanged) ────────────────────────────────
+                // Turns created by `push_turn` or `set_transcript` have
+                // empty `line_scales`.  Output is byte-for-byte identical
+                // to the pre-styled-row behaviour — existing callers
+                // (vimcode debug / AI sidebar) are visually unchanged.
+                let plain: String = turn.text.spans.iter().map(|s| s.text.as_str()).collect();
+                for raw_line in plain.split('\n') {
+                    for wrapped in wrap_text(raw_line, content_budget) {
+                        rows.push(MessageRow::new(wrapped, content_fg, 2.0));
+                    }
                 }
             }
 
@@ -1062,6 +1110,84 @@ fn wrap_text(text: &str, col_budget: usize) -> Vec<String> {
     lines
 }
 
+/// Split a flat span list (where `\n`-only spans act as line delimiters)
+/// into per-logical-line span lists.
+///
+/// This is the inverse of the encoding used by
+/// [`ChatController::push_turn_markdown`], which concatenates per-line
+/// span vecs with [`StyledSpan::plain`]`("\n")` separators.  The
+/// resulting `Vec<Vec<StyledSpan>>` has one entry per logical line
+/// (including an empty entry for blank lines).
+fn split_spans_by_newline(spans: &[StyledSpan]) -> Vec<Vec<StyledSpan>> {
+    let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut current: Vec<StyledSpan> = Vec::new();
+    for span in spans {
+        if span.text == "\n" {
+            lines.push(std::mem::take(&mut current));
+        } else {
+            current.push(span.clone());
+        }
+    }
+    lines.push(current);
+    lines
+}
+
+/// Wrap a flat span list at `col_budget` characters per rendered row.
+///
+/// Returns a `Vec` of per-row span lists.  Spans that cross a wrap
+/// boundary are split at the boundary — the span style (fg, bold, italic)
+/// is cloned onto both halves so styling is preserved.
+///
+/// Zero budget or empty input is handled gracefully (one group returned).
+fn wrap_spans(spans: &[StyledSpan], col_budget: usize) -> Vec<Vec<StyledSpan>> {
+    if spans.is_empty() {
+        return vec![vec![]];
+    }
+    let total_chars: usize = spans.iter().map(|s| s.text.chars().count()).sum();
+    if total_chars == 0 {
+        return vec![vec![]];
+    }
+    if col_budget == 0 || total_chars <= col_budget {
+        return vec![spans.to_vec()];
+    }
+
+    let mut result: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut current_row: Vec<StyledSpan> = Vec::new();
+    let mut row_chars = 0usize;
+
+    for span in spans {
+        let chars: Vec<char> = span.text.chars().collect();
+        let mut span_start = 0usize;
+
+        while span_start < chars.len() {
+            // Flush a full row if no space remains.
+            if row_chars >= col_budget {
+                result.push(std::mem::take(&mut current_row));
+                row_chars = 0;
+            }
+            let available = col_budget - row_chars;
+            let can_take = (chars.len() - span_start).min(available);
+            if can_take > 0 {
+                let chunk: String = chars[span_start..span_start + can_take].iter().collect();
+                current_row.push(StyledSpan {
+                    text: chunk,
+                    ..span.clone()
+                });
+                row_chars += can_take;
+                span_start += can_take;
+            }
+        }
+    }
+
+    if !current_row.is_empty() {
+        result.push(current_row);
+    }
+    if result.is_empty() {
+        result.push(vec![]);
+    }
+    result
+}
+
 /// Convert a byte offset in `text` to `(line, char_col)`.
 fn cursor_byte_to_line_col(text: &str, cursor: usize) -> (usize, usize) {
     let cursor = cursor.min(text.len());
@@ -1509,6 +1635,7 @@ mod tests {
             role,
             text: StyledText::plain(text),
             timestamp_unix: None,
+            line_scales: Vec::new(),
         }
     }
 
@@ -1725,6 +1852,7 @@ mod tests {
             role: ChatRole::Assistant,
             text: StyledText::colored("hi there", Color::rgb(180, 230, 180)),
             timestamp_unix: Some(1_700_000_000.0),
+            line_scales: Vec::new(),
         };
         let json = serde_json::to_string(&turn).expect("serialize ChatTurn");
         let decoded: ChatTurn = serde_json::from_str(&json).expect("deserialize ChatTurn");
@@ -2008,6 +2136,236 @@ mod tests {
             .filter(|r| !r.text.is_empty() && r.indent > 0.0)
             .collect();
         assert_eq!(content.len(), 2);
+    }
+
+    // ── Styled transcript rows ────────────────────────────────────────
+
+    #[test]
+    fn push_turn_markdown_stores_line_scales() {
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::Assistant, "# Heading\nbody", &theme);
+        let turn = &cc.transcript[0];
+        // Markdown adapter produces 2 lines → 2 scales.
+        assert_eq!(
+            turn.line_scales.len(),
+            2,
+            "line_scales must have one entry per markdown line; got {:?}",
+            turn.line_scales
+        );
+        // H1 → scale 2.0.
+        assert!(
+            (turn.line_scales[0] - 2.0).abs() < f32::EPSILON,
+            "H1 line_scale must be 2.0; got {}",
+            turn.line_scales[0]
+        );
+        // Body → scale 1.0.
+        assert!(
+            (turn.line_scales[1] - 1.0).abs() < f32::EPSILON,
+            "body line_scale must be 1.0; got {}",
+            turn.line_scales[1]
+        );
+    }
+
+    #[test]
+    fn push_turn_has_empty_line_scales() {
+        // Turns created via push_turn must have empty line_scales so the
+        // flat render path is used — invariant for existing callers.
+        let mut cc = ChatController::new("c");
+        cc.push_turn(ChatRole::User, StyledText::plain("plain text"));
+        assert!(
+            cc.transcript[0].line_scales.is_empty(),
+            "push_turn must leave line_scales empty"
+        );
+    }
+
+    #[test]
+    fn build_transcript_rows_flat_path_unchanged() {
+        // Turns with empty line_scales must produce rows with empty spans
+        // — bit-for-bit identical to the pre-styled-row behaviour.
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(vec![make_turn(ChatRole::User, "hello")]);
+        let rows = cc.build_transcript_rows(80);
+        // Content row at index 1 (after the "You" header).
+        let content_row = rows.iter().find(|r| r.text == "hello").unwrap();
+        assert!(
+            content_row.spans.is_empty(),
+            "flat-path rows must have empty spans; got {:?}",
+            content_row.spans
+        );
+        assert!(
+            (content_row.scale - 1.0).abs() < f32::EPSILON,
+            "flat-path rows must have scale 1.0"
+        );
+    }
+
+    #[test]
+    fn build_transcript_rows_styled_path_produces_spans() {
+        // Turns created by push_turn_markdown must produce rows with non-empty
+        // spans so rasterisers can apply per-span styling.
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::Assistant, "**bold** text", &theme);
+        let rows = cc.build_transcript_rows(80);
+        // Skip the "AI" role header row, find the content row.
+        let content_rows: Vec<_> = rows.iter().filter(|r| r.indent > 0.0).collect();
+        assert!(
+            !content_rows.is_empty(),
+            "expected at least one content row"
+        );
+        let first = &content_rows[0];
+        assert!(
+            !first.spans.is_empty(),
+            "markdown turns must produce rows with non-empty spans; got empty"
+        );
+        // The bold span must appear somewhere in the row spans.
+        let has_bold = first.spans.iter().any(|s| s.bold);
+        assert!(
+            has_bold,
+            "expected a bold span in the row; spans: {:?}",
+            first.spans
+        );
+    }
+
+    #[test]
+    fn build_transcript_rows_heading_carries_scale() {
+        // H1 markdown line → content rows must have scale 2.0.
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::Assistant, "# Title", &theme);
+        let rows = cc.build_transcript_rows(80);
+        let content_rows: Vec<_> = rows.iter().filter(|r| r.indent > 0.0).collect();
+        assert!(!content_rows.is_empty(), "expected content rows");
+        let heading_row = &content_rows[0];
+        assert!(
+            (heading_row.scale - 2.0).abs() < f32::EPSILON,
+            "H1 content row must have scale 2.0; got {}",
+            heading_row.scale
+        );
+    }
+
+    #[test]
+    fn build_transcript_rows_plain_role_header_has_no_spans() {
+        // Role headers ("You", "AI", "System") must always be flat rows —
+        // they are inserted by the controller, not from user content.
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::User, "**bold**", &theme);
+        let rows = cc.build_transcript_rows(80);
+        let header = rows.iter().find(|r| r.text == "You").unwrap();
+        assert!(
+            header.spans.is_empty(),
+            "role header must be a flat row; spans: {:?}",
+            header.spans
+        );
+    }
+
+    #[test]
+    fn build_transcript_rows_styled_wraps_across_budget() {
+        // A styled turn wider than the column budget must produce multiple rows.
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        // 10 plain chars; col_budget=7 → content_budget=5 → 2 rows.
+        cc.push_turn_markdown(ChatRole::Assistant, "1234567890", &theme);
+        let rows = cc.build_transcript_rows(7);
+        let content_rows: Vec<_> = rows.iter().filter(|r| r.indent > 0.0).collect();
+        assert_eq!(
+            content_rows.len(),
+            2,
+            "10-char styled line at budget=5 must wrap to 2 rows; got {}",
+            content_rows.len()
+        );
+    }
+
+    // ── split_spans_by_newline ────────────────────────────────────────
+
+    #[test]
+    fn split_spans_by_newline_single_line() {
+        let spans = vec![StyledSpan::plain("hello")];
+        let lines = split_spans_by_newline(&spans);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), 1);
+        assert_eq!(lines[0][0].text, "hello");
+    }
+
+    #[test]
+    fn split_spans_by_newline_two_lines() {
+        let spans = vec![
+            StyledSpan::plain("line1"),
+            StyledSpan::plain("\n"),
+            StyledSpan::plain("line2"),
+        ];
+        let lines = split_spans_by_newline(&spans);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0][0].text, "line1");
+        assert_eq!(lines[1][0].text, "line2");
+    }
+
+    #[test]
+    fn split_spans_by_newline_empty_produces_one_empty_line() {
+        let lines = split_spans_by_newline(&[]);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].is_empty());
+    }
+
+    // ── wrap_spans ────────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_spans_short_line_not_split() {
+        let spans = vec![StyledSpan::plain("hello")];
+        let groups = wrap_spans(&spans, 80);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 1);
+        assert_eq!(groups[0][0].text, "hello");
+    }
+
+    #[test]
+    fn wrap_spans_splits_single_span_at_budget() {
+        let spans = vec![StyledSpan::plain("abcde")];
+        let groups = wrap_spans(&spans, 3);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0][0].text, "abc");
+        assert_eq!(groups[1][0].text, "de");
+    }
+
+    #[test]
+    fn wrap_spans_preserves_style_on_split_chunks() {
+        let bold_span = StyledSpan {
+            text: "abcdef".to_string(),
+            fg: Some(Color::rgb(255, 0, 0)),
+            bg: None,
+            bold: true,
+            italic: false,
+            underline: false,
+        };
+        let groups = wrap_spans(&[bold_span], 4);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0][0].bold, "first chunk must retain bold");
+        assert!(groups[1][0].bold, "second chunk must retain bold");
+        assert_eq!(groups[0][0].fg, Some(Color::rgb(255, 0, 0)));
+        assert_eq!(groups[0][0].text, "abcd");
+        assert_eq!(groups[1][0].text, "ef");
+    }
+
+    #[test]
+    fn wrap_spans_multi_span_boundary() {
+        // Two 3-char spans at budget=4 → first row gets span-A (3) + one char
+        // of span-B; second row gets remaining 2 chars of span-B.
+        let a = StyledSpan::plain("abc");
+        let b = StyledSpan::plain("def");
+        let groups = wrap_spans(&[a, b], 4);
+        assert_eq!(groups.len(), 2);
+        let row0_text: String = groups[0].iter().map(|s| s.text.as_str()).collect();
+        let row1_text: String = groups[1].iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(row0_text, "abcd");
+        assert_eq!(row1_text, "ef");
+    }
+
+    #[test]
+    fn wrap_spans_empty_returns_one_empty_group() {
+        let groups = wrap_spans(&[], 80);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].is_empty());
     }
 
     // ── Wrap helper ───────────────────────────────────────────────────
