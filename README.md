@@ -147,6 +147,15 @@ host's click-routing + state mutations, assert the host's state
 changes match the painted UI. See `quadraui/src/tui/multi_section_view.rs`
 "Consumer-state round-trip harness" for the canonical block.
 
+Whole examples get an **end-to-end driver** layer: `quadraui::tui::testing::TuiDriver`
+runs a shipping `AppLogic` (the same type the `tui_*` examples instantiate)
+through the real event → `handle` → `render` path against ratatui's
+in-memory `TestBackend` — no TTY, no pty, deterministic. Script
+keystrokes/clicks/drags (`press`, `click`, `drag`, `ctrl_char`) and
+assert on the rendered screen. Because `AppLogic` is backend-neutral the
+same event script is the basis for a future cross-backend `GtkDriver`.
+See `quadraui/tests/tui_example_driver.rs` and `docs/TESTING.md`.
+
 ## License
 
 Licensed under either of:

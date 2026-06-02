@@ -1291,3 +1291,50 @@ This session resolved all hit_test prerequisites for the three runtime epics (#2
 ### Open queue for next session
 
 Same as previous session — no new issues filed.
+
+## Session 2026-06-01 — TUI example-driver test harness (#300, #303) + follow-ups
+
+**Agent:** Claude Opus 4.8 (1M context)
+
+**Prompt:** evaluate microsoft/tui-test for automated, independent tests of the running TUI example apps (catch regressions; remove the manual smoke-test bottleneck).
+
+### Outcome: built an in-process driver instead of adopting a pty tool
+
+microsoft/tui-test is a pty-based, Node/TS black-box runner. It's genuinely capable (snapshots, language-agnostic) but a poor first investment here: it's **TUI-only** (can't generalize to GTK/macOS/Windows), keyboard-first (our examples are click-heavy), non-deterministic, and adds a Node toolchain. quadraui's `AppLogic` layer is backend-neutral, so testing *that* with scripted `UiEvent`s validates the shared logic for **every** backend from one script. Built that instead.
+
+### Issues closed (2)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 300 | TUI example-driver harness | A | `quadraui::tui::testing::TuiDriver` — drives a whole `AppLogic` through the real event→`handle`→`render` path against ratatui `TestBackend`; extracted `render_frame` + `dispatch_event` (+ `EventOutcome`) as `pub(crate)` from `tui::run::run_inner` so the test path can't drift from production; `tests/tui_example_driver.rs` (pipeline/mini/text-input/demo); TESTING.md tier 4. Also fixed 16 example files missing `[[example]]` Cargo.toml entries (broke single-feature `cargo test`). |
+| 303 | TuiDriver drag support | A | `TuiBackend::translate_injected` routes injected events through the same `apply_dispatch`+`DragState`+accelerator+double-click pipeline `wait_events` uses; added `mouse_down`/`mouse_move`/`mouse_up`/`drag`/`ctrl_char`; `panel_drag_selects_text_and_ctrl_c_copies_it` drives a real drag-select → Ctrl-C → TextCopied end-to-end. |
+
+### Issues filed (4)
+
+| # | Title | Status |
+|---|---|---|
+| 300 | example-driver harness | closed in-session |
+| 301 | GtkDriver twin (Cairo-surface snapshot, cross-backend parity) | open |
+| 302 | Tier-3 native pty smoke layer (portable-pty + vt100, terminal-protocol bugs e.g. #293) | open |
+| 303 | TuiDriver drag support | closed in-session |
+
+### Three-tier test model (documented in TESTING.md)
+
+1. **Example-driver** (this work) — scripted `UiEvent`s → whole `AppLogic` → assert rendered screen. Backend-neutral, deterministic.
+2. **Per-backend rasteriser round-trips** (existing) — `draw_*` into headless buffer/surface + hit_test.
+3. **Native pty smoke** (#302, future) — real binary in a pty for terminal-protocol fidelity.
+
+### Findings / gotchas
+
+1. **16 example files were undeclared in Cargo.toml** (8 tui/gtk pairs incl. `tui_pipeline`) — cargo auto-discovered them with no `required-features`, so `cargo test --features tui|gtk` was already broken on develop. Fixed by declaring each.
+2. **Scrollbar thumb-drag is NOT wired into any TUI example** — `apply_dispatch` passes `&[]` scroll surfaces and no consumer handles `ScrollOffsetChanged`. The offset math is unit-tested in `dispatch.rs`. Text-selection drag, by contrast, is fully wired (`examples/common/panel_app.rs` = `tui_panel` is the selection-capable example).
+3. Mid-session the working tree was switched to the DiffView (#294) branch, discarding the uncommitted prototype; recreated it, committed early, and rebased cleanly onto the DiffView merge that had landed on develop.
+
+### Quality gate (green both commits)
+
+`cargo build --features tui --features gtk`; `cargo test --features tui` (1097 lib + 11 driver + 3 doc); `cargo test --features gtk` (891); `cargo clippy --features tui|gtk -- -D warnings`; `cargo fmt --check`. (Note: a stricter local clippy — rust-1.93.0 — flags `--tests`-only lints in pre-existing `#[cfg(test)]` code; the documented gate command, without `--tests`, is clean.)
+
+### Markdown updated
+
+- `docs/TESTING.md` — added the example-driver tier (taxonomy row + dedicated section, incl. drag support + the scrollbar caveat).
+- `README.md` — Testing section: end-to-end driver paragraph.
