@@ -70,6 +70,15 @@ assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test�
 - **Mouse is a `UiEvent::MouseDown` in backend coordinates** — no SGR
   escape-sequence math, the ergonomic win over a pty runner for
   click-heavy primitives.
+- **Drags work too.** `mouse_down`/`mouse_move`/`mouse_up`/`drag` route
+  through `TuiBackend::translate_injected` — the same `apply_dispatch` +
+  `DragState` layer `wait_events` uses — so a scripted drag exercises the
+  real selection/drag machinery. E.g. drag over a registered text region
+  → `TextSelectionChanged`, then `ctrl_char('c')` → `TextCopied` (see
+  `panel_drag_selects_text_and_ctrl_c_copies_it`). (Scrollbar thumb-drag
+  isn't wired into any TUI example yet — `apply_dispatch` passes no
+  scroll surfaces — so there's nothing to drive there until a consumer
+  adopts it; the offset math is unit-tested in `dispatch.rs`.)
 - **Generalizes across backends.** Because `AppLogic` is
   backend-neutral, a future `GtkDriver` can feed identical scripted
   events to the identical app and snapshot the Cairo surface — true

@@ -449,6 +449,20 @@ impl TuiBackend {
         out
     }
 
+    /// Run injected (synthetic) raw events through the same translation
+    /// pipeline [`Backend::wait_events`] applies to crossterm input —
+    /// drag-state dispatch, accelerator matching, double-click folding —
+    /// minus the terminal read. Used by the headless
+    /// [`super::testing::TuiDriver`] so scripted mouse drags exercise the
+    /// real `DragState` / text-selection machinery instead of bypassing
+    /// it. Mirrors the body of [`Backend::wait_events`] exactly.
+    pub(crate) fn translate_injected(&mut self, raw: Vec<UiEvent>) -> Vec<UiEvent> {
+        let mut out = self.apply_dispatch(raw);
+        self.apply_accelerators(&mut out);
+        self.double_click.process(&mut out);
+        out
+    }
+
     fn apply_accelerators(&self, events: &mut [UiEvent]) {
         if self.parsed_accelerators.is_empty() {
             return;

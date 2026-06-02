@@ -16,6 +16,8 @@ use quadraui::NamedKey;
 mod demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
+#[path = "../examples/common/panel_app.rs"]
+mod panel_app;
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
 #[path = "../examples/common/text_input_demo.rs"]
@@ -23,6 +25,7 @@ mod text_input_demo;
 
 use demo::AppState;
 use mini_app::MiniApp;
+use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
 use text_input_demo::TextInputDemo;
 
@@ -172,5 +175,51 @@ fn demo_n_opens_a_new_scratch_tab() {
         driver.screen_contains("scratch"),
         "'n' should open a new scratch tab:\n{}",
         driver.screen()
+    );
+}
+
+// ─── PanelApp: mouse-DRAG text selection + Ctrl-C copy ───────────────────────
+//
+// This is the case the simpler click tests can't reach: a drag is a
+// MouseDown → MouseMoved(held) → MouseUp sequence whose translation into
+// `TextSelectionChanged` lives in the backend dispatch layer
+// (`apply_dispatch`/`DragState`). The driver routes injected mouse events
+// through that exact layer, so a scripted drag exercises the real
+// selection machinery end-to-end.
+
+#[test]
+fn panel_drag_selects_text_and_ctrl_c_copies_it() {
+    let mut driver = TuiDriver::new(PanelApp::new(), 80, 24);
+
+    // Two distinct painted content lines (substrings unique to lines 0 and 3).
+    let (x0, y0) = driver
+        .find("brown")
+        .unwrap_or_else(|| panic!("content line 0 not painted:\n{}", driver.screen()));
+    let (x1, y1) = driver
+        .find("wizards")
+        .unwrap_or_else(|| panic!("content line 3 not painted:\n{}", driver.screen()));
+
+    // Drag down across the content lines → backend begins a TextSelection
+    // drag on MouseDown and emits TextSelectionChanged on MouseMoved.
+    driver.mouse_down(x0, y0);
+    driver.mouse_move(x1, y1);
+    assert!(
+        driver.screen_contains("Selecting"),
+        "dragging over the content region should show selection feedback:\n{}",
+        driver.screen()
+    );
+    driver.mouse_up(x1, y1);
+
+    // Ctrl-C with an active selection → runner copies it and emits
+    // TextCopied, which PanelApp echoes as `Copied: "..."`.
+    driver.ctrl_char('c');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Copied:"),
+        "Ctrl-C after a selection should copy it:\n{screen}"
+    );
+    assert!(
+        screen.contains("quick"),
+        "the copied preview should contain selected text:\n{screen}"
     );
 }

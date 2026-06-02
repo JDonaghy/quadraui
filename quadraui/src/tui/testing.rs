@@ -51,7 +51,7 @@ use ratatui::Terminal;
 use crate::runner::{AppLogic, Reaction};
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
-use crate::{Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 /// Drives an [`AppLogic`] impl headlessly for tests.
 ///
@@ -91,24 +91,39 @@ impl<A: AppLogic> TuiDriver<A> {
             .expect("TestBackend render is infallible");
     }
 
-    /// Dispatch one event through the shared production dispatch path,
-    /// applying its outcome (repaint on redraw, latch `exited` on exit).
-    /// Returns the equivalent [`Reaction`] for convenient assertions.
+    /// Feed one synthetic event through the **full production pipeline**:
+    /// backend translation ([`TuiBackend::translate_injected`] — drag
+    /// state, accelerator matching, double-click folding) followed by the
+    /// shared [`dispatch_event`] for each resulting event. Repaints on
+    /// redraw and latches `exited`. Returns the strongest [`Reaction`]
+    /// (Exit > Redraw > Continue) for convenient assertions.
+    ///
+    /// Routing through `translate_injected` (not straight to
+    /// `dispatch_event`) is what makes drag sequences work: a `MouseDown`
+    /// in a registered text region begins a `TextSelection` drag, and a
+    /// following `MouseMoved` is translated into `TextSelectionChanged` —
+    /// exactly as `wait_events` does for real crossterm input.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
         if self.exited {
             return Reaction::Exit;
         }
-        match dispatch_event(event, &mut self.backend, &mut self.app) {
-            EventOutcome::Continue => Reaction::Continue,
-            EventOutcome::Redraw => {
-                self.render();
-                Reaction::Redraw
-            }
-            EventOutcome::Exit => {
-                self.exited = true;
-                Reaction::Exit
+        let mut result = Reaction::Continue;
+        for ev in self.backend.translate_injected(vec![event]) {
+            match dispatch_event(ev, &mut self.backend, &mut self.app) {
+                EventOutcome::Continue => {}
+                EventOutcome::Redraw => {
+                    self.render();
+                    if result == Reaction::Continue {
+                        result = Reaction::Redraw;
+                    }
+                }
+                EventOutcome::Exit => {
+                    self.exited = true;
+                    return Reaction::Exit;
+                }
             }
         }
+        result
     }
 
     /// Press a key (no modifiers).
@@ -130,16 +145,65 @@ impl<A: AppLogic> TuiDriver<A> {
         self.press(Key::Named(key))
     }
 
+    /// Press a character key with Ctrl held (e.g. `ctrl_char('c')` to
+    /// trigger the runner's copy-on-selection path).
+    pub fn ctrl_char(&mut self, c: char) -> Reaction {
+        self.dispatch(UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        })
+    }
+
     /// Left-click at backend coordinates `(x, y)` (cell units for TUI),
     /// delivered as a [`UiEvent::MouseDown`] — the event primitives'
     /// hit-test paths consume.
     pub fn click(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_down(x, y)
+    }
+
+    /// Press the left mouse button down at `(x, y)`. Begins a drag if it
+    /// lands on a draggable target (text region, scrollbar thumb).
+    pub fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
         self.dispatch(UiEvent::MouseDown {
             widget: None,
             button: MouseButton::Left,
             position: Point::new(x, y),
             modifiers: Modifiers::default(),
         })
+    }
+
+    /// Move the cursor to `(x, y)` with the left button held. During an
+    /// active drag this is translated to the drag's high-level event
+    /// (e.g. [`UiEvent::TextSelectionChanged`] /
+    /// [`UiEvent::ScrollOffsetChanged`]).
+    pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
+        self.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask {
+                left: true,
+                ..ButtonMask::default()
+            },
+        })
+    }
+
+    /// Release the left mouse button at `(x, y)`, ending any active drag.
+    pub fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
+        self.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+        })
+    }
+
+    /// Left-button drag from `(x0, y0)` to `(x1, y1)`: down → move → up.
+    pub fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> Reaction {
+        self.mouse_down(x0, y0);
+        self.mouse_move(x1, y1);
+        self.mouse_up(x1, y1)
     }
 
     /// Whether the app has returned [`Reaction::Exit`].
