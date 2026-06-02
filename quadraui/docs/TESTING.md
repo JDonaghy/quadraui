@@ -89,6 +89,74 @@ does *not* exercise real ANSI/escape emission — terminal-protocol bugs
 (raw-mode setup, escape parsing, SGR mouse decoding; e.g. #293) are out
 of scope and need a pty-based smoke test instead.
 
+### Cross-backend example tests: shared bodies, per-backend adapters
+
+When the `GtkDriver` lands (#301), example-driver tests should **not** be
+duplicated per backend. The split is hybrid — ~80% shares, ~20% is
+irreducibly backend-specific:
+
+| Layer | Shared? | Why |
+|---|---|---|
+| The `AppLogic` under test | yes — identical | backend-neutral by design |
+| The event script (`press`/`click`/`drag`) | yes — identical | `UiEvent` is the unified boundary |
+| Logical / state assertions | yes — identical | same app → same state on every backend |
+| Reading "the screen" | **no** | TUI = character-cell grid (string search); GTK = Cairo pixel surface (Pango text map) |
+| Coordinate units | **no** | TUI = cells (`line_height 1`); GTK = pixels (`line_height ~16`) |
+
+Abstract the two backend-specific rows behind a small trait, write each
+test body **once** as a generic fn, and run it against both drivers:
+
+```rust
+trait ExampleDriver {
+    fn press_named(&mut self, k: NamedKey);
+    fn type_char(&mut self, c: char);
+    fn click_text(&mut self, needle: &str);   // locate text → click center (native coords)
+    fn drag_text(&mut self, from: &str, to: &str);
+    fn screen_has(&self, needle: &str) -> bool;
+    fn exited(&self) -> bool;
+}
+
+fn check_pipeline_click<D: ExampleDriver>(mut d: D) {   // written ONCE
+    d.click_text("Go");
+    assert!(d.screen_has("stage 3"));
+}
+
+#[test] fn tui() { check_pipeline_click(TuiDriver::new(PipelineApp::new(), 100, 30)); }
+#[test] fn gtk() { check_pipeline_click(GtkDriver::new(PipelineApp::new(), 800, 480)); }
+```
+
+**Rules for shared bodies:**
+
+1. **Locate by semantics, never literal coordinates.** Use
+   `click_text("Go")` / `drag_text(a, b)`, not `click(12.0, 3.0)` — each
+   driver resolves text to its own native position (TUI scans the cell
+   grid; GTK queries the `(text, bounds)` map it records at paint time),
+   so bodies stay unit-agnostic. A test that hard-codes cell/pixel
+   numbers will not port.
+2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
+   works on both (cell-grid search vs Pango text map).
+
+**Parity test (free bonus):** run the same script on both drivers and
+assert they reach the same logical state — the strongest cross-backend
+guarantee:
+
+```rust
+fn pipeline_parity<D: ExampleDriver>(mut d: D) -> Vec<bool> {
+    d.click_text("Go");
+    vec![d.screen_has("stage 3"), d.exited()]
+}
+assert_eq!(pipeline_parity(tui), pipeline_parity(gtk));
+```
+
+**Irreducible per-backend residue (keep separate, by design):** exact
+pixel colours, 1px borders, font rendering, double-width glyph handling.
+These genuinely differ — TUI keeps cell-style assertions; GTK gets
+pixel/Pango checks. Don't try to share these.
+
+**Plan of record:** fold the `ExampleDriver` trait extraction into #301
+so the existing TUI tests in `tests/tui_example_driver.rs` migrate to
+shared bodies as GTK comes online, rather than being copy-pasted.
+
 ## Backend testability requirement
 
 Every backend MUST support headless paint-to-memory so tests don't
