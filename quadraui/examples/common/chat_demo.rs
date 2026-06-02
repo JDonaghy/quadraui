@@ -108,6 +108,7 @@ impl AppLogic for ChatDemo {
                     role: ChatRole::User,
                     text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
                     timestamp_unix: None,
+                    line_scales: Vec::new(),
                 });
                 self.controller.clear_input();
                 // Queue a simulated reply (delivered after a few ticks).
@@ -148,6 +149,7 @@ impl AppLogic for ChatDemo {
                         role: ChatRole::Assistant,
                         text: StyledText::colored(reply, Color::rgb(180, 230, 180)),
                         timestamp_unix: None,
+                        line_scales: Vec::new(),
                     });
                 }
             }
