@@ -45,6 +45,7 @@ use crate::{
     Rect, Scrollbar, Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -179,8 +180,24 @@ pub struct ChatController {
     /// navigation. Restored on `↓` past the newest history entry.
     saved_input: Option<(String, usize)>,
     // ── Transcript scroll ─────────────────────────────────────────────
-    transcript_scroll_top: usize,
+    /// First visible wrapped row.
+    ///
+    /// Stored in a [`Cell`] so that [`render`](Self::render) (which takes
+    /// `&self` to satisfy the [`AppLogic`] trait contract) can update the
+    /// position when follow-tail is engaged — without requiring the caller to
+    /// hold a `&mut` reference.
+    transcript_scroll_top: Cell<usize>,
     transcript_drag: Option<ScrollDrag>,
+    /// When `true` the viewport is pinned to the tail: each [`render`] call
+    /// drives `transcript_scroll_top` to `total_rows − visible_rows` so
+    /// freshly-appended content stays visible.
+    ///
+    /// Starts `true` on construction.  Disengaged whenever the user scrolls
+    /// up (via wheel, PageUp, or scrollbar drag); re-engaged whenever the
+    /// user scrolls back down to the bottom row.
+    ///
+    /// [`render`]: Self::render
+    stuck_to_bottom: bool,
     // ── Config ────────────────────────────────────────────────────────
     /// Number of rows for the text input area. Default: `4`.
     input_height_rows: usize,
@@ -208,8 +225,9 @@ impl ChatController {
             history: Vec::new(),
             history_pos: None,
             saved_input: None,
-            transcript_scroll_top: 0,
+            transcript_scroll_top: Cell::new(0),
             transcript_drag: None,
+            stuck_to_bottom: true,
             input_height_rows: 4,
             scrollbar_width: None,
         }
@@ -348,13 +366,22 @@ impl ChatController {
     }
 
     /// Current transcript scroll offset (first visible wrapped row).
+    ///
+    /// After [`render`](Self::render) runs with follow-tail engaged, this
+    /// reflects the position that was actually painted (tail row).
     pub fn transcript_scroll_top(&self) -> usize {
-        self.transcript_scroll_top
+        self.transcript_scroll_top.get()
     }
 
     /// Programmatically override the transcript scroll position.
+    ///
+    /// This does **not** change the [`stuck_to_bottom`](Self) flag.  If you
+    /// want to re-engage follow-tail, call
+    /// [`scroll_transcript_by`](Self::scroll_transcript_by) with a large
+    /// positive delta so the flag is recomputed against a known `total_rows`
+    /// and `visible_rows`.
     pub fn set_transcript_scroll_top(&mut self, top: usize) {
-        self.transcript_scroll_top = top;
+        self.transcript_scroll_top.set(top);
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -394,22 +421,34 @@ impl ChatController {
         let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
         let wrapped_rows = self.build_transcript_rows(col_budget);
         let total_rows = wrapped_rows.len();
+        // Hoist visible_rows so follow-tail can use it before building MessageList.
+        let visible_rows =
+            Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
+
+        // Follow-tail: if stuck to the bottom, pin scroll_top to the last page
+        // so newly-appended rows are always visible.  This is a no-op when the
+        // content fits entirely in the viewport (total ≤ visible → max = 0).
+        // `transcript_scroll_top` is a `Cell<usize>` so we can update it here
+        // while `render` takes `&self` (required by the `AppLogic` trait).
+        if self.stuck_to_bottom {
+            self.transcript_scroll_top
+                .set(total_rows.saturating_sub(visible_rows));
+        }
+
         let list = MessageList {
             id: WidgetId::new(format!("{}-transcript", self.id.0)),
             rows: wrapped_rows,
-            scroll_top: self.transcript_scroll_top,
+            scroll_top: self.transcript_scroll_top.get(),
         };
         backend.draw_message_list(layout.transcript, &list);
 
         // ── 4. Scrollbar ──────────────────────────────────────────────
         if let Some(sb_rect) = layout.scrollbar {
-            let visible_rows =
-                Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
             let track_w = self.scrollbar_track_width(backend.line_height());
             let sb = build_scrollbar(
                 format!("{}-sb", self.id.0),
                 sb_rect,
-                self.transcript_scroll_top,
+                self.transcript_scroll_top.get(),
                 total_rows,
                 visible_rows,
                 self.transcript_drag.is_some(),
@@ -496,11 +535,18 @@ impl ChatController {
     ///
     /// Exposed so callers can drive transcript scrolling without synthesising
     /// a [`UiEvent::Scroll`].
+    ///
+    /// After clamping, [`stuck_to_bottom`](Self) is recomputed: scrolling up
+    /// disengages follow-tail; scrolling back to the last page re-engages it.
     pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
         let max = total_rows.saturating_sub(visible_rows) as isize;
-        let cur = self.transcript_scroll_top as isize;
+        let cur = self.transcript_scroll_top.get() as isize;
         let new = (cur + delta).max(0).min(max) as usize;
-        self.transcript_scroll_top = new;
+        self.transcript_scroll_top.set(new);
+        // Re-engage follow-tail when scrolled to (or past) the last page;
+        // disengage it when scrolled up from there.
+        self.stuck_to_bottom =
+            self.transcript_scroll_top.get() >= total_rows.saturating_sub(visible_rows);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -936,7 +982,7 @@ impl ChatController {
         let sb = build_scrollbar(
             format!("{}-sb", self.id.0),
             sb_rect,
-            self.transcript_scroll_top,
+            self.transcript_scroll_top.get(),
             total,
             visible,
             false,
@@ -949,7 +995,7 @@ impl ChatController {
             let travel = (sb_rect.height - sb.thumb_len).max(0.0);
             self.transcript_drag = Some(ScrollDrag {
                 origin_y: y,
-                origin_offset: self.transcript_scroll_top,
+                origin_offset: self.transcript_scroll_top.get(),
                 travel,
                 max_offset,
             });
@@ -974,11 +1020,15 @@ impl ChatController {
         let drow = dy / drag.travel * drag.max_offset as f32;
         let new = (drag.origin_offset as f32 + drow).round() as i32;
         let new = new.max(0) as usize;
-        let new = new.min(drag.max_offset);
-        if new == self.transcript_scroll_top {
+        // Copy max_offset before the immutable borrow of `drag` ends so we can
+        // use it when updating `stuck_to_bottom` after mutating `self`.
+        let max_offset = drag.max_offset;
+        let new = new.min(max_offset);
+        if new == self.transcript_scroll_top.get() {
             return ChatControllerEvent::Ignored;
         }
-        self.transcript_scroll_top = new;
+        self.transcript_scroll_top.set(new);
+        self.stuck_to_bottom = new >= max_offset;
         ChatControllerEvent::Consumed
     }
 
@@ -2021,6 +2071,91 @@ mod tests {
         cc.set_transcript_scroll_top(10);
         cc.scroll_transcript_by(-5, 20, 5);
         assert_eq!(cc.transcript_scroll_top(), 5);
+    }
+
+    // ── Follow-tail (stick-to-bottom) ─────────────────────────────────
+
+    /// A brand-new controller must start stuck to the bottom so the first
+    /// streamed reply is visible without the user having to scroll.
+    #[test]
+    fn new_controller_is_stuck_to_bottom() {
+        let cc = ChatController::new("c");
+        assert!(
+            cc.stuck_to_bottom,
+            "new controller must start stuck_to_bottom=true"
+        );
+    }
+
+    /// When `stuck_to_bottom` is true and new turns push the total row-count
+    /// beyond the visible window, `render()` must advance `transcript_scroll_top`
+    /// so the newest rows are visible.
+    ///
+    /// Geometry with `MockBackend` (line_height=1, char_width=1) + `make_rect`
+    /// (80 × 24):
+    ///   status_h = 1, input_h = 4×1+2 = 6, middle_h = 17,
+    ///   scrollbar_width = 1  →  transcript_rect = 79 × 17,
+    ///   visible_rows = 17, col_budget = 79.
+    ///
+    /// Each plain turn → 1 header + 1 content + 1 blank = 3 rows.
+    /// 7 turns → 21 rows.  max_scroll = 21 − 17 = 4.
+    #[test]
+    fn follow_tail_advances_scroll_top_on_new_content() {
+        let mut cc = ChatController::new("c");
+        for i in 0..7 {
+            cc.push_turn(ChatRole::User, StyledText::plain(&format!("m{i}")));
+        }
+        assert_eq!(cc.transcript_scroll_top(), 0, "scroll_top must start at 0");
+        cc.render(&mut MockBackend, make_rect());
+        assert!(
+            cc.transcript_scroll_top() > 0,
+            "follow-tail must advance scroll_top when content exceeds the visible window; \
+             scroll_top={}",
+            cc.transcript_scroll_top()
+        );
+    }
+
+    /// When the user has scrolled up (disengaging follow-tail), appending new
+    /// content must NOT yank the viewport to the bottom.
+    #[test]
+    fn scrolled_up_position_preserved_across_new_content() {
+        let mut cc = ChatController::new("c");
+        // Scroll up from 0 → disengages follow-tail (max = 20−5 = 15; 0 < 15).
+        cc.scroll_transcript_by(-5, 20, 5); // clamped to 0, stuck=false
+                                            // Scroll to a mid position.
+        cc.scroll_transcript_by(3, 20, 5); // scroll_top=3, stuck=false
+        assert!(
+            !cc.stuck_to_bottom,
+            "scroll_transcript_by up must disengage follow-tail"
+        );
+        assert_eq!(cc.transcript_scroll_top(), 3);
+        // Append new content.
+        cc.push_turn(ChatRole::Assistant, StyledText::plain("new reply"));
+        // render() must leave scroll_top unchanged because follow-tail is off.
+        cc.render(&mut MockBackend, make_rect());
+        assert_eq!(
+            cc.transcript_scroll_top(),
+            3,
+            "scroll position must be preserved when follow-tail is disengaged; \
+             scroll_top={}",
+            cc.transcript_scroll_top()
+        );
+    }
+
+    /// After scrolling up (disengaging follow-tail), scrolling back to the very
+    /// last page must re-engage follow-tail automatically.
+    #[test]
+    fn scroll_to_bottom_reengages_follow_tail() {
+        let mut cc = ChatController::new("c");
+        // Disengage by scrolling up.
+        cc.scroll_transcript_by(-5, 20, 5); // clamped to 0, max=15, stuck=false
+        cc.scroll_transcript_by(3, 20, 5); // scroll_top=3, stuck=false
+        assert!(!cc.stuck_to_bottom);
+        // Scroll to the bottom (max = 20−5 = 15).
+        cc.scroll_transcript_by(100, 20, 5); // clamped to 15, stuck=(15≥15)=true
+        assert!(
+            cc.stuck_to_bottom,
+            "scrolling back to the last page must re-engage follow-tail"
+        );
     }
 
     // ── push_turn / push_turn_markdown ───────────────────────────────
