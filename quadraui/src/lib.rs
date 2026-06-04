@@ -1552,10 +1552,11 @@ mod tests {
             crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
         });
         assert_eq!(layout.visible_buttons.len(), 3);
-        // Stacked: each 30px tall (90/3); widths equal content_w = 300-20=280.
+        // Stacked: each one full button row tall (button_row_height = 90);
+        // widths equal content_w = 300-20 = 280.
         for b in &layout.visible_buttons {
             assert_eq!(b.bounds.width, 280.0);
-            assert_eq!(b.bounds.height, 30.0);
+            assert_eq!(b.bounds.height, 90.0);
         }
         // Button 0 y < button 1 y < button 2 y.
         assert!(layout.visible_buttons[0].bounds.y < layout.visible_buttons[1].bounds.y);

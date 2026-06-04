@@ -173,7 +173,13 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
             set_cell(buf, col, by, ' ', fg, btn_bg);
         }
         let label_w = btn.label.chars().count() as u16;
-        let start = bx + (bw.saturating_sub(label_w)) / 2;
+        // Vertical button lists (e.g. the repo picker) read as a left-justified
+        // menu; horizontal action rows keep their centred labels.
+        let start = if dialog.vertical_buttons {
+            bx + 1
+        } else {
+            bx + (bw.saturating_sub(label_w)) / 2
+        };
         for (i, ch) in btn.label.chars().enumerate() {
             let col = start + i as u16;
             if col >= bx + bw {

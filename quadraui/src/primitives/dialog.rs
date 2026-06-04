@@ -265,7 +265,14 @@ impl Dialog {
     where
         F: Fn(&crate::primitives::toolbar::ToolbarButton) -> ToolbarItemMeasure,
     {
-        let total_h = measure.total_height();
+        // A vertical button stack reserves one row per button; total_height()
+        // budgets only a single button row, so swap in the full block height.
+        let button_block_h = if self.vertical_buttons {
+            measure.button_row_height * self.buttons.len().max(1) as f32
+        } else {
+            measure.button_row_height
+        };
+        let total_h = measure.total_height() - measure.button_row_height + button_block_h;
         let box_x = viewport.x + (viewport.width - measure.width) * 0.5;
         let box_y = viewport.y + (viewport.height - total_h) * 0.5;
         let bounds = Rect::new(box_x, box_y, measure.width, total_h);
@@ -302,20 +309,17 @@ impl Dialog {
             };
 
         let button_row_bounds =
-            Rect::new(content_x, cursor_y, content_w, measure.button_row_height);
+            Rect::new(content_x, cursor_y, content_w, button_block_h);
 
         let mut visible_buttons: Vec<VisibleDialogButton> = Vec::new();
         let mut hit_regions: Vec<(Rect, DialogHit)> = Vec::new();
 
         if self.vertical_buttons {
-            // Stack vertically, each button full content width.
-            let btn_h = if self.buttons.is_empty() {
-                0.0
-            } else {
-                measure.button_row_height / self.buttons.len() as f32
-            };
+            // Stack vertically, one full row per button, full content width,
+            // starting at the button-row origin and growing downward.
+            let btn_h = measure.button_row_height;
             for (i, btn) in self.buttons.iter().enumerate() {
-                let y = cursor_y - measure.button_row_height + (i as f32) * btn_h;
+                let y = cursor_y + (i as f32) * btn_h;
                 let b = Rect::new(content_x, y, content_w, btn_h);
                 visible_buttons.push(VisibleDialogButton {
                     button_idx: i,
