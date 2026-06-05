@@ -99,7 +99,7 @@ impl TerminalApp {
         let footer_rect = Rect::new(0.0, y, vp.width, FOOTER_ROWS as f32);
 
         let (text, fg, bg) = if let Some(ref sess) = self.session {
-            if sess.exited {
+            if sess.is_exited() {
                 let code = sess.exit_code().unwrap_or(0);
                 (
                     format!(" [process exited {code}] — press Ctrl+Q to close"),
@@ -189,8 +189,8 @@ impl AppLogic for TerminalApp {
         let rect = Rect::new(0.0, 0.0, vp.width, term_h);
 
         if let Some(ref sess) = self.session {
-            let total = sess.history_len() + sess.rows as usize;
-            let sb = if total > sess.rows as usize {
+            let total = sess.history_len() + sess.rows() as usize;
+            let sb = if total > sess.rows() as usize {
                 Some(sess.scrollbar_state(None))
             } else {
                 None
@@ -269,8 +269,8 @@ impl AppLogic for TerminalApp {
 
                 if in_scrollbar {
                     if let Some(ref sess) = self.session {
-                        let total = sess.history_len() + sess.rows as usize;
-                        let visible = sess.rows as usize;
+                        let total = sess.history_len() + sess.rows() as usize;
+                        let visible = sess.rows() as usize;
                         if total > visible {
                             // Start drag only when the scrollbar is visible.
                             self.scrollbar_drag = Some(ScrollbarDrag {
@@ -310,7 +310,7 @@ impl AppLogic for TerminalApp {
             // ── Bracketed paste ───────────────────────────────────────────────
             UiEvent::ClipboardPaste(text) => {
                 if let Some(ref mut sess) = self.session {
-                    if !sess.exited {
+                    if !sess.is_exited() {
                         // Wrap in bracketed-paste markers so the shell handles it
                         // correctly (avoids interpreting pasted newlines as commands).
                         let mut bytes = b"\x1b[200~".to_vec();
@@ -330,7 +330,7 @@ impl AppLogic for TerminalApp {
                 ..
             } if modifiers.shift => {
                 if let Some(ref mut sess) = self.session {
-                    let page = sess.rows as usize;
+                    let page = sess.rows() as usize;
                     sess.scroll_up(page);
                 }
                 return Reaction::Redraw;
@@ -343,7 +343,7 @@ impl AppLogic for TerminalApp {
                 ..
             } if modifiers.shift => {
                 if let Some(ref mut sess) = self.session {
-                    let page = sess.rows as usize;
+                    let page = sess.rows() as usize;
                     sess.scroll_down(page);
                 }
                 return Reaction::Redraw;
@@ -365,8 +365,8 @@ impl AppLogic for TerminalApp {
             // ── Key input ─────────────────────────────────────────────────────
             UiEvent::KeyPressed { key, modifiers, .. } => {
                 if let Some(ref mut sess) = self.session {
-                    // FIX 1: dead PTY — swallow all key input.
-                    if sess.exited {
+                    // Dead PTY — swallow all key input.
+                    if sess.is_exited() {
                         return Reaction::Continue;
                     }
                     // Any key press returns to live view.
@@ -381,8 +381,8 @@ impl AppLogic for TerminalApp {
             // ── Printable characters typed ────────────────────────────────────
             UiEvent::CharTyped(ch) => {
                 if let Some(ref mut sess) = self.session {
-                    // FIX 1: dead PTY — swallow all character input.
-                    if sess.exited {
+                    // Dead PTY — swallow all character input.
+                    if sess.is_exited() {
                         return Reaction::Continue;
                     }
                     sess.scroll_reset();
@@ -527,12 +527,38 @@ fn xterm_cursor_seq(letter: &[u8], mod_param: Option<u8>) -> Vec<u8> {
 
 /// Function-key byte sequences (xterm encoding).
 fn f_key_bytes(n: u8, mod_param: Option<u8>) -> Option<Vec<u8>> {
-    // F1-F4 use SS3 sequences; F5-F12 use CSI sequences.
+    // F1-F4 use SS3 sequences when unmodified (\x1bOP…\x1bOS).
+    // When a modifier is present they fall back to CSI: \x1b[1;<mod>P…S.
+    // F5-F12 always use tilde-terminated CSI sequences.
     let bytes = match n {
-        1 => xterm_cursor_seq(b"P", mod_param), // \x1bOP or \x1b[1;mP
-        2 => xterm_cursor_seq(b"Q", mod_param),
-        3 => xterm_cursor_seq(b"R", mod_param),
-        4 => xterm_cursor_seq(b"S", mod_param),
+        1 => {
+            if mod_param.is_none() {
+                b"\x1bOP".to_vec()
+            } else {
+                xterm_cursor_seq(b"P", mod_param)
+            }
+        }
+        2 => {
+            if mod_param.is_none() {
+                b"\x1bOQ".to_vec()
+            } else {
+                xterm_cursor_seq(b"Q", mod_param)
+            }
+        }
+        3 => {
+            if mod_param.is_none() {
+                b"\x1bOR".to_vec()
+            } else {
+                xterm_cursor_seq(b"R", mod_param)
+            }
+        }
+        4 => {
+            if mod_param.is_none() {
+                b"\x1bOS".to_vec()
+            } else {
+                xterm_cursor_seq(b"S", mod_param)
+            }
+        }
         5 => xterm_seq(b"15", mod_param),
         6 => xterm_seq(b"17", mod_param),
         7 => xterm_seq(b"18", mod_param),
@@ -608,8 +634,41 @@ mod tests {
 
     #[test]
     fn f1_plain() {
+        // F1 unmodified must emit the SS3 sequence \x1bOP, NOT the CSI \x1b[P.
         let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(1)), Modifiers::default()).unwrap();
-        assert_eq!(bytes, b"\x1b[P");
+        assert_eq!(bytes, b"\x1bOP");
+    }
+
+    #[test]
+    fn f2_plain() {
+        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(2)), Modifiers::default()).unwrap();
+        assert_eq!(bytes, b"\x1bOQ");
+    }
+
+    #[test]
+    fn f3_plain() {
+        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(3)), Modifiers::default()).unwrap();
+        assert_eq!(bytes, b"\x1bOR");
+    }
+
+    #[test]
+    fn f4_plain() {
+        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(4)), Modifiers::default()).unwrap();
+        assert_eq!(bytes, b"\x1bOS");
+    }
+
+    #[test]
+    fn f1_ctrl_uses_csi() {
+        // Ctrl+F1 → \x1b[1;5P (CSI modifier form, not SS3).
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::F(1)),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[1;5P");
     }
 
     #[test]
