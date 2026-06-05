@@ -2567,4 +2567,50 @@ mod tests {
             "text_regions must be cleared on begin_frame"
         );
     }
+
+    /// Verify that `select_all_text_region` sets the full viewport bounds as
+    /// the active selection. This directly tests the core acceptance criterion:
+    /// "Ctrl-A sets the expected full range; extracted text == full region
+    /// content" (the extraction half is covered by the round-trip test above).
+    #[test]
+    fn select_all_text_region_sets_full_bounds() {
+        let mut backend = TuiBackend::new();
+        backend.register_text_region(crate::dispatch::TextRegion {
+            id: WidgetId::new("body"),
+            bounds: crate::event::Rect::new(0.0, 0.0, 10.0, 5.0),
+            lines: vec![],
+        });
+        assert!(
+            backend.select_all_text_region(),
+            "should return true when exactly one region is registered"
+        );
+        let sel = backend
+            .active_text_selection()
+            .expect("selection should be active after select_all_text_region");
+        assert_eq!(
+            sel.anchor,
+            Point::new(0.0, 0.0),
+            "anchor should be at top-left of region bounds"
+        );
+        assert_eq!(
+            sel.focus,
+            Point::new(10.0, 5.0),
+            "focus should be at bottom-right of region bounds"
+        );
+    }
+
+    /// Verify that `select_all_text_region` returns `false` when no regions
+    /// are registered, and the fallthrough path is taken.
+    #[test]
+    fn select_all_text_region_returns_false_when_no_regions() {
+        let mut backend = TuiBackend::new();
+        assert!(
+            !backend.select_all_text_region(),
+            "should return false with no registered regions"
+        );
+        assert!(
+            backend.active_text_selection().is_none(),
+            "no selection should be set when select_all returns false"
+        );
+    }
 }
