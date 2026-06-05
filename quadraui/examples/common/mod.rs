@@ -28,6 +28,11 @@
 // unused-import warnings are expected and not actionable here.
 #![allow(dead_code, unused_imports)]
 
+#[cfg(feature = "terminal")]
+pub mod terminal_app;
+#[cfg(feature = "terminal")]
+pub use terminal_app::TerminalApp;
+
 pub mod ai_transcript;
 pub mod appshell_demo;
 pub mod bottom_panel_demo;

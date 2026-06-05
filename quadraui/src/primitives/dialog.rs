@@ -308,8 +308,7 @@ impl Dialog {
                 (None, None)
             };
 
-        let button_row_bounds =
-            Rect::new(content_x, cursor_y, content_w, button_block_h);
+        let button_row_bounds = Rect::new(content_x, cursor_y, content_w, button_block_h);
 
         let mut visible_buttons: Vec<VisibleDialogButton> = Vec::new();
         let mut hit_regions: Vec<(Rect, DialogHit)> = Vec::new();
