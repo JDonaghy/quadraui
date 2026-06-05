@@ -90,6 +90,12 @@ pub mod shell;
 pub mod theme;
 pub mod types;
 
+// ── Terminal engine (PTY + vt100 + scrollback) ───────────────────────────────
+// Gated behind the `terminal` feature so non-terminal consumers don't pull in
+// portable-pty / vt100.
+#[cfg(feature = "terminal")]
+pub mod terminal_engine;
+
 // ── Per-backend rasterisers (#223) ──────────────────────────────────────────
 // Public `draw_*` rasterisers, gated behind feature flags so apps that only
 // consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode
