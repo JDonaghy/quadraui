@@ -359,6 +359,18 @@ impl TerminalSession {
         self.exit_code
     }
 
+    /// Returns `true` when the cursor should be rendered visible.
+    ///
+    /// The cursor is suppressed when:
+    /// - The child process has exited ([`exited`](Self::exited) is `true`), or
+    /// - The view is scrolled into history (`scroll_offset > 0`).
+    ///
+    /// Use this to gate cursor rendering in the app layer instead of
+    /// relying on cell-level `is_cursor` flags alone.
+    pub fn cursor_visible(&self) -> bool {
+        !self.exited && self.scroll_offset == 0
+    }
+
     // ── Text scrape ───────────────────────────────────────────────────────────
 
     /// Extract the current vt100 live screen as plain text.
@@ -716,7 +728,8 @@ impl TerminalSession {
                                         (' ', (229, 229, 229), (30, 30, 30), false, false, false)
                                     };
 
-                                let is_cursor = scroll_offset == 0
+                                let is_cursor = !self.exited
+                                    && scroll_offset == 0
                                     && cursor_active
                                     && live_r == cursor_row
                                     && cu == cursor_col;
@@ -986,6 +999,70 @@ mod tests {
         let (r, g, b) = map_vt100_color(vt100::Color::Idx(196), false);
         // Index 196 = pure red (from cube).
         assert_eq!((r, g, b), (255, 0, 0));
+    }
+
+    // ── cursor_visible integration tests (require a real PTY / Unix shell) ────
+
+    /// After the child exits, `cursor_visible()` must return `false`
+    /// regardless of the scroll offset.
+    #[test]
+    #[cfg(unix)]
+    fn cursor_hidden_after_exit() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
+
+        // Verify cursor is visible before exit (scroll_offset = 0, not exited).
+        assert!(
+            sess.cursor_visible(),
+            "cursor should be visible before exit"
+        );
+
+        // Exit the shell.
+        sess.send_str("exit 0\n");
+        let exited = poll_until(&mut sess, 5000, |s| s.exited);
+        assert!(exited, "shell did not exit within timeout");
+
+        // After exit, cursor must be hidden.
+        assert!(
+            !sess.cursor_visible(),
+            "cursor should be hidden after shell exits"
+        );
+    }
+
+    /// When scrolled into history, `cursor_visible()` returns `false`.
+    #[test]
+    #[cfg(unix)]
+    fn cursor_hidden_when_scrolled() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
+
+        // Generate some history so we can scroll.
+        for _ in 0..30 {
+            sess.send_str("echo line\n");
+        }
+        let _ = poll_until(&mut sess, 5000, |s| s.history_len() > 0);
+
+        // At live view (scroll_offset = 0), cursor should be visible.
+        assert!(
+            sess.cursor_visible(),
+            "cursor should be visible at live view"
+        );
+
+        // Scroll up into history.
+        sess.scroll_up(5);
+        assert!(
+            !sess.cursor_visible(),
+            "cursor should be hidden when scrolled into history"
+        );
+
+        // Scroll back to live view.
+        sess.scroll_reset();
+        assert!(
+            sess.cursor_visible(),
+            "cursor should be visible again after scroll_reset"
+        );
+
+        sess.send_str("exit\n");
     }
 
     // ── Integration tests (require a real PTY / Unix shell) ───────────────────
