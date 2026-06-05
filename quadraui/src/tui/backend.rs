@@ -124,6 +124,17 @@ pub struct TuiBackend {
     /// `terminal.current_buffer_mut()` would return an empty buffer —
     /// caching here is the only reliable way to get the text.
     cached_selection_text: String,
+    /// The id of the most-recently focused/hovered `TextRegion` — used
+    /// by [`Self::select_all_text_region`] to resolve the Ctrl-A target.
+    /// Updated in two places:
+    ///   (a) [`Self::set_active_text_selection`] — when a drag produces
+    ///       a `TextSelectionChanged` event.
+    ///   (b) [`Self::apply_dispatch`] — when a `MouseDown` starts a
+    ///       `DragTarget::TextSelection` drag.
+    /// Intentionally NOT cleared on `clear_text_selection` /
+    /// `clear_selection_display` so Ctrl-A still targets the right
+    /// region after Ctrl-C or a plain click.
+    last_text_region_id: Option<WidgetId>,
 }
 
 impl TuiBackend {
@@ -148,6 +159,7 @@ impl TuiBackend {
             text_regions: Vec::new(),
             active_selection: None,
             cached_selection_text: String::new(),
+            last_text_region_id: None,
         }
     }
 
@@ -236,13 +248,18 @@ impl TuiBackend {
     }
 
     /// Update (or start) the active text selection. Called by the runner
-    /// when a [`UiEvent::TextSelectionChanged`] event arrives.
+    /// when a [`UiEvent::TextSelectionChanged`] event arrives, and by
+    /// [`Self::select_all_text_region`].
+    ///
+    /// Also updates [`Self::last_text_region_id`] so Ctrl-A can resolve
+    /// the correct target even after the drag has ended.
     pub(crate) fn set_active_text_selection(
         &mut self,
         region: WidgetId,
         anchor: Point,
         focus: Point,
     ) {
+        self.last_text_region_id = Some(region.clone());
         self.active_selection = Some(TuiTextSelection {
             region,
             anchor,
@@ -335,6 +352,67 @@ impl TuiBackend {
         self.cached_selection_text.clone()
     }
 
+    /// Set the active selection to cover the entire visible content of the
+    /// most-recently focused `TextRegion`. Returns `true` when a region was
+    /// found and the selection was set; `false` when no region can be
+    /// resolved (zero registered regions, or multiple with no prior
+    /// interaction).
+    ///
+    /// Target resolution order:
+    /// 1. [`Self::last_text_region_id`] if the region is still registered
+    ///    this frame.
+    /// 2. The sole registered region (if exactly one exists).
+    /// 3. Returns `false` — caller should fall through to the app.
+    ///
+    /// # Viewport-only limitation
+    ///
+    /// `TextRegion.bounds` is the painted viewport. For scrolled panels
+    /// (e.g. long issue bodies) only the on-screen rows are selected.
+    /// Full-document select-all requires `TextRegion` to carry
+    /// total-content rows; a follow-up issue tracks this.
+    ///
+    /// # `last_text_region_id` persistence
+    ///
+    /// [`Self::last_text_region_id`] is intentionally NOT cleared on
+    /// `clear_text_selection` / `clear_selection_display` so Ctrl-A
+    /// still targets the right region after Ctrl-C or a plain click.
+    /// A future multi-panel focus model may need to revise this.
+    // TODO: full-document select-all requires TextRegion to carry
+    // total-content rows; for now this selects only the visible
+    // viewport (bounds).
+    pub(crate) fn select_all_text_region(&mut self) -> bool {
+        // Resolve the target region id.
+        let region_id = if let Some(ref id) = self.last_text_region_id {
+            if self.text_regions.iter().any(|r| &r.id == id) {
+                id.clone()
+            } else if self.text_regions.len() == 1 {
+                self.text_regions[0].id.clone()
+            } else {
+                return false;
+            }
+        } else if self.text_regions.len() == 1 {
+            self.text_regions[0].id.clone()
+        } else {
+            return false;
+        };
+
+        // Clone the bounds to release the borrow before calling
+        // `set_active_text_selection`, which needs `&mut self`.
+        let bounds = match self.text_regions.iter().find(|r| r.id == region_id) {
+            Some(r) => r.bounds,
+            None => return false,
+        };
+
+        // Anchor at top-left; focus just past the bottom-right so that
+        // `text_selection_line_range` covers every row. The focus is
+        // clamped to the region bounds by that function, so placing it
+        // one unit outside is harmless.
+        let anchor = Point::new(bounds.x, bounds.y);
+        let focus = Point::new(bounds.x + bounds.width, bounds.y + bounds.height);
+        self.set_active_text_selection(region_id, anchor, focus);
+        true
+    }
+
     /// Read the selected cells back from `buf`, trim trailing whitespace
     /// per line, and return the joined text (lines separated by `\n`).
     ///
@@ -425,6 +503,12 @@ impl TuiBackend {
                         button,
                         modifiers,
                     ));
+                    // Track which region was clicked so Ctrl-A can target
+                    // the right region even before the first drag move.
+                    if let Some(DragTarget::TextSelection { region, .. }) = self.drag_state.target()
+                    {
+                        self.last_text_region_id = Some(region.clone());
+                    }
                 }
                 UiEvent::MouseMoved { position, buttons } => {
                     out.extend(crate::dispatch::dispatch_mouse_drag(
