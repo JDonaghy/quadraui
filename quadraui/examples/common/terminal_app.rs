@@ -495,15 +495,18 @@ fn modifier_param(mods: Modifiers) -> Option<u8> {
     }
 }
 
-/// Build `\x1b[<code>~` or `\x1b[1;<mod><code>~` for tilde-terminated sequences.
+/// Build `\x1b[<code>~` or `\x1b[<code>;<mod>~` for tilde-terminated sequences.
+///
+/// Per xterm conventions, the modifier parameter follows the code (separated by `;`)
+/// for tilde-terminated sequences (Home, End, Insert, Delete, PageUp, PageDown, F5–F12).
+/// Cursor-letter sequences use the `1;<mod>` prefix instead — see [`xterm_cursor_seq`].
 fn xterm_seq(code: &[u8], mod_param: Option<u8>) -> Vec<u8> {
     let mut v = b"\x1b[".to_vec();
+    v.extend_from_slice(code);
     if let Some(m) = mod_param {
-        v.push(b'1');
         v.push(b';');
         v.push(b'0' + m);
     }
-    v.extend_from_slice(code);
     v.push(b'~');
     v
 }
@@ -681,6 +684,91 @@ mod tests {
     fn page_up_plain() {
         let bytes = key_to_pty_bytes(Key::Named(NamedKey::PageUp), Modifiers::default()).unwrap();
         assert_eq!(bytes, b"\x1b[5~");
+    }
+
+    #[test]
+    fn delete_ctrl() {
+        // Tilde-terminated keys with a modifier must use the form `\x1b[<code>;<mod>~`,
+        // NOT `\x1b[1;<mod><code>~` (which is the cursor-letter form).
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::Delete),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[3;5~");
+    }
+
+    #[test]
+    fn page_up_ctrl() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::PageUp),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[5;5~");
+    }
+
+    #[test]
+    fn home_shift() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::Home),
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // shift mod_param = 2 → "\x1b[1;2~"  (Home code = "1")
+        assert_eq!(bytes, b"\x1b[1;2~");
+    }
+
+    #[test]
+    fn end_alt() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::End),
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // alt mod_param = 3 → "\x1b[4;3~"  (End code = "4")
+        assert_eq!(bytes, b"\x1b[4;3~");
+    }
+
+    #[test]
+    fn f5_ctrl() {
+        // F5+ are tilde-terminated; Ctrl+F5 → \x1b[15;5~ (not \x1b[1;515~).
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::F(5)),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[15;5~");
+    }
+
+    #[test]
+    fn page_down_shift_ctrl() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::PageDown),
+            Modifiers {
+                shift: true,
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // shift+ctrl mod_param = 6 → "\x1b[6;6~"  (PageDown code = "6")
+        assert_eq!(bytes, b"\x1b[6;6~");
     }
 
     #[test]
