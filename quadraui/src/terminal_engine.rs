@@ -208,19 +208,33 @@ pub struct TerminalSession {
     /// PTY output bytes from the background reader thread.
     rx: Receiver<Vec<u8>>,
     /// Current terminal width in columns.
-    pub cols: u16,
+    ///
+    /// Read via [`cols()`](Self::cols); change only through [`resize()`](Self::resize)
+    /// to keep the vt100 parser and PTY master in sync.
+    cols: u16,
     /// Current terminal height in rows.
-    pub rows: u16,
+    ///
+    /// Read via [`rows()`](Self::rows); change only through [`resize()`](Self::resize).
+    rows: u16,
     /// Mouse text selection, if any.
     pub selection: Option<TerminalSelection>,
     /// `true` once the child process has exited.
-    pub exited: bool,
+    ///
+    /// Read via [`is_exited()`](Self::is_exited). Set only by [`poll()`](Self::poll)
+    /// when `child.try_wait()` returns a status — setting it externally would
+    /// desynchronise the exit-code state.
+    exited: bool,
     /// Exit code of the child process once it has exited, or `None` while
     /// still running. `0` conventionally means success.
     exit_code: Option<u32>,
     /// How many rows above the live bottom the user has scrolled.
     /// `0` = live view; maximum = `history.len()`.
-    pub scroll_offset: usize,
+    ///
+    /// Read via [`scroll_offset()`](Self::scroll_offset); change through
+    /// [`set_scroll_offset()`](Self::set_scroll_offset) /
+    /// [`scroll_up()`](Self::scroll_up) / [`scroll_down()`](Self::scroll_down)
+    /// so that `parser.set_scrollback(0)` is always called consistently.
+    scroll_offset: usize,
     /// Scrollback ring buffer (oldest at index 0, newest at the back).
     history: VecDeque<Vec<HistCell>>,
     /// Maximum number of rows kept in `history` (`0` = unlimited — not
@@ -350,11 +364,37 @@ impl TerminalSession {
 
     // ── Exit status ───────────────────────────────────────────────────────────
 
+    /// Current terminal width in columns.
+    pub fn cols(&self) -> u16 {
+        self.cols
+    }
+
+    /// Current terminal height in rows.
+    pub fn rows(&self) -> u16 {
+        self.rows
+    }
+
+    /// `true` once the child process has exited.
+    ///
+    /// Use [`exit_code()`](Self::exit_code) for the numeric exit status.
+    pub fn is_exited(&self) -> bool {
+        self.exited
+    }
+
+    /// Current scroll offset (rows above the live bottom).
+    ///
+    /// `0` = live view; maximum = [`history_len()`](Self::history_len).
+    /// Change via [`set_scroll_offset()`](Self::set_scroll_offset) /
+    /// [`scroll_up()`](Self::scroll_up) / [`scroll_down()`](Self::scroll_down).
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
     /// Exit code of the child process, or `None` while still running.
     ///
     /// `0` conventionally means success. Populated by the first [`poll`](Self::poll)
-    /// call that observes the child exiting. Check [`exited`](Self::exited) first
-    /// if you only need a boolean; this method returns the actual numeric code.
+    /// call that observes the child exiting. Check [`is_exited()`](Self::is_exited)
+    /// first if you only need a boolean; this method returns the actual numeric code.
     pub fn exit_code(&self) -> Option<u32> {
         self.exit_code
     }
@@ -991,13 +1031,9 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_state_inverted() {
-        // A synthetic test without a real PTY — just checks the
-        // scrollbar_state API shape using hand-crafted history.
-        // We can't spawn a TerminalSession in unit tests without a
-        // PTY, but we can test the pure helper logic above.
+    fn map_vt100_idx_196_is_pure_red() {
+        // Colour index 196 = r=5,g=0,b=0 in the 6×6×6 cube → (255, 0, 0).
         let (r, g, b) = map_vt100_color(vt100::Color::Idx(196), false);
-        // Index 196 = pure red (from cube).
         assert_eq!((r, g, b), (255, 0, 0));
     }
 

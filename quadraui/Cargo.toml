@@ -478,6 +478,11 @@ path = "examples/tui_terminal.rs"
 required-features = ["tui", "terminal"]
 
 [[example]]
+name = "gtk_terminal"
+path = "examples/gtk_terminal.rs"
+required-features = ["gtk", "terminal"]
+
+[[example]]
 name = "gtk_toolbar"
 path = "examples/gtk_toolbar.rs"
 required-features = ["gtk"]
