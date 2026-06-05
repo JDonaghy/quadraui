@@ -6,6 +6,7 @@
 //!
 //! Controls:
 //! - click-drag content area   select text (TUI: line-wise highlight)
+//! - Ctrl-A                    select all content in the panel
 //! - Ctrl-C (with selection)   copy selection to clipboard (OSC52 + native)
 //! - click close button        quit
 //! - click maximize button     toggle collapsed
@@ -37,7 +38,7 @@ impl PanelApp {
     pub fn new() -> Self {
         Self {
             collapsed: false,
-            last_message: "Click-drag to select text, Ctrl-C to copy".into(),
+            last_message: "Click-drag or Ctrl-A to select, Ctrl-C to copy".into(),
         }
     }
 
@@ -77,7 +78,7 @@ impl PanelApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " c=collapse | q=quit ".into(),
+                text: " Ctrl-A=select all | c=collapse | q=quit ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -196,7 +197,7 @@ impl AppLogic for PanelApp {
                 Reaction::Redraw
             }
             UiEvent::MouseDown { position, .. } => {
-                self.last_message = "Click-drag to select text, Ctrl-C to copy".into();
+                self.last_message = "Click-drag or Ctrl-A to select, Ctrl-C to copy".into();
                 let viewport = backend.viewport();
                 let lh = backend.line_height();
                 let panel_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);

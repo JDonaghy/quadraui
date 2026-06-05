@@ -140,6 +140,17 @@ pub struct GtkBackend {
     /// clears it). Set by [`Self::set_active_text_selection`], cleared by
     /// [`Self::clear_text_selection`] or [`Self::clear_selection_display`].
     active_selection: Option<GtkTextSelection>,
+    /// The id of the most-recently focused/hovered `TextRegion` — used by
+    /// [`Self::select_all_text_region`] to resolve the Ctrl-A target.
+    /// Updated in two places:
+    ///   (a) [`Self::set_active_text_selection`] — when a drag produces
+    ///       a `TextSelectionChanged` event.
+    ///   (b) `gtk/run.rs::connect_pressed` — when a `MouseDown` starts
+    ///       a `DragTarget::TextSelection` drag.
+    /// Intentionally NOT cleared on `clear_text_selection` /
+    /// `clear_selection_display` so Ctrl-A still targets the right
+    /// region after Ctrl-C or a plain click.
+    pub(crate) last_text_region_id: Option<WidgetId>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -177,6 +188,7 @@ impl GtkBackend {
             ui_font: "Sans 11".to_string(),
             text_regions: Vec::new(),
             active_selection: None,
+            last_text_region_id: None,
         }
     }
 
@@ -382,13 +394,18 @@ impl GtkBackend {
     }
 
     /// Update (or start) the active text selection. Called by the runner
-    /// when a [`UiEvent::TextSelectionChanged`] event arrives.
+    /// when a [`UiEvent::TextSelectionChanged`] event arrives, and by
+    /// [`Self::select_all_text_region`].
+    ///
+    /// Also updates [`Self::last_text_region_id`] so Ctrl-A can resolve
+    /// the correct target even after the drag has ended.
     pub(crate) fn set_active_text_selection(
         &mut self,
         region: WidgetId,
         anchor: Point,
         focus: Point,
     ) {
+        self.last_text_region_id = Some(region.clone());
         self.active_selection = Some(GtkTextSelection {
             region,
             anchor,
@@ -545,6 +562,68 @@ impl GtkBackend {
             lines.push(trimmed);
         }
         lines.join("\n")
+    }
+
+    /// Set the active selection to cover the entire visible content of the
+    /// most-recently focused `TextRegion`. Returns `true` when a region was
+    /// found and the selection was set; `false` when no region can be
+    /// resolved (zero registered regions, or multiple with no prior
+    /// interaction).
+    ///
+    /// Target resolution order:
+    /// 1. [`Self::last_text_region_id`] if the region is still registered
+    ///    this frame.
+    /// 2. The sole registered region (if exactly one exists).
+    /// 3. Returns `false` — caller should fall through to the app.
+    ///
+    /// Anchor is at the region's top-left pixel; focus is just past the
+    /// bottom-right pixel so `apply_selection_highlight` covers every row.
+    ///
+    /// # Viewport-only limitation
+    ///
+    /// `TextRegion.bounds` is the painted viewport. For scrolled panels
+    /// (e.g. long issue bodies) only the on-screen rows are selected.
+    /// Full-document select-all requires `TextRegion` to carry
+    /// total-content rows; a follow-up issue tracks this.
+    // TODO: full-document select-all requires TextRegion to carry
+    // total-content rows; for now this selects only the visible
+    // viewport (bounds).
+    pub(crate) fn select_all_text_region(&mut self) -> bool {
+        // Resolve the target region id.
+        let region_id = if let Some(ref id) = self.last_text_region_id {
+            if self.text_regions.iter().any(|r| &r.id == id) {
+                id.clone()
+            } else if self.text_regions.len() == 1 {
+                self.text_regions[0].id.clone()
+            } else {
+                return false;
+            }
+        } else if self.text_regions.len() == 1 {
+            self.text_regions[0].id.clone()
+        } else {
+            return false;
+        };
+
+        // Clone the bounds to release the borrow before calling
+        // `set_active_text_selection`, which needs `&mut self`.
+        let bounds = match self.text_regions.iter().find(|r| r.id == region_id) {
+            Some(r) => r.bounds,
+            None => return false,
+        };
+
+        // Anchor at top-left pixel; focus just past the bottom-right pixel
+        // so that `apply_selection_highlight` (and `extract_selection_text`)
+        // cover every row. The focus is clamped to the region bounds.
+        let anchor = Point {
+            x: bounds.x,
+            y: bounds.y,
+        };
+        let focus = Point {
+            x: bounds.x + bounds.width,
+            y: bounds.y + bounds.height,
+        };
+        self.set_active_text_selection(region_id, anchor, focus);
+        true
     }
 
     // ── Accelerators ────────────────────────────────────────────────────────

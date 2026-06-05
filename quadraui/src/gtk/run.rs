@@ -248,6 +248,35 @@ fn activate<A: AppLogic + 'static>(
                 }
             }
 
+            // ── Ctrl-A interception (select-all for text regions) ────
+            //
+            // Accepts 'A' (CapsLock). Guards on !shift to avoid
+            // intercepting Ctrl-Shift-A. Falls through to the app when
+            // no TextRegion resolves so app-level Ctrl-A handlers
+            // (e.g. tree-node inline-edit select-all) are unaffected.
+            //
+            // Priority note: when a `TextRegion` is registered the runner
+            // takes Ctrl-A; apps that register a `TextRegion` and also
+            // want their own Ctrl-A handler should clear the region first.
+            if let UiEvent::KeyPressed {
+                key: Key::Char('a') | Key::Char('A'),
+                modifiers:
+                    Modifiers {
+                        ctrl: true,
+                        shift: false,
+                        alt: false,
+                        cmd: false,
+                    },
+                ..
+            } = &ev
+            {
+                let handled = backend.borrow_mut().select_all_text_region();
+                if handled {
+                    da_for_redraw.queue_draw();
+                    return glib::Propagation::Stop;
+                }
+            }
+
             let reaction = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
@@ -306,7 +335,7 @@ fn activate<A: AppLogic + 'static>(
                 let drag_rc = backend_mut.drag_state_handle();
                 let stack = stack_rc.borrow();
                 let mut drag = drag_rc.borrow_mut();
-                dispatch_click(
+                let evs = dispatch_click(
                     &stack,
                     &[], // scroll surfaces not tracked in the runner
                     &backend_mut.text_regions,
@@ -314,7 +343,15 @@ fn activate<A: AppLogic + 'static>(
                     position,
                     button,
                     modifiers,
-                )
+                );
+                // Track which region was clicked so Ctrl-A can target
+                // the right region even before the first drag move.
+                if let Some(crate::dispatch::DragTarget::TextSelection { region, .. }) =
+                    drag.target()
+                {
+                    backend_mut.last_text_region_id = Some(region.clone());
+                }
+                evs
             };
 
             let mut needs_redraw = false;

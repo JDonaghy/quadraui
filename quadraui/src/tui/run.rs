@@ -260,6 +260,24 @@ pub(crate) fn dispatch_event<A: AppLogic>(
                 _ => EventOutcome::Redraw,
             };
         }
+        // Ctrl-A (any case; not Ctrl-Shift-A) → select the entire
+        // content of the most-recently focused `TextRegion`, if one is
+        // registered. Accepts 'A' (CapsLock). Falls through to the app
+        // when no region resolves so app-level Ctrl-A handlers (e.g. a
+        // tree-node inline-edit select-all) are unaffected.
+        //
+        // Priority note: when a `TextRegion` is registered the runner
+        // takes Ctrl-A; apps that register a `TextRegion` and also want
+        // their own Ctrl-A handler should clear the region first.
+        UiEvent::KeyPressed {
+            key: Key::Char('a') | Key::Char('A'),
+            modifiers,
+            ..
+        } if modifiers.ctrl && !modifiers.shift && !modifiers.alt && !modifiers.cmd => {
+            if backend.select_all_text_region() {
+                return EventOutcome::Redraw;
+            }
+        }
         _ => {}
     }
 
