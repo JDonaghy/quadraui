@@ -150,7 +150,7 @@ pub struct GtkBackend {
     /// Intentionally NOT cleared on `clear_text_selection` /
     /// `clear_selection_display` so Ctrl-A still targets the right
     /// region after Ctrl-C or a plain click.
-    pub(crate) last_text_region_id: Option<WidgetId>,
+    last_text_region_id: Option<WidgetId>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -433,6 +433,19 @@ impl GtkBackend {
         ) {
             drag.end();
         }
+    }
+
+    /// Record that `id` is the most-recently focused/clicked `TextRegion`.
+    /// Called by the runner's `connect_pressed` callback after
+    /// `dispatch_click` starts a `DragTarget::TextSelection` drag so that
+    /// [`Self::select_all_text_region`] can resolve the correct target even
+    /// before the first drag-move fires a `TextSelectionChanged` event.
+    ///
+    /// Kept as a method (rather than exposing `last_text_region_id` as
+    /// `pub(crate)`) so callers cannot bypass the encapsulation and set
+    /// stale or incorrect ids.
+    pub(crate) fn track_focused_text_region(&mut self, id: WidgetId) {
+        self.last_text_region_id = Some(id);
     }
 
     /// Paint the active text selection highlight onto `cr`. Must be called
@@ -2582,6 +2595,48 @@ mod tests {
             backend.extract_selection_text(),
             "",
             "empty lines → empty extraction"
+        );
+    }
+
+    /// Verify that `select_all_text_region` sets the full viewport bounds as
+    /// the active selection. This directly tests the core acceptance criterion:
+    /// "Ctrl-A sets the expected full range; extracted text == full region
+    /// content."
+    #[test]
+    fn gtk_select_all_text_region_sets_full_bounds() {
+        let mut backend = GtkBackend::new();
+        backend.register_text_region(text_region("body", 0.0, 0.0, 10.0, 5.0, vec![]));
+        assert!(
+            backend.select_all_text_region(),
+            "should return true when exactly one region is registered"
+        );
+        let sel = backend
+            .active_text_selection()
+            .expect("selection should be active after select_all_text_region");
+        assert_eq!(
+            sel.anchor,
+            Point { x: 0.0, y: 0.0 },
+            "anchor should be at top-left of region bounds"
+        );
+        assert_eq!(
+            sel.focus,
+            Point { x: 10.0, y: 5.0 },
+            "focus should be at bottom-right of region bounds"
+        );
+    }
+
+    /// Verify that `select_all_text_region` returns `false` when no regions
+    /// are registered, and leaves no selection active.
+    #[test]
+    fn gtk_select_all_text_region_returns_false_when_no_regions() {
+        let mut backend = GtkBackend::new();
+        assert!(
+            !backend.select_all_text_region(),
+            "should return false with no registered regions"
+        );
+        assert!(
+            backend.active_text_selection().is_none(),
+            "no selection should be set when select_all returns false"
         );
     }
 

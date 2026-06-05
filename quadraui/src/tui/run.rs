@@ -273,10 +273,13 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             key: Key::Char('a') | Key::Char('A'),
             modifiers,
             ..
-        } if modifiers.ctrl && !modifiers.shift && !modifiers.alt && !modifiers.cmd => {
-            if backend.select_all_text_region() {
-                return EventOutcome::Redraw;
-            }
+        } if modifiers.ctrl
+            && !modifiers.shift
+            && !modifiers.alt
+            && !modifiers.cmd
+            && backend.select_all_text_region() =>
+        {
+            return EventOutcome::Redraw;
         }
         _ => {}
     }

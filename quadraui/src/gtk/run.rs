@@ -349,7 +349,7 @@ fn activate<A: AppLogic + 'static>(
                 if let Some(crate::dispatch::DragTarget::TextSelection { region, .. }) =
                     drag.target()
                 {
-                    backend_mut.last_text_region_id = Some(region.clone());
+                    backend_mut.track_focused_text_region(region.clone());
                 }
                 evs
             };
