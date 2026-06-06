@@ -12,14 +12,17 @@
 //! - **Shift+PageUp / Shift+PageDown** scroll the history view (not sent to PTY).
 //! - **Shift+Home** jumps to the oldest available history line.
 //! - Ctrl+C / Ctrl+D / Ctrl+Z forward as terminal control bytes.
-//! - Scroll wheel scrolls the history (3 rows per notch).
+//! - Scroll wheel forwards to the PTY when the child has mouse reporting enabled
+//!   or is on the alternate screen (e.g. tmux, vim, less); otherwise scrolls local
+//!   history (3 rows per notch).
+//! - Click (press/release) is forwarded to the PTY when mouse reporting is enabled.
 //! - Dragging the scrollbar thumb scrolls the history.
 //! - Window resize triggers a PTY resize.
 //! - Ctrl+Q quits.
 //! - Bracketed paste is forwarded verbatim.
 //! - When the shell exits a status line shows the exit code; Ctrl+Q closes.
 
-use quadraui::terminal_engine::{default_shell, TerminalSession};
+use quadraui::terminal_engine::{default_shell, TerminalMouseKind, TerminalSession};
 use quadraui::{
     AppLogic, Backend, ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Reaction, Rect,
     ScrollDelta, StatusBar, StatusBarSegment, UiEvent, Viewport, WidgetId,
@@ -242,8 +245,37 @@ impl AppLogic for TerminalApp {
             }
 
             // ── Scroll wheel ─────────────────────────────────────────────────
-            UiEvent::Scroll { delta, .. } => {
+            UiEvent::Scroll {
+                delta, position, ..
+            } => {
                 if let Some(ref mut sess) = self.session {
+                    let vp = self.last_viewport;
+                    let term_h = Self::term_height(vp);
+                    let in_term = position.y >= 0.0 && position.y < term_h;
+
+                    // Try to forward the wheel to the PTY first.
+                    // `forward_mouse` returns `true` when mouse reporting is on
+                    // or the child is on the alt-screen (e.g. tmux / vim / less).
+                    if in_term && delta.y != 0.0 {
+                        let kind = if delta.y > 0.0 {
+                            TerminalMouseKind::WheelUp
+                        } else {
+                            TerminalMouseKind::WheelDown
+                        };
+                        let col = position.x.max(0.0) as u16;
+                        let row = position.y.max(0.0) as u16;
+                        if sess.forward_mouse(
+                            kind,
+                            MouseButton::Left,
+                            col,
+                            row,
+                            Modifiers::default(),
+                        ) {
+                            return Reaction::Redraw;
+                        }
+                    }
+
+                    // Fall back to local scrollback.
                     // Positive y = scroll up (into history).
                     // Negative y = scroll down (toward live).
                     if delta.y > 0.0 {
@@ -255,17 +287,22 @@ impl AppLogic for TerminalApp {
                 }
             }
 
-            // ── Scrollbar mouse-down: start drag ──────────────────────────────
+            // ── Scrollbar mouse-down: start drag / forward click to PTY ──────
             UiEvent::MouseDown {
-                button: MouseButton::Left,
+                button,
                 position,
+                modifiers,
                 ..
             } => {
                 let vp = self.last_viewport;
                 let term_h = Self::term_height(vp);
                 let sb_col = Self::scrollbar_col(vp);
 
-                let in_scrollbar = position.x >= sb_col && position.y >= 0.0 && position.y < term_h;
+                // Left-button click on the scrollbar column → start a drag.
+                let in_scrollbar = button == MouseButton::Left
+                    && position.x >= sb_col
+                    && position.y >= 0.0
+                    && position.y < term_h;
 
                 if in_scrollbar {
                     if let Some(ref sess) = self.session {
@@ -284,6 +321,20 @@ impl AppLogic for TerminalApp {
                         }
                     }
                 }
+
+                // Any click inside the terminal content area is forwarded to
+                // the PTY when mouse reporting is enabled.
+                let in_term = position.y >= 0.0 && position.y < term_h;
+                if in_term {
+                    if let Some(ref mut sess) = self.session {
+                        let col = position.x.max(0.0) as u16;
+                        let row = position.y.max(0.0) as u16;
+                        if sess.forward_mouse(TerminalMouseKind::Press, button, col, row, modifiers)
+                        {
+                            return Reaction::Redraw;
+                        }
+                    }
+                }
             }
 
             // ── Scrollbar mouse-move: update drag ─────────────────────────────
@@ -297,13 +348,32 @@ impl AppLogic for TerminalApp {
                 }
             }
 
-            // ── Mouse-up: end drag ─────────────────────────────────────────────
+            // ── Mouse-up: end drag / forward release to PTY ────────────────────
             UiEvent::MouseUp {
-                button: MouseButton::Left,
-                ..
+                button, position, ..
             } => {
+                // End any active scrollbar drag first.
                 if self.scrollbar_drag.take().is_some() {
                     return Reaction::Redraw;
+                }
+                // Forward button release to the PTY when mouse reporting is on.
+                let vp = self.last_viewport;
+                let term_h = Self::term_height(vp);
+                let in_term = position.y >= 0.0 && position.y < term_h;
+                if in_term {
+                    if let Some(ref mut sess) = self.session {
+                        let col = position.x.max(0.0) as u16;
+                        let row = position.y.max(0.0) as u16;
+                        if sess.forward_mouse(
+                            TerminalMouseKind::Release,
+                            button,
+                            col,
+                            row,
+                            Modifiers::default(),
+                        ) {
+                            return Reaction::Redraw;
+                        }
+                    }
                 }
             }
 
