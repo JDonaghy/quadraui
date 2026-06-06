@@ -17,6 +17,8 @@
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
 //!   input + status strip.
+//! - [`TabGroupController`] — TabBar + Split + DropZone + FocusGroup wired into
+//!   editor-group-style tabbed split panes.
 
 pub mod app_shell;
 pub mod bottom_panel;
@@ -29,6 +31,7 @@ pub mod markdown;
 pub mod menu_system;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
+pub mod tab_group;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 
@@ -48,5 +51,6 @@ pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };
 pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
+pub use tab_group::{PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout};
 pub use toolbar_hover_tracker::ToolbarHoverTracker;
 pub use tree_controller::{TreeController, TreeControllerEvent};
