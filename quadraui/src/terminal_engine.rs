@@ -555,6 +555,24 @@ impl TerminalSession {
         self.parser.screen().bracketed_paste()
     }
 
+    /// Returns `true` when the child has enabled application-cursor-keys mode
+    /// (DECCKM, DEC private mode `?1h` / `ESC [ ? 1 h`).
+    ///
+    /// In this mode, **unmodified** arrow keys and Home/End must be encoded as
+    /// SS3 sequences (`ESC O A`…`ESC O D`, `ESC O H`, `ESC O F`) rather than
+    /// the normal CSI sequences (`ESC [ A`…`ESC [ 4 ~`). Modifier combinations
+    /// (e.g. Ctrl+Up) continue to use the CSI form regardless of this flag.
+    ///
+    /// Full-TUI programs — `vim`, `neovim`, `claude`, `htop` — set DECCKM when
+    /// active. Without honouring it, navigation inside those programs silently
+    /// stops working. Key encoders must query this flag each keystroke and pass
+    /// it to `key_to_pty_bytes` (see `examples/common/terminal_app.rs`).
+    ///
+    /// Backed by [`vt100::Screen::application_cursor`].
+    pub fn application_cursor_keys(&self) -> bool {
+        self.parser.screen().application_cursor()
+    }
+
     // ── Alt-screen + mouse reporting state ───────────────────────────────────
 
     /// `true` when the child is currently rendering on the alternate screen
@@ -1761,6 +1779,40 @@ mod tests {
         assert!(
             poll_until(&mut sess, 5000, |s| s.history_len() > baseline + 5),
             "history did not resume growing after returning to primary screen"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `application_cursor_keys()` reflects the child's DECCKM state
+    /// (DEC private mode `?1h` / `?1l`, i.e. "application cursor keys").
+    ///
+    /// Full-TUI programs like vim, neovim, and claude set this mode on entry
+    /// and clear it on exit. The key encoder must honour it so that arrow keys
+    /// are sent as `ESC O A…D` (SS3) instead of `ESC [ A…D` (CSI) while the
+    /// child is in application-cursor mode (quadraui #336).
+    #[test]
+    #[cfg(unix)]
+    fn application_cursor_keys_tracks_decckm() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+
+        // Off by default.
+        assert!(!sess.application_cursor_keys());
+
+        // Emit ESC[?1h — the sequence programs like vim/claude use on entry.
+        sess.send_str("printf '\\033[?1h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.application_cursor_keys()),
+            "DECCKM should be enabled after ESC[?1h"
+        );
+
+        // Emit ESC[?1l — the exit/restore sequence.
+        sess.send_str("printf '\\033[?1l'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| !s.application_cursor_keys()),
+            "DECCKM should be disabled after ESC[?1l"
         );
 
         sess.send_str("exit\n");
