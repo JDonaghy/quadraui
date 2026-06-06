@@ -56,7 +56,7 @@
 //! TODO(#144-followup): wire cross-group drag-and-drop using `compute_drop_zone`
 //! + `drop_zone_overlay` + `Backend::draw_drop_overlay`.
 
-pub use crate::backend::BackendWidget;
+use crate::backend::BackendWidget;
 use crate::compose::focus_group::FocusGroup;
 use crate::event::Rect;
 use crate::primitives::drop_zone::DropGroupRect;
@@ -192,8 +192,16 @@ pub enum TabGroupEvent {
     TabActivated { pane_idx: usize, tab_id: String },
     /// User closed a tab in `pane_idx`.
     TabClosed { pane_idx: usize, tab_id: String },
-    /// The last tab in `pane_idx` was closed; the pane was removed.
-    /// The controller has already collapsed the pane and renumbered.
+    /// The last tab in `pane_idx` was closed.
+    ///
+    /// **When more than one pane exists:** the pane is removed and the
+    /// controller renumbers the remaining panes.
+    ///
+    /// **When only one pane remains:** `collapse_pane` is a no-op — the
+    /// empty pane is retained in the controller (dropping to zero panes is
+    /// not permitted). Consumers should treat this case as "all tabs closed;
+    /// the single pane is now empty" and react accordingly (e.g. show a
+    /// welcome screen in the content area).
     PaneCollapsed {
         /// Index the pane had *before* collapse.
         pane_idx: usize,
@@ -584,7 +592,9 @@ impl TabGroupController {
         let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
 
         for pane_idx in 0..n {
-            let cache = self.last_pane_hits[pane_idx].as_ref()?;
+            let Some(cache) = self.last_pane_hits[pane_idx].as_ref() else {
+                continue;
+            };
             let strip = cache.strip_bounds;
             let content = cache.content_bounds;
             let hits = &cache.hits;

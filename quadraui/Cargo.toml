@@ -486,3 +486,13 @@ required-features = ["gtk", "terminal"]
 name = "gtk_toolbar"
 path = "examples/gtk_toolbar.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_tabgroup"
+path = "examples/tui_tabgroup.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_tabgroup"
+path = "examples/gtk_tabgroup.rs"
+required-features = ["gtk"]
