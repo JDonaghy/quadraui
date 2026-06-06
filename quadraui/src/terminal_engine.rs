@@ -65,8 +65,9 @@ use std::sync::mpsc::{self, Receiver};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
+use crate::event::MouseButton;
 use crate::primitives::terminal::{Terminal, TerminalCell, TerminalScrollbar};
-use crate::types::{Color, WidgetId};
+use crate::types::{Color, Modifiers, WidgetId};
 
 // ── Internal history cell ─────────────────────────────────────────────────────
 
@@ -178,6 +179,99 @@ fn xterm_256_color(n: u8) -> (u8, u8, u8) {
     // Greyscale ramp: indices 232-255.
     let gray = 8 + (n - 232) * 10;
     (gray, gray, gray)
+}
+
+// ── Mouse → PTY encoding (SGR-1006) ──────────────────────────────────────────
+
+/// Mouse event kinds that can be forwarded to a PTY child via SGR-1006.
+///
+/// Mirrors the granularity an embedded terminal needs to dispatch: button
+/// press/release, motion (with a button held, per DEC 1002), and wheel.
+/// Wheel direction is encoded in the kind because wheel events have no
+/// matching `MouseButton` in [`crate::event::MouseButton`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalMouseKind {
+    /// Button press.
+    Press,
+    /// Button release.
+    Release,
+    /// Cursor motion. For SGR-1006 the `button` field still indicates which
+    /// (if any) button is being held; pass [`MouseButton::Left`] with no
+    /// button-down state if the caller can't disambiguate.
+    Move,
+    /// Mouse wheel scrolled up (toward the top of content).
+    WheelUp,
+    /// Mouse wheel scrolled down (toward the bottom of content).
+    WheelDown,
+}
+
+/// Encode a mouse event as SGR-1006 bytes ready to write to a PTY.
+///
+/// Format: `ESC [ < Cb ; Cx ; Cy M` (press / wheel / motion) or
+/// `ESC [ < Cb ; Cx ; Cy m` (release). Coordinates in the output are 1-based;
+/// the `col` / `row` inputs are **0-based** cell indices.
+///
+/// The `Cb` byte packs button identity + modifier state + motion bit:
+///
+/// | bits      | meaning                                              |
+/// |-----------|------------------------------------------------------|
+/// | 0–1       | button low bits (0=left, 1=middle, 2=right)          |
+/// | 2 (= 4)   | shift                                                |
+/// | 3 (= 8)   | alt / meta                                           |
+/// | 4 (= 16)  | ctrl                                                 |
+/// | 5 (= 32)  | motion event                                         |
+/// | 6 (= 64)  | wheel (combined with bits 0–1 for direction)         |
+/// | 7 (= 128) | extra button (X1 → 128, X2 → 129)                    |
+///
+/// Wheel events always use the `M` terminator (they have no release).
+/// [`MouseButton::Other(n)`] forwards `n` directly into the low button bits.
+pub fn encode_mouse_sgr(
+    kind: TerminalMouseKind,
+    button: MouseButton,
+    col: u16,
+    row: u16,
+    modifiers: Modifiers,
+) -> Vec<u8> {
+    // Wheel codes are independent of `button`.
+    let mut cb: u32 = match kind {
+        TerminalMouseKind::WheelUp => 64,
+        TerminalMouseKind::WheelDown => 65,
+        TerminalMouseKind::Press | TerminalMouseKind::Release | TerminalMouseKind::Move => {
+            match button {
+                MouseButton::Left => 0,
+                MouseButton::Middle => 1,
+                MouseButton::Right => 2,
+                MouseButton::X1 => 128,
+                MouseButton::X2 => 129,
+                MouseButton::Other(n) => n as u32,
+            }
+        }
+    };
+
+    if matches!(kind, TerminalMouseKind::Move) {
+        cb |= 32; // motion bit
+    }
+    if modifiers.shift {
+        cb |= 4;
+    }
+    if modifiers.alt {
+        cb |= 8;
+    }
+    if modifiers.ctrl {
+        cb |= 16;
+    }
+
+    let terminator = match kind {
+        TerminalMouseKind::Release => b'm',
+        // Press / Move / WheelUp / WheelDown all use uppercase 'M'.
+        _ => b'M',
+    };
+
+    // Convert 0-based cell to 1-based protocol coordinates. Saturate at u16::MAX.
+    let cx = col.saturating_add(1);
+    let cy = row.saturating_add(1);
+
+    format!("\x1b[<{cb};{cx};{cy}{}", terminator as char).into_bytes()
 }
 
 // ── TerminalSession ───────────────────────────────────────────────────────────
@@ -461,6 +555,116 @@ impl TerminalSession {
         self.parser.screen().bracketed_paste()
     }
 
+    // ── Alt-screen + mouse reporting state ───────────────────────────────────
+
+    /// `true` when the child is currently rendering on the alternate screen
+    /// (DEC private mode `1047` / `1049`, or legacy `47`).
+    ///
+    /// Full-TUI applications (`vim`, `tmux`, `less`, `claude`, `htop`) switch
+    /// to the alternate screen on launch and back to the primary screen on
+    /// exit. The engine uses this signal to:
+    ///
+    /// 1. **Suppress scrollback capture** — alt-screen churn must never
+    ///    pollute the shell's scrollback (quadraui #335).
+    /// 2. **Route the wheel** — when the child is on the alt-screen, wheel
+    ///    events forward to the PTY rather than scrolling our local
+    ///    scrollback (quadraui #334, coord #446). See
+    ///    [`should_forward_wheel`](Self::should_forward_wheel).
+    ///
+    /// Backed by vt100's `Screen::alternate_screen()`.
+    pub fn on_alt_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
+    /// `true` when the child has enabled any xterm mouse-reporting mode
+    /// (DEC private modes `1000` / `1002` / `1003`). Independent of the
+    /// `1006` (SGR) encoding bit, which selects the wire format but doesn't
+    /// turn reporting on or off.
+    ///
+    /// Used by [`should_forward_wheel`](Self::should_forward_wheel) and
+    /// [`forward_mouse`](Self::forward_mouse) to decide whether mouse events
+    /// belong to the child rather than our local UI (selection, scrollback).
+    pub fn mouse_reporting_enabled(&self) -> bool {
+        self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    }
+
+    /// Whether wheel scroll events should be forwarded to the PTY child
+    /// rather than handled locally.
+    ///
+    /// Returns `true` when **either**:
+    ///
+    /// - the child has enabled mouse reporting
+    ///   ([`mouse_reporting_enabled`](Self::mouse_reporting_enabled)), or
+    /// - the child is on the alternate screen
+    ///   ([`on_alt_screen`](Self::on_alt_screen)).
+    ///
+    /// The alt-screen clause is what makes embedded `claude` / `tmux` /
+    /// `less` usable: even when those programs don't request mouse reporting,
+    /// scrolling our local (now-empty, alt-screen-shadowed) scrollback would
+    /// be jarring — forwarding the wheel lets the inner app paginate
+    /// (quadraui #334 / coord #446).
+    pub fn should_forward_wheel(&self) -> bool {
+        self.mouse_reporting_enabled() || self.on_alt_screen()
+    }
+
+    // ── Mouse → PTY forwarding ────────────────────────────────────────────────
+
+    /// Encode a mouse event as SGR-1006 PTY bytes, **without** writing it.
+    ///
+    /// Returns `None` when the engine has determined the event should not be
+    /// reported to the child:
+    ///
+    /// - Wheel events are gated on
+    ///   [`should_forward_wheel`](Self::should_forward_wheel).
+    /// - Press / Release / Move are gated on
+    ///   [`mouse_reporting_enabled`](Self::mouse_reporting_enabled).
+    ///
+    /// Callers that want to bypass the gate (e.g. for testing) can call the
+    /// free function [`encode_mouse_sgr`] directly.
+    pub fn encode_mouse(
+        &self,
+        kind: TerminalMouseKind,
+        button: MouseButton,
+        col: u16,
+        row: u16,
+        modifiers: Modifiers,
+    ) -> Option<Vec<u8>> {
+        let allow = match kind {
+            TerminalMouseKind::WheelUp | TerminalMouseKind::WheelDown => {
+                self.should_forward_wheel()
+            }
+            _ => self.mouse_reporting_enabled(),
+        };
+        if !allow {
+            return None;
+        }
+        Some(encode_mouse_sgr(kind, button, col, row, modifiers))
+    }
+
+    /// Forward a mouse event to the PTY child as SGR-1006 bytes, gated on
+    /// the current reporting / alt-screen state.
+    ///
+    /// Returns `true` when bytes were written. When `false`, the caller
+    /// should fall back to local handling — wheel events scroll our own
+    /// scrollback ([`scroll_up`](Self::scroll_up) / [`scroll_down`](Self::scroll_down)),
+    /// clicks drive local selection, etc.
+    pub fn forward_mouse(
+        &mut self,
+        kind: TerminalMouseKind,
+        button: MouseButton,
+        col: u16,
+        row: u16,
+        modifiers: Modifiers,
+    ) -> bool {
+        match self.encode_mouse(kind, button, col, row, modifiers) {
+            Some(bytes) => {
+                self.write_input(&bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Extract all captured scrollback history as plain text.
     ///
     /// Returns one line per history row (oldest first), trailing
@@ -629,6 +833,10 @@ impl TerminalSession {
     /// Process a data chunk, splitting at `rows`-newline boundaries so
     /// that each sub-chunk causes at most `rows` lines to scroll off
     /// the live screen — the safe maximum for vt100's scrollback read-back.
+    ///
+    /// While the child is on the **alternate screen** (vim / tmux / less /
+    /// claude) `capture_scrolled_rows` is a no-op: alt-screen churn must
+    /// never pollute the shell's scrollback (quadraui #335).
     fn process_with_capture(&mut self, data: &[u8]) {
         let max_nl = self.rows as usize;
         let mut start = 0;
@@ -661,7 +869,17 @@ impl TerminalSession {
     /// Temporarily shifts the vt100 viewport to see the rows that just
     /// scrolled off (they're still in the vt100 internal scrollback at
     /// this point), reads them, then restores the live view.
+    ///
+    /// Skipped entirely while the child is on the alternate screen — vt100
+    /// keeps a separate scrollback buffer for the alt grid and full-TUI
+    /// apps re-render every frame, so capturing those rows would both leak
+    /// frame churn into the shell's scrollback **and** read from the wrong
+    /// grid. The check is evaluated *after* `parser.process(...)` so the
+    /// mode-switch escape (`ESC[?1049h` / `ESC[?1049l`) takes effect first.
     fn capture_scrolled_rows(&mut self, n_newlines: usize) {
+        if self.parser.screen().alternate_screen() {
+            return;
+        }
         let to_capture = n_newlines.min(self.rows as usize);
         self.parser.set_scrollback(to_capture);
         {
@@ -1223,6 +1441,288 @@ mod tests {
         });
         // Just verify no panic occurred and the session is still valid.
         assert!(sess.cols > 0 && sess.rows > 0);
+        sess.send_str("exit\n");
+    }
+
+    // ── Mouse → PTY encoding (SGR-1006) ──────────────────────────────────────
+
+    /// SGR-1006 left-button press at (col=0, row=0) → `ESC[<0;1;1M`.
+    #[test]
+    fn encode_mouse_sgr_left_press_origin() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Press,
+            MouseButton::Left,
+            0,
+            0,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<0;1;1M");
+    }
+
+    /// SGR-1006 left-button release uses lowercase `m` and reports the actual
+    /// button (not the legacy `3` placeholder).
+    #[test]
+    fn encode_mouse_sgr_left_release_uses_lowercase_m() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Release,
+            MouseButton::Left,
+            4,
+            9,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<0;5;10m");
+    }
+
+    /// Right-button press at (col=11, row=4) with shift → `ESC[<6;12;5M`
+    /// (button 2 | shift bit 4 = 6).
+    #[test]
+    fn encode_mouse_sgr_right_press_with_shift() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Press,
+            MouseButton::Right,
+            11,
+            4,
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(bytes, b"\x1b[<6;12;5M");
+    }
+
+    /// Wheel-up event at (col=0, row=0) → `ESC[<64;1;1M`. Wheel always uses
+    /// `M` (no matching release) regardless of `button`.
+    #[test]
+    fn encode_mouse_sgr_wheel_up() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::WheelUp,
+            MouseButton::Left,
+            0,
+            0,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<64;1;1M");
+    }
+
+    /// Wheel-down event with ctrl modifier → `ESC[<81;1;1M` (65 | 16 = 81).
+    #[test]
+    fn encode_mouse_sgr_wheel_down_with_ctrl() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::WheelDown,
+            MouseButton::Left,
+            0,
+            0,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(bytes, b"\x1b[<81;1;1M");
+    }
+
+    /// Motion event with left button held → bit 5 (32) set + button 0 = 32.
+    #[test]
+    fn encode_mouse_sgr_motion_with_left() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Move,
+            MouseButton::Left,
+            7,
+            2,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<32;8;3M");
+    }
+
+    /// X1 extra-button press → `Cb = 128`.
+    #[test]
+    fn encode_mouse_sgr_x1_press() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Press,
+            MouseButton::X1,
+            0,
+            0,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<128;1;1M");
+    }
+
+    // ── Mouse → PTY encoding (require a real PTY) ────────────────────────────
+
+    /// With no mouse reporting and no alt-screen, the engine refuses to
+    /// forward — `forward_mouse` returns `false` and `encode_mouse`
+    /// returns `None`. Local handling (selection / scrollback) keeps
+    /// working unchanged.
+    #[test]
+    #[cfg(unix)]
+    fn no_forward_without_reporting_or_alt_screen() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 10, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+
+        assert!(!sess.mouse_reporting_enabled());
+        assert!(!sess.on_alt_screen());
+        assert!(!sess.should_forward_wheel());
+
+        // Wheel + click are both refused.
+        assert!(sess
+            .encode_mouse(
+                TerminalMouseKind::WheelUp,
+                MouseButton::Left,
+                0,
+                0,
+                Modifiers::default()
+            )
+            .is_none());
+        assert!(!sess.forward_mouse(
+            TerminalMouseKind::Press,
+            MouseButton::Left,
+            0,
+            0,
+            Modifiers::default()
+        ));
+
+        sess.send_str("exit\n");
+    }
+
+    /// After the child enables xterm mouse reporting (`ESC[?1000h`), the
+    /// engine starts forwarding mouse events to the PTY.
+    #[test]
+    #[cfg(unix)]
+    fn forwards_after_mouse_reporting_enabled() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 10, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+
+        // Child enables mouse reporting.
+        sess.send_str("printf '\\033[?1000h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.mouse_reporting_enabled()),
+            "mouse reporting did not turn on"
+        );
+        assert!(sess.should_forward_wheel());
+
+        let bytes = sess.encode_mouse(
+            TerminalMouseKind::WheelDown,
+            MouseButton::Left,
+            0,
+            0,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes.as_deref(), Some(&b"\x1b[<65;1;1M"[..]));
+
+        // Disable again — forwarding stops.
+        sess.send_str("printf '\\033[?1000l'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| !s.mouse_reporting_enabled()),
+            "mouse reporting did not turn off"
+        );
+        assert!(!sess.should_forward_wheel());
+
+        sess.send_str("exit\n");
+    }
+
+    /// Alt-screen entry alone (without explicit mouse reporting) makes the
+    /// engine forward wheel events to the child — the routing rule from
+    /// coord #446 that fixes embedded `claude` / `tmux` / `less`.
+    #[test]
+    #[cfg(unix)]
+    fn wheel_forwards_on_alt_screen_even_without_mouse_reporting() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 10, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+
+        sess.send_str("printf '\\033[?1049h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.on_alt_screen()),
+            "did not enter alt-screen"
+        );
+        assert!(!sess.mouse_reporting_enabled()); // alt-screen alone
+        assert!(sess.should_forward_wheel());
+
+        // Press / Release / Move still gated on mouse reporting — alt-screen
+        // alone is not enough for those (they only matter to apps that asked).
+        assert!(sess
+            .encode_mouse(
+                TerminalMouseKind::Press,
+                MouseButton::Left,
+                0,
+                0,
+                Modifiers::default()
+            )
+            .is_none());
+
+        // Wheel IS forwarded.
+        assert!(sess
+            .encode_mouse(
+                TerminalMouseKind::WheelUp,
+                MouseButton::Left,
+                0,
+                0,
+                Modifiers::default()
+            )
+            .is_some());
+
+        sess.send_str("printf '\\033[?1049l'\n");
+        let _ = poll_until(&mut sess, 5000, |s| !s.on_alt_screen());
+        sess.send_str("exit\n");
+    }
+
+    /// Scrollback must NOT grow while the child is on the alternate screen,
+    /// and MUST resume growing after the child returns to the primary screen
+    /// (quadraui #335 + coord #446 — without this, `claude` / `tmux` / `vim`
+    /// frames leak into the shell's scrollback as cold-frame garbage).
+    #[test]
+    #[cfg(unix)]
+    fn scrollback_skipped_on_alt_screen_resumes_on_primary() {
+        let cwd = std::env::temp_dir();
+        // Small screen so each `echo` line scrolls quickly.
+        let mut sess =
+            TerminalSession::spawn(40, 5, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+
+        // Drain initial prompt.
+        let _ = poll_until(&mut sess, 1000, |_| false);
+
+        // Enter alt-screen.
+        sess.send_str("printf '\\033[?1049h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.on_alt_screen()),
+            "did not enter alt-screen"
+        );
+
+        // Record baseline AFTER we're on alt-screen (the `printf` command
+        // line itself may have scrolled some rows on the primary screen).
+        let baseline = sess.history_len();
+
+        // Generate many lines of output. Each scrolls the alt-screen, but
+        // alt-screen scrolls MUST NOT touch our history ring.
+        for _ in 0..40 {
+            sess.send_str("echo alt_content\n");
+        }
+        // Wait long enough for all the output to flush through the PTY.
+        let _ = poll_until(&mut sess, 2000, |_| false);
+
+        assert_eq!(
+            sess.history_len(),
+            baseline,
+            "history grew while on alt-screen — alt-screen churn must not pollute shell scrollback"
+        );
+
+        // Exit alt-screen.
+        sess.send_str("printf '\\033[?1049l'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| !s.on_alt_screen()),
+            "did not exit alt-screen"
+        );
+
+        // Generate more lines on the primary screen — history SHOULD grow now.
+        for _ in 0..40 {
+            sess.send_str("echo primary_content\n");
+        }
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.history_len() > baseline + 5),
+            "history did not resume growing after returning to primary screen"
+        );
+
         sess.send_str("exit\n");
     }
 
