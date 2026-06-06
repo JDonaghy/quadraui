@@ -1546,6 +1546,46 @@ mod tests {
         assert_eq!(bytes, b"\x1b[<128;1;1M");
     }
 
+    /// X2 extra-button press → `Cb = 129`.
+    #[test]
+    fn encode_mouse_sgr_x2_press() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Press,
+            MouseButton::X2,
+            0,
+            0,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<129;1;1M");
+    }
+
+    /// Middle button press → `Cb = 1` (lowercase `M` terminator).
+    #[test]
+    fn encode_mouse_sgr_middle_press() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Press,
+            MouseButton::Middle,
+            4,
+            2,
+            Modifiers::default(),
+        );
+        // col 4 + 1 = 5, row 2 + 1 = 3
+        assert_eq!(bytes, b"\x1b[<1;5;3M");
+    }
+
+    /// Middle button release → `Cb = 1` with lowercase `m` terminator.
+    #[test]
+    fn encode_mouse_sgr_middle_release() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::Release,
+            MouseButton::Middle,
+            4,
+            2,
+            Modifiers::default(),
+        );
+        assert_eq!(bytes, b"\x1b[<1;5;3m");
+    }
+
     // ── Mouse → PTY encoding (require a real PTY) ────────────────────────────
 
     /// With no mouse reporting and no alt-screen, the engine refuses to
