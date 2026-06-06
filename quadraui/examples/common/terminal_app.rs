@@ -110,8 +110,18 @@ impl TerminalApp {
                     Color::rgb(60, 30, 0),
                 )
             } else {
+                // Show [APP KEYS] indicator when DECCKM is active so users can
+                // see that arrow keys are being encoded in application-cursor
+                // mode (ESC O A…D rather than ESC [ A…D) — quadraui #336.
+                let app_indicator = if sess.application_cursor_keys() {
+                    "  · [APP KEYS]"
+                } else {
+                    ""
+                };
                 (
-                    " Ctrl+Q quit  ·  wheel / Shift+PgUp scroll  ·  type to run".to_string(),
+                    format!(
+                        " Ctrl+Q quit  ·  wheel / Shift+PgUp scroll  ·  type to run{app_indicator}"
+                    ),
                     Color::rgb(160, 160, 160),
                     Color::rgb(40, 40, 40),
                 )
@@ -441,7 +451,9 @@ impl AppLogic for TerminalApp {
                     }
                     // Any key press returns to live view.
                     sess.scroll_reset();
-                    if let Some(bytes) = key_to_pty_bytes(key, modifiers) {
+                    // Query DECCKM so arrow/Home/End get the right encoding.
+                    let app_cursor = sess.application_cursor_keys();
+                    if let Some(bytes) = key_to_pty_bytes(key, modifiers, app_cursor) {
                         sess.write_input(&bytes);
                     }
                 }
@@ -486,9 +498,15 @@ impl AppLogic for TerminalApp {
 
 /// Convert a [`Key`] + [`Modifiers`] to the byte sequence sent to the PTY.
 ///
+/// `app_cursor` should be `true` when the child has enabled DECCKM
+/// (application-cursor-keys mode, `ESC [ ? 1 h`). In that mode, unmodified
+/// arrow keys and Home/End are encoded as SS3 sequences (`ESC O A…D/H/F`)
+/// rather than the normal CSI sequences. Obtain the flag from
+/// [`TerminalSession::application_cursor_keys`].
+///
 /// Covers the common VT100 / xterm-256color escape sequences. Keys that
 /// have no meaningful PTY encoding (e.g. CapsLock) return `None`.
-fn key_to_pty_bytes(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
+pub(crate) fn key_to_pty_bytes(key: Key, mods: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     match key {
         Key::Char(ch) => {
             if mods.ctrl {
@@ -513,12 +531,16 @@ fn key_to_pty_bytes(key: Key, mods: Modifiers) -> Option<Vec<u8>> {
             Some(s.as_bytes().to_vec())
         }
 
-        Key::Named(named) => named_key_bytes(named, mods),
+        Key::Named(named) => named_key_bytes(named, mods, app_cursor),
     }
 }
 
 /// Map named keys to their VT100 escape sequences.
-fn named_key_bytes(key: NamedKey, mods: Modifiers) -> Option<Vec<u8>> {
+///
+/// `app_cursor` enables DECCKM encoding: unmodified arrow keys and Home/End
+/// emit SS3 sequences (`ESC O x`) rather than CSI sequences (`ESC [ x`).
+/// When a modifier is present the CSI form is always used regardless of mode.
+fn named_key_bytes(key: NamedKey, mods: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     // Modifier prefix for xterm sequences: 1=plain 2=shift 3=alt 4=shift+alt
     // 5=ctrl 6=shift+ctrl 7=alt+ctrl 8=shift+alt+ctrl.
     let mod_param = modifier_param(mods);
@@ -536,12 +558,51 @@ fn named_key_bytes(key: NamedKey, mods: Modifiers) -> Option<Vec<u8>> {
         NamedKey::Backspace => Some(b"\x7f".to_vec()),
         NamedKey::Delete => Some(xterm_seq(b"3", mod_param)),
         NamedKey::Escape => Some(b"\x1b".to_vec()),
-        NamedKey::Up => Some(xterm_cursor_seq(b"A", mod_param)),
-        NamedKey::Down => Some(xterm_cursor_seq(b"B", mod_param)),
-        NamedKey::Right => Some(xterm_cursor_seq(b"C", mod_param)),
-        NamedKey::Left => Some(xterm_cursor_seq(b"D", mod_param)),
-        NamedKey::Home => Some(xterm_seq(b"1", mod_param)),
-        NamedKey::End => Some(xterm_seq(b"4", mod_param)),
+        // ── Arrow keys: SS3 in application-cursor mode (no modifier), CSI otherwise
+        NamedKey::Up => {
+            if app_cursor && mod_param.is_none() {
+                Some(ss3_seq(b'A'))
+            } else {
+                Some(xterm_cursor_seq(b"A", mod_param))
+            }
+        }
+        NamedKey::Down => {
+            if app_cursor && mod_param.is_none() {
+                Some(ss3_seq(b'B'))
+            } else {
+                Some(xterm_cursor_seq(b"B", mod_param))
+            }
+        }
+        NamedKey::Right => {
+            if app_cursor && mod_param.is_none() {
+                Some(ss3_seq(b'C'))
+            } else {
+                Some(xterm_cursor_seq(b"C", mod_param))
+            }
+        }
+        NamedKey::Left => {
+            if app_cursor && mod_param.is_none() {
+                Some(ss3_seq(b'D'))
+            } else {
+                Some(xterm_cursor_seq(b"D", mod_param))
+            }
+        }
+        // ── Home/End: SS3 in application-cursor mode (no modifier), tilde-CSI otherwise
+        NamedKey::Home => {
+            if app_cursor && mod_param.is_none() {
+                Some(ss3_seq(b'H'))
+            } else {
+                Some(xterm_seq(b"1", mod_param))
+            }
+        }
+        NamedKey::End => {
+            if app_cursor && mod_param.is_none() {
+                Some(ss3_seq(b'F'))
+            } else {
+                Some(xterm_seq(b"4", mod_param))
+            }
+        }
+        // PageUp/PageDown are not affected by DECCKM.
         NamedKey::Insert => Some(xterm_seq(b"2", mod_param)),
         NamedKey::PageUp => Some(xterm_seq(b"5", mod_param)),
         NamedKey::PageDown => Some(xterm_seq(b"6", mod_param)),
@@ -549,6 +610,14 @@ fn named_key_bytes(key: NamedKey, mods: Modifiers) -> Option<Vec<u8>> {
         // Keys with no PTY mapping.
         NamedKey::CapsLock | NamedKey::NumLock | NamedKey::ScrollLock | NamedKey::Menu => None,
     }
+}
+
+/// Build an SS3 sequence: `ESC O <letter>`.
+///
+/// Used for application-cursor-keys mode (DECCKM on): unmodified arrows emit
+/// `ESC O A/B/C/D` and Home/End emit `ESC O H/F` instead of CSI sequences.
+fn ss3_seq(letter: u8) -> Vec<u8> {
+    vec![0x1b, b'O', letter]
 }
 
 /// Build an xterm modifier parameter (1-based; plain = `None`).
@@ -649,6 +718,8 @@ fn f_key_bytes(n: u8, mod_param: Option<u8>) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    // ── Normal-mode key encoding (DECCKM off / app_cursor = false) ───────────
+
     #[test]
     fn ctrl_c_is_etx() {
         let bytes = key_to_pty_bytes(
@@ -657,6 +728,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         );
         assert_eq!(bytes, Some(vec![0x03])); // ETX
     }
@@ -669,25 +741,29 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         );
         assert_eq!(bytes, Some(vec![0x04])); // EOT
     }
 
     #[test]
     fn printable_char_passes_through() {
-        let bytes = key_to_pty_bytes(Key::Char('a'), Modifiers::default()).unwrap();
+        let bytes = key_to_pty_bytes(Key::Char('a'), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"a");
     }
 
     #[test]
     fn enter_is_cr() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::Enter), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Enter), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\r");
     }
 
     #[test]
     fn up_arrow_plain() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::Up), Modifiers::default()).unwrap();
+        // Normal mode (app_cursor = false) → CSI sequence.
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Up), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1b[A");
     }
 
@@ -699,6 +775,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         // ctrl mod_param = 5 → "\x1b[1;5A"
@@ -708,25 +785,29 @@ mod tests {
     #[test]
     fn f1_plain() {
         // F1 unmodified must emit the SS3 sequence \x1bOP, NOT the CSI \x1b[P.
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(1)), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::F(1)), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1bOP");
     }
 
     #[test]
     fn f2_plain() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(2)), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::F(2)), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1bOQ");
     }
 
     #[test]
     fn f3_plain() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(3)), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::F(3)), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1bOR");
     }
 
     #[test]
     fn f4_plain() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::F(4)), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::F(4)), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1bOS");
     }
 
@@ -739,6 +820,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(bytes, b"\x1b[1;5P");
@@ -746,13 +828,15 @@ mod tests {
 
     #[test]
     fn delete_plain() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::Delete), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Delete), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1b[3~");
     }
 
     #[test]
     fn page_up_plain() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::PageUp), Modifiers::default()).unwrap();
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::PageUp), Modifiers::default(), false).unwrap();
         assert_eq!(bytes, b"\x1b[5~");
     }
 
@@ -766,6 +850,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(bytes, b"\x1b[3;5~");
@@ -779,6 +864,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(bytes, b"\x1b[5;5~");
@@ -792,6 +878,7 @@ mod tests {
                 shift: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         // shift mod_param = 2 → "\x1b[1;2~"  (Home code = "1")
@@ -806,6 +893,7 @@ mod tests {
                 alt: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         // alt mod_param = 3 → "\x1b[4;3~"  (End code = "4")
@@ -821,6 +909,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         assert_eq!(bytes, b"\x1b[15;5~");
@@ -835,6 +924,7 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             },
+            false,
         )
         .unwrap();
         // shift+ctrl mod_param = 6 → "\x1b[6;6~"  (PageDown code = "6")
@@ -843,8 +933,119 @@ mod tests {
 
     #[test]
     fn caps_lock_is_none() {
-        let bytes = key_to_pty_bytes(Key::Named(NamedKey::CapsLock), Modifiers::default());
+        let bytes = key_to_pty_bytes(Key::Named(NamedKey::CapsLock), Modifiers::default(), false);
         assert!(bytes.is_none());
+    }
+
+    // ── Application-cursor-keys mode (DECCKM on / app_cursor = true) ─────────
+
+    /// In application-cursor mode, unmodified Up emits `ESC O A` (SS3).
+    #[test]
+    fn app_cursor_up_plain_is_ss3() {
+        let bytes = key_to_pty_bytes(Key::Named(NamedKey::Up), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1bOA");
+    }
+
+    /// In application-cursor mode, unmodified Down emits `ESC O B`.
+    #[test]
+    fn app_cursor_down_plain_is_ss3() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Down), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1bOB");
+    }
+
+    /// In application-cursor mode, unmodified Right emits `ESC O C`.
+    #[test]
+    fn app_cursor_right_plain_is_ss3() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Right), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1bOC");
+    }
+
+    /// In application-cursor mode, unmodified Left emits `ESC O D`.
+    #[test]
+    fn app_cursor_left_plain_is_ss3() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Left), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1bOD");
+    }
+
+    /// In application-cursor mode, unmodified Home emits `ESC O H`.
+    #[test]
+    fn app_cursor_home_plain_is_ss3() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::Home), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1bOH");
+    }
+
+    /// In application-cursor mode, unmodified End emits `ESC O F`.
+    #[test]
+    fn app_cursor_end_plain_is_ss3() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::End), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1bOF");
+    }
+
+    /// Even in application-cursor mode, a modifier makes arrows fall back to
+    /// the CSI form `ESC [ 1 ; <mod> A` — xterm does the same.
+    #[test]
+    fn app_cursor_up_ctrl_falls_back_to_csi() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::Up),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[1;5A");
+    }
+
+    /// Even in application-cursor mode, Shift+Up falls back to CSI form.
+    #[test]
+    fn app_cursor_up_shift_falls_back_to_csi() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::Up),
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[1;2A");
+    }
+
+    /// Home with a modifier falls back to tilde-CSI even in app-cursor mode.
+    #[test]
+    fn app_cursor_home_shift_falls_back_to_csi() {
+        let bytes = key_to_pty_bytes(
+            Key::Named(NamedKey::Home),
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x1b[1;2~");
+    }
+
+    /// PageUp is never affected by DECCKM — always `ESC [ 5 ~`.
+    #[test]
+    fn app_cursor_page_up_unchanged() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::PageUp), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1b[5~");
+    }
+
+    /// PageDown is never affected by DECCKM — always `ESC [ 6 ~`.
+    #[test]
+    fn app_cursor_page_down_unchanged() {
+        let bytes =
+            key_to_pty_bytes(Key::Named(NamedKey::PageDown), Modifiers::default(), true).unwrap();
+        assert_eq!(bytes, b"\x1b[6~");
     }
 
     // ── Scrollbar drag math ───────────────────────────────────────────────────
