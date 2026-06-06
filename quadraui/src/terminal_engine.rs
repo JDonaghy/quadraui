@@ -448,6 +448,19 @@ impl TerminalSession {
         lines.join("\n")
     }
 
+    /// Returns `true` when the child has enabled bracketed-paste mode
+    /// (`ESC[?2004h`).
+    ///
+    /// Interactive programs (e.g. `claude`, shells with line editors) turn
+    /// this mode on once their input prompt is live and ready to accept
+    /// keystrokes, so it doubles as a reliable **input-readiness signal**
+    /// for programmatic drivers: wait for this to flip `true` before
+    /// injecting a bracketed paste, otherwise early bytes are silently
+    /// dropped. Backed by vt100's tracking of the DEC private mode `2004`.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.parser.screen().bracketed_paste()
+    }
+
     /// Extract all captured scrollback history as plain text.
     ///
     /// Returns one line per history row (oldest first), trailing
@@ -1096,6 +1109,38 @@ mod tests {
         assert!(
             sess.cursor_visible(),
             "cursor should be visible again after scroll_reset"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `bracketed_paste_enabled()` reflects the child's DEC private mode
+    /// 2004 (`ESC[?2004h` / `ESC[?2004l`) — the input-readiness signal a
+    /// programmatic driver waits on before injecting input (quadraui #343,
+    /// consumed by coord-tui #446).
+    #[test]
+    #[cfg(unix)]
+    fn bracketed_paste_enabled_tracks_mode_2004() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+
+        // Off until the child enables it.
+        assert!(!sess.bracketed_paste_enabled());
+
+        // Emit ESC[?2004h from the child (as interactive programs do once
+        // their input prompt is ready). `\033` is a POSIX printf octal escape.
+        sess.send_str("printf '\\033[?2004h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.bracketed_paste_enabled()),
+            "bracketed paste should be enabled after the child emits ESC[?2004h"
+        );
+
+        // And clears again on ESC[?2004l.
+        sess.send_str("printf '\\033[?2004l'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| !s.bracketed_paste_enabled()),
+            "bracketed paste should be disabled after the child emits ESC[?2004l"
         );
 
         sess.send_str("exit\n");
