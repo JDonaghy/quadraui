@@ -98,6 +98,37 @@ pub trait Backend {
     /// override this to accumulate regions for the current frame.
     fn register_text_region(&mut self, _region: crate::dispatch::TextRegion) {}
 
+    /// Cancel any in-progress text-selection drag without clearing the
+    /// currently displayed selection highlight.
+    ///
+    /// ## When to call this
+    ///
+    /// `apply_dispatch` (inside `Backend::wait_events`) speculatively starts
+    /// a [`crate::DragTarget::TextSelection`] drag whenever a `MouseDown`
+    /// lands on a registered [`crate::dispatch::TextRegion`], *before* the
+    /// app's `handle()` is called. Apps that host an embedded terminal with
+    /// mouse reporting enabled should call this method after a successful
+    /// [`crate::terminal_engine::TerminalSession::forward_mouse`] return
+    /// (`true`) so that subsequent `MouseMoved` events do not emit spurious
+    /// [`crate::UiEvent::TextSelectionChanged`] events.
+    ///
+    /// ```ignore
+    /// // Inside your AppLogic::handle() / ShellApp::handle():
+    /// if in_term_area {
+    ///     if sess.forward_mouse(kind, button, col, row, mods) {
+    ///         // Cancel the speculative drag the runner started; don't clear
+    ///         // any previously finalised selection display.
+    ///         backend.cancel_text_selection_drag();
+    ///         return Reaction::Redraw;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Default: no-op. The TUI backend cancels the `DragTarget::TextSelection`
+    /// drag state without touching the `active_selection` field, preserving
+    /// any previously finalised selection highlight on screen.
+    fn cancel_text_selection_drag(&mut self) {}
+
     // ─── Events + keybindings ──────────────────────────────────────────
     /// Drain all queued native events. Returns a fully-translated
     /// `Vec<UiEvent>` ready for app dispatch. Never blocks.

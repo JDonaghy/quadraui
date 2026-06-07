@@ -230,6 +230,20 @@ impl<A: AppLogic> TuiDriver<A> {
         self.screen().contains(needle)
     }
 
+    /// Access the app state for test assertions.
+    ///
+    /// Useful when the test app records side-effects (e.g. last copied text,
+    /// selection changes) that would otherwise require screen-scraping.
+    pub fn app(&self) -> &A {
+        &self.app
+    }
+
+    /// Access the backend for test assertions (e.g. active selection state,
+    /// drag state).
+    pub fn backend(&self) -> &TuiBackend {
+        &self.backend
+    }
+
     /// Cell-centre coordinates of the first row containing `needle`, at
     /// the start of the match. Counts in *character cells* (not bytes),
     /// so it works on rows full of multi-byte box-drawing glyphs.

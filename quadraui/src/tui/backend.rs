@@ -287,6 +287,21 @@ impl TuiBackend {
         self.active_selection = None;
     }
 
+    /// End any in-progress `TextSelection` drag without clearing the
+    /// displayed `active_selection`. Called by the `Backend` trait impl of
+    /// [`Backend::cancel_text_selection_drag`] so apps can abort a
+    /// speculative drag (started by `apply_dispatch` before the app had a
+    /// chance to forward the click to a PTY) while preserving any
+    /// previously finalised selection highlight on screen.
+    fn cancel_text_selection_drag_impl(&mut self) {
+        if matches!(
+            self.drag_state.target(),
+            Some(DragTarget::TextSelection { .. })
+        ) {
+            self.drag_state.end();
+        }
+    }
+
     /// Invert (highlight) the cells in the ratatui buffer that fall
     /// within the active text selection range, and cache the extracted
     /// text in `self.cached_selection_text`.
@@ -690,6 +705,10 @@ impl Backend for TuiBackend {
 
     fn register_text_region(&mut self, region: TextRegion) {
         self.text_regions.push(region);
+    }
+
+    fn cancel_text_selection_drag(&mut self) {
+        self.cancel_text_selection_drag_impl();
     }
 
     fn end_frame(&mut self) {
