@@ -10,6 +10,15 @@ Vimcode and any other downstream consumer pin a published version
 externally. Don't introduce assumptions about specific downstream
 consumers.
 
+## Codebase navigation — query the graph first
+
+This repo ships a **graphify** knowledge graph in `graphify-out/` (`graph.json`,
+`GRAPH_REPORT.md`), kept current automatically by `post-commit` / `post-checkout`
+git hooks. For any architecture / "where is this handled" / "what calls this" /
+file-relationship question, **query the graph first** (the `graphify` skill, or the
+graphify CLI) before reaching for grep/Read. Grep/Read are for exact-string or
+line-level confirmation — not the first move.
+
 ## Session Start Protocol
 
 1. Read `README.md` for the high-level shape (workspace, primitives, status).
