@@ -1,18 +1,13 @@
-# Graph Report - quadraui  (2026-06-07)
+# Graph Report - .  (2026-06-07)
 
 ## Corpus Check
-- 344 files · ~450,784 words
+- 347 files · ~451,984 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 8263 nodes · 17643 edges · 470 communities (353 shown, 117 thin omitted)
-- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 354 edges (avg confidence: 0.8)
-- Token cost: 0 input · 0 output
-
-## Graph Freshness
-- Built from commit: `cc9f2ee8`
-- Run `git rev-parse HEAD` and compare to check if the graph is stale.
-- Run `graphify update .` after code changes (no API cost).
+- 7711 nodes · 17055 edges · 415 communities (301 shown, 114 thin omitted)
+- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 352 edges (avg confidence: 0.8)
+- Token cost: 231,884 input · 0 output
 
 ## Community Hubs (Navigation)
 - [[_COMMUNITY_Compose Backend Draw API|Compose Backend Draw API]]
@@ -229,7 +224,6 @@
 - [[_COMMUNITY_Community 212|Community 212]]
 - [[_COMMUNITY_Community 213|Community 213]]
 - [[_COMMUNITY_Community 214|Community 214]]
-- [[_COMMUNITY_Community 215|Community 215]]
 - [[_COMMUNITY_Community 216|Community 216]]
 - [[_COMMUNITY_Community 217|Community 217]]
 - [[_COMMUNITY_Community 218|Community 218]]
@@ -420,61 +414,10 @@
 - [[_COMMUNITY_Community 410|Community 410]]
 - [[_COMMUNITY_Community 412|Community 412]]
 - [[_COMMUNITY_Community 413|Community 413]]
-- [[_COMMUNITY_Community 415|Community 415]]
-- [[_COMMUNITY_Community 416|Community 416]]
-- [[_COMMUNITY_Community 417|Community 417]]
-- [[_COMMUNITY_Community 418|Community 418]]
-- [[_COMMUNITY_Community 419|Community 419]]
-- [[_COMMUNITY_Community 420|Community 420]]
-- [[_COMMUNITY_Community 421|Community 421]]
-- [[_COMMUNITY_Community 422|Community 422]]
-- [[_COMMUNITY_Community 423|Community 423]]
-- [[_COMMUNITY_Community 424|Community 424]]
-- [[_COMMUNITY_Community 425|Community 425]]
-- [[_COMMUNITY_Community 426|Community 426]]
-- [[_COMMUNITY_Community 427|Community 427]]
-- [[_COMMUNITY_Community 428|Community 428]]
-- [[_COMMUNITY_Community 429|Community 429]]
-- [[_COMMUNITY_Community 430|Community 430]]
-- [[_COMMUNITY_Community 431|Community 431]]
-- [[_COMMUNITY_Community 432|Community 432]]
-- [[_COMMUNITY_Community 433|Community 433]]
-- [[_COMMUNITY_Community 434|Community 434]]
-- [[_COMMUNITY_Community 435|Community 435]]
-- [[_COMMUNITY_Community 436|Community 436]]
-- [[_COMMUNITY_Community 437|Community 437]]
-- [[_COMMUNITY_Community 438|Community 438]]
-- [[_COMMUNITY_Community 439|Community 439]]
-- [[_COMMUNITY_Community 440|Community 440]]
-- [[_COMMUNITY_Community 441|Community 441]]
-- [[_COMMUNITY_Community 442|Community 442]]
-- [[_COMMUNITY_Community 443|Community 443]]
-- [[_COMMUNITY_Community 444|Community 444]]
-- [[_COMMUNITY_Community 445|Community 445]]
-- [[_COMMUNITY_Community 446|Community 446]]
-- [[_COMMUNITY_Community 447|Community 447]]
-- [[_COMMUNITY_Community 448|Community 448]]
-- [[_COMMUNITY_Community 449|Community 449]]
-- [[_COMMUNITY_Community 450|Community 450]]
-- [[_COMMUNITY_Community 451|Community 451]]
-- [[_COMMUNITY_Community 452|Community 452]]
-- [[_COMMUNITY_Community 453|Community 453]]
-- [[_COMMUNITY_Community 454|Community 454]]
-- [[_COMMUNITY_Community 455|Community 455]]
-- [[_COMMUNITY_Community 456|Community 456]]
-- [[_COMMUNITY_Community 457|Community 457]]
-- [[_COMMUNITY_Community 458|Community 458]]
-- [[_COMMUNITY_Community 459|Community 459]]
-- [[_COMMUNITY_Community 460|Community 460]]
-- [[_COMMUNITY_Community 461|Community 461]]
-- [[_COMMUNITY_Community 462|Community 462]]
-- [[_COMMUNITY_Community 463|Community 463]]
-- [[_COMMUNITY_Community 464|Community 464]]
-- [[_COMMUNITY_Community 465|Community 465]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `GtkBackend` - 124 edges
-2. `TuiBackend` - 111 edges
+2. `TuiBackend` - 109 edges
 3. `QRect` - 105 edges
 4. `MacBackend` - 100 edges
 5. `SidebarSystem` - 83 edges
@@ -485,16 +428,16 @@
 10. `MockBackend` - 70 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Cross-backend portability commitment` --references--> `AppLogic + Backend trait architecture`  [INFERRED]
-  CLAUDE.md → quadraui/README.md
 - `quality-check command` --semantically_similar_to--> `Quality Gate (build/test/clippy/fmt)`  [INFERRED] [semantically similar]
   .claude/commands/quality-check.md → CLAUDE.md
 - `FocusGroup compose helper` --semantically_similar_to--> `Compose helpers (FocusRing/MenuSystem/SidebarSystem)`  [INFERRED] [semantically similar]
   SESSION_HISTORY.md → README.md
 - `GTK4 List Model pattern (ListView + ListStore + SignalListItemFactory)` --conceptually_related_to--> `GTK backend (Cairo + Pango)`  [INFERRED]
   .claude/skills/gtk4-rs-master.md → quadraui/BACKEND.md
-- `CI workflow (fmt + tui + gtk jobs)` --references--> `GTK backend (Cairo + Pango)`  [INFERRED]
-  .github/workflows/ci.yml → quadraui/BACKEND.md
+- `Cross-backend portability commitment` --references--> `AppLogic + Backend trait architecture`  [INFERRED]
+  CLAUDE.md → quadraui/README.md
+- `TextCopied vs ClipboardPaste event model` --conceptually_related_to--> `dispatch_scroll / dispatch_click infrastructure`  [AMBIGUOUS]
+  CLAUDE.md → SESSION_HISTORY.md
 
 ## Import Cycles
 - 1-file cycle: `kubeui-core/src/k8s.rs -> kubeui-core/src/k8s.rs`
@@ -526,7 +469,7 @@
 - **Paint/click drift elimination (one layout, two consumers)** — docs_lessons_paint_click_drift, docs_lessons_band_aid_trap, docs_lessons_layout_caching, docs_primitive_rules_round_trip_harness, docs_backend_trait_proposal_d6 [EXTRACTED 0.95]
 - **One-primitive-per-UX-concept decision family** — docs_decisions_d001, docs_decisions_d002, docs_decisions_d003, docs_decisions_one_primitive_per_concept [EXTRACTED 1.00]
 
-## Communities (470 total, 117 thin omitted)
+## Communities (415 total, 114 thin omitted)
 
 ### Community 0 - "Compose Backend Draw API"
 Cohesion: 0.03
@@ -577,16 +520,16 @@ Cohesion: 0.09
 Nodes (58): install_blink_timer(), QuadraBlinkTarget, QuadraBlinkTargetIvars, accelerator_literal_ctrl_shift_t_maps(), accelerator_redo_maps_to_cmd_shift_z(), accelerator_save_maps_to_cmd_s(), accelerator_to_ns(), add_stock_item() (+50 more)
 
 ### Community 13 - "Terminal Demo App"
-Cohesion: 0.07
-Nodes (64): app_cursor_down_plain_is_ss3(), app_cursor_end_plain_is_ss3(), app_cursor_home_plain_is_ss3(), app_cursor_home_shift_falls_back_to_csi(), app_cursor_left_plain_is_ss3(), app_cursor_page_down_unchanged(), app_cursor_page_up_unchanged(), app_cursor_right_plain_is_ss3() (+56 more)
+Cohesion: 0.08
+Nodes (50): caps_lock_is_none(), ctrl_c_is_etx(), ctrl_d_is_eot(), delete_ctrl(), delete_plain(), drag_at_bottom_gives_live_view(), drag_at_midpoint_gives_half_offset(), drag_at_top_gives_max_offset() (+42 more)
 
 ### Community 14 - "Rich Text Popup"
 Cohesion: 0.08
 Nodes (51): CGRect, CGRectExt, color_to_cg(), draw_rich_text_popup(), fill_rect(), focused_popup_border_paints_differently_than_unfocused(), font(), layout_for() (+43 more)
 
 ### Community 15 - "TUI Primitive Rasterisers"
-Cohesion: 0.07
-Nodes (24): B, CommandLine, DiffView, DiffViewLayout, FindReplacePanel, Form, FormLayout, ListView (+16 more)
+Cohesion: 0.08
+Nodes (21): CommandLine, DiffView, DiffViewLayout, FindReplacePanel, Form, FormLayout, MessageList, ProgressBar (+13 more)
 
 ### Community 16 - "AppShell Activity Bar"
 Cohesion: 0.11
@@ -617,8 +560,8 @@ Cohesion: 0.11
 Nodes (41): activate_tab_changes_active_and_resets_scroll(), BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout, BottomPanelTab, build_tab_bar_propagates_per_tab_closability(), build_tab_bar_shows_caret_when_docked() (+33 more)
 
 ### Community 23 - "TUI ActivityBar & DropOverlay"
-Cohesion: 0.11
-Nodes (27): Modifier, ActivityBar, ActivityBarRowHit, Buffer, Option, Rect, Theme, Vec (+19 more)
+Cohesion: 0.07
+Nodes (47): Modifier, ActivityBar, ActivityBarRowHit, Buffer, Option, Rect, Theme, Vec (+39 more)
 
 ### Community 24 - "TUI Dialog & Toolbar"
 Cohesion: 0.08
@@ -649,16 +592,16 @@ Cohesion: 0.07
 Nodes (37): DiffViewApp, AlignedEntry, build_aligned_diff(), compute_hunks(), lcs_diff(), LineDiff, test_compute_hunks_add_only(), test_compute_hunks_both_empty() (+29 more)
 
 ### Community 31 - "Backend Contracts (docs)"
-Cohesion: 0.21
-Nodes (15): Backend trait (draw_<primitive> + layout methods), GTK backend (Cairo + Pango), macOS backend (Core Graphics + Core Text), TUI backend (ratatui), Win-GUI backend (Direct2D + DirectWrite), Cross-backend portability commitment, quadraui repo README, Chart primitive (+7 more)
+Cohesion: 0.07
+Nodes (46): Implementing a quadraui backend (BACKEND.md), Backend trait (draw_<primitive> + layout methods), Click intercept hierarchy (z-order dispatch), Contract A: owned data, no closures, serde-friendly, Contract B: measurer-parameterised algorithms, Contract C: per-primitive backend contract, GTK backend (Cairo + Pango), macOS backend (Core Graphics + Core Text) (+38 more)
 
 ### Community 32 - "Chat Controller Input"
 Cohesion: 0.07
 Nodes (23): backspace_at_start_is_noop(), backspace_deletes_previous_char(), ChatController, ChatControllerEvent, cursor_byte_to_line_col(), delete_removes_char_at_cursor(), down_after_history_nav_restores_saved_input(), down_when_not_navigating_returns_ignored() (+15 more)
 
 ### Community 33 - "TUI Backend Runtime"
-Cohesion: 0.25
-Nodes (6): Key, NamedKey, Reaction, Self, UiEvent, TuiDriver<A>
+Cohesion: 0.09
+Nodes (28): A, B, CrosstermBackend, Result, Stdout, Terminal, TuiBackend, UiEvent (+20 more)
 
 ### Community 34 - "macOS Event Translation"
 Cohesion: 0.07
@@ -682,7 +625,7 @@ Nodes (34): DialogInput, DialogSeverity, base_dialog(), btn(), Dialog, DialogBut
 
 ### Community 39 - "TUI Key & Modal Dispatch"
 Cohesion: 0.07
-Nodes (17): DoubleClickDetector, AcceleratorId, Cell, Default, DragState, HashMap, Key, KeyBinding (+9 more)
+Nodes (20): DoubleClickDetector, AcceleratorId, Default, DragState, Key, KeyBinding, ModalStack, Modifiers (+12 more)
 
 ### Community 40 - "MSV SC Panel Demo"
 Cohesion: 0.11
@@ -706,7 +649,7 @@ Nodes (17): BottomPanelConfig, PanelDefinition, AppShellLayout, Into, Option, Re
 
 ### Community 45 - "GTK Draw Dispatch"
 Cohesion: 0.07
-Nodes (21): Chart, ChartLayout, DiffView, DiffViewLayout, MultiSectionView, MultiSectionViewLayout, Panel, PanelLayout (+13 more)
+Nodes (20): Chart, ChartLayout, MenuBar, MenuBarLayout, MessageList, MultiSectionView, MultiSectionViewLayout, Panel (+12 more)
 
 ### Community 46 - "macOS Form Rasteriser"
 Cohesion: 0.12
@@ -730,7 +673,7 @@ Nodes (36): Buffer, Form, FormLayout, Rect, StyledText, Theme, button_row_click_
 
 ### Community 51 - "Community 51"
 Cohesion: 0.12
-Nodes (23): gtk_active_selection_set_and_cleared(), gtk_backend_is_modal_open_tracks_stack(), gtk_backend_modal_stack_handle_shares_state(), gtk_backend_push_event_round_trip(), gtk_clear_selection_display_does_not_end_drag(), gtk_clear_text_selection_ends_drag(), gtk_extract_selection_text_empty_when_no_lines(), gtk_extract_selection_text_empty_when_no_selection() (+15 more)
+Nodes (24): gtk_active_selection_set_and_cleared(), gtk_backend_is_modal_open_tracks_stack(), gtk_backend_modal_stack_handle_shares_state(), gtk_clear_selection_display_does_not_end_drag(), gtk_clear_text_selection_ends_drag(), gtk_extract_selection_text_empty_when_no_lines(), gtk_extract_selection_text_empty_when_no_selection(), gtk_extract_selection_text_multi_row() (+16 more)
 
 ### Community 52 - "Community 52"
 Cohesion: 0.13
@@ -758,7 +701,7 @@ Nodes (17): Default, From, Into, Option, Self, String, Vec, Badge (+9 more)
 
 ### Community 58 - "Community 58"
 Cohesion: 0.09
-Nodes (25): BottomPanelController, run_with_shell(), A, ShellConfig, A, AppLogic, AppShell, AppShellLayout (+17 more)
+Nodes (23): BottomPanelController, run_with_shell(), A, ShellConfig, A, AppLogic, AppShell, AppShellLayout (+15 more)
 
 ### Community 59 - "Community 59"
 Cohesion: 0.12
@@ -798,7 +741,7 @@ Nodes (24): FormItemMeasure, ButtonRowItem, FieldKind, Form, FormEvent, FormFiel
 
 ### Community 68 - "Community 68"
 Cohesion: 0.07
-Nodes (19): CommandLine, Completions, CompletionsLayout, ContextMenu, ContextMenuLayout, DropOverlay, FindReplacePanel, MessageList (+11 more)
+Nodes (18): CommandLine, Completions, CompletionsLayout, ContextMenu, ContextMenuLayout, DiffView, DiffViewLayout, DropOverlay (+10 more)
 
 ### Community 69 - "Community 69"
 Cohesion: 0.11
@@ -806,7 +749,7 @@ Nodes (19): MacClipboard, applescript_escape(), configure_panel(), MacClipboard,
 
 ### Community 70 - "Community 70"
 Cohesion: 0.15
-Nodes (23): Accelerator, Buffer, Point, TextRegion, accelerator_match_named_keys(), accelerator_match_replaces_keypressed_with_accelerator(), accelerator_match_uppercase_letter_normalised(), accelerator_modifier_mismatch_no_match() (+15 more)
+Nodes (23): Accelerator, Backend, Buffer, Cell, HashMap, Rect, accelerator_match_named_keys(), accelerator_match_replaces_keypressed_with_accelerator() (+15 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.15
@@ -821,12 +764,12 @@ Cohesion: 0.09
 Nodes (16): DataTable, DataTableLayout, DiffView, DiffViewLayout, Form, MultiSectionView, MultiSectionViewLayout, PipelineView (+8 more)
 
 ### Community 74 - "Community 74"
-Cohesion: 0.22
-Nodes (8): rect_contains(), Backend, ListView, Point, Rect, Scrollbar, TreeView, TreeViewLayout
+Cohesion: 0.17
+Nodes (10): rect_contains(), Backend, ListView, Point, Rect, Scrollbar, TextDisplay, TextDisplayLayout (+2 more)
 
 ### Community 75 - "Community 75"
-Cohesion: 0.08
-Nodes (15): GtkBackend, GtkTextSelection, Context, Default, DragState, HashMap, Into, LayoutMetrics (+7 more)
+Cohesion: 0.09
+Nodes (12): GtkBackend, GtkTextSelection, Context, Default, HashMap, Into, LayoutMetrics, ModalStack (+4 more)
 
 ### Community 76 - "Community 76"
 Cohesion: 0.11
@@ -854,7 +797,7 @@ Nodes (22): bordered_track_inset_above_bottom_border(), flat_track_spans_bottom_
 
 ### Community 82 - "Community 82"
 Cohesion: 0.23
-Nodes (29): Buffer, Chart, ChartLayout, Color, Option, Rect, Theme, Vec (+21 more)
+Nodes (28): Buffer, Chart, ChartLayout, Color, Option, Rect, Theme, Vec (+20 more)
 
 ### Community 83 - "Community 83"
 Cohesion: 0.11
@@ -929,8 +872,8 @@ Cohesion: 0.12
 Nodes (22): ToastAction, ToastCorner, ToastEvent, ToastHit, ToastItem, ToastMeasure, ToastSeverity, ToastStack (+14 more)
 
 ### Community 101 - "Community 101"
-Cohesion: 0.14
-Nodes (21): VecDeque, Write, encode_mouse_sgr(), encode_mouse_sgr_left_press_origin(), encode_mouse_sgr_left_release_uses_lowercase_m(), encode_mouse_sgr_middle_press(), encode_mouse_sgr_middle_release(), encode_mouse_sgr_motion_with_left() (+13 more)
+Cohesion: 0.15
+Nodes (19): VecDeque, Write, encode_mouse_sgr(), encode_mouse_sgr_left_press_origin(), encode_mouse_sgr_left_release_uses_lowercase_m(), encode_mouse_sgr_middle_press(), encode_mouse_sgr_middle_release(), encode_mouse_sgr_motion_with_left() (+11 more)
 
 ### Community 102 - "Community 102"
 Cohesion: 0.18
@@ -977,8 +920,8 @@ Cohesion: 0.18
 Nodes (23): CGRect, CGRectExt, color_to_cg(), draw_status_bar(), empty_bar_falls_back_to_theme_background(), fill_rect(), font(), hover_tint_lightens_clickable_segment_bg() (+15 more)
 
 ### Community 113 - "Community 113"
-Cohesion: 0.10
-Nodes (11): Backend, Completions, CompletionsLayout, DropOverlay, RichTextPopup, RichTextPopupLayout, Tooltip, TooltipLayout (+3 more)
+Cohesion: 0.11
+Nodes (10): Completions, CompletionsLayout, DropOverlay, MultiSectionView, MultiSectionViewLayout, RichTextPopup, RichTextPopupLayout, Tooltip (+2 more)
 
 ### Community 114 - "Community 114"
 Cohesion: 0.15
@@ -1037,8 +980,8 @@ Cohesion: 0.16
 Nodes (12): CGColorSpaceRef, CGFloat, Drop, BitmapSurface, dimensions_reported(), dump_smoke_ppm(), fill_paints_expected_colour(), integrates_with_mac_backend_frame_scope() (+4 more)
 
 ### Community 128 - "Community 128"
-Cohesion: 0.08
-Nodes (14): Child, MasterPty, Parser, Option, Send, Terminal, TerminalCell, TerminalScrollbar (+6 more)
+Cohesion: 0.11
+Nodes (7): Child, MasterPty, Parser, Send, Receiver, TerminalSession, Sync
 
 ### Community 129 - "Community 129"
 Cohesion: 0.16
@@ -1053,8 +996,8 @@ Cohesion: 0.16
 Nodes (13): ToolbarApp, AppLogic, Backend, Default, Option, Reaction, Rect, Self (+5 more)
 
 ### Community 132 - "Community 132"
-Cohesion: 0.16
-Nodes (16): Error, Box, Fn, Path, Result, application_cursor_keys_tracks_decckm(), bracketed_paste_enabled_tracks_mode_2004(), cursor_hidden_after_exit() (+8 more)
+Cohesion: 0.17
+Nodes (15): Error, Box, Fn, Path, Result, bracketed_paste_enabled_tracks_mode_2004(), cursor_hidden_after_exit(), cursor_hidden_when_scrolled() (+7 more)
 
 ### Community 133 - "Community 133"
 Cohesion: 0.19
@@ -1065,8 +1008,8 @@ Cohesion: 0.22
 Nodes (21): active_item_paints_accent_strip_on_left_edge(), background_is_tab_bar_bg(), color_to_cg(), draw_activity_bar(), dump_smoke_ppm(), fill_rect(), font(), hover_lightens_row_background() (+13 more)
 
 ### Community 135 - "Community 135"
-Cohesion: 0.28
-Nodes (5): String, screen_text_strips_trailing_blanks(), terminal_manager_close_active_on_empty_is_noop(), terminal_manager_new_is_empty(), terminal_manager_switch_to_empty_is_noop()
+Cohesion: 0.16
+Nodes (11): Option, String, default_shell(), default_shell_is_nonempty(), normalize_selection(), screen_text_strips_trailing_blanks(), terminal_manager_close_active_on_empty_is_noop(), terminal_manager_new_is_empty() (+3 more)
 
 ### Community 136 - "Community 136"
 Cohesion: 0.21
@@ -1162,11 +1105,11 @@ Nodes (13): Default, Self, String, BackendNativeEvent, ButtonMask, Key, MouseBut
 
 ### Community 159 - "Community 159"
 Cohesion: 0.19
-Nodes (7): Chart, ChartLayout, DataTable, DataTableLayout, Option, SidebarPanel, SidebarPanelLayout
+Nodes (7): Chart, ChartLayout, DataTable, DataTableLayout, Option, StatusBar, StatusBarLayout
 
 ### Community 160 - "Community 160"
-Cohesion: 0.15
-Nodes (7): Clipboard, FileDialogOptions, Notification, PathBuf, PlatformServices, MockServices, NoopClipboard
+Cohesion: 0.12
+Nodes (8): Clipboard, FileDialogOptions, Notification, PathBuf, PlatformServices, String, MockServices, NoopClipboard
 
 ### Community 161 - "Community 161"
 Cohesion: 0.23
@@ -1197,8 +1140,8 @@ Cohesion: 0.18
 Nodes (11): PanelApp, AppLogic, Backend, Default, Panel, Reaction, Rect, Self (+3 more)
 
 ### Community 168 - "Community 168"
-Cohesion: 0.12
-Nodes (12): gtk_form_layout_toolbar_field_produces_per_button_hit_regions(), DataTable, DataTableLayout, Form, FormLayout, Layout, MenuBar, MenuBarLayout (+4 more)
+Cohesion: 0.15
+Nodes (10): gtk_form_layout_toolbar_field_produces_per_button_hit_regions(), Form, FormLayout, Layout, Option, StatusBar, StatusBarLayout, StyledText (+2 more)
 
 ### Community 169 - "Community 169"
 Cohesion: 0.29
@@ -1265,8 +1208,8 @@ Cohesion: 0.17
 Nodes (9): SectionKind, SidebarSectionDef, Into, Option, SectionSize, Self, String, StyledText (+1 more)
 
 ### Community 185 - "Community 185"
-Cohesion: 0.22
-Nodes (7): ActivityBar, ActivityBarRowHit, Dialog, DialogLayout, Duration, UiEvent, Vec
+Cohesion: 0.16
+Nodes (9): gtk_backend_push_event_round_trip(), ActivityBar, ActivityBarRowHit, Dialog, DialogLayout, Duration, UiEvent, Vec (+1 more)
 
 ### Community 186 - "Community 186"
 Cohesion: 0.32
@@ -1282,7 +1225,7 @@ Nodes (17): TabBar, TabItem, make_bar(), make_tab(), tab_bar_layout_empty(), tab
 
 ### Community 189 - "Community 189"
 Cohesion: 0.21
-Nodes (7): ContextMenu, ContextMenuLayout, StatusBar, StatusBarLayout, Toolbar, ToolbarLayout, WidgetId
+Nodes (7): ContextMenu, ContextMenuLayout, SidebarPanel, SidebarPanelLayout, Toolbar, ToolbarLayout, WidgetId
 
 ### Community 190 - "Community 190"
 Cohesion: 0.27
@@ -1384,10 +1327,6 @@ Nodes (13): Buffer, Rect, Spinner, SpinnerLayout, Theme, cell_char(), draw_spinn
 Cohesion: 0.32
 Nodes (13): Buffer, Color, Theme, Tooltip, TooltipLayout, cell_char(), draw_tooltip(), make_layout() (+5 more)
 
-### Community 215 - "Community 215"
-Cohesion: 0.11
-Nodes (6): AppLogic, ShellConfig, shell_runner_path_ctrl_a_selects_all(), shell_runner_path_drag_and_ctrl_c_copies_text(), driver_with_shell(), TuiDriver
-
 ### Community 216 - "Community 216"
 Cohesion: 0.22
 Nodes (12): ApplicationWindow, activate(), apply_reaction(), run(), A, Application, DrawingArea, ExitCode (+4 more)
@@ -1397,8 +1336,8 @@ Cohesion: 0.17
 Nodes (13): Backend trait (frame state + setters), Option-A event queue adapter for callback-driven backends, GtkBackend reference impl (mid-migration), Backend trait (proposal §4), D6 — primitives return Layout, backends rasterise verbatim, Backend-by-backend rewrite migration (B.1-B.8), Shared AppLogic must not hardcode backend-native units, GTK idle_add unreliable during continuous events (+5 more)
 
 ### Community 218 - "Community 218"
-Cohesion: 0.40
-Nodes (6): Band-aid trap (caching inputs vs output), Layout caching (cache output, one derivation), Paint/click drift bug class, Declarative description first (struct + layout + hit_test), One source of truth for layout, Paint/click round-trip harness rule
+Cohesion: 0.18
+Nodes (13): Band-aid trap (caching inputs vs output), The harness is the gate, Layout caching (cache output, one derivation), Paint/click drift bug class, Declarative description first (struct + layout + hit_test), One source of truth for layout, Paint/click round-trip harness rule, Coverage taxonomy (four bug classes / test shapes) (+5 more)
 
 ### Community 219 - "Community 219"
 Cohesion: 0.22
@@ -1481,8 +1420,8 @@ Cohesion: 0.22
 Nodes (10): FieldKind, Form, FormField, form_layout_empty(), form_layout_hit_carries_widget_id_not_index(), form_layout_scroll_offset_skips(), form_layout_stacks_fields(), form_layout_varying_heights_by_kind() (+2 more)
 
 ### Community 239 - "Community 239"
-Cohesion: 0.19
-Nodes (8): remove_active_panel_selects_neighbor(), remove_last_panel_clears_active(), remove_panel_adjusts_active_index(), ContextMenu, ContextMenuLayout, StatusBar, StatusBarLayout, WidgetId
+Cohesion: 0.28
+Nodes (6): remove_active_panel_selects_neighbor(), remove_last_panel_clears_active(), remove_panel_adjusts_active_index(), ContextMenu, ContextMenuLayout, WidgetId
 
 ### Community 240 - "Community 240"
 Cohesion: 0.22
@@ -1521,12 +1460,12 @@ Cohesion: 0.39
 Nodes (9): ScrollDelta, delta(), dispatch_scroll(), scroll_inside_modal_routes_to_modal(), scroll_on_non_overlapping_surface(), scroll_outside_all_surfaces_emits_no_widget(), scroll_outside_open_modal_is_swallowed(), scroll_routes_to_topmost_surface() (+1 more)
 
 ### Community 249 - "Community 249"
-Cohesion: 0.05
-Nodes (42): 10. References, 11. Phase B.2 implementation notes — terminal-maximize pilot, 1. Why now, 2. `UiEvent` — what a user did, 3. `Accelerator` — declarative cross-platform keybindings, 4. `Backend` trait — one impl per platform, 5. Migration — backend-by-backend rewrite, 6.1 `AnyPrimitive` vs per-primitive trait methods (+34 more)
+Cohesion: 0.29
+Nodes (4): Panel, PanelLayout, TabBar, TabBarHits
 
 ### Community 250 - "Community 250"
-Cohesion: 0.38
-Nodes (7): Layer cake (App / Render adapter / Backend), State flows down, measurements flow up, events flow back, BufferView adapter (TextEditor / Engine decoupling), Build-and-draw each frame (no virtual DOM), Primitive catalog (layout/chrome/content/popup), Primitive-owned scroll + text-input state only, Cross-platform UI crate vision
+Cohesion: 0.32
+Nodes (8): Layer cake (App / Render adapter / Backend), State flows down, measurements flow up, events flow back, BufferView adapter (TextEditor / Engine decoupling), Build-and-draw each frame (no virtual DOM), Design invariants for plugin-driven UI (§10), Primitive catalog (layout/chrome/content/popup), Primitive-owned scroll + text-input state only, Cross-platform UI crate vision
 
 ### Community 251 - "Community 251"
 Cohesion: 0.25
@@ -1549,12 +1488,12 @@ Cohesion: 0.50
 Nodes (7): draw_spinner(), gtk_spinner_layout(), Context, Layout, Spinner, SpinnerLayout, Theme
 
 ### Community 256 - "Community 256"
-Cohesion: 0.07
-Nodes (29): 1. Body composition, 2. Scroll model, 3. Resize redistribute policy, 4. Axis, 5. Min/max enforcement, 6. Header hit-test, 7. Empty-state body, D-001 — `ListView` is a distinct primitive (not `TreeView` with depth 0) (+21 more)
+Cohesion: 0.25
+Nodes (5): Terminal, TerminalCell, TerminalScrollbar, Vec, WidgetId
 
 ### Community 257 - "Community 257"
-Cohesion: 0.08
-Nodes (25): 10. Design invariants for plugin-driven UI, 11. What happens next, 1. Vision, 2. Non-goals, 3.1 Rendering model: build-and-draw each frame, 3.2 Event model, 3.3 Fully-drawn, not native-widget, 3.4 "Native feel" without native widgets (+17 more)
+Cohesion: 0.39
+Nodes (4): B, ListView, Palette, paint_overlays()
 
 ### Community 258 - "Community 258"
 Cohesion: 0.39
@@ -1569,8 +1508,8 @@ Cohesion: 0.29
 Nodes (7): Effective/derived value per-frame accessor, Mouse hit-tests mirror draw-time geometry, PanelChromeDesc shared chrome arithmetic, Terminal maximize worked example (#34), Quadratic wiring problem (feature x backend), Reserved space = all chrome not one element, build_screen_layout is single source of truth
 
 ### Community 261 - "Community 261"
-Cohesion: 0.12
-Nodes (16): Compose helpers (FocusRing, MenuSystem, SidebarSystem), MenuOverlay GTK hosting helper, Two-layer split (primitives vs backend rasterisers), quadraui workspace layout, Backend _layout methods must work outside frame scope, Native-vs-painted menu convention, Primitive Authoring Rules, Primitive maturity levels (+8 more)
+Cohesion: 0.33
+Nodes (7): Compose helpers (FocusRing, MenuSystem, SidebarSystem), MenuOverlay GTK hosting helper, Two-layer split (primitives vs backend rasterisers), quadraui workspace layout, Backend _layout methods must work outside frame scope, Native-vs-painted menu convention, quadraui session history archive
 
 ### Community 262 - "Community 262"
 Cohesion: 0.43
@@ -1628,10 +1567,6 @@ Nodes (6): Terminal, make_term(), terminal_layout_cell_bounds(), terminal_layout
 Cohesion: 0.40
 Nodes (4): Color, Default, Self, Theme
 
-### Community 281 - "Community 281"
-Cohesion: 0.09
-Nodes (22): 1. Start with the contract: one primitive, end-to-end, 2. Add click handling: the StatusBar pattern, 3. Primitive extension: when the existing shape isn't enough, 4. When the primitive model doesn't fit: the `hit_regions` pattern, 5. The decision log (why things are the way they are), 6. Optional: one full-feature primitive end-to-end, After the tour, Click resolution (+14 more)
-
 ### Community 282 - "Community 282"
 Cohesion: 0.60
 Nodes (5): Buffer, CommandLine, Rect, Theme, draw_command_line()
@@ -1649,8 +1584,8 @@ Cohesion: 0.60
 Nodes (5): Buffer, Color, Scrollbar, Theme, draw_scrollbar()
 
 ### Community 286 - "Community 286"
-Cohesion: 0.22
-Nodes (9): D7 — focus model (D7a-D7e), Event routing: hit-test vs focus, Plugin invariants (no closures, serde, owned data), UiEvent backend-neutral event enum, Two backend consumers, one dispatcher, The harness is the gate, ExampleDriver trait (shared bodies, per-backend adapters), TuiDriver example-driver harness (+1 more)
+Cohesion: 0.40
+Nodes (5): D7 — focus model (D7a-D7e), Event routing: hit-test vs focus, Plugin invariants (no closures, serde, owned data), UiEvent backend-neutral event enum, Two backend consumers, one dispatcher
 
 ### Community 287 - "Community 287"
 Cohesion: 0.70
@@ -1680,29 +1615,9 @@ Nodes (4): Color, Default, Self, HistCell
 Cohesion: 0.50
 Nodes (3): body_measure(), Section, SectionMeasure
 
-### Community 298 - "Community 298"
-Cohesion: 0.10
-Nodes (20): 10. Decisions log, 11. References, 1. Goals & non-goals, 2.1 The app is already backend-generic, 2.2 Every interactive widget already has an identity, 2.3 The server still computes layout — repurposed for coordinates, 2. The three enabling facts (why this is cheap), 3. The abstraction-cut spectrum (and the chosen cut) (+12 more)
-
-### Community 299 - "Community 299"
-Cohesion: 0.21
-Nodes (19): A, B, CrosstermBackend, Result, Self, Stdout, Terminal, TuiBackend (+11 more)
-
 ### Community 302 - "Community 302"
 Cohesion: 0.50
 Nodes (4): Accelerator registry + apply_accelerators, Accelerator declarative keybinding type, Engine-owned accelerator registry (B.2 final shape), TUI accelerator three-layer stack caveat
-
-### Community 304 - "Community 304"
-Cohesion: 0.12
-Nodes (16): 10. Interaction parity is harder than rendering parity (Session 269), 11. Extension panel click geometry must match fractional draw layout, 12. Unit-mismatch is the silent killer when sharing render logic, 13. GTK's `idle_add_local_once` is unreliable during continuous events, 14. "TUI works → make GTK work" — suspect units, not timing, 15. Terminal integration requires three interaction layers, 1. Reserved space = ALL chrome, not just one element, 2. Test multi-group scenarios explicitly (+8 more)
-
-### Community 305 - "Community 305"
-Cohesion: 0.12
-Nodes (15): 1. Mental model, 3. The two-pass paint pattern, 5. Click intercept hierarchy, 6. Minimal backend walkthroughs, 7. Backend-implementer checklist, 8. When to extend quadraui itself, 9. Reference implementations, Cross-cutting (+7 more)
-
-### Community 306 - "Community 306"
-Cohesion: 0.23
-Nodes (15): Buffer, Rect, TabBar, TabBarHits, TabBarLayout, Theme, TabMeasure, cell_char() (+7 more)
 
 ### Community 314 - "Community 314"
 Cohesion: 0.50
@@ -1712,186 +1627,18 @@ Nodes (4): ActivityItem, activity_bar_layout_bottom_wins_on_collision(), activit
 Cohesion: 0.50
 Nodes (4): ContextMenuItem, cm_action(), cm_separator(), context_menu_layout_below_flips_above_when_no_room()
 
-### Community 325 - "Community 325"
-Cohesion: 0.13
-Nodes (14): 1. The three types that make this work, 2. The dispatcher functions, 3. Two backend consumers, one dispatcher, 4. How drags extend the shape, 5. What's still missing (near-term follow-ups), 6. Reading order for new backend authors, 7. History, GTK picker click (`src/gtk/mod.rs`, around the `picker_open` (+6 more)
-
 ### Community 327 - "Community 327"
 Cohesion: 0.50
 Nodes (3): A, ExitCode, run()
-
-### Community 415 - "Community 415"
-Cohesion: 0.16
-Nodes (12): AppLogic, Backend, Option, Point, Reaction, Rect, String, UiEvent (+4 more)
-
-### Community 416 - "Community 416"
-Cohesion: 0.23
-Nodes (14): Implementing a quadraui backend (BACKEND.md), Click intercept hierarchy (z-order dispatch), quadraui mental model (immediate-mode, state-build-paint-events), Palette primitive (modal click intercept), StatusBar primitive (fit_right_start contract), TabBar primitive (fit_active_scroll_offset contract), Two-pass paint pattern, 2. The three contracts every backend must honour (+6 more)
-
-### Community 417 - "Community 417"
-Cohesion: 0.14
-Nodes (13): All runners must fire all UiEvent variants the consumer pattern needs, Backend draw_* and *_layout must agree on which dimensions they use, Backend `_layout` methods must work outside the frame scope, Dropdown item sizing must use backend-native units, Layout helpers must return coords in the same frame across backends, Lessons Captured, Migration discipline (corollary), Paint/click drift is the structural bug class quadraui exists to eliminate (+5 more)
-
-### Community 418 - "Community 418"
-Cohesion: 0.14
-Nodes (13): 1. Owned data only — no `&'static str`, no closures, 2. Measurer-parameterised algorithms, 3. Backend contract per primitive, Cross-backend invariants, How it fits together, Implementing a new backend, License, Primitives (+5 more)
-
-### Community 419 - "Community 419"
-Cohesion: 0.19
-Nodes (7): A, Option, String, Terminal, TuiBackend, TestBackend, TuiDriver
-
-### Community 420 - "Community 420"
-Cohesion: 0.17
-Nodes (11): Application architecture on top of quadraui, Engine layer — `src/core/engine/`, New-feature checklist, Per-backend plumbing (currently duplicated across TUI, GTK, Win-GUI), References, Render adapter — `src/render.rs`, Rules of thumb, The layer cake (+3 more)
-
-### Community 421 - "Community 421"
-Cohesion: 0.17
-Nodes (11): Bugs caught during development, Changes delivered, Issues closed (1), Open queue for next session, Open queue for next session, Session 2026-05-14 — macOS headless test surface (#37), Session 2026-05-18 — GTK rasteriser layout-first refactor, Session History (+3 more)
-
-### Community 422 - "Community 422"
-Cohesion: 0.17
-Nodes (12): #39 — Content rasterisers, #40 — MSV + scrollbar, #41 — Overlays, #42 — Containers + indicators, Cross-cutting concerns surfaced during the session, Issues closed (4), Issues filed for follow-up macOS native-feel work (2), macOS milestone status at end of session (+4 more)
-
-### Community 423 - "Community 423"
-Cohesion: 0.18
-Nodes (10): Branching + releases, CLAUDE.md — quadraui, Code Style, Commit conventions, Demos are mandatory for visual features, Development Workflow, Event model: TextCopied vs ClipboardPaste, Quality Gate (+2 more)
-
-### Community 424 - "Community 424"
-Cohesion: 0.18
-Nodes (10): 1. Frame ownership, 2. Event poll / wait, 3. Modal stack + drag dispatch, 4. PlatformServices, Backend implementation guide, Event-loop shape: poll-driven trait, queue adapter for callback-driven backends, Glossary, The four hooks (+2 more)
-
-### Community 425 - "Community 425"
-Cohesion: 0.18
-Nodes (11): 4. Backend operation reference, Apply bold to text, Clip to rectangle (popups, dialogs), Draw text at a position, Fill rectangle in a colour, Measure text width (the core of contract B), Notes on the table, Receive a key event (+3 more)
-
-### Community 426 - "Community 426"
-Cohesion: 0.18
-Nodes (10): Compose Helpers, Design, Examples, Features, License, Primitives, quadraui, Status (+2 more)
-
-### Community 427 - "Community 427"
-Cohesion: 0.18
-Nodes (11): Backend trait changes, Bugs found + fixed, Disk management, Example updates, Interactivity features shipped, Issues closed (6), Issues filed (5), New primitive shipped (+3 more)
-
-### Community 428 - "Community 428"
-Cohesion: 0.22
-Nodes (9): Backend testability requirement, Coverage taxonomy, Cross-backend example tests: shared bodies, per-backend adapters, Example-driver tests (end-to-end, in-process), Backend headless paint-to-memory requirement, Tests empirically verified by mutation, Quality gate, Testing (+1 more)
-
-### Community 429 - "Community 429"
-Cohesion: 0.20
-Nodes (10): Cell attribute deferral, Issues closed (1), `MacBackend` cleanup, macOS milestone status at end of session, Open queue for next session, Process notes, Session 2026-05-17 — macOS terminal + text_display + message_list rasterisers (#43), Test count progression (+2 more)
-
-### Community 430 - "Community 430"
-Cohesion: 0.22
-Nodes (9): Additional PRs, Bugs found + fixed, Issues closed (5), Issues filed (3), Lens assessment, New primitive shipped, Open queue for next session, Session 2026-05-12b/13 — StatusBarLayout, DataTable, h-scroll, double-click, Lens assessment (+1 more)
-
-### Community 431 - "Community 431"
-Cohesion: 0.22
-Nodes (9): Bugs found + fixed, CLAUDE.md updates, Infrastructure shipped, Issues closed (8), Issues filed (26), Open queue for next session, Primitives shipped (6 new, 1 extended), Session 2026-05-03/04 — Primitive completion + vimcode migration support (+1 more)
-
-### Community 432 - "Community 432"
-Cohesion: 0.22
-Nodes (9): Bugs found + fixed, Design decisions, Issues closed (7), Issues filed (4), New example, New primitives/features shipped, Open queue for next session, Session 2026-05-09/10 — SidebarSystem Form sections + Form field kinds (+1 more)
-
-### Community 433 - "Community 433"
-Cohesion: 0.22
-Nodes (9): Compose helpers shipped (2), Context, Design decisions, Issues closed (2), Issues filed (2), Open queue for next session, Session 2026-05-07 — TreeController + FocusGroup compose helpers, SidebarSystem refactoring (+1 more)
-
-### Community 434 - "Community 434"
-Cohesion: 0.22
-Nodes (8): 1. Signal Handling & Closures, 2. State Management, 3. UI Construction, 4. Layout & Widgets, 5. List Model (GTK4 Pattern), 6. Async in GTK, 7. Resources & Actions, GTK4 Rust Specialist
-
-### Community 435 - "Community 435"
-Cohesion: 0.25
-Nodes (8): Additional PRs (no issue number), API changes, Bug investigation: h-scrollbar drag range, Bugs found + fixed, Issues closed (4), Open queue for next session, Session 2026-05-11b/12 — Terminal scrollbar fixes + editor selection wrap + drag dispatch rework, Test count progression
-
-### Community 436 - "Community 436"
-Cohesion: 0.25
-Nodes (8): Architectural decisions, Bugs found + fixed, Cross-repo discovery (end of session), Issues closed (6), Issues filed (1), Open queue for next session, Session 2026-05-15b — macOS milestone close-out (6 issues, 7 PRs), Test count progression
-
-### Community 437 - "Community 437"
-Cohesion: 0.25
-Nodes (8): Bugs found + fixed during session, CLAUDE.md sections added/updated, Issues closed (5), Issues filed (3), Open queue for next session, Session 2026-05-01b — MenuBar + Split rasterisers, primitive audit, Split primitive shipped (first of #16's 5), Test count progression
-
-### Community 438 - "Community 438"
-Cohesion: 0.25
-Nodes (8): Bugs found + fixed during smoke testing, Issues closed (1), Issues filed (3), Open queue for next session, Process notes, Session 2026-05-15 — macOS paired examples + surfaced coord-frame fixes (#44), Test count progression, What shipped
-
-### Community 439 - "Community 439"
-Cohesion: 0.25
-Nodes (8): Findings / gotchas, Issues closed (2), Issues filed (4), Markdown updated, Outcome: built an in-process driver instead of adopting a pty tool, Quality gate (green both commits), Session 2026-06-01 — TUI example-driver test harness (#300, #303) + follow-ups, Three-tier test model (documented in TESTING.md)
-
-### Community 440 - "Community 440"
-Cohesion: 0.25
-Nodes (7): 1. Ownership & Lifetimes, 2. Error Handling, 3. Style & Idioms, 4. Module Organization, 5. Modern Tooling, 6. Performance Defaults, Rust Expert Skill
-
-### Community 441 - "Community 441"
-Cohesion: 0.25
-Nodes (7): 1. Project Structure, 2. Cargo.toml Conventions, 3. Build Process, 4. Naming Conventions, 5. Git Conventions, 6. Common Pitfalls to Avoid, Rust GTK Project Conventions
-
-### Community 442 - "Community 442"
-Cohesion: 0.29
-Nodes (7): Architectural decisions made, CLAUDE.md sections added/updated, Issues closed (9), Issues filed (4), Open queue for next session, Session 2026-05-01 — Cross-backend portability arc, Test count progression
-
-### Community 443 - "Community 443"
-Cohesion: 0.29
-Nodes (7): Bugs caught during development, Open queue for next session, Scope omissions (deferred to a unified text-attribute pass), Session 2026-05-15 — macOS chrome rasterisers (#38), Test count progression, Tests, What shipped
-
-### Community 444 - "Community 444"
-Cohesion: 0.29
-Nodes (7): Bugs found + fixed, Changes shipped, Dependencies added, Issues closed (1), Open queue for next session, Session 2026-05-10b — Text field editing + clipboard + selection contrast, Test count progression
-
-### Community 445 - "Community 445"
-Cohesion: 0.29
-Nodes (7): Dispatch extensions, Issues closed (5), New primitives/types shipped, New rasterisers, Open queue for next session, Session 2026-05-11 — Vimcode dedup primitives + dispatch extensions + TUI terminal rasteriser, Test count progression
-
-### Community 446 - "Community 446"
-Cohesion: 0.47
-Nodes (6): CI workflow (fmt + tui + gtk jobs), Quality Gate (build/test/clippy/fmt), complete-push command, complete-session command, quality-check command, quadraui session history log
-
-### Community 447 - "Community 447"
-Cohesion: 0.40
-Nodes (6): Development Workflow (branch/Path A/Path B/issues), quadraui agent guide (CLAUDE.md), TextCopied vs ClipboardPaste event model, make-release command, plan-next command, dispatch_scroll / dispatch_click infrastructure
-
-### Community 448 - "Community 448"
-Cohesion: 0.33
-Nodes (5): After PR, Create PR, Flatpak sources, Pre-flight checks, Version bump
-
-### Community 452 - "Community 452"
-Cohesion: 0.53
-Nodes (6): Compose helpers (FocusRing/MenuSystem/SidebarSystem), FocusGroup compose helper, FormController compose helper, MenuSystem compose helper, SidebarSystem compose helper, TreeController compose helper
-
-### Community 453 - "Community 453"
-Cohesion: 0.33
-Nodes (6): Architectural significance, CLAUDE.md updated, Issues closed (8), Open queue for next session, Session 2026-05-15/16 — Hit-test unification + runtime epic prerequisites, Test count progression
-
-### Community 454 - "Community 454"
-Cohesion: 0.33
-Nodes (6): Bugs fixed during session, Issues closed (8), Open queue for next session, Session 2026-05-13/14 — FormController + vimcode primitive gap batch, Test count progression, What shipped
-
-### Community 455 - "Community 455"
-Cohesion: 0.33
-Nodes (6): Bugs found + fixed, Issues closed (3), Open queue for next session, Session 2026-05-06c — SidebarSystem selection nav + GTK menu fixes, Test count progression, Worktree tooling failure noted
-
-### Community 456 - "Community 456"
-Cohesion: 0.70
-Nodes (4): Buffer, DropOverlay, Theme, draw_drop_overlay()
-
-### Community 457 - "Community 457"
-Cohesion: 0.40
-Nodes (5): Architecture delivered, Issues closed (6), Open queue for next session, Process notes, Session 2026-05-16b — Runtime epics + ScreenLayout + ShellApp
-
-### Community 462 - "Community 462"
-Cohesion: 0.50
-Nodes (3): Consumer Patterns, MSV with aux=Input + N collapsible TreeView sections (SC panel shape), MSV with N stacked TreeView sections (Debug-sidebar shape)
 
 ## Ambiguous Edges - Review These
 - `TextCopied vs ClipboardPaste event model` → `dispatch_scroll / dispatch_click infrastructure`  [AMBIGUOUS]
   CLAUDE.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **1577 isolated node(s):** `T`, `F`, `HasMeta`, `Duration`, `Result` (+1572 more)
+- **1166 isolated node(s):** `T`, `F`, `HasMeta`, `Duration`, `Result` (+1161 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **117 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **114 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
@@ -1899,13 +1646,13 @@ _Questions this graph is uniquely positioned to answer:_
 - **What is the exact relationship between `TextCopied vs ClipboardPaste event model` and `dispatch_scroll / dispatch_click infrastructure`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
 - **Why does `render_accelerator()` connect `Community 117` to `Community 146`, `Community 211`, `Community 77`, `Community 87`?**
-  _High betweenness centrality (0.047) - this node is a cross-community bridge._
+  _High betweenness centrality (0.051) - this node is a cross-community bridge._
 - **Why does `shortcut_text()` connect `Community 77` to `Community 117`?**
-  _High betweenness centrality (0.044) - this node is a cross-community bridge._
+  _High betweenness centrality (0.045) - this node is a cross-community bridge._
 - **Why does `draw_context_menu()` connect `Community 77` to `Community 176`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
 - **What connects `T`, `F`, `HasMeta` to the rest of the system?**
-  _1594 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _1183 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Compose Backend Draw API` be split into smaller, more focused modules?**
   _Cohesion score 0.028293545534924844 - nodes in this community are weakly interconnected._
 - **Should `Tab Group & Panes` be split into smaller, more focused modules?**
