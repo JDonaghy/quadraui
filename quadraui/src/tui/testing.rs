@@ -45,13 +45,88 @@
 //! # }
 //! ```
 
+use std::cell::RefCell;
+
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
+use crate::compose::app_shell::AppShell;
+use crate::compose::bottom_panel::BottomPanelController;
 use crate::runner::{AppLogic, Reaction};
+use crate::shell::{ShellApp, ShellConfig};
+use crate::shell_adapter::ShellAdapter;
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+
+/// Build a [`TuiDriver`] that wraps `app` in the full
+/// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
+/// [`crate::tui::shell_runner::run_with_shell`] does at runtime — but
+/// returning a testable driver instead of entering the live event loop.
+///
+/// Use this constructor in tests that need to verify the full
+/// `ShellApp → ShellAdapter → dispatch_event` integration path, e.g.
+/// confirming that `register_text_region()` is reached via
+/// `ShellAdapter::render()` and that the selection pipeline (drag → Ctrl-C)
+/// works end-to-end for `run_with_shell` callers.
+///
+/// # Example
+///
+/// ```no_run
+/// # use quadraui::tui::testing::driver_with_shell;
+/// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
+/// # struct MyApp;
+/// # impl ShellApp for MyApp {
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
+/// # }
+/// let config = ShellConfig::new("Demo", vec![]);
+/// let mut driver = driver_with_shell(MyApp, config, 80, 24);
+/// assert!(driver.screen_contains("Demo"));
+/// ```
+pub fn driver_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+    width: u16,
+    height: u16,
+) -> TuiDriver<impl AppLogic> {
+    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
+        .with_bottom_items(config.bottom_items)
+        .with_min_width(config.min_sidebar_width)
+        .with_max_width(config.max_sidebar_width)
+        .with_position(config.position);
+
+    if config.has_title_bar {
+        shell = shell.with_title_bar(config.title_bar_height_lh);
+    }
+    if config.has_bottom_panel {
+        shell = shell
+            .with_bottom_panel(config.bottom_panel_height_lh)
+            .with_bottom_panel_limits(
+                config.min_bottom_panel_height_lh,
+                config.max_bottom_panel_height_lh,
+            );
+    }
+    if config.has_command_line {
+        shell = shell.with_command_line();
+    }
+    if config.has_status_bar {
+        shell = shell.with_status_bar();
+    }
+
+    let bottom_panel = if let Some(bp_config) = config.bottom_panel {
+        shell = shell
+            .with_bottom_panel(10.0)
+            .with_bottom_panel_limits(3.0, 40.0);
+        Some(RefCell::new(BottomPanelController::new(bp_config)))
+    } else {
+        None
+    };
+
+    let active_panel_id = shell.active_panel_id().cloned();
+    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel);
+    TuiDriver::new(adapter, width, height)
+}
 
 /// Drives an [`AppLogic`] impl headlessly for tests.
 ///
