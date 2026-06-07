@@ -143,6 +143,11 @@ path = "examples/tui_panel.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_selection"
+path = "examples/tui_selection.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "gtk_panel"
 path = "examples/gtk_panel.rs"
 required-features = ["gtk"]

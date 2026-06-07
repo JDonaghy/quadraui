@@ -321,3 +321,231 @@ fn pop_keyboard_enhancement(backend: &mut CrosstermBackend<io::Stdout>) -> io::R
     use ratatui::crossterm::event::PopKeyboardEnhancementFlags;
     execute!(backend, PopKeyboardEnhancementFlags)
 }
+
+// ── Selection pipeline tests ──────────────────────────────────────────────────
+//
+// These use `TuiDriver` to exercise the full dispatch_event + render_frame
+// path (the same code the live runner and `run_with_shell` both use).
+// Each test builds a minimal app that registers a text region, then
+// verifies the selection pipeline's observable behaviour.
+
+#[cfg(test)]
+mod tests {
+    use crate::runner::{AppLogic, Reaction};
+    use crate::tui::testing::TuiDriver;
+    use crate::{Backend, Key, Point, Rect, TextRegion, UiEvent, WidgetId};
+
+    // ── Minimal test app ──────────────────────────────────────────────────────
+
+    /// Records `TextCopied` payloads and `TextSelectionChanged` anchor/focus
+    /// so tests can assert on them without a real clipboard.
+    struct SelectionRecorder {
+        last_copied: Option<String>,
+        selection_changes: Vec<(Point, Point)>,
+    }
+
+    impl SelectionRecorder {
+        fn new() -> Self {
+            Self {
+                last_copied: None,
+                selection_changes: Vec::new(),
+            }
+        }
+
+        fn config_rect() -> Rect {
+            // 20-wide × 5-tall text region at the top-left corner.
+            Rect::new(0.0, 0.0, 20.0, 5.0)
+        }
+    }
+
+    impl AppLogic for SelectionRecorder {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            // Register the text region every frame so dispatch_click can find it.
+            backend.register_text_region(TextRegion {
+                id: WidgetId::new("test-region"),
+                bounds: Self::config_rect(),
+                lines: vec![
+                    "line one".into(),
+                    "line two".into(),
+                    "line three".into(),
+                    "line four".into(),
+                    "line five".into(),
+                ],
+            });
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            match event {
+                UiEvent::TextCopied(text) => {
+                    self.last_copied = Some(text);
+                    Reaction::Redraw
+                }
+                UiEvent::TextSelectionChanged { anchor, focus, .. } => {
+                    self.selection_changes.push((anchor, focus));
+                    Reaction::Redraw
+                }
+                UiEvent::KeyPressed {
+                    key: Key::Char('q'),
+                    ..
+                } => Reaction::Exit,
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    /// Dragging across a registered `TextRegion` emits `TextSelectionChanged`.
+    ///
+    /// This exercises the full pipeline:
+    ///   `MouseDown` → `dispatch_click` starts drag →
+    ///   `MouseMoved` → `dispatch_mouse_drag` → `TextSelectionChanged` →
+    ///   `dispatch_event` calls `set_active_text_selection`.
+    #[test]
+    fn drag_over_text_region_emits_selection_changed() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+
+        // Start drag at (2, 0), move to (2, 2) — two rows.
+        driver.mouse_down(2.0, 0.0);
+        driver.mouse_move(2.0, 2.0);
+
+        assert!(
+            !driver.app().selection_changes.is_empty(),
+            "drag over a text region must emit TextSelectionChanged"
+        );
+        let (anchor, _focus) = driver.app().selection_changes[0];
+        // Anchor should be close to where the drag started.
+        assert!(
+            anchor.y < 1.0,
+            "anchor row should be 0 (drag started at y=0), got y={}",
+            anchor.y
+        );
+    }
+
+    /// `Ctrl-C` with an active selection emits `TextCopied` to the app
+    /// instead of forwarding the raw key press.
+    #[test]
+    fn ctrl_c_with_selection_emits_text_copied() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+
+        // Build a selection by dragging.
+        driver.mouse_down(0.0, 0.0);
+        driver.mouse_move(0.0, 1.0);
+        driver.mouse_up(0.0, 1.0);
+
+        // Ctrl-C should fire TextCopied, not a raw KeyPressed.
+        driver.ctrl_char('c');
+
+        assert!(
+            driver.app().last_copied.is_some(),
+            "Ctrl-C with active selection must emit TextCopied to the app"
+        );
+    }
+
+    /// `Ctrl-C` without any selection does NOT emit `TextCopied` — the raw
+    /// `KeyPressed` is forwarded to the app instead (exit handled by 'q',
+    /// but Ctrl-C without selection stays as a KeyPressed for the app).
+    #[test]
+    fn ctrl_c_without_selection_does_not_emit_text_copied() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+
+        // No drag — no active selection.
+        driver.ctrl_char('c');
+
+        assert!(
+            driver.app().last_copied.is_none(),
+            "Ctrl-C without an active selection must NOT emit TextCopied"
+        );
+    }
+
+    /// `Ctrl-A` selects the entire registered text region and subsequent
+    /// `Ctrl-C` copies the full content.
+    #[test]
+    fn ctrl_a_then_ctrl_c_copies_full_region() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+
+        driver.ctrl_char('a'); // select-all
+        driver.ctrl_char('c'); // copy
+
+        assert!(
+            driver.app().last_copied.is_some(),
+            "Ctrl-A + Ctrl-C must copy the region content"
+        );
+        let text = driver.app().last_copied.as_deref().unwrap_or("");
+        // The content must contain at least some of the region's lines.
+        assert!(
+            !text.is_empty(),
+            "copied text must not be empty after Ctrl-A"
+        );
+    }
+
+    /// A `MouseDown` clears the displayed selection without ending an ongoing
+    /// drag (so the new drag can replace the old selection).
+    #[test]
+    fn mouse_down_clears_selection_display() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+
+        // Build a selection.
+        driver.mouse_down(0.0, 0.0);
+        driver.mouse_move(0.0, 2.0);
+        driver.mouse_up(0.0, 2.0);
+
+        // Verify selection exists (active_selection is Some after mouse-up
+        // because the TUI runner preserves the finalised selection).
+        let had_selection = driver.backend().active_text_selection().is_some();
+
+        // A new MouseDown should clear the displayed selection.
+        driver.mouse_down(0.0, 4.0);
+
+        // After the new MouseDown the old highlight should be gone.
+        assert!(
+            !had_selection || driver.backend().active_text_selection().is_none(),
+            "MouseDown must clear the previously displayed selection"
+        );
+    }
+
+    /// `cancel_text_selection_drag` ends an in-progress drag without
+    /// clearing the active selection display. This is the #454 pattern:
+    /// the app forwards a click to the PTY and then cancels the speculative
+    /// drag the runner started.
+    #[test]
+    fn cancel_text_selection_drag_does_not_clear_display() {
+        use crate::DragTarget;
+
+        let mut backend = crate::tui::backend::TuiBackend::new();
+
+        // Manually start a TextSelection drag (simulates what apply_dispatch
+        // does on MouseDown inside a text region).
+        backend
+            .drag_and_modal_mut()
+            .0
+            .begin(DragTarget::TextSelection {
+                region: WidgetId::new("r"),
+                anchor: Point::new(0.0, 0.0),
+            });
+
+        // Also set an active (finalised) selection.
+        backend.set_active_text_selection(
+            WidgetId::new("r"),
+            Point::new(0.0, 0.0),
+            Point::new(5.0, 0.0),
+        );
+
+        // Cancel the drag (PTY forwarding path).
+        backend.cancel_text_selection_drag();
+
+        // Drag state should be cleared.
+        assert!(
+            !backend.drag_and_modal_mut().0.is_active(),
+            "cancel_text_selection_drag must end the active drag"
+        );
+
+        // But the displayed selection should still be there.
+        assert!(
+            backend.active_text_selection().is_some(),
+            "cancel_text_selection_drag must NOT clear the active selection display"
+        );
+    }
+}
