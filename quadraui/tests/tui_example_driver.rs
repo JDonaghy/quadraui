@@ -9,7 +9,7 @@
 //! exact code a user runs, not a test-only copy.
 #![cfg(feature = "tui")]
 
-use quadraui::tui::testing::TuiDriver;
+use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::NamedKey;
 
 #[path = "../examples/common/demo.rs"]
@@ -20,6 +20,8 @@ mod mini_app;
 mod panel_app;
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
+#[path = "../examples/common/selection_app.rs"]
+mod selection_app;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 
@@ -27,6 +29,7 @@ use demo::AppState;
 use mini_app::MiniApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
+use selection_app::SelectionDemo;
 use text_input_demo::TextInputDemo;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
@@ -288,5 +291,84 @@ fn panel_drag_selects_text_and_ctrl_c_copies_it() {
     assert!(
         screen.contains("quick"),
         "the copied preview should contain selected text:\n{screen}"
+    );
+}
+
+// ─── SelectionDemo (shell-runner path): drag + Ctrl-C via run_with_shell ───────
+//
+// `SelectionDemo` implements `ShellApp` (not `AppLogic` directly) and is
+// driven by `run_with_shell` in production. Here we use `driver_with_shell`
+// to construct the same `ShellAdapter` wrapper that `run_with_shell` builds,
+// then script events through it — exercising the full
+// `ShellApp → ShellAdapter::render() → register_text_region()` call chain
+// that the `AppLogic`-only tests in `run.rs` cannot reach.
+//
+// This satisfies the third acceptance criterion of issue #283:
+// "add a shell-runner-path test."
+
+/// Full `run_with_shell` path: drag to select, then Ctrl-C copies the text
+/// and `SelectionDemo` echoes it in the status bar as `Copied: "..."`.
+///
+/// This test proves that `ShellAdapter::render()` correctly threads the backend
+/// into `app.render_content()` so `register_text_region()` is called, making
+/// the selection pipeline operational for `run_with_shell` consumers.
+#[test]
+fn shell_runner_path_drag_and_ctrl_c_copies_text() {
+    let config = SelectionDemo::config();
+    let mut driver = driver_with_shell(SelectionDemo::new(), config, 80, 24);
+
+    // Locate a word from the first content line so we have real coordinates.
+    let (x0, y0) = driver
+        .find("quick")
+        .unwrap_or_else(|| panic!("content not rendered via shell path:\n{}", driver.screen()));
+
+    // Drag to a word on a lower line.
+    let (x1, y1) = driver
+        .find("wizards")
+        .unwrap_or_else(|| panic!("second content line not rendered:\n{}", driver.screen()));
+
+    driver.mouse_down(x0, y0);
+    driver.mouse_move(x1, y1);
+    assert!(
+        driver.screen_contains("Selecting"),
+        "drag in shell-runner path should show selection feedback:\n{}",
+        driver.screen()
+    );
+    driver.mouse_up(x1, y1);
+
+    // Ctrl-C must copy the selection and SelectionDemo should display the
+    // "Copied:" banner — proving the TextCopied event reached the ShellApp.
+    driver.ctrl_char('c');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Copied:"),
+        "Ctrl-C via run_with_shell path must copy the selection:\n{screen}"
+    );
+    assert!(
+        screen.contains("quick") || screen.contains("brown"),
+        "copied preview should contain selected text:\n{screen}"
+    );
+}
+
+/// Shell-runner path: Ctrl-A selects all content lines, Ctrl-C copies them.
+///
+/// Verifies the select-all fallback path works when the app is driven through
+/// `ShellAdapter` (the `run_with_shell` code path).
+#[test]
+fn shell_runner_path_ctrl_a_selects_all() {
+    let config = SelectionDemo::config();
+    let mut driver = driver_with_shell(SelectionDemo::new(), config, 80, 24);
+
+    // No drag — just Ctrl-A then Ctrl-C.
+    driver.ctrl_char('a');
+    driver.ctrl_char('c');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Copied:"),
+        "Ctrl-A + Ctrl-C via run_with_shell path must copy all content:\n{screen}"
+    );
+    assert!(
+        screen.contains("quick") || screen.contains("brown"),
+        "copied preview should contain text from the first content line:\n{screen}"
     );
 }

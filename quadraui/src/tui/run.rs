@@ -494,14 +494,17 @@ mod tests {
 
         // Verify selection exists (active_selection is Some after mouse-up
         // because the TUI runner preserves the finalised selection).
-        let had_selection = driver.backend().active_text_selection().is_some();
+        assert!(
+            driver.backend().active_text_selection().is_some(),
+            "drag should have established a selection before the test"
+        );
 
         // A new MouseDown should clear the displayed selection.
         driver.mouse_down(0.0, 4.0);
 
         // After the new MouseDown the old highlight should be gone.
         assert!(
-            !had_selection || driver.backend().active_text_selection().is_none(),
+            driver.backend().active_text_selection().is_none(),
             "MouseDown must clear the previously displayed selection"
         );
     }
