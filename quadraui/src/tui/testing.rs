@@ -45,16 +45,11 @@
 //! # }
 //! ```
 
-use std::cell::RefCell;
-
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-use crate::compose::app_shell::AppShell;
-use crate::compose::bottom_panel::BottomPanelController;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
-use crate::shell_adapter::ShellAdapter;
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
@@ -90,41 +85,7 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
     width: u16,
     height: u16,
 ) -> TuiDriver<impl AppLogic> {
-    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
-        .with_bottom_items(config.bottom_items)
-        .with_min_width(config.min_sidebar_width)
-        .with_max_width(config.max_sidebar_width)
-        .with_position(config.position);
-
-    if config.has_title_bar {
-        shell = shell.with_title_bar(config.title_bar_height_lh);
-    }
-    if config.has_bottom_panel {
-        shell = shell
-            .with_bottom_panel(config.bottom_panel_height_lh)
-            .with_bottom_panel_limits(
-                config.min_bottom_panel_height_lh,
-                config.max_bottom_panel_height_lh,
-            );
-    }
-    if config.has_command_line {
-        shell = shell.with_command_line();
-    }
-    if config.has_status_bar {
-        shell = shell.with_status_bar();
-    }
-
-    let bottom_panel = if let Some(bp_config) = config.bottom_panel {
-        shell = shell
-            .with_bottom_panel(10.0)
-            .with_bottom_panel_limits(3.0, 40.0);
-        Some(RefCell::new(BottomPanelController::new(bp_config)))
-    } else {
-        None
-    };
-
-    let active_panel_id = shell.active_panel_id().cloned();
-    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel);
+    let adapter = crate::tui::shell_runner::build_shell_adapter(app, config);
     TuiDriver::new(adapter, width, height)
 }
 

@@ -12,8 +12,16 @@ use crate::compose::bottom_panel::BottomPanelController;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::ShellAdapter;
 
-/// Run a [`ShellApp`] with AppShell chrome on the TUI backend.
-pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+/// Assemble the [`AppShell`] + [`ShellAdapter`] stack for a [`ShellApp`].
+///
+/// This is the single source of truth for shell construction — both the
+/// live runner ([`run_with_shell`]) and the headless test driver
+/// ([`crate::tui::testing::driver_with_shell`]) call this so they cannot
+/// drift apart as [`ShellConfig`] grows.
+pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> ShellAdapter<A> {
     let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
@@ -54,7 +62,11 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
 
     let active_panel_id = shell.active_panel_id().cloned();
 
-    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel);
+    ShellAdapter::new(app, shell, active_panel_id, bottom_panel)
+}
 
+/// Run a [`ShellApp`] with AppShell chrome on the TUI backend.
+pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+    let adapter = build_shell_adapter(app, config);
     let _ = super::run::run(adapter);
 }
