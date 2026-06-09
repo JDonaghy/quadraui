@@ -298,5 +298,28 @@ fn format_event(ev: &TabGroupEvent) -> String {
         TabGroupEvent::NewTabRequested { pane_idx } => {
             format!("new tab requested in pane {pane_idx}")
         }
+        TabGroupEvent::TabReordered {
+            pane_idx,
+            tab_id,
+            from_idx,
+            to_idx,
+        } => format!("tab {tab_id} reordered in pane {pane_idx}: {from_idx} → {to_idx}"),
+        TabGroupEvent::TabMovedToPane {
+            from_pane_idx,
+            to_pane_idx,
+            tab_id,
+            insert_idx,
+        } => format!(
+            "tab {tab_id} moved from pane {from_pane_idx} to pane {to_pane_idx} at {insert_idx}"
+        ),
+        TabGroupEvent::TabSplitToNewPane {
+            from_pane_idx,
+            tab_id,
+            edge,
+            new_pane_idx,
+            ..
+        } => format!(
+            "tab {tab_id} split from pane {from_pane_idx} to new pane {new_pane_idx} ({edge:?})"
+        ),
     }
 }
