@@ -280,16 +280,21 @@ impl AppLogic for TabGroupDemo {
             UiEvent::MouseUp { position, .. } => {
                 if *self.tab_dragging.borrow() {
                     *self.tab_dragging.borrow_mut() = false;
-                    if let Some(ev) = self
+                    let evs = self
                         .group
                         .borrow_mut()
-                        .handle_tab_drop(position.x, position.y)
-                    {
-                        *self.last_event.borrow_mut() = format_event(&ev);
-                        self.handle_tab_group_event(ev);
-                    } else {
+                        .handle_tab_drop(position.x, position.y);
+                    if evs.is_empty() {
                         self.group.borrow_mut().cancel_tab_drag();
                         *self.last_event.borrow_mut() = "tab drag cancelled".into();
+                    } else {
+                        // Show the primary event in the status line; dispatch each.
+                        if let Some(primary) = evs.first() {
+                            *self.last_event.borrow_mut() = format_event(primary);
+                        }
+                        for ev in evs {
+                            self.handle_tab_group_event(ev);
+                        }
                     }
                     return Reaction::Redraw;
                 }
