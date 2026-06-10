@@ -944,10 +944,16 @@ impl Backend for MacBackend {
         // `quadraui::gtk::draw_drop_overlay` for reference). The macOS impl
         // should draw the three layers (highlight rect, insertion bar, ghost
         // label) using `CGContextFillRect` + the existing label-drawing helpers
-        // in `quadraui::macos::tab_bar`. A follow-up issue tracks this work;
-        // until then `TabGroupController` drag-and-drop on macOS proceeds
-        // without visual feedback but otherwise functions correctly because the
-        // controller's hit-test and mutation logic do not depend on the
+        // in `quadraui::macos::tab_bar`.
+        //
+        // FOLLOW-UP ISSUE: a tracker issue should be filed in the repo titled
+        // "macos: implement Backend::draw_drop_overlay" and the `TODO` tag
+        // above replaced with `TODO(#NNN)` referencing it, so the deferred
+        // work is grep-able from a single canonical identifier.
+        //
+        // Until then `TabGroupController` drag-and-drop on macOS proceeds
+        // without visual feedback but otherwise functions correctly because
+        // the controller's hit-test and mutation logic do not depend on the
         // overlay being drawn.
     }
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {

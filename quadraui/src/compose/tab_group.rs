@@ -466,20 +466,18 @@ pub enum TabGroupEvent {
     /// the index it held **before** any collapse, and a separate
     /// [`TabGroupEvent::PaneCollapsed`] event is emitted alongside this one
     /// (see [`TabGroupController::handle_tab_drop`] for the event order).
-    /// `new_pane_idx` is the final vec index of the new pane after all
-    /// mutations.
     ///
-    /// `target_pane_idx` is the **original** index of the target pane (before
-    /// any collapse). Both `target_pane_idx` and `new_pane_idx` may shift if
-    /// the source pane was collapsed first.
+    /// Both `target_pane_idx` and `new_pane_idx` are **post-mutation** indices
+    /// (after any source collapse). You can index into the controller's pane
+    /// vec with either value immediately after handling this event.
     TabSplitToNewPane {
         from_pane_idx: usize,
         tab_id: String,
-        /// The pane whose edge was targeted (original index, pre-collapse).
+        /// The pane whose edge was targeted. Post-collapse vec index.
         target_pane_idx: usize,
         /// Which edge the tab was dropped onto.
         edge: DropEdge,
-        /// Final vec index of the newly created pane (post-collapse).
+        /// Vec index of the newly created pane (post-collapse).
         new_pane_idx: usize,
     },
 }
@@ -1227,6 +1225,14 @@ impl TabGroupController {
 
         // Extract the reorder insertion index up-front so the merge arm doesn't
         // have to re-match on `zone.kind` after the outer match has consumed it.
+        //
+        // NOTE: this pattern relies on every `DropZoneKind` variant carrying a
+        // `Copy` payload (`DropEdge: Copy`, `usize: Copy`, `Center` is unit).
+        // The outer `match zone.kind { … }` therefore moves a `Copy` value and
+        // leaves `zone.kind` usable for any subsequent extraction. If a future
+        // variant introduces a non-`Copy` payload (e.g. `Center(TabId)`), this
+        // up-front extraction must move to `zone.kind.clone()` instead, or the
+        // outer match will produce a confusing "use of moved value" error.
         let reorder_insert_idx = if let DropZoneKind::TabReorder(idx) = zone.kind {
             Some(idx)
         } else {

@@ -1,7 +1,9 @@
 //! `TabGroupController` demo (GTK backend).
 //!
 //! Two split panes, each with its own tab bar. Demonstrates tab
-//! switching, closing, new-tab, pane focus, and divider dragging.
+//! switching, closing, new-tab, pane focus, divider dragging, and the
+//! full cross-pane tab drag-and-drop suite (reorder within a strip,
+//! merge into another pane, split off a new adjacent pane).
 //!
 //! ```sh
 //! cargo run --example gtk_tabgroup --features gtk

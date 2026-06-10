@@ -285,8 +285,22 @@ impl AppLogic for TabGroupDemo {
                         .borrow_mut()
                         .handle_tab_drop(position.x, position.y);
                     if evs.is_empty() {
+                        // No mutation occurred (drop on source pane's own content,
+                        // same-position drop, etc.). The most common cause is a
+                        // simple click on a tab body — `MouseDown` started a drag
+                        // because the cursor was on a tab, but the cursor never
+                        // moved so `handle_tab_drop` resolved to a no-op slot.
+                        // Cancel the drag and fall through to `handle_click` so
+                        // tab activation still works for click-with-no-movement.
                         self.group.borrow_mut().cancel_tab_drag();
-                        *self.last_event.borrow_mut() = "tab drag cancelled".into();
+                        if let Some(ev) =
+                            self.group.borrow_mut().handle_click(position.x, position.y)
+                        {
+                            *self.last_event.borrow_mut() = format_event(&ev);
+                            self.handle_tab_group_event(ev);
+                        } else {
+                            *self.last_event.borrow_mut() = "tab drag cancelled".into();
+                        }
                     } else {
                         // Show the primary event in the status line; dispatch each.
                         if let Some(primary) = evs.first() {
