@@ -995,6 +995,13 @@ impl Backend for GtkBackend {
         ))
     }
 
+    fn list_vscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
+        // GTK ListView vertical-scrollbar rasteriser not yet implemented.
+        // Delegate to the primitive's geometry method using pixel units:
+        // each "row" is one line_height tall.
+        list.vscrollbar(rect, self.line_height())
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let (cr, layout) = self
             .current_frame_refs()

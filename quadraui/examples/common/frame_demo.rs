@@ -114,6 +114,7 @@ impl FrameDemo {
             bordered: false,
             h_scroll: self.h_scroll,
             max_content_width: Some(self.max_content_width()),
+            show_v_scrollbar: false,
         }
     }
 

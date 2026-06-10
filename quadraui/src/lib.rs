@@ -485,6 +485,7 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
+            show_v_scrollbar: false,
         };
         let json = serde_json::to_string(&list).unwrap();
         let back: ListView = serde_json::from_str(&json).unwrap();
@@ -3400,6 +3401,7 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
+            show_v_scrollbar: false,
         }
     }
 

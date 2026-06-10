@@ -65,13 +65,14 @@ pub fn draw_list(
     let title_fg = ratatui_color(theme.title_fg);
     let h_scroll = list.h_scroll;
 
-    // Reserve the bottom row for a horizontal scrollbar when content
-    // overflows. The track + thumb geometry comes from
-    // `ListView::hscrollbar` — the single source of truth also used by
-    // consumers for thumb hit-testing (via `Backend::list_hscrollbar`),
-    // so the painted thumb and the draggable thumb can never drift apart.
-    // In bordered mode the scrollbar sits inside the box (above the bottom
-    // border); in flat mode it occupies the last row.
+    // Reserve the bottom row for a horizontal scrollbar and/or the
+    // rightmost column for a vertical scrollbar when content overflows.
+    // The track + thumb geometry comes from `ListView::hscrollbar` /
+    // `ListView::vscrollbar` — the single source of truth also used by
+    // consumers for thumb hit-testing (via `Backend::list_hscrollbar` /
+    // `Backend::list_vscrollbar`), so the painted thumb and the draggable
+    // thumb can never drift apart. In bordered mode the scrollbars sit
+    // inside the box; in flat mode they occupy the outermost row/column.
     let area_f = crate::event::Rect::new(
         area.x as f32,
         area.y as f32,
@@ -81,14 +82,24 @@ pub fn draw_list(
     let hscrollbar = list.hscrollbar(area_f, 1.0);
     let needs_hscrollbar = hscrollbar.is_some();
 
+    let vscrollbar = list.vscrollbar(area_f, 1.0);
+    let needs_vscrollbar = vscrollbar.is_some();
+
     let viewport_h = if needs_hscrollbar {
         (area.height as f32 - 1.0).max(0.0)
     } else {
         area.height as f32
     };
 
+    // Reserve one column on the right for the vertical scrollbar.
+    let viewport_w = if needs_vscrollbar {
+        (area.width as f32 - 1.0).max(0.0)
+    } else {
+        area.width as f32
+    };
+
     let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
-    let layout = list.layout(area.width as f32, viewport_h, title_h, |_| {
+    let layout = list.layout(viewport_w, viewport_h, title_h, |_| {
         ListItemMeasure::new(1.0)
     });
 
@@ -293,6 +304,20 @@ pub fn draw_list(
         };
         super::draw_scrollbar(buf, hsb, theme, hsb_bg);
     }
+
+    // ── Vertical scrollbar ────────────────────────────────────────────────
+    // Drawn after items (and the h-scrollbar) so it occupies the rightmost
+    // column without being overwritten. Track + thumb geometry was resolved
+    // above by `ListView::vscrollbar`; consumers obtain the same `Scrollbar`
+    // via `Backend::list_vscrollbar` for thumb hit-testing.
+    if let Some(ref vsb) = vscrollbar {
+        let vsb_bg = if list.bordered {
+            theme.surface_bg
+        } else {
+            theme.background
+        };
+        super::draw_scrollbar(buf, vsb, theme, vsb_bg);
+    }
 }
 
 // ── Private rendering helpers ─────────────────────────────────────────────
@@ -394,6 +419,7 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
+            show_v_scrollbar: false,
         }
     }
 
@@ -473,6 +499,7 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
+            show_v_scrollbar: false,
         };
         let theme = Theme {
             error_fg: Color::rgb(255, 0, 0),
@@ -694,6 +721,7 @@ mod tests {
             bordered: false,
             h_scroll: 8,
             max_content_width: None,
+            show_v_scrollbar: false,
         };
         draw_list(
             &mut buf,
@@ -741,5 +769,109 @@ mod tests {
 
         let has_sb = (0..5u16).any(|x| matches!(cell_char(&buf, x, 2), '▁' | '▄'));
         assert!(!has_sb, "no scrollbar when max_content_width is None");
+    }
+
+    // ── v_scrollbar rasteriser tests ─────────────────────────────────────────
+
+    fn make_vlist(n: usize, scroll_offset: usize) -> ListView {
+        ListView {
+            items: (0..n)
+                .map(|i| item(&format!("item {}", i), Decoration::Normal))
+                .collect(),
+            scroll_offset,
+            show_v_scrollbar: true,
+            ..make_list(0)
+        }
+    }
+
+    #[test]
+    fn vscrollbar_visible_when_items_exceed_height() {
+        // 20 items in a 5-row area → scrollbar in rightmost column.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let list = make_vlist(20, 0);
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 10, 5),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Rightmost column (x=9) must contain at least one scrollbar glyph.
+        let has_sb = (0..5u16).any(|y| matches!(cell_char(&buf, 9, y), '█' | '░'));
+        assert!(
+            has_sb,
+            "vertical scrollbar expected in rightmost column when items overflow"
+        );
+        // Selection marker still appears in the items area.
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            '▶',
+            "selection marker must remain intact"
+        );
+    }
+
+    #[test]
+    fn vscrollbar_hidden_when_show_false() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let mut list = make_vlist(20, 0);
+        list.show_v_scrollbar = false;
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 10, 5),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        let has_sb = (0..5u16).any(|y| matches!(cell_char(&buf, 9, y), '█' | '░'));
+        assert!(!has_sb, "no vertical scrollbar when show_v_scrollbar=false");
+    }
+
+    #[test]
+    fn vscrollbar_items_do_not_paint_into_scrollbar_column() {
+        // Items must stay within [0, area.width-2] when v_scrollbar is active.
+        let long_text = "abcdefghijklmnop";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let list = ListView {
+            items: (0..20)
+                .map(|_| item(long_text, Decoration::Normal))
+                .collect(),
+            show_v_scrollbar: true,
+            ..make_list(0)
+        };
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 10, 5),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Column 9 must be a scrollbar glyph, not item text.
+        let col9_is_sb = (0..5u16).any(|y| matches!(cell_char(&buf, 9, y), '█' | '░'));
+        assert!(col9_is_sb, "rightmost column should be the scrollbar");
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            '▶',
+            "selection marker at col 0 must be intact"
+        );
+    }
+
+    #[test]
+    fn vscrollbar_hidden_when_all_items_fit() {
+        // 3 items in a 5-row viewport → all fit, no scrollbar shown.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let list = make_vlist(3, 0);
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 10, 5),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        let has_sb = (0..5u16).any(|y| matches!(cell_char(&buf, 9, y), '█' | '░'));
+        assert!(!has_sb, "no scrollbar when all items fit");
     }
 }
