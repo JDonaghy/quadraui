@@ -9,6 +9,10 @@
 //! - Click `+` (right segment) to add a new tab.
 //! - Click inside the content area to focus that pane.
 //! - Drag the divider to resize the two panes.
+//! - **Drag a tab into another pane** to merge it there.
+//! - **Drag a tab to a pane edge** to split it into a new pane.
+//!   `Left`/`Right` edges create a horizontal split;
+//!   `Top`/`Bottom` edges create a vertical split.
 //! - Tab / Shift+Tab to cycle focus between panes.
 //! - `q` / Esc to quit.
 
@@ -63,14 +67,16 @@ pub struct TabGroupDemo {
     group: RefCell<TabGroupController>,
     last_event: RefCell<String>,
     last_bounds: RefCell<Rect>,
-    dragging: RefCell<bool>,
+    /// True while a divider drag is in progress.
+    divider_dragging: RefCell<bool>,
+    /// True while a tab drag is in progress.
+    tab_dragging: RefCell<bool>,
     /// Counter used to make new-tab IDs unique.
     next_tab_id: RefCell<usize>,
 }
 
 impl TabGroupDemo {
     pub fn new() -> Self {
-        // Build initial group: two panes.
         let mut group = TabGroupController::with_pane(
             "pane:0",
             vec![
@@ -104,9 +110,12 @@ impl TabGroupDemo {
 
         Self {
             group: RefCell::new(group),
-            last_event: RefCell::new("click tabs | drag divider | Tab=focus | q=quit".into()),
+            last_event: RefCell::new(
+                "click tabs | drag divider | drag tab to edge/pane | Tab=focus | q=quit".into(),
+            ),
             last_bounds: RefCell::new(Rect::new(0.0, 0.0, 100.0, 20.0)),
-            dragging: RefCell::new(false),
+            divider_dragging: RefCell::new(false),
+            tab_dragging: RefCell::new(false),
             next_tab_id: RefCell::new(10),
         }
     }
@@ -129,7 +138,7 @@ impl AppLogic for TabGroupDemo {
         let content_rect = Rect::new(0.0, 0.0, viewport.width, (viewport.height - lh).max(0.0));
         *self.last_bounds.borrow_mut() = content_rect;
 
-        // Render the tab group.
+        // Render the tab group (also draws the drop overlay when tab-dragging).
         self.group.borrow_mut().render(backend, content_rect);
 
         let group = self.group.borrow();
@@ -173,7 +182,12 @@ impl AppLogic for TabGroupDemo {
             | UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Escape),
                 ..
-            } => Reaction::Exit,
+            } => {
+                // Cancel any active tab drag on Escape.
+                self.group.borrow_mut().cancel_tab_drag();
+                *self.tab_dragging.borrow_mut() = false;
+                Reaction::Exit
+            }
 
             // ── Focus cycling ──────────────────────────────────────
             UiEvent::KeyPressed {
@@ -208,17 +222,31 @@ impl AppLogic for TabGroupDemo {
                 Reaction::Redraw
             }
 
-            // ── Mouse down: click or drag start ────────────────────
+            // ── Mouse down: try tab drag first, then divider, then click ──
             UiEvent::MouseDown { position, .. } => {
+                // 1. Try to start a tab drag.
+                if self
+                    .group
+                    .borrow_mut()
+                    .handle_tab_drag_start(position.x, position.y)
+                {
+                    *self.tab_dragging.borrow_mut() = true;
+                    *self.last_event.borrow_mut() = "tab drag start".into();
+                    return Reaction::Redraw;
+                }
+
+                // 2. Try to start a divider drag.
                 if self
                     .group
                     .borrow_mut()
                     .handle_drag_start(position.x, position.y)
                 {
-                    *self.dragging.borrow_mut() = true;
-                    *self.last_event.borrow_mut() = "drag start".into();
+                    *self.divider_dragging.borrow_mut() = true;
+                    *self.last_event.borrow_mut() = "divider drag start".into();
                     return Reaction::Redraw;
                 }
+
+                // 3. Otherwise treat as a click.
                 if let Some(ev) = self.group.borrow_mut().handle_click(position.x, position.y) {
                     *self.last_event.borrow_mut() = format_event(&ev);
                     self.handle_tab_group_event(ev);
@@ -226,27 +254,54 @@ impl AppLogic for TabGroupDemo {
                 Reaction::Redraw
             }
 
-            // ── Mouse moved: drag ──────────────────────────────────
+            // ── Mouse moved ────────────────────────────────────────
             UiEvent::MouseMoved { position, .. } => {
-                if !*self.dragging.borrow() {
-                    return Reaction::Continue;
-                }
-                let bounds = *self.last_bounds.borrow();
-                if let Some(ev) = self
-                    .group
-                    .borrow_mut()
-                    .handle_drag_move(position.x, position.y, bounds)
-                {
-                    *self.last_event.borrow_mut() = format_event(&ev);
+                if *self.tab_dragging.borrow() {
+                    self.group
+                        .borrow_mut()
+                        .handle_tab_drag_move(position.x, position.y);
                     return Reaction::Redraw;
+                }
+                if *self.divider_dragging.borrow() {
+                    let bounds = *self.last_bounds.borrow();
+                    if let Some(ev) = self
+                        .group
+                        .borrow_mut()
+                        .handle_drag_move(position.x, position.y, bounds)
+                    {
+                        *self.last_event.borrow_mut() = format_event(&ev);
+                        return Reaction::Redraw;
+                    }
                 }
                 Reaction::Continue
             }
 
             // ── Mouse up ───────────────────────────────────────────
-            UiEvent::MouseUp { .. } => {
-                *self.dragging.borrow_mut() = false;
-                self.group.borrow_mut().handle_drag_end();
+            UiEvent::MouseUp { position, .. } => {
+                if *self.tab_dragging.borrow() {
+                    *self.tab_dragging.borrow_mut() = false;
+                    let evs = self
+                        .group
+                        .borrow_mut()
+                        .handle_tab_drop(position.x, position.y);
+                    if evs.is_empty() {
+                        self.group.borrow_mut().cancel_tab_drag();
+                        *self.last_event.borrow_mut() = "tab drag cancelled".into();
+                    } else {
+                        // Show the primary event in the status line; dispatch each.
+                        if let Some(primary) = evs.first() {
+                            *self.last_event.borrow_mut() = format_event(primary);
+                        }
+                        for ev in evs {
+                            self.handle_tab_group_event(ev);
+                        }
+                    }
+                    return Reaction::Redraw;
+                }
+                if *self.divider_dragging.borrow() {
+                    *self.divider_dragging.borrow_mut() = false;
+                    self.group.borrow_mut().handle_drag_end();
+                }
                 Reaction::Continue
             }
 
@@ -298,5 +353,28 @@ fn format_event(ev: &TabGroupEvent) -> String {
         TabGroupEvent::NewTabRequested { pane_idx } => {
             format!("new tab requested in pane {pane_idx}")
         }
+        TabGroupEvent::TabReordered {
+            pane_idx,
+            tab_id,
+            from_idx,
+            to_idx,
+        } => format!("tab {tab_id} reordered in pane {pane_idx}: {from_idx} → {to_idx}"),
+        TabGroupEvent::TabMovedToPane {
+            from_pane_idx,
+            to_pane_idx,
+            tab_id,
+            insert_idx,
+        } => format!(
+            "tab {tab_id} moved from pane {from_pane_idx} to pane {to_pane_idx} at {insert_idx}"
+        ),
+        TabGroupEvent::TabSplitToNewPane {
+            from_pane_idx,
+            tab_id,
+            edge,
+            new_pane_idx,
+            ..
+        } => format!(
+            "tab {tab_id} split from pane {from_pane_idx} to new pane {new_pane_idx} ({edge:?})"
+        ),
     }
 }

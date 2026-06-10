@@ -2,8 +2,8 @@
 //!
 //! Wires [`TabBar`](crate::TabBar) + [`Split`](crate::Split) +
 //! [`DropZone`](crate::DropZone) + [`FocusGroup`] into an
-//! editor-group-style layout: N panes arranged side-by-side (or
-//! stacked top/bottom), each with its own scrollable tab bar.
+//! editor-group-style layout: N panes arranged in an arbitrary nested
+//! H/V split tree, each with its own scrollable tab bar.
 //!
 //! # Quick start
 //!
@@ -42,7 +42,7 @@
 //! # Adding panes
 //!
 //! [`TabGroupController::add_pane_with_tab`] opens a new pane, splitting the
-//! available space evenly. Panes are separated by draggable
+//! focused pane evenly. Panes are separated by draggable
 //! [`Split`](crate::Split) dividers. Route `MouseDown` / `MouseMoved` /
 //! `MouseUp` events to [`handle_drag_start`](TabGroupController::handle_drag_start)
 //! / [`handle_drag_move`](TabGroupController::handle_drag_move) /
@@ -50,20 +50,233 @@
 //!
 //! # Cross-group tab drag
 //!
-//! [`crate::compute_drop_zone`] data types for detecting drop targets are
-//! exposed via [`TabGroupController::drop_group_rects`]. Full wiring is deferred.
+//! Route `MouseDown` to [`handle_tab_drag_start`](TabGroupController::handle_tab_drag_start)
+//! **before** [`handle_drag_start`]. On success, route subsequent `MouseMoved`
+//! to [`handle_tab_drag_move`] and `MouseUp` to [`handle_tab_drop`] (or
+//! [`cancel_tab_drag`](TabGroupController::cancel_tab_drag) on `Escape`).
+//! The controller calls `backend.draw_drop_overlay` automatically inside
+//! [`render`](TabGroupController::render) whenever a drag is active.
 //!
-//! TODO(#144-followup): wire cross-group drag-and-drop using `compute_drop_zone`
-//! + `drop_zone_overlay` + `Backend::draw_drop_overlay`.
+//! # Layout model
+//!
+//! Panes are arranged in a recursive binary split tree ([`GroupLayout`]).
+//! Each [`Split`](GroupLayout::Split) node carries its own direction and ratio,
+//! enabling arbitrary nested horizontal/vertical splits. Leaves hold pane
+//! indices that reference positions in the controller's internal pane vec.
+//! When a tab is dragged to a `Left`/`Right` edge a **horizontal** split is
+//! created; `Top`/`Bottom` edges create a **vertical** split.
 
 use crate::backend::BackendWidget;
 use crate::compose::focus_group::FocusGroup;
 use crate::event::Rect;
-use crate::primitives::drop_zone::DropGroupRect;
+use crate::primitives::drop_zone::{
+    compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
+    DropZoneKind,
+};
 use crate::primitives::split::{Split, SplitDirection};
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
 use crate::types::WidgetId;
 use crate::Backend;
+
+// ── Recursive layout tree ─────────────────────────────────────────────────────
+
+/// Recursive binary split tree describing how panes are arranged.
+///
+/// `Leaf(k)` references the pane at index `k` in the controller's internal
+/// pane vec. `Split` describes how a rect is divided between two sub-trees.
+///
+/// In-order leaf traversal gives panes from first (left/top) to last
+/// (right/bottom). In-order split traversal gives dividers in the same
+/// display order, matching the `divider_idx` used in events and
+/// `handle_drag_start`.
+///
+/// The controller maintains the invariant that every pane vec index `0..n`
+/// appears exactly once as a leaf, so `Leaf(k)` always corresponds to pane
+/// `k` in the vec.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GroupLayout {
+    /// A single pane (referenced by vec index).
+    Leaf(usize),
+    /// A binary split: `first` occupies `ratio` of the parent rect,
+    /// `second` gets the rest.
+    Split {
+        /// Split orientation for this node.
+        direction: SplitDirection,
+        /// Fraction of the parent rect assigned to `first` (0.0–1.0).
+        ratio: f32,
+        /// Left/top sub-tree.
+        first: Box<GroupLayout>,
+        /// Right/bottom sub-tree.
+        second: Box<GroupLayout>,
+    },
+}
+
+impl GroupLayout {
+    /// Number of leaves in the tree.
+    pub fn leaf_count(&self) -> usize {
+        match self {
+            GroupLayout::Leaf(_) => 1,
+            GroupLayout::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
+        }
+    }
+
+    /// Whether the tree contains a leaf with value `idx`.
+    fn contains_leaf(&self, idx: usize) -> bool {
+        match self {
+            GroupLayout::Leaf(k) => *k == idx,
+            GroupLayout::Split { first, second, .. } => {
+                first.contains_leaf(idx) || second.contains_leaf(idx)
+            }
+        }
+    }
+
+    /// Remove the leaf with value `pane_idx`, replacing its parent `Split`
+    /// with the surviving sibling. Returns `None` when this node IS the leaf
+    /// being removed (signals the caller to replace the parent).
+    ///
+    /// After calling this, all leaf values > `pane_idx` must be shifted down
+    /// with [`shift_indices_down_above`](Self::shift_indices_down_above).
+    fn remove_leaf(self, pane_idx: usize) -> Option<Self> {
+        match self {
+            GroupLayout::Leaf(k) if k == pane_idx => None,
+            GroupLayout::Leaf(k) => Some(GroupLayout::Leaf(k)),
+            GroupLayout::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                if first.contains_leaf(pane_idx) {
+                    match first.remove_leaf(pane_idx) {
+                        None => Some(*second),
+                        Some(new_first) => Some(GroupLayout::Split {
+                            direction,
+                            ratio,
+                            first: Box::new(new_first),
+                            second,
+                        }),
+                    }
+                } else {
+                    match second.remove_leaf(pane_idx) {
+                        None => Some(*first),
+                        Some(new_second) => Some(GroupLayout::Split {
+                            direction,
+                            ratio,
+                            first,
+                            second: Box::new(new_second),
+                        }),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shift all leaf indices > `threshold` down by one.
+    ///
+    /// Use after [`remove_leaf`](Self::remove_leaf) to keep the vec-index
+    /// invariant intact.
+    fn shift_indices_down_above(self, threshold: usize) -> Self {
+        match self {
+            GroupLayout::Leaf(k) => GroupLayout::Leaf(if k > threshold { k - 1 } else { k }),
+            GroupLayout::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => GroupLayout::Split {
+                direction,
+                ratio,
+                first: Box::new(first.shift_indices_down_above(threshold)),
+                second: Box::new(second.shift_indices_down_above(threshold)),
+            },
+        }
+    }
+
+    /// Shift all leaf indices >= `threshold` up by one.
+    ///
+    /// Use before inserting a new pane into the middle of the vec.
+    fn shift_indices_up_from(self, threshold: usize) -> Self {
+        match self {
+            GroupLayout::Leaf(k) => GroupLayout::Leaf(if k >= threshold { k + 1 } else { k }),
+            GroupLayout::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => GroupLayout::Split {
+                direction,
+                ratio,
+                first: Box::new(first.shift_indices_up_from(threshold)),
+                second: Box::new(second.shift_indices_up_from(threshold)),
+            },
+        }
+    }
+
+    /// Find `Leaf(target)` and wrap it in a `Split(dir, 0.5, Leaf(new), Leaf(target))`.
+    fn insert_before_leaf(self, target: usize, new_idx: usize, dir: SplitDirection) -> Self {
+        match self {
+            GroupLayout::Leaf(k) if k == target => GroupLayout::Split {
+                direction: dir,
+                ratio: 0.5,
+                first: Box::new(GroupLayout::Leaf(new_idx)),
+                second: Box::new(GroupLayout::Leaf(k)),
+            },
+            GroupLayout::Leaf(k) => GroupLayout::Leaf(k),
+            GroupLayout::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => GroupLayout::Split {
+                direction,
+                ratio,
+                first: Box::new(first.insert_before_leaf(target, new_idx, dir)),
+                second: Box::new(second.insert_before_leaf(target, new_idx, dir)),
+            },
+        }
+    }
+
+    /// Find `Leaf(target)` and wrap it in a `Split(dir, 0.5, Leaf(target), Leaf(new))`.
+    fn insert_after_leaf(self, target: usize, new_idx: usize, dir: SplitDirection) -> Self {
+        match self {
+            GroupLayout::Leaf(k) if k == target => GroupLayout::Split {
+                direction: dir,
+                ratio: 0.5,
+                first: Box::new(GroupLayout::Leaf(k)),
+                second: Box::new(GroupLayout::Leaf(new_idx)),
+            },
+            GroupLayout::Leaf(k) => GroupLayout::Leaf(k),
+            GroupLayout::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => GroupLayout::Split {
+                direction,
+                ratio,
+                first: Box::new(first.insert_after_leaf(target, new_idx, dir)),
+                second: Box::new(second.insert_after_leaf(target, new_idx, dir)),
+            },
+        }
+    }
+}
+
+// ── Private layout state ──────────────────────────────────────────────────────
+
+/// Cached info about one divider from the last render pass.
+struct DividerInfo {
+    /// The thin strip that is the visual divider handle.
+    divider_bounds: Rect,
+    /// Orientation of this split.
+    direction: SplitDirection,
+    /// Full bounds of the `Split` node (first + divider + second combined).
+    /// Used by [`handle_drag_move`](TabGroupController::handle_drag_move) to
+    /// recompute the split ratio from cursor position without needing the
+    /// caller to pass the global bounds again.
+    split_bounds: Rect,
+    /// Current ratio (cached so we can redraw without mutating the tree during drag).
+    ratio: f32,
+}
 
 // ── Public data types ─────────────────────────────────────────────────────────
 
@@ -210,12 +423,65 @@ pub enum TabGroupEvent {
     PaneAdded { pane_idx: usize },
     /// User clicked inside a pane's content area — pane received focus.
     PaneFocused { pane_idx: usize },
-    /// User dragged a divider. `divider_idx` is the 0-based index of the
-    /// divider (between pane `divider_idx` and pane `divider_idx + 1`).
+    /// User dragged a divider. `divider_idx` is the 0-based in-order index
+    /// of the divider (matching the tree's in-order split traversal).
     DividerResized { divider_idx: usize },
     /// User clicked the "+" new-tab button in a pane. Apps should call
     /// [`TabGroupController::add_tab`] in response.
     NewTabRequested { pane_idx: usize },
+
+    // ── Cross-group tab drag events ─────────────────────────────────
+    /// A tab was reordered within its pane via drag-and-drop.
+    ///
+    /// `from_idx` and `to_idx` are the before and after positions in
+    /// `pane_idx`'s tab list.
+    TabReordered {
+        pane_idx: usize,
+        /// Id of the tab that moved.
+        tab_id: String,
+        /// Position before the move.
+        from_idx: usize,
+        /// Position after the move.
+        to_idx: usize,
+    },
+
+    /// A tab was dragged from one pane to another (merge).
+    ///
+    /// The tab was inserted into `to_pane_idx` at `insert_idx`. If the source
+    /// pane was left empty it was collapsed; `from_pane_idx` is the index the
+    /// source pane held **before** any collapse, and a separate
+    /// [`TabGroupEvent::PaneCollapsed`] event is emitted alongside this one
+    /// (see [`TabGroupController::handle_tab_drop`] for the event order).
+    TabMovedToPane {
+        from_pane_idx: usize,
+        to_pane_idx: usize,
+        tab_id: String,
+        /// Position in the target pane's tab list where the tab landed.
+        insert_idx: usize,
+    },
+
+    /// A tab was dragged to a group edge, creating a new adjacent pane.
+    ///
+    /// If the source pane was left empty it was collapsed; `from_pane_idx` is
+    /// the index it held **before** any collapse, and a separate
+    /// [`TabGroupEvent::PaneCollapsed`] event is emitted alongside this one
+    /// (see [`TabGroupController::handle_tab_drop`] for the event order).
+    /// `new_pane_idx` is the final vec index of the new pane after all
+    /// mutations.
+    ///
+    /// `target_pane_idx` is the **original** index of the target pane (before
+    /// any collapse). Both `target_pane_idx` and `new_pane_idx` may shift if
+    /// the source pane was collapsed first.
+    TabSplitToNewPane {
+        from_pane_idx: usize,
+        tab_id: String,
+        /// The pane whose edge was targeted (original index, pre-collapse).
+        target_pane_idx: usize,
+        /// Which edge the tab was dropped onto.
+        edge: DropEdge,
+        /// Final vec index of the newly created pane (post-collapse).
+        new_pane_idx: usize,
+    },
 }
 
 // ── Layout ────────────────────────────────────────────────────────────────────
@@ -223,17 +489,18 @@ pub enum TabGroupEvent {
 /// Resolved pane regions for one rendered frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabGroupLayout {
-    /// Per-pane full bounds (tab strip + content area combined).
+    /// Per-pane full bounds (tab strip + content area combined), in pane vec order.
     pub pane_bounds: Vec<Rect>,
-    /// Per-pane tab-strip bounds (top row of each pane).
+    /// Per-pane tab-strip bounds (top row of each pane), in pane vec order.
     pub strip_bounds: Vec<Rect>,
-    /// Per-pane content area bounds (below the tab strip).
+    /// Per-pane content area bounds (below the tab strip), in pane vec order.
     pub content_bounds: Vec<Rect>,
 }
 
 // ── Controller ────────────────────────────────────────────────────────────────
 
-/// Stateful controller that manages N split panes, each with its own tab bar.
+/// Stateful controller that manages N split panes arranged in a recursive
+/// H/V split tree, each pane with its own tab bar.
 ///
 /// # Typical lifecycle
 ///
@@ -253,30 +520,39 @@ pub struct TabGroupLayout {
 /// // In render:
 /// let layout = group.render(backend, content_rect);
 ///
-/// // In handle:
-/// if let Some(ev) = group.handle_click(x, y) { … }
-/// group.handle_drag_start(x, y);
-/// if let Some(ev) = group.handle_drag_move(x, y) { … }
-/// group.handle_drag_end();
+/// // In handle (try tab drag before divider drag):
+/// if group.handle_tab_drag_start(x, y) {
+///     tab_drag_active = true;
+/// } else if group.handle_drag_start(x, y) {
+///     divider_drag_active = true;
+/// }
 /// ```
 pub struct TabGroupController {
     panes: Vec<Pane>,
     focus: FocusGroup,
-    /// One fraction per pane; sum ≈ 1.0. Represents how much of the
-    /// total split-direction width (or height) each pane occupies.
-    pane_fractions: Vec<f32>,
-    split_direction: SplitDirection,
+    /// Recursive split tree. `Leaf(k)` references `panes[k]`.
+    /// Maintained so that the vec index of every pane equals the leaf value
+    /// that references it.
+    layout: GroupLayout,
+    /// Default direction used by [`add_pane_with_tab`](Self::add_pane_with_tab).
+    default_split_direction: SplitDirection,
+    /// Monotonically incrementing counter for generating unique pane IDs.
+    next_pane_counter: usize,
 
     // ── Hit-test cache from last render ────────────────────────────
     last_bounds: Option<Rect>,
     /// Per-pane: (hits, strip_bounds). `None` before first render.
+    /// Indexed by pane vec index.
     last_pane_hits: Vec<Option<PaneHitCache>>,
-    /// Bounds of each inter-pane divider (N-1 entries).
-    last_divider_bounds: Vec<Rect>,
+    /// Dividers from the last render (in-order split traversal). N-1 entries
+    /// for N panes.
+    last_dividers: Vec<DividerInfo>,
 
     // ── Interaction state ───────────────────────────────────────────
     /// Index of the divider currently being dragged, if any.
     dragging_divider: Option<usize>,
+    /// In-progress tab drag, if any (mutually exclusive with `dragging_divider`).
+    dragging_tab: Option<TabDragState>,
 }
 
 /// Cached hit-test state for one pane from the last render.
@@ -284,6 +560,23 @@ struct PaneHitCache {
     hits: TabBarHits,
     strip_bounds: Rect,
     content_bounds: Rect,
+}
+
+/// In-progress tab drag state.
+struct TabDragState {
+    /// Index of the pane the drag started in.
+    source_pane_idx: usize,
+    /// Id of the tab being dragged.
+    tab_id: String,
+    /// Most recently computed drop zone (updated by [`handle_tab_drag_move`]).
+    ///
+    /// [`handle_tab_drag_move`]: TabGroupController::handle_tab_drag_move
+    current_zone: Option<DropZone>,
+    /// Last known cursor position (used by [`render`] to draw the overlay).
+    ///
+    /// [`render`]: TabGroupController::render
+    cursor_x: f32,
+    cursor_y: f32,
 }
 
 impl TabGroupController {
@@ -300,12 +593,14 @@ impl TabGroupController {
         Self {
             panes: vec![pane],
             focus: FocusGroup::new(1),
-            pane_fractions: vec![1.0],
-            split_direction,
+            layout: GroupLayout::Leaf(0),
+            default_split_direction: split_direction,
+            next_pane_counter: 1,
             last_bounds: None,
             last_pane_hits: (0..1).map(|_| None).collect(),
-            last_divider_bounds: vec![],
+            last_dividers: vec![],
             dragging_divider: None,
+            dragging_tab: None,
         }
     }
 
@@ -337,6 +632,11 @@ impl TabGroupController {
     /// Cycle focus forward (+1) or backward (−1) across panes.
     pub fn cycle_focus(&mut self, delta: isize) {
         self.focus.cycle(delta);
+    }
+
+    /// Read-only reference to the layout tree.
+    pub fn layout(&self) -> &GroupLayout {
+        &self.layout
     }
 
     // ── Tab lifecycle ───────────────────────────────────────────────
@@ -395,79 +695,72 @@ impl TabGroupController {
 
     // ── Pane lifecycle ──────────────────────────────────────────────
 
-    /// Open a new pane containing a single tab. The new pane is appended
-    /// after the currently focused pane (or at the end) and given an equal
-    /// share of the available space. Returns the index of the new pane.
+    /// Open a new pane containing a single tab. The new pane is inserted after
+    /// the currently focused pane (splitting it), or appended at the end when
+    /// no pane is focused. The split direction is the controller's
+    /// `default_split_direction` (set via [`with_pane`](Self::with_pane)).
+    ///
+    /// Returns the vec index of the new pane.
     pub fn add_pane_with_tab(&mut self, pane_id: impl Into<String>, tab: PaneTab) -> usize {
         let tab_id = tab.id.clone();
         let new_pane = Pane::new(pane_id, vec![tab], tab_id);
 
         // Insert after the focused pane (or at the end).
-        let insert_at = self
+        let focused = self
             .focus
             .active()
-            .map(|i| (i + 1).min(self.panes.len()))
-            .unwrap_or(self.panes.len());
+            .unwrap_or_else(|| self.panes.len().saturating_sub(1));
+        let insert_pos = (focused + 1).min(self.panes.len());
 
-        self.panes.insert(insert_at, new_pane);
+        // Update the tree: shift all leaf indices >= insert_pos up by 1, then
+        // wrap the focused pane's leaf in a new Split with the new pane after it.
+        self.layout = self.layout.clone().shift_indices_up_from(insert_pos);
+        self.panes.insert(insert_pos, new_pane);
+        // After shift, focused leaf is still `focused` (we shifted indices >= insert_pos
+        // = focused+1, not focused itself).
+        self.layout = self.layout.clone().insert_after_leaf(
+            focused,
+            insert_pos,
+            self.default_split_direction,
+        );
 
-        // Redistribute fractions evenly.
         let n = self.panes.len();
-        let each = 1.0 / n as f32;
-        self.pane_fractions = vec![each; n];
-
-        // Update focus group count (preserve focused index, or move to new pane).
         self.focus.set_count(n);
-        self.focus.set_active(Some(insert_at));
-
-        // Resize hit cache to match new pane count.
+        self.focus.set_active(Some(insert_pos));
         self.last_pane_hits = (0..n).map(|_| None).collect();
-        self.last_divider_bounds = vec![];
+        self.last_dividers = vec![];
 
-        insert_at
+        insert_pos
     }
 
-    /// Remove and drop the pane at `pane_idx`, redistributing its space
-    /// to its neighbors. No-op when only one pane remains (never collapse
-    /// to zero panes from outside code — use [`close_tab`](Self::close_tab)
-    /// which handles the case gracefully).
+    /// Remove and drop the pane at `pane_idx`, giving its space to the
+    /// nearest sibling in the split tree. No-op when only one pane remains.
     pub fn collapse_pane(&mut self, pane_idx: usize) {
         if self.panes.len() <= 1 || pane_idx >= self.panes.len() {
             return;
         }
-        let removed_fraction = self.pane_fractions[pane_idx];
+
+        // Remove the leaf from the tree, replacing its parent Split with the sibling.
+        let new_layout = self
+            .layout
+            .clone()
+            .remove_leaf(pane_idx)
+            .expect("pane_idx must exist as a leaf in the layout tree");
+        // Shift down all leaf indices > pane_idx.
+        self.layout = new_layout.shift_indices_down_above(pane_idx);
+
+        // Remove from the pane vec.
         self.panes.remove(pane_idx);
-        self.pane_fractions.remove(pane_idx);
-
-        // Give the removed fraction to the neighbor that comes right after
-        // (or the one before when the last pane was removed).
-        let neighbor = if pane_idx < self.pane_fractions.len() {
-            pane_idx
-        } else {
-            pane_idx.saturating_sub(1)
-        };
-        if let Some(f) = self.pane_fractions.get_mut(neighbor) {
-            *f += removed_fraction;
-        }
-
-        // Normalise to ensure sum == 1.0 despite floating-point drift.
-        let total: f32 = self.pane_fractions.iter().sum();
-        if total > 0.0 {
-            for f in &mut self.pane_fractions {
-                *f /= total;
-            }
-        }
 
         let n = self.panes.len();
         self.focus.set_count(n);
-        // Keep focused index in bounds.
         if let Some(fi) = self.focus.active() {
             if fi >= n {
                 self.focus.set_active(n.checked_sub(1));
             }
         }
         self.last_pane_hits = (0..n).map(|_| None).collect();
-        self.last_divider_bounds = vec![];
+        self.last_dividers = vec![];
     }
 
     // ── Render ──────────────────────────────────────────────────────
@@ -475,8 +768,11 @@ impl TabGroupController {
     /// Render all panes into `bounds`. Calls `backend.draw_split` for each
     /// inter-pane divider and `backend.draw_tab_bar` for each pane's tab
     /// strip. Active-pane content is rendered via [`BackendWidget::render`].
+    /// When a tab drag is active, automatically calls
+    /// `backend.draw_drop_overlay` at the end of the frame.
     ///
-    /// Returns a [`TabGroupLayout`] with resolved pane/strip/content rects.
+    /// Returns a [`TabGroupLayout`] with resolved pane/strip/content rects
+    /// in pane vec order.
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> TabGroupLayout {
         if self.panes.is_empty() {
             return TabGroupLayout {
@@ -487,67 +783,49 @@ impl TabGroupController {
         }
 
         self.last_bounds = Some(bounds);
-
         let n = self.panes.len();
 
-        // ── Step 1: compute per-pane full bounds ────────────────────
-        let pane_bounds =
-            compute_pane_bounds(backend, bounds, &self.pane_fractions, self.split_direction);
+        // ── Step 1: compute per-pane bounds via recursive layout ────
+        let mut pane_bounds_by_idx: Vec<Option<Rect>> = vec![None; n];
+        self.last_dividers.clear();
+        layout_recursive(
+            &self.layout,
+            backend,
+            bounds,
+            &mut pane_bounds_by_idx,
+            &mut self.last_dividers,
+        );
 
-        // ── Step 2: draw dividers and cache their hit bounds ────────
-        self.last_divider_bounds.clear();
-        self.last_divider_bounds.reserve(n.saturating_sub(1));
-
-        for i in 0..(n.saturating_sub(1)) {
-            let pb_i = pane_bounds[i];
-            let pb_next = pane_bounds[i + 1];
-            // Build a synthetic Split covering pane i .. end of pane i+1,
-            // just so draw_split can render the divider at the right position.
-            let (combined_rect, ratio) = match self.split_direction {
-                SplitDirection::Horizontal => {
-                    // combined width = pb_i.width + divider + pb_next.width
-                    // We infer divider thickness from the gap between panes.
-                    let combined_w = (pb_next.x + pb_next.width) - pb_i.x;
-                    let rect = Rect::new(pb_i.x, pb_i.y, combined_w, pb_i.height);
-                    let ratio = pb_i.width / (combined_w.max(0.001));
-                    (rect, ratio)
-                }
-                SplitDirection::Vertical => {
-                    let combined_h = (pb_next.y + pb_next.height) - pb_i.y;
-                    let rect = Rect::new(pb_i.x, pb_i.y, pb_i.width, combined_h);
-                    let ratio = pb_i.height / (combined_h.max(0.001));
-                    (rect, ratio)
-                }
-            };
-
+        // ── Step 2: draw dividers ───────────────────────────────────
+        for (i, info) in self.last_dividers.iter().enumerate() {
             let split = Split {
                 id: WidgetId::new(format!("tg:div{}", i)),
-                direction: self.split_direction,
-                ratio,
+                direction: info.direction,
+                ratio: info.ratio,
                 first_min: 0.0,
                 second_min: 0.0,
             };
-            let split_layout = backend.draw_split(combined_rect, &split);
-            self.last_divider_bounds.push(split_layout.divider_bounds);
+            backend.draw_split(info.split_bounds, &split);
         }
 
         // ── Step 3: for each pane, draw tab strip + content ─────────
         let lh = backend.line_height();
+        let mut pane_bounds_out = Vec::with_capacity(n);
         let mut strip_bounds = Vec::with_capacity(n);
         let mut content_bounds = Vec::with_capacity(n);
 
-        // Ensure cache vec is the right length.
         if self.last_pane_hits.len() != n {
             self.last_pane_hits = (0..n).map(|_| None).collect();
         }
 
         for (pane_idx, pane) in self.panes.iter_mut().enumerate() {
-            let pb = pane_bounds[pane_idx];
+            let pb = pane_bounds_by_idx[pane_idx].unwrap_or(bounds);
 
             let strip = Rect::new(pb.x, pb.y, pb.width, lh);
             let content_h = (pb.height - lh).max(0.0);
             let content = Rect::new(pb.x, pb.y + lh, pb.width, content_h);
 
+            pane_bounds_out.push(pb);
             strip_bounds.push(strip);
             content_bounds.push(content);
 
@@ -570,8 +848,24 @@ impl TabGroupController {
             });
         }
 
+        // ── Step 4: draw drop overlay when a tab drag is in progress ─
+        // Compute the overlay before borrowing backend mutably.
+        let overlay: Option<DropOverlay> = if let Some(drag) = self.dragging_tab.as_ref() {
+            if drag.current_zone.is_some() {
+                let ghost_offset = lh;
+                self.tab_drag_overlay(drag.cursor_x, drag.cursor_y, 2.0, ghost_offset)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(ov) = overlay {
+            backend.draw_drop_overlay(&ov);
+        }
+
         TabGroupLayout {
-            pane_bounds,
+            pane_bounds: pane_bounds_out,
             strip_bounds,
             content_bounds,
         }
@@ -667,8 +961,9 @@ impl TabGroupController {
     /// Start a drag if `(x, y)` is on a divider. Returns `true` when a
     /// drag was initiated.
     pub fn handle_drag_start(&mut self, x: f32, y: f32) -> bool {
-        for (i, div) in self.last_divider_bounds.iter().enumerate() {
-            if x >= div.x && x < div.x + div.width && y >= div.y && y < div.y + div.height {
+        for (i, info) in self.last_dividers.iter().enumerate() {
+            let d = &info.divider_bounds;
+            if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
                 self.dragging_divider = Some(i);
                 return true;
             }
@@ -677,77 +972,46 @@ impl TabGroupController {
     }
 
     /// Update the dragged divider position. Returns a `DividerResized` event
-    /// when the fractions change. Call with each mouse-moved event while
+    /// when the split ratio changes. Call with each mouse-moved event while
     /// dragging.
     ///
-    /// `bounds` must be the same rect passed to the most recent [`render`](Self::render).
-    pub fn handle_drag_move(&mut self, x: f32, y: f32, bounds: Rect) -> Option<TabGroupEvent> {
+    /// The `bounds` parameter is accepted for API compatibility but is no
+    /// longer needed — the controller uses the cached split bounds from the
+    /// last render instead.
+    pub fn handle_drag_move(&mut self, x: f32, y: f32, _bounds: Rect) -> Option<TabGroupEvent> {
         let div_idx = self.dragging_divider?;
-        if div_idx >= self.pane_fractions.len().saturating_sub(1) {
-            return None;
-        }
+        let info = self.last_dividers.get(div_idx)?;
 
-        // Compute the new cumulative split position in [0, 1].
-        let cursor_frac = match self.split_direction {
+        // Compute new ratio from cursor position relative to the split's own bounds.
+        let new_ratio = match info.direction {
             SplitDirection::Horizontal => {
-                if bounds.width > 0.0 {
-                    ((x - bounds.x) / bounds.width).clamp(0.01, 0.99)
+                if info.split_bounds.width > 0.0 {
+                    ((x - info.split_bounds.x) / info.split_bounds.width).clamp(0.05, 0.95)
                 } else {
                     return None;
                 }
             }
             SplitDirection::Vertical => {
-                if bounds.height > 0.0 {
-                    ((y - bounds.y) / bounds.height).clamp(0.01, 0.99)
+                if info.split_bounds.height > 0.0 {
+                    ((y - info.split_bounds.y) / info.split_bounds.height).clamp(0.05, 0.95)
                 } else {
                     return None;
                 }
             }
         };
 
-        // Compute cumulative positions before and after the dragged divider.
-        let cumsum: Vec<f32> = {
-            let mut v = Vec::with_capacity(self.pane_fractions.len());
-            let mut acc = 0.0_f32;
-            for f in &self.pane_fractions {
-                acc += f;
-                v.push(acc);
-            }
-            v
-        };
-        let left_bound = if div_idx > 0 {
-            cumsum[div_idx - 1]
-        } else {
-            0.0
-        };
-        let right_bound = if div_idx + 2 < cumsum.len() {
-            cumsum[div_idx + 1]
-        } else {
-            1.0
-        };
+        let mut counter = 0usize;
+        let changed =
+            update_split_ratio_inorder(&mut self.layout, div_idx, new_ratio, &mut counter)
+                .unwrap_or(false);
 
-        // Clamp cursor_frac so neither adjacent pane collapses below 5%.
-        let clamped = cursor_frac.clamp(left_bound + 0.05, right_bound - 0.05);
-        let prev_cum = if div_idx > 0 {
-            cumsum[div_idx - 1]
+        if changed {
+            Some(TabGroupEvent::DividerResized {
+                divider_idx: div_idx,
+            })
         } else {
-            0.0
-        };
-        let next_cum = cumsum[div_idx + 1];
-
-        let new_left_frac = clamped - prev_cum;
-        let new_right_frac = next_cum - clamped;
-
-        if (new_left_frac - self.pane_fractions[div_idx]).abs() < 0.001 {
-            return None; // negligible change
+            None
         }
-
-        self.pane_fractions[div_idx] = new_left_frac;
-        self.pane_fractions[div_idx + 1] = new_right_frac;
-
-        Some(TabGroupEvent::DividerResized {
-            divider_idx: div_idx,
-        })
     }
 
     /// End any active divider drag.
@@ -763,9 +1027,6 @@ impl TabGroupController {
     /// Tab slot positions are derived from the last [`TabBarHits`] recorded
     /// during [`render`](Self::render). If `render` has not been called yet,
     /// the result is empty.
-    ///
-    /// TODO(#144-followup): wire the returned `DropZone` result through
-    /// `handle_tab_drop` → reorder / cross-pane move / split-on-edge.
     pub fn drop_group_rects(&self) -> Vec<DropGroupRect> {
         self.last_pane_hits
             .iter()
@@ -794,57 +1055,481 @@ impl TabGroupController {
             })
             .collect()
     }
+
+    // ── Cross-group tab drag ────────────────────────────────────────
+
+    /// Return the strip height from cached render data, or a default of 1.0.
+    fn strip_height(&self) -> f32 {
+        self.last_pane_hits
+            .iter()
+            .find_map(|c| c.as_ref().map(|c| c.strip_bounds.height))
+            .unwrap_or(1.0)
+    }
+
+    /// Start a tab drag if `(x, y)` lands on a draggable tab slot (not a
+    /// close button or the new-tab segment). Returns `true` when a drag was
+    /// initiated; `false` means the caller should fall through to
+    /// [`handle_click`](Self::handle_click).
+    ///
+    /// A tab drag and a divider drag are mutually exclusive; starting one
+    /// implicitly cancels the other.
+    pub fn handle_tab_drag_start(&mut self, x: f32, y: f32) -> bool {
+        let click_x = x as f64;
+        let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
+
+        let n = self.panes.len();
+        for pane_idx in 0..n {
+            let Some(cache) = self.last_pane_hits[pane_idx].as_ref() else {
+                continue;
+            };
+            let strip = cache.strip_bounds;
+            let hits = &cache.hits;
+
+            let in_strip = y >= strip.y
+                && y < strip.y + strip.height
+                && x >= strip.x
+                && x < strip.x + strip.width;
+            if !in_strip {
+                continue;
+            }
+
+            // Reject close buttons — those are click actions, not drags.
+            for range in hits.close_bounds.iter().flatten() {
+                if in_range(*range) {
+                    return false;
+                }
+            }
+            // Reject right segments (new-tab button etc.).
+            for rb in &hits.right_segment_bounds {
+                if in_range(*rb) {
+                    return false;
+                }
+            }
+
+            // Accept any tab slot.
+            for (tab_idx, range) in hits.slot_positions.iter().enumerate() {
+                if in_range(*range) {
+                    if let Some(tab) = self.panes[pane_idx].tabs.get(tab_idx) {
+                        self.dragging_divider = None;
+                        self.dragging_tab = Some(TabDragState {
+                            source_pane_idx: pane_idx,
+                            tab_id: tab.id.clone(),
+                            current_zone: None,
+                            cursor_x: x,
+                            cursor_y: y,
+                        });
+                        return true;
+                    }
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Update the drag position. Returns the current [`DropZone`] under the
+    /// cursor, or `None` when no drag is in progress or the cursor is outside
+    /// all groups.
+    ///
+    /// Call on every mouse-moved event while dragging. The result can be
+    /// passed to [`drop_zone_overlay`](crate::drop_zone_overlay) directly,
+    /// or use [`tab_drag_overlay`](Self::tab_drag_overlay) as a convenience.
+    pub fn handle_tab_drag_move(&mut self, x: f32, y: f32) -> Option<DropZone> {
+        self.dragging_tab.as_ref()?;
+        let groups = self.drop_group_rects();
+        let tab_bar_h = self.strip_height();
+        let zone = compute_drop_zone(x, y, &groups, tab_bar_h);
+        if let Some(drag) = &mut self.dragging_tab {
+            drag.current_zone = zone.clone();
+            drag.cursor_x = x;
+            drag.cursor_y = y;
+        }
+        zone
+    }
+
+    /// Compute the drop overlay for the current tab drag, ready to hand to
+    /// the backend's drop-overlay renderer.
+    ///
+    /// Uses the [`DropZone`] last stored by [`handle_tab_drag_move`]. Returns
+    /// `None` when no tab drag is in progress or no drop zone has been
+    /// resolved yet (cursor was outside all groups).
+    ///
+    /// `bar_thickness` is the insertion-bar width in logical units (typically
+    /// 2–3 px for GTK, 1 cell for TUI). `ghost_offset` is how far the ghost
+    /// label floats from the cursor (typically one line height).
+    ///
+    /// Note: [`render`](Self::render) calls this automatically and passes the
+    /// overlay to `backend.draw_drop_overlay`. Only call this directly if you
+    /// need the overlay for a custom rendering path.
+    pub fn tab_drag_overlay(
+        &self,
+        cursor_x: f32,
+        cursor_y: f32,
+        bar_thickness: f32,
+        ghost_offset: f32,
+    ) -> Option<DropOverlay> {
+        let drag = self.dragging_tab.as_ref()?;
+        let zone = drag.current_zone.as_ref()?;
+        let groups = self.drop_group_rects();
+        let tab_bar_h = self.strip_height();
+        Some(drop_zone_overlay(
+            zone,
+            &groups,
+            cursor_x,
+            cursor_y,
+            tab_bar_h,
+            bar_thickness,
+            ghost_offset,
+        ))
+    }
+
+    /// Finalise a tab drag by applying the drop at `(x, y)`.
+    ///
+    /// Returns the list of [`TabGroupEvent`]s describing the resulting
+    /// mutation, in temporal order. An empty `Vec` means the drop was a no-op
+    /// (no drag in progress, cursor outside all groups, dropped on the source
+    /// pane's own content, dropped at the same tab position, or attempted to
+    /// split the only tab of the only pane).
+    ///
+    /// Handles three cases:
+    ///
+    /// * **Reorder within the same pane** — `DropZoneKind::TabReorder` on the
+    ///   source pane: reorders the tab list and emits a single
+    ///   [`TabGroupEvent::TabReordered`].
+    /// * **Merge into another pane** — `DropZoneKind::Center` or
+    ///   `DropZoneKind::TabReorder` on a different pane: moves the tab and
+    ///   emits [`TabGroupEvent::TabMovedToPane`]. If the source pane is left
+    ///   empty it is collapsed and an additional
+    ///   [`TabGroupEvent::PaneCollapsed`] (with the source's pre-collapse
+    ///   index) is appended.
+    /// * **Split to new pane** — `DropZoneKind::Split`: removes the tab from
+    ///   its pane, creates a new pane adjacent to the target, and emits
+    ///   [`TabGroupEvent::TabSplitToNewPane`]. If the source pane is left
+    ///   empty it is collapsed and an additional
+    ///   [`TabGroupEvent::PaneCollapsed`] is appended. Dropping the only tab
+    ///   of the only pane onto its own edge is a no-op. `Left`/`Right` edges
+    ///   create a **horizontal** split; `Top`/`Bottom` edges create a
+    ///   **vertical** split.
+    ///
+    /// Clears drag state regardless of outcome.
+    pub fn handle_tab_drop(&mut self, x: f32, y: f32) -> Vec<TabGroupEvent> {
+        let Some(drag) = self.dragging_tab.take() else {
+            return Vec::new();
+        };
+        let groups = self.drop_group_rects();
+        let tab_bar_h = self.strip_height();
+        let Some(zone) = compute_drop_zone(x, y, &groups, tab_bar_h) else {
+            return Vec::new();
+        };
+
+        let from = drag.source_pane_idx;
+        let to = zone.group_idx;
+
+        // Extract the reorder insertion index up-front so the merge arm doesn't
+        // have to re-match on `zone.kind` after the outer match has consumed it.
+        let reorder_insert_idx = if let DropZoneKind::TabReorder(idx) = zone.kind {
+            Some(idx)
+        } else {
+            None
+        };
+
+        match zone.kind {
+            // ── Reorder within same pane ────────────────────────────
+            DropZoneKind::TabReorder(insert_idx) if to == from => {
+                let Some(cur_idx) = self.panes[from]
+                    .tabs
+                    .iter()
+                    .position(|t| t.id == drag.tab_id)
+                else {
+                    return Vec::new();
+                };
+                // Drop at the same position: no-op.
+                if cur_idx == insert_idx || cur_idx + 1 == insert_idx {
+                    return Vec::new();
+                }
+                let moved_tab = self.panes[from].tabs.remove(cur_idx);
+                // After removal, indices > cur_idx shift down by 1.
+                let adj = if insert_idx > cur_idx {
+                    insert_idx - 1
+                } else {
+                    insert_idx
+                };
+                let adj = adj.min(self.panes[from].tabs.len());
+                self.panes[from].tabs.insert(adj, moved_tab);
+                vec![TabGroupEvent::TabReordered {
+                    pane_idx: from,
+                    tab_id: drag.tab_id,
+                    from_idx: cur_idx,
+                    to_idx: adj,
+                }]
+            }
+
+            // ── No-op: dropped on own content area ──────────────────
+            DropZoneKind::Center if to == from => Vec::new(),
+
+            // ── Merge: move tab to another pane ─────────────────────
+            DropZoneKind::Center | DropZoneKind::TabReorder(_) => {
+                // Locate and remove tab from source pane.
+                let Some(cur_idx) = self.panes[from]
+                    .tabs
+                    .iter()
+                    .position(|t| t.id == drag.tab_id)
+                else {
+                    return Vec::new();
+                };
+                let moved_tab = self.panes[from].tabs.remove(cur_idx);
+                // Fix active tab in source pane.
+                if self.panes[from].active_tab_id == drag.tab_id {
+                    let fallback = if cur_idx > 0 { cur_idx - 1 } else { 0 };
+                    self.panes[from].active_tab_id = self.panes[from]
+                        .tabs
+                        .get(fallback)
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                }
+                let tab_id = moved_tab.id.clone();
+                let source_empty = self.panes[from].tabs.is_empty();
+
+                // Determine insertion position in the target pane's tab list.
+                let raw_insert = reorder_insert_idx
+                    .map(|idx| idx.min(self.panes[to].tabs.len()))
+                    .unwrap_or_else(|| self.panes[to].tabs.len());
+                self.panes[to].tabs.insert(raw_insert, moved_tab);
+                self.panes[to].active_tab_id = tab_id.clone();
+
+                // Collapse source pane if empty; adjust the reported target index.
+                let final_to = if source_empty {
+                    self.collapse_pane(from);
+                    // collapse_pane removes index `from`; all indices > from shift down.
+                    if from < to {
+                        to - 1
+                    } else {
+                        to
+                    }
+                } else {
+                    to
+                };
+
+                let mut events = vec![TabGroupEvent::TabMovedToPane {
+                    from_pane_idx: from,
+                    to_pane_idx: final_to,
+                    tab_id,
+                    insert_idx: raw_insert,
+                }];
+                if source_empty {
+                    events.push(TabGroupEvent::PaneCollapsed { pane_idx: from });
+                }
+                events
+            }
+
+            // ── Split: create a new adjacent pane ───────────────────
+            DropZoneKind::Split(edge) => {
+                // Guard: splitting the only tab of the only pane is a no-op.
+                if self.panes[from].tabs.len() == 1 && self.panes.len() == 1 {
+                    return Vec::new();
+                }
+
+                // Remove tab from source pane.
+                let Some(cur_idx) = self.panes[from]
+                    .tabs
+                    .iter()
+                    .position(|t| t.id == drag.tab_id)
+                else {
+                    return Vec::new();
+                };
+                let moved_tab = self.panes[from].tabs.remove(cur_idx);
+                if self.panes[from].active_tab_id == drag.tab_id {
+                    let fallback = if cur_idx > 0 { cur_idx - 1 } else { 0 };
+                    self.panes[from].active_tab_id = self.panes[from]
+                        .tabs
+                        .get(fallback)
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                }
+                let tab_id = moved_tab.id.clone();
+                let source_empty = self.panes[from].tabs.is_empty();
+                let original_target = zone.group_idx;
+
+                // Split direction is determined by the drop edge.
+                // Left/Right → horizontal split; Top/Bottom → vertical split.
+                let split_dir = match edge {
+                    DropEdge::Left | DropEdge::Right => SplitDirection::Horizontal,
+                    DropEdge::Top | DropEdge::Bottom => SplitDirection::Vertical,
+                };
+                let insert_before = matches!(edge, DropEdge::Left | DropEdge::Top);
+
+                // Adjust target index if source collapses first.
+                let mut adjusted_to = to;
+                if source_empty {
+                    self.collapse_pane(from);
+                    if from < adjusted_to {
+                        adjusted_to -= 1;
+                    }
+                }
+
+                // New pane will be inserted at `actual_pos` in the vec.
+                let actual_pos = if insert_before {
+                    adjusted_to
+                } else {
+                    adjusted_to + 1
+                };
+
+                // Build the new pane with a unique ID.
+                let new_pane_id = format!("pane:{}", self.next_pane_counter);
+                self.next_pane_counter += 1;
+                let new_tab_id = moved_tab.id.clone();
+                let new_pane = Pane::new(new_pane_id, vec![moved_tab], new_tab_id);
+
+                // Shift tree indices >= actual_pos up by 1, then insert into vec.
+                self.layout = self.layout.clone().shift_indices_up_from(actual_pos);
+                self.panes.insert(actual_pos, new_pane);
+
+                // Wrap the target leaf in a new Split with the new pane.
+                // After the shift, the target pane is at:
+                //   - insert_before: adjusted_to + 1  (was shifted up)
+                //   - insert_after:  adjusted_to       (was not shifted)
+                if insert_before {
+                    self.layout = self.layout.clone().insert_before_leaf(
+                        adjusted_to + 1,
+                        actual_pos,
+                        split_dir,
+                    );
+                } else {
+                    self.layout =
+                        self.layout
+                            .clone()
+                            .insert_after_leaf(adjusted_to, actual_pos, split_dir);
+                }
+
+                let new_n = self.panes.len();
+                self.focus.set_count(new_n);
+                self.focus.set_active(Some(actual_pos));
+                self.last_pane_hits = (0..new_n).map(|_| None).collect();
+                self.last_dividers = vec![];
+
+                let mut events = vec![TabGroupEvent::TabSplitToNewPane {
+                    from_pane_idx: from,
+                    tab_id,
+                    target_pane_idx: original_target,
+                    edge,
+                    new_pane_idx: actual_pos,
+                }];
+                if source_empty {
+                    events.push(TabGroupEvent::PaneCollapsed { pane_idx: from });
+                }
+                events
+            }
+        }
+    }
+
+    /// Cancel an in-progress tab drag without moving any tab.
+    pub fn cancel_tab_drag(&mut self) {
+        self.dragging_tab = None;
+    }
+
+    /// Return `true` if a tab drag is currently in progress.
+    pub fn is_tab_dragging(&self) -> bool {
+        self.dragging_tab.is_some()
+    }
+
+    /// Compute the drop zone at `(cursor_x, cursor_y)` using the cached
+    /// group rects from the last render.
+    ///
+    /// Convenience wrapper around [`crate::compute_drop_zone`] that derives
+    /// `tab_bar_height` from the stored strip bounds. Returns `None` before
+    /// the first render or when the cursor is outside all groups.
+    pub fn drop_zone_at(&self, cursor_x: f32, cursor_y: f32) -> Option<DropZone> {
+        let groups = self.drop_group_rects();
+        let tab_bar_h = self.strip_height();
+        compute_drop_zone(cursor_x, cursor_y, &groups, tab_bar_h)
+    }
 }
 
 // ── Layout helpers ────────────────────────────────────────────────────────────
 
-/// Compute the bounds for each pane by recursively applying binary splits.
+/// Walk the layout tree, computing per-pane bounds and collecting divider info
+/// in in-order split traversal.
 ///
-/// For N panes with fractions `f[0..N]` (summing to 1.0), the layout is a
-/// left-leaning binary tree of [`Split`]s:
-/// - Level 0: split `bounds` at ratio `f[0]` → pane 0 gets `first_bounds`.
-/// - Level 1: split remaining `second_bounds` at ratio `f[1]/(f[1]+…+f[N-1])`.
-/// - …and so on until all panes are placed.
-///
-/// Each call to `backend.split_layout` returns a layout using the backend's
-/// native divider thickness — the compose helper never hard-codes it.
-fn compute_pane_bounds(
+/// `pane_bounds[k]` is set to the bounds for the pane at vec index `k`.
+/// `dividers` receives one entry per `Split` node in in-order traversal
+/// (left subtree's splits, then the current split, then right subtree's
+/// splits), matching the divider ordering used in `last_dividers` and
+/// `DividerResized` events.
+fn layout_recursive(
+    tree: &GroupLayout,
     backend: &dyn Backend,
     bounds: Rect,
-    fractions: &[f32],
-    direction: SplitDirection,
-) -> Vec<Rect> {
-    let n = fractions.len();
-    if n == 0 {
-        return vec![];
+    pane_bounds: &mut Vec<Option<Rect>>,
+    dividers: &mut Vec<DividerInfo>,
+) {
+    match tree {
+        GroupLayout::Leaf(idx) => {
+            if *idx < pane_bounds.len() {
+                pane_bounds[*idx] = Some(bounds);
+            }
+        }
+        GroupLayout::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let split = Split {
+                id: WidgetId::new("tg:layout"),
+                direction: *direction,
+                ratio: *ratio,
+                first_min: 0.0,
+                second_min: 0.0,
+            };
+            let sl = backend.split_layout(bounds, &split);
+            // In-order: first subtree's dividers, then this divider, then second.
+            layout_recursive(first, backend, sl.first_bounds, pane_bounds, dividers);
+            dividers.push(DividerInfo {
+                divider_bounds: sl.divider_bounds,
+                direction: *direction,
+                split_bounds: bounds,
+                ratio: *ratio,
+            });
+            layout_recursive(second, backend, sl.second_bounds, pane_bounds, dividers);
+        }
     }
-    if n == 1 {
-        return vec![bounds];
+}
+
+/// Update the ratio of the in-order-`target` `Split` node in `tree`.
+///
+/// Returns `Some(true)` when the node was found and the ratio changed
+/// significantly (≥ 0.001), `Some(false)` when found but unchanged, and
+/// `None` when the target index was not found.
+///
+/// `counter` must start at 0 on the first call.
+fn update_split_ratio_inorder(
+    tree: &mut GroupLayout,
+    target: usize,
+    new_ratio: f32,
+    counter: &mut usize,
+) -> Option<bool> {
+    match tree {
+        GroupLayout::Leaf(_) => None,
+        GroupLayout::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } => {
+            // In-order: check first subtree, then current node, then second subtree.
+            if let Some(r) = update_split_ratio_inorder(first, target, new_ratio, counter) {
+                return Some(r);
+            }
+            if *counter == target {
+                let old = *ratio;
+                *counter += 1;
+                *ratio = new_ratio;
+                return Some((new_ratio - old).abs() >= 0.001);
+            }
+            *counter += 1;
+            update_split_ratio_inorder(second, target, new_ratio, counter)
+        }
     }
-
-    let rest_sum: f32 = fractions[1..].iter().sum();
-    let ratio = if fractions[0] + rest_sum > 0.0 {
-        fractions[0] / (fractions[0] + rest_sum)
-    } else {
-        0.5
-    };
-    let split = Split {
-        id: WidgetId::new("tg:layout-split"),
-        direction,
-        ratio,
-        first_min: 0.0,
-        second_min: 0.0,
-    };
-    let layout = backend.split_layout(bounds, &split);
-
-    let mut result = vec![layout.first_bounds];
-    result.extend(compute_pane_bounds(
-        backend,
-        layout.second_bounds,
-        &fractions[1..],
-        direction,
-    ));
-    result
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1024,9 +1709,6 @@ mod tests {
 
     #[test]
     fn close_last_tab_in_solo_pane_does_not_collapse() {
-        // When only 1 pane remains, close_tab on the last tab still returns
-        // PaneCollapsed but the controller keeps 1 (empty) pane rather than
-        // dropping to 0 — collapse_pane no-ops at len==1.
         let mut ctrl = TabGroupController::with_pane(
             "p0",
             vec![tab("t0", "only", true)],
@@ -1048,8 +1730,8 @@ mod tests {
         let ev = ctrl.close_tab(idx, "x0");
         assert_eq!(ev, Some(TabGroupEvent::PaneCollapsed { pane_idx: idx }));
         assert_eq!(ctrl.pane_count(), 1);
-        // Fractions renormalise.
-        assert!((ctrl.pane_fractions[0] - 1.0).abs() < 0.01);
+        // Layout should be a single Leaf.
+        assert!(matches!(ctrl.layout, GroupLayout::Leaf(0)));
     }
 
     // ── Pane lifecycle ────────────────────────────────────────────────────────
@@ -1061,9 +1743,10 @@ mod tests {
         assert_eq!(idx, 1);
         assert_eq!(ctrl.pane_count(), 2);
         assert_eq!(ctrl.focused_pane(), Some(1));
-        // Fractions sum to 1.0.
-        let sum: f32 = ctrl.pane_fractions.iter().sum();
-        assert!((sum - 1.0).abs() < 0.001);
+        // Layout should be a Split at root.
+        assert!(matches!(ctrl.layout, GroupLayout::Split { .. }));
+        // Tree has exactly 2 leaves.
+        assert_eq!(ctrl.layout.leaf_count(), 2);
     }
 
     #[test]
@@ -1072,8 +1755,8 @@ mod tests {
         ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", false));
         ctrl.add_pane_with_tab("p2", tab("y0", "y.rs", false));
         assert_eq!(ctrl.pane_count(), 3);
-        let sum: f32 = ctrl.pane_fractions.iter().sum();
-        assert!((sum - 1.0).abs() < 0.001);
+        // All 3 pane indices appear as leaves.
+        assert_eq!(ctrl.layout.leaf_count(), 3);
     }
 
     // ── Focus tracking ────────────────────────────────────────────────────────
@@ -1101,8 +1784,6 @@ mod tests {
 
     #[test]
     fn click_inactive_tab_emits_tab_activated() {
-        // Layout: t0=[0..8), t1=[8..16), close=[14..16), new-tab=[77..80)
-        // strip at y=0, bar_w=80, tab_w=8, close_w=2
         let mut ctrl = make_group();
         prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
 
@@ -1121,16 +1802,14 @@ mod tests {
     fn click_active_tab_returns_none() {
         let mut ctrl = make_group();
         prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
-        // t0 is active at [0..8). Click on it → None.
         assert_eq!(ctrl.handle_click(3.0, 0.5), None);
     }
 
     #[test]
     fn click_close_button_emits_tab_closed() {
-        // t0 close region at [6..8) (tab_w=8, close_w=2 → close=[6..8))
         let mut ctrl = make_group();
         prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
-        let ev = ctrl.handle_click(7.0, 0.5); // x=7 → close of t0
+        let ev = ctrl.handle_click(7.0, 0.5);
         assert_eq!(
             ev,
             Some(TabGroupEvent::TabClosed {
@@ -1143,7 +1822,6 @@ mod tests {
 
     #[test]
     fn click_new_tab_button_emits_new_tab_requested() {
-        // new-tab at [77..80) (bar_w=80, right_segment width=3)
         let mut ctrl = make_group();
         prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
         let ev = ctrl.handle_click(78.0, 0.5);
@@ -1156,14 +1834,10 @@ mod tests {
     fn click_content_area_focuses_pane() {
         let mut ctrl = make_group();
         ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", false));
-        // add_pane_with_tab auto-focuses the new pane (idx 1). Move focus back
-        // to pane 0 so clicking pane 1's content triggers a focus change.
         ctrl.focus_pane(0);
-        // Prime both panes side by side: pane 0 at x=0, pane 1 at x=80.
         prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
         prime_pane(&mut ctrl, 1, 80.0, 0.0, 80.0, 8.0, 2.0);
 
-        // Click in pane 1's content area (x=85, y=5).
         let ev = ctrl.handle_click(85.0, 5.0);
         assert_eq!(ev, Some(TabGroupEvent::PaneFocused { pane_idx: 1 }));
         assert_eq!(ctrl.focused_pane(), Some(1));
@@ -1174,7 +1848,6 @@ mod tests {
         let mut ctrl = make_group();
         prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
         ctrl.focus_pane(0);
-        // Click in content area of already-focused pane → None.
         assert_eq!(ctrl.handle_click(5.0, 5.0), None);
     }
 
@@ -1182,11 +1855,9 @@ mod tests {
 
     #[test]
     fn click_with_offset_strip_resolves_correctly() {
-        // strip_x=20 → t0=[20..28), t1=[28..36), t0-close=[26..28)
         let mut ctrl = make_group();
         prime_pane(&mut ctrl, 0, 20.0, 5.0, 80.0, 8.0, 2.0);
 
-        // Click t1 body (x=30).
         let ev = ctrl.handle_click(30.0, 5.5);
         assert_eq!(
             ev,
@@ -1202,7 +1873,6 @@ mod tests {
     #[test]
     fn drag_start_on_non_divider_returns_false() {
         let mut ctrl = make_group();
-        // No dividers with 1 pane.
         assert!(!ctrl.handle_drag_start(50.0, 50.0));
     }
 
@@ -1210,26 +1880,43 @@ mod tests {
     fn drag_start_on_divider_returns_true() {
         let mut ctrl = make_group();
         ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", false));
-        // Manually place a divider rect.
-        ctrl.last_divider_bounds = vec![Rect::new(40.0, 0.0, 1.0, 20.0)];
+        // Manually place a divider.
+        ctrl.last_dividers = vec![DividerInfo {
+            divider_bounds: Rect::new(40.0, 0.0, 1.0, 20.0),
+            direction: SplitDirection::Horizontal,
+            split_bounds: Rect::new(0.0, 0.0, 80.0, 20.0),
+            ratio: 0.5,
+        }];
         assert!(ctrl.handle_drag_start(40.5, 10.0));
         assert_eq!(ctrl.dragging_divider, Some(0));
     }
 
     #[test]
-    fn drag_move_updates_fractions() {
+    fn drag_move_updates_split_ratio() {
         let mut ctrl = make_group();
         ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", false));
-        ctrl.last_divider_bounds = vec![Rect::new(50.0, 0.0, 1.0, 20.0)];
+        // Place a divider centred at x=50 on a 100-wide split.
+        ctrl.last_dividers = vec![DividerInfo {
+            divider_bounds: Rect::new(50.0, 0.0, 1.0, 20.0),
+            direction: SplitDirection::Horizontal,
+            split_bounds: Rect::new(0.0, 0.0, 100.0, 20.0),
+            ratio: 0.5,
+        }];
         ctrl.handle_drag_start(50.5, 5.0);
 
-        let bounds = Rect::new(0.0, 0.0, 100.0, 20.0);
-        let ev = ctrl.handle_drag_move(30.0, 5.0, bounds); // drag to x=30 → 30%
+        let bounds = Rect::new(0.0, 0.0, 100.0, 20.0); // ignored by new impl
+        let ev = ctrl.handle_drag_move(30.0, 5.0, bounds); // drag to x=30 → ratio ≈ 0.30
         assert_eq!(ev, Some(TabGroupEvent::DividerResized { divider_idx: 0 }));
-        assert!((ctrl.pane_fractions[0] - 0.30).abs() < 0.02);
-        assert!((ctrl.pane_fractions[1] - 0.70).abs() < 0.02);
-        let sum: f32 = ctrl.pane_fractions.iter().sum();
-        assert!((sum - 1.0).abs() < 0.001);
+        // The root split's ratio should now be ≈ 0.30.
+        let ratio = match &ctrl.layout {
+            GroupLayout::Split { ratio, .. } => *ratio,
+            _ => panic!("expected Split at root"),
+        };
+        assert!(
+            (ratio - 0.30).abs() < 0.02,
+            "ratio={ratio}, expected ≈ 0.30"
+        );
+        assert!((1.0 - ratio - 0.70).abs() < 0.02);
     }
 
     #[test]
@@ -1257,18 +1944,527 @@ mod tests {
         assert_eq!(rects[0].bounds.width, 80.0);
     }
 
-    // ── Pane fractions normalisation ──────────────────────────────────────────
+    // ── Pane fractions / layout tree invariants ───────────────────────────────
 
     #[test]
-    fn collapse_pane_renormalises_fractions() {
+    fn collapse_pane_reduces_leaf_count() {
         let mut ctrl = make_group();
         ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", false));
         ctrl.add_pane_with_tab("p2", tab("y0", "y.rs", false));
         assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.layout.leaf_count(), 3);
 
         ctrl.collapse_pane(1);
         assert_eq!(ctrl.pane_count(), 2);
-        let sum: f32 = ctrl.pane_fractions.iter().sum();
-        assert!((sum - 1.0).abs() < 0.001);
+        assert_eq!(ctrl.layout.leaf_count(), 2);
+    }
+
+    // ── Recursive split tree ──────────────────────────────────────────────────
+
+    #[test]
+    fn layout_after_two_adds_is_correct() {
+        // Start: Leaf(0)
+        // Add p1 (after p0): Split(H, Leaf(0), Leaf(1))
+        // Add p2 (after p1, which is focused): Split(H, Leaf(0), Split(H, Leaf(1), Leaf(2)))
+        let mut ctrl = make_group();
+        ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", false));
+        ctrl.add_pane_with_tab("p2", tab("y0", "y.rs", false));
+        // All three leaf indices present.
+        assert!(ctrl.layout.contains_leaf(0));
+        assert!(ctrl.layout.contains_leaf(1));
+        assert!(ctrl.layout.contains_leaf(2));
+        assert_eq!(ctrl.layout.leaf_count(), 3);
+    }
+
+    #[test]
+    fn top_bottom_edge_drops_create_vertical_splits() {
+        // When a tab is dropped on a Top or Bottom edge, the resulting split
+        // in the tree must have direction == Vertical.
+        let mut ctrl = make_group();
+        ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", true));
+        ctrl.focus_pane(0);
+        prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
+        prime_pane(&mut ctrl, 1, 80.0, 0.0, 80.0, 8.0, 2.0);
+
+        // Drag t1 from pane 0 to the top edge of pane 1.
+        // top-edge: y < tab_bar_h + edge_h → but y must be in content area.
+        // Per compute_drop_zone: top edge = content area, y - content_top < edge_h(=3).
+        // Content top for pane 1 = 1.0 (strip height). Edge zone: y < 1.0+3=4.
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1
+        let evs = ctrl.handle_tab_drop(120.0, 2.5); // top-edge of pane 1 content
+
+        if let Some(TabGroupEvent::TabSplitToNewPane { edge, .. }) = evs.first() {
+            assert!(
+                matches!(edge, DropEdge::Top),
+                "expected Top edge, got {edge:?}"
+            );
+        } else {
+            // If not a split (e.g. fell into center), skip direction check.
+            return;
+        }
+
+        // Find the newly inserted split node in the tree — it must be Vertical.
+        fn find_any_vertical(node: &GroupLayout) -> bool {
+            match node {
+                GroupLayout::Leaf(_) => false,
+                GroupLayout::Split {
+                    direction,
+                    first,
+                    second,
+                    ..
+                } => {
+                    *direction == SplitDirection::Vertical
+                        || find_any_vertical(first)
+                        || find_any_vertical(second)
+                }
+            }
+        }
+        assert!(
+            find_any_vertical(&ctrl.layout),
+            "expected a Vertical split in tree after Top-edge drop"
+        );
+    }
+
+    // ── Cross-group tab drag: helpers ─────────────────────────────────────────
+
+    /// Build a two-pane controller with:
+    ///   pane 0 at x=0  : tabs [t0, t1], strip height=1, bar_w=80
+    ///   pane 1 at x=80 : tabs [x0],     strip height=1, bar_w=80
+    fn make_two_pane() -> TabGroupController {
+        let mut ctrl = TabGroupController::with_pane(
+            "p0",
+            vec![tab("t0", "main.rs", true), tab("t1", "lib.rs", true)],
+            "t0",
+            SplitDirection::Horizontal,
+        );
+        ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", true));
+        ctrl.focus_pane(0);
+        prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
+        prime_pane(&mut ctrl, 1, 80.0, 0.0, 80.0, 8.0, 2.0);
+        ctrl
+    }
+
+    // ── handle_tab_drag_start ─────────────────────────────────────────────────
+
+    #[test]
+    fn tab_drag_start_on_tab_body_returns_true() {
+        let mut ctrl = make_two_pane();
+        assert!(ctrl.handle_tab_drag_start(9.0, 0.5));
+        assert!(ctrl.is_tab_dragging());
+        let drag = ctrl.dragging_tab.as_ref().unwrap();
+        assert_eq!(drag.source_pane_idx, 0);
+        assert_eq!(drag.tab_id, "t1");
+    }
+
+    #[test]
+    fn tab_drag_start_on_close_button_returns_false() {
+        let mut ctrl = make_two_pane();
+        assert!(!ctrl.handle_tab_drag_start(7.0, 0.5));
+        assert!(!ctrl.is_tab_dragging());
+    }
+
+    #[test]
+    fn tab_drag_start_on_new_tab_button_returns_false() {
+        let mut ctrl = make_two_pane();
+        assert!(!ctrl.handle_tab_drag_start(78.0, 0.5));
+        assert!(!ctrl.is_tab_dragging());
+    }
+
+    #[test]
+    fn tab_drag_start_in_content_area_returns_false() {
+        let mut ctrl = make_two_pane();
+        assert!(!ctrl.handle_tab_drag_start(40.0, 5.0));
+        assert!(!ctrl.is_tab_dragging());
+    }
+
+    #[test]
+    fn tab_drag_start_outside_all_panes_returns_false() {
+        let mut ctrl = make_two_pane();
+        assert!(!ctrl.handle_tab_drag_start(999.0, 0.5));
+        assert!(!ctrl.is_tab_dragging());
+    }
+
+    // ── handle_tab_drag_move + tab_drag_overlay ───────────────────────────────
+
+    #[test]
+    fn tab_drag_move_returns_none_when_not_dragging() {
+        let mut ctrl = make_two_pane();
+        assert!(ctrl.handle_tab_drag_move(120.0, 5.0).is_none());
+    }
+
+    #[test]
+    fn tab_drag_move_returns_drop_zone_and_stores_it() {
+        let mut ctrl = make_two_pane();
+        assert!(ctrl.handle_tab_drag_start(9.0, 0.5));
+        let zone = ctrl.handle_tab_drag_move(120.0, 5.0);
+        assert_eq!(
+            zone,
+            Some(crate::DropZone {
+                kind: crate::DropZoneKind::Center,
+                group_idx: 1,
+            })
+        );
+        let stored = ctrl.dragging_tab.as_ref().unwrap().current_zone.as_ref();
+        assert_eq!(stored.unwrap().group_idx, 1);
+    }
+
+    #[test]
+    fn tab_drag_overlay_returns_none_without_zone() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        assert!(ctrl.tab_drag_overlay(9.0, 0.5, 2.0, 10.0).is_none());
+    }
+
+    #[test]
+    fn tab_drag_overlay_returns_highlight_after_move() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        ctrl.handle_tab_drag_move(120.0, 5.0);
+        let ov = ctrl.tab_drag_overlay(120.0, 5.0, 2.0, 10.0).unwrap();
+        assert_eq!(ov.highlight, Some(crate::Rect::new(80.0, 1.0, 80.0, 10.0)));
+        assert!(ov.insertion_bar.is_none());
+    }
+
+    // ── cancel_tab_drag / is_tab_dragging ─────────────────────────────────────
+
+    #[test]
+    fn cancel_tab_drag_clears_state() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        assert!(ctrl.is_tab_dragging());
+        ctrl.cancel_tab_drag();
+        assert!(!ctrl.is_tab_dragging());
+    }
+
+    // ── drop_zone_at ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn drop_zone_at_center_of_pane_1() {
+        let ctrl = make_two_pane();
+        let zone = ctrl.drop_zone_at(120.0, 5.0).unwrap();
+        assert_eq!(zone.group_idx, 1);
+        assert_eq!(zone.kind, crate::DropZoneKind::Center);
+    }
+
+    #[test]
+    fn drop_zone_at_tab_bar_of_pane_1_reorder() {
+        let ctrl = make_two_pane();
+        let zone = ctrl.drop_zone_at(82.0, 0.5).unwrap();
+        assert_eq!(zone.group_idx, 1);
+        assert!(matches!(zone.kind, crate::DropZoneKind::TabReorder(_)));
+    }
+
+    // ── handle_tab_drop: reorder within same pane ─────────────────────────────
+
+    #[test]
+    fn tab_drop_reorders_within_same_pane() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(3.0, 0.5);
+        assert_eq!(
+            evs,
+            vec![TabGroupEvent::TabReordered {
+                pane_idx: 0,
+                tab_id: "t1".into(),
+                from_idx: 1,
+                to_idx: 0,
+            }]
+        );
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t1");
+        assert_eq!(ctrl.panes[0].tabs()[1].id, "t0");
+        assert_eq!(ctrl.pane_count(), 2);
+    }
+
+    #[test]
+    fn tab_drop_reorder_same_position_is_noop() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(14.0, 0.5);
+        assert!(evs.is_empty());
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t0");
+        assert_eq!(ctrl.panes[0].tabs()[1].id, "t1");
+    }
+
+    #[test]
+    fn tab_drop_same_pane_center_is_noop() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(40.0, 5.0);
+        assert!(evs.is_empty());
+        assert_eq!(ctrl.pane_count(), 2);
+        assert_eq!(ctrl.panes[0].tabs().len(), 2);
+    }
+
+    // ── handle_tab_drop: merge into another pane ──────────────────────────────
+
+    #[test]
+    fn tab_drop_moves_tab_to_another_pane_center() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(120.0, 5.0);
+        assert_eq!(
+            evs,
+            vec![TabGroupEvent::TabMovedToPane {
+                from_pane_idx: 0,
+                to_pane_idx: 1,
+                tab_id: "t1".into(),
+                insert_idx: 1,
+            }]
+        );
+        assert_eq!(ctrl.pane_count(), 2);
+        assert_eq!(ctrl.panes[0].tabs().len(), 1);
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t0");
+        assert_eq!(ctrl.panes[1].tabs().len(), 2);
+        assert_eq!(ctrl.panes[1].tabs()[1].id, "t1");
+        assert_eq!(ctrl.panes[1].active_tab_id(), "t1");
+        assert_eq!(ctrl.layout.leaf_count(), 2);
+    }
+
+    #[test]
+    fn tab_drop_moves_tab_to_another_pane_tab_bar() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(82.0, 0.5);
+        assert_eq!(
+            evs,
+            vec![TabGroupEvent::TabMovedToPane {
+                from_pane_idx: 0,
+                to_pane_idx: 1,
+                tab_id: "t1".into(),
+                insert_idx: 0,
+            }]
+        );
+        assert_eq!(ctrl.panes[1].tabs()[0].id, "t1");
+        assert_eq!(ctrl.panes[1].tabs()[1].id, "x0");
+    }
+
+    #[test]
+    fn tab_drop_source_collapses_when_last_tab_moved() {
+        let mut ctrl = TabGroupController::with_pane(
+            "p0",
+            vec![tab("only", "only.rs", true)],
+            "only",
+            SplitDirection::Horizontal,
+        );
+        ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", true));
+        ctrl.focus_pane(0);
+        prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
+        prime_pane(&mut ctrl, 1, 80.0, 0.0, 80.0, 8.0, 2.0);
+
+        ctrl.handle_tab_drag_start(3.0, 0.5);
+        let evs = ctrl.handle_tab_drop(120.0, 5.0);
+
+        assert_eq!(ctrl.pane_count(), 1);
+        assert_eq!(
+            evs,
+            vec![
+                TabGroupEvent::TabMovedToPane {
+                    from_pane_idx: 0,
+                    to_pane_idx: 0,
+                    tab_id: "only".into(),
+                    insert_idx: 1,
+                },
+                TabGroupEvent::PaneCollapsed { pane_idx: 0 },
+            ]
+        );
+        assert_eq!(ctrl.panes[0].tabs().len(), 2);
+        assert_eq!(ctrl.panes[0].tabs()[1].id, "only");
+        assert_eq!(ctrl.layout.leaf_count(), 1);
+    }
+
+    // ── handle_tab_drop: split to new pane ────────────────────────────────────
+
+    #[test]
+    fn tab_drop_splits_right_edge_creates_pane_after_target() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(150.0, 5.0);
+        assert_eq!(evs.len(), 1, "no collapse expected: {evs:?}");
+        assert!(
+            matches!(
+                &evs[0],
+                TabGroupEvent::TabSplitToNewPane {
+                    from_pane_idx: 0,
+                    tab_id,
+                    target_pane_idx: 1,
+                    edge: crate::DropEdge::Right,
+                    new_pane_idx: 2,
+                } if tab_id == "t1"
+            ),
+            "unexpected event: {:?}",
+            evs[0]
+        );
+        assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t0");
+        assert_eq!(ctrl.panes[1].tabs()[0].id, "x0");
+        assert_eq!(ctrl.panes[2].tabs()[0].id, "t1");
+        assert_eq!(ctrl.layout.leaf_count(), 3);
+    }
+
+    #[test]
+    fn tab_drop_splits_left_edge_creates_pane_before_target() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(83.0, 5.0);
+        assert_eq!(evs.len(), 1, "no collapse expected: {evs:?}");
+        assert!(
+            matches!(
+                &evs[0],
+                TabGroupEvent::TabSplitToNewPane {
+                    from_pane_idx: 0,
+                    tab_id,
+                    target_pane_idx: 1,
+                    edge: crate::DropEdge::Left,
+                    new_pane_idx: 1,
+                } if tab_id == "t1"
+            ),
+            "unexpected event: {:?}",
+            evs[0]
+        );
+        assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t0");
+        assert_eq!(ctrl.panes[1].tabs()[0].id, "t1");
+        assert_eq!(ctrl.panes[2].tabs()[0].id, "x0");
+    }
+
+    #[test]
+    fn tab_drop_split_source_collapses_when_last_tab() {
+        let mut ctrl = TabGroupController::with_pane(
+            "p0",
+            vec![tab("only", "only.rs", true)],
+            "only",
+            SplitDirection::Horizontal,
+        );
+        ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", true));
+        ctrl.focus_pane(0);
+        prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
+        prime_pane(&mut ctrl, 1, 80.0, 0.0, 80.0, 8.0, 2.0);
+
+        ctrl.handle_tab_drag_start(3.0, 0.5);
+        let evs = ctrl.handle_tab_drop(150.0, 5.0);
+
+        assert_eq!(ctrl.pane_count(), 2);
+        assert_eq!(evs.len(), 2, "expected split + collapse: {evs:?}");
+        assert!(
+            matches!(
+                &evs[0],
+                TabGroupEvent::TabSplitToNewPane {
+                    from_pane_idx: 0,
+                    tab_id,
+                    new_pane_idx: 1,
+                    ..
+                } if tab_id == "only"
+            ),
+            "unexpected primary event: {:?}",
+            evs[0]
+        );
+        assert_eq!(evs[1], TabGroupEvent::PaneCollapsed { pane_idx: 0 });
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "x0");
+        assert_eq!(ctrl.panes[1].tabs()[0].id, "only");
+        assert_eq!(ctrl.layout.leaf_count(), 2);
+    }
+
+    #[test]
+    fn tab_drop_only_tab_only_pane_split_is_noop() {
+        let mut ctrl = TabGroupController::with_pane(
+            "p0",
+            vec![tab("t0", "only.rs", true)],
+            "t0",
+            SplitDirection::Horizontal,
+        );
+        prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
+
+        ctrl.handle_tab_drag_start(3.0, 0.5);
+        let evs = ctrl.handle_tab_drop(70.0, 5.0);
+        assert!(evs.is_empty());
+        assert_eq!(ctrl.pane_count(), 1);
+        assert_eq!(ctrl.panes[0].tabs().len(), 1);
+    }
+
+    #[test]
+    fn tab_drop_clears_drag_state_on_noop() {
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(999.0, 999.0);
+        assert!(evs.is_empty());
+        assert!(!ctrl.is_tab_dragging());
+    }
+
+    /// Self-pane edge drop with multiple tabs: pane has ≥2 tabs, drag one out
+    /// to its OWN pane's edge. Source pane stays alive (no collapse), a new
+    /// pane is created adjacent to it.
+    #[test]
+    fn tab_drop_self_pane_edge_with_multiple_tabs_splits_without_collapse() {
+        let mut ctrl = make_two_pane();
+        // Pane 0 has tabs [t0, t1]; drag t1 onto pane 0's own left edge.
+        // Left edge of pane 0 content: x < 0 + edge_w(=3). Use x=1.0, y=5.0 (in content).
+        ctrl.handle_tab_drag_start(9.0, 0.5); // t1 from pane 0
+        let evs = ctrl.handle_tab_drop(1.0, 5.0); // pane 0 left edge
+
+        // Exactly one event (split, no collapse since pane 0 still has t0).
+        assert_eq!(evs.len(), 1, "no collapse expected: {evs:?}");
+        assert!(
+            matches!(
+                &evs[0],
+                TabGroupEvent::TabSplitToNewPane {
+                    from_pane_idx: 0,
+                    tab_id,
+                    target_pane_idx: 0,
+                    edge: crate::DropEdge::Left,
+                    new_pane_idx: 0,
+                } if tab_id == "t1"
+            ),
+            "unexpected event: {:?}",
+            evs[0]
+        );
+        // Pane count grew from 2 to 3; layout tree still has 3 unique leaves.
+        assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.layout.leaf_count(), 3);
+        // The new pane (vec index 0) carries the moved tab; the old pane 0
+        // (now at vec index 1) keeps its remaining tab.
+        assert_eq!(ctrl.panes[0].tabs().len(), 1);
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t1");
+        assert_eq!(ctrl.panes[1].tabs().len(), 1);
+        assert_eq!(ctrl.panes[1].tabs()[0].id, "t0");
+        // The original "other pane" (was index 1) is now at index 2.
+        assert_eq!(ctrl.panes[2].tabs()[0].id, "x0");
+    }
+
+    // ── Unique pane IDs after repeated splits ─────────────────────────────────
+
+    #[test]
+    fn split_then_collapse_then_split_unique_ids() {
+        // Drag t1 out to create pane:1, collapse it, then drag a different tab
+        // to create another split.  The second new pane must have a distinct id.
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1
+        ctrl.handle_tab_drop(150.0, 5.0); // split → pane[2].id == "pane:1"
+        assert_eq!(ctrl.pane_count(), 3);
+        let first_new_id = ctrl.panes[2].id.clone();
+
+        ctrl.collapse_pane(2); // remove the new pane
+        assert_eq!(ctrl.pane_count(), 2);
+
+        // Add an extra tab so pane 0 won't be emptied by the next drag.
+        ctrl.add_tab(0, tab("t-extra", "extra.rs", false));
+
+        // Re-prime: pane 0 now has 2 tabs (t0, t-extra), pane 1 has 1 tab (x0).
+        prime_pane(&mut ctrl, 0, 0.0, 0.0, 80.0, 8.0, 2.0);
+        prime_pane(&mut ctrl, 1, 80.0, 0.0, 80.0, 8.0, 2.0);
+
+        // Drag t-extra (slot [8..16), x=9) to right edge of pane 1 → creates pane:2.
+        ctrl.handle_tab_drag_start(9.0, 0.5);
+        let evs = ctrl.handle_tab_drop(150.0, 5.0);
+
+        assert_eq!(
+            ctrl.pane_count(),
+            3,
+            "second split should create 3 panes: {evs:?}"
+        );
+        let second_new_id = ctrl.panes[2].id.clone();
+        assert_ne!(
+            second_new_id, first_new_id,
+            "second split pane must have a unique id (got {second_new_id:?})"
+        );
     }
 }

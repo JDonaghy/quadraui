@@ -8,13 +8,16 @@
 //! ```
 //!
 //! Controls:
-//! - click tab label     — activate that tab
-//! - click `×`          — close the tab (last tab collapses the pane)
-//! - click `+`          — add an untitled tab
-//! - click content area — focus that pane
-//! - drag divider       — resize panes
-//! - Tab / Shift+Tab    — cycle focus
-//! - q / Esc            — quit
+//! - click tab label              — activate that tab
+//! - click `×`                   — close the tab (last tab collapses the pane)
+//! - click `+`                   — add an untitled tab
+//! - click content area          — focus that pane
+//! - drag divider                — resize panes
+//! - drag tab onto another pane  — merge tab into that pane
+//! - drag tab to a pane's edge   — split off a new adjacent pane
+//! - drag tab within its strip   — reorder tabs in the same pane
+//! - Tab / Shift+Tab             — cycle focus
+//! - q / Esc                     — quit
 
 #[path = "common/mod.rs"]
 mod common;
