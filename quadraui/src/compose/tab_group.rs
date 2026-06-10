@@ -1354,7 +1354,6 @@ impl TabGroupController {
                 }
                 let tab_id = moved_tab.id.clone();
                 let source_empty = self.panes[from].tabs.is_empty();
-                let original_target = zone.group_idx;
 
                 // Split direction is determined by the drop edge.
                 // Left/Right → horizontal split; Top/Bottom → vertical split.
@@ -1416,7 +1415,7 @@ impl TabGroupController {
                 let mut events = vec![TabGroupEvent::TabSplitToNewPane {
                     from_pane_idx: from,
                     tab_id,
-                    target_pane_idx: original_target,
+                    target_pane_idx: adjusted_to,
                     edge,
                     new_pane_idx: actual_pos,
                 }];
@@ -2351,12 +2350,15 @@ mod tests {
 
         assert_eq!(ctrl.pane_count(), 2);
         assert_eq!(evs.len(), 2, "expected split + collapse: {evs:?}");
+        // After source (pane 0) collapses, the original target pane 1 shifts to
+        // index 0.  target_pane_idx and new_pane_idx are both post-collapse.
         assert!(
             matches!(
                 &evs[0],
                 TabGroupEvent::TabSplitToNewPane {
                     from_pane_idx: 0,
                     tab_id,
+                    target_pane_idx: 0, // post-collapse: "x0" is now at index 0
                     new_pane_idx: 1,
                     ..
                 } if tab_id == "only"
