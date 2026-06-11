@@ -82,7 +82,22 @@ pub fn draw_list(
     let hscrollbar = list.hscrollbar(area_f, 1.0);
     let needs_hscrollbar = hscrollbar.is_some();
 
-    let vscrollbar = list.vscrollbar(area_f, 1.0);
+    // #326 fix: when an h-scrollbar reserves the bottom row, the v-scrollbar's
+    // track and visible-row count must be computed against the REDUCED height.
+    // Passing the full `area_f` overcounts `visible` by one row, so the thumb is
+    // sized for a row that isn't actually visible, never advances fully to the
+    // bottom, and its track overlaps the h-scrollbar's row in the corner cell.
+    let v_area_f = if needs_hscrollbar {
+        crate::event::Rect::new(
+            area_f.x,
+            area_f.y,
+            area_f.width,
+            (area_f.height - 1.0).max(0.0),
+        )
+    } else {
+        area_f
+    };
+    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
     let needs_vscrollbar = vscrollbar.is_some();
 
     let viewport_h = if needs_hscrollbar {
@@ -874,4 +889,30 @@ mod tests {
         let has_sb = (0..5u16).any(|y| matches!(cell_char(&buf, 9, y), '█' | '░'));
         assert!(!has_sb, "no scrollbar when all items fit");
     }
+
+    #[test]
+    fn vscrollbar_thumb_moves_down_as_scroll_offset_increases() {
+        // PRIMITIVE_RULES.md Rule 6: assert the PAINTED thumb tracks
+        // scroll_offset (read the rasterised output), not just the geometry
+        // method. 30 items in a 10-row area; paint at offset 0 vs near-max and
+        // confirm the '█' thumb's topmost cell moves DOWN.
+        let area = Rect::new(0, 0, 10, 10);
+        let mut buf_top = Buffer::empty(area);
+        let mut buf_bot = Buffer::empty(area);
+        draw_list(&mut buf_top, area, &make_vlist(30, 0), &Theme::default(), false);
+        draw_list(&mut buf_bot, area, &make_vlist(30, 20), &Theme::default(), false);
+
+        let first_thumb = |buf: &Buffer| (0..10u16).find(|&y| cell_char(buf, 9, y) == '█');
+        let thumb_top =
+            first_thumb(&buf_top).expect("thumb '█' must paint at scroll_offset=0");
+        let thumb_bot =
+            first_thumb(&buf_bot).expect("thumb '█' must paint at scroll_offset=20");
+        assert!(
+            thumb_bot > thumb_top,
+            "v-scrollbar thumb must move DOWN as scroll_offset grows \
+             (got top={thumb_top}, bottom={thumb_bot}) — guards the \
+             'thumb hardcoded at gutter top' failure class (Rule 6)",
+        );
+    }
+
 }

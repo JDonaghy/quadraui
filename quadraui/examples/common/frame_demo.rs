@@ -22,6 +22,10 @@ pub struct FrameDemo {
     items: Vec<String>,
     selected: usize,
     h_scroll: usize,
+    /// #326: toggles the ListView vertical scrollbar (the `v` key) so the demo
+    /// visually exercises `show_v_scrollbar` — the vertical counterpart to the
+    /// existing h_scroll demonstration.
+    show_v_scroll: bool,
     /// Active h-scrollbar thumb drag: (track_x, track_w, thumb_len, grab_offset).
     h_sb_drag: Option<(f32, f32, f32, f32)>,
     last_hit: String,
@@ -30,19 +34,30 @@ pub struct FrameDemo {
 
 impl FrameDemo {
     pub fn new() -> Self {
+        // Five intentionally long rows so content overflows any reasonable
+        // terminal width — this is what exercises ListView h_scroll.
+        let mut items: Vec<String> = vec![
+            "Pods         kube-system/coredns-5d78c9869d-xz4kp  ip-10-0-1-23.us-west-2.compute.internal  3/3 Running r:0".into(),
+            "Deployments  kube-system/coredns                   2 desired / 2 updated / 2 available       Available".into(),
+            "Services     default/kubernetes                    ClusterIP 10.96.0.1  ports 443/TCP        Active".into(),
+            "ConfigMaps   kube-system/kube-root-ca.crt          1 key (ca.crt)  created 14d ago            Immutable".into(),
+            "Secrets      default/default-token-abcde           kubernetes.io/service-account-token  3 keys  Opaque".into(),
+        ];
+        // #326: many more rows so the list also overflows VERTICALLY — gives the
+        // `v` key a real vertical scrollbar to show, with the thumb tracking
+        // scroll position as you move the selection with j/k.
+        for i in 0..40 {
+            items.push(format!(
+                "Workload {i:02}  kube-system/workload-{i:03}            replica {}/3            Running",
+                (i % 3) + 1,
+            ));
+        }
         Self {
             active_tab: 0,
-            // Intentionally long rows so content overflows any reasonable
-            // terminal width — this is what exercises ListView h_scroll.
-            items: vec![
-                "Pods         kube-system/coredns-5d78c9869d-xz4kp  ip-10-0-1-23.us-west-2.compute.internal  3/3 Running r:0".into(),
-                "Deployments  kube-system/coredns                   2 desired / 2 updated / 2 available       Available".into(),
-                "Services     default/kubernetes                    ClusterIP 10.96.0.1  ports 443/TCP        Active".into(),
-                "ConfigMaps   kube-system/kube-root-ca.crt          1 key (ca.crt)  created 14d ago            Immutable".into(),
-                "Secrets      default/default-token-abcde           kubernetes.io/service-account-token  3 keys  Opaque".into(),
-            ],
+            items,
             selected: 0,
             h_scroll: 0,
+            show_v_scroll: true,
             h_sb_drag: None,
             last_hit: "—".into(),
             cached_hit_map: RefCell::new(FrameHitMap::default()),
@@ -109,12 +124,15 @@ impl FrameDemo {
                 })
                 .collect(),
             selected_idx: self.selected,
-            scroll_offset: 0,
+            // #326: drive scroll_offset from the selection so j/k scrolls the
+            // list and the vertical-scrollbar thumb visibly tracks position.
+            // The primitive clamps this in `layout()`.
+            scroll_offset: self.selected,
             has_focus: true,
             bordered: false,
             h_scroll: self.h_scroll,
             max_content_width: Some(self.max_content_width()),
-            show_v_scrollbar: false,
+            show_v_scrollbar: self.show_v_scroll,
         }
     }
 
@@ -125,8 +143,12 @@ impl FrameDemo {
             id: WidgetId::new("status"),
             left_segments: vec![StatusBarSegment {
                 text: format!(
-                    " tab:{} sel:{} hscroll:{} hit:{} ",
-                    self.active_tab, self.selected, self.h_scroll, self.last_hit
+                    " tab:{} sel:{} hscroll:{} vbar:{} hit:{} ",
+                    self.active_tab,
+                    self.selected,
+                    self.h_scroll,
+                    if self.show_v_scroll { "on" } else { "off" },
+                    self.last_hit
                 ),
                 fg,
                 bg,
@@ -134,7 +156,7 @@ impl FrameDemo {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " ←/→ or h/l = h-scroll | j/k = move | q=quit ".into(),
+                text: " ←/→ or h/l = h-scroll | j/k = move (v-scrolls) | v = toggle v-bar | q=quit ".into(),
                 fg,
                 bg,
                 bold: false,
@@ -213,6 +235,11 @@ impl AppLogic for FrameDemo {
                 }
                 Key::Char('h') | Key::Named(NamedKey::Left) => {
                     self.h_scroll = self.h_scroll.saturating_sub(1);
+                    return Reaction::Redraw;
+                }
+                Key::Char('v') => {
+                    // #326: toggle the ListView vertical scrollbar on/off.
+                    self.show_v_scroll = !self.show_v_scroll;
                     return Reaction::Redraw;
                 }
                 Key::Named(NamedKey::Tab) => {
