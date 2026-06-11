@@ -364,6 +364,16 @@ impl TerminalSession {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        // Present the embedded terminal as a clean, top-level terminal. When
+        // the host app (e.g. coord-tui) is itself launched from inside tmux,
+        // the spawned shell would otherwise inherit $TMUX/$TMUX_PANE and any
+        // tmux command run here would be treated as *nested* in the host's
+        // outer session — e.g. `tmux attach-session` refuses ("sessions should
+        // be nested with care") and `switch-client` hijacks the host's outer
+        // client instead of rendering in this pane. Scrubbing them makes an
+        // interactive session launched in this pane attach in-pane as expected.
+        cmd.env_remove("TMUX");
+        cmd.env_remove("TMUX_PANE");
         cmd.cwd(cwd);
         let child = pair.slave.spawn_command(cmd)?;
 
