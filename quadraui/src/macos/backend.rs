@@ -465,6 +465,17 @@ impl Backend for MacBackend {
             row_h,
         ))
     }
+    fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
+        // macOS ListView vertical-scrollbar rasteriser not yet implemented.
+        // Delegate to the primitive's geometry method using pixel units:
+        // each "row" is one line_height tall (the primitive column-width
+        // parameter is reused as row_height here, same as for TUI).
+        let row_h = self.line_height();
+        list.vscrollbar(
+            crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
+            row_h,
+        )
+    }
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         let ctx = self.current_cg();
         debug_assert!(

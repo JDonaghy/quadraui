@@ -858,6 +858,21 @@ impl Backend for TuiBackend {
         )
     }
 
+    fn list_vscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
+        // Snap through the same u16 cell truncation `draw_list` uses so
+        // the consumer's thumb hit-region matches the painted thumb.
+        let area = q_rect_to_ratatui(rect);
+        list.vscrollbar(
+            crate::event::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            1.0,
+        )
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -1724,6 +1739,9 @@ mod tests {
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
             None
         }
+        fn list_vscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
+            None
+        }
         fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
             self.calls.push(DrawCall::Palette {
                 rect,
@@ -2261,6 +2279,7 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
+            show_v_scrollbar: false,
         }
     }
 

@@ -55,6 +55,15 @@ pub struct ListView {
     /// `None` = caller hasn't measured content; no scrollbar shown.
     #[serde(default)]
     pub max_content_width: Option<usize>,
+    /// When `true`, backends reserve the rightmost column of the list area
+    /// for a vertical scrollbar and paint a track/thumb there. The thumb
+    /// position is derived from `scroll_offset` and `items.len()`.
+    /// `false` (default) = no vertical scrollbar regardless of list length.
+    ///
+    /// The vertical scrollbar is independent of `h_scroll` / `max_content_width`:
+    /// both scrollbars can be active simultaneously.
+    #[serde(default)]
+    pub show_v_scrollbar: bool,
 }
 
 /// One row in a `ListView`.
@@ -323,6 +332,79 @@ impl ListView {
             row_height,
         ))
     }
+    /// Vertical scrollbar geometry for this list rendered into `area`.
+    ///
+    /// This is the single source of truth shared by the rasteriser — which
+    /// paints the returned [`Scrollbar`] — and consumers, which hit-test the
+    /// resolved `track` / `thumb_start` / `thumb_len` to implement thumb
+    /// dragging. Keeping it here (rather than inline in each backend's
+    /// `draw_*`) means a consumer never re-derives the track rect and so can
+    /// never drift out of sync with the paint. Reach it backend-agnostically
+    /// via [`crate::Backend::list_vscrollbar`].
+    ///
+    /// Returns `None` when no vertical scrollbar is needed: `show_v_scrollbar`
+    /// is `false`, the list is empty, or all items fit in the visible viewport.
+    ///
+    /// # Arguments
+    ///
+    /// - `area` — the list surface rect, in surface-native units (TUI cells,
+    ///   GTK / macOS pixels).
+    /// - `row_height` — height of one row: `1.0` on TUI, `line_height` on
+    ///   pixel backends. The scrollbar occupies the rightmost column of the
+    ///   area (one column inside the right border in `bordered` mode), and
+    ///   `row_height` also serves as both the column width and the minimum
+    ///   thumb length (i.e. `1.0` on TUI — one cell wide, one cell tall
+    ///   minimum thumb).
+    pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
+        if !self.show_v_scrollbar {
+            return None;
+        }
+        let total = self.items.len() as f32;
+        if total == 0.0 {
+            return None;
+        }
+        // Track occupies the rightmost content column; its height spans the
+        // content rows (below the title in flat mode, between borders in
+        // bordered mode).
+        let (track_x, track_y, track_h) = if self.bordered {
+            // In bordered mode: right border at area.x + area.width - 1,
+            // so the track sits at area.x + area.width - 2*row_height (last
+            // content column), spanning from top-border to bottom-border.
+            let x = area.x + area.width - 2.0 * row_height;
+            let y = area.y + row_height;
+            let h = (area.height - 2.0 * row_height).max(0.0);
+            (x, y, h)
+        } else {
+            // In flat mode: track at the rightmost column, starting below
+            // the title row (if any).
+            let title_h = if self.title.is_some() {
+                row_height
+            } else {
+                0.0
+            };
+            let x = area.x + area.width - row_height;
+            let y = area.y + title_h;
+            let h = (area.height - title_h).max(0.0);
+            (x, y, h)
+        };
+        if track_h <= 0.0 {
+            return None;
+        }
+        // Visible rows = how many full rows fit in the track height.
+        let visible = (track_h / row_height).floor();
+        if total <= visible {
+            return None;
+        }
+        let track = Rect::new(track_x, track_y, row_height, track_h);
+        Some(Scrollbar::vertical(
+            self.id.clone(),
+            track,
+            self.scroll_offset as f32,
+            total,
+            visible,
+            row_height,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +430,7 @@ mod hscrollbar_tests {
             bordered: false,
             h_scroll,
             max_content_width: max.then_some(content_width),
+            show_v_scrollbar: false,
         }
     }
 
@@ -404,6 +487,112 @@ mod hscrollbar_tests {
         assert!(
             scrolled.thumb_start > at_zero.thumb_start,
             "scrolling right should move the thumb right"
+        );
+    }
+}
+
+#[cfg(test)]
+mod vscrollbar_tests {
+    use super::*;
+
+    /// Build a list with `n_items` rows and vertical-scroll enabled,
+    /// scrolled to `scroll_offset`.
+    fn vlist(n_items: usize, scroll_offset: usize) -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..n_items)
+                .map(|i| ListItem {
+                    text: StyledText::plain(&format!("item {}", i)),
+                    detail: None,
+                    icon: None,
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        }
+    }
+
+    #[test]
+    fn none_when_show_v_scrollbar_false() {
+        let mut l = vlist(50, 0);
+        l.show_v_scrollbar = false;
+        assert!(l.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn none_when_items_fit_in_viewport() {
+        // 5 items, 10 rows available → all fit, no scrollbar.
+        let l = vlist(5, 0);
+        assert!(l.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn none_when_items_exactly_fill_viewport() {
+        // 10 items, 10 rows → exactly fits (total == visible), no scrollbar.
+        let l = vlist(10, 0);
+        assert!(l.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn flat_track_spans_right_column() {
+        let l = vlist(20, 0);
+        let sb = l
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .expect("overflow should yield a scrollbar");
+        // Flat: rightmost column (x=19), full height, 1 cell wide.
+        assert_eq!(sb.track.x, 19.0);
+        assert_eq!(sb.track.y, 0.0);
+        assert_eq!(sb.track.width, 1.0);
+        assert_eq!(sb.track.height, 10.0);
+        // Thumb starts at the top when scroll_offset == 0.
+        assert_eq!(sb.thumb_start, 0.0);
+        assert!(sb.thumb_len > 0.0 && sb.thumb_len < sb.track.height);
+    }
+
+    #[test]
+    fn flat_track_below_title_row() {
+        let mut l = vlist(20, 0);
+        l.title = Some(StyledText::plain("Title"));
+        let sb = l
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .expect("overflow should yield a scrollbar");
+        // Track starts at y=1 (below title row) and is 1 row shorter.
+        assert_eq!(sb.track.y, 1.0);
+        assert_eq!(sb.track.height, 9.0);
+    }
+
+    #[test]
+    fn bordered_track_inset_inside_right_border() {
+        let mut l = vlist(20, 0);
+        l.bordered = true;
+        let sb = l
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .expect("overflow should yield a scrollbar");
+        // In bordered mode: right border at x=19, track at x=18 (last content col).
+        assert_eq!(sb.track.x, 18.0);
+        // Track spans between top border (y=0) and bottom border (y=9), so y=1 height=8.
+        assert_eq!(sb.track.y, 1.0);
+        assert_eq!(sb.track.height, 8.0);
+    }
+
+    #[test]
+    fn scroll_offset_advances_thumb() {
+        let at_zero = vlist(30, 0)
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .unwrap();
+        let scrolled = vlist(30, 15)
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .unwrap();
+        assert!(
+            scrolled.thumb_start > at_zero.thumb_start,
+            "scrolling down should move the thumb down"
         );
     }
 }

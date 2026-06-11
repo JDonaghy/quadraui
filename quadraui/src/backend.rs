@@ -275,6 +275,13 @@ pub trait Backend {
     /// implement drag without re-deriving geometry. Mirrors
     /// [`Backend::data_table_layout`]; see [`ListView::hscrollbar`].
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
+    /// Vertical scrollbar geometry for `list` rendered into `rect`, or
+    /// `None` when `show_v_scrollbar` is `false` or all items fit. Each
+    /// backend supplies its native row height; the resolved track + thumb
+    /// are the same values the rasteriser paints, so consumers hit-test
+    /// the returned thumb to implement drag without re-deriving geometry.
+    /// Mirrors [`Backend::list_hscrollbar`]; see [`ListView::vscrollbar`].
+    fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 

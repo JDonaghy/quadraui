@@ -1485,6 +1485,9 @@ mod tests {
         fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
             None
         }
+        fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
+            None
+        }
         fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
         fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
         fn draw_status_bar(
