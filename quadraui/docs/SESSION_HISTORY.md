@@ -4,6 +4,31 @@ Archived session summaries. Newest at top.
 
 ---
 
+## 2026-06-11 — PipelineView rounded corners (#287)
+
+**Agent:** Claude Sonnet 4.6
+
+**Issue closed:** #287 (branch `issue-287-pipelineview-stage-box-rounded-corners`, PR pending)
+
+**Change:** Visual polish — PipelineView stage boxes now render with rounded corners on all backends.
+
+| Backend | Before | After |
+|---------|--------|-------|
+| TUI | `┌ ┐ └ ┘` corner glyphs | `╭ ╮ ╰ ╯` rounded Unicode corners |
+| GTK | already `CORNER_RADIUS=4.0` + `rounded_rect_path` | no change needed ✅ |
+| macOS | sharp `fill_rect`/`stroke_rect` | `add_rounded_rect_path()` via `CGContextAddArcToPoint`; `CORNER_RADIUS=4.0` |
+
+**Key design decisions:**
+
+1. **Single baked-in radius:** `CORNER_RADIUS = 4.0` on GTK and macOS; glyph change on TUI — no configurable field exposed.
+2. **TUI uses Unicode box-drawing rounded glyphs** — `╭ ╮ ╰ ╯` — side (`│`) and horizontal (`─`) edges unchanged, so box dimensions and label alignment are unaffected.
+3. **GTK was already done**: `rounded_rect_path` with `CORNER_RADIUS=4.0` was added in a prior session; this issue confirmed no regression.
+4. **macOS dead-code cleanup:** Removing the no-longer-needed `fill_rect`/`stroke_rect` wrappers and their FFI declarations (`CGContextFillRect`, `CGContextStrokeRect`, `CGRect` import) as part of this commit — avoids clippy warnings.
+
+**Tests:** 30 pipeline tests pass (TUI + GTK + primitives); all 1249 GTK tests pass. Clippy clean. Changed files pass `rustfmt`.
+
+---
+
 ## 2026-05-07e/08 — Vimcode integration sprint (inline editing, context menu, scrollbar, backend-free handle)
 
 **Agent:** Claude Opus 4.6 (1M context)
