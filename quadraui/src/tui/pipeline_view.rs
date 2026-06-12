@@ -1,7 +1,8 @@
 //! TUI rasteriser for [`crate::primitives::pipeline_view::PipelineView`].
 //!
-//! Paints a horizontal row of bordered stage boxes connected by `───▶`
-//! arrow connectors. Each box shows a status icon on the first row, the
+//! Paints a horizontal row of rounded stage boxes connected by `───▶`
+//! arrow connectors. Corner glyphs `╭ ╮ ╰ ╯` give the boxes soft rounded
+//! corners, matching the `border-radius` used by the GTK rasteriser. Each box shows a status icon on the first row, the
 //! stage label on the second row, and an optional `[Action]` button on
 //! the bottom row.
 //!
@@ -101,25 +102,26 @@ pub fn draw_pipeline_view(
             continue;
         }
 
-        // ── Draw box border ───────────────────────────────────────────────
-        // Top edge.
-        set_cell(buf, bx, by, '┌', border_col, bg);
+        // ── Draw box border (rounded corners) ────────────────────────────
+        // Top edge — use rounded-corner glyphs (╭ ╮ ╰ ╯) so the box reads
+        // softer, matching the CSS `border-radius` used by the GTK rasteriser.
+        set_cell(buf, bx, by, '╭', border_col, bg);
         for dx in 1..bw.saturating_sub(1) {
             set_cell(buf, bx + dx, by, '─', border_col, bg);
         }
         if bw >= 2 {
-            set_cell(buf, bx + bw - 1, by, '┐', border_col, bg);
+            set_cell(buf, bx + bw - 1, by, '╮', border_col, bg);
         }
 
         // Bottom edge.
         if bh >= 2 {
             let yb = by + bh - 1;
-            set_cell(buf, bx, yb, '└', border_col, bg);
+            set_cell(buf, bx, yb, '╰', border_col, bg);
             for dx in 1..bw.saturating_sub(1) {
                 set_cell(buf, bx + dx, yb, '─', border_col, bg);
             }
             if bw >= 2 {
-                set_cell(buf, bx + bw - 1, yb, '┘', border_col, bg);
+                set_cell(buf, bx + bw - 1, yb, '╯', border_col, bg);
             }
         }
 
@@ -274,7 +276,8 @@ mod tests {
         let view = make_view();
         draw_pipeline_view(&mut buf, area, &view, &Theme::default());
         // Row 0 is reserved for the focus indicator; box starts at row 1.
-        assert_eq!(cell_char(&buf, 0, 1), '┌');
+        // Rounded-corner glyph ╭ is the top-left corner.
+        assert_eq!(cell_char(&buf, 0, 1), '╭');
     }
 
     #[test]
@@ -336,8 +339,8 @@ mod tests {
         let ind_col = bx + bw / 2;
         assert_eq!(cell_char(&buf, ind_col, 0), '▼');
 
-        // The box border is still drawn (status colour, not overridden).
-        assert_eq!(cell_char(&buf, bx, by), '┌');
+        // The box border is still drawn (rounded, status colour, not overridden).
+        assert_eq!(cell_char(&buf, bx, by), '╭');
     }
 
     /// A label carrying a newline renders as two centred rows inside the box —

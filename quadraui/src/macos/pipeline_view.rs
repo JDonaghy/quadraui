@@ -4,7 +4,6 @@
 //! connectors using Core Graphics. Each box shows a status icon, label,
 //! and optional action button.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
@@ -19,6 +18,8 @@ use crate::types::Color;
 const MAC_ARROW_WIDTH_PX: f32 = 32.0;
 /// Height reserved for the action button in pixels.
 const MAC_ACTION_HEIGHT_PX: f32 = 22.0;
+/// Corner radius for stage boxes (matches the GTK `CORNER_RADIUS`).
+const CORNER_RADIUS: f64 = 4.0;
 /// Border width for stage box outline.
 const BORDER_WIDTH: f64 = 1.0;
 /// Height reserved above stage boxes for the focus indicator (pixels).
@@ -90,8 +91,10 @@ pub unsafe fn draw_pipeline_view(
             continue;
         }
 
-        // ── Box fill ─────────────────────────────────────────────────────
-        fill_rect(ctx, bx, by, bw, bh, theme.surface_bg);
+        // ── Box fill (rounded corners) ────────────────────────────────────
+        set_fill_color(ctx, theme.surface_bg);
+        add_rounded_rect_path(ctx, bx, by, bw, bh, CORNER_RADIUS);
+        CGContextFillPath(ctx);
 
         // ── Box border (per-status colour; focus uses an above-box indicator) ──
         let border_color = match stage.status {
@@ -100,7 +103,10 @@ pub unsafe fn draw_pipeline_view(
             StageStatus::Failed => theme.error_fg,
             StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => theme.muted_fg,
         };
-        stroke_rect(ctx, bx, by, bw, bh, border_color, BORDER_WIDTH);
+        set_stroke_color(ctx, border_color);
+        CGContextSetLineWidth(ctx, BORDER_WIDTH);
+        add_rounded_rect_path(ctx, bx, by, bw, bh, CORNER_RADIUS);
+        CGContextStrokePath(ctx);
 
         // ── Focus indicator (small ▼ triangle above the box) ─────────────
         if is_focused {
@@ -216,6 +222,32 @@ fn status_icon_color(
     }
 }
 
+/// Build a rounded-rectangle CG path and make it the current path on `ctx`.
+///
+/// Uses `CGContextAddArcToPoint` to produce four rounded corners with radius
+/// `r`. Equivalent to the GTK `rounded_rect_path` helper but expressed in
+/// Core Graphics primitives.
+unsafe fn add_rounded_rect_path(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    // Clamp radius so it never exceeds half the shortest side.
+    let r = r.min(w / 2.0).min(h / 2.0);
+    CGContextBeginPath(ctx);
+    // Start at top-left corner (after the radius offset).
+    CGContextMoveToPoint(ctx, x + r, y);
+    // Top edge → top-right corner.
+    CGContextAddLineToPoint(ctx, x + w - r, y);
+    CGContextAddArcToPoint(ctx, x + w, y, x + w, y + r, r);
+    // Right edge → bottom-right corner.
+    CGContextAddLineToPoint(ctx, x + w, y + h - r);
+    CGContextAddArcToPoint(ctx, x + w, y + h, x + w - r, y + h, r);
+    // Bottom edge → bottom-left corner.
+    CGContextAddLineToPoint(ctx, x + r, y + h);
+    CGContextAddArcToPoint(ctx, x, y + h, x, y + h - r, r);
+    // Left edge → top-left corner.
+    CGContextAddLineToPoint(ctx, x, y + r);
+    CGContextAddArcToPoint(ctx, x, y, x + r, y, r);
+    CGContextClosePath(ctx);
+}
+
 fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
     (
         c.r as f64 / 255.0,
@@ -223,19 +255,6 @@ fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
         c.b as f64 / 255.0,
         c.a as f64 / 255.0,
     )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    set_fill_color(ctx, c);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-unsafe fn stroke_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color, lw: f64) {
-    set_stroke_color(ctx, c);
-    CGContextSetLineWidth(ctx, lw);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextStrokeRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
 }
 
 unsafe fn set_fill_color(ctx: CGContextRef, c: Color) {
@@ -274,8 +293,7 @@ extern "C" {
         alpha: core_graphics::base::CGFloat,
     );
     fn CGContextSetLineWidth(c: CGContextRef, width: core_graphics::base::CGFloat);
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
+    fn CGContextBeginPath(c: CGContextRef);
     fn CGContextMoveToPoint(
         c: CGContextRef,
         x: core_graphics::base::CGFloat,
@@ -285,6 +303,14 @@ extern "C" {
         c: CGContextRef,
         x: core_graphics::base::CGFloat,
         y: core_graphics::base::CGFloat,
+    );
+    fn CGContextAddArcToPoint(
+        c: CGContextRef,
+        x1: core_graphics::base::CGFloat,
+        y1: core_graphics::base::CGFloat,
+        x2: core_graphics::base::CGFloat,
+        y2: core_graphics::base::CGFloat,
+        radius: core_graphics::base::CGFloat,
     );
     fn CGContextStrokePath(c: CGContextRef);
     fn CGContextClosePath(c: CGContextRef);
