@@ -899,14 +899,24 @@ mod tests {
         let area = Rect::new(0, 0, 10, 10);
         let mut buf_top = Buffer::empty(area);
         let mut buf_bot = Buffer::empty(area);
-        draw_list(&mut buf_top, area, &make_vlist(30, 0), &Theme::default(), false);
-        draw_list(&mut buf_bot, area, &make_vlist(30, 20), &Theme::default(), false);
+        draw_list(
+            &mut buf_top,
+            area,
+            &make_vlist(30, 0),
+            &Theme::default(),
+            false,
+        );
+        draw_list(
+            &mut buf_bot,
+            area,
+            &make_vlist(30, 20),
+            &Theme::default(),
+            false,
+        );
 
         let first_thumb = |buf: &Buffer| (0..10u16).find(|&y| cell_char(buf, 9, y) == '█');
-        let thumb_top =
-            first_thumb(&buf_top).expect("thumb '█' must paint at scroll_offset=0");
-        let thumb_bot =
-            first_thumb(&buf_bot).expect("thumb '█' must paint at scroll_offset=20");
+        let thumb_top = first_thumb(&buf_top).expect("thumb '█' must paint at scroll_offset=0");
+        let thumb_bot = first_thumb(&buf_bot).expect("thumb '█' must paint at scroll_offset=20");
         assert!(
             thumb_bot > thumb_top,
             "v-scrollbar thumb must move DOWN as scroll_offset grows \
@@ -914,5 +924,4 @@ mod tests {
              'thumb hardcoded at gutter top' failure class (Rule 6)",
         );
     }
-
 }

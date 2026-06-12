@@ -156,7 +156,9 @@ impl FrameDemo {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " ←/→ or h/l = h-scroll | j/k = move (v-scrolls) | v = toggle v-bar | q=quit ".into(),
+                text:
+                    " ←/→ or h/l = h-scroll | j/k = move (v-scrolls) | v = toggle v-bar | q=quit "
+                        .into(),
                 fg,
                 bg,
                 bold: false,
