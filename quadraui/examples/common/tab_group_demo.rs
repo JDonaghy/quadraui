@@ -24,6 +24,11 @@ use quadraui::{
     StatusBarSegment, UiEvent, WidgetId,
 };
 
+/// Minimum cursor movement (backend units: pixels for GTK, character cells for
+/// TUI) required to commit a primed tab drag.  Below this distance a
+/// mouse-down/up on a tab body is treated as a plain click (tab activation).
+const TAB_DRAG_THRESHOLD: f32 = 2.0;
+
 // ── Content widgets ───────────────────────────────────────────────────────────
 
 /// A content widget that fills its area with a labelled status bar.
@@ -69,8 +74,13 @@ pub struct TabGroupDemo {
     last_bounds: RefCell<Rect>,
     /// True while a divider drag is in progress.
     divider_dragging: RefCell<bool>,
-    /// True while a tab drag is in progress.
+    /// True while a tab drag is in progress (threshold crossed).
     tab_dragging: RefCell<bool>,
+    /// Mouse-down position when a tab drag has been primed but the cursor
+    /// hasn't yet crossed [`TAB_DRAG_THRESHOLD`].  `None` when there is no
+    /// pending drag.  On `MouseUp` without crossing the threshold this is
+    /// treated as a plain click.
+    tab_drag_pending_pos: RefCell<Option<(f32, f32)>>,
     /// Counter used to make new-tab IDs unique.
     next_tab_id: RefCell<usize>,
 }
@@ -116,6 +126,7 @@ impl TabGroupDemo {
             last_bounds: RefCell::new(Rect::new(0.0, 0.0, 100.0, 20.0)),
             divider_dragging: RefCell::new(false),
             tab_dragging: RefCell::new(false),
+            tab_drag_pending_pos: RefCell::new(None),
             next_tab_id: RefCell::new(10),
         }
     }
@@ -183,9 +194,10 @@ impl AppLogic for TabGroupDemo {
                 key: Key::Named(NamedKey::Escape),
                 ..
             } => {
-                // Cancel any active tab drag on Escape.
+                // Cancel any active or pending tab drag on Escape / q.
                 self.group.borrow_mut().cancel_tab_drag();
                 *self.tab_dragging.borrow_mut() = false;
+                *self.tab_drag_pending_pos.borrow_mut() = None;
                 Reaction::Exit
             }
 
@@ -222,17 +234,19 @@ impl AppLogic for TabGroupDemo {
                 Reaction::Redraw
             }
 
-            // ── Mouse down: try tab drag first, then divider, then click ──
+            // ── Mouse down: prime tab drag, then divider, then click ──────
             UiEvent::MouseDown { position, .. } => {
-                // 1. Try to start a tab drag.
+                // 1. Prime a tab drag — but do NOT commit it yet.  We wait for
+                //    the cursor to cross TAB_DRAG_THRESHOLD before starting the
+                //    visual drag so that a plain click still activates the tab.
                 if self
                     .group
                     .borrow_mut()
                     .handle_tab_drag_start(position.x, position.y)
                 {
-                    *self.tab_dragging.borrow_mut() = true;
-                    *self.last_event.borrow_mut() = "tab drag start".into();
-                    return Reaction::Redraw;
+                    *self.tab_drag_pending_pos.borrow_mut() = Some((position.x, position.y));
+                    // Don't redraw — no visible change yet.
+                    return Reaction::Continue;
                 }
 
                 // 2. Try to start a divider drag.
@@ -261,6 +275,23 @@ impl AppLogic for TabGroupDemo {
                         .borrow_mut()
                         .handle_tab_drag_move(position.x, position.y);
                     return Reaction::Redraw;
+                }
+                // Promote a pending tab drag to an active drag once the cursor
+                // has moved far enough from the press point.
+                if let Some((sx, sy)) = *self.tab_drag_pending_pos.borrow() {
+                    let dx = (position.x - sx).abs();
+                    let dy = (position.y - sy).abs();
+                    if dx > TAB_DRAG_THRESHOLD || dy > TAB_DRAG_THRESHOLD {
+                        *self.tab_drag_pending_pos.borrow_mut() = None;
+                        *self.tab_dragging.borrow_mut() = true;
+                        *self.last_event.borrow_mut() = "tab drag start".into();
+                        self.group
+                            .borrow_mut()
+                            .handle_tab_drag_move(position.x, position.y);
+                        return Reaction::Redraw;
+                    }
+                    // Still within threshold — don't update the display.
+                    return Reaction::Continue;
                 }
                 if *self.divider_dragging.borrow() {
                     let bounds = *self.last_bounds.borrow();
@@ -295,6 +326,17 @@ impl AppLogic for TabGroupDemo {
                         for ev in evs {
                             self.handle_tab_group_event(ev);
                         }
+                    }
+                    return Reaction::Redraw;
+                }
+                // A tab was pressed but the cursor never crossed the threshold
+                // → cancel the primed drag and treat the gesture as a click.
+                if self.tab_drag_pending_pos.borrow().is_some() {
+                    *self.tab_drag_pending_pos.borrow_mut() = None;
+                    self.group.borrow_mut().cancel_tab_drag();
+                    if let Some(ev) = self.group.borrow_mut().handle_click(position.x, position.y) {
+                        *self.last_event.borrow_mut() = format_event(&ev);
+                        self.handle_tab_group_event(ev);
                     }
                     return Reaction::Redraw;
                 }
