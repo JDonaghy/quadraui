@@ -22,6 +22,8 @@ mod panel_app;
 mod pipeline_app;
 #[path = "../examples/common/selection_app.rs"]
 mod selection_app;
+#[path = "../examples/common/tab_group_demo.rs"]
+mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 
@@ -30,6 +32,7 @@ use mini_app::MiniApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
 use selection_app::SelectionDemo;
+use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
@@ -371,4 +374,47 @@ fn shell_runner_path_ctrl_a_selects_all() {
         screen.contains("quick") || screen.contains("brown"),
         "copied preview should contain text from the first content line:\n{screen}"
     );
+}
+
+// ─── TabGroupDemo: tab-click activation + keyboard exit ─────────────────────
+
+/// Regression test for #358.
+///
+/// Before the fix, `MouseDown` on a tab body primed a drag and returned early.
+/// `MouseUp` at the same position (no cursor movement) reached
+/// `handle_tab_drop`, which returned an empty `Vec` → status "tab drag
+/// cancelled" — no activation.
+///
+/// After the fix, a down/up pair with no movement past `TAB_DRAG_THRESHOLD`
+/// cancels the primed drag and falls through to `handle_click`, restoring
+/// tab-activation behaviour.
+#[test]
+fn tab_group_click_inactive_tab_activates_it() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+
+    // Initial state: "main.rs" (p0:t0) is active; "lib.rs" (p0:t1) is
+    // the inactive second tab and must be visible in the tab bar.
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("lib.rs")
+        .unwrap_or_else(|| panic!("lib.rs tab must be visible on initial render:\n{before}"));
+
+    // Plain click: mouse-down then mouse-up at the exact same position —
+    // no MouseMoved in between, so the drag stays in the pending state and
+    // the threshold is never crossed.
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("activated tab"),
+        "clicking lib.rs should activate it (status bar must say 'activated tab …'):\n{after}"
+    );
+}
+
+#[test]
+fn tab_group_q_exits() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the tab group demo");
 }
