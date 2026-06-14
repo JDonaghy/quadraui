@@ -1292,6 +1292,63 @@ This session resolved all hit_test prerequisites for the three runtime epics (#2
 
 Same as previous session — no new issues filed.
 
+## Session 2026-06-14 — Terminal scrollback selection + copy (#366)
+
+**Agent:** Claude Sonnet 4.6
+
+### Issues closed (1)
+
+| # | Title | Path | Key deliverable |
+|---|---|---|---|
+| 366 | Embedded terminal: text selection + copy broken while scrolled into scrollback | B (PR pending) | Removed `scroll_offset == 0` gate from `selected_text()` and `build_rows()`; new `cell_content_at_display_row()` private helper implements the canonical history-vs-live blend used by both paths; 5 new `#[cfg(unix)]` unit tests |
+
+### Changes delivered
+
+**`terminal_engine.rs` — three touch points:**
+
+- **`selected_text()`** — removed early `return None` when `scroll_offset != 0`; cell lookup now calls `cell_content_at_display_row()` for every display row, reading from `self.history` when `display_r < scroll_offset` and from the live vt100 screen otherwise.
+- **`build_rows()`** — removed the `scroll_offset == 0` gate on `sel_bounds`; extracted `is_selected(display_r, cu)` closure using display-row coordinates (no offset math needed); applied to both the history branch (previously hardcoded `false`) and the live branch (previously using `live_r` instead of `display_r`).
+- **`cell_content_at_display_row()`** — new private helper documenting the canonical blend. Both `selected_text` and `build_rows` now share the same mapping so they cannot drift.
+
+**Five new tests** (all `#[cfg(unix)]`, direct history injection — no PTY output timing):
+- `selected_text_from_pure_history` — single-row selection fully inside scrollback
+- `selected_text_multi_row_in_history` — multi-row selection across history rows
+- `build_rows_highlights_selection_in_history` — `selected` cell flag set correctly in history rows
+- `selected_text_live_view_no_regression` — live view (`scroll_offset == 0`) still works
+- `selected_text_spans_history_live_boundary` — selection crossing the history/live boundary
+
+### Test count progression
+
+| Checkpoint | Tests (`--features tui,terminal`) |
+|---|---|
+| Session start | 1283 |
+| Session end | 1288 (+5 new) |
+
+### Smoke testing notes
+
+**`tui_terminal` example does NOT wire text selection.** `cargo run --example tui_terminal --features tui,terminal` gives a live shell with scrollback, but mouse drag-to-select is not implemented in the example's `AppLogic`. The example is useful for verifying scroll behaviour only.
+
+**Real smoke test requires coord-tui.** The selection path (`terminal_pixel_to_cell` → `terminal_host_sel_begin/update` → `selected_text()`) lives in coord-tui, which consumes quadraui via relative path (`../../quadraui/quadraui`). Rebuild coord-tui against this branch and test there:
+
+```sh
+# On the machine with coord-tui
+cd ~/src/coord-tui
+cargo build
+# Launch, open embedded terminal, run seq 1 100, scroll up, drag-select, copy
+```
+
+The four scenarios from the issue acceptance criteria all need to be verified in coord-tui:
+1. Selection highlight tracks cursor while scrolled into scrollback.
+2. `selected_text()` returns visually-selected text at any `scroll_offset`.
+3. No regression at `scroll_offset == 0`.
+4. Selection spanning the history/live boundary copies correctly.
+
+### Open queue for next session
+
+No new issues filed. coord-tui #484 (the downstream report that surfaced #366) should close once coord-tui is rebuilt and smoke-tested.
+
+---
+
 ## Session 2026-06-01 — TUI example-driver test harness (#300, #303) + follow-ups
 
 **Agent:** Claude Opus 4.8 (1M context)
