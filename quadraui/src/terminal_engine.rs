@@ -788,17 +788,16 @@ impl TerminalSession {
 
     // ── Selection helpers ─────────────────────────────────────────────────────
 
-    /// Extract selected text from the live vt100 screen.
+    /// Extract selected text, blending history and live screen correctly.
     ///
-    /// Returns `None` when there is no selection or when the user is
-    /// scrolled into history (selection is only tracked in the live
-    /// screen coordinate space).
+    /// Selection coordinates (`TerminalSelection`) are always in
+    /// **display-row** space (0-based from the visible top), which is the
+    /// same coordinate system `build_rows` uses.  This means the function
+    /// works at any `scroll_offset`, including inside scrollback history.
+    ///
+    /// Returns `None` when there is no active selection.
     pub fn selected_text(&self) -> Option<String> {
-        if self.scroll_offset != 0 {
-            return None;
-        }
         let sel = self.selection.as_ref()?;
-        let screen = self.parser.screen();
         let (r0, c0, r1, c1) = normalize_selection(sel);
         let mut lines: Vec<String> = Vec::new();
         for row in r0..=r1 {
@@ -810,18 +809,49 @@ impl TerminalSession {
                 self.cols.saturating_sub(1)
             };
             for col in col_start..=col_end {
-                if let Some(cell) = screen.cell(row, col) {
-                    let s = cell.contents();
-                    if s.is_empty() {
-                        line.push(' ');
-                    } else {
-                        line.push_str(&s);
-                    }
-                }
+                line.push_str(&self.cell_content_at_display_row(row as usize, col));
             }
             lines.push(line.trim_end().to_string());
         }
         Some(lines.join("\n"))
+    }
+
+    /// Return the text content of the cell at the given **display row** and
+    /// column, resolving from `self.history` when
+    /// `display_r < self.scroll_offset` or from the live vt100 screen
+    /// otherwise.
+    ///
+    /// Returns a single space for empty or out-of-range cells, matching the
+    /// convention used by [`selected_text`](Self::selected_text).  This is
+    /// the canonical blending helper — both `selected_text` and `build_rows`
+    /// use the same mapping so the two can never drift apart.
+    fn cell_content_at_display_row(&self, display_r: usize, col: u16) -> String {
+        let scroll_offset = self.scroll_offset;
+        let hist_len = self.history.len();
+
+        if display_r < scroll_offset {
+            let hist_idx_signed = hist_len as isize - scroll_offset as isize + display_r as isize;
+            if hist_idx_signed >= 0 {
+                if let Some(hist_row) = self.history.get(hist_idx_signed as usize) {
+                    let ch = hist_row.get(col as usize).copied().unwrap_or_default().ch;
+                    return ch.to_string();
+                }
+            }
+            " ".to_string()
+        } else {
+            let live_r = (display_r - scroll_offset) as u16;
+            let screen = self.parser.screen();
+            if let Some(cell) = screen.cell(live_r, col) {
+                let s = cell.contents();
+                if s.is_empty() {
+                    " ".to_string()
+                } else {
+                    s
+                }
+            } else {
+                " ".to_string()
+            }
+        }
     }
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -951,11 +981,28 @@ impl TerminalSession {
         let scroll_offset = self.scroll_offset;
         let hist_len = self.history.len();
 
-        // Selection is only available in live view (scroll_offset == 0).
-        let sel_bounds = if scroll_offset == 0 {
-            self.selection.as_ref().map(normalize_selection)
-        } else {
-            None
+        // Selection coordinates are always in display-row space (0 = visible
+        // top), matching the coordinate system used by coord-tui's
+        // `terminal_pixel_to_cell`.  The gate on `scroll_offset == 0` that
+        // previously existed here was overly conservative: the `display_r`
+        // comparison below is correct at any offset.
+        let sel_bounds = self.selection.as_ref().map(normalize_selection);
+
+        // Closure: is the cell at (display_r, cu) inside the selection?
+        // Uses display-row coordinates throughout — no offset math needed.
+        let is_selected = |display_r: usize, cu: u16| -> bool {
+            sel_bounds.is_some_and(|(r0, c0, r1, c1)| {
+                let dr = display_r as u16;
+                if r0 == r1 {
+                    dr == r0 && cu >= c0 && cu <= c1
+                } else if dr == r0 {
+                    cu >= c0
+                } else if dr == r1 {
+                    cu <= c1
+                } else {
+                    dr > r0 && dr < r1
+                }
+            })
         };
 
         (0..rows_count)
@@ -982,7 +1029,7 @@ impl TerminalSession {
                                             hc.italic,
                                             hc.underline,
                                             false,
-                                            false,
+                                            is_selected(display_r, cu),
                                         )
                                     } else {
                                         (
@@ -993,7 +1040,7 @@ impl TerminalSession {
                                             false,
                                             false,
                                             false,
-                                            false,
+                                            is_selected(display_r, cu),
                                         )
                                     }
                                 } else {
@@ -1033,19 +1080,16 @@ impl TerminalSession {
                                     && live_r == cursor_row
                                     && cu == cursor_col;
 
-                                let selected = sel_bounds.is_some_and(|(r0, c0, r1, c1)| {
-                                    if r0 == r1 {
-                                        live_r == r0 && cu >= c0 && cu <= c1
-                                    } else if live_r == r0 {
-                                        cu >= c0
-                                    } else if live_r == r1 {
-                                        cu <= c1
-                                    } else {
-                                        live_r > r0 && live_r < r1
-                                    }
-                                });
-
-                                (ch, fg, bg, bold, italic, underline, is_cursor, selected)
+                                (
+                                    ch,
+                                    fg,
+                                    bg,
+                                    bold,
+                                    italic,
+                                    underline,
+                                    is_cursor,
+                                    is_selected(display_r, cu),
+                                )
                             };
 
                         TerminalCell {
@@ -1845,6 +1889,233 @@ mod tests {
             !text.ends_with('\n'),
             "screen_text() should not end with a newline; got: {text:?}"
         );
+        sess.send_str("exit\n");
+    }
+
+    // ── Selection-in-scrollback tests (pure unit — no PTY output needed) ─────
+    //
+    // These tests inject history rows directly into `TerminalSession::history`
+    // (accessible because `mod tests` is a child of the same module) and
+    // exercise `selected_text` / `build_rows` without waiting for shell output.
+    // A real PTY is still spawned so the struct is fully initialised, but no
+    // `poll()` calls are made, so PTY output cannot race with the injected
+    // history rows.
+
+    /// Build a `Vec<HistCell>` row that fills `cols` columns with `ch` in the
+    /// first `text_len` cells and spaces thereafter.
+    #[cfg(unix)]
+    fn make_hist_row_content(text: &str, cols: u16) -> Vec<HistCell> {
+        let chars: Vec<char> = text.chars().collect();
+        (0..cols as usize)
+            .map(|i| HistCell {
+                ch: chars.get(i).copied().unwrap_or(' '),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// `selected_text()` returns the correct history text when the view is
+    /// fully scrolled into the scrollback buffer (all display rows are history
+    /// rows, `scroll_offset == rows`).
+    ///
+    /// Before the fix this returned `None` regardless of the selection.
+    #[test]
+    #[cfg(unix)]
+    fn selected_text_from_pure_history() {
+        let cwd = std::env::temp_dir();
+        // 10 cols × 4 rows — small enough that scrolling is easy to reason about.
+        let mut sess = TerminalSession::spawn(10, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // Inject three known history rows (no poll() — avoids races with PTY).
+        sess.history
+            .push_back(make_hist_row_content("AAAA", sess.cols));
+        sess.history
+            .push_back(make_hist_row_content("BBBB", sess.cols));
+        sess.history
+            .push_back(make_hist_row_content("CCCC", sess.cols));
+
+        // Scroll so all 3 history rows are visible at the top; the 4th
+        // display row would be a live row we don't care about.
+        // scroll_offset = 3: display_r 0,1,2 → hist[0,1,2]; display_r 3 → live.
+        sess.set_scroll_offset(3);
+
+        // Select display row 1 (= history row "BBBB"), columns 0-3 inclusive.
+        sess.selection = Some(TerminalSelection {
+            start_row: 1,
+            start_col: 0,
+            end_row: 1,
+            end_col: 3,
+        });
+
+        let text = sess
+            .selected_text()
+            .expect("selected_text() must be Some when scrolled");
+        assert_eq!(
+            text, "BBBB",
+            "expected 'BBBB' from history row 1, got: {text:?}"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `selected_text()` returns the correct text for a multi-row selection
+    /// that spans multiple history rows.
+    #[test]
+    #[cfg(unix)]
+    fn selected_text_multi_row_in_history() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 5, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        sess.history
+            .push_back(make_hist_row_content("LINE0", sess.cols));
+        sess.history
+            .push_back(make_hist_row_content("LINE1", sess.cols));
+        sess.history
+            .push_back(make_hist_row_content("LINE2", sess.cols));
+
+        // Scroll_offset = 3: display rows 0,1,2 → history rows 0,1,2.
+        sess.set_scroll_offset(3);
+
+        // Select display rows 0–2, full width (cols 0 to 4 each).
+        sess.selection = Some(TerminalSelection {
+            start_row: 0,
+            start_col: 0,
+            end_row: 2,
+            end_col: 4,
+        });
+
+        let text = sess.selected_text().expect("selected_text() must be Some");
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(lines.len(), 3, "expected 3 lines, got: {lines:?}");
+        assert_eq!(lines[0], "LINE0", "row 0: got {:?}", lines[0]);
+        assert_eq!(lines[1], "LINE1", "row 1: got {:?}", lines[1]);
+        assert_eq!(lines[2], "LINE2", "row 2: got {:?}", lines[2]);
+
+        sess.send_str("exit\n");
+    }
+
+    /// `build_rows()` marks cells `selected = true` for history rows when a
+    /// selection covers them.
+    ///
+    /// Before the fix the `selected` flag was always `false` for history rows.
+    #[test]
+    #[cfg(unix)]
+    fn build_rows_highlights_selection_in_history() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(6, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // One history row, 6 columns: ['H','I','S','T',' ',' '].
+        sess.history
+            .push_back(make_hist_row_content("HIST", sess.cols));
+        // One more to ensure display_r=0 maps to the right row.
+        sess.history
+            .push_back(make_hist_row_content("XXXX", sess.cols));
+
+        // scroll_offset = 2: display_r 0 → history[0]="HIST", display_r 1 → history[1]="XXXX"
+        sess.set_scroll_offset(2);
+
+        // Select display_r = 0, cols 1-3 → "IST"
+        sess.selection = Some(TerminalSelection {
+            start_row: 0,
+            start_col: 1,
+            end_row: 0,
+            end_col: 3,
+        });
+
+        let rows = sess.build_rows(false);
+
+        // display row 0: cols 1,2,3 must be selected; col 0 and 4+ must not.
+        let row0 = &rows[0];
+        assert!(!row0[0].selected, "col 0 should NOT be selected");
+        assert!(row0[1].selected, "col 1 should be selected");
+        assert!(row0[2].selected, "col 2 should be selected");
+        assert!(row0[3].selected, "col 3 should be selected");
+        assert!(!row0[4].selected, "col 4 should NOT be selected");
+
+        // display row 1 (different history row) should have no selection.
+        let row1 = &rows[1];
+        assert!(
+            row1.iter().all(|c| !c.selected),
+            "row 1 should have no selection"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `selected_text()` at `scroll_offset == 0` (live view) continues to
+    /// work correctly — regression guard.
+    #[test]
+    #[cfg(unix)]
+    fn selected_text_live_view_no_regression() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // At live view with no selection, must return None.
+        assert!(sess.selection.is_none());
+        assert!(sess.selected_text().is_none());
+
+        // Set a selection and confirm we get Some (content is live-screen
+        // dependent so we only check it's non-None and correctly typed).
+        sess.selection = Some(TerminalSelection {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 4,
+        });
+        assert!(
+            sess.selected_text().is_some(),
+            "selected_text() must be Some when selection is set at live view"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// A selection spanning the history/live boundary: the history part is
+    /// extracted from `self.history` and the live part from the vt100 screen.
+    /// The result must be `Some(_)` and contain the history text on the first line.
+    #[test]
+    #[cfg(unix)]
+    fn selected_text_spans_history_live_boundary() {
+        let cwd = std::env::temp_dir();
+        // 10 cols × 5 rows.
+        let mut sess = TerminalSession::spawn(10, 5, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // Inject two history rows.
+        sess.history
+            .push_back(make_hist_row_content("HIST0", sess.cols));
+        sess.history
+            .push_back(make_hist_row_content("HIST1", sess.cols));
+
+        // scroll_offset = 2: display_r 0 → HIST0, display_r 1 → HIST1,
+        //                    display_r 2+ → live rows.
+        sess.set_scroll_offset(2);
+
+        // Selection: display row 1 (last history row) through display row 2
+        // (first live row), columns 0-4.
+        sess.selection = Some(TerminalSelection {
+            start_row: 1,
+            start_col: 0,
+            end_row: 2,
+            end_col: 4,
+        });
+
+        let text = sess
+            .selected_text()
+            .expect("selected_text() must be Some at boundary");
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 2 lines (history + live); got: {lines:?}"
+        );
+        assert_eq!(
+            lines[0], "HIST1",
+            "first line must come from history; got: {:?}",
+            lines[0]
+        );
+        // lines[1] is from the live screen (shell prompt) — content is
+        // non-deterministic, so we just verify it was included.
+
         sess.send_str("exit\n");
     }
 }
