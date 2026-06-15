@@ -374,6 +374,7 @@ impl AppShell {
             bottom_items,
             active_accent: None,
             selection_bg: None,
+            is_keyboard_focused: false,
         }
     }
 

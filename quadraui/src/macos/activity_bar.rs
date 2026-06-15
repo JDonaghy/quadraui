@@ -187,6 +187,7 @@ mod tests {
             }],
             active_accent: Some(Color::rgb(80, 140, 255)),
             selection_bg: None,
+            is_keyboard_focused: false,
         }
     }
 

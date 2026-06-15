@@ -151,6 +151,13 @@ pub struct GtkBackend {
     /// `clear_selection_display` so Ctrl-A still targets the right
     /// region after Ctrl-C or a plain click.
     last_text_region_id: Option<WidgetId>,
+    /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
+    /// during the most recent render pass. Cleared by `begin_frame` and
+    /// re-set by `draw_activity_bar`. The GTK runner reads this in the
+    /// window-level key handler to convert `KeyPressed` events into
+    /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })` so
+    /// consumers receive typed key events without fighting GTK widget focus.
+    focused_activity_bar: Option<WidgetId>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -189,6 +196,7 @@ impl GtkBackend {
             text_regions: Vec::new(),
             active_selection: None,
             last_text_region_id: None,
+            focused_activity_bar: None,
         }
     }
 
@@ -266,6 +274,15 @@ impl GtkBackend {
     /// to paint a full-DA background before each frame.
     pub fn current_theme(&self) -> &crate::Theme {
         &self.current_theme
+    }
+
+    /// Return the `WidgetId` of the `ActivityBar` that declared
+    /// `is_keyboard_focused = true` during the most recent render pass,
+    /// or `None` if no bar is focused. Called by the GTK runner's key
+    /// handler to decide whether to redirect a `KeyPressed` event into
+    /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`.
+    pub(crate) fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar.as_ref()
     }
 
     /// Update the cached Pango line height (in DIPs). Call once per
@@ -771,6 +788,10 @@ impl Backend for GtkBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors TuiBackend::begin_frame.
         self.text_regions.clear();
+        // Clear the focused activity bar — re-set by draw_activity_bar
+        // during the render pass if still focused. Same lifecycle as
+        // text_regions.
+        self.focused_activity_bar = None;
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -1110,6 +1131,11 @@ impl Backend for GtkBackend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<crate::ActivityBarRowHit> {
+        // Track keyboard focus so the GTK runner's key handler can
+        // redirect KeyPressed events to this bar.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_activity_bar called outside enter_frame_scope");

@@ -33,6 +33,7 @@ pub mod terminal_app;
 #[cfg(feature = "terminal")]
 pub use terminal_app::TerminalApp;
 
+pub mod activity_nav;
 pub mod ai_transcript;
 pub mod appshell_demo;
 pub mod bottom_panel_demo;
@@ -67,6 +68,7 @@ pub mod text_input_demo;
 pub mod toast_app;
 pub mod toolbar_app;
 
+pub use activity_nav::ActivityNavApp;
 pub use ai_transcript::AiTranscript;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
