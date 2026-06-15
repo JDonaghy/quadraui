@@ -33,6 +33,10 @@ pub fn draw_activity_bar(
     let active_fg = qc(theme.foreground);
     let inactive_fg = qc(theme.inactive_fg);
     let hover_bg = qc(theme.tab_bar_bg.lighten(0.10));
+    // Explicit keyboard-selection background when the bar sets `selection_bg`.
+    // `None` → fall back to `Modifier::REVERSED` after the icon paint (terminal-
+    // agnostic inversion that works in every colour scheme).
+    let sel_explicit_bg: Option<ratatui::style::Color> = bar.selection_bg.map(qc);
 
     // Fill background.
     for row in area.y..area.y + area.height {
@@ -64,15 +68,28 @@ pub fn draw_activity_bar(
         };
 
         let is_hovered = hovered_idx == Some(flat_idx);
-        let row_bg = if is_hovered { hover_bg } else { bg };
-        let fg = if item.is_active || is_hovered {
+        // Effective row background priority: explicit keyboard-selection >
+        // hover > default. When keyboard-selected without an explicit
+        // `selection_bg`, the row uses the default bg and REVERSED is applied
+        // after the icon paint (so all cells invert, giving a clear cursor
+        // in any terminal colour scheme).
+        let row_bg = if item.is_keyboard_selected {
+            sel_explicit_bg.unwrap_or(if is_hovered { hover_bg } else { bg })
+        } else if is_hovered {
+            hover_bg
+        } else {
+            bg
+        };
+        let fg = if item.is_active || is_hovered || item.is_keyboard_selected {
             active_fg
         } else {
             inactive_fg
         };
 
-        // Row background (hover tint).
-        if is_hovered {
+        // Row background fill (hover tint or explicit keyboard-selection bg).
+        // Both use the same `row_bg` computed above, but we only fill when
+        // there is actually a tint to apply.
+        if is_hovered || (item.is_keyboard_selected && sel_explicit_bg.is_some()) {
             for col in area.x..sep_col {
                 set_cell(buf, col, y, ' ', fg, row_bg);
             }
@@ -96,8 +113,9 @@ pub fn draw_activity_bar(
             set_cell(buf, content_start, y, icon_ch, fg, row_bg);
         }
 
-        // Keyboard selection highlight.
-        if item.is_keyboard_selected {
+        // Keyboard selection highlight — REVERSED fallback when no explicit
+        // `selection_bg`. Applied last so it overrides any earlier colour.
+        if item.is_keyboard_selected && sel_explicit_bg.is_none() {
             for col in area.x..sep_col {
                 let cell = &mut buf[(col, y)];
                 cell.modifier |= Modifier::REVERSED;

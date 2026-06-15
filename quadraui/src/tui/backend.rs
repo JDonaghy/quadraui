@@ -555,11 +555,6 @@ impl TuiBackend {
                 // `UiEvent::ActivityBar(id, KeyPressed { … })` instead of
                 // `UiEvent::KeyPressed { … }`. This runs before the
                 // accelerator pass so the bar can intercept any key.
-                // When an ActivityBar has `is_keyboard_focused`, redirect
-                // raw `KeyPressed` events to it so the app receives
-                // `UiEvent::ActivityBar(id, KeyPressed { … })` instead of
-                // `UiEvent::KeyPressed { … }`. This runs before the
-                // accelerator pass so the bar can intercept any key.
                 UiEvent::KeyPressed { key, modifiers, .. }
                     if self.focused_activity_bar.is_some() =>
                 {
