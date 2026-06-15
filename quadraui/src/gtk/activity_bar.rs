@@ -115,21 +115,26 @@ pub fn draw_activity_bar(
 
         let is_hovered = hovered_idx == Some(flat_idx);
 
-        // Keyboard-selection highlight: fill the row with a visible tint
-        // so the user can see which item the cursor is on. Drawn before
-        // hover so that hover-on-selected still shows the selection.
-        if item.is_keyboard_selected {
-            let sel_bg = {
-                let c = theme.tab_bar_bg.lighten(0.20);
-                (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0)
-            };
-            cr.set_source_rgb(sel_bg.0, sel_bg.1, sel_bg.2);
+        // Hover tint (lower priority: painted first so selection can win).
+        if is_hovered {
+            cr.set_source_rgb(hover_bg.0, hover_bg.1, hover_bg.2);
             cr.rectangle(0.0, y, width, row_h);
             cr.fill().ok();
         }
 
-        if is_hovered {
-            cr.set_source_rgb(hover_bg.0, hover_bg.1, hover_bg.2);
+        // Keyboard-selection highlight: painted *after* hover so the brighter
+        // selection tint (lighten 0.20, or `bar.selection_bg`) always wins over
+        // the dimmer hover tint (lighten 0.10) when the cursor sits on a hovered
+        // row.
+        if item.is_keyboard_selected {
+            let sel_bg = bar
+                .selection_bg
+                .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0))
+                .unwrap_or_else(|| {
+                    let c = theme.tab_bar_bg.lighten(0.20);
+                    (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0)
+                });
+            cr.set_source_rgb(sel_bg.0, sel_bg.1, sel_bg.2);
             cr.rectangle(0.0, y, width, row_h);
             cr.fill().ok();
         }

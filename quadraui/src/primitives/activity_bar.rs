@@ -84,9 +84,12 @@ pub struct ActivityItem {
     pub tooltip: String,
     #[serde(default)]
     pub is_active: bool,
-    /// Keyboard-focused selection highlight (used by TUI when the activity
-    /// bar has `toolbar_focused`). GTK rarely sets this — native buttons
-    /// manage their own focus rings.
+    /// Keyboard-focused selection highlight. Both the TUI and GTK rasterizers
+    /// honour this flag: TUI applies `Modifier::REVERSED` (or paints
+    /// `ActivityBar::selection_bg` when set); GTK fills the row with a
+    /// brightened background tint (or `ActivityBar::selection_bg` when set).
+    /// Set this on the item whose index matches the app's keyboard cursor while
+    /// `ActivityBar::is_keyboard_focused` is `true`.
     #[serde(default)]
     pub is_keyboard_selected: bool,
 }
@@ -280,7 +283,11 @@ pub enum ActivityBarEvent {
 ///
 /// Both the TUI and GTK backends use this helper so the emitted key strings
 /// are identical regardless of which backend is active.
-pub fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
+///
+/// This is `pub(crate)` because external consumers receive the already-normalised
+/// string from [`ActivityBarEvent::KeyPressed::key`] — they have no reason to call
+/// the conversion helper directly.
+pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     use crate::event::{Key, NamedKey};
     match key {
         Key::Char(c) => c.to_string(),
