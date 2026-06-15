@@ -50,6 +50,23 @@ pub struct ActivityBar {
     /// `None` = backends fall back to their own default.
     #[serde(default)]
     pub selection_bg: Option<Color>,
+    /// When `true` the bar is accepting keyboard input. Both TUI and GTK
+    /// backends intercept key events and emit
+    /// [`ActivityBarEvent::KeyPressed`] (wrapped in
+    /// [`crate::UiEvent::ActivityBar`]) rather than forwarding them as raw
+    /// [`crate::UiEvent::KeyPressed`] events.
+    ///
+    /// **GTK note**: the runner already attaches its `EventControllerKey` to
+    /// the window (not a sibling `DrawingArea`), so setting this flag does
+    /// *not* call `grab_focus()` on any widget and does not interfere with
+    /// other key controllers.
+    ///
+    /// Navigation logic (`j`/`k` move cursor, `l`/`Enter` activate, `Esc`/`h`
+    /// dismiss focus) stays in the consumer. The bar delivers every key as
+    /// [`ActivityBarEvent::KeyPressed`] so the app can map keys to its own
+    /// engine calls (`activity_bar_move_up`, `focus_out`, etc.).
+    #[serde(default)]
+    pub is_keyboard_focused: bool,
 }
 
 /// One icon entry in an `ActivityBar`.
@@ -253,4 +270,56 @@ pub enum ActivityBarEvent {
     /// A key was pressed with the activity bar focused and the primitive
     /// didn't consume it.
     KeyPressed { key: String, modifiers: Modifiers },
+}
+
+/// Convert a [`crate::Key`] to the string form carried in
+/// [`ActivityBarEvent::KeyPressed`].
+///
+/// - Printable characters map to their single-character string (`"j"`, `"k"`, …).
+/// - Named keys use TitleCase names (`"Escape"`, `"Enter"`, `"Up"`, …).
+///
+/// Both the TUI and GTK backends use this helper so the emitted key strings
+/// are identical regardless of which backend is active.
+pub fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
+    use crate::event::{Key, NamedKey};
+    match key {
+        Key::Char(c) => c.to_string(),
+        Key::Named(named) => {
+            let s = match named {
+                NamedKey::Escape => "Escape",
+                NamedKey::Tab => "Tab",
+                NamedKey::BackTab => "BackTab",
+                NamedKey::Enter => "Enter",
+                NamedKey::Backspace => "Backspace",
+                NamedKey::Delete => "Delete",
+                NamedKey::Insert => "Insert",
+                NamedKey::Home => "Home",
+                NamedKey::End => "End",
+                NamedKey::PageUp => "PageUp",
+                NamedKey::PageDown => "PageDown",
+                NamedKey::Up => "Up",
+                NamedKey::Down => "Down",
+                NamedKey::Left => "Left",
+                NamedKey::Right => "Right",
+                NamedKey::F(1) => "F1",
+                NamedKey::F(2) => "F2",
+                NamedKey::F(3) => "F3",
+                NamedKey::F(4) => "F4",
+                NamedKey::F(5) => "F5",
+                NamedKey::F(6) => "F6",
+                NamedKey::F(7) => "F7",
+                NamedKey::F(8) => "F8",
+                NamedKey::F(9) => "F9",
+                NamedKey::F(10) => "F10",
+                NamedKey::F(11) => "F11",
+                NamedKey::F(12) => "F12",
+                NamedKey::F(_) => "F?",
+                NamedKey::CapsLock => "CapsLock",
+                NamedKey::NumLock => "NumLock",
+                NamedKey::ScrollLock => "ScrollLock",
+                NamedKey::Menu => "Menu",
+            };
+            s.to_string()
+        }
+    }
 }

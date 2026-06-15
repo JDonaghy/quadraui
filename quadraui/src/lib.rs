@@ -1011,6 +1011,7 @@ mod tests {
             }],
             active_accent: Some(Color::rgb(120, 180, 255)),
             selection_bg: Some(Color::rgb(80, 80, 80)),
+            is_keyboard_focused: false,
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: ActivityBar = serde_json::from_str(&json).unwrap();
@@ -3248,6 +3249,7 @@ mod tests {
             bottom_items: vec![],
             active_accent: None,
             selection_bg: None,
+            is_keyboard_focused: false,
         };
         let layout = bar.layout(3.0, 20.0, 1.0);
         assert_eq!(layout.visible_items.len(), 0);
@@ -3265,6 +3267,7 @@ mod tests {
             bottom_items: vec![],
             active_accent: None,
             selection_bg: None,
+            is_keyboard_focused: false,
         };
         let layout = bar.layout(3.0, 10.0, 1.0);
         assert_eq!(layout.visible_items.len(), 2);
@@ -3285,6 +3288,7 @@ mod tests {
             bottom_items: vec![make_activity_item("activity:settings", 'G')],
             active_accent: None,
             selection_bg: None,
+            is_keyboard_focused: false,
         };
         // Viewport 10, items 1 each. Top at y=0, bottom at y=9.
         let layout = bar.layout(3.0, 10.0, 1.0);
@@ -3326,6 +3330,7 @@ mod tests {
                 .collect(),
             active_accent: None,
             selection_bg: None,
+            is_keyboard_focused: false,
         };
         let layout = bar.layout(3.0, 6.0, 1.0);
         let top_count = layout
@@ -3356,6 +3361,7 @@ mod tests {
             bottom_items: vec![make_activity_item("activity:settings", 'G')],
             active_accent: None,
             selection_bg: None,
+            is_keyboard_focused: false,
         };
         let layout = bar.layout(48.0, 200.0, 48.0);
         // Top items at y = 0, 48, 96. Settings at y = 200 - 48 = 152.

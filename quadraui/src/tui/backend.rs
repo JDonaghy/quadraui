@@ -135,6 +135,13 @@ pub struct TuiBackend {
     /// `clear_selection_display` so Ctrl-A still targets the right
     /// region after Ctrl-C or a plain click.
     last_text_region_id: Option<WidgetId>,
+    /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
+    /// during the most recent render pass. Set by `draw_activity_bar`;
+    /// cleared at the start of each frame by `begin_frame` (same lifecycle
+    /// as `text_regions`). When `Some`, `apply_dispatch` converts incoming
+    /// `KeyPressed` events to `UiEvent::ActivityBar(id, KeyPressed { … })`
+    /// so app logic receives activity-bar keys through a typed channel.
+    focused_activity_bar: Option<WidgetId>,
 }
 
 impl TuiBackend {
@@ -160,6 +167,7 @@ impl TuiBackend {
             active_selection: None,
             cached_selection_text: String::new(),
             last_text_region_id: None,
+            focused_activity_bar: None,
         }
     }
 
@@ -542,6 +550,29 @@ impl TuiBackend {
                         button,
                     ));
                 }
+                // When an ActivityBar has `is_keyboard_focused`, redirect
+                // raw `KeyPressed` events to it so the app receives
+                // `UiEvent::ActivityBar(id, KeyPressed { … })` instead of
+                // `UiEvent::KeyPressed { … }`. This runs before the
+                // accelerator pass so the bar can intercept any key.
+                // When an ActivityBar has `is_keyboard_focused`, redirect
+                // raw `KeyPressed` events to it so the app receives
+                // `UiEvent::ActivityBar(id, KeyPressed { … })` instead of
+                // `UiEvent::KeyPressed { … }`. This runs before the
+                // accelerator pass so the bar can intercept any key.
+                UiEvent::KeyPressed { key, modifiers, .. }
+                    if self.focused_activity_bar.is_some() =>
+                {
+                    let id = self.focused_activity_bar.clone().unwrap();
+                    let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(&key);
+                    out.push(UiEvent::ActivityBar(
+                        id,
+                        crate::ActivityBarEvent::KeyPressed {
+                            key: key_str,
+                            modifiers,
+                        },
+                    ));
+                }
                 other => out.push(other),
             }
         }
@@ -701,6 +732,9 @@ impl Backend for TuiBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger.
         self.text_regions.clear();
+        // Clear the focused activity bar — re-set by draw_activity_bar
+        // during the render pass if still focused.
+        self.focused_activity_bar = None;
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -987,6 +1021,12 @@ impl Backend for TuiBackend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<crate::ActivityBarRowHit> {
+        // Track keyboard focus: if this bar declares `is_keyboard_focused`,
+        // record its id so `apply_dispatch` can convert incoming `KeyPressed`
+        // events to `UiEvent::ActivityBar(id, KeyPressed { … })`.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let frame = self
@@ -2649,6 +2689,103 @@ mod tests {
         assert!(
             backend.active_text_selection().is_none(),
             "no selection should be set when select_all returns false"
+        );
+    }
+
+    // ── ActivityBar keyboard focus tests ─────────────────────────────────────
+
+    /// `begin_frame` clears the focused activity bar so stale state from
+    /// the previous render doesn't persist.
+    #[test]
+    fn focused_activity_bar_cleared_on_begin_frame() {
+        let mut backend = TuiBackend::new();
+        backend.focused_activity_bar = Some(WidgetId::new("demo:bar"));
+        backend.begin_frame(Viewport::default());
+        assert!(
+            backend.focused_activity_bar.is_none(),
+            "focused_activity_bar must be cleared by begin_frame"
+        );
+    }
+
+    /// When an `ActivityBar` with `is_keyboard_focused = true` is drawn,
+    /// `apply_dispatch` converts the next `KeyPressed` into
+    /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`.
+    #[test]
+    fn activity_bar_focused_redirects_key_presses() {
+        use crate::ActivityBarEvent;
+
+        let mut backend = TuiBackend::new();
+        // Simulate the render pass recording a focused bar.
+        backend.focused_activity_bar = Some(WidgetId::new("demo:bar"));
+
+        let raw = vec![UiEvent::KeyPressed {
+            key: Key::Char('j'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }];
+        let out = backend.apply_dispatch(raw);
+        assert_eq!(
+            out.len(),
+            1,
+            "one input event must produce one output event"
+        );
+        match &out[0] {
+            UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { key, modifiers }) => {
+                assert_eq!(id.as_str(), "demo:bar");
+                assert_eq!(key, "j");
+                assert_eq!(*modifiers, Modifiers::default());
+            }
+            other => panic!("expected UiEvent::ActivityBar KeyPressed, got {other:?}"),
+        }
+    }
+
+    /// Without a focused activity bar, raw `KeyPressed` events pass through
+    /// unchanged (no accidental interception).
+    #[test]
+    fn activity_bar_unfocused_passes_key_presses_through() {
+        let mut backend = TuiBackend::new();
+        // No focused bar.
+        assert!(backend.focused_activity_bar.is_none());
+
+        let raw = vec![UiEvent::KeyPressed {
+            key: Key::Char('j'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }];
+        let out = backend.apply_dispatch(raw);
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(
+                &out[0],
+                UiEvent::KeyPressed {
+                    key: Key::Char('j'),
+                    ..
+                }
+            ),
+            "key must pass through unchanged when no bar is focused"
+        );
+    }
+
+    /// `key_to_activity_bar_string` maps printable chars and common
+    /// named keys to their expected string forms.
+    #[test]
+    fn key_to_activity_bar_string_maps_correctly() {
+        use crate::primitives::activity_bar::key_to_activity_bar_string;
+
+        assert_eq!(key_to_activity_bar_string(&Key::Char('j')), "j");
+        assert_eq!(key_to_activity_bar_string(&Key::Char('K')), "K");
+        assert_eq!(
+            key_to_activity_bar_string(&Key::Named(NamedKey::Escape)),
+            "Escape"
+        );
+        assert_eq!(
+            key_to_activity_bar_string(&Key::Named(NamedKey::Enter)),
+            "Enter"
+        );
+        assert_eq!(key_to_activity_bar_string(&Key::Named(NamedKey::Up)), "Up");
+        assert_eq!(
+            key_to_activity_bar_string(&Key::Named(NamedKey::Down)),
+            "Down"
         );
     }
 }
