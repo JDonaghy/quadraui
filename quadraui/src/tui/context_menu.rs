@@ -3,16 +3,22 @@
 //! Box-bordered popup with one row per item. Selected clickable items
 //! render inverted (fg/bg swapped); separators draw as a horizontal
 //! dash; disabled items render dimmed. Items with `checked == Some(true)`
-//! show a leading `✓` glyph in the row's left-padding column. The
-//! right-aligned shortcut hint is sourced from `item.detail` if set
-//! (back-compat), otherwise from `render_accelerator(item.key_equivalent,
-//! Platform::Tui)`.
+//! show a leading `✓` glyph in the row's left-padding column. Items with
+//! `submenu.is_some()` show a `▶` glyph at the far-right column instead
+//! of a keyboard-shortcut hint. The right-aligned shortcut hint is sourced
+//! from `item.detail` if set (back-compat), otherwise from
+//! `render_accelerator(item.key_equivalent, Platform::Tui)`.
+//!
+//! [`draw_context_menu_with_submenus`] extends the basic rasteriser to
+//! paint the full stack of open nested (pull-right) submenus in one call.
 
 use ratatui::buffer::Buffer;
 
 use super::{ratatui_color, set_cell};
 use crate::accelerator::{render_accelerator, Platform};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
+use crate::primitives::context_menu::{
+    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement,
+};
 use crate::theme::Theme;
 
 /// Returns the right-aligned shortcut text for `item`, sourced from
@@ -121,7 +127,19 @@ pub fn draw_context_menu(
             }
             set_cell(buf, col, row_y, ch, item_fg, item_bg);
         }
-        if let Some(shortcut) = shortcut_text(item, Platform::Tui) {
+        if item.submenu.is_some() {
+            // Submenu-parent: show ▶ at the far-right column.
+            // Keyboard shortcuts are not rendered for submenu parents
+            // (they open a child menu rather than dispatching an action).
+            let arrow_fg = if is_selected && vis.clickable {
+                item_fg
+            } else {
+                dim_fg
+            };
+            if inner_w > 0 {
+                set_cell(buf, inner_x + inner_w - 1, row_y, '▶', arrow_fg, item_bg);
+            }
+        } else if let Some(shortcut) = shortcut_text(item, Platform::Tui) {
             let sc_w = shortcut.chars().count() as u16;
             let sc_start = inner_x + inner_w.saturating_sub(sc_w + 1);
             let sc_fg = if is_selected && vis.clickable {
@@ -137,6 +155,109 @@ pub fn draw_context_menu(
                 set_cell(buf, col, row_y, ch, sc_fg, item_bg);
             }
         }
+    }
+}
+
+/// Draw a [`ContextMenu`] AND any nested submenus that are currently open
+/// within it ("pull-right" cascading submenus).
+///
+/// # Arguments
+///
+/// * `root_menu` / `root_layout` — the top-level menu, as produced by
+///   [`ContextMenu::layout`].
+/// * `submenu_path` — depth-first path of open submenus.
+///   `submenu_path[0]` = `item_idx` in the root menu whose submenu is open;
+///   `submenu_path[1]` = `item_idx` in *that* submenu whose sub-submenu is open;
+///   etc.  Empty slice → draw only the root.
+/// * `selected_at_depth` — `selected_at_depth[d]` = selected item index
+///   inside the submenu at depth `d` (depth 0 = first child of root).
+/// * `viewport` — full paint surface; used for right-edge overflow detection.
+///
+/// Each child popup anchors its left edge to the parent popup's right
+/// border column.  If that would overflow the viewport's right edge the
+/// popup flips to the **left** of the parent instead.
+pub fn draw_context_menu_with_submenus(
+    buf: &mut Buffer,
+    root_menu: &ContextMenu,
+    root_layout: &ContextMenuLayout,
+    submenu_path: &[usize],
+    selected_at_depth: &[usize],
+    viewport: crate::event::Rect,
+    theme: &Theme,
+) {
+    draw_context_menu(buf, root_menu, root_layout, theme);
+
+    // Walk the open submenu chain.  We keep owned copies so Rust's borrow
+    // checker lets us update `parent_*` at the end of each iteration.
+    let mut parent_items: Vec<ContextMenuItem> = root_menu.items.clone();
+    let mut parent_bounds = root_layout.bounds;
+    let mut parent_vis: Vec<crate::primitives::context_menu::VisibleContextMenuItem> =
+        root_layout.visible_items.clone();
+
+    // Fixed geometry per level: 1 cell high per item (TUI cells, not pixels).
+    const MENU_WIDTH: f32 = 20.0;
+
+    for (depth, &path_idx) in submenu_path.iter().enumerate() {
+        // Resolve submenu items at this depth.
+        let sub_items = match parent_items
+            .get(path_idx)
+            .and_then(|item| item.submenu.clone())
+        {
+            Some(items) => items,
+            None => break,
+        };
+
+        // Preferred anchor: right border of parent popup + 1 column.
+        // Parent inner right = parent_bounds.x + parent_bounds.width
+        // Parent right border column = inner_right (draw_context_menu places it at
+        // inner_x + inner_w, i.e. bounds.x + bounds.width).
+        // We start the child's inner region one column further right.
+        let preferred_x = parent_bounds.x + parent_bounds.width + 1.0;
+
+        // Fallback: flip to the left of the parent popup when the right side
+        // would overflow the viewport.
+        //   Child inner left = parent_bounds.x - MENU_WIDTH - 1
+        //   (the −1 places the child's right border at parent_bounds.x − 1,
+        //    leaving the parent's left border intact)
+        let flipped_x = parent_bounds.x - MENU_WIDTH - 1.0;
+
+        let anchor_x = if preferred_x + MENU_WIDTH <= viewport.x + viewport.width {
+            preferred_x
+        } else if flipped_x >= viewport.x {
+            flipped_x
+        } else {
+            // Neither side has enough room — clamp to viewport right.
+            (viewport.x + viewport.width - MENU_WIDTH).max(viewport.x)
+        };
+
+        // Anchor y = top of the row that triggered this submenu.
+        let anchor_y = parent_vis
+            .iter()
+            .find(|v| v.item_idx == path_idx)
+            .map(|v| v.bounds.y)
+            .unwrap_or(parent_bounds.y);
+
+        let selected = selected_at_depth.get(depth).copied().unwrap_or(0);
+
+        let sub_menu = ContextMenu {
+            id: crate::types::WidgetId::new("tui-submenu"),
+            items: sub_items.clone(),
+            selected_idx: selected,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+
+        // In TUI every row (item or separator) is exactly 1 cell tall.
+        let sub_layout = sub_menu.layout(anchor_x, anchor_y, viewport, MENU_WIDTH, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        draw_context_menu(buf, &sub_menu, &sub_layout, theme);
+
+        // Advance to next depth.
+        parent_items = sub_items;
+        parent_bounds = sub_layout.bounds;
+        parent_vis = sub_layout.visible_items;
     }
 }
 
@@ -424,5 +545,143 @@ mod tests {
         );
         draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Submenu (▶ affordance + pull-right popup) ────────────────────────
+
+    fn submenu_parent_menu() -> ContextMenu {
+        use crate::types::{StyledSpan, StyledText, WidgetId};
+        let sub_item = ContextMenuItem {
+            id: Some(WidgetId::new("sub-a")),
+            label: StyledText {
+                spans: vec![StyledSpan::plain("SubItem")],
+            },
+            ..Default::default()
+        };
+        ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![
+                ContextMenuItem {
+                    id: Some(WidgetId::new("parent")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Parent")],
+                    },
+                    submenu: Some(vec![sub_item]),
+                    ..Default::default()
+                },
+                ContextMenuItem {
+                    id: Some(WidgetId::new("leaf")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Leaf")],
+                    },
+                    ..Default::default()
+                },
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        }
+    }
+
+    #[test]
+    fn submenu_parent_paints_arrow_affordance() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let menu = submenu_parent_menu();
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 40.0, 10.0),
+            16.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        // The ▶ appears at the rightmost inner column of the parent item's row.
+        let inner_x = layout.bounds.x.round() as u16;
+        let inner_w = layout.bounds.width.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x + inner_w - 1, row_y),
+            '▶',
+            "submenu-parent item should show ▶ at rightmost inner column",
+        );
+
+        // A plain leaf item (no submenu) must not show ▶.
+        let leaf_row_y = layout.visible_items[1].bounds.y.round() as u16;
+        assert_ne!(
+            cell_char(&buf, inner_x + inner_w - 1, leaf_row_y),
+            '▶',
+            "plain leaf item must not show ▶",
+        );
+    }
+
+    #[test]
+    fn submenu_popup_anchored_at_right_edge() {
+        // Root menu inner at x=2, width=16.
+        // Viewport 50 wide — plenty of room to the right.
+        // Expected: child inner left = 2 + 16 + 1 = 19.
+        //           child left border (┌) at (18, anchor_y − 1).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 50.0, 10.0);
+        let layout = menu.layout(2.0, 1.0, viewport, 16.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        // submenu_path = [0] means item 0 (the submenu-parent) is open.
+        // selected_at_depth = [0] → first child selected.
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        // Root menu ┌ is at (inner_x − 1, inner_y − 1) = (1, 0).
+        assert_eq!(cell_char(&buf, 1, 0), '┌', "root menu top-left corner");
+
+        // Child menu: preferred_x = 2 + 16 + 1 = 19 (inner left).
+        // Child left border (┌) at inner_x − 1 = 18.
+        // anchor_y = bounds.y of visible_items[0] = 1.0
+        // by = anchor_y − 1 = 0.
+        assert_eq!(
+            cell_char(&buf, 18, 0),
+            '┌',
+            "child popup top-left corner should be at x=18 (right-edge anchor)",
+        );
+    }
+
+    #[test]
+    fn submenu_overflow_flips_left() {
+        // Viewport 50 wide.  Root menu inner at x=25, width=10.
+        // preferred_x = 25 + 10 + 1 = 36; 36 + 20 = 56 > 50 → overflow.
+        // flipped_x   = 25 − 20 − 1 = 4 ≥ 0 → use 4.
+        // Child inner left = 4 → child ┌ at (3, anchor_y − 1).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 50.0, 10.0);
+        let layout = menu.layout(25.0, 1.0, viewport, 10.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        // anchor_y = 1.0, child border-top at y = 0.
+        assert_eq!(
+            cell_char(&buf, 3, 0),
+            '┌',
+            "flipped child popup top-left corner should be at x=3 (left-flip)",
+        );
     }
 }

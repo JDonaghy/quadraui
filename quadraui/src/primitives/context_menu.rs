@@ -1,11 +1,14 @@
 //! `ContextMenu` primitive: a keyboard/mouse-navigable popup of actions
 //! triggered at a specific screen location (right-click, keyboard
 //! shortcut, explicit open-menu command). Each item is either an
-//! action (clickable, emits an id) or a separator (visual only).
+//! action (clickable, emits an id), a separator (visual only), or a
+//! submenu parent (opens a nested pull-right popup).
 //!
-//! Submenus are out of scope for v1 — flat menus only. Adding submenus
-//! would require an additional `children` field on items and nested
-//! layout state; revisit once a consumer needs them.
+//! Items carry `submenu: Option<Vec<ContextMenuItem>>` for nested menus.
+//! The TUI rasteriser renders the `▶` affordance and the pull-right child
+//! popup; see [`crate::tui::draw_context_menu`] and
+//! [`crate::tui::draw_context_menu_with_submenus`]. The macOS backend
+//! wires this into native `NSMenu` nesting.
 //!
 //! # Backend contract
 //!
@@ -126,14 +129,11 @@ pub struct ContextMenuItem {
     /// so a column of items aligns visually.
     #[serde(default)]
     pub checked: Option<bool>,
-    /// Nested submenu. When `Some`, activating the item opens the
-    /// submenu rather than firing an action. The macOS NSMenu
-    /// installer wires this as a real nested `NSMenu`. In-window
-    /// rasterisers (TUI/GTK `draw_context_menu`) ignore the field
-    /// today — apps that want multi-level dropdowns inside the
-    /// window use the existing `MenuSystem` compose helper, which
-    /// also doesn't currently expand to nested submenus
-    /// (documented deferral in #184).
+    /// Nested submenu. When `Some`, activating the item opens the child
+    /// menu instead of firing an action. The TUI rasteriser renders a `▶`
+    /// affordance and a pull-right popup (see
+    /// [`crate::tui::draw_context_menu_with_submenus`]). The macOS NSMenu
+    /// installer wires this as a real nested `NSMenu`. GTK is a follow-up.
     #[serde(default)]
     pub submenu: Option<Vec<ContextMenuItem>>,
 }
