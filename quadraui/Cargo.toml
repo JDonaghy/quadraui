@@ -328,6 +328,11 @@ path = "examples/tui_menu_bar.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_submenu"
+path = "examples/tui_submenu.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "gtk_menu_bar"
 path = "examples/gtk_menu_bar.rs"
 required-features = ["gtk"]

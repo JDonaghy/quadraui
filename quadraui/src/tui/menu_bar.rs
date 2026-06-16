@@ -265,4 +265,66 @@ mod tests {
             "non-alt char 'i' should not be underlined"
         );
     }
+
+    /// Verify that a dropdown containing a submenu-parent item shows ▶.
+    ///
+    /// The menu bar itself doesn't render dropdowns — the app calls
+    /// `draw_context_menu` for the open dropdown.  This test simulates
+    /// that: we build a context-menu dropdown with one submenu-parent
+    /// item, paint it, and assert the affordance is visible.
+    #[test]
+    fn dropdown_submenu_item_shows_arrow() {
+        use crate::primitives::context_menu::{
+            ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
+        };
+        use crate::tui::context_menu::draw_context_menu;
+        use crate::types::{StyledSpan, StyledText, WidgetId};
+
+        let dropdown = ContextMenu {
+            id: WidgetId::new("file-menu"),
+            items: vec![
+                ContextMenuItem {
+                    id: Some(WidgetId::new("new")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("New")],
+                    },
+                    ..Default::default()
+                },
+                ContextMenuItem {
+                    id: Some(WidgetId::new("export")),
+                    label: StyledText {
+                        spans: vec![StyledSpan::plain("Export")],
+                    },
+                    submenu: Some(vec![ContextMenuItem {
+                        id: Some(WidgetId::new("export-png")),
+                        label: StyledText {
+                            spans: vec![StyledSpan::plain("PNG")],
+                        },
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+        };
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let viewport = crate::event::Rect::new(0.0, 0.0, 40.0, 10.0);
+        let layout = dropdown.layout(0.0, 1.0, viewport, 20.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+        draw_context_menu(&mut buf, &dropdown, &layout, &Theme::default());
+
+        // "Export" is visible_items[1]; its row is at y = bounds.y + 1.
+        let inner_x = layout.bounds.x.round() as u16;
+        let inner_w = layout.bounds.width.round() as u16;
+        let export_row_y = layout.visible_items[1].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x + inner_w - 1, export_row_y),
+            '▶',
+            "dropdown submenu-parent item should show ▶ affordance",
+        );
+    }
 }
