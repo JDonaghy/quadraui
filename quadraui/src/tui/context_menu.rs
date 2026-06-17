@@ -161,6 +161,15 @@ pub fn draw_context_menu(
 /// Draw a [`ContextMenu`] AND any nested submenus that are currently open
 /// within it ("pull-right" cascading submenus).
 ///
+/// # Note
+///
+/// This function operates directly on a raw `ratatui::buffer::Buffer` and
+/// bypasses the [`crate::backend::Backend`] trait.  The production render path
+/// goes through [`crate::compose::MenuSystem::render`] → `backend.draw_context_menu()`
+/// per level.  This function exists as a lower-level building block used by
+/// the rasteriser unit tests; consumers should use `MenuSystem::render` instead.
+#[doc(hidden)]
+///
 /// # Arguments
 ///
 /// * `root_menu` / `root_layout` — the top-level menu, as produced by

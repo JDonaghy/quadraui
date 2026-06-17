@@ -293,8 +293,9 @@ impl MenuSystem {
 
                                 if let Some(item_idx) = item_idx_opt {
                                     if menu.items[item_idx].submenu.is_some() {
-                                        // Toggle: close any deeper submenus,
-                                        // then open/close this one.
+                                        // Trim any deeper submenus that were open, then open
+                                        // this submenu (always open — clicking a submenu parent
+                                        // re-opens even if already visible).
                                         self.submenu_path.truncate(depth_idx);
                                         self.submenu_selected.truncate(depth_idx);
                                         self.open_submenu(item_idx);
@@ -659,6 +660,352 @@ mod tests {
     use crate::primitives::context_menu::ContextMenuItem;
     use crate::types::StyledText;
 
+    // ── Minimal mock backend for handle()-level tests ─────────────────────────
+
+    struct MockBackend {
+        modal_stack: crate::ModalStack,
+    }
+
+    impl MockBackend {
+        fn new() -> Self {
+            Self {
+                modal_stack: crate::ModalStack::new(),
+            }
+        }
+    }
+
+    impl crate::backend::Backend for MockBackend {
+        fn viewport(&self) -> crate::event::Viewport {
+            crate::event::Viewport::new(80.0, 24.0, 1.0)
+        }
+        fn begin_frame(&mut self, _: crate::event::Viewport) {}
+        fn end_frame(&mut self) {}
+        fn poll_events(&mut self) -> Vec<UiEvent> {
+            Vec::new()
+        }
+        fn wait_events(&mut self, _: std::time::Duration) -> Vec<UiEvent> {
+            Vec::new()
+        }
+        fn register_accelerator(&mut self, _: &crate::accelerator::Accelerator) {}
+        fn unregister_accelerator(&mut self, _: &crate::accelerator::AcceleratorId) {}
+        fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
+            &mut self.modal_stack
+        }
+        fn services(&self) -> &dyn crate::backend::PlatformServices {
+            unimplemented!()
+        }
+        fn line_height(&self) -> f32 {
+            1.0
+        }
+        fn char_width(&self) -> f32 {
+            1.0
+        }
+        fn menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
+            bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
+        }
+        fn draw_menu_bar(&mut self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
+            bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
+        }
+        fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
+        fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
+        fn draw_data_table(
+            &mut self,
+            _r: Rect,
+            _t: &crate::DataTable,
+            _h: Option<usize>,
+        ) -> crate::DataTableLayout {
+            unimplemented!()
+        }
+        fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
+            unimplemented!()
+        }
+        fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
+            None
+        }
+        fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
+            None
+        }
+        fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
+        fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
+        fn draw_status_bar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::primitives::status_bar::StatusBar,
+            _hovered_id: Option<&WidgetId>,
+            _pressed_id: Option<&WidgetId>,
+        ) -> crate::StatusBarLayout {
+            unimplemented!()
+        }
+        fn draw_tab_bar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _h: Option<usize>,
+        ) -> crate::TabBarHits {
+            unimplemented!()
+        }
+        fn draw_activity_bar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::primitives::activity_bar::ActivityBar,
+            _h: Option<usize>,
+        ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
+            unimplemented!()
+        }
+        fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
+        fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
+        fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
+        fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
+            crate::StatusBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_segments: Vec::new(),
+                hit_regions: Vec::new(),
+                resolved_right_start: 0,
+            }
+        }
+        fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
+            crate::TabBarHits::default()
+        }
+        fn activity_bar_layout(
+            &self,
+            _r: Rect,
+            _b: &crate::primitives::activity_bar::ActivityBar,
+        ) -> Vec<crate::ActivityBarRowHit> {
+            Vec::new()
+        }
+        fn text_display_layout(
+            &self,
+            _r: Rect,
+            _t: &crate::TextDisplay,
+        ) -> crate::TextDisplayLayout {
+            unimplemented!()
+        }
+        fn draw_text_input(&mut self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
+            unimplemented!()
+        }
+        fn text_input_layout(&self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
+            unimplemented!()
+        }
+        fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
+        fn draw_context_menu(
+            &mut self,
+            _m: &crate::ContextMenu,
+            _l: &crate::ContextMenuLayout,
+        ) -> Vec<(Rect, WidgetId)> {
+            Vec::new()
+        }
+        fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
+            unimplemented!()
+        }
+        fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
+        fn msv_layout(
+            &self,
+            _r: Rect,
+            _v: &crate::MultiSectionView,
+        ) -> crate::MultiSectionViewLayout {
+            unimplemented!()
+        }
+        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+            unimplemented!()
+        }
+        fn tree_layout(
+            &self,
+            rect: Rect,
+            tree: &crate::TreeView,
+        ) -> crate::primitives::tree::TreeViewLayout {
+            let lh = self.line_height();
+            let indent_cells = tree.style.indent as f32;
+            let chevron_w = if tree.style.show_chevrons {
+                tree.style.chevron_expanded.chars().count() as f32 + 1.0
+            } else {
+                0.0
+            };
+            tree.layout(rect.width, rect.height, |i| {
+                let row = &tree.rows[i];
+                let chevron_end_x = if row.is_expanded.is_some() && chevron_w > 0.0 {
+                    Some(row.indent as f32 * indent_cells + chevron_w)
+                } else {
+                    None
+                };
+                crate::primitives::tree::TreeRowMeasure {
+                    height: lh,
+                    chevron_end_x,
+                }
+            })
+        }
+        fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
+            unimplemented!()
+        }
+        fn draw_editor(
+            &mut self,
+            _r: Rect,
+            _e: &crate::primitives::editor::Editor,
+        ) -> crate::backend::EditorPaintResult {
+            Default::default()
+        }
+        fn draw_message_list(
+            &mut self,
+            _r: Rect,
+            _l: &crate::primitives::message_list::MessageList,
+        ) {
+        }
+        fn draw_rich_text_popup(
+            &mut self,
+            _p: &crate::RichTextPopup,
+            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
+        ) {
+        }
+        fn draw_find_replace(
+            &mut self,
+            _r: Rect,
+            _p: &crate::primitives::find_replace::FindReplacePanel,
+        ) {
+        }
+        fn draw_completions(
+            &mut self,
+            _c: &crate::Completions,
+            _l: &crate::primitives::completions::CompletionsLayout,
+        ) {
+        }
+        fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
+        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
+        fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
+            unimplemented!()
+        }
+        fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
+            unimplemented!()
+        }
+        fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
+            unimplemented!()
+        }
+        fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
+            unimplemented!()
+        }
+        fn draw_toast_stack(
+            &mut self,
+            _r: Rect,
+            _s: &crate::ToastStack,
+        ) -> crate::ToastStackLayout {
+            unimplemented!()
+        }
+        fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
+            unimplemented!()
+        }
+        fn draw_pipeline_view(
+            &mut self,
+            _r: Rect,
+            _v: &crate::PipelineView,
+        ) -> crate::PipelineViewLayout {
+            unimplemented!()
+        }
+        fn pipeline_view_layout(
+            &self,
+            _r: Rect,
+            _v: &crate::PipelineView,
+        ) -> crate::PipelineViewLayout {
+            unimplemented!()
+        }
+        fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
+            unimplemented!()
+        }
+        fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
+            unimplemented!()
+        }
+        fn draw_spinner(&mut self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
+            unimplemented!()
+        }
+        fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
+            unimplemented!()
+        }
+        fn draw_command_center(
+            &mut self,
+            _r: Rect,
+            _c: &crate::CommandCenter,
+        ) -> crate::CommandCenterLayout {
+            unimplemented!()
+        }
+        fn command_center_layout(
+            &self,
+            _r: Rect,
+            _c: &crate::CommandCenter,
+        ) -> crate::CommandCenterLayout {
+            unimplemented!()
+        }
+        fn draw_toolbar(
+            &mut self,
+            _r: Rect,
+            _b: &crate::primitives::toolbar::Toolbar,
+            _h: Option<&WidgetId>,
+            _p: Option<&WidgetId>,
+        ) -> crate::primitives::toolbar::ToolbarLayout {
+            unimplemented!()
+        }
+        fn toolbar_layout(
+            &self,
+            _r: Rect,
+            _b: &crate::primitives::toolbar::Toolbar,
+        ) -> crate::primitives::toolbar::ToolbarLayout {
+            unimplemented!()
+        }
+        fn draw_sidebar_panel(
+            &mut self,
+            _r: Rect,
+            _p: &crate::primitives::sidebar_panel::SidebarPanel,
+            _h: Option<&WidgetId>,
+            _pr: Option<&WidgetId>,
+        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+            unimplemented!()
+        }
+        fn sidebar_panel_layout(
+            &self,
+            _r: Rect,
+            _p: &crate::primitives::sidebar_panel::SidebarPanel,
+        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+            unimplemented!()
+        }
+        fn draw_diff_view(
+            &mut self,
+            _r: Rect,
+            view: &crate::primitives::diff_view::DiffView,
+        ) -> crate::primitives::diff_view::DiffViewLayout {
+            crate::primitives::diff_view::DiffViewLayout {
+                visible_rows: 0,
+                total_rows: view.total_rows(),
+            }
+        }
+        fn draw_chart(
+            &mut self,
+            _r: Rect,
+            _c: &crate::primitives::chart::Chart,
+            _h: Option<(usize, usize)>,
+            _x: Option<f64>,
+        ) -> crate::primitives::chart::ChartLayout {
+            unimplemented!()
+        }
+        fn chart_layout(
+            &self,
+            _r: Rect,
+            _c: &crate::primitives::chart::Chart,
+        ) -> crate::primitives::chart::ChartLayout {
+            unimplemented!()
+        }
+    }
+
+    // Helper: construct a `KeyPressed` event with no modifiers.
+    fn key_ev(key: Key) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    // Standard bar rect used by all handle() tests.
+    fn bar_rect() -> Rect {
+        Rect::new(0.0, 0.0, 80.0, 1.0)
+    }
+
     fn action(id: &str, label: &str) -> ContextMenuItem {
         ContextMenuItem {
             id: Some(WidgetId::new(id)),
@@ -829,5 +1176,142 @@ mod tests {
         ms.submenu_path = vec![1];
         ms.submenu_selected = vec![1];
         assert_eq!(ms.current_selected(), 1);
+    }
+
+    // ── Keyboard-nav interaction tests (flow through handle()) ────────────────
+
+    // Fixture: menus_with_submenu(), but the root dropdown is "open" so that
+    // keyboard events are processed.  We set open_item directly (bypassing the
+    // modal-stack push that open_menu does) because these tests focus on
+    // navigation state, not on rendering.
+    fn open_ms() -> MenuSystem {
+        let mut ms = MenuSystem::new(menus_with_submenu());
+        ms.open_item = Some(0);
+        ms.dropdown_selected = 1; // pre-select "Export" (item 1, has submenu)
+        ms
+    }
+
+    /// `Right` on a submenu-parent item must push the path and return `StateChanged`.
+    #[test]
+    fn handle_right_on_submenu_parent_opens_submenu() {
+        let mut ms = open_ms();
+        let mut backend = MockBackend::new();
+        let ev = key_ev(Key::Named(NamedKey::Right));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(
+            result,
+            MenuEvent::StateChanged,
+            "Right must return StateChanged"
+        );
+        assert_eq!(ms.submenu_path, vec![1], "submenu_path must grow to [1]");
+        assert!(
+            ms.open_item.is_some(),
+            "menu must still be open after Right"
+        );
+    }
+
+    /// `Left` with a submenu open must pop one level and return `StateChanged`.
+    #[test]
+    fn handle_left_with_submenu_open_closes_deepest() {
+        let mut ms = open_ms();
+        ms.submenu_path = vec![1];
+        ms.submenu_selected = vec![0];
+        let mut backend = MockBackend::new();
+        let ev = key_ev(Key::Named(NamedKey::Left));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(
+            result,
+            MenuEvent::StateChanged,
+            "Left must return StateChanged"
+        );
+        assert!(
+            ms.submenu_path.is_empty(),
+            "submenu_path must shrink back to []"
+        );
+        assert!(ms.open_item.is_some(), "top-level menu must remain open");
+    }
+
+    /// `Esc` with a submenu open must close only the deepest level — NOT the
+    /// whole menu.
+    #[test]
+    fn handle_esc_with_submenu_closes_deepest_not_whole_menu() {
+        let mut ms = open_ms();
+        ms.submenu_path = vec![1];
+        ms.submenu_selected = vec![0];
+        let mut backend = MockBackend::new();
+        let ev = key_ev(Key::Named(NamedKey::Escape));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::StateChanged);
+        assert!(ms.submenu_path.is_empty(), "deepest submenu must be closed");
+        assert!(ms.open_item.is_some(), "top-level menu must still be open");
+    }
+
+    /// `Esc` with no submenus open must close the whole menu.
+    #[test]
+    fn handle_esc_with_no_submenu_closes_whole_menu() {
+        let mut ms = open_ms();
+        // No submenus open — submenu_path is empty.
+        let mut backend = MockBackend::new();
+        let ev = key_ev(Key::Named(NamedKey::Escape));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::StateChanged);
+        assert!(ms.open_item.is_none(), "whole menu must be closed");
+        assert!(ms.submenu_path.is_empty());
+    }
+
+    /// `Enter` on a submenu-parent must open the child — NOT activate the item.
+    #[test]
+    fn handle_enter_on_submenu_parent_opens_child() {
+        let mut ms = open_ms(); // dropdown_selected = 1 ("Export" with submenu)
+        let mut backend = MockBackend::new();
+        let ev = key_ev(Key::Named(NamedKey::Enter));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(
+            result,
+            MenuEvent::StateChanged,
+            "Enter on parent must return StateChanged"
+        );
+        assert_eq!(ms.submenu_path, vec![1], "submenu must open for item 1");
+        assert!(ms.open_item.is_some(), "menu must remain open");
+        // Must NOT have activated — no Activated variant.
+        assert!(
+            !matches!(result, MenuEvent::Activated(_)),
+            "Enter on submenu parent must not activate"
+        );
+    }
+
+    /// `Enter` on a leaf item inside an open submenu must activate it and close
+    /// the whole menu.
+    #[test]
+    fn handle_enter_on_leaf_in_submenu_activates_and_closes() {
+        let mut ms = open_ms();
+        // Open the submenu for "Export" (item 1) and select "PNG" (item 0 inside).
+        ms.submenu_path = vec![1];
+        ms.submenu_selected = vec![0]; // "PNG" (id = "export-png")
+        let mut backend = MockBackend::new();
+        let ev = key_ev(Key::Named(NamedKey::Enter));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(
+            result,
+            MenuEvent::Activated(WidgetId::new("export-png")),
+            "Enter on leaf must return Activated with the item id"
+        );
+        assert!(ms.open_item.is_none(), "menu must close after activation");
+        assert!(
+            ms.submenu_path.is_empty(),
+            "submenu_path must be cleared on close"
+        );
     }
 }
