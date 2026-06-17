@@ -418,33 +418,15 @@ impl SubmenuApp {
                     let s = self.ctx_menu.as_ref().unwrap();
                     levels.push((s.menu.items.clone(), s.anchor.x, s.anchor.y));
                     let mut par_items = s.menu.items.clone();
-                    let mut par_bounds = {
-                        // Compute root bounds inline.
-                        let layout = s.menu.layout(s.anchor.x, s.anchor.y, vp, menu_w, |i| {
-                            ContextMenuItemMeasure::new(if par_items[i].is_separator() {
-                                sep_h
-                            } else {
-                                item_h
-                            })
-                        });
-                        layout.bounds
-                    };
-                    let mut par_vis = {
-                        let layout = self.ctx_menu.as_ref().unwrap().menu.layout(
-                            self.ctx_menu.as_ref().unwrap().anchor.x,
-                            self.ctx_menu.as_ref().unwrap().anchor.y,
-                            vp,
-                            menu_w,
-                            |i| {
-                                ContextMenuItemMeasure::new(if par_items[i].is_separator() {
-                                    sep_h
-                                } else {
-                                    item_h
-                                })
-                            },
-                        );
-                        layout.visible_items
-                    };
+                    let root_layout = s.menu.layout(s.anchor.x, s.anchor.y, vp, menu_w, |i| {
+                        ContextMenuItemMeasure::new(if par_items[i].is_separator() {
+                            sep_h
+                        } else {
+                            item_h
+                        })
+                    });
+                    let mut par_bounds = root_layout.bounds;
+                    let mut par_vis = root_layout.visible_items;
 
                     for &path_idx in &self.ctx_menu.as_ref().unwrap().submenu_path.clone() {
                         let sub_items =
