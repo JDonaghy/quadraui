@@ -434,12 +434,15 @@ impl SubmenuApp {
                                 Some(items) => items,
                                 None => break,
                             };
-                        let px =
-                            if par_bounds.x + par_bounds.width + 1.0 + menu_w <= vp.x + vp.width {
-                                par_bounds.x + par_bounds.width + 1.0
-                            } else {
-                                (par_bounds.x - menu_w - 1.0).max(vp.x)
-                            };
+                        let preferred_px = par_bounds.x + par_bounds.width + 1.0;
+                        let flipped_px = par_bounds.x - menu_w - 1.0;
+                        let px = if preferred_px + menu_w <= vp.x + vp.width {
+                            preferred_px
+                        } else if flipped_px >= vp.x {
+                            flipped_px
+                        } else {
+                            (vp.x + vp.width - menu_w).max(vp.x)
+                        };
                         let py = par_vis
                             .iter()
                             .find(|v| v.item_idx == path_idx)
@@ -545,10 +548,14 @@ impl SubmenuApp {
                         Some(items) => items,
                         None => break,
                     };
-                    let px = if par_b.x + par_b.width + 1.0 + menu_w <= vp.x + vp.width {
-                        par_b.x + par_b.width + 1.0
+                    let preferred_px = par_b.x + par_b.width + 1.0;
+                    let flipped_px = par_b.x - menu_w - 1.0;
+                    let px = if preferred_px + menu_w <= vp.x + vp.width {
+                        preferred_px
+                    } else if flipped_px >= vp.x {
+                        flipped_px
                     } else {
-                        (par_b.x - menu_w - 1.0).max(vp.x)
+                        (vp.x + vp.width - menu_w).max(vp.x)
                     };
                     let py = par_v
                         .iter()

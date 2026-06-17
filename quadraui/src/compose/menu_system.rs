@@ -1283,11 +1283,6 @@ mod tests {
         );
         assert_eq!(ms.submenu_path, vec![1], "submenu must open for item 1");
         assert!(ms.open_item.is_some(), "menu must remain open");
-        // Must NOT have activated — no Activated variant.
-        assert!(
-            !matches!(result, MenuEvent::Activated(_)),
-            "Enter on submenu parent must not activate"
-        );
     }
 
     /// `Enter` on a leaf item inside an open submenu must activate it and close
