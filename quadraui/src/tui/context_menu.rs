@@ -158,6 +158,7 @@ pub fn draw_context_menu(
     }
 }
 
+#[doc(hidden)]
 /// Draw a [`ContextMenu`] AND any nested submenus that are currently open
 /// within it ("pull-right" cascading submenus).
 ///
@@ -168,7 +169,6 @@ pub fn draw_context_menu(
 /// goes through [`crate::compose::MenuSystem::render`] → `backend.draw_context_menu()`
 /// per level.  This function exists as a lower-level building block used by
 /// the rasteriser unit tests; consumers should use `MenuSystem::render` instead.
-#[doc(hidden)]
 ///
 /// # Arguments
 ///
