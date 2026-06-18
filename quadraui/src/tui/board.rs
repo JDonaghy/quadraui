@@ -40,8 +40,8 @@ pub(crate) const TUI_BOARD_COL_MIN_CELLS: f32 = 20.0;
 const TUI_BOARD_COL_GAP: f32 = 1.0;
 /// Column header height in TUI cells (one row for title).
 const TUI_BOARD_HEADER_H: f32 = 1.0;
-/// Card height in TUI cells (border + title + badge row + optional hint = 4 or 5).
-const TUI_BOARD_CARD_H: f32 = 4.0;
+/// Card height in TUI cells: top_border + title + badge + hint + bottom_border = 5.
+pub(crate) const TUI_BOARD_CARD_H: f32 = 5.0;
 /// Vertical gap between cards in TUI cells.
 const TUI_BOARD_CARD_GAP: f32 = 0.0;
 
@@ -209,10 +209,11 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
             }
 
             // ── Decision hint (row 3 inside the card, if present) ────────
-            if bh >= 4 {
+            // Requires bh >= 5: top_border(0) + title(1) + badge(2) + hint(3) + bottom(4).
+            if bh >= 5 {
                 if let Some(hint) = &card.decision_hint {
                     let hint_row = by + 3;
-                    // Check if row 3 is still inside the card border.
+                    // Check that the hint row is inside the card border.
                     if hint_row < by + bh.saturating_sub(1) {
                         let inner_w = bw.saturating_sub(2) as usize;
                         let hint_chars: Vec<char> = hint.chars().collect();
@@ -527,7 +528,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let model = make_model();
         let layout = draw_board(&mut buf, area, &model, &Theme::default());
-        // With card_height=4, header=1, area height=10 → body=9 → floor(9/4)=2
+        // With card_height=5, header=1, area height=10 → body=9 → floor(9/5)=1
         // But there is only 1 card in col 0, so cards.len() == 1.
         assert!(layout.columns[0].visible_cards >= 1);
         assert_eq!(layout.columns[0].cards.len(), 1);
@@ -535,17 +536,24 @@ mod tests {
 
     #[test]
     fn decision_hint_drawn_when_present() {
+        // Card height = 5 rows:
+        //   row 0 (card_y + 0 = 1): ╭ top border
+        //   row 1 (card_y + 1 = 2): title
+        //   row 2 (card_y + 2 = 3): badge row
+        //   row 3 (card_y + 3 = 4): decision_hint  ← assert here
+        //   row 4 (card_y + 4 = 5): ╰ bottom border
+        // Header occupies row 0, so card_y = 1 and hint_row = 4.
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
         let mut model = make_model();
         model.columns[0].cards[0].decision_hint = Some("use plan B".to_string());
         draw_board(&mut buf, area, &model, &Theme::default());
-        // The hint is on row 4 inside the card (1-indexed): row 1=header, row 2=border,
-        // row 3=title, row 4=badge, row 5=hint (TUI card starts at row 1).
-        // Card starts at y=1 (after header row=0). Inside: row=1→border, row=2→title,
-        // row=3→badge, row=4→hint.
-        // Just verify nothing panics and buf has content.
-        assert!(buf.area.height > 0);
+        // Cell (1, 4) should hold 'u', the first character of "use plan B".
+        assert_eq!(
+            cell_char(&buf, 1, 4),
+            'u',
+            "hint row (row 4) must contain first char of decision_hint"
+        );
     }
 
     // ── Keyboard handling ─────────────────────────────────────────────

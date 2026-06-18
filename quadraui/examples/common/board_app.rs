@@ -15,16 +15,23 @@
 //! - G       — jump to last card
 //! - q / Esc — quit
 
+use std::cell::RefCell;
+
 use quadraui::{
-    AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardModel, Key, MoveDir,
-    NamedKey, Reaction, Rect, Stage, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardLayout, BoardModel,
+    Key, MoveDir, NamedKey, Reaction, Rect, Stage, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct BoardApp {
     model: BoardModel,
     last_message: String,
-    /// Cached board layout from the last render pass (used for click dispatch).
-    last_layout: Option<quadraui::BoardLayout>,
+    /// Cached board layout from the last render pass, used for click dispatch.
+    ///
+    /// Wrapped in `RefCell` so that `render(&self, …)` can update it while
+    /// keeping the `AppLogic` signature immutable.  The `BoardLayout` is set
+    /// every frame by `render` and read in `handle` for mouse hit-testing —
+    /// avoids calling `backend.draw_board` outside an `enter_frame_scope`.
+    last_layout: RefCell<Option<BoardLayout>>,
 }
 
 impl BoardApp {
@@ -32,7 +39,7 @@ impl BoardApp {
         Self {
             model: demo_board(),
             last_message: "j/k=move  h/l=col  g/G=top/bottom  q=quit".into(),
-            last_layout: None,
+            last_layout: RefCell::new(None),
         }
     }
 
@@ -97,10 +104,14 @@ impl AppLogic for BoardApp {
 
         // Board fills the rest of the screen.
         let board_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - status_h);
-        let _layout = backend.draw_board(board_rect, &self.model);
+        let layout = backend.draw_board(board_rect, &self.model);
+
+        // Cache the layout so `handle` can hit-test mouse events without
+        // calling `draw_board` outside a frame scope.
+        *self.last_layout.borrow_mut() = Some(layout);
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
             UiEvent::KeyPressed {
                 key: Key::Char('q'),
@@ -122,12 +133,16 @@ impl AppLogic for BoardApp {
             }
 
             UiEvent::MouseDown { position, .. } => {
-                let viewport = backend.viewport();
-                let lh = backend.line_height();
-                let board_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
-                let layout = backend.draw_board(board_rect, &self.model);
                 use quadraui::BoardHit;
-                match layout.hit_test(position.x, position.y) {
+                // Use the layout cached by the last `render` call. If no render
+                // has run yet (first event before first frame), skip hit-testing.
+                let hit = self
+                    .last_layout
+                    .borrow()
+                    .as_ref()
+                    .map(|l| l.hit_test(position.x, position.y))
+                    .unwrap_or(BoardHit::Empty);
+                match hit {
                     BoardHit::Card(id) => {
                         self.model.selected_card_id = Some(id.clone());
                         let title = self
@@ -159,6 +174,11 @@ impl BoardApp {
         match action {
             BoardAction::MoveSelection(dir) => {
                 self.model.move_selection(dir);
+                // After a horizontal column move, ensure the newly-selected
+                // column is scrolled into view.
+                if matches!(dir, MoveDir::Left | MoveDir::Right) {
+                    self.clamp_col_scroll();
+                }
             }
             BoardAction::JumpToTop => {
                 self.model.jump_to_top();
@@ -167,6 +187,31 @@ impl BoardApp {
                 self.model.jump_to_bottom();
             }
             _ => {}
+        }
+    }
+
+    /// Adjust `col_scroll_offset` so the currently-selected column is visible.
+    ///
+    /// Uses the layout cached by the last `render` call to know how many
+    /// columns are visible. A no-op when no layout is cached yet.
+    fn clamp_col_scroll(&mut self) {
+        let Some(col_idx) = self.model.selected_col_index() else {
+            return;
+        };
+        // Read visible column count from the cached layout, then drop the borrow
+        // before mutating `self.model`.
+        let visible = {
+            let borrowed = self.last_layout.borrow();
+            match borrowed.as_ref() {
+                Some(l) => l.columns.len(),
+                None => return,
+            }
+        };
+        let offset = &mut self.model.col_scroll_offset;
+        if col_idx < *offset {
+            *offset = col_idx;
+        } else if visible > 0 && col_idx >= *offset + visible {
+            *offset = col_idx + 1 - visible;
         }
     }
 }

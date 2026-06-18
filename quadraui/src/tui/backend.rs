@@ -2262,16 +2262,22 @@ mod tests {
 
         fn draw_board(
             &mut self,
-            _r: QRect,
+            r: QRect,
             model: &crate::primitives::board::BoardModel,
         ) -> crate::primitives::board::BoardLayout {
             crate::primitives::board::board_layout(
                 model,
-                _r.x,
-                _r.y,
-                _r.width,
-                _r.height,
-                crate::primitives::board::BoardMeasure::new(20.0, 1.0, 1.0, 4.0, 0.0),
+                r.x,
+                r.y,
+                r.width,
+                r.height,
+                crate::primitives::board::BoardMeasure::new(
+                    crate::tui::board::TUI_BOARD_COL_MIN_CELLS,
+                    1.0,
+                    1.0,
+                    crate::tui::board::TUI_BOARD_CARD_H,
+                    0.0,
+                ),
             )
         }
     }

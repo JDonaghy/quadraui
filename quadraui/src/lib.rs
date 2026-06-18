@@ -141,7 +141,7 @@ pub use primitives::activity_bar::{
 };
 pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
-    BoardMeasure, BoardModel, CardLayout, ColumnLayout, MoveDir, Stage, TestVerdict,
+    BoardMeasure, BoardModel, CardId, CardLayout, ColumnLayout, MoveDir, Stage, TestVerdict,
 };
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
