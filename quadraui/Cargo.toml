@@ -398,6 +398,16 @@ path = "examples/gtk_bottom_panel.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_board"
+path = "examples/tui_board.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_board"
+path = "examples/gtk_board.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_diff_view"
 path = "examples/tui_diff_view.rs"
 required-features = ["tui"]

@@ -2185,6 +2185,27 @@ impl Backend for GtkBackend {
             line_height,
         )
     }
+
+    fn draw_board(
+        &mut self,
+        rect: QRect,
+        model: &crate::primitives::board::BoardModel,
+    ) -> crate::primitives::board::BoardLayout {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_board called outside enter_frame_scope");
+        crate::gtk::draw_board(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            model,
+            &theme,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

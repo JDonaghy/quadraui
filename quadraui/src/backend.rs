@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::CommandLine;
@@ -618,6 +619,19 @@ pub trait Backend {
 
     /// Compute chart layout without painting.
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;
+
+    /// Draw a [`BoardModel`] (kanban/pipeline board widget).
+    ///
+    /// The backend paints columns side by side, each with a header title
+    /// and a vertical stack of card boxes. Each card shows the issue
+    /// title, an inline badge row (stage icons), and an optional
+    /// `decision_hint` callout strip. The selected card is highlighted.
+    ///
+    /// Returns a [`BoardLayout`] so hosts can route clicks via
+    /// `layout.hit_test(x, y)` and implement selection-follow clamping
+    /// (DataTable pattern: host reads `layout.columns[i].visible_cards`
+    /// and adjusts `column.scroll_offset` accordingly).
+    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
 }
 
 // ── Shared layout helpers ───────────────────────────────────────────────

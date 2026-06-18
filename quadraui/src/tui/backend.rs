@@ -1619,6 +1619,19 @@ impl Backend for TuiBackend {
             .expect("TuiBackend::draw_diff_view called outside enter_frame_scope");
         crate::tui::draw_diff_view(frame.buffer_mut(), area, view, &theme)
     }
+
+    fn draw_board(
+        &mut self,
+        rect: QRect,
+        model: &crate::primitives::board::BoardModel,
+    ) -> crate::primitives::board::BoardLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_board called outside enter_frame_scope");
+        crate::tui::draw_board(frame.buffer_mut(), area, model, &theme)
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -2245,6 +2258,21 @@ mod tests {
                 visible_rows: 0,
                 total_rows: view.total_rows(),
             }
+        }
+
+        fn draw_board(
+            &mut self,
+            _r: QRect,
+            model: &crate::primitives::board::BoardModel,
+        ) -> crate::primitives::board::BoardLayout {
+            crate::primitives::board::board_layout(
+                model,
+                _r.x,
+                _r.y,
+                _r.width,
+                _r.height,
+                crate::primitives::board::BoardMeasure::new(20.0, 1.0, 1.0, 4.0, 0.0),
+            )
         }
     }
 

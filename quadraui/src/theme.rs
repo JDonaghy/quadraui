@@ -254,6 +254,24 @@ pub struct Theme {
     pub command_line_bg: Color,
     /// Text colour of the command line bar.
     pub command_line_fg: Color,
+
+    // ── Board / kanban (#362) ──────────────────────────────────────────
+    /// Background of the selected card in a `Board`.
+    pub board_selected_card_bg: Color,
+    /// Background of the focused column header in a `Board`.
+    pub board_col_header_bg: Color,
+    /// `BadgeStatus::Running` colour (typically accent yellow / orange).
+    pub badge_running: Color,
+    /// `BadgeStatus::Passed` colour (green).
+    pub badge_passed: Color,
+    /// `BadgeStatus::RequestChanges` colour (warning orange).
+    pub badge_request_changes: Color,
+    /// `BadgeStatus::Blocked` colour (red).
+    pub badge_blocked: Color,
+    /// Background of the `decision_hint` callout strip at the bottom of a card.
+    pub decision_hint_bg: Color,
+    /// Text colour of the `decision_hint` callout.
+    pub decision_hint_fg: Color,
 }
 
 impl Default for Theme {
@@ -335,6 +353,16 @@ impl Default for Theme {
             ghost_text_fg: Color::rgb(110, 115, 130),
             command_line_bg: bg,
             command_line_fg: fg,
+
+            // Board / kanban (#362)
+            board_selected_card_bg: Color::rgb(50, 60, 90),
+            board_col_header_bg: Color::rgb(40, 44, 56),
+            badge_running: Color::rgb(220, 180, 80),
+            badge_passed: Color::rgb(120, 200, 120),
+            badge_request_changes: Color::rgb(220, 140, 60),
+            badge_blocked: Color::rgb(220, 80, 80),
+            decision_hint_bg: Color::rgb(35, 40, 55),
+            decision_hint_fg: Color::rgb(180, 190, 210),
         }
     }
 }

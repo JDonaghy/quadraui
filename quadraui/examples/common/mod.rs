@@ -36,6 +36,7 @@ pub use terminal_app::TerminalApp;
 pub mod activity_nav;
 pub mod ai_transcript;
 pub mod appshell_demo;
+pub mod board_app;
 pub mod bottom_panel_demo;
 pub mod chart_app;
 pub mod chat_demo;
@@ -71,6 +72,7 @@ pub mod toolbar_app;
 
 pub use activity_nav::ActivityNavApp;
 pub use ai_transcript::AiTranscript;
+pub use board_app::BoardApp;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
 pub use data_table_app::DataTableApp;
