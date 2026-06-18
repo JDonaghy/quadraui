@@ -230,6 +230,7 @@ impl BoardModel {
     /// | `h` / `←` | Move selection left (between columns) |
     /// | `l` / `→` | Move selection right (between columns) |
     /// | `Enter` | Open issue |
+    /// | `g` | Jump to top of focused column |
     /// | `G` | Jump to bottom of focused column |
     /// | `r` | Refine selected card |
     /// | `d` / `P` | Dispatch selected card |
@@ -337,6 +338,7 @@ impl BoardModel {
             "h" | "Left" | "ArrowLeft" => Some(BoardAction::MoveSelection(MoveDir::Left)),
             "l" | "Right" | "ArrowRight" => Some(BoardAction::MoveSelection(MoveDir::Right)),
             "Enter" => selected.map(|id| BoardAction::OpenIssue(id.clone())),
+            "g" => Some(BoardAction::JumpToTop),
             "G" => Some(BoardAction::JumpToBottom),
             "r" => selected.map(|id| BoardAction::Refine(id.clone())),
             "d" | "P" => selected.map(|id| BoardAction::Dispatch(id.clone())),
