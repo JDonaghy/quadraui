@@ -139,6 +139,10 @@ pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityItem, ActivitySide, VisibleActivityItem,
 };
+pub use primitives::board::{
+    board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
+    BoardMeasure, BoardModel, CardLayout, ColumnLayout, MoveDir, Stage, TestVerdict,
+};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
 };

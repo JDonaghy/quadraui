@@ -990,6 +990,17 @@ mod tests {
         ) -> crate::primitives::chart::ChartLayout {
             unimplemented!()
         }
+
+        fn draw_board(
+            &mut self,
+            _r: Rect,
+            _m: &crate::primitives::board::BoardModel,
+        ) -> crate::primitives::board::BoardLayout {
+            crate::primitives::board::BoardLayout {
+                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
+                columns: vec![],
+            }
+        }
     }
 
     // Helper: construct a `KeyPressed` event with no modifiers.

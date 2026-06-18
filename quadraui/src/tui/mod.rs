@@ -22,6 +22,7 @@ use crate::types::{Color, Decoration, StyledText};
 
 mod activity_bar;
 pub mod backend;
+mod board;
 mod chart;
 mod command_center;
 mod command_line;
@@ -64,6 +65,7 @@ mod tree;
 
 pub use activity_bar::draw_activity_bar;
 pub use backend::TuiBackend;
+pub use board::{draw_board, tui_board_layout};
 pub use chart::{draw_chart, tui_chart_layout};
 pub use command_center::{draw_command_center, tui_command_center_layout};
 pub use completions::draw_completions;
