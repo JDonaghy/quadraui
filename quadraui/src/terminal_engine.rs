@@ -1238,6 +1238,69 @@ pub fn default_shell() -> String {
 mod tests {
     use super::*;
 
+    // ── Regression: vt100 0.15.2 wide-char column-boundary panic (#377) ─────
+
+    /// Feed wide Unicode characters to the vt100 parser such that a 2-cell
+    /// glyph straddles or lands exactly at the right column edge.  The
+    /// patched vt100 must NOT panic; before the patch both `screen.rs:934`
+    /// and `grid.rs:672` would fire `unwrap()` on `None`.
+    ///
+    /// We exercise three progressively harder layouts:
+    ///  1. Glyphs that fill a row exactly (no boundary straddle).
+    ///  2. A glyph whose first cell is the last column — forces `col_wrap`.
+    ///  3. Many glyphs across multiple rows, interspersed with CR/LF, to
+    ///     stress the scroll-path that triggers the grid.rs unwrap.
+    #[test]
+    fn vt100_wide_char_column_boundary_no_panic() {
+        // '日' is U+65E5, width=2.  Three raw UTF-8 bytes: 0xe6 0x97 0xa5.
+        let wide = "日";
+        // '→' is U+2192, width=1 (sanity filler between wide chars).
+        let narrow = "x";
+
+        // Case 1: 10-column terminal, fill with exactly 5 wide chars (10 cols).
+        {
+            let mut p = vt100::Parser::new(3, 10, 0);
+            let row: String = wide.repeat(5); // 10 cells, exactly full
+            p.process(row.as_bytes());
+            p.process(b"\r\n");
+            p.process(row.as_bytes());
+            // second row write must not panic even with a full-row wrap
+            let _ = p.screen().cell(0, 0);
+        }
+
+        // Case 2: 10-column terminal, 4 wide chars (8 cells) then one more
+        // wide char — the second cell of the 5th char would be col 9 → 10,
+        // which is out of bounds, triggering col_wrap → drawing_row_mut.
+        {
+            let mut p = vt100::Parser::new(3, 10, 0);
+            let four_wide: String = wide.repeat(4); // 8 cells
+            p.process(four_wide.as_bytes());
+            p.process(narrow.as_bytes()); // col 8, fills col 9 implicitly
+                                          // Now feed a wide char starting at col 9 (last col) — the second
+                                          // half would fall at col 10 → out of bounds → col_wrap fires.
+            p.process(wide.as_bytes()); // must not panic
+            let _ = p.screen().cell(0, 0);
+        }
+
+        // Case 3: stress-test with 80-column terminal and many wide chars
+        // across scrolling rows (exit-repaint scenario).
+        {
+            let mut p = vt100::Parser::new(24, 80, 0);
+            // 40 wide chars = 80 cells = exactly one full row
+            let full_row: String = wide.repeat(40);
+            for _ in 0..50 {
+                p.process(full_row.as_bytes());
+                p.process(b"\r\n");
+            }
+            // One more line where an odd wide char straddles the boundary.
+            // 39 wide chars (78 cells) + 1 narrow (col 78) → next wide char
+            // starts at col 79 (last col), second half would be at col 80.
+            let boundary_line = format!("{}{}{}", wide.repeat(39), narrow, wide);
+            p.process(boundary_line.as_bytes()); // must not panic
+            let _ = p.screen().cell(0, 0);
+        }
+    }
+
     #[test]
     fn xterm_256_system_colors() {
         // Colour 0 = black.
