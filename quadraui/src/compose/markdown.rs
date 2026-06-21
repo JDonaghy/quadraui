@@ -57,6 +57,7 @@
 //! assert!(result.line_scales[0] > 1.0); // heading
 //! ```
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::theme::Theme;
@@ -207,6 +208,238 @@ pub fn render_markdown_to_styled(input: &str, theme: &Theme) -> RenderedMarkdown
     }
 
     result
+}
+
+// ── Width-aware wrapped rendering ─────────────────────────────────────────
+
+/// Convert a markdown `input` string to [`RenderedMarkdown`] with word-wrap
+/// applied to body content so that all visual rows fit within `width`
+/// characters.
+///
+/// # Behaviour
+///
+/// - Each non-code body line is wrapped at word boundaries (the last space
+///   that falls within the first `width` characters).  A token longer than
+///   `width` is **hard-split** at exactly `width` characters rather than
+///   overflowing.
+/// - **Fenced code blocks are never wrapped.**  The opening fence (language
+///   header), every content line, and the closing fence are copied verbatim.
+///   The [`RenderedMarkdown::code_blocks`] side-channel indices are remapped
+///   to the new line positions so consumers remain correct.
+/// - Per-span styling (fg, bg, bold, italic, underline) is preserved when a
+///   span is split across a wrap boundary: both halves carry the original
+///   style flags.
+/// - The [`RenderedMarkdown::links`] side-channel is **not** preserved in the
+///   wrapped output (byte ranges would need complex remapping after wrapping).
+///   The underlined link spans are still visible in the output; only URL
+///   routing via the side-channel is absent.
+/// - `width == 0` delegates to [`render_markdown_to_styled`] unchanged.
+/// - Empty input produces empty output vectors (no-op).
+///
+/// # All-vectors-aligned invariant
+///
+/// `lines`, `line_text`, and `line_scales` are always the same length — one
+/// entry per visual row, including wrapped continuation rows.
+pub fn render_markdown_to_styled_wrapped(
+    input: &str,
+    theme: &Theme,
+    width: usize,
+) -> RenderedMarkdown {
+    if width == 0 {
+        return render_markdown_to_styled(input, theme);
+    }
+
+    let base = render_markdown_to_styled(input, theme);
+
+    if base.lines.is_empty() {
+        return base;
+    }
+
+    // Build the set of line indices that must NOT be word-wrapped.
+    // Every line that belongs to a fenced code block — opening fence (lang
+    // header), content lines, and closing fence — is exempt.
+    let mut no_wrap: HashSet<usize> = HashSet::new();
+    for cb in &base.code_blocks {
+        // For unclosed blocks, protect from fence_open to the last line.
+        let close = cb
+            .fence_close
+            .unwrap_or_else(|| base.lines.len().saturating_sub(1));
+        for i in cb.fence_open..=close {
+            no_wrap.insert(i);
+        }
+    }
+
+    let mut out = RenderedMarkdown::default();
+    // For each original line index, record the index of its first output
+    // line.  Used below to remap code_blocks indices.
+    let mut orig_to_out_start: Vec<usize> = Vec::with_capacity(base.lines.len());
+
+    for i in 0..base.lines.len() {
+        let styled = &base.lines[i];
+        let plain = &base.line_text[i];
+        let scale = base.line_scales[i];
+
+        orig_to_out_start.push(out.lines.len());
+
+        if no_wrap.contains(&i) || plain.chars().count() <= width {
+            // No wrapping needed: copy the line as-is.
+            out.lines.push(styled.clone());
+            out.line_text.push(plain.clone());
+            out.line_scales.push(scale);
+        } else {
+            // Wrap this line into one or more visual rows.
+            let segments = wrap_plain_line(plain, width);
+            for (seg_idx, &(start_char, char_count)) in segments.iter().enumerate() {
+                let seg_styled = extract_span_slice(&styled.spans, start_char, char_count);
+                let seg_plain: String = plain.chars().skip(start_char).take(char_count).collect();
+                // First segment keeps the original scale (e.g. heading scale).
+                // Continuation rows use body scale 1.0.
+                let seg_scale = if seg_idx == 0 { scale } else { 1.0 };
+                out.lines.push(seg_styled);
+                out.line_text.push(seg_plain);
+                out.line_scales.push(seg_scale);
+            }
+        }
+    }
+
+    // Remap code_blocks to the new output line indices.  Code-block lines
+    // are never wrapped (they are in the no_wrap set), so each maps 1-to-1.
+    out.code_blocks = base
+        .code_blocks
+        .iter()
+        .map(|cb| CodeBlockRange {
+            fence_open: orig_to_out_start[cb.fence_open],
+            fence_close: cb.fence_close.map(|c| orig_to_out_start[c]),
+            lang: cb.lang.clone(),
+        })
+        .collect();
+
+    // links side-channel: not remapped — see doc comment above.
+
+    out
+}
+
+// ── Wrap helpers ───────────────────────────────────────────────────────────
+
+/// Word-wrap a plain-text string to `width` characters per visual row.
+///
+/// Returns `Vec<(start_char, char_count)>` — one entry per visual row.
+/// Each pair describes a slice of the original string in **character** (not
+/// byte) coordinates.
+///
+/// Wrap behaviour:
+/// - Wraps at the **last space** that falls within the first `width` chars of
+///   the current window.  The space itself is consumed and does not appear in
+///   either row.
+/// - If no such space exists the segment is **hard-split** at exactly `width`
+///   characters.
+/// - `width == 0` is handled by the caller (`render_markdown_to_styled_wrapped`
+///   returns early); passing `0` here returns a single segment for the whole
+///   string.
+fn wrap_plain_line(plain: &str, width: usize) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = plain.chars().collect();
+    let len = chars.len();
+
+    if width == 0 || len <= width {
+        return vec![(0, len)];
+    }
+
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let remaining = len - pos;
+        if remaining <= width {
+            segments.push((pos, remaining));
+            break;
+        }
+
+        // `remaining > width`, so `pos + width < len` — the window is valid.
+        let window_end = pos + width;
+
+        // Find the last space in chars[pos .. pos+width].
+        // Exclude relative position 0 so we never produce an empty leading row.
+        let last_space_rel = chars[pos..window_end]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|&(rel, &ch)| ch == ' ' && rel > 0)
+            .map(|(rel, _)| rel);
+
+        match last_space_rel {
+            Some(rel) => {
+                // Wrap before the space: include chars[pos .. pos+rel].
+                segments.push((pos, rel));
+                pos += rel + 1; // +1 to consume (skip) the space
+            }
+            None => {
+                // No word boundary in the window — hard-split at width.
+                segments.push((pos, width));
+                pos += width;
+            }
+        }
+    }
+
+    // Guarantee at least one segment even for empty input.
+    if segments.is_empty() {
+        segments.push((0, 0));
+    }
+
+    segments
+}
+
+/// Extract the styled spans that cover the character range
+/// `[start_char, start_char + char_count)` in the concatenation of `spans`.
+///
+/// Assumes that the concatenation of all span texts equals the line's plain
+/// text (the invariant maintained throughout this module).  When a span
+/// straddles a boundary it is split: both halves carry the original style
+/// flags.  Returns an empty [`StyledText`] when `char_count == 0`.
+fn extract_span_slice(spans: &[StyledSpan], start_char: usize, char_count: usize) -> StyledText {
+    let end_char = start_char + char_count;
+    let mut result_spans: Vec<StyledSpan> = Vec::new();
+    let mut cursor = 0usize; // char position of the start of the current span
+
+    for span in spans {
+        let span_chars: Vec<char> = span.text.chars().collect();
+        let span_len = span_chars.len();
+        let span_end = cursor + span_len;
+
+        // Skip spans entirely before the requested range.
+        if span_end <= start_char {
+            cursor = span_end;
+            continue;
+        }
+        // Stop once we've passed the requested range.
+        if cursor >= end_char {
+            break;
+        }
+
+        // Compute the overlap in absolute char coordinates, then convert
+        // to span-local coordinates.
+        let overlap_start = start_char.max(cursor);
+        let overlap_end = end_char.min(span_end);
+        let local_start = overlap_start - cursor;
+        let local_end = overlap_end - cursor;
+
+        let text: String = span_chars[local_start..local_end].iter().collect();
+        if !text.is_empty() {
+            result_spans.push(StyledSpan {
+                text,
+                fg: span.fg,
+                bg: span.bg,
+                bold: span.bold,
+                italic: span.italic,
+                underline: span.underline,
+            });
+        }
+
+        cursor = span_end;
+    }
+
+    StyledText {
+        spans: result_spans,
+    }
 }
 
 // ── Fence detection ────────────────────────────────────────────────────────
@@ -1559,6 +1792,243 @@ mod tests {
         );
         // plain text is "alpha alpha" (11 bytes); link must be at 6..11.
         assert_eq!(range.start, 6, "link must start after leading 'alpha '");
+    }
+
+    // ── render_markdown_to_styled_wrapped ──────────────────────────────
+
+    #[test]
+    fn wrapped_empty_input_is_no_op() {
+        let theme = Theme::default();
+        let r = render_markdown_to_styled_wrapped("", &theme, 40);
+        assert!(r.lines.is_empty(), "empty input must produce no lines");
+        assert!(r.line_text.is_empty());
+        assert!(r.line_scales.is_empty());
+    }
+
+    #[test]
+    fn wrapped_short_line_unchanged() {
+        let theme = Theme::default();
+        // "Hello" fits within width=40.
+        let base = render_markdown_to_styled("Hello", &theme);
+        let wrapped = render_markdown_to_styled_wrapped("Hello", &theme, 40);
+        assert_eq!(wrapped.lines.len(), 1);
+        assert_eq!(wrapped.line_text[0], base.line_text[0]);
+    }
+
+    #[test]
+    fn wrapped_long_paragraph_produces_multiple_rows() {
+        let theme = Theme::default();
+        let input =
+            "This is a long sentence that should be wrapped at a relatively small width here.";
+        let r = render_markdown_to_styled_wrapped(input, &theme, 20);
+        assert!(
+            r.lines.len() > 1,
+            "long line should produce more than one visual row"
+        );
+        // All three primary vectors must be length-aligned.
+        assert_eq!(
+            r.lines.len(),
+            r.line_text.len(),
+            "line_text length mismatch"
+        );
+        assert_eq!(
+            r.lines.len(),
+            r.line_scales.len(),
+            "line_scales length mismatch"
+        );
+        // Every individual row must fit within the requested width.
+        for (i, lt) in r.line_text.iter().enumerate() {
+            assert!(
+                lt.chars().count() <= 20,
+                "wrapped row {i} exceeds width 20: {:?}",
+                lt
+            );
+        }
+        // Joining the rows with spaces should reconstruct the original words.
+        let joined = r.line_text.join(" ");
+        assert!(
+            joined.contains("long sentence"),
+            "original words must survive wrapping"
+        );
+    }
+
+    #[test]
+    fn wrapped_overlong_word_hard_splits() {
+        let theme = Theme::default();
+        // Single 20-char word with no spaces — must hard-split at width=10.
+        let input = "abcdefghijklmnopqrst";
+        let r = render_markdown_to_styled_wrapped(input, &theme, 10);
+        assert!(
+            r.lines.len() >= 2,
+            "overlong word must produce at least 2 rows after hard split"
+        );
+        assert_eq!(
+            r.line_text[0].chars().count(),
+            10,
+            "first row must be exactly width chars for a hard split"
+        );
+        assert_eq!(r.line_text[1], "klmnopqrst");
+        // All vectors length-aligned.
+        assert_eq!(r.lines.len(), r.line_text.len());
+        assert_eq!(r.lines.len(), r.line_scales.len());
+    }
+
+    #[test]
+    fn wrapped_code_block_not_wrapped() {
+        let theme = Theme::default();
+        // Code-block content is a single very long line; it must not be wrapped.
+        let long_code =
+            "fn very_long_function_name_that_exceeds_any_reasonable_width(arg: usize) -> usize { arg }";
+        let input = format!("```rust\n{long_code}\n```");
+        let base = render_markdown_to_styled(&input, &theme);
+        let wrapped = render_markdown_to_styled_wrapped(&input, &theme, 20);
+        // Wrapping must not expand the code block — same number of total lines.
+        assert_eq!(
+            base.lines.len(),
+            wrapped.lines.len(),
+            "code block must not be wrapped into extra rows"
+        );
+        // The content line (index 1) must be verbatim.
+        assert_eq!(
+            base.line_text[1], wrapped.line_text[1],
+            "code-block content must be unchanged by wrapping"
+        );
+        // code_blocks side-channel must still be present and correct.
+        assert_eq!(wrapped.code_blocks.len(), 1);
+        assert_eq!(wrapped.code_blocks[0].fence_open, 0);
+        assert_eq!(wrapped.code_blocks[0].fence_close, Some(2));
+    }
+
+    #[test]
+    fn wrapped_code_block_indices_remapped_when_body_lines_precede_it() {
+        let theme = Theme::default();
+        // A long body paragraph (will wrap to multiple rows) followed by a code block.
+        // The code_blocks indices in the wrapped output must point to the correct rows.
+        let input =
+            "This paragraph is longer than twenty characters and will wrap.\n```rust\nlet x = 1;\n```";
+        let wrapped = render_markdown_to_styled_wrapped(input, &theme, 20);
+        assert_eq!(wrapped.code_blocks.len(), 1);
+        let cb = &wrapped.code_blocks[0];
+        // The opening fence must be in the wrapped output at the correct row.
+        assert_eq!(
+            wrapped.line_text[cb.fence_open], "  rust",
+            "fence_open must point to the lang-header row"
+        );
+        if let Some(close) = cb.fence_close {
+            assert!(
+                wrapped.line_text[close].is_empty(),
+                "fence_close must point to the blank closing row"
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_styled_spans_preserved_at_wrap_boundary() {
+        let theme = Theme::default();
+        // "aaa **bold text** bbb" → plain = "aaa bold text bbb" (17 chars)
+        // At width=8: wrap segments are "aaa" (3), "bold" (4), "text bbb" (8).
+        // "bold" and "text" are both inside the bold span.
+        let r = render_markdown_to_styled_wrapped("aaa **bold text** bbb", &theme, 8);
+        // Must produce 3 rows.
+        assert_eq!(
+            r.lines.len(),
+            3,
+            "expected 3 visual rows; got: {:?}",
+            r.line_text
+        );
+        assert_eq!(r.line_text[0], "aaa");
+        assert_eq!(r.line_text[1], "bold");
+        assert_eq!(r.line_text[2], "text bbb");
+        // Row 1 must contain a bold span with text "bold".
+        assert!(
+            r.lines[1].spans.iter().any(|s| s.bold && s.text == "bold"),
+            "bold styling must be present on row 1; spans: {:?}",
+            r.lines[1].spans
+        );
+        // Row 2 must start with a bold span carrying "text".
+        assert!(
+            r.lines[2].spans.iter().any(|s| s.bold && s.text == "text"),
+            "bold must continue at start of row 2; spans: {:?}",
+            r.lines[2].spans
+        );
+        // " bbb" at the end of row 2 must NOT be bold.
+        let bbb_span = r.lines[2]
+            .spans
+            .iter()
+            .find(|s| s.text.trim() == "bbb")
+            .expect("expected a span containing 'bbb'");
+        assert!(
+            !bbb_span.bold,
+            "non-bold text after bold span must stay non-bold"
+        );
+    }
+
+    #[test]
+    fn wrapped_all_vectors_length_aligned_for_various_inputs() {
+        let inputs: &[&str] = &[
+            "",
+            "short",
+            "a very long line that should definitely be wrapped because it exceeds the width",
+            "# Heading that is also quite long and might wrap at small widths",
+            "- bullet item that is a bit on the long side",
+            "1. numbered item with some extra text to trigger wrapping",
+            "> blockquote with plenty of words to cause a line break",
+            "```rust\nfn main() {}\n```",
+            "paragraph\n```rust\ncode\n```\nmore paragraph",
+        ];
+        let theme = Theme::default();
+        for input in inputs {
+            let r = render_markdown_to_styled_wrapped(input, &theme, 30);
+            assert_eq!(
+                r.lines.len(),
+                r.line_text.len(),
+                "line_text mismatch for {input:?}"
+            );
+            assert_eq!(
+                r.lines.len(),
+                r.line_scales.len(),
+                "line_scales mismatch for {input:?}"
+            );
+        }
+    }
+
+    // ── wrap_plain_line unit tests ─────────────────────────────────────
+
+    #[test]
+    fn wrap_plain_line_short_input_unchanged() {
+        let segs = wrap_plain_line("hello", 10);
+        assert_eq!(segs, vec![(0, 5)]);
+    }
+
+    #[test]
+    fn wrap_plain_line_exact_width_unchanged() {
+        let segs = wrap_plain_line("1234567890", 10);
+        assert_eq!(segs, vec![(0, 10)]);
+    }
+
+    #[test]
+    fn wrap_plain_line_wraps_at_space() {
+        // "hello world" (11 chars) at width=8: space at position 5.
+        // chars[0..8] = "hello wo" → last space at rel=5
+        // Segment 1: (0, 5) = "hello"
+        // Segment 2: (6, 5) = "world"
+        let segs = wrap_plain_line("hello world", 8);
+        assert_eq!(segs[0], (0, 5));
+        assert_eq!(segs[1], (6, 5));
+    }
+
+    #[test]
+    fn wrap_plain_line_hard_splits_no_space() {
+        // No spaces → hard split every width chars.
+        let segs = wrap_plain_line("abcdefghijklmnopqrst", 10);
+        assert_eq!(segs[0], (0, 10));
+        assert_eq!(segs[1], (10, 10));
+    }
+
+    #[test]
+    fn wrap_plain_line_empty_string() {
+        let segs = wrap_plain_line("", 10);
+        assert_eq!(segs, vec![(0, 0)]);
     }
 
     // ── Blockquotes ────────────────────────────────────────────────────

@@ -286,7 +286,9 @@ pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
-pub use compose::markdown::{render_markdown_to_styled, CodeBlockRange, RenderedMarkdown};
+pub use compose::markdown::{
+    render_markdown_to_styled, render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown,
+};
 pub use compose::{
     AppShell, AppShellEvent, AppShellLayout, BackendWidget, BottomPanelConfig,
     BottomPanelController, BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController,
