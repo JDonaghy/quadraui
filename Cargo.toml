@@ -6,3 +6,10 @@ resolver = "2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/JDonaghy/quadraui"
+
+# Patch vt100 0.15.2 to replace the two panicking .unwrap() calls on
+# drawing_cell()/drawing_row_mut() that fire on wide-char continuation cells
+# at a column boundary (issue #377). A straight vt100 bump to 0.16 is
+# blocked by ratatui 0.29's exact `unicode-width = "=0.2.0"` pin.
+[patch.crates-io]
+vt100 = { path = "vendor/vt100-0.15.2-patched" }
