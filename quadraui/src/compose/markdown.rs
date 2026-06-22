@@ -281,6 +281,12 @@ pub fn render_markdown_to_styled_wrapped(
 
         orig_to_out_start.push(out.lines.len());
 
+        // A blockquote line's plain text always starts with │ (U+2502).  When
+        // wrapping produces continuation rows we must re-prepend the prefix so
+        // every visual row carries the bar glyph, as required by the acceptance
+        // criteria.
+        let is_blockquote = plain.starts_with('\u{2502}');
+
         if no_wrap.contains(&i) || plain.chars().count() <= width {
             // No wrapping needed: copy the line as-is.
             out.lines.push(styled.clone());
@@ -295,8 +301,28 @@ pub fn render_markdown_to_styled_wrapped(
                 // First segment keeps the original scale (e.g. heading scale).
                 // Continuation rows use body scale 1.0.
                 let seg_scale = if seg_idx == 0 { scale } else { 1.0 };
-                out.lines.push(seg_styled);
-                out.line_text.push(seg_plain);
+                // Blockquote continuation rows: re-prepend │ (U+2502 + space)
+                // so the bar glyph appears on every visual row, not just the
+                // first.  The first row already carries the prefix via the
+                // base render output.
+                if seg_idx > 0 && is_blockquote {
+                    let bq_prefix = "\u{2502} ";
+                    let prefix_span = StyledSpan {
+                        text: bq_prefix.to_string(),
+                        fg: Some(theme.link_fg),
+                        bg: None,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                    };
+                    let mut final_spans = vec![prefix_span];
+                    final_spans.extend(seg_styled.spans);
+                    out.lines.push(StyledText { spans: final_spans });
+                    out.line_text.push(format!("{bq_prefix}{seg_plain}"));
+                } else {
+                    out.lines.push(seg_styled);
+                    out.line_text.push(seg_plain);
+                }
                 out.line_scales.push(seg_scale);
             }
         }
@@ -1990,6 +2016,44 @@ mod tests {
                 "line_scales mismatch for {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn wrapped_blockquote_continuation_rows_carry_pipe_glyph() {
+        let theme = Theme::default();
+        // A long blockquote that will produce multiple visual rows at width=20.
+        // Plain text is "│ This is a long blockquote that will definitely wrap"
+        // (~52 chars), so it must wrap.
+        let input = "> This is a long blockquote that will definitely wrap";
+        let r = render_markdown_to_styled_wrapped(input, &theme, 20);
+        assert!(
+            r.lines.len() >= 2,
+            "long blockquote should produce ≥2 visual rows; got: {:?}",
+            r.line_text
+        );
+        // Every row (including continuation rows) must carry the │ glyph in
+        // its plain text.
+        for (i, lt) in r.line_text.iter().enumerate() {
+            assert!(
+                lt.starts_with('\u{2502}'),
+                "blockquote row {i} must start with │; got: {:?}",
+                lt
+            );
+        }
+        // Every row must have a link_fg span containing the │ glyph.
+        for (i, styled) in r.lines.iter().enumerate() {
+            assert!(
+                styled
+                    .spans
+                    .iter()
+                    .any(|s| s.fg == Some(theme.link_fg) && s.text.contains('\u{2502}')),
+                "blockquote row {i} must have a link_fg │ span; spans: {:?}",
+                styled.spans
+            );
+        }
+        // All three primary vectors must remain length-aligned.
+        assert_eq!(r.lines.len(), r.line_text.len());
+        assert_eq!(r.lines.len(), r.line_scales.len());
     }
 
     // ── wrap_plain_line unit tests ─────────────────────────────────────
