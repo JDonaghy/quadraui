@@ -113,6 +113,8 @@ Scope is `quadraui` for library changes, `kubeui` / `kubeui-gtk` / `kubeui-core`
 
 Examples follow a paired pattern: one `AppLogic` impl in `examples/common/<shape>.rs`, one ~10-line runner per backend. See `examples/tui_pipeline.rs` + `examples/gtk_pipeline.rs` as reference.
 
+**Every TUI example also ships an automated black-box test** (the acceptance bar — #304). A runnable demo proves it compiles + paints; a driver test proves it *behaves* and catches regressions with no human re-running it. A new or changed `tui_*` example → a **`TuiDriver` end-to-end test** in `tests/tui_example_driver.rs` (Tier-1, #300): build the example's `AppLogic` / `ShellApp`, drive the real `event → handle → render` path against the headless `TestBackend`, and assert with `find()` + `screen_contains()` — **never hardcode coordinates**. (`quadraui::tui::testing::{TuiDriver, driver_with_shell}`.) Primitive paint/click changes stay covered by the round-trip harness (Tier-2, above); GTK-example coverage waits on `GtkDriver` (#301) — **TUI only for now**. The tier-by-tier *how* lives in [`quadraui/docs/TESTING.md`](quadraui/docs/TESTING.md); this is the *bar*. The **adversarial reviewer enforces it** — a PR that adds or changes a `tui_*` example without its driver test should be rejected.
+
 ## Event model: TextCopied vs ClipboardPaste
 
 Two clipboard events that must not be conflated:
