@@ -47,6 +47,12 @@ contract (zero out the offset, swap a +/-, paint at the wrong y),
 observe at least one test fail, restore. A green test that doesn't
 catch its bug class is theatre.
 
+## Acceptance bar for new code
+
+**Every PR that adds or changes a primitive (`<name>.rs`) or an example (`examples/tui_*.rs` / `examples/gtk_*.rs`) must include the matching test from the coverage taxonomy above** — the paint/click round-trip for a primitive, the example-driver round-trip for an example (TUI today via `tests/tui_example_driver.rs`; GTK once `GtkDriver` lands, #301). **A PR missing its test is rejected at review.** This is enforced by the adversarial reviewer, which reads the project rules in [`CLAUDE.md`](../../CLAUDE.md) (see *"Demos are mandatory for visual features"*).
+
+Tests must use the **high-level driver API** — `find("text")` to locate a painted target, then `click(x, y)` with the coords it returns, plus `screen_contains()`, `press()`, `type_char()`. **Hardcoded coordinates are brittle and out of policy** — locate, don't guess. A coordinate that's correct today silently rots the first time padding, a label, or a layout metric changes.
+
 ## Example-driver tests (end-to-end, in-process)
 
 `quadraui::tui::testing::TuiDriver` drives a whole `AppLogic` impl — the
