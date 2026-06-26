@@ -6,17 +6,24 @@
 //!
 //! ## Per-state colouring
 //!
-//! | State              | Foreground             | Background         |
-//! |--------------------|------------------------|--------------------|
-//! | Action, enabled    | `theme.foreground`     | `bar_bg`           |
-//! | Action, disabled   | `theme.muted_fg`       | `bar_bg`           |
-//! | Action, is_active  | `theme.foreground`     | `theme.selected_bg`|
-//! | Action, hovered    | `theme.hover_fg`       | `theme.hover_bg`   |
-//! | Action, pressed    | `theme.foreground`     | `theme.selected_bg`|
-//! | Separator          | `theme.muted_fg`       | `bar_bg`           |
-//! | Label              | `Label.fg` or `muted_fg`| `bar_bg`          |
+//! Priority (highest first): pressed → hovered → focused → is_active → enabled.
+//!
+//! | State              | Foreground             | Background          |
+//! |--------------------|------------------------|---------------------|
+//! | Action, enabled    | `theme.foreground`     | `bar_bg`            |
+//! | Action, disabled   | `theme.muted_fg`       | `bar_bg`            |
+//! | Action, is_active  | `theme.foreground`     | `theme.selected_bg` |
+//! | Action, focused    | `theme.foreground`     | `theme.accent_bg`   |
+//! | Action, hovered    | `theme.hover_fg`       | `theme.hover_bg`    |
+//! | Action, pressed    | `theme.foreground`     | `theme.selected_bg` |
+//! | Separator          | `theme.muted_fg`       | `bar_bg`            |
+//! | Label              | `Label.fg` or `muted_fg`| `bar_bg`           |
 //!
 //! `bar_bg` is `Toolbar.bg.unwrap_or(theme.header_bg)`.
+//!
+//! Focus is set via [`crate::primitives::toolbar::Toolbar::focused_index`].
+//! The host app advances focus with Tab / Shift-Tab and activates with
+//! Enter / Space; this rasteriser is purely declarative.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -107,6 +114,7 @@ pub fn draw_toolbar(
     let hover_bg = qc(theme.hover_bg);
     let hover_fg = qc(theme.hover_fg);
     let active_bg = qc(theme.selected_bg);
+    let focus_bg = qc(theme.accent_bg);
 
     // Vertically centre text on rects taller than 1 row. With even
     // heights the row above centre wins (matches GTK's
@@ -142,12 +150,16 @@ pub fn draw_toolbar(
             } => {
                 let is_hovered = *enabled && hovered_id == Some(id);
                 let is_pressed = *enabled && pressed_id == Some(id);
+                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
+                // Priority: pressed > hovered > focused > is_active > enabled.
                 let (cell_fg, cell_bg) = if !*enabled {
                     (muted, bar_bg)
                 } else if is_pressed || *is_active {
                     (fg, active_bg)
                 } else if is_hovered {
                     (hover_fg, hover_bg)
+                } else if is_focused {
+                    (fg, focus_bg)
                 } else {
                     (fg, bar_bg)
                 };
@@ -263,6 +275,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Refine", true)],
             bg: None,
+            focused_index: None,
         };
         let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // First two cells should be `[` then ` `.
@@ -278,6 +291,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
+            focused_index: None,
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // Click inside the first button.
@@ -304,6 +318,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Refine", false)],
             bg: None,
+            focused_index: None,
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         let b = layout.visible_items[0].bounds;
@@ -318,6 +333,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Separator],
             bg: None,
+            focused_index: None,
         };
         let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // First cell is space, second is the pipe char.
@@ -336,6 +352,7 @@ mod tests {
                 fg: None,
             }],
             bg: None,
+            focused_index: None,
         };
         let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), '2');
@@ -352,6 +369,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
+            focused_index: None,
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
@@ -369,6 +387,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
+            focused_index: None,
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
 
@@ -401,6 +420,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
+            focused_index: None,
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // Row 1 col 0 should be `[`.
@@ -418,6 +438,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
+            focused_index: None,
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         let r = layout.visible_items[0].bounds;
@@ -440,6 +461,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Separator],
             bg: None,
+            focused_index: None,
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // The │ glyph should appear on every row at column 1.
@@ -469,6 +491,7 @@ mod tests {
                 tooltip: String::new(),
             }],
             bg: None,
+            focused_index: None,
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(layout.visible_items[0].bounds.width, 5.0);
@@ -499,6 +522,7 @@ mod tests {
                 tooltip: String::new(),
             }],
             bg: None,
+            focused_index: None,
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9

@@ -170,6 +170,7 @@ impl FormGroupsApp {
                             },
                         ],
                         bg: None,
+                        focused_index: None,
                     }),
                     hint: StyledText::default(),
                     disabled: false,

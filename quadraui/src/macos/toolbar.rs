@@ -3,9 +3,13 @@
 //! Paints a horizontal strip of clickable action buttons using Core
 //! Graphics + Core Text. Mirrors the TUI / GTK rasterisers' look:
 //! enabled actions render in `theme.foreground`, disabled in
-//! `theme.muted_fg`, hovered actions get a `theme.hover_bg` tint, and
-//! active / pressed actions get `theme.selected_bg`. Separators draw
-//! as a thin vertical line; labels paint as plain text.
+//! `theme.muted_fg`, hovered actions get a `theme.hover_bg` tint,
+//! active / pressed actions get `theme.selected_bg`, and
+//! keyboard-focused actions (via `Toolbar::focused_index`) receive a
+//! `theme.accent_fg`-coloured rounded-rect focus ring. Separators
+//! draw as a thin vertical line; labels paint as plain text.
+//!
+//! Priority (highest first): pressed → hovered → focused → is_active → enabled.
 //!
 //! Per D6: layout policy lives in [`crate::primitives::toolbar::Toolbar::layout`];
 //! this rasteriser paints what that returns and provides the
@@ -129,7 +133,9 @@ pub unsafe fn draw_toolbar(
             } => {
                 let is_hovered = *enabled && hovered_id == Some(id);
                 let is_pressed = *enabled && pressed_id == Some(id);
+                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
 
+                // Background fill: pressed/active > hovered > no fill.
                 if is_pressed || *is_active {
                     fill_rect(
                         ctx,
@@ -147,6 +153,18 @@ pub unsafe fn draw_toolbar(
                         item_w - 4.0,
                         item_h - 4.0,
                         theme.hover_bg,
+                    );
+                }
+
+                // Focus ring: drawn when focused and not already
+                // dominated by hover / pressed highlight.
+                if is_focused && !is_hovered && !is_pressed && !*is_active {
+                    set_stroke_color(ctx, theme.accent_fg);
+                    CGContextSetLineWidth(ctx, 1.0);
+                    // Simple rectangle focus ring (2 px inset on each side).
+                    CGContextStrokeRect(
+                        ctx,
+                        cgrect(item_x + 2.0, item_y + 2.0, item_w - 4.0, item_h - 4.0),
                     );
                 }
 
@@ -241,4 +259,5 @@ extern "C" {
         y: core_graphics::base::CGFloat,
     );
     fn CGContextStrokePath(c: CGContextRef);
+    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }

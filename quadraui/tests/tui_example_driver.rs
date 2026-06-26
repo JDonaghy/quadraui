@@ -12,6 +12,10 @@
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::NamedKey;
 
+#[path = "../examples/common/toolbar_app.rs"]
+mod toolbar_app;
+use toolbar_app::ToolbarApp;
+
 #[path = "../examples/common/demo.rs"]
 mod demo;
 #[path = "../examples/common/mini_app.rs"]
@@ -417,4 +421,143 @@ fn tab_group_q_exits() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the tab group demo");
+}
+
+// ─── ToolbarApp: focus, Tab, Enter, click ───────────────────────────────────
+
+#[test]
+fn toolbar_initial_screen_paints_action_buttons() {
+    // Confirm the four action-button labels are all visible after the
+    // first render — no interaction required.
+    let driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    let screen = driver.screen();
+    assert!(driver.screen_contains("Pause"), "Pause button:\n{screen}");
+    assert!(driver.screen_contains("Filter"), "Filter button:\n{screen}");
+    assert!(driver.screen_contains("Reset"), "Reset button:\n{screen}");
+    // "Debug" is disabled but must still be visible (dimmed).
+    assert!(
+        driver.screen_contains("Debug"),
+        "Debug (disabled) button:\n{screen}"
+    );
+}
+
+#[test]
+fn toolbar_tab_moves_focus_to_first_enabled_button() {
+    // Initially no button is focused. First Tab should land on the first
+    // *enabled* action button (index 1: "Pause", because "Continue" starts
+    // disabled when running == true).
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    driver.press_named(NamedKey::Tab);
+    // Status bar should confirm what was focused.
+    assert!(
+        driver.screen_contains("Focused:"),
+        "after Tab the status should say 'Focused: …':\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn toolbar_tab_cycles_through_enabled_buttons() {
+    // Pressing Tab repeatedly should cycle focus through all enabled buttons
+    // and eventually wrap back to the first one. We don't assert exact order
+    // here — just that each Tab changes the status message.
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    driver.press_named(NamedKey::Tab);
+    let after_tab1 = driver.screen();
+    driver.press_named(NamedKey::Tab);
+    let after_tab2 = driver.screen();
+    driver.press_named(NamedKey::Tab);
+    let after_tab3 = driver.screen();
+
+    // Each Tab should produce a different status line (focus moved).
+    assert_ne!(
+        after_tab1, after_tab2,
+        "second Tab should move focus to a different button"
+    );
+    assert_ne!(after_tab2, after_tab3, "third Tab should move focus again");
+}
+
+#[test]
+fn toolbar_shift_tab_goes_backward() {
+    // Pressing Tab then Shift-Tab should move focus forward then back,
+    // ending up on the same button as the first Tab.
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    driver.press_named(NamedKey::Tab);
+    let after_tab = driver.screen();
+
+    driver.press_named(NamedKey::Tab);
+    // Now focused on the second button — Shift-Tab should go back.
+    driver.dispatch(quadraui::UiEvent::KeyPressed {
+        key: quadraui::Key::Named(NamedKey::Tab),
+        modifiers: quadraui::Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+        repeat: false,
+    });
+
+    let after_shift_tab = driver.screen();
+    assert_eq!(
+        after_tab, after_shift_tab,
+        "Shift-Tab should return focus to the same button Tab first landed on"
+    );
+}
+
+#[test]
+fn toolbar_enter_activates_focused_button() {
+    // Tab to first focused button (Pause in the default running==true
+    // state), then Enter — the status bar should reflect the Pause action.
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    driver.press_named(NamedKey::Tab);
+    // First focused button when running==true is "Pause" (index 1).
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Paused"),
+        "Enter on focused Pause button should show 'Paused' in status:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn toolbar_disabled_buttons_skipped_by_tab() {
+    // The "Debug" button is always disabled. Tab should never produce
+    // a status line that says "Focused: Debug".
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    // Press Tab enough times to wrap around all focusable buttons.
+    for _ in 0..10 {
+        driver.press_named(NamedKey::Tab);
+        assert!(
+            !driver.screen_contains("Focused: Debug"),
+            "Tab must never focus the disabled Debug button:\n{}",
+            driver.screen()
+        );
+    }
+}
+
+#[test]
+fn toolbar_click_fires_action_without_focus() {
+    // Clicking a visible button directly (no Tab needed) should fire the
+    // action — hover/click path is independent of keyboard focus.
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("Filter")
+        .unwrap_or_else(|| panic!("Filter button must be visible:\n{before}"));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("Filter"),
+        "clicking Filter should update the status:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn toolbar_q_exits() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the toolbar demo");
 }

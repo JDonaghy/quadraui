@@ -264,6 +264,7 @@ mod tests {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![mk_action("a", "Refine"), mk_action("b", "Drop")],
                 bg: None,
+                focused_index: None,
             }),
             toolbar_height: None,
         }
@@ -316,6 +317,7 @@ mod tests {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![], // empty!
                 bg: None,
+                focused_index: None,
             }),
             toolbar_height: None,
         };

@@ -822,6 +822,7 @@ mod tests {
                 },
             ],
             bg: None,
+            focused_index: None,
         });
 
         // Clicking the first button should emit ToolbarButtonClicked with
@@ -868,6 +869,7 @@ mod tests {
                 tooltip: String::new(),
             }],
             bg: None,
+            focused_index: None,
         });
 
         // form_click_event matches by id, not by enabled state.

@@ -71,6 +71,20 @@ pub struct Toolbar {
     /// toolbar reads as foreground chrome).
     #[serde(default)]
     pub bg: Option<Color>,
+    /// Index of the keyboard-focused button within [`Self::buttons`].
+    ///
+    /// When `Some(i)`, backends render the button at that index with a
+    /// distinct focus highlight (e.g. accent-coloured background on TUI,
+    /// a focus ring on GTK/macOS) so keyboard users know which button
+    /// Enter or Space will activate.
+    ///
+    /// The host app is responsible for advancing this via Tab / Shift-Tab
+    /// and activating via Enter / Space. Only `Action` buttons with
+    /// `enabled == true` should ever be assigned here; rasterisers skip
+    /// the focus highlight silently if the index points at a non-action
+    /// or disabled item.
+    #[serde(default)]
+    pub focused_index: Option<usize>,
 }
 
 /// One item in a [`Toolbar`].
@@ -317,6 +331,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(layout.visible_items.is_empty());
@@ -329,6 +344,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert_eq!(layout.visible_items.len(), 2);
@@ -345,6 +361,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("refine", "Refine", true)],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         let r = layout.visible_items[0].bounds;
@@ -361,6 +378,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("refine", "Refine", false)],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(!layout.visible_items[0].clickable);
@@ -380,6 +398,7 @@ mod tests {
                 },
             ],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(!layout.visible_items[0].clickable);
@@ -407,6 +426,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_wide("a"), mk_wide("b")],
             bg: None,
+            focused_index: None,
         };
         // Use a fixed 6-cell measurer so the second button is clipped.
         let measure = |_: &ToolbarButton| ToolbarItemMeasure::new(6.0);
@@ -426,6 +446,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(0.0, 0.0, 0.0, 1.0, cell_measure());
         assert_eq!(layout.visible_items.len(), 1);
@@ -441,6 +462,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
+            focused_index: None,
         };
         let layout = bar.layout(10.0, 5.0, 80.0, 1.0, cell_measure());
         assert_eq!(layout.bar_bounds.x, 10.0);
@@ -481,6 +503,7 @@ mod tests {
                 },
             ],
             bg: Some(Color::rgb(40, 40, 40)),
+            focused_index: None,
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: Toolbar = serde_json::from_str(&json).unwrap();

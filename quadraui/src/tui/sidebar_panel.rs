@@ -101,6 +101,7 @@ mod tests {
                     tooltip: String::new(),
                 }],
                 bg: None,
+                focused_index: None,
             }),
             toolbar_height: None,
         }
