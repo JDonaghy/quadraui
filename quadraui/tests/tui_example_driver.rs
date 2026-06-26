@@ -18,6 +18,8 @@ use toolbar_app::ToolbarApp;
 
 #[path = "../examples/common/demo.rs"]
 mod demo;
+#[path = "../examples/common/dialog_table_demo.rs"]
+mod dialog_table_demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
 #[path = "../examples/common/panel_app.rs"]
@@ -32,6 +34,7 @@ mod tab_group_demo;
 mod text_input_demo;
 
 use demo::AppState;
+use dialog_table_demo::DialogTableDemo;
 use mini_app::MiniApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
@@ -355,6 +358,66 @@ fn shell_runner_path_drag_and_ctrl_c_copies_text() {
         screen.contains("quick") || screen.contains("brown"),
         "copied preview should contain selected text:\n{screen}"
     );
+}
+
+// ─── DialogTableDemo (issue #225): table layout in dialog ───────────────────
+
+/// Initial screen renders dialog title and table headers.
+///
+/// Verifies that the `DialogTable` rasteriser paints the column header labels
+/// and at least one data row. Uses a wide terminal (100 cols) so the table is
+/// not clipped.
+#[test]
+fn dialog_table_initial_screen_paints_headers_and_rows() {
+    let driver = TuiDriver::new(DialogTableDemo::new(), 100, 30);
+    let screen = driver.screen();
+    // Title.
+    assert!(
+        driver.screen_contains("Keybindings"),
+        "dialog title should appear:\n{screen}"
+    );
+    // Column headers.
+    assert!(
+        driver.screen_contains("Key"),
+        "table 'Key' header should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Action"),
+        "table 'Action' header should be painted:\n{screen}"
+    );
+    // At least one data row.
+    assert!(
+        driver.screen_contains("Stage hunk"),
+        "data row 'Stage hunk' should be painted:\n{screen}"
+    );
+}
+
+/// The column separator `│` appears between header columns.
+#[test]
+fn dialog_table_paints_column_separator() {
+    let driver = TuiDriver::new(DialogTableDemo::new(), 100, 30);
+    let screen = driver.screen();
+    assert!(
+        screen.contains('│'),
+        "column separator '│' should be in the rendered table:\n{screen}"
+    );
+}
+
+/// Pressing `q` exits the dialog demo.
+#[test]
+fn dialog_table_q_exits() {
+    let mut driver = TuiDriver::new(DialogTableDemo::new(), 100, 30);
+    assert!(!driver.exited(), "should not be exited initially");
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the dialog demo");
+}
+
+/// Pressing Esc exits the dialog demo.
+#[test]
+fn dialog_table_esc_exits() {
+    let mut driver = TuiDriver::new(DialogTableDemo::new(), 100, 30);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Esc should exit the dialog demo");
 }
 
 /// Shell-runner path: Ctrl-A selects all content lines, Ctrl-C copies them.

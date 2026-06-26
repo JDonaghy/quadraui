@@ -164,7 +164,7 @@ pub use primitives::data_table::{
 };
 pub use primitives::dialog::{
     Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
-    DialogSeverity, DialogTextInput, VisibleDialogButton,
+    DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
 };
 pub use primitives::diff_view::{
     DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewEvent,
@@ -1505,6 +1505,7 @@ mod tests {
             buttons: vec![cancel, ok],
             severity: Some(DialogSeverity::Question),
             vertical_buttons: false,
+            table: None,
             input: None,
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -1512,6 +1513,7 @@ mod tests {
             width: 400.0,
             title_height: 24.0,
             body_height: 40.0,
+            table_height: 0.0,
             input_height: 0.0,
             button_row_height: 32.0,
             button_width: 80.0,
@@ -1550,6 +1552,7 @@ mod tests {
             ],
             severity: None,
             vertical_buttons: true,
+            table: None,
             input: None,
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -1557,6 +1560,7 @@ mod tests {
             width: 300.0,
             title_height: 20.0,
             body_height: 0.0,
+            table_height: 0.0,
             input_height: 0.0,
             button_row_height: 90.0,
             button_width: 280.0,
@@ -1589,6 +1593,7 @@ mod tests {
             ],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input: None,
         };
         let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
@@ -1596,6 +1601,7 @@ mod tests {
             width: 200.0,
             title_height: 20.0,
             body_height: 20.0,
+            table_height: 0.0,
             input_height: 0.0,
             button_row_height: 20.0,
             button_width: 60.0,
@@ -1634,6 +1640,7 @@ mod tests {
             buttons: vec![cancel, ok],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input: Some(DialogInput::TextInput(DialogTextInput {
                 value: "old_name.rs".to_string(),
                 placeholder: String::new(),
@@ -1645,6 +1652,7 @@ mod tests {
             width: 200.0,
             title_height: 20.0,
             body_height: 20.0,
+            table_height: 0.0,
             input_height: 24.0,
             button_row_height: 20.0,
             button_width: 60.0,
@@ -1676,6 +1684,7 @@ mod tests {
             buttons: vec![cancel, ok],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input: None,
         };
         assert_eq!(d.default_button_id().unwrap().as_str(), "ok");

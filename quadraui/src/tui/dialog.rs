@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as RRect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout, DialogTable};
 use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::theme::Theme;
 use crate::types::StyledText;
@@ -31,15 +31,32 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
     // Measure body height as number of body lines (capped to a maximum
     // to keep the dialog from filling the whole viewport).
     let body_h = (dialog.body.len() as f32).clamp(0.0, 10.0);
+
+    // Compute table dimensions so we can factor them into the dialog width.
+    let (table_h, table_preferred_w) = if let Some(t) = &dialog.table {
+        let h = t.tui_total_height() as f32;
+        // +2 for the 1-cell padding on each side.
+        let w = t.tui_total_width() as f32 + 2.0;
+        (h, w)
+    } else {
+        (0.0, 0.0)
+    };
+
     let input_h = if dialog.input.is_some() { 1.0 } else { 0.0 };
+
+    // Dialog width: at least wide enough for the table content.
+    let default_w = (viewport.width * 0.5).clamp(30.0, 60.0);
+    let dialog_w = default_w.max(table_preferred_w).min(viewport.width - 4.0);
+
     let measure = DialogMeasure {
-        width: (viewport.width * 0.5).clamp(30.0, 60.0),
+        width: dialog_w,
         title_height: if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
             1.0
         } else {
             0.0
         },
         body_height: body_h,
+        table_height: table_h,
         input_height: input_h,
         button_row_height: 1.0,
         button_width: 8.0,
@@ -49,6 +66,133 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
     dialog.layout(viewport, measure, |btn| {
         ToolbarItemMeasure::new(tui_item_width(btn))
     })
+}
+
+/// Render a [`DialogTable`] inside `bounds`.
+///
+/// Columns are separated by ` │ `.  When headers are present the first two
+/// rows are the header row and a `─┼─` separator.
+fn draw_table(
+    buf: &mut ratatui::buffer::Buffer,
+    table: &DialogTable,
+    bounds: &crate::event::Rect,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    border_fg: ratatui::style::Color,
+) {
+    let col_widths = table.auto_col_widths();
+    if col_widths.is_empty() {
+        return;
+    }
+    let ncols = col_widths.len();
+    let start_x = bounds.x.round() as u16;
+    let start_y = bounds.y.round() as u16;
+    let max_w = bounds.width.round() as u16;
+    let max_h = bounds.height.round() as u16;
+
+    // Build column x-offsets relative to start_x.
+    let mut col_offsets = Vec::with_capacity(ncols);
+    let mut cursor = 0u16;
+    for (j, &w) in col_widths.iter().enumerate() {
+        col_offsets.push(cursor);
+        cursor += w as u16;
+        if j + 1 < ncols {
+            cursor += 3; // " │ "
+        }
+    }
+
+    let mut row_idx = 0u16;
+
+    // Helper closure to paint one text run.
+    let paint_cell = |buf: &mut ratatui::buffer::Buffer,
+                      row: u16,
+                      col_start: u16,
+                      col_max_w: u16,
+                      text: &str,
+                      text_fg: ratatui::style::Color| {
+        let y = start_y + row;
+        if y >= start_y + max_h {
+            return;
+        }
+        for (i, ch) in text.chars().enumerate() {
+            let x = start_x + col_start + i as u16;
+            if x >= start_x + col_start + col_max_w || x >= start_x + max_w {
+                break;
+            }
+            set_cell(buf, x, y, ch, text_fg, bg);
+        }
+    };
+
+    // Draw column separators (vertical ` │ `) for a given row.
+    let paint_separators = |buf: &mut ratatui::buffer::Buffer, row: u16, sep_ch: char| {
+        let y = start_y + row;
+        if y >= start_y + max_h {
+            return;
+        }
+        for j in 0..ncols.saturating_sub(1) {
+            let sep_x = start_x + col_offsets[j] + col_widths[j] as u16 + 1;
+            if sep_x < start_x + max_w {
+                set_cell(buf, sep_x, y, sep_ch, border_fg, bg);
+            }
+        }
+    };
+
+    if let Some(headers) = &table.headers {
+        // Header row.
+        for (j, h) in headers.iter().enumerate() {
+            if j < ncols {
+                paint_cell(buf, row_idx, col_offsets[j], col_widths[j] as u16, h, fg);
+            }
+        }
+        paint_separators(buf, row_idx, '│');
+        row_idx += 1;
+
+        // Separator row: ────┼────
+        {
+            let y = start_y + row_idx;
+            if y < start_y + max_h {
+                let mut x = start_x;
+                for (j, &col_w) in col_widths.iter().enumerate().take(ncols) {
+                    let w = col_w as u16;
+                    for _ in 0..w {
+                        if x < start_x + max_w {
+                            set_cell(buf, x, y, '─', border_fg, bg);
+                        }
+                        x += 1;
+                    }
+                    if j + 1 < ncols {
+                        // space before │
+                        if x < start_x + max_w {
+                            set_cell(buf, x, y, '─', border_fg, bg);
+                        }
+                        x += 1;
+                        // ┼
+                        if x < start_x + max_w {
+                            set_cell(buf, x, y, '┼', border_fg, bg);
+                        }
+                        x += 1;
+                        // space after │
+                        if x < start_x + max_w {
+                            set_cell(buf, x, y, '─', border_fg, bg);
+                        }
+                        x += 1;
+                    }
+                }
+            }
+        }
+        row_idx += 1;
+    }
+
+    // Data rows.
+    for row in &table.rows {
+        for (j, cell) in row.iter().enumerate() {
+            if j < ncols {
+                paint_cell(buf, row_idx, col_offsets[j], col_widths[j] as u16, cell, fg);
+            }
+        }
+        paint_separators(buf, row_idx, '│');
+        row_idx += 1;
+    }
 }
 
 /// Draw a [`Dialog`] at its resolved layout.
@@ -129,6 +273,11 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
             }
             set_cell(buf, col, row, ch, fg, bg);
         }
+    }
+
+    // Optional table slot.
+    if let (Some(table_bounds), Some(table)) = (layout.table_bounds, &dialog.table) {
+        draw_table(buf, table, &table_bounds, fg, bg, border_fg);
     }
 
     // Optional input slot — text input or embedded toolbar.
@@ -224,6 +373,7 @@ mod tests {
             ],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input: None,
         }
     }
@@ -233,6 +383,7 @@ mod tests {
             width: 40.0,
             title_height: 1.0,
             body_height: 2.0,
+            table_height: 0.0,
             input_height: 0.0,
             button_row_height: 1.0,
             button_width: 8.0,
@@ -299,6 +450,7 @@ mod tests {
             width: 40.0,
             title_height: 1.0,
             body_height: 2.0,
+            table_height: 0.0,
             input_height: 1.0,
             button_row_height: 1.0,
             button_width: 8.0,
@@ -328,6 +480,7 @@ mod tests {
             width: 0.0,
             title_height: 0.0,
             body_height: 0.0,
+            table_height: 0.0,
             input_height: 0.0,
             button_row_height: 0.0,
             button_width: 0.0,
@@ -363,6 +516,7 @@ mod tests {
             }],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input: Some(DialogInput::Toolbar(Toolbar {
                 id: WidgetId::new("body-toolbar"),
                 buttons: vec![
