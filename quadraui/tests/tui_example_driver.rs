@@ -12,6 +12,10 @@
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::NamedKey;
 
+#[path = "../examples/common/shell_app.rs"]
+mod shell_app_ex;
+use shell_app_ex::ShellApp as ShellAppEx;
+
 #[path = "../examples/common/toolbar_app.rs"]
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
@@ -739,6 +743,54 @@ fn palette_dual_mode_typing_in_input_mode_updates_query() {
     );
 }
 
+// ─── ShellApp: AppShell keyboard activity-bar nav (#386) ────────────────────
+//
+// `ShellApp` uses `AppShell` (not the raw `ActivityBar` primitive directly).
+// These tests verify that the new keyboard navigation API (`set_activity_keyboard_focused`,
+// `activity_select_next/prev`, `activity_activate_selected`) is correctly wired
+// through `AppShell::build_activity_bar()` → TUI backend → `UiEvent::ActivityBar`
+// → `ShellApp::handle()` round-trip.
+
+#[test]
+fn shell_app_initial_screen_shows_hint() {
+    let driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    let screen = driver.screen();
+    // The default hint instructs the user to press Tab to focus the bar.
+    assert!(
+        driver.screen_contains("Tab") || driver.screen_contains("quit"),
+        "initial screen should show keyboard hint:\n{screen}"
+    );
+    // No navigation hint yet.
+    assert!(
+        !driver.screen_contains("j/k"),
+        "j/k hint must not appear before bar is focused:\n{screen}"
+    );
+}
+
+#[test]
+fn shell_app_tab_focuses_activity_bar() {
+    // Pressing Tab must focus the activity bar: the status bar switches
+    // from the default message to "Activity bar focused (…)".
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    let before = driver.screen();
+
+    driver.press_named(NamedKey::Tab);
+    let after = driver.screen();
+
+    assert_ne!(before, after, "Tab should change the screen");
+    assert!(
+        driver.screen_contains("Activity bar focused"),
+        "after Tab the status should say 'Activity bar focused (…)':\n{}",
+        driver.screen()
+    );
+    // j/k hint should appear now that the bar is focused.
+    assert!(
+        driver.screen_contains("j/k"),
+        "j/k hint should appear while bar is focused:\n{}",
+        driver.screen()
+    );
+}
+
 #[test]
 fn palette_dual_mode_escape_closes_picker() {
     let mut driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
@@ -748,5 +800,108 @@ fn palette_dual_mode_escape_closes_picker() {
     assert!(
         !driver.screen_contains("[L]") && !driver.screen_contains("[I]"),
         "mode badge should disappear after Escape:\n{screen}"
+    );
+}
+
+#[test]
+fn shell_app_j_moves_cursor_down() {
+    // After Tab, typing 'j' moves the cursor from the first to the second
+    // top panel. The status bar echoes the new cursor position.
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    driver.press_named(NamedKey::Tab); // focus bar (cursor = 0: panel:explorer)
+    let after_tab = driver.screen();
+
+    driver.type_char('j'); // cursor moves to panel:search
+    let after_j = driver.screen();
+
+    assert_ne!(after_tab, after_j, "'j' should change the screen");
+    assert!(
+        driver.screen_contains("panel:search"),
+        "after 'j' the status should mention panel:search:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn shell_app_k_moves_cursor_up() {
+    // Move down twice then up once — cursor should land on the second item.
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j'); // cursor → panel:search
+    driver.type_char('j'); // cursor → panel:git
+    driver.type_char('k'); // cursor → panel:search
+    assert!(
+        driver.screen_contains("panel:search"),
+        "after j j k cursor should be on panel:search:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn shell_app_enter_activates_and_dismisses_focus() {
+    // Tab (focus) → j (move to panel:search) → Enter (activate).
+    // After activation: focus is cleared and the active panel is panel:search.
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j'); // cursor → panel:search
+    driver.press_named(NamedKey::Enter); // activate
+
+    let screen = driver.screen();
+    // Status bar should now show the panel that was activated.
+    assert!(
+        screen.contains("panel:search"),
+        "after Enter the status should show the activated panel:\n{screen}"
+    );
+    // Navigation hint should be gone — bar is no longer focused.
+    assert!(
+        !screen.contains("j/k"),
+        "j/k hint should disappear after activation:\n{screen}"
+    );
+}
+
+#[test]
+fn shell_app_esc_dismisses_without_activating() {
+    // Tab (focus, cursor = panel:explorer already active) → Esc (dismiss).
+    // Active panel must not change; focus hint must disappear.
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j'); // move so we know we'd switch if we activated
+    driver.press_named(NamedKey::Escape);
+
+    let screen = driver.screen();
+    // Focus hint gone.
+    assert!(
+        !screen.contains("j/k"),
+        "j/k hint should disappear after Esc:\n{screen}"
+    );
+    // Status bar should say focus was returned.
+    assert!(
+        screen.contains("Focus returned"),
+        "after Esc status should say 'Focus returned to editor':\n{screen}"
+    );
+}
+
+#[test]
+fn shell_app_k_saturates_at_first_item() {
+    // Pressing k at the top must not move past the first item (no panic,
+    // cursor stays on the first panel). The status message updates to
+    // mention the cursor position — still the first panel.
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    driver.press_named(NamedKey::Tab); // cursor = 0 (panel:explorer)
+    driver.type_char('k'); // should saturate — cursor still at panel:explorer
+
+    // The cursor stayed on panel:explorer, not wrapped to the bottom.
+    assert!(
+        driver.screen_contains("panel:explorer"),
+        "'k' at top should keep cursor on panel:explorer (saturates, not wraps):\n{}",
+        driver.screen()
+    );
+    // Critically, we must NOT see panel:settings (the bottom item) since
+    // saturation means k at position 0 stays at 0, not wraps to last item.
+    // (This distinguishes saturate from wrap.)
+    assert!(
+        !driver.screen_contains("panel:settings"),
+        "'k' at top must NOT wrap to the bottom item:\n{}",
+        driver.screen()
     );
 }
