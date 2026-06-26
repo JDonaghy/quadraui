@@ -482,26 +482,25 @@ fn toolbar_tab_cycles_through_enabled_buttons() {
 fn toolbar_shift_tab_goes_backward() {
     // Pressing Tab then Shift-Tab should move focus forward then back,
     // ending up on the same button as the first Tab.
+    //
+    // Shift-Tab is dispatched as `NamedKey::BackTab` (no shift modifier) —
+    // that is exactly what crossterm, GTK, and macOS backends emit for the
+    // real Shift-Tab keypress. Using BackTab here covers the real terminal
+    // path and prevents the false-green that a synthetic Tab+shift event
+    // would produce (Tab+shift was swallowed silently by the old handler).
     let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
 
     driver.press_named(NamedKey::Tab);
     let after_tab = driver.screen();
 
     driver.press_named(NamedKey::Tab);
-    // Now focused on the second button — Shift-Tab should go back.
-    driver.dispatch(quadraui::UiEvent::KeyPressed {
-        key: quadraui::Key::Named(NamedKey::Tab),
-        modifiers: quadraui::Modifiers {
-            shift: true,
-            ..Default::default()
-        },
-        repeat: false,
-    });
+    // Now focused on the second button — BackTab should go back to the first.
+    driver.press_named(NamedKey::BackTab);
 
     let after_shift_tab = driver.screen();
     assert_eq!(
         after_tab, after_shift_tab,
-        "Shift-Tab should return focus to the same button Tab first landed on"
+        "Shift-Tab (BackTab) should return focus to the same button Tab first landed on"
     );
 }
 
