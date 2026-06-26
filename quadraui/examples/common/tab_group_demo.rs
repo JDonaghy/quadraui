@@ -278,7 +278,15 @@ impl AppLogic for TabGroupDemo {
                 }
                 // Promote a pending tab drag to an active drag once the cursor
                 // has moved far enough from the press point.
-                if let Some((sx, sy)) = *self.tab_drag_pending_pos.borrow() {
+                //
+                // Copy the pending position into a local variable so the
+                // immutable `Ref` returned by `.borrow()` is dropped
+                // immediately (at the `;`), before any `borrow_mut()` call
+                // inside the block. Keeping the `Ref` alive in the `if let`
+                // scrutinee and then calling `borrow_mut()` in the same block
+                // panics with "RefCell already borrowed" (#375).
+                let pending_pos = *self.tab_drag_pending_pos.borrow();
+                if let Some((sx, sy)) = pending_pos {
                     let dx = (position.x - sx).abs();
                     let dy = (position.y - sy).abs();
                     if dx > TAB_DRAG_THRESHOLD || dy > TAB_DRAG_THRESHOLD {

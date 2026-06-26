@@ -560,3 +560,40 @@ fn toolbar_q_exits() {
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the toolbar demo");
 }
+
+/// Regression test for #375.
+///
+/// Before the fix, crossing `TAB_DRAG_THRESHOLD` during a `MouseMoved` event
+/// panicked with "RefCell already borrowed":
+/// `if let Some((sx, sy)) = *self.tab_drag_pending_pos.borrow()` held an
+/// immutable `Ref` alive for the whole block, and the subsequent
+/// `*self.tab_drag_pending_pos.borrow_mut() = None` inside that block tried
+/// to create a mutable borrow of the same `RefCell`, which panics at runtime.
+///
+/// After the fix the pending position is copied into a local `let` binding
+/// (dropping the `Ref` immediately), so the mutable borrow succeeds.
+#[test]
+fn tab_group_drag_start_does_not_panic() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("main.rs")
+        .unwrap_or_else(|| panic!("main.rs tab not found:\n{before}"));
+
+    // MouseDown on the tab primes the drag (sets tab_drag_pending_pos).
+    driver.mouse_down(x, y);
+    assert!(!driver.exited(), "mouse_down should not cause exit");
+
+    // MouseMove past TAB_DRAG_THRESHOLD promotes the pending drag to an
+    // active drag. Before the fix this panicked; after it succeeds and
+    // causes a redraw (status shows "tab drag start").
+    driver.mouse_move(x + 3.0, y);
+    assert!(
+        !driver.exited(),
+        "mouse_move into drag should not cause exit"
+    );
+
+    // MouseUp completes the drag cycle without further panic.
+    driver.mouse_up(x + 3.0, y);
+    assert!(!driver.exited(), "mouse_up should not cause exit");
+}
