@@ -205,7 +205,7 @@ pub use primitives::multi_section_view::{
     SectionBody, SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
 };
 pub use primitives::palette::{
-    Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout,
+    Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
 pub use primitives::panel::{
@@ -292,12 +292,12 @@ pub use compose::markdown::{
 pub use compose::{
     AppShell, AppShellEvent, AppShellLayout, BackendWidget, BottomPanelConfig,
     BottomPanelController, BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController,
-    ChatControllerEvent, ChatRole, ChatTurn, FocusGroup, FocusRing, FolderPickerController,
-    FolderPickerEvent, FormController, FormControllerEvent, GroupLayout, MenuDef, MenuEvent,
-    MenuSystem, NavigationMode, PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent,
-    SidebarSectionDef, SidebarSystem, StatusBarAction, StatusBarInteraction, TabGroupController,
-    TabGroupEvent, TabGroupLayout, ToolbarHoverTracker, TreeController, TreeControllerEvent,
-    PALETTE_CHROME_ROWS,
+    ChatControllerEvent, ChatRole, ChatTurn, DualModePaletteController, DualModePaletteEvent,
+    FocusGroup, FocusRing, FolderPickerController, FolderPickerEvent, FormController,
+    FormControllerEvent, GroupLayout, MenuDef, MenuEvent, MenuSystem, NavigationMode, PaneTab,
+    PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem,
+    StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
+    ToolbarHoverTracker, TreeController, TreeControllerEvent, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
@@ -532,6 +532,7 @@ mod tests {
             show_query: true,
             create_label: None,
             preview: None,
+            mode: primitives::palette::PaletteMode::List,
         };
         let json = serde_json::to_string(&palette).unwrap();
         let back: Palette = serde_json::from_str(&json).unwrap();
@@ -2939,6 +2940,7 @@ mod tests {
             show_query: true,
             create_label: None,
             preview: None,
+            mode: primitives::palette::PaletteMode::List,
         }
     }
 

@@ -20,6 +20,8 @@ use toolbar_app::ToolbarApp;
 mod demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
+#[path = "../examples/common/palette_dual_mode_app.rs"]
+mod palette_dual_mode_app;
 #[path = "../examples/common/panel_app.rs"]
 mod panel_app;
 #[path = "../examples/common/pipeline_app.rs"]
@@ -33,6 +35,7 @@ mod text_input_demo;
 
 use demo::AppState;
 use mini_app::MiniApp;
+use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
 use selection_app::SelectionDemo;
@@ -519,6 +522,30 @@ fn toolbar_enter_activates_focused_button() {
     );
 }
 
+// ─── PaletteDualModeApp: dual-mode palette ───────────────────────────────────
+
+#[test]
+fn palette_dual_mode_initial_screen_shows_list_mode_with_branches() {
+    // On startup the picker is open in List mode showing the branch list.
+    let driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
+    let screen = driver.screen();
+
+    // The [L] mode badge appears in the title bar.
+    assert!(
+        driver.screen_contains("[L]"),
+        "list-mode badge '[L]' should be visible on startup:\n{screen}"
+    );
+    // At least one branch name should be painted in the item list.
+    assert!(
+        driver.screen_contains("main"),
+        "branch 'main' should appear in the initial list:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("develop"),
+        "branch 'develop' should appear in the initial list:\n{screen}"
+    );
+}
+
 #[test]
 fn toolbar_disabled_buttons_skipped_by_tab() {
     // The "Debug" button is always disabled. Tab should never produce
@@ -551,6 +578,31 @@ fn toolbar_click_fires_action_without_focus() {
         driver.screen_contains("Filter"),
         "clicking Filter should update the status:\n{}",
         driver.screen()
+    );
+}
+
+#[test]
+fn palette_dual_mode_tab_switches_to_input_mode() {
+    // Pressing Tab should toggle from List mode to Input mode, which:
+    // - changes the mode badge from [L] to [I]
+    // - hides the item list rows
+    let mut driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
+
+    let before = driver.screen();
+    assert!(before.contains("[L]"), "starts in list mode:\n{before}");
+
+    driver.press_named(NamedKey::Tab);
+    let after = driver.screen();
+
+    assert!(
+        after.contains("[I]"),
+        "after Tab, input-mode badge '[I]' should be visible:\n{after}"
+    );
+    // In Input mode the item list is suppressed — branch names should not
+    // appear as selectable rows in the palette body.
+    assert!(
+        !after.contains("develop"),
+        "item rows should be hidden in Input mode:\n{after}"
     );
 }
 
@@ -596,4 +648,42 @@ fn tab_group_drag_start_does_not_panic() {
     // MouseUp completes the drag cycle without further panic.
     driver.mouse_up(x + 3.0, y);
     assert!(!driver.exited(), "mouse_up should not cause exit");
+}
+
+#[test]
+fn palette_dual_mode_typing_in_input_mode_updates_query() {
+    // Switch to Input mode, type a branch name, assert it appears in the
+    // query row of the palette.
+    let mut driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
+
+    // Switch to Input mode.
+    driver.press_named(NamedKey::Tab);
+    let screen_before_typing = driver.screen();
+    assert!(
+        screen_before_typing.contains("[I]"),
+        "must be in Input mode:\n{screen_before_typing}"
+    );
+
+    // Type a new branch name.
+    for c in "my-feature".chars() {
+        driver.type_char(c);
+    }
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("my-feature"),
+        "typed text should appear in the query field:\n{screen}"
+    );
+}
+
+#[test]
+fn palette_dual_mode_escape_closes_picker() {
+    let mut driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
+    driver.press_named(NamedKey::Escape);
+    let screen = driver.screen();
+    // After Esc the picker is gone — no palette border glyphs visible.
+    assert!(
+        !driver.screen_contains("[L]") && !driver.screen_contains("[I]"),
+        "mode badge should disappear after Escape:\n{screen}"
+    );
 }
