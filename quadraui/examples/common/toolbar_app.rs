@@ -313,14 +313,34 @@ impl AppLogic for ToolbarApp {
                 ..
             } => Reaction::Exit,
 
-            // ── Tab / Shift-Tab: cycle keyboard focus ──────────────────────
+            // ── Tab: move keyboard focus forward ───────────────────────────
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Tab),
-                modifiers,
                 ..
             } => {
-                let forward = !modifiers.shift;
-                self.advance_focus(forward);
+                self.advance_focus(true);
+                let focused_label = self.focused_index.and_then(|idx| {
+                    let bar = self.toolbar();
+                    bar.buttons.into_iter().nth(idx).and_then(|btn| match btn {
+                        ToolbarButton::Action { label, .. } => Some(label),
+                        _ => None,
+                    })
+                });
+                self.last_message = match focused_label {
+                    Some(l) => format!("Focused: {l} (Enter to activate)"),
+                    None => "Focus cleared".into(),
+                };
+                Reaction::Redraw
+            }
+
+            // ── Shift-Tab (BackTab): move keyboard focus backward ──────────
+            // Real terminals (crossterm, GTK) send Shift-Tab as
+            // `NamedKey::BackTab` with no shift modifier — not as Tab + shift.
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::BackTab),
+                ..
+            } => {
+                self.advance_focus(false);
                 let focused_label = self.focused_index.and_then(|idx| {
                     let bar = self.toolbar();
                     bar.buttons.into_iter().nth(idx).and_then(|btn| match btn {
