@@ -539,6 +539,7 @@ impl FolderPickerController {
             show_query: true,
             create_label: None,
             preview: None,
+            mode: crate::primitives::palette::PaletteMode::List,
         }
     }
 }

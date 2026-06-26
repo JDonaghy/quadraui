@@ -35,6 +35,27 @@ use crate::primitives::scrollbar::fit_thumb;
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
+/// Which interaction mode the palette is operating in.
+///
+/// - `List` (default) — the existing search-and-select behaviour: the
+///   query row filters the item list and Enter activates the selected row.
+/// - `Input` — the query row is a standalone free-text field (e.g. "new
+///   branch name"). The item list is hidden; Enter emits
+///   [`PaletteEvent::InputConfirmed`] with the current query value.
+///
+/// Backends that have not yet implemented mode-aware rendering can safely
+/// ignore this field — they will render the list as usual, which is a
+/// graceful degradation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PaletteMode {
+    /// Search + list mode — the default. The query filters the item list.
+    #[default]
+    List,
+    /// Free-text input mode. The item list is suppressed; Enter confirms
+    /// the raw query text.
+    Input,
+}
+
 /// Declarative description of a `Palette` widget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Palette {
@@ -77,6 +98,12 @@ pub struct Palette {
     /// the left, preview content on the right.
     #[serde(default)]
     pub preview: Option<PalettePreview>,
+    /// Interaction mode — `List` (default) or `Input`.
+    ///
+    /// In `Input` mode the item list is suppressed and Enter emits
+    /// [`PaletteEvent::InputConfirmed`] rather than activating a row.
+    #[serde(default)]
+    pub mode: PaletteMode,
 }
 
 /// One row in a `Palette`'s filtered result list.
@@ -177,6 +204,8 @@ pub enum PaletteHit {
     ScrollbarThumb,
     /// Click landed on the scrollbar track (page-jump area).
     ScrollbarTrack,
+    /// Click landed on the mode-toggle indicator in the title bar.
+    ModeToggle,
     /// Click landed outside any region.
     Empty,
 }
@@ -413,4 +442,11 @@ pub enum PaletteEvent {
     /// did not consume it. App may interpret it (e.g. `Ctrl+P` cycles
     /// a history ring).
     KeyPressed { key: String, modifiers: Modifiers },
+    /// User confirmed the free-text input value (Enter in `Input` mode).
+    /// The `value` is the current query string at the moment of
+    /// confirmation.
+    InputConfirmed { value: String },
+    /// The active [`PaletteMode`] changed (e.g. user clicked the toggle
+    /// button or pressed the mode-switch key).
+    ModeChanged { new_mode: PaletteMode },
 }

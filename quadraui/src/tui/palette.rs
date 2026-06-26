@@ -3,24 +3,35 @@
 //! Modal-style fuzzy picker with a title bar, query-input row, and a
 //! scrollable result list. Renders in cell-art glyphs:
 //!
+//! **List mode** (default):
 //! ```text
-//! ╭ Title  N/M ──╮
-//! │ > query      │
-//! ├──────────────┤
-//! │  Item 1       │
-//! │  Item 2       │
-//! │  Item 3 detail│
-//! ╰───────────────╯
+//! ╭ Title  N/M ──[L]╮
+//! │ > query          │
+//! ├──────────────────┤
+//! │  Item 1          │
+//! │  Item 2          │
+//! │  Item 3  detail  │
+//! ╰──────────────────╯
+//! ```
+//!
+//! **Input mode** (`PaletteMode::Input`):
+//! ```text
+//! ╭ Title ───────[I]╮
+//! │ > free text      │
+//! ╰──────────────────╯
 //! ```
 //!
 //! Per-item `match_positions` (byte offsets) get highlighted with
 //! [`Theme::match_fg`] for fuzzy-search emphasis.
+//!
+//! The `[L]` / `[I]` badge in the title bar is a clickable
+//! [`PaletteHit::ModeToggle`] region.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::palette::Palette;
+use crate::primitives::palette::{Palette, PaletteMode};
 use crate::theme::Theme;
 
 /// Draw a [`Palette`] modal into `area` on `buf`.
@@ -62,6 +73,15 @@ pub fn draw_palette(
         }
     }
 
+    // ── Mode badge ─────────────────────────────────────────────────────
+    // "[L]" or "[I]" appears at the far-right of the title row and acts
+    // as a clickable mode-toggle target.
+    let badge = match palette.mode {
+        PaletteMode::List => "[L]",
+        PaletteMode::Input => "[I]",
+    };
+    let badge_w = badge.chars().count() as u16;
+
     // Top border with title overlay.
     for col in 0..w {
         let ch = if col == 0 {
@@ -89,6 +109,16 @@ pub fn draw_palette(
             break;
         }
         set_cell(buf, x0 + col, y0, ch, title_fg, bg);
+    }
+
+    // Paint badge right-aligned inside the title border (before the ╮).
+    // Leave one cell gap between badge and ╮: badge starts at w - 1 - badge_w.
+    let accent_fg = ratatui_color(theme.accent_fg);
+    if w > badge_w + 2 {
+        let badge_start = w - 1 - badge_w;
+        for (i, ch) in badge.chars().enumerate() {
+            set_cell(buf, x0 + badge_start + i as u16, y0, ch, accent_fg, bg);
+        }
     }
 
     // Preview pane splits the popup horizontally when present.
@@ -161,6 +191,34 @@ pub fn draw_palette(
     } else {
         y0 + 1
     };
+
+    // ── Input mode: no item list — draw bottom border and return ────────
+    if palette.mode == PaletteMode::Input {
+        // Fill any gap rows between the query row and the bottom border with
+        // side borders (handles the case where the caller gave a taller rect).
+        for row in items_row0..y_end - 1 {
+            set_cell(buf, x0, row, '│', border_fg, bg);
+            if w >= 2 {
+                set_cell(buf, x0 + w - 1, row, '│', border_fg, bg);
+            }
+            for col in 1..w - 1 {
+                set_cell(buf, x0 + col, row, ' ', fg, bg);
+            }
+        }
+        // Bottom border.
+        let row = y_end - 1;
+        for col in 0..w {
+            let ch = if col == 0 {
+                '╰'
+            } else if col == w - 1 {
+                '╯'
+            } else {
+                '─'
+            };
+            set_cell(buf, x0 + col, row, ch, border_fg, bg);
+        }
+        return;
+    }
 
     // Result rows.
     let has_create = palette.create_label.is_some();
@@ -448,6 +506,7 @@ mod tests {
             create_label: None,
             total_count: 3,
             preview: None,
+            mode: crate::primitives::palette::PaletteMode::List,
         }
     }
 
