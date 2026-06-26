@@ -14,7 +14,7 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
-use crate::primitives::palette::{Palette, PaletteItemMeasure};
+use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteMode};
 use crate::theme::Theme;
 
 /// Draw a [`Palette`] modal into `(x, y, w, h)` on `cr`.
@@ -187,7 +187,8 @@ pub fn draw_palette(
     }
 
     // ── Separator row ─────────────────────────────────────────────────
-    if palette.show_query {
+    // In Input mode there is no item list, so no separator is drawn.
+    if palette.show_query && palette.mode != PaletteMode::Input {
         cr.set_source_rgb(border.0, border.1, border.2);
         cr.set_line_width(1.0);
         cr.move_to(x, sep_y);
@@ -196,6 +197,14 @@ pub fn draw_palette(
     }
 
     // ── Result rows ───────────────────────────────────────────────────
+    // Input mode suppresses the item list entirely — the query field is the
+    // only interaction target. A future iteration can add a mode badge to
+    // the GTK title row; for now the list is simply hidden.
+    if palette.mode == PaletteMode::Input {
+        cr.restore().ok();
+        return;
+    }
+
     cr.save().ok();
     cr.rectangle(x, rows_y, content_w, rows_h);
     cr.clip();

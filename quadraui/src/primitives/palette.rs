@@ -204,8 +204,6 @@ pub enum PaletteHit {
     ScrollbarThumb,
     /// Click landed on the scrollbar track (page-jump area).
     ScrollbarTrack,
-    /// Click landed on the mode-toggle indicator in the title bar.
-    ModeToggle,
     /// Click landed outside any region.
     Empty,
 }
@@ -442,11 +440,4 @@ pub enum PaletteEvent {
     /// did not consume it. App may interpret it (e.g. `Ctrl+P` cycles
     /// a history ring).
     KeyPressed { key: String, modifiers: Modifiers },
-    /// User confirmed the free-text input value (Enter in `Input` mode).
-    /// The `value` is the current query string at the moment of
-    /// confirmation.
-    InputConfirmed { value: String },
-    /// The active [`PaletteMode`] changed (e.g. user clicked the toggle
-    /// button or pressed the mode-switch key).
-    ModeChanged { new_mode: PaletteMode },
 }

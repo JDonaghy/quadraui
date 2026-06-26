@@ -24,8 +24,8 @@
 //! Per-item `match_positions` (byte offsets) get highlighted with
 //! [`Theme::match_fg`] for fuzzy-search emphasis.
 //!
-//! The `[L]` / `[I]` badge in the title bar is a clickable
-//! [`PaletteHit::ModeToggle`] region.
+//! The `[L]` / `[I]` badge in the title bar indicates the active mode;
+//! press `Tab` to toggle between modes (keyboard-only).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -171,7 +171,8 @@ pub fn draw_palette(
             }
         }
 
-        if h >= 4 {
+        // In Input mode there is no item list, so no separator row.
+        if h >= 4 && palette.mode != PaletteMode::Input {
             let row = y0 + 2;
             for col in 0..w {
                 let ch = if col == 0 {
@@ -187,7 +188,12 @@ pub fn draw_palette(
             }
         }
 
-        y0 + 3
+        // Input mode: no separator row between query and bottom border.
+        if palette.mode == PaletteMode::Input {
+            y0 + 2
+        } else {
+            y0 + 3
+        }
     } else {
         y0 + 1
     };
@@ -687,6 +693,76 @@ mod tests {
             row_text.contains("+ Create"),
             "expected create label at pinned row, got: {row_text:?}"
         );
+    }
+
+    // ── Rule 6: mode badge position derived from palette state ──────────
+    // Verifies that the `[L]` / `[I]` badge is painted at the position
+    // predicted by the formula: `badge_start = w - 1 - badge_w` (3 chars).
+    #[test]
+    fn mode_badge_appears_at_computed_right_side_position() {
+        // w=20 → badge_w=3 → badge_start = 20 - 1 - 3 = 16.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        let p = make_palette();
+        draw_palette(
+            &mut buf,
+            Rect::new(0, 0, 20, 8),
+            &p,
+            &Theme::default(),
+            false,
+        );
+        // List-mode badge "[L]" should appear at columns 16, 17, 18 of row 0.
+        assert_eq!(cell_char(&buf, 16, 0), '[', "badge '[' at col 16");
+        assert_eq!(cell_char(&buf, 17, 0), 'L', "badge 'L' at col 17");
+        assert_eq!(cell_char(&buf, 18, 0), ']', "badge ']' at col 18");
+
+        // Input-mode badge "[I]" at the same columns.
+        let mut buf2 = Buffer::empty(Rect::new(0, 0, 20, 8));
+        let mut p2 = make_palette();
+        p2.mode = crate::primitives::palette::PaletteMode::Input;
+        draw_palette(
+            &mut buf2,
+            Rect::new(0, 0, 20, 8),
+            &p2,
+            &Theme::default(),
+            false,
+        );
+        assert_eq!(cell_char(&buf2, 16, 0), '[', "input badge '[' at col 16");
+        assert_eq!(cell_char(&buf2, 17, 0), 'I', "input badge 'I' at col 17");
+        assert_eq!(cell_char(&buf2, 18, 0), ']', "input badge ']' at col 18");
+    }
+
+    // ── Input mode: no separator row ─────────────────────────────────────
+    // Regression guard for the bug where the ├──┤ separator was painted
+    // at row 2 even in Input mode (items_row0 was y0+3 so the early-return
+    // fill started at row 3, leaving the separator untouched).
+    #[test]
+    fn input_mode_no_separator_row_painted() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        let mut p = make_palette();
+        p.mode = crate::primitives::palette::PaletteMode::Input;
+        draw_palette(
+            &mut buf,
+            Rect::new(0, 0, 20, 8),
+            &p,
+            &Theme::default(),
+            false,
+        );
+        // Row 2 must not carry the ├ separator glyph.
+        assert_ne!(
+            cell_char(&buf, 0, 2),
+            '├',
+            "separator must not appear in Input mode"
+        );
+        // The bottom border must be at row 7 (y_end - 1) regardless of
+        // how many rows the caller allocated.
+        assert_eq!(cell_char(&buf, 0, 7), '╰', "bottom-left corner at last row");
+        assert_eq!(
+            cell_char(&buf, 19, 7),
+            '╯',
+            "bottom-right corner at last row"
+        );
+        // Row 1 should still have the query prompt.
+        assert_eq!(cell_char(&buf, 1, 1), '>', "query prompt in Input mode");
     }
 
     #[test]
