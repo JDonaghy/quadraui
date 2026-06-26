@@ -11,12 +11,105 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
-use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout, DialogTable};
 use crate::theme::Theme;
 use crate::types::{Color, StyledText};
 
 fn flatten(text: &StyledText) -> String {
     text.spans.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// Draw a [`DialogTable`] at `(table_x, table_y)` using Core Text.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the call.
+unsafe fn draw_table_macos(
+    ctx: CGContextRef,
+    font: &CTFont,
+    table: &DialogTable,
+    table_x: f64,
+    table_y: f64,
+    line_height: f64,
+    fg: Color,
+    border_color: Color,
+) {
+    let ncols = table.num_cols();
+    if ncols == 0 {
+        return;
+    }
+
+    // Measure column widths.
+    let mut col_widths_px = vec![0.0f64; ncols];
+    if let Some(headers) = &table.headers {
+        for (j, h) in headers.iter().enumerate() {
+            if j < ncols {
+                let (w, _) = measure_text(font, h);
+                if w > col_widths_px[j] {
+                    col_widths_px[j] = w;
+                }
+            }
+        }
+    }
+    for row in &table.rows {
+        for (j, cell) in row.iter().enumerate() {
+            if j < ncols {
+                let (w, _) = measure_text(font, cell);
+                if w > col_widths_px[j] {
+                    col_widths_px[j] = w;
+                }
+            }
+        }
+    }
+
+    let (sep_w, _) = measure_text(font, " │ ");
+    let mut col_x = vec![0.0f64; ncols];
+    let mut cursor_x = table_x;
+    for j in 0..ncols {
+        col_x[j] = cursor_x;
+        cursor_x += col_widths_px[j];
+        if j + 1 < ncols {
+            cursor_x += sep_w;
+        }
+    }
+
+    let fg_cg = color_to_cg(fg);
+    let border_cg = color_to_cg(border_color);
+    let mut row_y = table_y;
+
+    if let Some(headers) = &table.headers {
+        for (j, h) in headers.iter().enumerate() {
+            if j < ncols {
+                draw_text(ctx, font, h, col_x[j], row_y, fg_cg);
+            }
+        }
+        for j in 0..ncols.saturating_sub(1) {
+            let sep_x = col_x[j] + col_widths_px[j];
+            draw_text(ctx, font, " │ ", sep_x, row_y, border_cg);
+        }
+        row_y += line_height;
+
+        // Separator row: ─────
+        let total_w = col_x[ncols - 1] + col_widths_px[ncols - 1] - table_x;
+        let char_w = line_height * 0.6;
+        let dash_count = (total_w / char_w).ceil() as usize + 4;
+        let dash_str: String = "─".repeat(dash_count);
+        draw_text(ctx, font, &dash_str, table_x, row_y, border_cg);
+        row_y += line_height;
+    }
+
+    for row in &table.rows {
+        for (j, cell) in row.iter().enumerate() {
+            if j < ncols {
+                draw_text(ctx, font, cell, col_x[j], row_y, fg_cg);
+            }
+        }
+        for j in 0..ncols.saturating_sub(1) {
+            let sep_x = col_x[j] + col_widths_px[j];
+            draw_text(ctx, font, " │ ", sep_x, row_y, border_cg);
+        }
+        row_y += line_height;
+    }
 }
 
 /// Draw a [`Dialog`] at its resolved layout. Returns per-button bounds.
@@ -81,6 +174,20 @@ pub unsafe fn draw_dialog(
             body_b.x as f64,
             row_y,
             color_to_cg(theme.surface_fg),
+        );
+    }
+
+    // Optional table slot.
+    if let (Some(table_b), Some(table)) = (dialog_layout.table_bounds, dialog.table.as_ref()) {
+        draw_table_macos(
+            ctx,
+            font,
+            table,
+            table_b.x as f64,
+            table_b.y as f64,
+            line_height,
+            theme.surface_fg,
+            theme.border_fg,
         );
     }
 

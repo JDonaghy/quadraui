@@ -18,12 +18,151 @@ use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
-use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout, DialogTable};
 use crate::theme::Theme;
 use crate::types::StyledText;
 
 fn flatten(text: &StyledText) -> String {
     text.spans.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// Draw a [`DialogTable`] at `bounds` using Pango.
+///
+/// Column widths are auto-computed from content using `pango_layout` pixel
+/// metrics. Columns are separated by a space-│-space glyph run. When
+/// `table.headers` is `Some`, a header row is drawn first, followed by a
+/// `──┼──` separator row, then the data rows.
+#[allow(clippy::too_many_arguments)]
+fn draw_table_gtk(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    table: &DialogTable,
+    table_x: f64,
+    table_y: f64,
+    line_height: f64,
+    fg: (f64, f64, f64),
+    border: (f64, f64, f64),
+) {
+    let ncols = table.num_cols();
+    if ncols == 0 {
+        return;
+    }
+
+    // Measure each column width in pixels by iterating headers + rows.
+    let mut col_widths_px = vec![0.0f64; ncols];
+
+    let measure_text = |text: &str| -> f64 {
+        pango_layout.set_text(text);
+        pango_layout.set_attributes(None);
+        let (w, _) = pango_layout.pixel_size();
+        w as f64
+    };
+
+    if let Some(headers) = &table.headers {
+        for (j, h) in headers.iter().enumerate() {
+            if j < ncols {
+                let w = measure_text(h);
+                if w > col_widths_px[j] {
+                    col_widths_px[j] = w;
+                }
+            }
+        }
+    }
+    for row in &table.rows {
+        for (j, cell) in row.iter().enumerate() {
+            if j < ncols {
+                let w = measure_text(cell);
+                if w > col_widths_px[j] {
+                    col_widths_px[j] = w;
+                }
+            }
+        }
+    }
+
+    // If column_widths is provided, use them as minimums (convert from
+    // char-cell hint to pixels roughly via line_height ratio — backends
+    // may override this with proper font metrics).
+    if let Some(explicit) = &table.column_widths {
+        for (j, &w) in explicit.iter().enumerate() {
+            if j < ncols {
+                let px = w as f64 * (line_height * 0.6); // approx char width
+                if px > col_widths_px[j] {
+                    col_widths_px[j] = px;
+                }
+            }
+        }
+    }
+
+    // Build column x positions.
+    let sep_w = measure_text(" │ ");
+    let mut col_x = vec![0.0f64; ncols];
+    let mut cursor_x = table_x;
+    for j in 0..ncols {
+        col_x[j] = cursor_x;
+        cursor_x += col_widths_px[j];
+        if j + 1 < ncols {
+            cursor_x += sep_w;
+        }
+    }
+
+    let mut row_y = table_y;
+
+    // Header row.
+    if let Some(headers) = &table.headers {
+        cr.set_source_rgb(fg.0, fg.1, fg.2);
+        for (j, h) in headers.iter().enumerate() {
+            if j < ncols {
+                pango_layout.set_text(h);
+                pango_layout.set_attributes(None);
+                cr.move_to(col_x[j], row_y);
+                pcfn::show_layout(cr, pango_layout);
+            }
+        }
+        // Separators.
+        cr.set_source_rgb(border.0, border.1, border.2);
+        for j in 0..ncols.saturating_sub(1) {
+            let sep_x = col_x[j] + col_widths_px[j];
+            pango_layout.set_text(" │ ");
+            pango_layout.set_attributes(None);
+            cr.move_to(sep_x, row_y);
+            pcfn::show_layout(cr, pango_layout);
+        }
+        row_y += line_height;
+
+        // Separator row: ─────┼─────
+        cr.set_source_rgb(border.0, border.1, border.2);
+        let total_w = col_x[ncols - 1] + col_widths_px[ncols - 1] - table_x;
+        let dash_count = (total_w / (line_height * 0.6)).ceil() as usize + 4;
+        let dash_str: String = "─".repeat(dash_count);
+        pango_layout.set_text(&dash_str);
+        pango_layout.set_attributes(None);
+        cr.move_to(table_x, row_y);
+        pcfn::show_layout(cr, pango_layout);
+        row_y += line_height;
+    }
+
+    // Data rows.
+    for row in &table.rows {
+        cr.set_source_rgb(fg.0, fg.1, fg.2);
+        for (j, cell) in row.iter().enumerate() {
+            if j < ncols {
+                pango_layout.set_text(cell);
+                pango_layout.set_attributes(None);
+                cr.move_to(col_x[j], row_y);
+                pcfn::show_layout(cr, pango_layout);
+            }
+        }
+        // Separators.
+        cr.set_source_rgb(border.0, border.1, border.2);
+        for j in 0..ncols.saturating_sub(1) {
+            let sep_x = col_x[j] + col_widths_px[j];
+            pango_layout.set_text(" │ ");
+            pango_layout.set_attributes(None);
+            cr.move_to(sep_x, row_y);
+            pcfn::show_layout(cr, pango_layout);
+        }
+        row_y += line_height;
+    }
 }
 
 /// Draw a [`Dialog`] at its resolved layout. Returns
@@ -99,6 +238,20 @@ pub fn draw_dialog(
         pango_layout.set_attributes(None);
         cr.move_to(body_b.x as f64, row_y);
         pcfn::show_layout(cr, pango_layout);
+    }
+
+    // Optional table slot.
+    if let (Some(table_b), Some(table)) = (dialog_layout.table_bounds, dialog.table.as_ref()) {
+        draw_table_gtk(
+            cr,
+            pango_layout,
+            table,
+            table_b.x as f64,
+            table_b.y as f64,
+            line_height,
+            fg,
+            border,
+        );
     }
 
     if let (Some(input_b), Some(input_kind)) = (dialog_layout.input_bounds, dialog.input.as_ref()) {

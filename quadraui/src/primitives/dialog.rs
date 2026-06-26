@@ -20,6 +20,93 @@ use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, Toolba
 use crate::types::{Color, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
+/// A 2-D data table embedded inside a [`Dialog`] body.
+///
+/// Rendered between the body text lines and the [`DialogInput`] slot.
+/// Columns are separated by ` │ `. When `headers` is `Some`, a header row
+/// is drawn above a `─┼─` separator row.
+///
+/// # Column widths
+///
+/// `column_widths` is an optional explicit hint (in *character cells* for TUI,
+/// in *pixels* for pixel backends). When `None` every backend auto-sizes each
+/// column to fit its widest cell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogTable {
+    /// Optional column header labels.
+    pub headers: Option<Vec<String>>,
+    /// Data rows; each row is a `Vec` of cell strings, one per column.
+    pub rows: Vec<Vec<String>>,
+    /// Explicit column widths (TUI: char cells; pixel backends: pixels).
+    /// `None` → auto-size.
+    #[serde(default)]
+    pub column_widths: Option<Vec<u16>>,
+}
+
+impl DialogTable {
+    /// Number of columns derived from the widest row / header.
+    pub fn num_cols(&self) -> usize {
+        let from_rows = self.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let from_headers = self.headers.as_ref().map(|h| h.len()).unwrap_or(0);
+        from_rows.max(from_headers)
+    }
+
+    /// Auto-compute column char-widths from content (TUI helper).
+    ///
+    /// Returns a `Vec` of length [`Self::num_cols`]; each entry is the
+    /// maximum character count seen in that column across headers + rows.
+    /// If `column_widths` is `Some`, those values are used as a *minimum*
+    /// (content may still be wider).
+    pub fn auto_col_widths(&self) -> Vec<usize> {
+        let ncols = self.num_cols();
+        let mut widths = vec![0usize; ncols];
+
+        if let Some(explicit) = &self.column_widths {
+            for (j, &w) in explicit.iter().enumerate() {
+                if j < ncols {
+                    widths[j] = w as usize;
+                }
+            }
+        }
+
+        if let Some(headers) = &self.headers {
+            for (j, h) in headers.iter().enumerate() {
+                if j < ncols {
+                    widths[j] = widths[j].max(h.chars().count());
+                }
+            }
+        }
+        for row in &self.rows {
+            for (j, cell) in row.iter().enumerate() {
+                if j < ncols {
+                    widths[j] = widths[j].max(cell.chars().count());
+                }
+            }
+        }
+        widths
+    }
+
+    /// Total rendered width in character cells (TUI).
+    ///
+    /// Columns are separated by ` │ ` (3 chars). Returns 0 when there are no
+    /// columns.
+    pub fn tui_total_width(&self) -> usize {
+        let col_widths = self.auto_col_widths();
+        if col_widths.is_empty() {
+            return 0;
+        }
+        let sum: usize = col_widths.iter().sum();
+        sum + 3 * col_widths.len().saturating_sub(1)
+    }
+
+    /// Total height in TUI rows: data rows + header row + separator row (when
+    /// headers present).
+    pub fn tui_total_height(&self) -> usize {
+        let header_rows = if self.headers.is_some() { 2 } else { 0 };
+        header_rows + self.rows.len()
+    }
+}
+
 /// Declarative description of a dialog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dialog {
@@ -39,7 +126,14 @@ pub struct Dialog {
     /// false, buttons are horizontal, right-aligned.
     #[serde(default)]
     pub vertical_buttons: bool,
-    /// Optional content rendered between the body text and the button row.
+    /// Optional structured table rendered between the body text and the
+    /// [`DialogInput`] slot. Used for keybindings grids, comparison
+    /// tables, etc.
+    ///
+    /// Layout order: title → body → **table** → input → buttons.
+    #[serde(default)]
+    pub table: Option<DialogTable>,
+    /// Optional content rendered between the table and the button row.
     ///
     /// - [`DialogInput::TextInput`] — single-line text field; used for
     ///   rename prompts, input-required confirms.
@@ -138,6 +232,10 @@ pub struct DialogMeasure {
     pub title_height: f32,
     /// Height of the body content.
     pub body_height: f32,
+    /// Height reserved for the table slot (0 when `dialog.table` is `None`).
+    /// Set by the backend to `row_count * row_height` (including header +
+    /// separator rows when headers are present).
+    pub table_height: f32,
     /// Height reserved for the input row (0 when dialog has no input).
     pub input_height: f32,
     /// Height reserved for the button row.
@@ -154,6 +252,7 @@ impl DialogMeasure {
     pub fn total_height(&self) -> f32 {
         self.title_height
             + self.body_height
+            + self.table_height
             + self.input_height
             + self.button_row_height
             + self.padding * 2.0
@@ -192,6 +291,10 @@ pub struct DialogLayout {
     pub title_bounds: Option<Rect>,
     /// Body content bounds.
     pub body_bounds: Rect,
+    /// Bounds of the table slot when `dialog.table` is `Some` and
+    /// `measure.table_height > 0`. Rasterisers render the table inside
+    /// this rectangle.
+    pub table_bounds: Option<Rect>,
     /// Bounds of the input slot (text input or toolbar), when present
     /// and `measure.input_height > 0`. Rasterisers use this to position
     /// whichever kind of input the dialog carries.
@@ -292,6 +395,14 @@ impl Dialog {
         let body_bounds = Rect::new(content_x, cursor_y, content_w, measure.body_height);
         cursor_y += measure.body_height;
 
+        let table_bounds = if self.table.is_some() && measure.table_height > 0.0 {
+            let b = Rect::new(content_x, cursor_y, content_w, measure.table_height);
+            cursor_y += measure.table_height;
+            Some(b)
+        } else {
+            None
+        };
+
         let (input_bounds, body_toolbar_layout) =
             if self.input.is_some() && measure.input_height > 0.0 {
                 let b = Rect::new(content_x, cursor_y, content_w, measure.input_height);
@@ -348,6 +459,7 @@ impl Dialog {
             bounds,
             title_bounds,
             body_bounds,
+            table_bounds,
             input_bounds,
             body_toolbar_layout,
             button_row_bounds,
@@ -394,6 +506,7 @@ mod tests {
             width: 200.0,
             title_height: 20.0,
             body_height: 20.0,
+            table_height: 0.0,
             input_height: 0.0,
             button_row_height: 20.0,
             button_width: 60.0,
@@ -427,6 +540,7 @@ mod tests {
             buttons: vec![btn("ok")],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input,
         }
     }
@@ -589,5 +703,171 @@ mod tests {
         let cx = layout.body_bounds.x + 5.0;
         let cy = layout.body_bounds.y + 5.0;
         assert_eq!(layout.hit_test(cx, cy), DialogHit::Body);
+    }
+
+    // ── DialogTable ──────────────────────────────────────────────────────────
+
+    fn table_dialog() -> Dialog {
+        Dialog {
+            id: WidgetId::new("d"),
+            title: crate::types::StyledText::plain("Keybindings"),
+            body: vec![],
+            buttons: vec![btn("close")],
+            severity: None,
+            vertical_buttons: false,
+            table: Some(DialogTable {
+                headers: Some(vec!["Key".into(), "Action".into()]),
+                rows: vec![
+                    vec!["Ctrl+S".into(), "Save".into()],
+                    vec!["Ctrl+Z".into(), "Undo".into()],
+                ],
+                column_widths: None,
+            }),
+            input: None,
+        }
+    }
+
+    #[test]
+    fn dialog_table_num_cols() {
+        let t = DialogTable {
+            headers: Some(vec!["A".into(), "B".into(), "C".into()]),
+            rows: vec![vec!["x".into(), "y".into()]],
+            column_widths: None,
+        };
+        assert_eq!(t.num_cols(), 3, "headers win when wider than rows");
+    }
+
+    #[test]
+    fn dialog_table_auto_col_widths() {
+        let t = DialogTable {
+            headers: Some(vec!["Key".into(), "Action".into()]),
+            rows: vec![
+                vec!["Ctrl+S".into(), "Save".into()],
+                vec!["Ctrl+Shift+Z".into(), "Redo".into()],
+            ],
+            column_widths: None,
+        };
+        let widths = t.auto_col_widths();
+        assert_eq!(widths.len(), 2);
+        assert_eq!(widths[0], "Ctrl+Shift+Z".chars().count()); // 12
+        assert_eq!(widths[1], "Action".chars().count()); // 6
+    }
+
+    #[test]
+    fn dialog_table_tui_total_width() {
+        let t = DialogTable {
+            headers: Some(vec!["Key".into(), "Action".into()]),
+            rows: vec![vec!["Ctrl+S".into(), "Save".into()]],
+            column_widths: None,
+        };
+        // col0=6 ("Ctrl+S"), col1=6 ("Action"), sep=" │ "=3 → total=6+3+6=15
+        assert_eq!(t.tui_total_width(), 15);
+    }
+
+    #[test]
+    fn dialog_table_tui_total_height_with_headers() {
+        let t = DialogTable {
+            headers: Some(vec!["Key".into()]),
+            rows: vec![vec!["a".into()], vec!["b".into()]],
+            column_widths: None,
+        };
+        // 2 header rows (header + separator) + 2 data rows = 4
+        assert_eq!(t.tui_total_height(), 4);
+    }
+
+    #[test]
+    fn dialog_table_tui_total_height_no_headers() {
+        let t = DialogTable {
+            headers: None,
+            rows: vec![vec!["a".into()], vec!["b".into()], vec!["c".into()]],
+            column_widths: None,
+        };
+        assert_eq!(t.tui_total_height(), 3);
+    }
+
+    #[test]
+    fn layout_with_table_creates_table_bounds() {
+        let d = table_dialog();
+        // table: 2 header rows + 2 data rows = 4 rows → table_height=4*20=80
+        let measure = DialogMeasure {
+            width: 200.0,
+            title_height: 20.0,
+            body_height: 0.0,
+            table_height: 80.0,
+            input_height: 0.0,
+            button_row_height: 20.0,
+            button_width: 60.0,
+            button_gap: 8.0,
+            padding: 10.0,
+        };
+        let layout = d.layout(viewport(), measure, no_measure);
+        assert!(
+            layout.table_bounds.is_some(),
+            "table_bounds should be Some when table is set"
+        );
+        let tb = layout.table_bounds.unwrap();
+        assert_eq!(tb.height, 80.0);
+    }
+
+    #[test]
+    fn layout_without_table_has_no_table_bounds() {
+        let d = base_dialog(None);
+        let layout = d.layout(viewport(), measure_no_input(), no_measure);
+        assert!(
+            layout.table_bounds.is_none(),
+            "table_bounds should be None when table is None"
+        );
+    }
+
+    #[test]
+    fn layout_table_placed_below_body() {
+        let d = table_dialog();
+        let measure = DialogMeasure {
+            width: 200.0,
+            title_height: 10.0,
+            body_height: 0.0,
+            table_height: 40.0,
+            input_height: 0.0,
+            button_row_height: 10.0,
+            button_width: 60.0,
+            button_gap: 8.0,
+            padding: 5.0,
+        };
+        let layout = d.layout(viewport(), measure, no_measure);
+        let body_bottom = layout.body_bounds.y + layout.body_bounds.height;
+        let table_top = layout.table_bounds.unwrap().y;
+        assert_eq!(
+            table_top, body_bottom,
+            "table starts immediately after body"
+        );
+    }
+
+    #[test]
+    fn serde_dialog_table_round_trip() {
+        let t = DialogTable {
+            headers: Some(vec!["Key".into(), "Action".into()]),
+            rows: vec![vec!["Ctrl+S".into(), "Save".into()]],
+            column_widths: Some(vec![10, 20]),
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        let back: DialogTable = serde_json::from_str(&json).unwrap();
+        assert_eq!(t, back);
+    }
+
+    #[test]
+    fn serde_dialog_with_table_round_trip() {
+        let d = table_dialog();
+        let json = serde_json::to_string(&d).unwrap();
+        let back: Dialog = serde_json::from_str(&json).unwrap();
+        assert_eq!(d, back);
+    }
+
+    #[test]
+    fn serde_dialog_without_table_defaults_to_none() {
+        // A JSON blob that doesn't contain the "table" key should deserialise
+        // with table = None (backward-compat — old serialised dialogs keep working).
+        let json = r#"{"id":"d","title":{"spans":[{"text":"T","fg":null,"bg":null,"bold":false,"italic":false,"underline":false,"strike":false}]},"body":[],"buttons":[]}"#;
+        let d: Dialog = serde_json::from_str(json).unwrap();
+        assert!(d.table.is_none());
     }
 }
