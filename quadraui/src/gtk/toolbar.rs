@@ -8,15 +8,22 @@
 //!
 //! ## Per-state colouring
 //!
+//! Priority (highest first): pressed → hovered → focused → is_active → enabled.
+//!
 //! | State              | Foreground             | Background           |
 //! |--------------------|------------------------|----------------------|
 //! | Action, enabled    | `theme.foreground`     | `bar_bg`             |
 //! | Action, disabled   | `theme.muted_fg`       | `bar_bg`             |
 //! | Action, is_active  | `theme.foreground`     | `theme.selected_bg`  |
+//! | Action, focused    | `theme.foreground`     | `bar_bg` + ring      |
 //! | Action, hovered    | `theme.hover_fg`       | `theme.hover_bg`     |
 //! | Action, pressed    | `theme.foreground`     | `theme.selected_bg`  |
 //! | Separator          | `theme.muted_fg`       | `bar_bg`             |
 //! | Label              | `Label.fg` or `muted`  | `bar_bg`             |
+//!
+//! Keyboard-focused buttons (via [`crate::primitives::toolbar::Toolbar::focused_index`])
+//! receive a `theme.accent_fg`-coloured rounded-rect stroke drawn on top of the
+//! button background. Hover / pressed still take visual priority over focus.
 //!
 //! `bar_bg` is `Toolbar.bg.unwrap_or(theme.header_bg)`.
 
@@ -174,8 +181,10 @@ pub fn draw_toolbar(
             } => {
                 let is_hovered = *enabled && hovered_id == Some(id);
                 let is_pressed = *enabled && pressed_id == Some(id);
+                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
 
                 // Highlight background for hover/pressed/active states.
+                // Priority: pressed > hovered > focused > is_active.
                 let highlight = if is_pressed || *is_active {
                     Some(theme.selected_bg)
                 } else if is_hovered {
@@ -194,6 +203,22 @@ pub fn draw_toolbar(
                         CORNER_RADIUS,
                     );
                     cr.fill().ok();
+                }
+
+                // Focus ring: drawn when focused and not already
+                // visually dominated by hover or pressed highlight.
+                if is_focused && !is_hovered && !is_pressed && !*is_active {
+                    set_source(cr, theme.accent_fg);
+                    cr.set_line_width(1.0);
+                    rounded_rect_path(
+                        cr,
+                        item_x + 1.5,
+                        item_y + 1.5,
+                        item_w - 3.0,
+                        item_h - 3.0,
+                        CORNER_RADIUS,
+                    );
+                    cr.stroke().ok();
                 }
 
                 // Foreground.

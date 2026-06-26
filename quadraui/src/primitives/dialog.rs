@@ -473,6 +473,7 @@ mod tests {
                 },
             ],
             bg: None,
+            focused_index: None,
         });
         let json = serde_json::to_string(&input).unwrap();
         let back: DialogInput = serde_json::from_str(&json).unwrap();
@@ -507,6 +508,7 @@ mod tests {
                 tooltip: String::new(),
             }],
             bg: None,
+            focused_index: None,
         })));
         let layout = d.layout(viewport(), measure_with_input(), |_| {
             ToolbarItemMeasure::new(10.0)
@@ -561,6 +563,7 @@ mod tests {
                 tooltip: String::new(),
             }],
             bg: None,
+            focused_index: None,
         })));
         let layout = d.layout(viewport(), measure_with_input(), |_| {
             ToolbarItemMeasure::new(60.0)

@@ -387,6 +387,7 @@ mod tests {
                     },
                 ],
                 bg: None,
+                focused_index: None,
             })),
         }
     }
@@ -505,6 +506,7 @@ mod tests {
                 ToolbarButton::Separator,
             ],
             bg: None,
+            focused_index: None,
         });
         let json = serde_json::to_string(&input).unwrap();
         let back: DialogInput = serde_json::from_str(&json).unwrap();

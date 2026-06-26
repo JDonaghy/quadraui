@@ -1452,6 +1452,7 @@ mod tests {
                         },
                     ],
                     bg: None,
+                    focused_index: None,
                 }),
                 hint: label(""),
                 disabled: false,
@@ -1565,6 +1566,7 @@ mod tests {
                 ToolbarButton::Separator,
             ],
             bg: None,
+            focused_index: None,
         });
         let json = serde_json::to_string(&kind).unwrap();
         let back: FieldKind = serde_json::from_str(&json).unwrap();

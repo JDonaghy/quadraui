@@ -114,6 +114,7 @@ impl SidebarPanelApp {
                 },
             ],
             bg: None,
+            focused_index: None,
         }
     }
 

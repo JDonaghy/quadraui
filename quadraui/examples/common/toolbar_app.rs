@@ -8,9 +8,12 @@
 //! - A `Separator` between button groups
 //! - A non-clickable `Label` showing live state ("paused" / "running")
 //! - Hover state (highlight tracks the mouse cursor)
+//! - **Keyboard focus** (Tab / Shift-Tab cycles focus, Enter / Space activates)
 //!
 //! Controls:
 //! - Click an action button       fire it
+//! - Tab / Shift-Tab              move keyboard focus between enabled buttons
+//! - Enter / Space                activate the focused button
 //! - 1 / 2 / 3 / 4               keyboard shortcuts for the four enabled actions
 //! - q / Esc                     quit
 
@@ -33,6 +36,13 @@ pub struct ToolbarApp {
     /// `WidgetId` of the action currently held down by the user (between
     /// `MouseDown` and `MouseUp`). Drives the pressed highlight.
     pressed_id: Option<WidgetId>,
+    /// Index into `self.toolbar().buttons` of the keyboard-focused button,
+    /// or `None` when the toolbar has no keyboard focus.
+    ///
+    /// Tab / Shift-Tab advance this through the list of *enabled* action
+    /// buttons (skipping separators, labels, and disabled actions).
+    /// Enter / Space activate the focused button.
+    focused_index: Option<usize>,
 }
 
 impl ToolbarApp {
@@ -40,9 +50,10 @@ impl ToolbarApp {
         Self {
             filter_active: false,
             running: true,
-            last_message: "Click a button or press 1/2/3/4. q=quit".into(),
+            last_message: "Click, Tab to focus, Enter to activate. q=quit".into(),
             hovered_id: None,
             pressed_id: None,
+            focused_index: None,
         }
     }
 
@@ -114,6 +125,7 @@ impl ToolbarApp {
             ],
             // `None` lets the backend pick its theme default (header_bg).
             bg: None,
+            focused_index: self.focused_index,
         }
     }
 
@@ -171,6 +183,77 @@ impl ToolbarApp {
             }
         }
     }
+
+    /// Return the indices of all enabled `Action` buttons in the current
+    /// toolbar, in order. Used by Tab navigation to skip separators, labels,
+    /// and disabled actions.
+    fn focusable_indices(&self) -> Vec<usize> {
+        self.toolbar()
+            .buttons
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, btn)| match btn {
+                ToolbarButton::Action { enabled, .. } if enabled => Some(i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Advance keyboard focus to the next (or previous) focusable button.
+    ///
+    /// `forward`: `true` for Tab, `false` for Shift-Tab.
+    ///
+    /// When no button has focus, Tab lands on the first focusable button;
+    /// Shift-Tab lands on the last. Focus wraps around.
+    fn advance_focus(&mut self, forward: bool) {
+        let candidates = self.focusable_indices();
+        if candidates.is_empty() {
+            return;
+        }
+        self.focused_index = Some(match self.focused_index {
+            None => {
+                if forward {
+                    candidates[0]
+                } else {
+                    *candidates.last().unwrap()
+                }
+            }
+            Some(current) => {
+                let pos = candidates.iter().position(|&i| i == current);
+                match pos {
+                    None => candidates[0], // stale index (e.g. button just disabled)
+                    Some(p) => {
+                        let next = if forward {
+                            (p + 1) % candidates.len()
+                        } else {
+                            (p + candidates.len() - 1) % candidates.len()
+                        };
+                        candidates[next]
+                    }
+                }
+            }
+        });
+    }
+
+    /// Activate the currently focused button (Enter / Space). No-op when
+    /// no button has focus.
+    fn activate_focused(&mut self) -> bool {
+        let idx = match self.focused_index {
+            Some(i) => i,
+            None => return false,
+        };
+        let bar = self.toolbar();
+        if let Some(btn) = bar.buttons.get(idx) {
+            if let ToolbarButton::Action { id, enabled, .. } = btn {
+                if *enabled {
+                    let id = id.clone();
+                    self.dispatch(&id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 impl Default for ToolbarApp {
@@ -220,6 +303,7 @@ impl AppLogic for ToolbarApp {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
+            // ── Quit ──────────────────────────────────────────────────────────
             UiEvent::KeyPressed {
                 key: Key::Char('q'),
                 ..
@@ -229,6 +313,41 @@ impl AppLogic for ToolbarApp {
                 ..
             } => Reaction::Exit,
 
+            // ── Tab / Shift-Tab: cycle keyboard focus ──────────────────────
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers,
+                ..
+            } => {
+                let forward = !modifiers.shift;
+                self.advance_focus(forward);
+                let focused_label = self.focused_index.and_then(|idx| {
+                    let bar = self.toolbar();
+                    bar.buttons.into_iter().nth(idx).and_then(|btn| match btn {
+                        ToolbarButton::Action { label, .. } => Some(label),
+                        _ => None,
+                    })
+                });
+                self.last_message = match focused_label {
+                    Some(l) => format!("Focused: {l} (Enter to activate)"),
+                    None => "Focus cleared".into(),
+                };
+                Reaction::Redraw
+            }
+
+            // ── Enter / Space: activate focused button ─────────────────────
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter) | Key::Char(' '),
+                ..
+            } => {
+                if self.activate_focused() {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
+
+            // ── Number shortcuts for individual buttons ────────────────────
             UiEvent::KeyPressed {
                 key: Key::Char(c), ..
             } => {
@@ -258,6 +377,7 @@ impl AppLogic for ToolbarApp {
                 Reaction::Continue
             }
 
+            // ── Mouse: hover / press / release ────────────────────────────
             UiEvent::MouseMoved { position, .. } => {
                 let rect = Self::toolbar_rect(backend);
                 let bar = self.toolbar();
