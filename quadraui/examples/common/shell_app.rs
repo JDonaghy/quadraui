@@ -18,9 +18,9 @@
 
 use quadraui::compose::app_shell::{AppShell, AppShellEvent, PanelDefinition};
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment,
-    StyledText, TreePath, TreeRow, UiEvent, WidgetId,
+    ActivityBarEvent, AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode,
+    Reaction, Rect, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
+    StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 pub struct ShellApp {
@@ -77,7 +77,7 @@ impl ShellApp {
             explorer,
             search,
             git,
-            last_message: "Click activity bar icons | drag divider | q to quit".into(),
+            last_message: "Tab=focus bar | click icons | drag divider | q=quit".into(),
         }
     }
 
@@ -103,8 +103,17 @@ impl ShellApp {
 
     fn status_bar(&self) -> StatusBar {
         let fg = Color::rgb(220, 220, 220);
-        let bg = Color::rgb(0, 122, 204);
+        let bg = if self.shell.activity_keyboard_focused() {
+            Color::rgb(80, 60, 130)
+        } else {
+            Color::rgb(0, 122, 204)
+        };
         let dim_bg = Color::rgb(30, 30, 40);
+        let hint = if self.shell.activity_keyboard_focused() {
+            " j/k=move  l/Enter=activate  Esc=dismiss ".into()
+        } else {
+            " Tab=focus bar  q=quit ".into()
+        };
         StatusBar {
             id: WidgetId::new("shell-status"),
             left_segments: vec![StatusBarSegment {
@@ -115,7 +124,7 @@ impl ShellApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " q=quit | click icons | drag divider ".into(),
+                text: hint,
                 fg: Color::rgb(180, 180, 180),
                 bg: dim_bg,
                 bold: false,
@@ -215,6 +224,81 @@ impl AppLogic for ShellApp {
             }
             AppShellEvent::Consumed => return Reaction::Redraw,
             AppShellEvent::Ignored => {}
+        }
+
+        // ── Activity-bar keyboard navigation ─────────────────────────────
+        // When the bar is focused the backend emits ActivityBar events
+        // instead of raw KeyPressed; the consumer maps key strings to the
+        // AppShell navigation methods.
+        if let UiEvent::ActivityBar(_, ActivityBarEvent::KeyPressed { ref key, .. }) = event {
+            match key.as_str() {
+                "j" | "Down" => {
+                    self.shell.activity_select_next();
+                    self.last_message = format!(
+                        "Bar cursor → {}",
+                        self.shell
+                            .activity_selected_id()
+                            .map(|id| id.as_str())
+                            .unwrap_or("?")
+                    );
+                    return Reaction::Redraw;
+                }
+                "k" | "Up" => {
+                    self.shell.activity_select_prev();
+                    self.last_message = format!(
+                        "Bar cursor → {}",
+                        self.shell
+                            .activity_selected_id()
+                            .map(|id| id.as_str())
+                            .unwrap_or("?")
+                    );
+                    return Reaction::Redraw;
+                }
+                "l" | "Enter" => {
+                    if let Some(ev) = self.shell.activity_activate_selected() {
+                        self.shell.set_activity_keyboard_focused(false);
+                        match ev {
+                            AppShellEvent::PanelChanged { ref panel_id } => {
+                                self.last_message = format!("Panel: {}", panel_id.as_str());
+                            }
+                            AppShellEvent::SidebarHidden => {
+                                self.last_message = "Sidebar hidden".into();
+                            }
+                            AppShellEvent::BottomItemClicked { ref id } => {
+                                self.last_message = format!("Settings clicked ({})", id.as_str());
+                            }
+                            _ => {}
+                        }
+                    }
+                    return Reaction::Redraw;
+                }
+                "Escape" | "h" | "Left" => {
+                    self.shell.set_activity_keyboard_focused(false);
+                    self.last_message = "Focus returned to editor".into();
+                    return Reaction::Redraw;
+                }
+                _ => return Reaction::Continue,
+            }
+        }
+
+        // ── Tab → focus the activity bar ─────────────────────────────────
+        if let UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            ..
+        } = event
+        {
+            if !self.shell.activity_keyboard_focused() {
+                self.shell.set_activity_keyboard_focused(true);
+                self.shell.activity_set_cursor(0);
+                self.last_message = format!(
+                    "Activity bar focused ({})",
+                    self.shell
+                        .activity_selected_id()
+                        .map(|id| id.as_str())
+                        .unwrap_or("?")
+                );
+                return Reaction::Redraw;
+            }
         }
 
         // Forward events to the active sidebar panel.
