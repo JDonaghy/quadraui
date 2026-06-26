@@ -192,6 +192,16 @@ impl DualModePaletteController {
     pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> DualModePaletteEvent {
         let result = match event {
             UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
+            // Route bracketed-paste into the query field when in Input mode.
+            // CLAUDE.md event model: ClipboardPaste = user pasted text into an
+            // input; route to the focused text field.  In Input mode the query
+            // IS the focused text field.
+            UiEvent::ClipboardPaste(text) if self.mode == PaletteMode::Input => {
+                self.insert_str_at_cursor(text);
+                DualModePaletteEvent::QueryChanged {
+                    value: self.query.clone(),
+                }
+            }
             _ => DualModePaletteEvent::Ignored,
         };
         // Sync scroll after any selection change.
@@ -379,6 +389,31 @@ impl DualModePaletteController {
 
             _ => DualModePaletteEvent::Ignored,
         }
+    }
+
+    /// Insert `text` at the current cursor position and advance the cursor.
+    ///
+    /// Shared by bracketed-paste handling and (potentially) future
+    /// multi-character insertion paths.
+    fn insert_str_at_cursor(&mut self, text: &str) {
+        let chars: Vec<char> = self.query.chars().collect();
+        let paste_chars: Vec<char> = text.chars().collect();
+        let mut new_query = String::with_capacity(self.query.len() + text.len());
+        for (i, &ch) in chars.iter().enumerate() {
+            if i == self.cursor_char {
+                for &pc in &paste_chars {
+                    new_query.push(pc);
+                }
+            }
+            new_query.push(ch);
+        }
+        if self.cursor_char >= chars.len() {
+            for &pc in &paste_chars {
+                new_query.push(pc);
+            }
+        }
+        self.cursor_char += paste_chars.len();
+        self.query = new_query;
     }
 
     /// Clamp `scroll_top` so `selected` is always visible within
@@ -700,6 +735,51 @@ mod tests {
             "input label should appear in title: {:?}",
             pal.title
         );
+    }
+
+    // ── ClipboardPaste in Input mode ──────────────────────────────────
+
+    #[test]
+    fn clipboard_paste_in_input_mode_inserts_at_cursor() {
+        let mut ctrl =
+            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
+        // Type "ac", move cursor left, then paste "b" — result should be "abc".
+        ctrl.handle(&key_ev(Key::Char('a')), 10);
+        ctrl.handle(&key_ev(Key::Char('c')), 10);
+        ctrl.handle(&key_ev(Key::Named(NamedKey::Left)), 10);
+        let ev = ctrl.handle(&UiEvent::ClipboardPaste("b".into()), 10);
+        assert_eq!(ctrl.query(), "abc");
+        assert_eq!(
+            ev,
+            DualModePaletteEvent::QueryChanged {
+                value: "abc".into()
+            }
+        );
+    }
+
+    #[test]
+    fn clipboard_paste_appends_when_cursor_at_end() {
+        let mut ctrl =
+            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
+        ctrl.handle(&key_ev(Key::Char('h')), 10);
+        ctrl.handle(&key_ev(Key::Char('i')), 10);
+        let ev = ctrl.handle(&UiEvent::ClipboardPaste("!".into()), 10);
+        assert_eq!(ctrl.query(), "hi!");
+        assert_eq!(
+            ev,
+            DualModePaletteEvent::QueryChanged {
+                value: "hi!".into()
+            }
+        );
+    }
+
+    #[test]
+    fn clipboard_paste_ignored_in_list_mode() {
+        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
+        // List mode — paste should be ignored (not the focused text input path).
+        let ev = ctrl.handle(&UiEvent::ClipboardPaste("xyz".into()), 10);
+        assert_eq!(ev, DualModePaletteEvent::Ignored);
+        assert_eq!(ctrl.query(), "");
     }
 
     #[test]
