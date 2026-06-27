@@ -59,19 +59,25 @@ impl DialogTableDemo {
     /// table's auto-sized column widths.
     ///
     /// `line_height` is 1.0 on TUI (one character cell) and the pixel line
-    /// height on GTK. Column widths are char counts on TUI, pixel widths on
-    /// GTK; for GTK we approximate with `char_count * line_height * 0.6`.
+    /// height on GTK/macOS. Column widths from `tui_total_width()` are in
+    /// character cells; on pixel backends we approximate char pixel width as
+    /// `line_height * 0.6`.
     fn measure(&self, backend: &dyn Backend) -> DialogMeasure {
         let lh = backend.line_height();
         let viewport = backend.viewport();
+
+        // On TUI lh == 1.0: char-cell widths are already in the right unit.
+        // On pixel backends lh is the pixel line-height; approximate char
+        // width as lh × 0.6.
+        let char_w = if lh > 1.0 { lh * 0.6 } else { 1.0 };
 
         let table = self.dialog.table.as_ref();
         let table_total_h = table
             .map(|t| t.tui_total_height() as f32 * lh)
             .unwrap_or(0.0);
-        // Approximate preferred table width: char cells × lh×0.6 + side padding.
+        // Preferred table width: char cells × char_w + 2 char-widths of padding.
         let table_preferred_w = table
-            .map(|t| (t.tui_total_width() as f32) * lh * 0.6 + lh * 2.0)
+            .map(|t| t.tui_total_width() as f32 * char_w + char_w * 2.0)
             .unwrap_or(0.0);
 
         let title_h = if self.dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
@@ -81,12 +87,12 @@ impl DialogTableDemo {
         };
         let body_h = self.dialog.body.len() as f32 * lh;
 
-        let min_w = lh * 30.0 * 0.6; // ≈ 30 char-widths
-        let max_w = lh * 60.0 * 0.6; // ≈ 60 char-widths
+        let min_w = char_w * 30.0; // ≈ 30 char-widths
+        let max_w = char_w * 60.0; // ≈ 60 char-widths
         let default_w = (viewport.width * 0.5).clamp(min_w, max_w);
         let dialog_w = default_w
             .max(table_preferred_w)
-            .min(viewport.width - lh * 4.0 * 0.6);
+            .min(viewport.width - char_w * 4.0);
 
         DialogMeasure {
             width: dialog_w,
@@ -95,8 +101,8 @@ impl DialogTableDemo {
             table_height: table_total_h,
             input_height: 0.0,
             button_row_height: lh,
-            button_width: lh * 8.0 * 0.6,
-            button_gap: lh * 2.0 * 0.6,
+            button_width: char_w * 8.0,
+            button_gap: char_w * 2.0,
             padding: lh,
         }
     }
