@@ -143,7 +143,18 @@ impl Clipboard for TuiClipboard {
             let _ = cb.set_text(text);
         }
         // 2. OSC 52 — terminal clipboard escape (works over SSH / tmux).
+        //
+        // Write to stdout AND to /dev/tty (Unix-only) for reliability:
+        //  - stdout: the normal TUI output stream; works in most setups.
+        //  - /dev/tty: the controlling terminal device, always reachable
+        //    even when stdout is redirected (e.g. run via a wrapper script
+        //    that pipes stdout). The two writes are harmless duplicates for
+        //    normal use where stdout already is the tty.
         emit_osc52_to(text, &mut std::io::stdout());
+        #[cfg(unix)]
+        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            emit_osc52_to(text, &mut tty);
+        }
     }
 }
 
