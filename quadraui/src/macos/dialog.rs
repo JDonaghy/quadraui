@@ -62,6 +62,19 @@ unsafe fn draw_table_macos(
         }
     }
 
+    // Honour explicit column_widths as minimums (char-cell → pixel
+    // approximation via line_height × 0.6, matching the GTK path).
+    if let Some(explicit) = &table.column_widths {
+        for (j, &w) in explicit.iter().enumerate() {
+            if j < ncols {
+                let px = w as f64 * (line_height * 0.6);
+                if px > col_widths_px[j] {
+                    col_widths_px[j] = px;
+                }
+            }
+        }
+    }
+
     let (sep_w, _) = measure_text(font, " │ ");
     let mut col_x = vec![0.0f64; ncols];
     let mut cursor_x = table_x;
@@ -380,6 +393,7 @@ mod tests {
             ],
             severity: None,
             vertical_buttons: false,
+            table: None,
             input: None,
         }
     }

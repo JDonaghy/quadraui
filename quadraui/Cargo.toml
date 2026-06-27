@@ -526,3 +526,13 @@ required-features = ["tui"]
 name = "gtk_activity_nav"
 path = "examples/gtk_activity_nav.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_dialog_table"
+path = "examples/tui_dialog_table.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_dialog_table"
+path = "examples/gtk_dialog_table.rs"
+required-features = ["gtk"]

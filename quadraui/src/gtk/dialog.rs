@@ -31,7 +31,8 @@ fn flatten(text: &StyledText) -> String {
 /// Column widths are auto-computed from content using `pango_layout` pixel
 /// metrics. Columns are separated by a space-│-space glyph run. When
 /// `table.headers` is `Some`, a header row is drawn first, followed by a
-/// `──┼──` separator row, then the data rows.
+/// plain `──────` dash separator row (no `┼` junction — full-width dashes
+/// span the table), then the data rows.
 #[allow(clippy::too_many_arguments)]
 fn draw_table_gtk(
     cr: &Context,
@@ -129,7 +130,7 @@ fn draw_table_gtk(
         }
         row_y += line_height;
 
-        // Separator row: ─────┼─────
+        // Separator row: ────── (plain dashes; no ┼ junction on GTK)
         cr.set_source_rgb(border.0, border.1, border.2);
         let total_w = col_x[ncols - 1] + col_widths_px[ncols - 1] - table_x;
         let dash_count = (total_w / (line_height * 0.6)).ceil() as usize + 4;
