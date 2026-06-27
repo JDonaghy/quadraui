@@ -278,6 +278,10 @@ impl AppLogic for ShellApp {
                     self.last_message = "Focus returned to editor".into();
                     return Reaction::Redraw;
                 }
+                // Honour the global quit key even while the bar is focused
+                // so users are not stranded (the bar hints do not show q=quit
+                // when focused, but muscle memory is hard to break).
+                "q" => return Reaction::Exit,
                 _ => return Reaction::Continue,
             }
         }

@@ -388,6 +388,8 @@ impl AppShell {
     /// Unregister a panel by ID. Returns `true` if found and removed.
     /// Adjusts `active_panel` to keep the same panel selected (or clears
     /// it if the active panel was the one removed).
+    /// Also adjusts `activity_cursor` analogously so keyboard navigation
+    /// remains consistent after a dynamic removal.
     pub fn remove_panel(&mut self, id: &WidgetId) -> bool {
         let Some(idx) = self.panels.iter().position(|p| p.id == *id) else {
             return false;
@@ -404,6 +406,20 @@ impl AppShell {
             Some(a) if a > idx => Some(a - 1),
             other => other,
         };
+        // Mirror the same shift logic for the keyboard cursor. The removed
+        // panel occupied combined-index `idx`; everything after it shifts
+        // down by one.
+        let total = self.panels.len() + self.bottom_items.len();
+        if total == 0 {
+            self.activity_cursor = 0;
+            self.activity_keyboard_focused = false;
+        } else if self.activity_cursor > idx {
+            self.activity_cursor -= 1;
+        } else if self.activity_cursor == idx {
+            // The cursor was on the removed panel; clamp to the new range.
+            self.activity_cursor = self.activity_cursor.min(total - 1);
+        }
+        // activity_cursor < idx: no change needed.
         true
     }
 
@@ -419,11 +435,28 @@ impl AppShell {
     }
 
     /// Unregister a bottom item by ID.
+    /// Adjusts `activity_cursor` so keyboard navigation remains consistent
+    /// after a dynamic removal (mirrors `remove_panel`'s treatment of
+    /// `active_panel`).
     pub fn remove_bottom_item(&mut self, id: &WidgetId) -> bool {
         let Some(idx) = self.bottom_items.iter().position(|p| p.id == *id) else {
             return false;
         };
+        // Bottom items begin at combined index `np` in the top-then-bottom
+        // sequence, so the removed item's combined index is `np + idx`.
+        let np = self.panels.len();
+        let combined_idx = np + idx;
         self.bottom_items.remove(idx);
+        let total = np + self.bottom_items.len();
+        if total == 0 {
+            self.activity_cursor = 0;
+            self.activity_keyboard_focused = false;
+        } else if self.activity_cursor > combined_idx {
+            self.activity_cursor -= 1;
+        } else if self.activity_cursor == combined_idx {
+            self.activity_cursor = self.activity_cursor.min(total - 1);
+        }
+        // activity_cursor < combined_idx: no change needed.
         true
     }
 
@@ -1497,6 +1530,93 @@ mod tests {
     fn remove_nonexistent_panel_returns_false() {
         let mut s = shell();
         assert!(!s.remove_panel(&WidgetId::new("panel:nope")));
+    }
+
+    // ── activity_cursor adjustment on remove ────────────────────────
+
+    #[test]
+    fn remove_panel_before_cursor_shifts_cursor_down() {
+        // shell() has 3 panels (explorer=0, search=1, git=2) + 1 bottom (settings=3).
+        let mut s = shell();
+        s.set_activity_keyboard_focused(true);
+        s.activity_set_cursor(2); // pointing at git (index 2)
+        s.remove_panel(&WidgetId::new("panel:explorer")); // remove index 0
+                                                          // cursor was > 0, so should decrement to 1 (still pointing at git)
+        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_selected_id(), Some(&WidgetId::new("panel:git")));
+    }
+
+    #[test]
+    fn remove_panel_after_cursor_leaves_cursor_unchanged() {
+        let mut s = shell();
+        s.set_activity_keyboard_focused(true);
+        s.activity_set_cursor(0); // pointing at explorer (index 0)
+        s.remove_panel(&WidgetId::new("panel:search")); // remove index 1 (after cursor)
+        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(
+            s.activity_selected_id(),
+            Some(&WidgetId::new("panel:explorer"))
+        );
+    }
+
+    #[test]
+    fn remove_panel_at_cursor_clamps_cursor() {
+        let mut s = shell();
+        s.set_activity_keyboard_focused(true);
+        s.activity_set_cursor(2); // pointing at git (last panel, index 2)
+        s.remove_panel(&WidgetId::new("panel:git")); // remove the cursor item
+                                                     // New total = 2 panels + 1 bottom = 3; cursor was 2, clamped to 2.
+                                                     // Now index 2 is the bottom item (settings).
+        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(
+            s.activity_selected_id(),
+            Some(&WidgetId::new("panel:settings"))
+        );
+    }
+
+    #[test]
+    fn remove_last_panel_while_focused_clears_focus() {
+        let mut s = AppShell::new(
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:only"),
+                icon: "O".into(),
+                tooltip: "Only".into(),
+                title: "ONLY".into(),
+            }],
+            30.0,
+        );
+        s.set_activity_keyboard_focused(true);
+        s.remove_panel(&WidgetId::new("panel:only"));
+        assert!(!s.activity_keyboard_focused());
+        assert_eq!(s.activity_cursor, 0);
+    }
+
+    #[test]
+    fn remove_bottom_item_before_cursor_leaves_cursor_unchanged() {
+        // shell(): panels 0,1,2; bottom item at combined index 3.
+        // cursor at 3 (settings), remove settings → cursor was at removed item,
+        // clamp to new total (3 panels + 0 bottom = 3, but 3 is out of range → 2).
+        // This test checks cursor BEFORE the bottom item first.
+        let mut s = shell();
+        s.set_activity_keyboard_focused(true);
+        s.activity_set_cursor(1); // pointing at search (panel index 1)
+        s.remove_bottom_item(&WidgetId::new("panel:settings")); // remove bottom at combined 3
+        assert_eq!(s.activity_cursor, 1); // cursor was before removed item
+        assert_eq!(
+            s.activity_selected_id(),
+            Some(&WidgetId::new("panel:search"))
+        );
+    }
+
+    #[test]
+    fn remove_bottom_item_at_cursor_clamps_cursor() {
+        let mut s = shell();
+        s.set_activity_keyboard_focused(true);
+        s.activity_set_cursor(3); // pointing at settings (combined index 3)
+        s.remove_bottom_item(&WidgetId::new("panel:settings"));
+        // New total = 3; cursor was 3, clamped to 2 (last panel).
+        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_selected_id(), Some(&WidgetId::new("panel:git")));
     }
 
     #[test]
