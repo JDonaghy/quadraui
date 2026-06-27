@@ -12,7 +12,8 @@
 //! - click activity bar icons   toggle / switch panels
 //! - drag divider               resize sidebar
 //! - click sidebar rows         select row
-//! - `Tab` / `Shift+Tab`        cycle sidebar sections
+//! - `Tab`                       focus activity bar (j/k/Enter/Esc to navigate)
+//! - `Shift+Tab`                cycle sidebar sections
 //! - `↑` / `↓`                  scroll / select in sidebar
 //! - `q` / `Esc`                quit
 
