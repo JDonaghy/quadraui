@@ -717,6 +717,45 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// Coalesce consecutive `MouseMoved` events in a raw batch, keeping only
+/// the last in each consecutive run.  A non-`MouseMoved` event breaks a
+/// run; the flushed move and the other event are both preserved in order.
+///
+/// Applied before [`TuiBackend::apply_dispatch`] so that a burst of N
+/// `MouseMoved` events (e.g. a fast drag) results in a single
+/// `dispatch_mouse_drag` call at the final cursor position, preventing N
+/// redundant selection updates or SGR-cursor writes to embedded PTYs.
+///
+/// # Ordering guarantee
+///
+/// `MouseDown … MouseMoved* … MouseUp` bursts survive intact — only
+/// intermediate positions within a consecutive run are elided.
+fn coalesce_mouse_moved(raw: Vec<UiEvent>) -> Vec<UiEvent> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut pending_move: Option<UiEvent> = None;
+    for ev in raw {
+        match ev {
+            UiEvent::MouseMoved { .. } => {
+                // Replace pending move with the newer position.
+                pending_move = Some(ev);
+            }
+            other => {
+                // Flush the pending move before the non-move event so
+                // ordering is preserved (e.g. MouseDown before MouseMoved).
+                if let Some(m) = pending_move.take() {
+                    out.push(m);
+                }
+                out.push(other);
+            }
+        }
+    }
+    // Flush any trailing move (common case: burst ends with a move).
+    if let Some(m) = pending_move.take() {
+        out.push(m);
+    }
+    out
+}
+
 impl Backend for TuiBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -755,7 +794,8 @@ impl Backend for TuiBackend {
         // native event translates to zero, one, or more `UiEvent`s
         // via [`super::events::crossterm_to_uievents`], then runs
         // through the dispatch layer (text-region hit-test, drag state)
-        // and [`Self::apply_accelerators`].
+        // and [`Self::apply_accelerators`].  Consecutive `MouseMoved`
+        // events are coalesced to the final position before dispatch.
         let mut raw = Vec::new();
         while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
             match ratatui::crossterm::event::read() {
@@ -763,25 +803,39 @@ impl Backend for TuiBackend {
                 Err(_) => break,
             }
         }
-        let mut out = self.apply_dispatch(raw);
+        let coalesced = coalesce_mouse_moved(raw);
+        let mut out = self.apply_dispatch(coalesced);
         self.apply_accelerators(&mut out);
         self.double_click.process(&mut out);
         out
     }
 
     fn wait_events(&mut self, timeout: Duration) -> Vec<UiEvent> {
-        // Block up to `timeout` for the next native event, translate it,
-        // run through the dispatch layer (text-region hit-test, drag
-        // state), match against registered accelerators, and return.
-        // Empty `Vec` on timeout.
+        // Block up to `timeout` for the first native event, then drain
+        // the remainder of the queue non-blocking so a burst of events
+        // (e.g. a fast mouse drag) is processed in a single frame instead
+        // of one event per render cycle.  Consecutive `MouseMoved` events
+        // are coalesced to the final position before dispatch, preventing
+        // N redundant selection updates or SGR-cursor writes to embedded
+        // PTYs.  Returns an empty `Vec` on timeout.
         if let Ok(true) = ratatui::crossterm::event::poll(timeout) {
-            if let Ok(ev) = ratatui::crossterm::event::read() {
-                let raw = super::events::crossterm_to_uievents(ev);
-                let mut out = self.apply_dispatch(raw);
-                self.apply_accelerators(&mut out);
-                self.double_click.process(&mut out);
-                return out;
+            let mut raw = Vec::new();
+            match ratatui::crossterm::event::read() {
+                Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
+                Err(_) => return Vec::new(),
             }
+            // Drain the rest of the queue without blocking.
+            while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
+                match ratatui::crossterm::event::read() {
+                    Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
+                    Err(_) => break,
+                }
+            }
+            let coalesced = coalesce_mouse_moved(raw);
+            let mut out = self.apply_dispatch(coalesced);
+            self.apply_accelerators(&mut out);
+            self.double_click.process(&mut out);
+            return out;
         }
         Vec::new()
     }
@@ -2816,6 +2870,140 @@ mod tests {
         assert_eq!(
             key_to_activity_bar_string(&Key::Named(NamedKey::Down)),
             "Down"
+        );
+    }
+
+    // ── coalesce_mouse_moved tests ────────────────────────────────────────────
+
+    /// A burst of N consecutive `MouseMoved` events collapses to a single
+    /// event at the final position.
+    #[test]
+    fn coalesce_collapses_consecutive_mouse_moved() {
+        use crate::ButtonMask;
+        let raw = vec![
+            UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: ButtonMask::default(),
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(2.0, 1.0),
+                buttons: ButtonMask::default(),
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(3.0, 1.0),
+                buttons: ButtonMask::default(),
+            },
+        ];
+        let out = coalesce_mouse_moved(raw);
+        assert_eq!(out.len(), 1, "three consecutive moves must collapse to one");
+        assert!(
+            matches!(&out[0], UiEvent::MouseMoved { position, .. } if position.x == 3.0),
+            "surviving event must carry the final position (x=3), got {:?}",
+            out
+        );
+    }
+
+    /// A `MouseDown … MouseMoved×N … MouseUp` burst collapses the moves
+    /// to the final position while preserving relative order with the
+    /// flanking down/up events.
+    #[test]
+    fn coalesce_preserves_ordering_around_down_and_up() {
+        use crate::{ButtonMask, Modifiers, MouseButton};
+        let raw = vec![
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(0.0, 0.0),
+                modifiers: Modifiers::default(),
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(1.0, 0.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..ButtonMask::default()
+                },
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(2.0, 0.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..ButtonMask::default()
+                },
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(3.0, 0.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..ButtonMask::default()
+                },
+            },
+            UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(3.0, 0.0),
+            },
+        ];
+        let out = coalesce_mouse_moved(raw);
+        assert_eq!(out.len(), 3, "expected [Down, Moved, Up], got {out:?}");
+        assert!(
+            matches!(&out[0], UiEvent::MouseDown { .. }),
+            "first event must be MouseDown"
+        );
+        assert!(
+            matches!(&out[1], UiEvent::MouseMoved { position, .. } if position.x == 3.0),
+            "middle event must be the final MouseMoved (x=3), got {:?}",
+            out[1]
+        );
+        assert!(
+            matches!(&out[2], UiEvent::MouseUp { .. }),
+            "last event must be MouseUp"
+        );
+    }
+
+    /// `MouseMoved` events separated by a non-move event are NOT merged —
+    /// each consecutive run collapses independently.
+    #[test]
+    fn coalesce_does_not_merge_moves_separated_by_other_events() {
+        use crate::{ButtonMask, Modifiers};
+        let raw = vec![
+            UiEvent::MouseMoved {
+                position: Point::new(1.0, 0.0),
+                buttons: ButtonMask::default(),
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(2.0, 0.0),
+                buttons: ButtonMask::default(),
+            },
+            UiEvent::KeyPressed {
+                key: Key::Char('x'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(5.0, 0.0),
+                buttons: ButtonMask::default(),
+            },
+            UiEvent::MouseMoved {
+                position: Point::new(6.0, 0.0),
+                buttons: ButtonMask::default(),
+            },
+        ];
+        let out = coalesce_mouse_moved(raw);
+        // Expected: [Moved(2.0), Key('x'), Moved(6.0)]
+        assert_eq!(out.len(), 3, "expected 3 events, got {out:?}");
+        assert!(
+            matches!(&out[0], UiEvent::MouseMoved { position, .. } if position.x == 2.0),
+            "first run must collapse to x=2, got {:?}",
+            out[0]
+        );
+        assert!(
+            matches!(&out[1], UiEvent::KeyPressed { .. }),
+            "middle event must be KeyPressed"
+        );
+        assert!(
+            matches!(&out[2], UiEvent::MouseMoved { position, .. } if position.x == 6.0),
+            "second run must collapse to x=6, got {:?}",
+            out[2]
         );
     }
 }
