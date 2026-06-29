@@ -78,6 +78,18 @@ pub trait Backend {
     /// `draw_*` calls consume the updated palette.
     fn set_theme(&mut self, _theme: crate::Theme) {}
 
+    /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
+    /// `draw_multi_section_view`, etc.) render `Icon::glyph` when `true`
+    /// and `Icon::fallback` when `false`.
+    ///
+    /// Call at the start of `render_content()` (or once from `setup()` if
+    /// the setting is static) so that the runner-owned backend picks up the
+    /// app's preference before any draw calls are made.
+    ///
+    /// Default: no-op. Backends that always use one icon form (e.g. a
+    /// headless test backend) can accept this default.
+    fn set_nerd_fonts(&mut self, _enabled: bool) {}
+
     // ─── Text selection ────────────────────────────────────────────────
     /// Register a selectable text region for the current frame.
     ///

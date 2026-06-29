@@ -200,13 +200,6 @@ impl GtkBackend {
         }
     }
 
-    /// Update the cached nerd-font flag. Call from the app's settings
-    /// or per-frame sync (vimcode does this in
-    /// `App::update::CacheFontMetrics`).
-    pub fn set_nerd_fonts(&mut self, enabled: bool) {
-        self.nerd_fonts_enabled = enabled;
-    }
-
     /// Update the cached UI font description string (Pango format,
     /// e.g. `"Cantarell 11"`). Call from the app's settings sync.
     pub fn set_ui_font(&mut self, ui_font: impl Into<String>) {
@@ -806,6 +799,10 @@ impl Backend for GtkBackend {
 
     fn set_theme(&mut self, theme: crate::Theme) {
         self.set_current_theme(theme);
+    }
+
+    fn set_nerd_fonts(&mut self, enabled: bool) {
+        self.nerd_fonts_enabled = enabled;
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
