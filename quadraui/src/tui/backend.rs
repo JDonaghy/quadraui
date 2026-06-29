@@ -229,14 +229,6 @@ impl TuiBackend {
         self.current_theme = theme;
     }
 
-    /// Toggle Nerd Font glyph rendering for primitives that vary
-    /// based on font availability. Apps wire this from their own
-    /// settings (vimcode reads `engine.settings.use_nerd_fonts`;
-    /// kubeui has its own setting).
-    pub fn set_nerd_fonts(&mut self, enabled: bool) {
-        self.nerd_fonts_enabled = enabled;
-    }
-
     /// Disjoint mutable borrows of drag state and modal stack.
     /// `mouse.rs::handle_mouse` needs both at the same time, and
     /// borrowing each field through a separate `&mut self` accessor
@@ -787,6 +779,10 @@ impl Backend for TuiBackend {
 
     fn set_theme(&mut self, theme: crate::Theme) {
         self.set_current_theme(theme);
+    }
+
+    fn set_nerd_fonts(&mut self, enabled: bool) {
+        self.nerd_fonts_enabled = enabled;
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
