@@ -590,6 +590,36 @@ pub struct TabGroupLayout {
     pub content_bounds: Vec<Rect>,
 }
 
+/// Externally-supplied geometry for one pane, used by
+/// [`TabGroupController::set_drag_geometry`] to prime the drag hit-test cache
+/// without a [`render`](TabGroupController::render) pass.
+///
+/// Consumers that compute their own per-pane layout (e.g. a native backend
+/// with its own geometry engine) populate one `PaneDragRect` per pane and
+/// pass the slice to `set_drag_geometry`. After that call,
+/// [`handle_tab_drag_move`](TabGroupController::handle_tab_drag_move),
+/// [`handle_tab_drop`](TabGroupController::handle_tab_drop),
+/// [`drop_group_rects`](TabGroupController::drop_group_rects),
+/// [`drop_zone_at`](TabGroupController::drop_zone_at), and
+/// [`tab_drag_overlay`](TabGroupController::tab_drag_overlay) all work without
+/// ever calling `render`.
+///
+/// `tab_slots` uses the same sentinel convention as [`TabBarHits`]: pass
+/// `(0.0, 0.0)` for any tab that is scrolled off the left edge of the strip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneDragRect {
+    /// Bounds of the tab strip row (top of the pane).
+    pub strip_bounds: Rect,
+    /// Bounds of the pane's content area (below the tab strip).
+    pub content_bounds: Rect,
+    /// Absolute `(start_x, end_x)` for each tab slot, in pane tab-list order.
+    ///
+    /// Tabs that are scrolled off the left edge of the strip must be
+    /// represented by a `(0.0, 0.0)` sentinel so that indices here stay
+    /// aligned with the controller's internal tab vec.
+    pub tab_slots: Vec<(f32, f32)>,
+}
+
 // ── Controller ────────────────────────────────────────────────────────────────
 
 /// Stateful controller that manages N split panes arranged in a recursive
@@ -1224,6 +1254,63 @@ impl TabGroupController {
                 })
             })
             .collect()
+    }
+
+    /// Prime drag hit-test geometry from externally-computed pane rects, so
+    /// [`handle_tab_drag_move`](Self::handle_tab_drag_move),
+    /// [`handle_tab_drop`](Self::handle_tab_drop),
+    /// [`drop_group_rects`](Self::drop_group_rects),
+    /// [`drop_zone_at`](Self::drop_zone_at), and
+    /// [`tab_drag_overlay`](Self::tab_drag_overlay) work without a
+    /// [`render`](Self::render) pass.
+    ///
+    /// Use this when your application already owns and renders its own per-pane
+    /// layout — for example a native backend that computes geometry
+    /// independently. Without calling `render`, the drop-zone logic would have
+    /// no data to work from; this method injects that data directly so drag
+    /// logic can proceed headlessly (useful for unit tests, too).
+    ///
+    /// The `panes` slice must be in the same order as the controller's internal
+    /// pane vec (index 0 corresponds to pane 0, etc.). Excess entries beyond
+    /// [`pane_count`](Self::pane_count) are silently ignored; if `panes` is
+    /// shorter than the pane count the remaining panes are left un-primed
+    /// (their drag geometry stays `None`).
+    ///
+    /// # Interaction with `handle_tab_drag_start`
+    ///
+    /// [`handle_tab_drag_start`](Self::handle_tab_drag_start) detects which tab
+    /// is under the cursor from `tab_slots` and also checks close-button /
+    /// right-segment bounds to reject those click targets. Because
+    /// `PaneDragRect` does not carry those bounds (they come from the tab-bar
+    /// renderer), close-button and right-segment exclusion is skipped for panes
+    /// primed via `set_drag_geometry`. If your consumer already excludes those
+    /// targets before routing to the controller, this is fine. If you need full
+    /// exclusion, call `render()` instead.
+    pub fn set_drag_geometry(&mut self, panes: &[PaneDragRect]) {
+        let n = self.panes.len();
+        if self.last_pane_hits.len() != n {
+            self.last_pane_hits = (0..n).map(|_| None).collect();
+        }
+        for (pane_idx, drag_rect) in panes.iter().enumerate().take(n) {
+            let slot_positions: Vec<(f64, f64)> = drag_rect
+                .tab_slots
+                .iter()
+                .map(|(s, e)| (*s as f64, *e as f64))
+                .collect();
+            let n_slots = slot_positions.len();
+            let hits = crate::primitives::tab_bar::TabBarHits {
+                slot_positions,
+                close_bounds: vec![None; n_slots],
+                right_segment_bounds: vec![],
+                available_cols: 0,
+                correct_scroll_offset: 0,
+            };
+            self.last_pane_hits[pane_idx] = Some(PaneHitCache {
+                hits,
+                strip_bounds: drag_rect.strip_bounds,
+                content_bounds: drag_rect.content_bounds,
+            });
+        }
     }
 
     // ── Cross-group tab drag ────────────────────────────────────────
@@ -2805,6 +2892,202 @@ mod tests {
         assert_eq!(ctrl.panes[1].tabs()[0].id, "t0");
         // The original "other pane" (was index 1) is now at index 2.
         assert_eq!(ctrl.panes[2].tabs()[0].id, "x0");
+    }
+
+    // ── set_drag_geometry ─────────────────────────────────────────────────────
+    //
+    // Geometry layout used in these tests (no render() call anywhere):
+    //
+    //  Pane 0: strip (x=0, y=0, w=80, h=1),  content (x=0, y=1, w=80, h=10)
+    //          tab_slots: [(0,8), (8,16)]  → t0 at [0,8), t1 at [8,16)
+    //
+    //  Pane 1: strip (x=80, y=0, w=80, h=1), content (x=80, y=1, w=80, h=10)
+    //          tab_slots: [(80,88)]         → x0 at [80,88)
+    //
+    //  edge_zone_size(80) = 80*0.2 = 16.0   → left: rel_x < 16, right: rel_x >= 64
+    //  edge_zone_size(10) = 10*0.2 = 2 → clamped to 3   → top: rel_y < 3, bottom: rel_y >= 7
+
+    fn two_pane_drag_rects() -> (TabGroupController, Vec<PaneDragRect>) {
+        let mut ctrl = TabGroupController::with_pane(
+            "p0",
+            vec![tab("t0", "main.rs", true), tab("t1", "lib.rs", true)],
+            "t0",
+            SplitDirection::Horizontal,
+        );
+        ctrl.add_pane_with_tab("p1", tab("x0", "x.rs", true));
+        ctrl.focus_pane(0);
+
+        let rects = vec![
+            PaneDragRect {
+                strip_bounds: Rect::new(0.0, 0.0, 80.0, 1.0),
+                content_bounds: Rect::new(0.0, 1.0, 80.0, 10.0),
+                tab_slots: vec![(0.0, 8.0), (8.0, 16.0)],
+            },
+            PaneDragRect {
+                strip_bounds: Rect::new(80.0, 0.0, 80.0, 1.0),
+                content_bounds: Rect::new(80.0, 1.0, 80.0, 10.0),
+                tab_slots: vec![(80.0, 88.0)],
+            },
+        ];
+        (ctrl, rects)
+    }
+
+    #[test]
+    fn set_drag_geometry_populates_drop_group_rects() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        // Before priming: no rects.
+        assert!(ctrl.drop_group_rects().is_empty());
+
+        ctrl.set_drag_geometry(&rects);
+
+        let groups = ctrl.drop_group_rects();
+        assert_eq!(groups.len(), 2, "both panes should be primed");
+        // Pane 0: full bounds = strip + content = (0, 0, 80, 11)
+        assert_eq!(groups[0].bounds.x, 0.0);
+        assert_eq!(groups[0].bounds.width, 80.0);
+        assert_eq!(groups[0].bounds.height, 11.0);
+        assert_eq!(groups[0].tab_slots.len(), 2);
+        assert_eq!(groups[0].tab_slots[0], (0.0, 8.0));
+        // Pane 1: full bounds = (80, 0, 80, 11)
+        assert_eq!(groups[1].bounds.x, 80.0);
+        assert_eq!(groups[1].tab_slots.len(), 1);
+    }
+
+    #[test]
+    fn set_drag_geometry_enables_drop_zone_at() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects);
+
+        // Center of pane 1 content: x=120, y=5 → DropZoneKind::Center, group_idx=1
+        let zone = ctrl.drop_zone_at(120.0, 5.0).expect("should resolve");
+        assert_eq!(zone.group_idx, 1);
+        assert!(matches!(
+            zone.kind,
+            crate::primitives::drop_zone::DropZoneKind::Center
+        ));
+    }
+
+    #[test]
+    fn set_drag_geometry_enables_handle_tab_drag_start() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects);
+
+        // x=9.0 lands in pane 0 slot [8, 16) → tab t1.
+        assert!(ctrl.handle_tab_drag_start(9.0, 0.5));
+        assert!(ctrl.is_tab_dragging());
+        let drag = ctrl.dragging_tab.as_ref().unwrap();
+        assert_eq!(drag.source_pane_idx, 0);
+        assert_eq!(drag.tab_id, "t1");
+    }
+
+    #[test]
+    fn set_drag_geometry_enables_handle_tab_drag_move() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects);
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1
+
+        // Move cursor to center of pane 1 (x=120, y=5).
+        let zone = ctrl.handle_tab_drag_move(120.0, 5.0);
+        assert!(zone.is_some(), "should resolve a drop zone");
+        assert_eq!(zone.unwrap().group_idx, 1);
+    }
+
+    #[test]
+    fn set_drag_geometry_reorder_within_pane() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects);
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1 (slot [8,16))
+
+        // Drop at x=3 in pane 0 strip → reorder: t1 goes before t0.
+        let evs = ctrl.handle_tab_drop(3.0, 0.5);
+        assert_eq!(
+            evs,
+            vec![TabGroupEvent::TabReordered {
+                pane_idx: 0,
+                tab_id: "t1".into(),
+                from_idx: 1,
+                to_idx: 0,
+            }]
+        );
+        assert_eq!(ctrl.panes[0].tabs()[0].id, "t1");
+        assert_eq!(ctrl.panes[0].tabs()[1].id, "t0");
+    }
+
+    #[test]
+    fn set_drag_geometry_move_tab_to_other_pane() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects);
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1
+
+        // Drop in pane 1 center: x=120 (rel_x=40, between edges 16..64), y=5.
+        let evs = ctrl.handle_tab_drop(120.0, 5.0);
+        assert_eq!(evs.len(), 1, "no collapse expected: {evs:?}");
+        assert!(
+            matches!(
+                &evs[0],
+                TabGroupEvent::TabMovedToPane {
+                    from_pane_idx: 0,
+                    to_pane_idx: 1,
+                    tab_id,
+                    ..
+                } if tab_id == "t1"
+            ),
+            "unexpected event: {:?}",
+            evs[0]
+        );
+        assert_eq!(ctrl.pane_count(), 2);
+        assert_eq!(ctrl.panes[0].tabs().len(), 1);
+        assert_eq!(ctrl.panes[1].tabs().len(), 2);
+    }
+
+    #[test]
+    fn set_drag_geometry_split_to_new_pane() {
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects);
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1
+
+        // Drop on right edge of pane 1: x=150 (rel_x=70 >= 64), y=5.
+        let evs = ctrl.handle_tab_drop(150.0, 5.0);
+        assert_eq!(evs.len(), 1, "no collapse: {evs:?}");
+        assert!(
+            matches!(
+                &evs[0],
+                TabGroupEvent::TabSplitToNewPane {
+                    from_pane_idx: 0,
+                    tab_id,
+                    edge: crate::DropEdge::Right,
+                    ..
+                } if tab_id == "t1"
+            ),
+            "unexpected event: {:?}",
+            evs[0]
+        );
+        assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.layout.leaf_count(), 3);
+    }
+
+    #[test]
+    fn set_drag_geometry_ignores_excess_entries() {
+        // Passing more PaneDragRect entries than panes should not panic or corrupt.
+        let (mut ctrl, mut rects) = two_pane_drag_rects();
+        rects.push(PaneDragRect {
+            strip_bounds: Rect::new(200.0, 0.0, 80.0, 1.0),
+            content_bounds: Rect::new(200.0, 1.0, 80.0, 10.0),
+            tab_slots: vec![(200.0, 208.0)],
+        });
+        ctrl.set_drag_geometry(&rects);
+        // Only 2 panes primed; excess entry silently dropped.
+        assert_eq!(ctrl.drop_group_rects().len(), 2);
+    }
+
+    #[test]
+    fn set_drag_geometry_partial_prime_leaves_rest_unprimed() {
+        // Passing fewer entries primes only those panes; the rest stay None.
+        let (mut ctrl, rects) = two_pane_drag_rects();
+        ctrl.set_drag_geometry(&rects[..1]); // only pane 0
+        let groups = ctrl.drop_group_rects();
+        assert_eq!(groups.len(), 1, "only pane 0 should be primed");
+        assert_eq!(groups[0].bounds.x, 0.0);
     }
 
     // ── Unique pane IDs after repeated splits ─────────────────────────────────

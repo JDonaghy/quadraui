@@ -56,7 +56,7 @@ pub use sidebar_system::{
 };
 pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
 pub use tab_group::{
-    GroupLayout, Pane, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
+    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
 };
 pub use toolbar_hover_tracker::ToolbarHoverTracker;
 pub use tree_controller::{TreeController, TreeControllerEvent};
