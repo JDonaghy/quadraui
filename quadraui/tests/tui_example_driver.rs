@@ -680,6 +680,92 @@ fn toolbar_q_exits() {
     assert!(driver.exited(), "'q' should exit the toolbar demo");
 }
 
+/// Pressing `f` rebuilds the controller via `from_layout`, producing a
+/// 3-pane mixed H/V tree (left | top-right / bottom-right).
+///
+/// Verifies that after pressing 'f':
+/// - All three pane tab labels are visible on screen.
+/// - The pane count shown in the status bar reflects 3 panes.
+///
+/// This is the primary smoke-test for `TabGroupController::from_layout` (#393).
+#[test]
+fn tab_group_f_key_switches_to_from_layout_3_pane() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+
+    // Press 'f' to rebuild via from_layout.
+    driver.type_char('f');
+
+    let screen = driver.screen();
+
+    // Pane 0 (left): active tab is "left.rs".
+    assert!(
+        screen.contains("left.rs"),
+        "after 'f' the left pane tab 'left.rs' must be visible:\n{screen}"
+    );
+    // Pane 1 (top-right): active tab is "top.rs".
+    assert!(
+        screen.contains("top.rs"),
+        "after 'f' the top-right pane tab 'top.rs' must be visible:\n{screen}"
+    );
+    // Pane 2 (bottom-right): active tab is "bottom.rs".
+    assert!(
+        screen.contains("bottom.rs"),
+        "after 'f' the bottom-right pane tab 'bottom.rs' must be visible:\n{screen}"
+    );
+    // Status bar right segment shows "panes: 3" for the from_layout 3-pane tree.
+    assert!(
+        screen.contains("panes: 3"),
+        "after 'f' the status bar should report 'panes: 3':\n{screen}"
+    );
+}
+
+/// Pressing `f` then `r` resets the layout back to the default 2-pane split.
+///
+/// Verifies that after pressing 'f' followed by 'r':
+/// - The original main.rs and Cargo.toml tabs are restored.
+/// - The 3-pane from_layout tabs (left.rs, top.rs, bottom.rs) are gone.
+/// - The pane count is back to 2.
+///
+/// This exercises the full from_layout → reset round-trip (#393).
+#[test]
+fn tab_group_f_then_r_resets_to_default_layout() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+
+    // Switch to the from_layout 3-pane tree.
+    driver.type_char('f');
+    assert!(
+        driver.screen_contains("left.rs"),
+        "prerequisite: 'f' must produce the from_layout layout:\n{}",
+        driver.screen()
+    );
+
+    // Reset back to default.
+    driver.type_char('r');
+
+    let screen = driver.screen();
+
+    // Default pane 0 tabs must be back.
+    assert!(
+        screen.contains("main.rs"),
+        "after 'r' the default tab 'main.rs' must be visible:\n{screen}"
+    );
+    // Default pane 1 tab must be back.
+    assert!(
+        screen.contains("Cargo.toml"),
+        "after 'r' the default tab 'Cargo.toml' must be visible:\n{screen}"
+    );
+    // The from_layout tabs should no longer be present.
+    assert!(
+        !screen.contains("left.rs"),
+        "after 'r' the from_layout 'left.rs' tab must not be visible:\n{screen}"
+    );
+    // Pane count is back to 2.
+    assert!(
+        screen.contains("panes: 2"),
+        "after 'r' the status bar should report 'panes: 2':\n{screen}"
+    );
+}
+
 /// Regression test for #375.
 ///
 /// Before the fix, crossing `TAB_DRAG_THRESHOLD` during a `MouseMoved` event
