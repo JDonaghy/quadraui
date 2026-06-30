@@ -39,7 +39,44 @@
 //! }
 //! ```
 //!
-//! # Adding panes
+//! # Building multi-pane layouts
+//!
+//! For simple cases, [`TabGroupController::add_pane_with_tab`] opens a new
+//! pane splitting the focused pane in the controller's default direction.
+//!
+//! When your app already knows the full layout — especially when it mixes
+//! horizontal and vertical splits — use
+//! [`TabGroupController::from_layout`] to hand the tree over directly:
+//!
+//! ```ignore
+//! use quadraui::compose::tab_group::{Pane, PaneTab, TabGroupController, GroupLayout};
+//! use quadraui::SplitDirection;
+//!
+//! // Three panes: left | (top-right / bottom-right)
+//! //   Pane 0 on the left, pane 1 top-right, pane 2 bottom-right.
+//! let layout = GroupLayout::Split {
+//!     direction: SplitDirection::Horizontal,
+//!     ratio: 0.5,
+//!     first: Box::new(GroupLayout::Leaf(0)),
+//!     second: Box::new(GroupLayout::Split {
+//!         direction: SplitDirection::Vertical,
+//!         ratio: 0.5,
+//!         first: Box::new(GroupLayout::Leaf(1)),
+//!         second: Box::new(GroupLayout::Leaf(2)),
+//!     }),
+//! };
+//! let ctrl = TabGroupController::from_layout(
+//!     vec![
+//!         Pane::new("pane:0", vec![/* tabs */], "t0"),
+//!         Pane::new("pane:1", vec![/* tabs */], "t1"),
+//!         Pane::new("pane:2", vec![/* tabs */], "t2"),
+//!     ],
+//!     layout,
+//!     SplitDirection::Horizontal,
+//! ).expect("layout must cover every pane index exactly once");
+//! ```
+//!
+//! # Adding panes incrementally
 //!
 //! [`TabGroupController::add_pane_with_tab`] opens a new pane, splitting the
 //! focused pane evenly. Panes are separated by draggable
@@ -192,6 +229,51 @@ impl GroupLayout {
         }
     }
 
+    /// Collect all leaf values into `out` (in-order traversal).
+    fn collect_leaves(&self, out: &mut Vec<usize>) {
+        match self {
+            GroupLayout::Leaf(k) => out.push(*k),
+            GroupLayout::Split { first, second, .. } => {
+                first.collect_leaves(out);
+                second.collect_leaves(out);
+            }
+        }
+    }
+
+    /// Validate that the tree is a bijection onto `0..n`.
+    ///
+    /// Returns `Ok(())` when every index in `0..n` appears exactly once as a
+    /// leaf. Returns `Err` with a descriptive message otherwise.
+    fn validate_for_pane_count(&self, n: usize) -> Result<(), String> {
+        let mut leaves = Vec::with_capacity(n);
+        self.collect_leaves(&mut leaves);
+
+        if leaves.len() != n {
+            return Err(format!(
+                "layout has {} leaf nodes but {} panes were provided",
+                leaves.len(),
+                n
+            ));
+        }
+
+        let mut seen = vec![false; n];
+        for &idx in &leaves {
+            if idx >= n {
+                return Err(format!(
+                    "leaf index {idx} is out of range for {n} panes (indices must be 0..{n})"
+                ));
+            }
+            if seen[idx] {
+                return Err(format!(
+                    "leaf index {idx} appears more than once in the layout"
+                ));
+            }
+            seen[idx] = true;
+        }
+
+        Ok(())
+    }
+
     /// Shift all leaf indices >= `threshold` up by one.
     ///
     /// Use before inserting a new pane into the middle of the vec.
@@ -306,7 +388,18 @@ pub struct Pane {
 }
 
 impl Pane {
-    fn new(id: impl Into<String>, tabs: Vec<PaneTab>, active_tab_id: impl Into<String>) -> Self {
+    /// Construct a new pane.
+    ///
+    /// `active_tab_id` is resolved against `tabs`; when the named tab is absent
+    /// the first tab's id is used as the fallback.
+    ///
+    /// Primarily used with [`TabGroupController::from_layout`] to build a
+    /// controller from an explicit split tree.
+    pub fn new(
+        id: impl Into<String>,
+        tabs: Vec<PaneTab>,
+        active_tab_id: impl Into<String>,
+    ) -> Self {
         let active_tab_id = active_tab_id.into();
         // Fallback to first tab when the named one is absent.
         let resolved = if tabs.iter().any(|t| t.id == active_tab_id) {
@@ -602,6 +695,83 @@ impl TabGroupController {
             dragging_divider: None,
             dragging_tab: None,
         }
+    }
+
+    /// Construct a controller from an explicit pane list and layout tree.
+    ///
+    /// This is the primary constructor when the caller already owns an
+    /// arbitrary mixed-direction split tree — for example, when reconstructing
+    /// a saved session that mixes horizontal and vertical splits.
+    ///
+    /// # Arguments
+    ///
+    /// * `panes` — the ordered pane vec; use [`Pane::new`] to build each entry.
+    ///   Must be non-empty.
+    /// * `layout` — the binary split tree. Every index `0..panes.len()` must
+    ///   appear **exactly once** as a `Leaf`; the tree must contain no other
+    ///   indices.
+    /// * `default_split_direction` — the direction used by future
+    ///   [`add_pane_with_tab`](Self::add_pane_with_tab) calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(message)` when:
+    ///
+    /// * `panes` is empty.
+    /// * The layout contains a leaf index ≥ `panes.len()`.
+    /// * A leaf index appears more than once.
+    /// * The number of leaves ≠ `panes.len()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Three panes: left | (top-right / bottom-right)
+    /// let layout = GroupLayout::Split {
+    ///     direction: SplitDirection::Horizontal,
+    ///     ratio: 0.5,
+    ///     first: Box::new(GroupLayout::Leaf(0)),
+    ///     second: Box::new(GroupLayout::Split {
+    ///         direction: SplitDirection::Vertical,
+    ///         ratio: 0.5,
+    ///         first:  Box::new(GroupLayout::Leaf(1)),
+    ///         second: Box::new(GroupLayout::Leaf(2)),
+    ///     }),
+    /// };
+    /// let ctrl = TabGroupController::from_layout(
+    ///     vec![
+    ///         Pane::new("pane:0", left_tabs,        "t0"),
+    ///         Pane::new("pane:1", top_right_tabs,   "t1"),
+    ///         Pane::new("pane:2", bottom_right_tabs,"t2"),
+    ///     ],
+    ///     layout,
+    ///     SplitDirection::Horizontal,
+    /// )?;
+    /// ```
+    pub fn from_layout(
+        panes: Vec<Pane>,
+        layout: GroupLayout,
+        default_split_direction: SplitDirection,
+    ) -> Result<Self, String> {
+        let n = panes.len();
+        if n == 0 {
+            return Err("panes must be non-empty".into());
+        }
+        layout.validate_for_pane_count(n)?;
+        Ok(Self {
+            panes,
+            focus: FocusGroup::new(n),
+            layout,
+            default_split_direction,
+            // Start auto-generated drag-split IDs above n so names like
+            // "pane:0", "pane:1", … (that the consumer may have used) are
+            // not repeated by the first handle_tab_drop split.
+            next_pane_counter: n,
+            last_bounds: None,
+            last_pane_hits: (0..n).map(|_| None).collect(),
+            last_dividers: vec![],
+            dragging_divider: None,
+            dragging_tab: None,
+        })
     }
 
     // ── Accessors ───────────────────────────────────────────────────
@@ -1632,6 +1802,213 @@ mod tests {
         assert_eq!(ctrl.panes[0].tabs().len(), 2);
         assert_eq!(ctrl.panes[0].active_tab_id(), "t0");
         assert_eq!(ctrl.focused_pane(), None); // starts unfocused
+    }
+
+    // ── from_layout ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_layout_single_pane() {
+        let pane = Pane::new("p0", vec![tab("t0", "main.rs", true)], "t0");
+        let layout = GroupLayout::Leaf(0);
+        let ctrl = TabGroupController::from_layout(vec![pane], layout, SplitDirection::Horizontal)
+            .expect("valid single-pane layout");
+        assert_eq!(ctrl.pane_count(), 1);
+        assert_eq!(ctrl.layout, GroupLayout::Leaf(0));
+        assert_eq!(ctrl.focused_pane(), None); // starts unfocused
+        assert_eq!(ctrl.panes[0].active_tab_id(), "t0");
+    }
+
+    #[test]
+    fn from_layout_two_pane_horizontal() {
+        let panes = vec![
+            Pane::new("p0", vec![tab("t0", "a.rs", true)], "t0"),
+            Pane::new("p1", vec![tab("t1", "b.rs", true)], "t1"),
+        ];
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.4,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Leaf(1)),
+        };
+        let ctrl = TabGroupController::from_layout(panes, layout.clone(), SplitDirection::Vertical)
+            .expect("valid two-pane layout");
+        assert_eq!(ctrl.pane_count(), 2);
+        assert_eq!(ctrl.layout, layout);
+        // Spot-check pane ids.
+        assert_eq!(ctrl.panes[0].id, "p0");
+        assert_eq!(ctrl.panes[1].id, "p1");
+    }
+
+    #[test]
+    fn from_layout_three_pane_mixed_direction() {
+        // Left pane | (top-right pane / bottom-right pane)
+        // Root split is Horizontal; the right sub-tree is Vertical.
+        // This is the canonical mixed-direction case the issue targets.
+        let panes = vec![
+            Pane::new("left", vec![tab("tl", "left.rs", true)], "tl"),
+            Pane::new("top-right", vec![tab("tr", "top.rs", true)], "tr"),
+            Pane::new("bottom-right", vec![tab("tb", "bottom.rs", true)], "tb"),
+        ];
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.5,
+                first: Box::new(GroupLayout::Leaf(1)),
+                second: Box::new(GroupLayout::Leaf(2)),
+            }),
+        };
+        let ctrl = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal)
+            .expect("valid mixed-direction layout");
+
+        assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.layout.leaf_count(), 3);
+        assert!(ctrl.layout.contains_leaf(0));
+        assert!(ctrl.layout.contains_leaf(1));
+        assert!(ctrl.layout.contains_leaf(2));
+
+        // Confirm the root split is Horizontal and the nested split is Vertical.
+        match &ctrl.layout {
+            GroupLayout::Split {
+                direction: SplitDirection::Horizontal,
+                second,
+                ..
+            } => match second.as_ref() {
+                GroupLayout::Split {
+                    direction: SplitDirection::Vertical,
+                    ..
+                } => {}
+                other => panic!("expected Vertical nested split, got {other:?}"),
+            },
+            other => panic!("expected Horizontal root split, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_layout_custom_ratio_preserved() {
+        // Verify that the exact ratio provided is stored as-is.
+        let panes = vec![
+            Pane::new("p0", vec![tab("t0", "a.rs", false)], "t0"),
+            Pane::new("p1", vec![tab("t1", "b.rs", false)], "t1"),
+        ];
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.3,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Leaf(1)),
+        };
+        let ctrl = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal)
+            .expect("valid");
+        let ratio = match &ctrl.layout {
+            GroupLayout::Split { ratio, .. } => *ratio,
+            _ => panic!("expected Split"),
+        };
+        assert!((ratio - 0.3).abs() < 1e-6, "ratio={ratio}");
+    }
+
+    #[test]
+    fn from_layout_add_pane_after_construction() {
+        // A from_layout controller should behave correctly with subsequent
+        // add_pane_with_tab calls (important: next_pane_counter must not
+        // collide with pre-existing pane ids).
+        let panes = vec![
+            Pane::new("p0", vec![tab("t0", "a.rs", true)], "t0"),
+            Pane::new("p1", vec![tab("t1", "b.rs", true)], "t1"),
+        ];
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Leaf(1)),
+        };
+        let mut ctrl = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal)
+            .expect("valid");
+        assert_eq!(ctrl.pane_count(), 2);
+
+        // Add a third pane via the regular incremental API.
+        let new_idx = ctrl.add_pane_with_tab("extra", tab("te", "extra.rs", false));
+        assert_eq!(ctrl.pane_count(), 3);
+        assert_eq!(ctrl.layout.leaf_count(), 3);
+        assert_eq!(ctrl.panes[new_idx].id, "extra");
+    }
+
+    // ── from_layout: error cases ──────────────────────────────────────────────
+
+    #[test]
+    fn from_layout_error_empty_panes() {
+        let result = TabGroupController::from_layout(
+            vec![],
+            GroupLayout::Leaf(0),
+            SplitDirection::Horizontal,
+        );
+        assert!(result.is_err(), "expected Err for empty panes");
+        let msg = result.err().unwrap();
+        assert!(msg.contains("non-empty"), "unexpected message: {msg}");
+    }
+
+    #[test]
+    fn from_layout_error_leaf_count_mismatch() {
+        let panes = vec![Pane::new("p0", vec![tab("t0", "a.rs", false)], "t0")];
+        // Tree has 2 leaves but only 1 pane provided.
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Leaf(1)),
+        };
+        let result = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal);
+        assert!(result.is_err(), "expected Err for count mismatch");
+        let msg = result.err().unwrap();
+        assert!(
+            msg.contains("2") && msg.contains("1"),
+            "error should mention counts, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_layout_error_duplicate_leaf_index() {
+        let panes = vec![
+            Pane::new("p0", vec![tab("t0", "a.rs", false)], "t0"),
+            Pane::new("p1", vec![tab("t1", "b.rs", false)], "t1"),
+        ];
+        // Both leaves reference index 0.
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Leaf(0)), // duplicate!
+        };
+        let result = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal);
+        assert!(result.is_err(), "expected Err for duplicate leaf");
+        let msg = result.err().unwrap();
+        assert!(
+            msg.contains("more than once") || msg.contains("duplicate"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_layout_error_out_of_range_leaf_index() {
+        let panes = vec![
+            Pane::new("p0", vec![tab("t0", "a.rs", false)], "t0"),
+            Pane::new("p1", vec![tab("t1", "b.rs", false)], "t1"),
+        ];
+        // Leaf index 2 is out of range for 2 panes (valid range: 0..2).
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Leaf(2)), // out of range!
+        };
+        let result = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal);
+        assert!(result.is_err(), "expected Err for out-of-range leaf");
+        let msg = result.err().unwrap();
+        assert!(
+            msg.contains("out of range") || msg.contains("range"),
+            "unexpected error message: {msg}"
+        );
     }
 
     // ── Tab switching ─────────────────────────────────────────────────────────
