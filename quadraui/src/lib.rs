@@ -295,9 +295,10 @@ pub use compose::{
     ChatControllerEvent, ChatRole, ChatTurn, DualModePaletteController, DualModePaletteEvent,
     FocusGroup, FocusRing, FolderPickerController, FolderPickerEvent, FormController,
     FormControllerEvent, GroupLayout, MenuDef, MenuEvent, MenuSystem, NavigationMode, Pane,
-    PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef,
-    SidebarSystem, StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent,
-    TabGroupLayout, ToolbarHoverTracker, TreeController, TreeControllerEvent, PALETTE_CHROME_ROWS,
+    PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent,
+    SidebarSectionDef, SidebarSystem, StatusBarAction, StatusBarInteraction, TabGroupController,
+    TabGroupEvent, TabGroupLayout, ToolbarHoverTracker, TreeController, TreeControllerEvent,
+    PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
