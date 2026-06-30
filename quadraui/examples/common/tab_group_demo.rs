@@ -14,11 +14,14 @@
 //!   `Left`/`Right` edges create a horizontal split;
 //!   `Top`/`Bottom` edges create a vertical split.
 //! - Tab / Shift+Tab to cycle focus between panes.
+//! - **`f`** — rebuild via `from_layout`: 3 panes in a mixed H/V tree
+//!   (`left | (top-right / bottom-right)`). Tests the new constructor.
+//! - **`r`** — reset to the default 2-pane horizontal layout.
 //! - `q` / Esc to quit.
 
 use std::cell::RefCell;
 
-use quadraui::compose::tab_group::{PaneTab, TabGroupController, TabGroupEvent};
+use quadraui::compose::tab_group::{GroupLayout, Pane, PaneTab, TabGroupController, TabGroupEvent};
 use quadraui::{
     AppLogic, Backend, Color, Key, Modifiers, NamedKey, Reaction, Rect, SplitDirection, StatusBar,
     StatusBarSegment, UiEvent, WidgetId,
@@ -65,6 +68,115 @@ fn lbl(text: &str, bg: Color) -> Box<LabelContent> {
     })
 }
 
+// ── Layout builders ───────────────────────────────────────────────────────────
+
+/// Default layout: two panes side-by-side (horizontal), built via the
+/// incremental `with_pane` / `add_pane_with_tab` API.
+fn make_default_group() -> TabGroupController {
+    let mut group = TabGroupController::with_pane(
+        "pane:0",
+        vec![
+            PaneTab {
+                id: "p0:t0".into(),
+                label: " main.rs ".into(),
+                closable: true,
+                content: lbl("main.rs content", Color::rgb(30, 40, 60)),
+            },
+            PaneTab {
+                id: "p0:t1".into(),
+                label: " lib.rs ".into(),
+                closable: true,
+                content: lbl("lib.rs content", Color::rgb(40, 30, 60)),
+            },
+        ],
+        "p0:t0",
+        SplitDirection::Horizontal,
+    );
+    group.add_pane_with_tab(
+        "pane:1",
+        PaneTab {
+            id: "p1:t0".into(),
+            label: " Cargo.toml ".into(),
+            closable: true,
+            content: lbl("Cargo.toml content", Color::rgb(30, 60, 40)),
+        },
+    );
+    group.focus_pane(0);
+    group
+}
+
+/// Mixed-direction layout built via `from_layout`:
+///
+/// ```text
+///  ┌──────────┬──────────┐
+///  │          │  top.rs  │
+///  │  left.rs ├──────────┤
+///  │          │bottom.rs │
+///  └──────────┴──────────┘
+/// ```
+///
+/// Root split is Horizontal (left | right); the right sub-tree is Vertical
+/// (top-right / bottom-right).  This is the layout that was impossible to
+/// express before `from_layout` was added.
+fn make_from_layout_group() -> TabGroupController {
+    let layout = GroupLayout::Split {
+        direction: SplitDirection::Horizontal,
+        ratio: 0.5,
+        first: Box::new(GroupLayout::Leaf(0)),
+        second: Box::new(GroupLayout::Split {
+            direction: SplitDirection::Vertical,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(1)),
+            second: Box::new(GroupLayout::Leaf(2)),
+        }),
+    };
+    TabGroupController::from_layout(
+        vec![
+            Pane::new(
+                "pane:left",
+                vec![
+                    PaneTab {
+                        id: "left:t0".into(),
+                        label: " left.rs ".into(),
+                        closable: true,
+                        content: lbl("left pane (pane 0)", Color::rgb(30, 40, 60)),
+                    },
+                    PaneTab {
+                        id: "left:t1".into(),
+                        label: " app.rs ".into(),
+                        closable: true,
+                        content: lbl("app.rs — left pane tab 2", Color::rgb(20, 50, 70)),
+                    },
+                ],
+                "left:t0",
+            ),
+            Pane::new(
+                "pane:top-right",
+                vec![PaneTab {
+                    id: "tr:t0".into(),
+                    label: " top.rs ".into(),
+                    closable: true,
+                    content: lbl("top-right pane (pane 1)", Color::rgb(60, 30, 40)),
+                }],
+                "tr:t0",
+            ),
+            Pane::new(
+                "pane:bottom-right",
+                vec![PaneTab {
+                    id: "br:t0".into(),
+                    label: " bottom.rs ".into(),
+                    closable: true,
+                    content: lbl("bottom-right pane (pane 2)", Color::rgb(30, 60, 30)),
+                }],
+                "br:t0",
+            ),
+        ],
+        layout,
+        SplitDirection::Horizontal,
+    )
+    .expect("from_layout: layout is structurally valid")
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 pub struct TabGroupDemo {
@@ -87,41 +199,10 @@ pub struct TabGroupDemo {
 
 impl TabGroupDemo {
     pub fn new() -> Self {
-        let mut group = TabGroupController::with_pane(
-            "pane:0",
-            vec![
-                PaneTab {
-                    id: "p0:t0".into(),
-                    label: " main.rs ".into(),
-                    closable: true,
-                    content: lbl("main.rs content", Color::rgb(30, 40, 60)),
-                },
-                PaneTab {
-                    id: "p0:t1".into(),
-                    label: " lib.rs ".into(),
-                    closable: true,
-                    content: lbl("lib.rs content", Color::rgb(40, 30, 60)),
-                },
-            ],
-            "p0:t0",
-            SplitDirection::Horizontal,
-        );
-
-        group.add_pane_with_tab(
-            "pane:1",
-            PaneTab {
-                id: "p1:t0".into(),
-                label: " Cargo.toml ".into(),
-                closable: true,
-                content: lbl("Cargo.toml content", Color::rgb(30, 60, 40)),
-            },
-        );
-        group.focus_pane(0);
-
         Self {
-            group: RefCell::new(group),
+            group: RefCell::new(make_default_group()),
             last_event: RefCell::new(
-                "click tabs | drag divider | drag tab to edge/pane | Tab=focus | q=quit".into(),
+                "click tabs · drag divider · drag tab to edge/pane · Tab=focus · f=from_layout · r=reset · q=quit".into(),
             ),
             last_bounds: RefCell::new(Rect::new(0.0, 0.0, 100.0, 20.0)),
             divider_dragging: RefCell::new(false),
@@ -199,6 +280,39 @@ impl AppLogic for TabGroupDemo {
                 *self.tab_dragging.borrow_mut() = false;
                 *self.tab_drag_pending_pos.borrow_mut() = None;
                 Reaction::Exit
+            }
+
+            // ── from_layout demo (f) / reset (r) ──────────────────
+            UiEvent::KeyPressed {
+                key: Key::Char('f'),
+                ..
+            } => {
+                // Rebuild the controller from an explicit mixed-direction tree:
+                //   left pane | (top-right pane / bottom-right pane)
+                // The root split is Horizontal; the right sub-tree is Vertical.
+                // This layout was impossible to construct before from_layout.
+                *self.group.borrow_mut() = make_from_layout_group();
+                *self.last_event.borrow_mut() =
+                    "from_layout: left | (top-right / bottom-right) — drag/click/Tab to verify"
+                        .into();
+                *self.divider_dragging.borrow_mut() = false;
+                *self.tab_dragging.borrow_mut() = false;
+                *self.tab_drag_pending_pos.borrow_mut() = None;
+                Reaction::Redraw
+            }
+
+            UiEvent::KeyPressed {
+                key: Key::Char('r'),
+                ..
+            } => {
+                // Reset to the default 2-pane horizontal layout (with_pane API).
+                *self.group.borrow_mut() = make_default_group();
+                *self.last_event.borrow_mut() =
+                    "reset to default 2-pane layout (with_pane API)".into();
+                *self.divider_dragging.borrow_mut() = false;
+                *self.tab_dragging.borrow_mut() = false;
+                *self.tab_drag_pending_pos.borrow_mut() = None;
+                Reaction::Redraw
             }
 
             // ── Focus cycling ──────────────────────────────────────
