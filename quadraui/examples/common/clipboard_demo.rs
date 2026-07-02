@@ -139,7 +139,10 @@ impl AppLogic for ClipboardDemo {
             } if modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
                 let text = self.line().to_string();
                 backend.services().clipboard().write_text(&text);
-                self.status = format!("Copied {} chars — check `xclip -o -selection clipboard` (or wl-paste) in another pane", text.chars().count());
+                self.status = format!(
+                    "Copied {} chars — check `xclip -o -selection clipboard` (or wl-paste) in another pane",
+                    text.chars().count()
+                );
                 Reaction::Redraw
             }
             // Ctrl-V: read the system clipboard back — proves a round
