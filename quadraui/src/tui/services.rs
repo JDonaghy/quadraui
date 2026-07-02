@@ -1,9 +1,17 @@
 //! Default `PlatformServices` impl for the TUI backend.
 //!
-//! Clipboard access uses **both** `arboard` (local desktop clipboard)
-//! and OSC 52 (terminal clipboard via escape sequence). Writing via
-//! OSC 52 works over SSH and inside tmux, covering environments where
-//! arboard cannot reach the host clipboard.
+//! Clipboard writes go out on **three** legs: `arboard` (local desktop
+//! clipboard), OSC 52 (terminal clipboard via escape sequence), and a
+//! native command-line tool (`wl-copy` / `xclip` / `xsel`). OSC 52
+//! covers SSH and tmux, where arboard cannot reach the host clipboard.
+//! The native-tool leg covers the opposite gap (#398): a local X11
+//! session running *inside* an outer tmux, where arboard can fail to
+//! own the X `CLIPBOARD` selection and OSC 52 is dropped unless both
+//! tmux and the outer terminal are configured to pass it through.
+//! Shelling out to the same tool `xclip -o` would use to read the
+//! selection sidesteps both failure modes. All three legs are
+//! best-effort and run independently — a leg that fails (tool absent,
+//! no display, no tty) is silently skipped.
 //!
 //! ### tmux
 //!
@@ -113,9 +121,80 @@ pub(crate) fn emit_osc52_to(text: &str, writer: &mut dyn std::io::Write) {
     emit_osc52_with(text, std::env::var_os("TMUX").is_some(), writer);
 }
 
+// ── Native clipboard tool fallback (#398) ───────────────────────────────────────
+
+/// Ordered list of native clipboard-tool invocations to try, as
+/// `(program, args)` pairs.
+///
+/// Wayland-first when `wayland` is true (typically driven by
+/// `$WAYLAND_DISPLAY`), else X11-first — but **all three** candidates
+/// are always present regardless of order, so a mislabelled session
+/// (e.g. a Wayland compositor that doesn't set `$WAYLAND_DISPLAY`)
+/// still finds a working tool.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn native_clipboard_candidates(wayland: bool) -> [(&'static str, &'static [&'static str]); 3] {
+    let wl_copy: (&'static str, &'static [&'static str]) = ("wl-copy", &[]);
+    let xclip: (&'static str, &'static [&'static str]) = ("xclip", &["-selection", "clipboard"]);
+    let xsel: (&'static str, &'static [&'static str]) = ("xsel", &["--clipboard", "--input"]);
+    if wayland {
+        [wl_copy, xclip, xsel]
+    } else {
+        [xclip, xsel, wl_copy]
+    }
+}
+
+/// Best-effort clipboard write via a native command-line tool
+/// (`wl-copy` / `xclip` / `xsel`) — the third leg of [`TuiClipboard::write_text`].
+///
+/// This covers the setup where neither arboard nor OSC 52 reliably
+/// reach the real system clipboard: a local X11 (or Wayland) session
+/// running inside an outer tmux (#398). The native tool owns the
+/// selection exactly the way `xclip -o` (or a paste elsewhere on the
+/// desktop) reads it back.
+///
+/// Tries each candidate in [`native_clipboard_candidates`] order,
+/// stopping at the first one that spawns successfully. These tools
+/// daemonize after reading stdin to EOF and keep serving the
+/// selection in the background; closing our end of the pipe (by
+/// dropping `stdin`) and then `wait()`-ing only reaps the short-lived
+/// foreground process, it does not wait for the daemonized copy to
+/// exit.
+///
+/// Silent on failure: over SSH these tools are typically absent (or
+/// target the wrong display) and every candidate's `spawn()` simply
+/// errors — OSC 52 already carries the copy in that case, so this
+/// leg is a no-op regression-free fallback, not the primary path.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn write_clipboard_via_native_tool(text: &str) {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    for (program, args) in native_clipboard_candidates(wayland) {
+        let mut child = match std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => continue, // tool not installed — try the next candidate
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(text.as_bytes());
+            // `stdin` drops here, closing our end (EOF) — the signal
+            // these tools wait for before forking to serve the
+            // selection in the background.
+        }
+        let _ = child.wait();
+        return;
+    }
+}
+
 // ── TuiClipboard ──────────────────────────────────────────────────────────────
 
-/// System clipboard that writes via **both** arboard and OSC 52.
+/// System clipboard that writes via **three** independent legs: arboard,
+/// OSC 52, and (Unix only) a native command-line tool fallback. See the
+/// module doc comment for why all three exist.
 ///
 /// The arboard handle is kept alive for the process lifetime so Linux
 /// clipboard serving threads persist (dropping the handle immediately
@@ -154,6 +233,17 @@ impl Clipboard for TuiClipboard {
         #[cfg(unix)]
         if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
             emit_osc52_to(text, &mut tty);
+        }
+        // 3. Native clipboard tool (wl-copy / xclip / xsel) — best-effort
+        //    fallback for local X11-inside-tmux setups where neither leg
+        //    above reaches the real system clipboard (#398). Offloaded to
+        //    a detached thread: these tools daemonize after reading
+        //    stdin, so spawning them synchronously here would risk
+        //    stalling the UI loop on a slow fork/exec.
+        #[cfg(unix)]
+        {
+            let owned = text.to_string();
+            let _ = std::thread::spawn(move || write_clipboard_via_native_tool(&owned));
         }
     }
 }
@@ -224,6 +314,50 @@ mod tests {
         // A two-ESC payload must come back with four ESCs, wrapped.
         let wrapped = tmux_passthrough_wrap("\x1bA\x1bB");
         assert_eq!(wrapped, "\x1bPtmux;\x1b\x1bA\x1b\x1bB\x1b\\");
+    }
+
+    #[test]
+    fn native_candidates_wayland_first_when_wayland() {
+        let candidates = native_clipboard_candidates(true);
+        assert_eq!(candidates[0].0, "wl-copy");
+        assert_eq!(candidates[1].0, "xclip");
+        assert_eq!(candidates[2].0, "xsel");
+    }
+
+    #[test]
+    fn native_candidates_x11_first_when_not_wayland() {
+        let candidates = native_clipboard_candidates(false);
+        assert_eq!(candidates[0].0, "xclip");
+        assert_eq!(candidates[1].0, "xsel");
+        assert_eq!(candidates[2].0, "wl-copy");
+    }
+
+    #[test]
+    fn native_candidates_always_list_all_three_tools_regardless_of_order() {
+        // A mislabelled session (e.g. Wayland compositor that doesn't set
+        // $WAYLAND_DISPLAY) should still find a working tool — so both
+        // orderings must contain the same three programs.
+        for wayland in [true, false] {
+            let names: Vec<&str> = native_clipboard_candidates(wayland)
+                .iter()
+                .map(|(program, _)| *program)
+                .collect();
+            assert!(names.contains(&"wl-copy"), "{names:?}");
+            assert!(names.contains(&"xclip"), "{names:?}");
+            assert!(names.contains(&"xsel"), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn native_candidate_args_target_the_system_clipboard_selection() {
+        // xclip/xsel default to the PRIMARY selection unless told
+        // otherwise — verify each candidate explicitly requests the
+        // CLIPBOARD selection that `xclip -o -selection clipboard` reads.
+        let candidates = native_clipboard_candidates(false);
+        let xclip = candidates.iter().find(|(p, _)| *p == "xclip").unwrap();
+        assert_eq!(xclip.1, &["-selection", "clipboard"]);
+        let xsel = candidates.iter().find(|(p, _)| *p == "xsel").unwrap();
+        assert_eq!(xsel.1, &["--clipboard", "--input"]);
     }
 }
 
