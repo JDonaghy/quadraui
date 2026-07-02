@@ -20,6 +20,8 @@ use shell_app_ex::ShellApp as ShellAppEx;
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
 
+#[path = "../examples/common/clipboard_demo.rs"]
+mod clipboard_demo;
 #[path = "../examples/common/demo.rs"]
 mod demo;
 #[path = "../examples/common/dialog_table_demo.rs"]
@@ -39,6 +41,7 @@ mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 
+use clipboard_demo::ClipboardDemo;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use mini_app::MiniApp;
@@ -167,6 +170,62 @@ fn text_input_backspace_deletes_a_char() {
         "cursor should move back to col 2 after backspace:\n{}",
         driver.screen()
     );
+}
+
+// ─── ClipboardDemo: native-tool fallback leg (#398) ─────────────────────────
+
+#[test]
+fn clipboard_demo_shows_starting_text_and_hint() {
+    let driver = TuiDriver::new(ClipboardDemo::new(), 100, 20);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Copy me to the system clipboard!"),
+        "starting line should render:\n{screen}"
+    );
+    assert!(
+        screen.contains("Ctrl-C"),
+        "status bar should hint at Ctrl-C:\n{screen}"
+    );
+}
+
+#[test]
+fn clipboard_demo_ctrl_c_writes_through_all_three_legs_and_confirms() {
+    // This drives the exact call the fix touches:
+    // `TuiClipboard::write_text`, via all three legs (arboard, OSC 52,
+    // and the new native-tool fallback on a detached thread). The
+    // native tool itself can't be asserted headlessly (no real
+    // clipboard exists in CI) — this checks the call completes
+    // without panicking/blocking and the app's own confirmation
+    // message updates, which is the observable, backend-agnostic
+    // contract `write_text` promises its callers.
+    let mut driver = TuiDriver::new(ClipboardDemo::new(), 100, 20);
+    driver.ctrl_char('c');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Copied"),
+        "Ctrl-C should update the status to confirm the copy:\n{screen}"
+    );
+}
+
+#[test]
+fn clipboard_demo_typing_then_backspace_edits_the_line() {
+    let mut driver = TuiDriver::new(ClipboardDemo::new(), 100, 20);
+    driver.type_char('!');
+    driver.type_char('!');
+    driver.press_named(NamedKey::Backspace);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Copy me to the system clipboard!!"),
+        "one '!' should remain appended after a single backspace:\n{screen}"
+    );
+}
+
+#[test]
+fn clipboard_demo_escape_exits() {
+    let mut driver = TuiDriver::new(ClipboardDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
 }
 
 // ─── AppState (demo): tab switching ─────────────────────────────────────────
