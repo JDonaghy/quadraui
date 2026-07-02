@@ -113,6 +113,11 @@ path = "examples/tui_app.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_clipboard"
+path = "examples/tui_clipboard.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "msv_multi_tree"
 path = "examples/msv_multi_tree.rs"
 required-features = ["tui"]

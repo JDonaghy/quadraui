@@ -185,8 +185,13 @@ fn write_clipboard_via_native_tool(text: &str) {
             // these tools wait for before forking to serve the
             // selection in the background.
         }
-        let _ = child.wait();
-        return;
+        match child.wait() {
+            Ok(status) if status.success() => return,
+            // Installed but failed at runtime (e.g. `$DISPLAY`/
+            // `$WAYLAND_DISPLAY` unset or stale) — try the next
+            // candidate instead of silently giving up.
+            _ => continue,
+        }
     }
 }
 
