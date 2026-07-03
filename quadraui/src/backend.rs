@@ -213,15 +213,23 @@ pub trait Backend {
     /// [`crate::shell::ShellContext::in_title_bar`] outside any interactive
     /// segment (menu item, min/max/close button).
     ///
-    /// `GtkBackend` wires this to `gdk4::Toplevel::begin_move`, using the
-    /// press context `gtk::run`'s click controller stashes just before the
-    /// press is translated to a portable [`UiEvent`] (see #400) — GDK
+    /// `GtkBackend` arms a deferred `gdk4::Toplevel::begin_move` call, using
+    /// the press context `gtk::run`'s click controller stashes just before
+    /// the press is translated to a portable [`UiEvent`] (see #400) — GDK
     /// requires the *originating* event's device/timestamp, not synthesized
-    /// values, or the drag silently no-ops on some compositors.
+    /// values, or the drag silently no-ops on some compositors. The actual
+    /// `begin_move` call only fires once the pointer moves past the drag
+    /// threshold (mirroring native `gtk4::WindowHandle`'s `GestureDrag`
+    /// `drag-begin` gating); calling this from a `MouseDown` handler does
+    /// not itself start an interactive move grab, so a press that turns out
+    /// to be the first half of a double-click still reaches the app as
+    /// `UiEvent::DoubleClick`.
     ///
     /// Returns `false` when the backend owns no window (TUI, and any
     /// backend before its window is constructed) or no primed press context
     /// is available. Callers should treat `false` as a no-op, not an error.
+    /// A `true` return means the drag request was accepted/armed, not that
+    /// the window has necessarily started moving yet.
     fn begin_window_drag(&mut self) -> bool {
         false
     }
