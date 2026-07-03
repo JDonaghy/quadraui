@@ -170,10 +170,27 @@ pub struct GtkBackend {
     /// recent primary-button press, stashed by `gtk/run.rs`'s
     /// `GestureClick::connect_pressed` before the press is translated to a
     /// portable [`UiEvent`]. [`Backend::begin_window_drag`] consumes this
-    /// (via `.take()`) to call `gdk4::Toplevel::begin_move` with the real
+    /// (via `.take()`) to arm [`Self::armed_window_drag`] with the real
     /// device/timestamp the gesture requires — GDK ignores synthesized
     /// values on some compositors.
     pending_window_press: Option<(gdk::Device, i32, f64, f64, u32)>,
+    /// Armed-but-not-yet-started window-drag request (#400 double-click
+    /// fix). Set by [`Backend::begin_window_drag`] from
+    /// [`Self::pending_window_press`]; consumed by
+    /// [`Self::commit_armed_window_drag`], which `gtk/run.rs`'s motion
+    /// controller calls only once the pointer has moved past the drag
+    /// threshold since the arming press.
+    ///
+    /// This split exists because calling `gdk4::Toplevel::begin_move`
+    /// synchronously on the very first press — before it's known whether
+    /// a second press is coming — starts an interactive move grab that
+    /// swallows the second press, so a double-click on a CSD titlebar
+    /// never reaches the app as `UiEvent::DoubleClick`. Native
+    /// `gtk4::WindowHandle` avoids this by deferring its own move-start
+    /// to `GestureDrag`'s `drag-begin` signal, which itself only fires
+    /// past the drag threshold — this mirrors that behaviour instead of
+    /// starting the grab on the raw press.
+    armed_window_drag: Option<(gdk::Device, i32, f64, f64, u32)>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -215,6 +232,7 @@ impl GtkBackend {
             focused_activity_bar: None,
             window: None,
             pending_window_press: None,
+            armed_window_drag: None,
         }
     }
 
@@ -240,6 +258,74 @@ impl GtkBackend {
         time: u32,
     ) {
         self.pending_window_press = Some((device, button, x, y, time));
+    }
+
+    /// Screen-space origin `(x, y)` of the press that armed the current
+    /// window-drag request, if one is armed. `gtk/run.rs`'s motion
+    /// controller uses this to measure how far the pointer has moved
+    /// since the press, so it can decide when to call
+    /// [`Self::commit_armed_window_drag`] (#400).
+    pub(crate) fn armed_window_drag_origin(&self) -> Option<(f64, f64)> {
+        self.armed_window_drag
+            .as_ref()
+            .map(|(_, _, x, y, _)| (*x, *y))
+    }
+
+    /// Discard an armed-but-uncommitted window-drag request without
+    /// starting a move. Called by `gtk/run.rs`'s `GestureClick::connect_released`
+    /// handler: if the button goes up before the pointer ever moved past
+    /// the drag threshold, the press was a plain click (or the first half
+    /// of a double-click) and must not leave stale state around to be
+    /// accidentally committed by an unrelated later hover-motion event
+    /// (#400).
+    pub(crate) fn discard_armed_window_drag(&mut self) {
+        self.armed_window_drag = None;
+    }
+
+    /// Commit an armed window-drag request by calling
+    /// `gdk4::Toplevel::begin_move` with the originating press's
+    /// device/button/timestamp (#400). Called by `gtk/run.rs`'s motion
+    /// controller once the pointer has moved past the drag threshold
+    /// since the arming press — see [`Self::armed_window_drag`] for why
+    /// this is deferred instead of running synchronously from
+    /// `Backend::begin_window_drag`.
+    ///
+    /// Returns `false` (no-op) if no window is set or nothing is armed.
+    pub(crate) fn commit_armed_window_drag(&mut self) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            self.armed_window_drag = None;
+            return false;
+        };
+        let Some((device, button, x, y, time)) = self.armed_window_drag.take() else {
+            return false;
+        };
+        // `ApplicationWindow` implements `Native` directly (gtk4-rs
+        // `@implements Native` on both `Window` and `ApplicationWindow`),
+        // so `.surface()` is reachable without an upcast. Only an actual
+        // toplevel surface implements the `Toplevel` interface `begin_move`
+        // lives on — downcast can fail if the surface isn't realized yet.
+        match window.surface().downcast::<gdk::Toplevel>() {
+            Ok(toplevel) => {
+                toplevel.begin_move(&device, button, x, y, time);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Pixel distance the pointer must travel from an armed press before
+    /// [`Self::armed_window_drag`] is committed (#400). Reads GTK's own
+    /// `gtk-dnd-drag-threshold` setting (the same threshold `GestureDrag`
+    /// uses natively) so the titlebar drag feels identical to any other
+    /// GTK drag gesture; falls back to GTK's documented default (8px) when
+    /// no window/display is available yet (e.g. in unit tests).
+    pub(crate) fn window_drag_threshold_px(&self) -> f64 {
+        const DEFAULT_THRESHOLD_PX: f64 = 8.0;
+        match self.window.as_ref() {
+            Some(w) => gtk4::Settings::for_display(&gtk4::prelude::WidgetExt::display(w))
+                .gtk_dnd_drag_threshold() as f64,
+            None => DEFAULT_THRESHOLD_PX,
+        }
     }
 
     /// Update the cached UI font description string (Pango format,
@@ -923,24 +1009,25 @@ impl Backend for GtkBackend {
     }
 
     fn begin_window_drag(&mut self) -> bool {
-        let Some(window) = self.window.as_ref() else {
+        // #400 double-click fix: this does NOT call `gdk4::Toplevel::begin_move`
+        // synchronously. Doing so on the very first press — before it's known
+        // whether a second press is coming — starts an interactive move grab
+        // that swallows the second press, so a double-click on a CSD titlebar
+        // never reaches the app. Instead this arms `Self::armed_window_drag`;
+        // `gtk/run.rs`'s motion controller commits it (via
+        // `commit_armed_window_drag`, which does the actual `begin_move` —
+        // see there for the downcast rationale) once the pointer has moved
+        // past the drag threshold, mirroring how native `gtk4::WindowHandle`
+        // defers its own move-start to `GestureDrag`'s threshold-gated
+        // `drag-begin` signal rather than the raw press.
+        if self.window.is_none() {
             return false;
-        };
-        let Some((device, button, x, y, time)) = self.pending_window_press.take() else {
-            return false;
-        };
-        // `ApplicationWindow` implements `Native` directly (gtk4-rs
-        // `@implements Native` on both `Window` and `ApplicationWindow`),
-        // so `.surface()` is reachable without an upcast. Only an actual
-        // toplevel surface implements the `Toplevel` interface `begin_move`
-        // lives on — downcast can fail if the surface isn't realized yet.
-        match window.surface().downcast::<gdk::Toplevel>() {
-            Ok(toplevel) => {
-                toplevel.begin_move(&device, button, x, y, time);
-                true
-            }
-            Err(_) => false,
         }
+        let Some(press) = self.pending_window_press.take() else {
+            return false;
+        };
+        self.armed_window_drag = Some(press);
+        true
     }
 
     fn toggle_window_maximize(&mut self) -> bool {
@@ -2359,6 +2446,60 @@ mod tests {
         let mut backend = GtkBackend::new();
         assert!(backend.pending_window_press.is_none());
         assert!(!Backend::begin_window_drag(&mut backend));
+    }
+
+    /// #400 double-click fix: `armed_window_drag_origin` must be `None`
+    /// when nothing has been armed (the state of every unit test and
+    /// every fresh backend).
+    #[test]
+    fn gtk_backend_armed_window_drag_origin_none_when_unarmed() {
+        let backend = GtkBackend::new();
+        assert!(backend.armed_window_drag_origin().is_none());
+    }
+
+    /// #400 double-click fix: `discard_armed_window_drag` clears a
+    /// simulated armed request, and the origin reads back `None`
+    /// afterwards — this is what `gtk/run.rs`'s `connect_released` relies
+    /// on to stop a plain click (or the first half of a double-click)
+    /// from being committed by a later, unrelated hover-motion event.
+    #[test]
+    fn gtk_backend_discard_armed_window_drag_clears_state() {
+        let mut backend = GtkBackend::new();
+        // No real `gdk::Device` is constructible headlessly, so this test
+        // exercises the discard path directly against the private field
+        // rather than going through `Backend::begin_window_drag` (which
+        // requires a real window).
+        assert!(backend.armed_window_drag_origin().is_none());
+        backend.discard_armed_window_drag();
+        assert!(backend.armed_window_drag_origin().is_none());
+    }
+
+    /// #400 double-click fix: `commit_armed_window_drag` must no-op
+    /// (rather than panic) with no window set, mirroring
+    /// `begin_window_drag`'s no-window no-op.
+    #[test]
+    fn gtk_backend_commit_armed_window_drag_false_without_window() {
+        let mut backend = GtkBackend::new();
+        assert!(!backend.commit_armed_window_drag());
+    }
+
+    /// #400 double-click fix: `commit_armed_window_drag` must no-op when
+    /// a window is present but nothing is armed (e.g. `connect_motion`
+    /// fires before any title-bar press ever called `begin_window_drag`).
+    #[test]
+    fn gtk_backend_commit_armed_window_drag_false_without_armed_request() {
+        let mut backend = GtkBackend::new();
+        assert!(backend.armed_window_drag.is_none());
+        assert!(!backend.commit_armed_window_drag());
+    }
+
+    /// #400 double-click fix: `window_drag_threshold_px` must fall back
+    /// to GTK's documented default (8px) rather than panic when no
+    /// window/display is available yet (every unit test).
+    #[test]
+    fn gtk_backend_window_drag_threshold_px_defaults_without_window() {
+        let backend = GtkBackend::new();
+        assert_eq!(backend.window_drag_threshold_px(), 8.0);
     }
 
     /// #400: with no window set, `toggle_window_maximize` must no-op

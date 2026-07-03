@@ -350,10 +350,13 @@ fn activate<A: AppLogic + 'static>(
 
             // Stash the raw GDK press context (device + button + timestamp)
             // before this press gets translated to a portable `UiEvent`, so
-            // `Backend::begin_window_drag` can later hand it to GDK's
-            // native window-drag call (#400). Runs for both single- and
-            // double-press events (both fire `connect_pressed`); harmless
-            // if the app never calls `begin_window_drag`.
+            // `Backend::begin_window_drag` can later arm a deferred
+            // window-drag request with it (#400; see
+            // `GtkBackend::armed_window_drag` for why it's deferred rather
+            // than calling GDK's native window-drag immediately). Runs for
+            // both single- and double-press events (both fire
+            // `connect_pressed`); harmless if the app never calls
+            // `begin_window_drag`.
             if let Some(event) = gesture.current_event() {
                 if let Some(device) = event.device() {
                     backend.borrow_mut().stash_window_press(
@@ -442,6 +445,14 @@ fn activate<A: AppLogic + 'static>(
         let window_for_close = window.clone();
         click.connect_released(move |gesture, _n_press, x, y| {
             let mut backend_mut = backend.borrow_mut();
+            // #400: if the button goes up before the pointer ever moved
+            // past the drag threshold, this was a plain click (or the
+            // first half of a double-click), not a drag. Discard the
+            // armed window-drag request rather than leaving it to be
+            // accidentally committed by a later, unrelated hover-motion
+            // event. See `GtkBackend::armed_window_drag` for the full
+            // rationale.
+            backend_mut.discard_armed_window_drag();
             let position = Point::new(x as f32, y as f32);
             let button: MouseButton = gdk_button_to_quadraui(gesture.current_button());
             let events = {
@@ -482,6 +493,32 @@ fn activate<A: AppLogic + 'static>(
         let cursor_pos = cursor_pos.clone();
         motion.connect_motion(move |ctrl, x, y| {
             cursor_pos.set((x, y));
+
+            // #400: commit a deferred window-drag once the pointer has
+            // moved past the drag threshold since the press that armed
+            // it (`Backend::begin_window_drag`). Mirrors native
+            // `gtk4::WindowHandle`, which defers its own move-start to
+            // `GestureDrag`'s threshold-gated `drag-begin` signal rather
+            // than the raw button press — this is what keeps a press
+            // that turns into a double-click from starting an
+            // interactive move grab that would swallow the second press.
+            // Only returns early when a drag is actually committed
+            // (control passes to the compositor's native move at that
+            // point); otherwise falls through to the normal motion
+            // handling below unaffected.
+            {
+                let mut backend_mut = backend.borrow_mut();
+                if let Some((origin_x, origin_y)) = backend_mut.armed_window_drag_origin() {
+                    let dx = x - origin_x;
+                    let dy = y - origin_y;
+                    let threshold = backend_mut.window_drag_threshold_px();
+                    if (dx * dx + dy * dy).sqrt() >= threshold {
+                        backend_mut.commit_armed_window_drag();
+                        return;
+                    }
+                }
+            }
+
             let modifier = ctrl.current_event_state();
             let buttons = ButtonMask {
                 left: modifier.contains(gtk4::gdk::ModifierType::BUTTON1_MASK),
