@@ -1911,7 +1911,8 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::menu_bar::MenuBarLayout {
         let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
         bar.layout(bounds, |i| {
             let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
             let text_w = self.pango_str_width(&pango_layout, &text, char_w);
@@ -2379,7 +2380,7 @@ impl Backend for GtkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WidgetId;
+    use crate::{MenuBarItem, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
     /// `Backend` through `<B>`. Same shape as the one in
@@ -2988,6 +2989,61 @@ mod tests {
         assert!(
             (px_w - 48.0).abs() < 0.5,
             "pixel width should be 48 (6 cols × 8px), got {px_w}"
+        );
+    }
+
+    /// #407: `menu_bar_layout` must prefer the frame-scoped Pango layout
+    /// (the one `draw_menu_bar` actually painted with) over the stable
+    /// widget-realized `pango_ctx`, mirroring `status_bar_layout` /
+    /// `tab_bar_layout`. Regression test: measure the same item with two
+    /// very differently-sized fonts — one stashed as the "stable"
+    /// `pango_ctx` (small), one live in an `enter_frame_scope` call
+    /// (large) — and assert the frame-scoped measurement wins. Before
+    /// the fix, `menu_bar_layout` always used `pango_ctx` and the two
+    /// widths would be identical (using the small font in both cases).
+    #[test]
+    fn gtk_backend_menu_bar_layout_prefers_frame_layout_over_pango_ctx() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+
+        let small_ctx = pangocairo::functions::create_context(&cr);
+        small_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 8")));
+
+        let large_ctx = pangocairo::functions::create_context(&cr);
+        large_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 40")));
+        let large_layout = pango::Layout::new(&large_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(small_ctx);
+
+        let bar = MenuBar {
+            id: WidgetId::new("test:menu-bar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("test:menu-bar:file"),
+                label: "&File".to_string(),
+                disabled: false,
+                submenu: None,
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
+
+        // Outside any frame scope: falls back to the small `pango_ctx` font.
+        let small_layout_result = backend.menu_bar_layout(rect, &bar);
+        let small_width = small_layout_result.visible_items[0].bounds.width;
+
+        // Inside a frame scope with a much larger live layout: must use it.
+        let large_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
+            b.menu_bar_layout(rect, &bar).visible_items[0].bounds.width
+        });
+
+        assert!(
+            large_width > small_width * 2.0,
+            "frame-scoped layout (Sans 40) should measure much wider than \
+             the fallback pango_ctx (Sans 8): small={small_width}, large={large_width}"
         );
     }
 }
