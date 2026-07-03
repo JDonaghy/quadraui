@@ -1,4 +1,7 @@
 //! GTK runner for the full-chrome AppShell demo (#217 Stage 2).
+//!
+//! Drag the empty part of the title bar to move the window; double-click
+//! it to toggle maximize/restore (#400).
 #[path = "common/mod.rs"]
 mod common;
 

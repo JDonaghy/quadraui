@@ -10,7 +10,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::NamedKey;
+use quadraui::{NamedKey, Point, UiEvent};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -26,6 +26,8 @@ mod clipboard_demo;
 mod demo;
 #[path = "../examples/common/dialog_table_demo.rs"]
 mod dialog_table_demo;
+#[path = "../examples/common/full_chrome_demo.rs"]
+mod full_chrome_demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
 #[path = "../examples/common/palette_dual_mode_app.rs"]
@@ -44,6 +46,7 @@ mod text_input_demo;
 use clipboard_demo::ClipboardDemo;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
+use full_chrome_demo::FullChromeDemo;
 use mini_app::MiniApp;
 use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
@@ -1047,6 +1050,63 @@ fn shell_app_k_saturates_at_first_item() {
     assert!(
         !driver.screen_contains("panel:settings"),
         "'k' at top must NOT wrap to the bottom item:\n{}",
+        driver.screen()
+    );
+}
+
+// ─── FullChromeDemo: CSD title-bar drag / maximize escape hatch (#400) ──────
+//
+// `FullChromeDemo` reserves a title-bar band via `ShellConfig::with_title_bar`
+// and, on the empty part of that band, calls the new
+// `Backend::begin_window_drag` / `Backend::toggle_window_maximize` methods.
+// TUI has no window to drive, so both are documented no-ops (`false`) —
+// these tests prove the call path runs cleanly end-to-end (paint → hit-test
+// → `ShellApp::handle` → backend call → re-render) and falls back to the
+// "no window" message, exactly as a headless backend should. The real
+// window-drag/maximize behaviour is GTK-only and has no automated coverage
+// yet (`GtkDriver` — #301); see the manual smoke test instead.
+
+/// Left-`MouseDown` on the empty title bar calls `begin_window_drag`, which
+/// must return `false` on `TuiBackend` (no window) and the demo must show
+/// the "no window to drag" fallback message rather than crash or hang.
+#[test]
+fn full_chrome_title_bar_click_requests_window_drag() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let (x, y) = driver
+        .find("TITLE BAR")
+        .unwrap_or_else(|| panic!("title bar band should be painted:\n{}", driver.screen()));
+
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Title bar click (no window to drag)"),
+        "clicking the empty title bar on TUI should call begin_window_drag(), get false back \
+         (no window), and fall back to the plain-click message:\n{}",
+        driver.screen()
+    );
+}
+
+/// Double-click on the empty title bar calls `toggle_window_maximize`,
+/// which must return `false` on `TuiBackend` (no window) and the demo must
+/// show the "no window" fallback message.
+#[test]
+fn full_chrome_title_bar_double_click_requests_maximize_toggle() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let (x, y) = driver
+        .find("TITLE BAR")
+        .unwrap_or_else(|| panic!("title bar band should be painted:\n{}", driver.screen()));
+
+    driver.dispatch(UiEvent::DoubleClick {
+        widget: None,
+        position: Point::new(x, y),
+    });
+    assert!(
+        driver.screen_contains("Title bar double-click (no window)"),
+        "double-clicking the empty title bar on TUI should call toggle_window_maximize(), get \
+         false back (no window), and fall back to the no-window message:\n{}",
         driver.screen()
     );
 }

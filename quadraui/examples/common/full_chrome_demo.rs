@@ -1,11 +1,18 @@
 //! Full-chrome AppShell demo — proves all four chrome slots
 //! (title bar, bottom panel, command line, status bar) plus the
 //! existing activity bar / sidebar / main layout.
+//!
+//! The empty part of the title bar also exercises the CSD drag/maximize
+//! escape hatch (#400): left-`MouseDown` calls `Backend::begin_window_drag`,
+//! `DoubleClick` calls `Backend::toggle_window_maximize`. On GTK this
+//! actually moves/maximizes the window; on TUI (no window to drive) both
+//! calls are a documented no-op — the demo's status line shows which
+//! happened either way.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig,
-    ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, Key, MouseButton, NamedKey, Reaction, Rect, ShellApp as ShellAppTrait,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct FullChromeDemo {
@@ -15,7 +22,7 @@ pub struct FullChromeDemo {
 impl FullChromeDemo {
     pub fn new() -> Self {
         Self {
-            last_event: "click icons | drag dividers | q=quit".into(),
+            last_event: "click icons | drag dividers | drag/double-click title bar | q=quit".into(),
         }
     }
 
@@ -170,7 +177,7 @@ impl ShellAppTrait for FullChromeDemo {
     fn handle(
         &mut self,
         event: UiEvent,
-        _backend: &mut dyn Backend,
+        backend: &mut dyn Backend,
         ctx: &ShellContext,
     ) -> Reaction {
         match &event {
@@ -178,9 +185,24 @@ impl ShellAppTrait for FullChromeDemo {
                 key: Key::Char('q') | Key::Named(NamedKey::Escape),
                 ..
             } => Reaction::Exit,
-            UiEvent::MouseDown { position, .. } => {
+            UiEvent::MouseDown {
+                position, button, ..
+            } => {
                 if ctx.in_title_bar(position.x, position.y) {
-                    self.last_event = "Title bar click".into();
+                    // #400: the empty part of the title bar drags the
+                    // window on a left-button press, same as native CSD
+                    // chrome. `begin_window_drag` is a documented no-op
+                    // (returns `false`) on backends with no window (TUI).
+                    if *button == MouseButton::Left {
+                        let dragging = backend.begin_window_drag();
+                        self.last_event = if dragging {
+                            "Title bar drag started".into()
+                        } else {
+                            "Title bar click (no window to drag)".into()
+                        };
+                    } else {
+                        self.last_event = "Title bar click".into();
+                    }
                     Reaction::Redraw
                 } else if ctx.in_sidebar(position.x, position.y) {
                     self.last_event = format!(
@@ -199,6 +221,23 @@ impl ShellAppTrait for FullChromeDemo {
                     Reaction::Redraw
                 } else if ctx.in_status_bar(position.x, position.y) {
                     self.last_event = "Status bar click".into();
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
+            UiEvent::DoubleClick { position, .. } => {
+                if ctx.in_title_bar(position.x, position.y) {
+                    // #400: double-click on the empty title bar toggles
+                    // maximize/restore, same as native CSD chrome.
+                    // `toggle_window_maximize` is a documented no-op on
+                    // backends with no window (TUI).
+                    let toggled = backend.toggle_window_maximize();
+                    self.last_event = if toggled {
+                        "Title bar double-click: maximize toggled".into()
+                    } else {
+                        "Title bar double-click (no window)".into()
+                    };
                     Reaction::Redraw
                 } else {
                     Reaction::Continue
