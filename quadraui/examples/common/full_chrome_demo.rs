@@ -12,17 +12,30 @@
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
     Backend, Color, Key, MouseButton, NamedKey, Reaction, Rect, ShellApp as ShellAppTrait,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    ShellConfig, ShellContext, StatusBar, StatusBarAction, StatusBarInteraction, StatusBarSegment,
+    UiEvent, WidgetId,
 };
+
+/// `action_id`s for the CSD title-bar button row (#402). Namespaced per
+/// `StatusBarSegment::action_id`'s doc convention.
+const TITLE_BAR_MINIMIZE: &str = "titlebar:minimize";
+const TITLE_BAR_MAXIMIZE: &str = "titlebar:maximize";
+const TITLE_BAR_CLOSE: &str = "titlebar:close";
 
 pub struct FullChromeDemo {
     last_event: String,
+    /// Hover/press tracking for the minimize/maximize/close button row
+    /// painted into the right side of the title bar (#402). The drag/
+    /// double-click-to-maximize gesture on the *empty* part of the title
+    /// bar (#400) is handled separately in `handle()` below.
+    title_bar_interaction: StatusBarInteraction,
 }
 
 impl FullChromeDemo {
     pub fn new() -> Self {
         Self {
             last_event: "click icons | drag dividers | drag/double-click title bar | q=quit".into(),
+            title_bar_interaction: StatusBarInteraction::new(),
         }
     }
 
@@ -92,6 +105,71 @@ impl FullChromeDemo {
         let rect = Rect::new(bounds.x, bounds.y, bounds.width, lh.min(bounds.height));
         backend.draw_status_bar(rect, &bar, None, None);
     }
+
+    /// Build the title bar's `StatusBar`: the existing plain-text label on
+    /// the left, plus a realistic minimize/maximize/close button row on the
+    /// right using the same `StatusBarSegment::action_id` mechanism every
+    /// other clickable status-bar segment in this codebase uses (#402).
+    fn build_title_bar(text: &str, fg: Color, bg: Color) -> StatusBar {
+        let button_bg = Color::rgb(70, 70, 76);
+        let close_bg = Color::rgb(190, 55, 45);
+        StatusBar {
+            id: WidgetId::new("chrome-title-bar"),
+            left_segments: vec![StatusBarSegment {
+                text: format!(" {text} "),
+                fg,
+                bg,
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                StatusBarSegment {
+                    text: " \u{2500} ".into(),
+                    fg,
+                    bg: button_bg,
+                    bold: false,
+                    action_id: Some(WidgetId::new(TITLE_BAR_MINIMIZE)),
+                },
+                StatusBarSegment {
+                    text: " \u{25a1} ".into(),
+                    fg,
+                    bg: button_bg,
+                    bold: false,
+                    action_id: Some(WidgetId::new(TITLE_BAR_MAXIMIZE)),
+                },
+                StatusBarSegment {
+                    text: " \u{2715} ".into(),
+                    fg,
+                    bg: close_bg,
+                    bold: false,
+                    action_id: Some(WidgetId::new(TITLE_BAR_CLOSE)),
+                },
+            ],
+        }
+    }
+
+    /// Dispatch a click on one of the title bar's button segments.
+    fn handle_title_bar_button(&mut self, backend: &mut dyn Backend, id: &WidgetId) -> Reaction {
+        match id.as_str() {
+            TITLE_BAR_CLOSE => Reaction::Exit,
+            TITLE_BAR_MAXIMIZE => {
+                let toggled = backend.toggle_window_maximize();
+                self.last_event = if toggled {
+                    "Maximize button: maximize toggled".into()
+                } else {
+                    "Maximize button (no window)".into()
+                };
+                Reaction::Redraw
+            }
+            TITLE_BAR_MINIMIZE => {
+                // No `Backend::minimize_window` exists yet — this button
+                // demonstrates the click-target/hover mechanism only.
+                self.last_event = "Minimize button (no backend hook yet)".into();
+                Reaction::Redraw
+            }
+            _ => Reaction::Redraw,
+        }
+    }
 }
 
 impl Default for FullChromeDemo {
@@ -110,14 +188,17 @@ impl ShellAppTrait for FullChromeDemo {
         let status_bg = Color::rgb(0, 120, 210);
 
         if let Some(tb) = layout.title_bar_bounds {
-            Self::draw_label(
-                backend,
-                tb,
-                "TITLE BAR  |  File  Edit  View  Help",
-                title_fg,
-                title_bg,
-                true,
+            let lh = backend.line_height();
+            let rect = Rect::new(tb.x, tb.y, tb.width, lh.min(tb.height));
+            let bar =
+                Self::build_title_bar("TITLE BAR  |  File  Edit  View  Help", title_fg, title_bg);
+            let bar_layout = backend.draw_status_bar(
+                rect,
+                &bar,
+                self.title_bar_interaction.hovered_id(),
+                self.title_bar_interaction.pressed_id(),
             );
+            self.title_bar_interaction.set_layout(bar_layout);
         }
 
         if let Some(content) = layout.sidebar_content_bounds {
@@ -180,6 +261,22 @@ impl ShellAppTrait for FullChromeDemo {
         backend: &mut dyn Backend,
         ctx: &ShellContext,
     ) -> Reaction {
+        // Title bar button row (#402) takes priority over the drag/
+        // double-click-to-maximize gesture (#400) on the empty part of the
+        // bar: a press that lands on minimize/maximize/close must not also
+        // start a window drag. `StatusBarInteraction::handle` only reacts
+        // to MouseMoved/MouseDown/MouseUp and is a no-op (`Ignored`) for
+        // every other event and for presses outside the button segments,
+        // so falling through to the existing title-bar-drag logic below is
+        // safe.
+        if let Some(tb) = ctx.title_bar_bounds() {
+            match self.title_bar_interaction.handle(&event, tb) {
+                StatusBarAction::Clicked(id) => return self.handle_title_bar_button(backend, &id),
+                StatusBarAction::Redraw => return Reaction::Redraw,
+                StatusBarAction::Ignored => {}
+            }
+        }
+
         match &event {
             UiEvent::KeyPressed {
                 key: Key::Char('q') | Key::Named(NamedKey::Escape),
