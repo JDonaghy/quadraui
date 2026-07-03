@@ -10,7 +10,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{NamedKey, Point, UiEvent};
+use quadraui::{NamedKey, Point, Reaction, UiEvent};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -1108,5 +1108,86 @@ fn full_chrome_title_bar_double_click_requests_maximize_toggle() {
         "double-clicking the empty title bar on TUI should call toggle_window_maximize(), get \
          false back (no window), and fall back to the no-window message:\n{}",
         driver.screen()
+    );
+}
+
+// ─── FullChromeDemo: title-bar minimize/maximize/close button row (#402) ────
+//
+// `FullChromeDemo` paints a realistic CSD button row into the right side of
+// the title bar via `StatusBarSegment::action_id`, tracked with the same
+// `StatusBarInteraction` press/release pattern every other clickable status
+// bar segment in this codebase uses. These tests prove clicks on the
+// buttons are dispatched to the button (not the drag/maximize gesture on
+// the empty part of the bar) and that each `action_id` routes to the right
+// behaviour. A full press+release pair is required — `StatusBarInteraction`
+// only fires `Clicked` on `MouseDown` + matching `MouseUp` on the same
+// segment — so these use `mouse_down` + `mouse_up` rather than the
+// single-event `click` helper the drag tests above use.
+
+/// Clicking the maximize button calls `toggle_window_maximize` (same
+/// backend hook as double-click-to-maximize on the empty bar, #400) and
+/// must NOT start a window drag.
+#[test]
+fn full_chrome_title_bar_maximize_button_toggles_via_click() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let (x, y) = driver
+        .find("\u{25a1}")
+        .unwrap_or_else(|| panic!("maximize button should be painted:\n{}", driver.screen()));
+
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+    assert!(
+        driver.screen_contains("Maximize button (no window)"),
+        "clicking the maximize button on TUI should call toggle_window_maximize(), get false \
+         back (no window), and show the maximize-button message (not the empty-bar drag \
+         message):\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the minimize button routes to its own `action_id` — no backend
+/// hook exists yet, so it just proves the click target and message are
+/// wired up distinctly from the other two buttons.
+#[test]
+fn full_chrome_title_bar_minimize_button_shows_placeholder_message() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let (x, y) = driver
+        .find("\u{2500}")
+        .unwrap_or_else(|| panic!("minimize button should be painted:\n{}", driver.screen()));
+
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+    assert!(
+        driver.screen_contains("Minimize button (no backend hook yet)"),
+        "clicking the minimize button should show its own placeholder message:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the close button requests app exit (`Reaction::Exit`), same as
+/// `q` / Escape.
+#[test]
+fn full_chrome_title_bar_close_button_exits() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let (x, y) = driver
+        .find("\u{2715}")
+        .unwrap_or_else(|| panic!("close button should be painted:\n{}", driver.screen()));
+
+    driver.mouse_down(x, y);
+    let reaction = driver.mouse_up(x, y);
+    assert_eq!(
+        reaction,
+        Reaction::Exit,
+        "releasing the mouse over the close button should request Reaction::Exit"
+    );
+    assert!(
+        driver.exited(),
+        "driver should latch `exited` after the close button is clicked"
     );
 }
