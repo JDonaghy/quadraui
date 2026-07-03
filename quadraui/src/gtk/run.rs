@@ -104,6 +104,12 @@ fn activate<A: AppLogic + 'static>(
         .default_height(600)
         .build();
 
+    // Stash the window handle so `Backend::begin_window_drag` /
+    // `Backend::toggle_window_maximize` (#400) have something to drive.
+    // Harmless for apps that never call them (default no-op on every
+    // other backend, and GTK apps that don't opt into a CSD titlebar).
+    backend.borrow_mut().set_window(window.clone());
+
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
@@ -341,6 +347,24 @@ fn activate<A: AppLogic + 'static>(
             let button = gdk_button_to_quadraui(gdk_button);
             let modifiers = gdk_modifiers_to_quadraui(modifier);
             let position = Point::new(x as f32, y as f32);
+
+            // Stash the raw GDK press context (device + button + timestamp)
+            // before this press gets translated to a portable `UiEvent`, so
+            // `Backend::begin_window_drag` can later hand it to GDK's
+            // native window-drag call (#400). Runs for both single- and
+            // double-press events (both fire `connect_pressed`); harmless
+            // if the app never calls `begin_window_drag`.
+            if let Some(event) = gesture.current_event() {
+                if let Some(device) = event.device() {
+                    backend.borrow_mut().stash_window_press(
+                        device,
+                        gdk_button as i32,
+                        x,
+                        y,
+                        event.time(),
+                    );
+                }
+            }
 
             if n_press == 2 {
                 // Double-click: clear selection and deliver DoubleClick directly.

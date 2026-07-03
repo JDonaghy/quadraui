@@ -42,7 +42,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk4::cairo::Context;
+use gtk4::gdk;
 use gtk4::pango;
+use gtk4::prelude::*;
 
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
 use crate::dispatch::TextRegion;
@@ -158,6 +160,20 @@ pub struct GtkBackend {
     /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })` so
     /// consumers receive typed key events without fighting GTK widget focus.
     focused_activity_bar: Option<WidgetId>,
+    /// Top-level window handle, set once by `gtk::run::activate` via
+    /// [`Self::set_window`]. `None` until the runner finishes constructing
+    /// the window (and in unit tests, which never call `set_window`).
+    /// Backs [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`]
+    /// — the CSD titlebar drag/maximize escape hatch (#400).
+    window: Option<gtk4::ApplicationWindow>,
+    /// Raw GDK context (device, button, x, y, timestamp) of the most
+    /// recent primary-button press, stashed by `gtk/run.rs`'s
+    /// `GestureClick::connect_pressed` before the press is translated to a
+    /// portable [`UiEvent`]. [`Backend::begin_window_drag`] consumes this
+    /// (via `.take()`) to call `gdk4::Toplevel::begin_move` with the real
+    /// device/timestamp the gesture requires — GDK ignores synthesized
+    /// values on some compositors.
+    pending_window_press: Option<(gdk::Device, i32, f64, f64, u32)>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -197,7 +213,33 @@ impl GtkBackend {
             active_selection: None,
             last_text_region_id: None,
             focused_activity_bar: None,
+            window: None,
+            pending_window_press: None,
         }
+    }
+
+    /// Store the top-level window handle. Called once by `gtk::run::activate`
+    /// right after the window is constructed. Backs
+    /// [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`].
+    pub fn set_window(&mut self, window: gtk4::ApplicationWindow) {
+        self.window = Some(window);
+    }
+
+    /// Stash the raw GDK context of a primary-button press. Called by
+    /// `gtk/run.rs`'s `GestureClick::connect_pressed`, before the press is
+    /// translated to a portable [`UiEvent`], so
+    /// [`Backend::begin_window_drag`] can later request a native
+    /// window-drag using the *originating* event's device/timestamp.
+    /// Overwritten by the next press; harmless if never consumed.
+    pub(crate) fn stash_window_press(
+        &mut self,
+        device: gdk::Device,
+        button: i32,
+        x: f64,
+        y: f64,
+        time: u32,
+    ) {
+        self.pending_window_press = Some((device, button, x, y, time));
     }
 
     /// Update the cached UI font description string (Pango format,
@@ -878,6 +920,39 @@ impl Backend for GtkBackend {
 
     fn services(&self) -> &dyn PlatformServices {
         &self.services
+    }
+
+    fn begin_window_drag(&mut self) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        let Some((device, button, x, y, time)) = self.pending_window_press.take() else {
+            return false;
+        };
+        // `ApplicationWindow` implements `Native` directly (gtk4-rs
+        // `@implements Native` on both `Window` and `ApplicationWindow`),
+        // so `.surface()` is reachable without an upcast. Only an actual
+        // toplevel surface implements the `Toplevel` interface `begin_move`
+        // lives on — downcast can fail if the surface isn't realized yet.
+        match window.surface().downcast::<gdk::Toplevel>() {
+            Ok(toplevel) => {
+                toplevel.begin_move(&device, button, x, y, time);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn toggle_window_maximize(&mut self) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        if window.is_maximized() {
+            window.unmaximize();
+        } else {
+            window.maximize();
+        }
+        true
     }
 
     // ─── Drawing ───────────────────────────────────────────────────────────
@@ -2265,6 +2340,33 @@ mod tests {
         backend.push_event(crate::UiEvent::WindowFocused(true));
         let q = backend.events_handle();
         assert_eq!(q.borrow().len(), 1);
+    }
+
+    /// #400: with no window set (the state of every unit test and every
+    /// backend before `gtk::run::activate` calls `set_window`),
+    /// `begin_window_drag` must no-op rather than panic.
+    #[test]
+    fn gtk_backend_begin_window_drag_false_without_window() {
+        let mut backend = GtkBackend::new();
+        assert!(!Backend::begin_window_drag(&mut backend));
+    }
+
+    /// #400: `begin_window_drag` also no-ops when a window is present but
+    /// no press was ever stashed (e.g. called from a non-mouse-driven
+    /// path) — there's no real device/timestamp to hand GDK.
+    #[test]
+    fn gtk_backend_begin_window_drag_false_without_pending_press() {
+        let mut backend = GtkBackend::new();
+        assert!(backend.pending_window_press.is_none());
+        assert!(!Backend::begin_window_drag(&mut backend));
+    }
+
+    /// #400: with no window set, `toggle_window_maximize` must no-op
+    /// rather than panic.
+    #[test]
+    fn gtk_backend_toggle_window_maximize_false_without_window() {
+        let mut backend = GtkBackend::new();
+        assert!(!Backend::toggle_window_maximize(&mut backend));
     }
 
     #[test]

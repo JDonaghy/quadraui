@@ -200,6 +200,43 @@ pub trait Backend {
     ) {
     }
 
+    // ─── Window chrome (CSD) ────────────────────────────────────────────
+    /// Begin an OS-native window drag-to-move gesture, using the raw
+    /// device/button/timestamp captured from the most recent primary-button
+    /// press.
+    ///
+    /// For apps that draw their own client-side titlebar (`ShellConfig::
+    /// with_title_bar` + `window.set_decorated(false)`) into
+    /// `AppShellLayout::title_bar_bounds` and want the empty part of that
+    /// band to drag the window like a native titlebar. Call from
+    /// [`crate::shell::ShellApp::handle`] when a `MouseDown` lands in
+    /// [`crate::shell::ShellContext::in_title_bar`] outside any interactive
+    /// segment (menu item, min/max/close button).
+    ///
+    /// `GtkBackend` wires this to `gdk4::Toplevel::begin_move`, using the
+    /// press context `gtk::run`'s click controller stashes just before the
+    /// press is translated to a portable [`UiEvent`] (see #400) — GDK
+    /// requires the *originating* event's device/timestamp, not synthesized
+    /// values, or the drag silently no-ops on some compositors.
+    ///
+    /// Returns `false` when the backend owns no window (TUI, and any
+    /// backend before its window is constructed) or no primed press context
+    /// is available. Callers should treat `false` as a no-op, not an error.
+    fn begin_window_drag(&mut self) -> bool {
+        false
+    }
+
+    /// Toggle the OS window between maximized and restored — the
+    /// double-click-to-maximize half of the CSD-titlebar gesture pair
+    /// (see [`Self::begin_window_drag`]).
+    ///
+    /// Call from `ShellApp::handle` on a `DoubleClick` landing in the empty
+    /// part of the titlebar band. Returns `false` on backends with no
+    /// window (TUI); `true` once the toggle happened.
+    fn toggle_window_maximize(&mut self) -> bool {
+        false
+    }
+
     // ─── Modal-overlay tracking ────────────────────────────────────────
     /// Mutable handle to the backend's modal stack. Apps push when a
     /// palette / dialog / context-menu opens and pop when it closes;
