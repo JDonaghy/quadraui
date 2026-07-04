@@ -4,6 +4,15 @@
 //! `AppLogic` (~80 lines). The shell owns activity bar, sidebar header,
 //! divider drag, and panel switching. The consumer renders sidebar
 //! content + main content into the bounds the shell provides.
+//!
+//! Also demonstrates the activity-bar keyboard-cursor hook (#409):
+//! `Tab` calls [`ShellContext::request_activity_keyboard_focus`] to enter
+//! keyboard-cursor mode; from there `j`/`k` (or arrows) move the cursor,
+//! `l`/`Enter`/`Space` activates the selected panel, and `Esc`/`h`/`Left`
+//! cancels — all driven internally by the shell runner, not this app. A
+//! `ShellApp` only needs to pick its own trigger key(s) and call
+//! `request_activity_keyboard_focus()`; a different consumer could bind
+//! `Ctrl+W` instead of `Tab` with no quadraui changes.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
@@ -18,7 +27,7 @@ pub struct AppShellDemo {
 impl AppShellDemo {
     pub fn new() -> Self {
         Self {
-            last_event: "click icons | drag divider | q=quit".into(),
+            last_event: "Tab=focus bar | click icons | drag divider | q=quit".into(),
         }
     }
 
@@ -112,6 +121,19 @@ impl ShellApp for AppShellDemo {
                 key: Key::Char('q') | Key::Named(NamedKey::Escape),
                 ..
             } => Reaction::Exit,
+            // Tab is this demo's chosen trigger for entering activity-bar
+            // keyboard-cursor mode (#409). The shell runner (not this app)
+            // owns j/k/Enter/Esc navigation from here — see
+            // `ShellAdapter::handle`. A different `ShellApp` is free to
+            // bind a different key (e.g. `Ctrl+W`) to the same request.
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                ..
+            } => {
+                ctx.request_activity_keyboard_focus();
+                self.last_event = "Activity bar focused (j/k, Enter, Esc)".into();
+                Reaction::Redraw
+            }
             UiEvent::MouseDown { position, .. } => {
                 if ctx.in_sidebar(position.x, position.y) {
                     self.last_event = format!(

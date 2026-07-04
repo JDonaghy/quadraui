@@ -6,6 +6,8 @@
 //! window creation, event wiring, AppShell chrome rendering, and event
 //! routing — the consumer renders only its own content.
 
+use std::cell::Cell;
+
 use crate::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
@@ -124,9 +126,58 @@ pub struct ShellContext<'a> {
     pub sidebar_visible: bool,
     /// Layout bounds from the last render.
     pub layout: &'a AppShellLayout,
+    /// Set via [`Self::request_activity_keyboard_focus`]; consumed by
+    /// [`crate::shell_adapter::ShellAdapter::handle`] after
+    /// `ShellApp::handle` returns. `Cell` because `ShellContext` is passed
+    /// by shared reference — the consumer can request focus without a
+    /// `&mut` hook back into the shell.
+    activity_focus_requested: Cell<bool>,
 }
 
 impl<'a> ShellContext<'a> {
+    /// Construct a [`ShellContext`] for one `ShellApp::handle` dispatch.
+    /// Only called by [`crate::shell_adapter::ShellAdapter`]; downstream
+    /// consumers receive an already-built context, they don't build one.
+    pub(crate) fn new(
+        active_panel_id: Option<&'a WidgetId>,
+        sidebar_visible: bool,
+        layout: &'a AppShellLayout,
+    ) -> Self {
+        Self {
+            active_panel_id,
+            sidebar_visible,
+            layout,
+            activity_focus_requested: Cell::new(false),
+        }
+    }
+
+    /// Request that the activity bar take keyboard focus, with its cursor
+    /// reset to the top item, once the current `ShellApp::handle` call
+    /// returns.
+    ///
+    /// Call this from your own `handle()` in response to whatever key you
+    /// want to bind as the "focus the activity bar" trigger (`Tab`,
+    /// `Ctrl+W`, a command-palette action, ...) — quadraui does not
+    /// reserve a key for this itself, so different consumers can pick
+    /// different triggers. Once focused, [`crate::shell_adapter::ShellAdapter`]
+    /// owns the navigation keys (`j`/`k`/arrows to move, `Enter`/`Space` to
+    /// activate, `Esc` to cancel) by driving the same
+    /// [`crate::compose::app_shell::AppShell`] methods the raw `AppLogic`
+    /// pattern uses directly — see `examples/common/shell_app.rs`.
+    ///
+    /// A no-op if called more than once per `handle()` call (the flag is
+    /// simply set, not counted).
+    pub fn request_activity_keyboard_focus(&self) {
+        self.activity_focus_requested.set(true);
+    }
+
+    /// Consume the pending focus request, if any. `pub(crate)` — only
+    /// [`crate::shell_adapter::ShellAdapter::handle`] calls this, after
+    /// `ShellApp::handle` returns.
+    pub(crate) fn take_activity_focus_requested(&self) -> bool {
+        self.activity_focus_requested.replace(false)
+    }
+
     /// Check if a mouse position lands inside the sidebar content area.
     pub fn in_sidebar(&self, x: f32, y: f32) -> bool {
         rect_contains_opt(self.layout.sidebar_content_bounds, x, y)

@@ -25,7 +25,7 @@ use crate::event::Rect;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellContext};
 use crate::types::WidgetId;
-use crate::{Backend, MouseButton, UiEvent};
+use crate::{ActivityBarEvent, Backend, MouseButton, UiEvent};
 
 /// Adapts a [`ShellApp`] into an [`AppLogic`] by composing it with an
 /// [`AppShell`] and an optional [`BottomPanelController`].
@@ -174,6 +174,52 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             AppShellEvent::Ignored => {}
         }
 
+        // ── Built-in activity-bar keyboard navigation (#409) ──────────────
+        //
+        // `AppShell::build_activity_bar()` (compose/app_shell.rs) already
+        // implements the full keyboard-cursor API (select_next/prev,
+        // activate_selected, ...) and the backends already translate a
+        // `KeyPressed` into `UiEvent::ActivityBar(id, KeyPressed { key, .. })`
+        // once `activity_keyboard_focused()` is true — see
+        // `TuiBackend::apply_dispatch`. But `ShellApp` consumers had no path
+        // to reach any of it (the raw `AppLogic` pattern in
+        // `examples/common/shell_app.rs` owns `AppShell` directly and wires
+        // this itself). Mirror that pattern here, once, for every `ShellApp`
+        // consumer: intercept the synthesized `ActivityBar` event before it
+        // would otherwise reach `ShellApp::handle` (which never sees this
+        // event type — there is nothing for a consumer to opt into or
+        // conflict with) and drive `AppShell` directly. Resulting
+        // `AppShellEvent`s are reported through the existing
+        // `on_shell_event` notification, exactly like a mouse-driven panel
+        // switch.
+        if let UiEvent::ActivityBar(_, ActivityBarEvent::KeyPressed { ref key, .. }) = event {
+            return match key.as_str() {
+                "j" | "Down" => {
+                    self.shell.activity_select_next();
+                    Reaction::Redraw
+                }
+                "k" | "Up" => {
+                    self.shell.activity_select_prev();
+                    Reaction::Redraw
+                }
+                "l" | "Enter" | " " | "Space" => {
+                    if let Some(ev) = self.shell.activity_activate_selected() {
+                        self.shell.set_activity_keyboard_focused(false);
+                        if let AppShellEvent::PanelChanged { ref panel_id } = ev {
+                            self.active_panel_id = Some(panel_id.clone());
+                        }
+                        self.app.on_shell_event(&ev);
+                    }
+                    Reaction::Redraw
+                }
+                "Escape" | "h" | "Left" => {
+                    self.shell.set_activity_keyboard_focused(false);
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            };
+        }
+
         // If the shell didn't consume the event, check the bottom panel tab strip.
         if let Some(ref ctrl_cell) = self.bottom_panel {
             if let UiEvent::MouseDown {
@@ -197,12 +243,25 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         }
 
         let layout = self.shell.layout(area, backend.line_height());
-        let ctx = ShellContext {
-            active_panel_id: self.active_panel_id.as_ref(),
-            sidebar_visible: self.shell.sidebar_visible(),
-            layout: &layout,
-        };
-        self.app.handle(event, backend, &ctx)
+        let ctx = ShellContext::new(
+            self.active_panel_id.as_ref(),
+            self.shell.sidebar_visible(),
+            &layout,
+        );
+        let mut reaction = self.app.handle(event, backend, &ctx);
+
+        // The app may have called `ctx.request_activity_keyboard_focus()`
+        // (e.g. in response to its own `Tab` / `Ctrl+W` binding) to enter
+        // the keyboard-cursor mode the block above then drives.
+        if ctx.take_activity_focus_requested() {
+            self.shell.set_activity_keyboard_focused(true);
+            self.shell.activity_set_cursor(0);
+            if reaction == Reaction::Continue {
+                reaction = Reaction::Redraw;
+            }
+        }
+
+        reaction
     }
 
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {

@@ -20,6 +20,8 @@ use shell_app_ex::ShellApp as ShellAppEx;
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
 
+#[path = "../examples/common/appshell_demo.rs"]
+mod appshell_demo;
 #[path = "../examples/common/clipboard_demo.rs"]
 mod clipboard_demo;
 #[path = "../examples/common/demo.rs"]
@@ -43,6 +45,7 @@ mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 
+use appshell_demo::AppShellDemo;
 use clipboard_demo::ClipboardDemo;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
@@ -426,6 +429,115 @@ fn shell_runner_path_drag_and_ctrl_c_copies_text() {
     assert!(
         screen.contains("quick") || screen.contains("brown"),
         "copied preview should contain selected text:\n{screen}"
+    );
+}
+
+// ─── AppShellDemo (issue #409): ShellApp activity-bar keyboard focus hook ───
+//
+// `AppShellDemo` implements `ShellApp` and binds `Tab` to
+// `ShellContext::request_activity_keyboard_focus()`. Everything after that
+// — j/k navigation, Enter activation, Escape cancellation — is driven by
+// `ShellAdapter::handle` itself, intercepting the synthesized
+// `UiEvent::ActivityBar` before it would reach `AppShellDemo::handle` (which
+// has no match arm for that event at all). These tests prove the full
+// `Tab → focus → j/k → Enter` round trip works for a `ShellApp` consumer,
+// which was impossible before #409 (only the raw `AppLogic` pattern in
+// `examples/common/shell_app.rs` could reach `AppShell`'s keyboard API).
+//
+// `Reaction::Redraw` vs `Reaction::Continue` is the key signal here: `j`/`k`/
+// `Escape` have no meaning to `AppShellDemo::handle` on their own (it would
+// return `Continue` for an unmatched raw key), so a `Redraw` after pressing
+// them proves `ShellAdapter` actually intercepted and handled the
+// synthesized `ActivityBar` event rather than the key falling through.
+
+/// `Tab` focuses the activity bar, `j` `j` moves the keyboard cursor down
+/// two items (explorer → search → git), and `Enter` activates the
+/// selection — switching to the Source Control panel and notifying
+/// `AppShellDemo::on_shell_event`, which is what paints "Panel: panel:git".
+#[test]
+fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 80, 24);
+
+    assert!(
+        driver.screen_contains("Tab=focus bar"),
+        "initial hint should mention the Tab trigger:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Tab should request activity-bar keyboard focus and redraw"
+    );
+    assert!(
+        driver.screen_contains("Activity bar focused"),
+        "focusing the bar should update the status hint:\n{}",
+        driver.screen()
+    );
+
+    // Cursor starts at index 0 (explorer). Two `j` presses move it to
+    // index 2 (git) — 3 top panels, cursor saturates instead of wrapping.
+    for _ in 0..2 {
+        let reaction = driver.type_char('j');
+        assert_eq!(
+            reaction,
+            Reaction::Redraw,
+            "'j' while focused must be intercepted as ActivityBar nav, not fall through:\n{}",
+            driver.screen()
+        );
+    }
+
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Enter should activate the selected item and redraw"
+    );
+    assert!(
+        driver.screen_contains("Panel: panel:git"),
+        "activating the cursor item should switch to the git panel and notify on_shell_event:\n{}",
+        driver.screen()
+    );
+}
+
+/// `Escape` while the bar is focused cancels keyboard-cursor mode without
+/// switching panels — and, crucially, releases focus so a *subsequent* key
+/// (here `q`) reaches `AppShellDemo::handle` again instead of being
+/// swallowed as activity-bar navigation.
+#[test]
+fn appshell_demo_escape_cancels_focus_without_switching_panel() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 80, 24);
+
+    driver.press_named(NamedKey::Tab);
+    assert!(driver.screen_contains("Activity bar focused"));
+
+    let reaction = driver.press_named(NamedKey::Escape);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Escape while focused should cancel, not exit the app"
+    );
+    assert!(
+        !driver.exited(),
+        "Escape while focused must not quit the demo"
+    );
+    assert!(
+        !driver.screen_contains("Panel:"),
+        "cancelling must not have activated any panel switch:\n{}",
+        driver.screen()
+    );
+
+    // If focus had not actually been released, 'q' would still be routed
+    // as an (unbound) ActivityBar key and return Continue. Getting Exit
+    // proves 'q' reached `AppShellDemo::handle`'s raw KeyPressed match arm.
+    let reaction = driver.type_char('q');
+    assert_eq!(
+        reaction,
+        Reaction::Exit,
+        "'q' after Escape should quit via the app's own binding, proving focus was released"
     );
 }
 
