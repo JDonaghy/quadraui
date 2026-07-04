@@ -277,7 +277,9 @@ pub use accelerator::{
     parse_key_binding, render_accelerator, render_binding, Accelerator, AcceleratorId,
     AcceleratorScope, KeyBinding, ParsedBinding, Platform,
 };
-pub use backend::{Backend, Clipboard, FileDialogOptions, Notification, PlatformServices};
+pub use backend::{
+    Backend, Clipboard, FileDialogOptions, Notification, PlatformServices, PointerShape, ResizeEdge,
+};
 pub use event::{
     BackendNativeEvent, ButtonMask, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent,
     Viewport,

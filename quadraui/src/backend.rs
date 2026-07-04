@@ -53,6 +53,36 @@ use crate::{
     TextDisplay, TreeView,
 };
 
+/// Which edge or corner of a window a resize gesture originates from.
+/// Mirrors `gdk4::SurfaceEdge` 1:1 (see [`Backend::begin_window_resize`]) so
+/// the GTK backend's conversion is a plain match with no ambiguity, but the
+/// type itself is backend-neutral — TUI and other backends just no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeEdge {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+/// OS mouse-pointer glyph hint (see [`Backend::set_cursor`]).
+///
+/// Deliberately named `PointerShape`, not `CursorShape` — that name is
+/// already taken by [`crate::primitives::editor::CursorShape`] (the
+/// text-editor caret shape, re-exported as `EditorCursorShape`), which is an
+/// unrelated concept (text caret vs. OS mouse pointer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerShape {
+    /// The platform's normal arrow/default pointer.
+    Default,
+    /// A directional resize pointer for the given window edge/corner.
+    Resize(ResizeEdge),
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 pub trait Backend {
     // ─── Frame + viewport ──────────────────────────────────────────────
@@ -242,6 +272,44 @@ pub trait Backend {
     /// part of the titlebar band. Returns `false` on backends with no
     /// window (TUI); `true` once the toggle happened.
     fn toggle_window_maximize(&mut self) -> bool {
+        false
+    }
+
+    /// Begin an OS-native window resize gesture from the given edge, using
+    /// the raw device/button/timestamp captured from the most recent
+    /// primary-button press (same mechanism as [`Self::begin_window_drag`]).
+    ///
+    /// For apps that draw their own client-side titlebar and want to offer
+    /// edge/corner resize the way native `gtk4::WindowHandle` /
+    /// `GDK_SURFACE_EDGE_*` decorations do for free. Apps are expected to
+    /// hit-test the pointer against their own window bounds each frame
+    /// (see [`crate::shell::ShellContext::window_edge`]) and call this from
+    /// a `MouseDown` handler when the press lands within resize-margin
+    /// distance of an edge.
+    ///
+    /// Unlike [`Self::begin_window_drag`], this does not need to defer past
+    /// a movement threshold: there is no competing "double-click on an edge
+    /// means something else" gesture to protect (double-click-to-maximize
+    /// only applies to the empty titlebar band), so `GtkBackend` calls
+    /// `gdk4::Toplevel::begin_resize` directly from the stashed press
+    /// context.
+    ///
+    /// Returns `false` when the backend owns no window (TUI, and any
+    /// backend before its window is constructed) or no primed press context
+    /// is available. Callers should treat `false` as a no-op, not an error.
+    fn begin_window_resize(&mut self, _edge: ResizeEdge) -> bool {
+        false
+    }
+
+    /// Hint the OS mouse-pointer glyph, e.g. to show a resize cursor while
+    /// hovering a window edge (see [`Self::begin_window_resize`]).
+    ///
+    /// Call from `ShellApp::handle` on every `UiEvent::MouseMoved`, passing
+    /// [`PointerShape::Resize`] when [`crate::shell::ShellContext::window_edge`]
+    /// returns `Some`, else [`PointerShape::Default`] to restore the normal
+    /// pointer. Returns `false` on backends with no native pointer concept
+    /// (TUI) or no window yet; `true` once the pointer glyph was applied.
+    fn set_cursor(&mut self, _shape: PointerShape) -> bool {
         false
     }
 

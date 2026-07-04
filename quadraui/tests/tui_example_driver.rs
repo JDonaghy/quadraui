@@ -10,7 +10,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{NamedKey, Point, Reaction, UiEvent};
+use quadraui::{ButtonMask, NamedKey, Point, Reaction, UiEvent};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -1189,5 +1189,135 @@ fn full_chrome_title_bar_close_button_exits() {
     assert!(
         driver.exited(),
         "driver should latch `exited` after the close button is clicked"
+    );
+}
+
+// ─── FullChromeDemo: window-edge resize escape hatch (#406) ────────────────
+//
+// `FullChromeDemo` hit-tests `ShellContext::window_edge` on `MouseDown` and
+// calls `Backend::begin_window_resize`, mirroring #400's drag/maximize
+// pattern. TUI has no window to resize, so this must return `false` and the
+// demo must show the "no window" fallback message rather than crash or
+// hang — same story as the #400 tests above. `MouseMoved` hints the resize
+// cursor via `Backend::set_cursor`, which is also a documented no-op on
+// TUI; those tests just prove the call path runs cleanly (no automated way
+// to observe the OS pointer glyph headlessly).
+
+/// Left-`MouseDown` on the window's right border (away from the title bar
+/// and any corner) calls `begin_window_resize(East)`, which must return
+/// `false` on `TuiBackend` (no window) and the demo must show the
+/// no-window fallback.
+///
+/// The *left* border isn't a usable equivalent here: `FullChromeDemo`'s
+/// activity bar sits flush against column 0 and spans the full band
+/// height, and `AppShell::handle` already claims the whole
+/// `activity_bar_bounds` rect for panel-switching before `ShellApp::handle`
+/// (and thus `window_edge`) ever sees the event — so West/NorthWest/
+/// SouthWest resize is unreachable in this particular demo layout. That's
+/// a property of an icon column starting at the literal window edge with
+/// no reserved margin, not a bug in `window_edge` itself; East/South/
+/// SouthEast (checked here and below) aren't shadowed by any shell-owned
+/// region and exercise the same mechanism.
+#[test]
+fn full_chrome_right_edge_click_requests_window_resize() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    // x=99 is the last column (the right border); y=15 sits well below the
+    // 2-row title bar and above the bottom-panel resize grip.
+    driver.click(99.0, 15.0);
+    assert!(
+        driver.screen_contains("Edge resize (no window) (East)"),
+        "clicking the right border should call begin_window_resize(East), \
+         get false back (no window), and show the edge-resize fallback \
+         message:\n{}",
+        driver.screen()
+    );
+}
+
+/// Left-`MouseDown` on the bottom-right corner calls
+/// `begin_window_resize(SouthEast)`, same no-window fallback as above.
+#[test]
+fn full_chrome_bottom_right_corner_click_requests_window_resize() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    // (99, 29) is the last valid cell in a 100x30 grid — the bottom-right
+    // corner, nowhere near the title bar.
+    driver.click(99.0, 29.0);
+    assert!(
+        driver.screen_contains("Edge resize (no window) (SouthEast)"),
+        "clicking the bottom-right corner should call \
+         begin_window_resize(SouthEast), get false back (no window), and \
+         show the edge-resize fallback message:\n{}",
+        driver.screen()
+    );
+}
+
+/// Regression guard for the priority decision documented in
+/// `FullChromeDemo::handle`: the title bar band owns the *entire* top edge
+/// (including its corners), same as native GTK `HeaderBar` CSD having no
+/// top-edge resize handle. A click at the top-left corner — which falls
+/// within both `in_title_bar` and `window_edge`'s margin — must still
+/// resolve to the title-bar-drag gesture (#400), not edge-resize (#406).
+#[test]
+fn full_chrome_title_bar_wins_over_window_edge_at_top_corner() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    driver.click(0.0, 0.0);
+    assert!(
+        driver.screen_contains("Title bar click (no window to drag)"),
+        "a MouseDown at the top-left corner overlaps both the title bar \
+         and the window-edge margin; the title bar must win:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Edge resize"),
+        "the top corner must not be reported as an edge-resize request \
+         while a title bar owns that band:\n{}",
+        driver.screen()
+    );
+}
+
+/// `MouseMoved` over a window edge calls `Backend::set_cursor` with a
+/// resize hint. `TuiBackend` has no OS pointer to change, so this just
+/// proves the call path runs end-to-end without crashing or hanging —
+/// there's no headless way to observe the (nonexistent) TUI cursor glyph.
+#[test]
+fn full_chrome_mouse_moved_over_edge_does_not_crash() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    // Hover with no button held (a plain move, not a drag) over the right
+    // border, then back over plain main-content — both must return
+    // `Continue` (a cursor hint never triggers a repaint) and leave the
+    // rest of the screen exactly as it was.
+    let reaction = driver.dispatch(UiEvent::MouseMoved {
+        position: Point::new(99.0, 15.0),
+        buttons: ButtonMask::default(),
+    });
+    assert_eq!(
+        reaction,
+        Reaction::Continue,
+        "hovering a window edge should only hint the cursor, never redraw"
+    );
+    // The full initial status line is longer than the visible
+    // main-content width and gets clipped — check a prefix that's
+    // guaranteed to survive the clip rather than the full string.
+    assert!(
+        driver.screen_contains("drag edges"),
+        "the status line should be unaffected by a hover-only cursor hint:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.dispatch(UiEvent::MouseMoved {
+        position: Point::new(50.0, 15.0),
+        buttons: ButtonMask::default(),
+    });
+    assert_eq!(
+        reaction,
+        Reaction::Continue,
+        "hovering plain main content (not an edge) should also just return Continue"
     );
 }

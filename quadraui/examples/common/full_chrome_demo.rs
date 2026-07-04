@@ -8,12 +8,19 @@
 //! actually moves/maximizes the window; on TUI (no window to drive) both
 //! calls are a documented no-op — the demo's status line shows which
 //! happened either way.
+//!
+//! The outer window border also exercises the edge-resize escape hatch
+//! (#406): a left-`MouseDown` within `backend.line_height()` of any edge or
+//! corner calls `Backend::begin_window_resize`, and every `MouseMoved`
+//! hints the resize cursor via `Backend::set_cursor` while hovering one.
+//! Same no-op-on-TUI story as #400 — there's no window to resize, so both
+//! calls report back `false` and the status line says so.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, MouseButton, NamedKey, Reaction, Rect, ShellApp as ShellAppTrait,
-    ShellConfig, ShellContext, StatusBar, StatusBarAction, StatusBarInteraction, StatusBarSegment,
-    UiEvent, WidgetId,
+    Backend, Color, Key, MouseButton, NamedKey, PointerShape, Reaction, Rect,
+    ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar, StatusBarAction,
+    StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// `action_id`s for the CSD title-bar button row (#402). Namespaced per
@@ -34,7 +41,8 @@ pub struct FullChromeDemo {
 impl FullChromeDemo {
     pub fn new() -> Self {
         Self {
-            last_event: "click icons | drag dividers | drag/double-click title bar | q=quit".into(),
+            last_event: "click icons | drag dividers | drag/double-click title bar | drag edges to resize | q=quit"
+                .into(),
             title_bar_interaction: StatusBarInteraction::new(),
         }
     }
@@ -290,6 +298,14 @@ impl ShellAppTrait for FullChromeDemo {
                     // window on a left-button press, same as native CSD
                     // chrome. `begin_window_drag` is a documented no-op
                     // (returns `false`) on backends with no window (TUI).
+                    //
+                    // Checked before #406's window-edge resize below: a
+                    // full-width title bar owns the entire top band, same
+                    // as native GTK `HeaderBar` CSD (which has no top-edge
+                    // resize handle either — the header bar IS the top
+                    // edge). Resize is still reachable from the left/right/
+                    // bottom borders and bottom corners, which the title
+                    // bar doesn't cover.
                     if *button == MouseButton::Left {
                         let dragging = backend.begin_window_drag();
                         self.last_event = if dragging {
@@ -299,6 +315,27 @@ impl ShellAppTrait for FullChromeDemo {
                         };
                     } else {
                         self.last_event = "Title bar click".into();
+                    }
+                    Reaction::Redraw
+                } else if let Some(edge) =
+                    ctx.window_edge(position.x, position.y, backend.line_height())
+                {
+                    // #406: the outer window border resizes on a left-
+                    // button press, same as native CSD chrome. Margin
+                    // derives from `line_height()` (portable across
+                    // cells/pixels per LESSONS.md) rather than a hardcoded
+                    // constant. `begin_window_resize` is a documented
+                    // no-op (returns `false`) on backends with no window
+                    // (TUI).
+                    if *button == MouseButton::Left {
+                        let resizing = backend.begin_window_resize(edge);
+                        self.last_event = if resizing {
+                            format!("Edge resize started ({edge:?})")
+                        } else {
+                            format!("Edge resize (no window) ({edge:?})")
+                        };
+                    } else {
+                        self.last_event = format!("Edge click ({edge:?})");
                     }
                     Reaction::Redraw
                 } else if ctx.in_sidebar(position.x, position.y) {
@@ -322,6 +359,28 @@ impl ShellAppTrait for FullChromeDemo {
                 } else {
                     Reaction::Continue
                 }
+            }
+            UiEvent::MouseMoved { position, .. } => {
+                // #406: hint the resize cursor while hovering the outer
+                // window border, restore the default pointer everywhere
+                // else. No repaint needed — this only changes the OS
+                // pointer glyph, not anything the app itself draws.
+                //
+                // Skip the title bar band first, same priority as the
+                // MouseDown handling above — the title bar isn't resizable
+                // (a full-width CSD header bar owns the top edge), so it
+                // must never show a resize cursor even though it's within
+                // `window_edge`'s top margin.
+                let shape = if ctx.in_title_bar(position.x, position.y) {
+                    PointerShape::Default
+                } else {
+                    match ctx.window_edge(position.x, position.y, backend.line_height()) {
+                        Some(edge) => PointerShape::Resize(edge),
+                        None => PointerShape::Default,
+                    }
+                };
+                backend.set_cursor(shape);
+                Reaction::Continue
             }
             UiEvent::DoubleClick { position, .. } => {
                 if ctx.in_title_bar(position.x, position.y) {

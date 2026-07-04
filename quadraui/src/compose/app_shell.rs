@@ -54,6 +54,12 @@ pub enum AppShellEvent {
 /// Layout bounds returned by [`AppShell::render`] and [`AppShell::layout`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppShellLayout {
+    /// The full window/viewport rect this layout was computed against —
+    /// the same `area` passed to [`AppShell::layout`] / [`AppShell::render`].
+    /// Lets [`crate::shell::ShellContext::window_edge`] (#406) hit-test the
+    /// outer window border for edge-resize without the app having to
+    /// separately track `backend.viewport()`.
+    pub window_bounds: Rect,
     pub title_bar_bounds: Option<Rect>,
     pub activity_bar_bounds: Rect,
     pub sidebar_header_bounds: Option<Rect>,
@@ -777,6 +783,7 @@ impl AppShell {
             };
             let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
             return AppShellLayout {
+                window_bounds: area,
                 title_bar_bounds,
                 activity_bar_bounds: ab_bounds,
                 sidebar_header_bounds: None,
@@ -814,6 +821,7 @@ impl AppShell {
                 let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
 
                 AppShellLayout {
+                    window_bounds: area,
                     title_bar_bounds,
                     activity_bar_bounds: ab_bounds,
                     sidebar_header_bounds: Some(header_bounds),
@@ -842,6 +850,7 @@ impl AppShell {
                 let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
 
                 AppShellLayout {
+                    window_bounds: area,
                     title_bar_bounds,
                     activity_bar_bounds: ab_bounds,
                     sidebar_header_bounds: Some(header_bounds),
