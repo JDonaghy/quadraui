@@ -148,6 +148,11 @@ path = "examples/tui_panel.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_palette_dual_mode"
+path = "examples/tui_palette_dual_mode.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_selection"
 path = "examples/tui_selection.rs"
 required-features = ["tui"]
@@ -176,6 +181,11 @@ required-features = ["tui"]
 name = "gtk_markdown"
 path = "examples/gtk_markdown.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_markdown_wrap"
+path = "examples/tui_markdown_wrap.rs"
+required-features = ["tui"]
 
 [[example]]
 name = "tui_indicators"
@@ -460,6 +470,16 @@ required-features = ["tui"]
 [[example]]
 name = "gtk_full_chrome_demo"
 path = "examples/gtk_full_chrome_demo.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_shell_menu"
+path = "examples/tui_shell_menu.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_shell_menu"
+path = "examples/gtk_shell_menu.rs"
 required-features = ["gtk"]
 
 [[example]]

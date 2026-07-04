@@ -40,6 +40,8 @@ mod panel_app;
 mod pipeline_app;
 #[path = "../examples/common/selection_app.rs"]
 mod selection_app;
+#[path = "../examples/common/shell_menu_demo.rs"]
+mod shell_menu_demo;
 #[path = "../examples/common/tab_group_demo.rs"]
 mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
@@ -55,6 +57,7 @@ use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
 use selection_app::SelectionDemo;
+use shell_menu_demo::ShellMenuDemo;
 use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
 
@@ -1431,5 +1434,96 @@ fn full_chrome_mouse_moved_over_edge_does_not_crash() {
         reaction,
         Reaction::Continue,
         "hovering plain main content (not an edge) should also just return Continue"
+    );
+}
+
+// ─── ShellMenuDemo: modal-over-chrome MouseDown routing (#411) ──────────────
+//
+// `ShellMenuDemo` opens a `MenuSystem` dropdown whose bar spans the full
+// viewport width starting at x=0, so the "File" entry (and the dropdown
+// opened below it) sits directly over the activity bar strip — the same
+// shape as vimcode's menu bar overlapping its activity bar (vimcode#552).
+// Before the #411 fix, `ShellAdapter::handle` ran `AppShell::handle` first,
+// which hit-tested `MouseDown` purely by screen position and swallowed any
+// click whose x fell inside the activity bar's width, even though
+// `dispatch_click` had already tagged the event for the open modal.
+
+/// Clicking a dropdown item whose x lands inside the activity bar's width
+/// must still activate it — the regression this issue is about. Before the
+/// fix this click was silently swallowed by `AppShell`'s chrome hit-test
+/// and the app never saw it.
+#[test]
+fn shell_menu_dropdown_item_over_activity_bar_activates() {
+    let config = ShellMenuDemo::config();
+    let mut driver = driver_with_shell(ShellMenuDemo::new(), config, 100, 30);
+
+    // Open the "File" menu.
+    let (file_x, file_y) = driver
+        .find("File")
+        .unwrap_or_else(|| panic!("File menu label should be painted:\n{}", driver.screen()));
+    driver.click(file_x, file_y);
+    assert!(
+        driver.screen_contains("New File"),
+        "clicking File should open its dropdown:\n{}",
+        driver.screen()
+    );
+
+    // The dropdown must actually overlap the activity bar for this test to
+    // be meaningful — confirm the "New File" item's left edge is inside the
+    // activity bar's 3-line-height-wide strip before clicking it.
+    let (item_x, item_y) = driver
+        .find("New File")
+        .expect("New File item should be painted after opening the dropdown");
+    assert!(
+        item_x < 3.0,
+        "test setup bug: the dropdown item must overlap the activity bar \
+         (x < 3) to reproduce #411, but it painted at x={item_x}:\n{}",
+        driver.screen()
+    );
+
+    // Click at the item's row, at x=1 — inside the activity bar strip.
+    driver.click(1.0, item_y);
+    assert!(
+        driver.screen_contains("activated: new"),
+        "clicking the dropdown item over the activity bar should activate it \
+         (routed to the app, not swallowed by shell chrome):\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("New File"),
+        "the dropdown should have closed after activation:\n{}",
+        driver.screen()
+    );
+}
+
+/// Sanity check for the other half of the fix: with no dropdown open, a
+/// click inside the activity bar strip must still behave as a normal chrome
+/// click (toggle/switch panels) — the #411 fix must not turn off chrome
+/// hit-testing unconditionally, only when a modal is actually open under the
+/// cursor.
+///
+/// This scans down the activity bar column for the row that actually
+/// toggles the (already-active) Explorer panel rather than asserting a
+/// specific row: `AppShell`'s cached click-region for an activity item is
+/// not guaranteed to be pixel-identical to the row its icon glyph paints on
+/// (padding/margins are an internal layout detail, unrelated to #411), so
+/// pinning an exact coordinate here would make this test fragile to changes
+/// in that unrelated geometry. What #411 cares about — and what this test
+/// asserts — is that *some* position within the activity bar's column still
+/// reaches shell chrome and toggles it, proving the fix didn't disable
+/// chrome hit-testing altogether.
+#[test]
+fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
+    let toggled = (0..20).map(|i| 1.0 + i as f32 * 0.5).any(|y| {
+        let mut probe = driver_with_shell(ShellMenuDemo::new(), ShellMenuDemo::config(), 100, 30);
+        probe.click(1.0, y);
+        probe.screen_contains("Sidebar hidden")
+    });
+
+    assert!(
+        toggled,
+        "no click within the activity bar column toggled the sidebar — a \
+         plain chrome click with no modal open should still be handled by \
+         shell chrome (AppShellEvent::SidebarHidden)"
     );
 }
