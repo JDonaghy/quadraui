@@ -10,7 +10,7 @@ use crate::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition, 
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
 use crate::types::WidgetId;
-use crate::{Backend, Reaction, UiEvent};
+use crate::{Backend, Reaction, ResizeEdge, UiEvent};
 
 /// Configuration for creating an AppShell.
 pub struct ShellConfig {
@@ -177,6 +177,75 @@ impl<'a> ShellContext<'a> {
         self.layout.title_bar_bounds
     }
 
+    /// The full window/viewport bounds this layout was computed against.
+    pub fn window_bounds(&self) -> Rect {
+        self.layout.window_bounds
+    }
+
+    /// Which edge or corner of the window `(x, y)` is within `margin` of,
+    /// or `None` if the position isn't near any outer border (#406).
+    ///
+    /// Mirrors [`Self::in_title_bar`]'s pattern: the app hit-tests the
+    /// pointer against a stored bounds field every frame rather than the
+    /// backend owning edge detection. Callers should derive `margin` from a
+    /// portable backend unit (e.g. `backend.line_height()`) rather than a
+    /// hardcoded pixel/cell constant — see `quadraui/docs/LESSONS.md`
+    /// "Shared AppLogic code must not hardcode backend-native units".
+    ///
+    /// Call from a `MouseDown` handler (pass the result to
+    /// [`Backend::begin_window_resize`]) and from a `MouseMoved` handler
+    /// (pass `PointerShape::Resize(edge)` / `PointerShape::Default` to
+    /// [`Backend::set_cursor`]).
+    pub fn window_edge(&self, x: f32, y: f32, margin: f32) -> Option<ResizeEdge> {
+        let r = self.layout.window_bounds;
+        // Points outside the window entirely (shouldn't normally happen —
+        // mouse events are clipped to the window — but defend anyway) never
+        // resolve to an edge.
+        if x < r.x || x > r.x + r.width || y < r.y || y > r.y + r.height {
+            return None;
+        }
+        // `near_right`/`near_bottom` use `>=` (not `>`) so the last valid
+        // cell index is included on TUI, mirroring `rect_contains`'s own
+        // `x < r.x + r.width` upper bound (which treats column
+        // `r.width - 1` as inside). With continuous GTK pixel coordinates
+        // the `=` case is a single point of measure zero and doesn't
+        // change behaviour; on TUI's discrete cell grid it's the
+        // difference between the bottom-right corner being reachable at
+        // all and a permanently-dead corner (margin == 1 cell exactly
+        // covers the last row/column, so a strict `>` would never fire).
+        let margin = margin.max(0.0);
+        let near_left = x < r.x + margin;
+        let near_right = x >= r.x + r.width - margin;
+        let near_top = y < r.y + margin;
+        let near_bottom = y >= r.y + r.height - margin;
+
+        // Corners first, then single edges. An if-chain (rather than an
+        // exhaustive match on all four bools) reads clearer and handles the
+        // degenerate case of a window smaller than `2 * margin` in one
+        // dimension (both `near_top` and `near_bottom` true, no left/right)
+        // by falling through to a deterministic single-edge pick instead of
+        // requiring a meaningless tie-break arm.
+        if near_top && near_left {
+            Some(ResizeEdge::NorthWest)
+        } else if near_top && near_right {
+            Some(ResizeEdge::NorthEast)
+        } else if near_bottom && near_left {
+            Some(ResizeEdge::SouthWest)
+        } else if near_bottom && near_right {
+            Some(ResizeEdge::SouthEast)
+        } else if near_top {
+            Some(ResizeEdge::North)
+        } else if near_bottom {
+            Some(ResizeEdge::South)
+        } else if near_left {
+            Some(ResizeEdge::West)
+        } else if near_right {
+            Some(ResizeEdge::East)
+        } else {
+            None
+        }
+    }
+
     /// Status bar bounds.
     pub fn status_bar_bounds(&self) -> Option<Rect> {
         self.layout.status_bar_bounds
@@ -239,5 +308,73 @@ pub trait ShellApp {
     /// that must happen without a user input event. Default is no-op.
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
         Reaction::Continue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::app_shell::AppShell;
+
+    /// Build a bare (no panels, no chrome) `AppShellLayout` sized `w x h`
+    /// starting at the origin — just enough to exercise `window_bounds`.
+    fn layout_for(w: f32, h: f32) -> AppShellLayout {
+        AppShell::new(Vec::new(), 20.0).layout(Rect::new(0.0, 0.0, w, h), 1.0)
+    }
+
+    fn ctx(layout: &AppShellLayout) -> ShellContext<'_> {
+        ShellContext {
+            active_panel_id: None,
+            sidebar_visible: false,
+            layout,
+        }
+    }
+
+    #[test]
+    fn window_edge_none_in_the_middle() {
+        let layout = layout_for(100.0, 40.0);
+        assert_eq!(ctx(&layout).window_edge(50.0, 20.0, 4.0), None);
+    }
+
+    #[test]
+    fn window_edge_detects_each_side() {
+        let layout = layout_for(100.0, 40.0);
+        let c = ctx(&layout);
+        assert_eq!(c.window_edge(50.0, 0.0, 4.0), Some(ResizeEdge::North));
+        assert_eq!(c.window_edge(50.0, 40.0, 4.0), Some(ResizeEdge::South));
+        assert_eq!(c.window_edge(0.0, 20.0, 4.0), Some(ResizeEdge::West));
+        assert_eq!(c.window_edge(100.0, 20.0, 4.0), Some(ResizeEdge::East));
+    }
+
+    #[test]
+    fn window_edge_detects_each_corner() {
+        let layout = layout_for(100.0, 40.0);
+        let c = ctx(&layout);
+        assert_eq!(c.window_edge(0.0, 0.0, 4.0), Some(ResizeEdge::NorthWest));
+        assert_eq!(c.window_edge(100.0, 0.0, 4.0), Some(ResizeEdge::NorthEast));
+        assert_eq!(c.window_edge(0.0, 40.0, 4.0), Some(ResizeEdge::SouthWest));
+        assert_eq!(c.window_edge(100.0, 40.0, 4.0), Some(ResizeEdge::SouthEast));
+    }
+
+    /// A point outside the window bounds entirely never resolves to an
+    /// edge, even if it would be "within margin" of one in absolute terms.
+    #[test]
+    fn window_edge_none_outside_window() {
+        let layout = layout_for(100.0, 40.0);
+        assert_eq!(ctx(&layout).window_edge(-2.0, 20.0, 4.0), None);
+        assert_eq!(ctx(&layout).window_edge(50.0, 45.0, 4.0), None);
+    }
+
+    /// A window narrower/shorter than `2 * margin` must still resolve
+    /// deterministically (no panic) rather than requiring an ambiguous
+    /// top-vs-bottom / left-vs-right tie-break.
+    #[test]
+    fn window_edge_degenerate_tiny_window_is_deterministic() {
+        let layout = layout_for(3.0, 3.0);
+        let c = ctx(&layout);
+        // Every point in a 3x3 window is within margin=4.0 of every edge;
+        // just assert this doesn't panic and returns a corner (checked
+        // first in the priority chain).
+        assert_eq!(c.window_edge(1.5, 1.5, 4.0), Some(ResizeEdge::NorthWest));
     }
 }

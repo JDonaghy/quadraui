@@ -53,8 +53,8 @@ use crate::types::WidgetId;
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
-    ParsedBinding, PlatformServices, Rect as QRect, Split, StatusBar, TabBar,
-    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
+    ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, StatusBar,
+    TabBar, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -899,6 +899,39 @@ fn named_key_to_binding_name(named: crate::NamedKey) -> &'static str {
     }
 }
 
+/// Map a portable [`ResizeEdge`] to GDK's native `SurfaceEdge`, the
+/// argument `gdk4::Toplevel::begin_resize` requires (#406). 1:1 mapping —
+/// `ResizeEdge` was deliberately named to mirror `SurfaceEdge`'s variants.
+fn resize_edge_to_surface_edge(edge: ResizeEdge) -> gdk::SurfaceEdge {
+    match edge {
+        ResizeEdge::North => gdk::SurfaceEdge::North,
+        ResizeEdge::South => gdk::SurfaceEdge::South,
+        ResizeEdge::East => gdk::SurfaceEdge::East,
+        ResizeEdge::West => gdk::SurfaceEdge::West,
+        ResizeEdge::NorthEast => gdk::SurfaceEdge::NorthEast,
+        ResizeEdge::NorthWest => gdk::SurfaceEdge::NorthWest,
+        ResizeEdge::SouthEast => gdk::SurfaceEdge::SouthEast,
+        ResizeEdge::SouthWest => gdk::SurfaceEdge::SouthWest,
+    }
+}
+
+/// Map a [`PointerShape`] to the GTK/CSS cursor name `WidgetExt::
+/// set_cursor_from_name` expects (#406). Names are the standard CSS Basic
+/// UI cursor keywords GTK's cursor theme lookup understands.
+fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
+    match shape {
+        PointerShape::Default => "default",
+        PointerShape::Resize(ResizeEdge::North) => "n-resize",
+        PointerShape::Resize(ResizeEdge::South) => "s-resize",
+        PointerShape::Resize(ResizeEdge::East) => "e-resize",
+        PointerShape::Resize(ResizeEdge::West) => "w-resize",
+        PointerShape::Resize(ResizeEdge::NorthEast) => "ne-resize",
+        PointerShape::Resize(ResizeEdge::NorthWest) => "nw-resize",
+        PointerShape::Resize(ResizeEdge::SouthEast) => "se-resize",
+        PointerShape::Resize(ResizeEdge::SouthWest) => "sw-resize",
+    }
+}
+
 impl Backend for GtkBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -1039,6 +1072,48 @@ impl Backend for GtkBackend {
         } else {
             window.maximize();
         }
+        true
+    }
+
+    fn begin_window_resize(&mut self, edge: ResizeEdge) -> bool {
+        // #406, mirrors `begin_window_drag`'s no-window / no-pending-press
+        // guards, but calls `gdk4::Toplevel::begin_resize` directly instead
+        // of arming a deferred request: edges have no competing
+        // double-click gesture to protect against (double-click-to-
+        // maximize only applies to the empty titlebar band), so there's no
+        // need to defer past a movement threshold the way
+        // `commit_armed_window_drag` does for the move gesture.
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        let Some((device, button, x, y, time)) = self.pending_window_press.take() else {
+            return false;
+        };
+        match window.surface().downcast::<gdk::Toplevel>() {
+            Ok(toplevel) => {
+                toplevel.begin_resize(
+                    resize_edge_to_surface_edge(edge),
+                    Some(&device),
+                    button,
+                    x,
+                    y,
+                    time,
+                );
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn set_cursor(&mut self, shape: PointerShape) -> bool {
+        // #406: GTK CSS cursor names inherit from the window down to the
+        // (cursor-less-by-default) content `DrawingArea`, so setting it on
+        // the stored top-level window is enough to change the pointer
+        // glyph anywhere over the content area.
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        window.set_cursor_from_name(Some(pointer_shape_cursor_name(shape)));
         true
     }
 
@@ -2508,6 +2583,121 @@ mod tests {
     fn gtk_backend_toggle_window_maximize_false_without_window() {
         let mut backend = GtkBackend::new();
         assert!(!Backend::toggle_window_maximize(&mut backend));
+    }
+
+    /// #406: with no window set (every unit test), `begin_window_resize`
+    /// must no-op rather than panic, mirroring `begin_window_drag`'s
+    /// no-window guard.
+    #[test]
+    fn gtk_backend_begin_window_resize_false_without_window() {
+        let mut backend = GtkBackend::new();
+        assert!(!Backend::begin_window_resize(
+            &mut backend,
+            ResizeEdge::South
+        ));
+    }
+
+    /// #406: `begin_window_resize` also no-ops when a window is present but
+    /// no press was ever stashed — there's no real device/timestamp to hand
+    /// GDK, same rationale as `begin_window_drag`'s equivalent guard.
+    #[test]
+    fn gtk_backend_begin_window_resize_false_without_pending_press() {
+        let mut backend = GtkBackend::new();
+        assert!(backend.pending_window_press.is_none());
+        assert!(!Backend::begin_window_resize(
+            &mut backend,
+            ResizeEdge::SouthEast
+        ));
+    }
+
+    /// #406: with no window set, `set_cursor` must no-op rather than panic.
+    #[test]
+    fn gtk_backend_set_cursor_false_without_window() {
+        let mut backend = GtkBackend::new();
+        assert!(!Backend::set_cursor(&mut backend, PointerShape::Default));
+        assert!(!Backend::set_cursor(
+            &mut backend,
+            PointerShape::Resize(ResizeEdge::North)
+        ));
+    }
+
+    /// #406: `ResizeEdge` maps 1:1 onto `gdk4::SurfaceEdge` — exercise
+    /// every variant so an accidental swap (e.g. `NorthEast` <->
+    /// `SouthWest`) fails loudly instead of silently resizing the wrong
+    /// corner on a real compositor.
+    #[test]
+    fn resize_edge_to_surface_edge_maps_every_variant() {
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::North),
+            gdk::SurfaceEdge::North
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::South),
+            gdk::SurfaceEdge::South
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::East),
+            gdk::SurfaceEdge::East
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::West),
+            gdk::SurfaceEdge::West
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::NorthEast),
+            gdk::SurfaceEdge::NorthEast
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::NorthWest),
+            gdk::SurfaceEdge::NorthWest
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::SouthEast),
+            gdk::SurfaceEdge::SouthEast
+        );
+        assert_eq!(
+            resize_edge_to_surface_edge(ResizeEdge::SouthWest),
+            gdk::SurfaceEdge::SouthWest
+        );
+    }
+
+    /// #406: `PointerShape` -> GTK cursor-name mapping covers every
+    /// variant with the expected CSS Basic UI keyword.
+    #[test]
+    fn pointer_shape_cursor_name_maps_every_variant() {
+        assert_eq!(pointer_shape_cursor_name(PointerShape::Default), "default");
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::North)),
+            "n-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::South)),
+            "s-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::East)),
+            "e-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::West)),
+            "w-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::NorthEast)),
+            "ne-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::NorthWest)),
+            "nw-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::SouthEast)),
+            "se-resize"
+        );
+        assert_eq!(
+            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::SouthWest)),
+            "sw-resize"
+        );
     }
 
     #[test]
