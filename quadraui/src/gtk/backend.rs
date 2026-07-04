@@ -191,6 +191,22 @@ pub struct GtkBackend {
     /// past the drag threshold — this mirrors that behaviour instead of
     /// starting the grab on the raw press.
     armed_window_drag: Option<(gdk::Device, i32, f64, f64, u32)>,
+    /// Clone of the Pango layout `draw_menu_bar` actually painted with,
+    /// stashed at the end of the frame's `enter_frame_scope` call.
+    /// `menu_bar_layout` (#407) is invoked from click-time hit-testing
+    /// (e.g. `MenuSystem::handle`), which runs *outside* any frame
+    /// scope — `current_frame_refs()` is always `None` there. Without
+    /// this cache the click-time measurement fell all the way back to
+    /// `pango_ctx`, which carries a different font (`"Sans 11"`, set
+    /// once at widget-init in `gtk::run::activate`) than the frame's
+    /// live layout (`"Monospace 11"`, set fresh every `set_draw_func`
+    /// call) — the two fonts have different glyph widths, so hit
+    /// regions silently drifted off the painted labels. Caching the
+    /// *exact* `pango::Layout` GObject used by the most recent paint
+    /// (refcounted clone — cheap, and always reflects the current
+    /// font/size) closes that gap: "cache at paint, hit-test at
+    /// click" (see `quadraui/docs/LESSONS.md`).
+    last_menu_bar_pango_layout: Option<pango::Layout>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -233,6 +249,7 @@ impl GtkBackend {
             window: None,
             pending_window_press: None,
             armed_window_drag: None,
+            last_menu_bar_pango_layout: None,
         }
     }
 
@@ -1892,7 +1909,7 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_menu_bar called outside enter_frame_scope");
-        crate::gtk::draw_menu_bar(
+        let result = crate::gtk::draw_menu_bar(
             cr,
             layout,
             rect.x as f64,
@@ -1901,7 +1918,13 @@ impl Backend for GtkBackend {
             rect.height as f64,
             bar,
             &self.current_theme,
-        )
+        );
+        // Stash the exact layout just painted with — see the field doc
+        // on `last_menu_bar_pango_layout` for why this is necessary
+        // rather than relying on `current_frame_refs()` alone.
+        let painted_layout = layout.clone();
+        self.last_menu_bar_pango_layout = Some(painted_layout);
+        result
     }
 
     fn menu_bar_layout(
@@ -1912,7 +1935,15 @@ impl Backend for GtkBackend {
         let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+        // Click-time hit-testing (e.g. `MenuSystem::handle`) calls this
+        // outside any `enter_frame_scope`, so `frame_layout` is always
+        // `None` then. Prefer the layout `draw_menu_bar` last painted
+        // with (same font/size as what's on screen) over the
+        // widget-init `pango_ctx`, which can carry a different font —
+        // see `last_menu_bar_pango_layout`'s doc comment.
+        let pango_layout = frame_layout
+            .or_else(|| self.last_menu_bar_pango_layout.clone())
+            .or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
         bar.layout(bounds, |i| {
             let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
             let text_w = self.pango_str_width(&pango_layout, &text, char_w);
@@ -3044,6 +3075,88 @@ mod tests {
             large_width > small_width * 2.0,
             "frame-scoped layout (Sans 40) should measure much wider than \
              the fallback pango_ctx (Sans 8): small={small_width}, large={large_width}"
+        );
+    }
+
+    /// #407 (manual smoke-test failure on iteration 1): the real bug is
+    /// that click-time hit-testing calls `menu_bar_layout` from
+    /// `MenuSystem::handle` — **outside** any `enter_frame_scope` — so
+    /// `current_frame_refs()` is always `None` at click time, and the
+    /// previous fix's `.or_else()` fell straight through to `pango_ctx`,
+    /// unchanged from before #407. This only mattered in practice
+    /// because `pango_ctx` (set once at widget-init, e.g. `"Sans 11"`)
+    /// carries a *different font* than the layout `draw_menu_bar` last
+    /// painted with (e.g. `"Monospace 11"`, rebuilt every frame) —
+    /// mismatched glyph widths drift the hit regions off the painted
+    /// labels, compounding item-over-item until a click on one label
+    /// resolves to a neighbour.
+    ///
+    /// Regression test: paint with `draw_menu_bar` inside a frame scope
+    /// using a large font, then call `menu_bar_layout` for the *same
+    /// bar* completely outside any frame scope (mirroring real
+    /// click-time dispatch) and assert it measures using the
+    /// large font that was actually painted with — not the small
+    /// `pango_ctx` font. Before this fix this assertion fails because
+    /// `menu_bar_layout` has no memory of the last paint.
+    #[test]
+    fn gtk_backend_menu_bar_layout_matches_last_paint_outside_frame_scope() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+
+        let small_ctx = pangocairo::functions::create_context(&cr);
+        small_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 8")));
+
+        let large_ctx = pangocairo::functions::create_context(&cr);
+        large_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 40")));
+        let large_layout = pango::Layout::new(&large_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(small_ctx);
+
+        let bar = MenuBar {
+            id: WidgetId::new("test:menu-bar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("test:menu-bar:file"),
+                label: "&File".to_string(),
+                disabled: false,
+                submenu: None,
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
+
+        // Paint (inside a frame scope) with the large font, exactly like
+        // `gtk::run::activate`'s draw callback does.
+        backend.enter_frame_scope(&cr, &large_layout, |b| {
+            b.draw_menu_bar(rect, &bar);
+        });
+
+        // Click-time dispatch happens from `AppLogic::handle`, which
+        // runs outside any frame scope (real event handlers never wrap
+        // their body in `enter_frame_scope` — only the draw callback
+        // does). Simulate that here: no frame scope is active.
+        let click_time_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
+            .bounds
+            .width;
+
+        // What painting with the small `pango_ctx` font alone would
+        // have produced, for comparison.
+        let small_only_width = {
+            let mut b2 = GtkBackend::new();
+            b2.set_pango_context(pangocairo::functions::create_context(&cr));
+            b2.menu_bar_layout(rect, &bar).visible_items[0].bounds.width
+        };
+
+        assert!(
+            click_time_width > small_only_width * 2.0,
+            "menu_bar_layout called outside any frame scope, right after a \
+             paint with a large font, should still measure using that \
+             large font (cached from paint) rather than falling back to \
+             pango_ctx's small font: click_time={click_time_width}, \
+             small_only={small_only_width}"
         );
     }
 }
