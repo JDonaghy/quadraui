@@ -21,7 +21,7 @@ use std::cell::RefCell;
 
 use crate::compose::app_shell::{AppShell, AppShellEvent, AppShellLayout};
 use crate::compose::bottom_panel::{BottomPanelController, BottomPanelEvent};
-use crate::event::Rect;
+use crate::event::{Point, Rect};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellContext};
 use crate::types::WidgetId;
@@ -131,6 +131,32 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 let lh = backend.line_height().max(1.0);
                 let panel_lh = (viewport.height / lh * height_fraction).clamp(3.0, 30.0);
                 self.shell.set_bottom_panel_height(panel_lh);
+            }
+        }
+
+        // An app-level modal (MenuSystem dropdown, Palette, Dialog, ...) can
+        // visually overlap shell chrome (activity bar, sidebar, dividers,
+        // bottom-panel grip). `AppShell::handle` below — and the
+        // bottom-panel tab-strip click check further down — both hit-test
+        // purely on screen position, so an open modal that overlaps chrome
+        // would otherwise have its `MouseDown` / `MouseUp` silently
+        // swallowed by the chrome (issue #411). Consult the backend's
+        // `ModalStack` directly — the same source `dispatch_click` /
+        // `dispatch_mouse_down` (`crate::dispatch`) used to tag the event's
+        // `widget` field — and route straight to the app when the position
+        // lands inside an open modal. This upholds the modal-stack contract
+        // ("events landing inside an open modal cannot fall through to the
+        // base layer", see `crate::dispatch` module docs) for shell chrome
+        // too, not just base-layer widgets.
+        if let Some(position) = mouse_event_position(&event) {
+            if backend.modal_stack_mut().hit_test(position).is_some() {
+                let layout = self.shell.layout(area, backend.line_height());
+                let ctx = ShellContext::new(
+                    self.active_panel_id.as_ref(),
+                    self.shell.sidebar_visible(),
+                    &layout,
+                );
+                return self.app.handle(event, backend, &ctx);
             }
         }
 
@@ -266,6 +292,20 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
         self.app.tick(backend)
+    }
+}
+
+/// Extract the screen position from a `MouseDown` / `MouseUp` event, or
+/// `None` for any other event variant.
+///
+/// Used to consult the backend's [`crate::modal_stack::ModalStack`] before
+/// letting shell chrome (`AppShell::handle`) hit-test the same position —
+/// only these two variants are position-gated by chrome logic today.
+fn mouse_event_position(event: &UiEvent) -> Option<Point> {
+    match event {
+        UiEvent::MouseDown { position, .. } => Some(*position),
+        UiEvent::MouseUp { position, .. } => Some(*position),
+        _ => None,
     }
 }
 

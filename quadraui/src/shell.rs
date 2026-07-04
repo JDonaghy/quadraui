@@ -374,11 +374,7 @@ mod tests {
     }
 
     fn ctx(layout: &AppShellLayout) -> ShellContext<'_> {
-        ShellContext {
-            active_panel_id: None,
-            sidebar_visible: false,
-            layout,
-        }
+        ShellContext::new(None, false, layout)
     }
 
     #[test]
