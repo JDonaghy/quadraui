@@ -134,6 +134,17 @@ pub struct GtkBackend {
     /// their settings (vimcode passes `format!("{} {}", ui_font_family,
     /// ui_font_size)`). Falls back to `"Sans 11"` if unset.
     ui_font: String,
+    /// Font family used to paint [`crate::primitives::editor::Editor`]
+    /// content. Defaults to `"Monospace"` — the historical hardcoded
+    /// value. Set via [`Backend::set_editor_font`]; `gtk/run.rs`'s draw
+    /// closure reads it (via [`Self::editor_font_pango_string`]) every
+    /// frame to build the shared editor `pango::Layout`, so painted
+    /// glyphs and the `current_line_height` / `current_char_width`
+    /// metrics resolved from the same font never drift apart (#422).
+    editor_font_family: String,
+    /// Editor font size in points, paired with `editor_font_family`.
+    /// Defaults to `11.0` (the historical hardcoded value).
+    editor_font_size_pt: f32,
     /// Selectable text regions registered during the current frame via
     /// [`Backend::register_text_region`]. Cleared at the start of each
     /// frame by [`Self::begin_frame`]. Parallels `TuiBackend::text_regions`.
@@ -253,6 +264,8 @@ impl GtkBackend {
             pango_ctx: None,
             nerd_fonts_enabled: false,
             ui_font: "Sans 11".to_string(),
+            editor_font_family: "Monospace".to_string(),
+            editor_font_size_pt: 11.0,
             text_regions: Vec::new(),
             active_selection: None,
             last_text_region_id: None,
@@ -361,6 +374,15 @@ impl GtkBackend {
     /// e.g. `"Cantarell 11"`). Call from the app's settings sync.
     pub fn set_ui_font(&mut self, ui_font: impl Into<String>) {
         self.ui_font = ui_font.into();
+    }
+
+    /// Current editor font as a Pango description string (`"<family>
+    /// <size>"`). Defaults to `"Monospace 11"` until
+    /// [`Backend::set_editor_font`] overrides it. `gtk/run.rs`'s draw
+    /// closure reads this every frame to build the shared editor
+    /// `pango::Layout` (#422).
+    pub(crate) fn editor_font_pango_string(&self) -> String {
+        format!("{} {}", self.editor_font_family, self.editor_font_size_pt)
     }
 
     /// Shared handle to the modal stack. The App and widget callbacks
@@ -993,6 +1015,11 @@ impl Backend for GtkBackend {
 
     fn set_nerd_fonts(&mut self, enabled: bool) {
         self.nerd_fonts_enabled = enabled;
+    }
+
+    fn set_editor_font(&mut self, family: &str, size_pt: f32) {
+        self.editor_font_family = family.to_string();
+        self.editor_font_size_pt = size_pt;
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
@@ -3384,5 +3411,37 @@ mod tests {
              pango_ctx's small font: click_time={click_time_width}, \
              small_only={small_only_width}"
         );
+    }
+
+    /// #422: a fresh backend must resolve to the historical hardcoded
+    /// default ("Monospace 11") so `gtk/run.rs` reading
+    /// `editor_font_pango_string()` reproduces today's behaviour for apps
+    /// that never call `set_editor_font`.
+    #[test]
+    fn gtk_backend_editor_font_defaults_to_monospace_11() {
+        let backend = GtkBackend::new();
+        assert_eq!(backend.editor_font_pango_string(), "Monospace 11");
+    }
+
+    /// #422: `Backend::set_editor_font` must update the string
+    /// `gtk/run.rs`'s draw closure reads every frame, so an app-supplied
+    /// family/size takes effect on the next repaint.
+    #[test]
+    fn gtk_backend_set_editor_font_overrides_default() {
+        let mut backend = GtkBackend::new();
+        Backend::set_editor_font(&mut backend, "DejaVu Sans Mono", 16.0);
+        assert_eq!(backend.editor_font_pango_string(), "DejaVu Sans Mono 16");
+    }
+
+    /// #422: setting the editor font must not perturb the separate UI
+    /// chrome font (`ui_font` / `set_ui_font`) — the two are independent
+    /// knobs, and conflating them was explicitly out of scope for #422.
+    #[test]
+    fn gtk_backend_set_editor_font_does_not_affect_ui_font() {
+        let mut backend = GtkBackend::new();
+        backend.set_ui_font("Cantarell 12");
+        Backend::set_editor_font(&mut backend, "Fira Code", 13.0);
+        assert_eq!(backend.ui_font, "Cantarell 12");
+        assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
     }
 }

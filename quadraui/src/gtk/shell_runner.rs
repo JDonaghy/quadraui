@@ -14,6 +14,7 @@ use crate::shell_adapter::ShellAdapter;
 
 /// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
 pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+    let editor_font = config.editor_font.clone();
     let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
@@ -52,7 +53,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
 
     let active_panel_id = shell.active_panel_id().cloned();
 
-    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel);
+    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel, editor_font);
 
     super::run::run(adapter);
 }

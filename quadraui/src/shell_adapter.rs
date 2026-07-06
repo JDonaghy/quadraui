@@ -44,6 +44,11 @@ pub(crate) struct ShellAdapter<A: ShellApp> {
     /// was `Some`. Wrapped in `RefCell` because `render(&self)` must mutate it
     /// to cache hit regions and render tab content.
     pub(crate) bottom_panel: Option<RefCell<BottomPanelController>>,
+    /// Editor font override from `ShellConfig::with_editor_font`
+    /// (family, size_pt), applied once in `setup()` via
+    /// `Backend::set_editor_font` (#422). `None` leaves the backend's own
+    /// default font in place.
+    pub(crate) editor_font: Option<(String, f32)>,
 }
 
 impl<A: ShellApp> ShellAdapter<A> {
@@ -55,6 +60,7 @@ impl<A: ShellApp> ShellAdapter<A> {
         shell: AppShell,
         active_panel_id: Option<WidgetId>,
         bottom_panel: Option<RefCell<BottomPanelController>>,
+        editor_font: Option<(String, f32)>,
     ) -> Self {
         Self {
             app,
@@ -62,6 +68,7 @@ impl<A: ShellApp> ShellAdapter<A> {
             _last_layout: None,
             active_panel_id,
             bottom_panel,
+            editor_font,
         }
     }
 }
@@ -70,6 +77,14 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
     type AreaId = ();
 
     fn setup(&mut self, backend: &mut dyn Backend) {
+        // Apply the configured editor font (#422) before anything else so
+        // it's in place for the app's own `setup()` and the very first
+        // frame. `Backend::set_editor_font` no-ops on backends without a
+        // font concept (TUI).
+        if let Some((family, size_pt)) = &self.editor_font {
+            backend.set_editor_font(family, *size_pt);
+        }
+
         // Initialise bottom panel height from height_fraction on first setup.
         if let Some(ref ctrl_cell) = self.bottom_panel {
             let ctrl = ctrl_cell.borrow();
