@@ -134,27 +134,35 @@ fn activate<A: AppLogic + 'static>(
 
     // ── Draw callback ──────────────────────────────────────────────
     //
-    // Set a default Pango font on the layout (matches GTK system
-    // sans-serif) and seed `current_line_height` / `current_char_width`
-    // on the backend from the resolved font metrics so trait `draw_*`
-    // methods that consume those (e.g. `draw_status_bar` for clip
-    // height) line up with the actual rendered text height.
+    // Set the editor's Pango font on the layout (app-configurable via
+    // `Backend::set_editor_font` — see #422) and seed
+    // `current_line_height` / `current_char_width` on the backend from
+    // the resolved font metrics so trait `draw_*` methods that consume
+    // those (e.g. `draw_status_bar` for clip height) line up with the
+    // actual rendered text height.
     //
-    // Apps that want a custom font / size override these on the
-    // backend themselves at the start of `render` via direct
-    // `GtkBackend` access (not exposed via the trait today).
+    // Apps that want a custom editor font call `backend.set_editor_font`
+    // (from `AppLogic::setup` for a static font, or any time their
+    // preference changes) via the trait — no direct `GtkBackend` access
+    // required. `ShellApp` consumers set it declaratively via
+    // `ShellConfig::with_editor_font`.
     {
         let app = app.clone();
         let backend = backend.clone();
         da.set_draw_func(move |da, cr, w, h| {
             let pango_ctx = pcfn::create_context(cr);
             let layout = pg::Layout::new(&pango_ctx);
-            // Default font — system monospace, size 11. Monospace is
-            // required because `draw_editor`'s scroll formula
-            // (`scroll_left * char_width`) assumes uniform glyph
-            // width. Resolves to the fontconfig monospace alias
-            // (DejaVu Sans Mono, JetBrains Mono, etc).
-            let font_desc = pg::FontDescription::from_string("Monospace 11");
+            // Editor font — defaults to system monospace, size 11, but
+            // is app-configurable via `Backend::set_editor_font`
+            // (`ShellConfig::with_editor_font` for `ShellApp` consumers).
+            // Read fresh every frame so a runtime font change takes
+            // effect on the next repaint (#422). Monospace is required
+            // because `draw_editor`'s scroll formula
+            // (`scroll_left * char_width`) assumes uniform glyph width;
+            // the untouched default resolves to the fontconfig monospace
+            // alias (DejaVu Sans Mono, JetBrains Mono, etc).
+            let font_desc_str = backend.borrow().editor_font_pango_string();
+            let font_desc = pg::FontDescription::from_string(&font_desc_str);
             layout.set_font_description(Some(&font_desc));
             // Single-line, no wrap. Belt-and-braces over the rasterisers
             // that also call `set_width(-1)` themselves.

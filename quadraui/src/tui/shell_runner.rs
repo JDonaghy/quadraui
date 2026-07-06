@@ -22,6 +22,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     app: A,
     config: ShellConfig,
 ) -> ShellAdapter<A> {
+    let editor_font = config.editor_font.clone();
     let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
@@ -62,7 +63,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
 
     let active_panel_id = shell.active_panel_id().cloned();
 
-    ShellAdapter::new(app, shell, active_panel_id, bottom_panel)
+    ShellAdapter::new(app, shell, active_panel_id, bottom_panel, editor_font)
 }
 
 /// Run a [`ShellApp`] with AppShell chrome on the TUI backend.

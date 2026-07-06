@@ -40,6 +40,15 @@ pub struct ShellConfig {
     /// region — no need to also call [`Self::with_bottom_panel`] unless you
     /// want to tune the height via the old API as well.
     pub bottom_panel: Option<BottomPanelConfig>,
+    /// Editor font override: `(family, size_pt)`. `None` (the default)
+    /// leaves each backend's built-in default in place (GTK:
+    /// `"Monospace 11"`; TUI: fixed-cell, no font concept — the value is
+    /// ignored). Set via [`Self::with_editor_font`]; the shell runner
+    /// applies it once via [`crate::Backend::set_editor_font`] during
+    /// [`crate::shell_adapter::ShellAdapter`]'s one-time `setup()`, before
+    /// the app's own `setup()` runs, so painted glyphs and click-column
+    /// math derive from the same font from the very first frame (#422).
+    pub editor_font: Option<(String, f32)>,
 }
 
 impl ShellConfig {
@@ -61,6 +70,7 @@ impl ShellConfig {
             has_command_line: false,
             has_status_bar: false,
             bottom_panel: None,
+            editor_font: None,
         }
     }
 
@@ -113,6 +123,21 @@ impl ShellConfig {
     /// instead when you only need a bare unstyled region below main content.
     pub fn with_bottom_panel_config(mut self, config: BottomPanelConfig) -> Self {
         self.bottom_panel = Some(config);
+        self
+    }
+
+    /// Override the font painted for editor content (family name + size
+    /// in points).
+    ///
+    /// `family` should name a monospace font — primitives that map
+    /// columns to pixels assume uniform glyph width. Applied once via
+    /// [`crate::Backend::set_editor_font`] during the shell runner's
+    /// one-time `setup()` call (see [`Self::editor_font`]); call
+    /// [`crate::Backend::set_editor_font`] directly at runtime (e.g. from
+    /// [`ShellApp::handle`]) to change it again after startup, such as a
+    /// zoom-in/out keybinding.
+    pub fn with_editor_font(mut self, family: impl Into<String>, size_pt: f32) -> Self {
+        self.editor_font = Some((family.into(), size_pt));
         self
     }
 }
@@ -375,6 +400,22 @@ mod tests {
 
     fn ctx(layout: &AppShellLayout) -> ShellContext<'_> {
         ShellContext::new(None, false, layout)
+    }
+
+    /// #422: a fresh `ShellConfig` has no editor-font override — backends
+    /// keep their own default (GTK: "Monospace 11").
+    #[test]
+    fn shell_config_editor_font_defaults_to_none() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.editor_font, None);
+    }
+
+    /// #422: `with_editor_font` stores the family/size pair verbatim for
+    /// the shell runner to apply via `Backend::set_editor_font`.
+    #[test]
+    fn shell_config_with_editor_font_sets_family_and_size() {
+        let config = ShellConfig::new("test", Vec::new()).with_editor_font("Fira Code", 14.0);
+        assert_eq!(config.editor_font, Some(("Fira Code".to_string(), 14.0)));
     }
 
     #[test]

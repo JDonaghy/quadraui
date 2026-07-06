@@ -120,6 +120,26 @@ pub trait Backend {
     /// headless test backend) can accept this default.
     fn set_nerd_fonts(&mut self, _enabled: bool) {}
 
+    /// Override the font used to paint editor content (family name + size
+    /// in points).
+    ///
+    /// Backends that build a shared per-frame text layout (GTK's Pango
+    /// layout) resolve `line_height()` / `char_width()` from this same
+    /// font on every frame, so painted glyphs and click-to-column math
+    /// (e.g. `editor_col_at_x`) always derive from one source of truth —
+    /// closing the paint↔click drift that motivated this method (#422).
+    /// `family` should name a monospace font: primitives that map columns
+    /// to pixels (`draw_editor`'s `scroll_left * char_width`, etc.) assume
+    /// uniform glyph width.
+    ///
+    /// Call once from `setup()` for a static font, or again any time the
+    /// app's font preference changes at runtime (e.g. a zoom-in
+    /// keybinding) — the change takes effect on the next repaint.
+    ///
+    /// Default: no-op. Fixed-cell backends (TUI) have no font concept —
+    /// every glyph already occupies exactly one terminal cell.
+    fn set_editor_font(&mut self, _family: &str, _size_pt: f32) {}
+
     // ─── Text selection ────────────────────────────────────────────────
     /// Register a selectable text region for the current frame.
     ///
