@@ -369,9 +369,19 @@ fn default_lightbulb_glyph() -> char {
 /// Classification of a hit-test result within an editor viewport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorHit {
-    /// Click landed on a text position. `line` is the buffer line index,
-    /// `col` is the character column (accounting for scroll_left and
-    /// tab expansion).
+    /// Click landed on a text position. `line` is the buffer line index
+    /// (always accurate — row height is uniform on every backend).
+    ///
+    /// `col` is a **uniform-monospace approximation** of the character
+    /// column (`(x - text_bounds.x) / cell_width`, plus `scroll_left`;
+    /// no tab expansion). It matches the painted glyph exactly on TUI's
+    /// fixed-cell grid, but can drift from the actual glyph on
+    /// proportional-font or per-span-attributed backends (bold /
+    /// italic / `font_scale` spans paint at a different advance than
+    /// `cell_width` — see #420). Callers that need the exact column on
+    /// those backends should discard this field and resolve via
+    /// [`crate::Backend::editor_col_at_x`] instead (falls back to this
+    /// same approximation on TUI).
     BufferPos { line: usize, col: usize },
     /// Click landed in the gutter region.
     Gutter { line_idx: usize, gutter_col: usize },
@@ -412,8 +422,14 @@ pub struct EditorLayout {
 
 impl EditorLayout {
     /// Resolve an absolute point to an editor zone with buffer-relative
-    /// positions. Assumes monospace text (character width uniform across
-    /// the viewport — true for code editors).
+    /// positions.
+    ///
+    /// Zone classification (gutter / scrollbar / text-area) and the
+    /// resolved `line` are always accurate. The `col` on the returned
+    /// [`EditorHit::BufferPos`] is a uniform-monospace approximation —
+    /// see that variant's doc and [`Self::col_at_x`] /
+    /// [`crate::Backend::editor_col_at_x`] for the text-engine-accurate
+    /// resolution proportional/attributed backends need (#420).
     pub fn hit_test(&self, x: f32, y: f32) -> EditorHit {
         if x < self.bounds.x
             || x >= self.bounds.x + self.bounds.width
@@ -460,6 +476,40 @@ impl EditorLayout {
         }
 
         EditorHit::Empty
+    }
+
+    /// Resolve `x` to a character column within `editor.lines[view_row]`
+    /// using uniform monospace division (`self.cell_width`).
+    ///
+    /// This is the default [`crate::Backend::editor_col_at_x`]
+    /// implementation — correct for TUI's fixed-cell grid and any
+    /// backend whose configured font renders every glyph at the same
+    /// advance width. Backends that paint editor text with a real
+    /// text-shaping engine and per-span attributes (bold / italic /
+    /// `font_scale`) override `Backend::editor_col_at_x` with an exact
+    /// glyph-position inverse of their `draw_editor` instead of relying
+    /// on this approximation (GTK's Pango `xy_to_index` — see #420).
+    ///
+    /// The returned column already folds in `self.scroll_left` and the
+    /// row's `segment_col_offset` (0 for non-wrapped lines and the
+    /// first visual segment of a wrapped line), so it's directly usable
+    /// as the buffer-line-relative column. Falls back to
+    /// `self.scroll_left` alone (no segment offset) when `view_row` is
+    /// out of range for `editor.lines`.
+    pub fn col_at_x(&self, editor: &Editor, view_row: usize, x: f32) -> usize {
+        let segment_col_offset = editor
+            .lines
+            .get(view_row)
+            .map(|line| line.segment_col_offset)
+            .unwrap_or(0);
+        let col_offset = if self.cell_width > 0.0 {
+            ((x - self.text_bounds.x) / self.cell_width)
+                .floor()
+                .max(0.0) as usize
+        } else {
+            0
+        };
+        self.scroll_left + col_offset + segment_col_offset
     }
 }
 
@@ -800,5 +850,80 @@ mod tests {
         assert_eq!(l.visible_cols, 95);
         // visible_lines with h_scrollbar: (600 - 16) / 16 = 36
         assert_eq!(l.visible_lines, 36);
+    }
+
+    // ── EditorLayout::col_at_x (#420) ───────────────────────────────
+
+    fn line_with_segment_offset(segment_col_offset: usize) -> EditorLine {
+        EditorLine {
+            raw_text: "wrapped segment text".into(),
+            gutter_text: String::new(),
+            spans: Vec::new(),
+            line_idx: 0,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: Vec::new(),
+            spell_errors: Vec::new(),
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: segment_col_offset > 0,
+            segment_col_offset,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: Vec::new(),
+            colorcolumns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn editor_col_at_x_matches_hit_test_in_monospace_case() {
+        // Non-wrapped row (segment_col_offset == 0): col_at_x must agree
+        // with hit_test's BufferPos.col exactly, since both use the same
+        // uniform cell-division formula.
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_top = 10;
+        ed.scroll_left = 5;
+        ed.lines = vec![line_with_segment_offset(0)];
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+
+        match l.hit_test(7.0, 2.0) {
+            EditorHit::BufferPos { col, .. } => {
+                assert_eq!(l.col_at_x(&ed, 2, 7.0), col);
+            }
+            other => panic!("expected BufferPos, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn editor_col_at_x_adds_segment_col_offset_for_wrapped_rows() {
+        // A wrap-continuation row's resolved column must be shifted by
+        // its segment_col_offset so it lands at the right buffer column,
+        // not the visual column within the wrapped segment.
+        let mut ed = make_editor(4, 100, 40);
+        ed.lines = vec![line_with_segment_offset(20)];
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+
+        // Click at text_bounds origin (col_offset == 0, scroll_left == 0):
+        // resolved column should be exactly the segment offset.
+        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x), 20);
+        // 3 cells further right adds 3.
+        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x + 3.0), 23);
+    }
+
+    #[test]
+    fn editor_col_at_x_out_of_range_row_falls_back_to_scroll_left() {
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_left = 7;
+        ed.lines = Vec::new();
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x), 7);
     }
 }
