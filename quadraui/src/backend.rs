@@ -23,7 +23,7 @@ use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
-use crate::primitives::editor::Editor;
+use crate::primitives::editor::{Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
@@ -565,6 +565,52 @@ pub trait Backend {
     /// overlays, etc.). Asymmetric across backends: TUI populates
     /// the result; GTK paints its own caret and returns the default.
     fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult;
+
+    /// Resolve a click x-coordinate to a text column on one visible row
+    /// of an [`Editor`], honouring the same glyph-advance metrics
+    /// [`Self::draw_editor`] painted that row with (bold / italic /
+    /// `font_scale` spans on GTK's Pango layout; uniform monospace
+    /// cells on TUI) — the paint↔click round-trip fix for #420.
+    ///
+    /// `layout` is the [`EditorLayout`] `editor.layout(...)` produced
+    /// for the same viewport/metrics the caller painted with.
+    /// `view_row` indexes into `editor.lines` (0 = topmost visible row
+    /// — the same row [`crate::primitives::editor::EditorLayout::hit_test`]
+    /// resolves from a y-coordinate). `x` is an absolute (surface-space)
+    /// coordinate, matching the `x` passed to `hit_test`.
+    ///
+    /// Returns the resolved character column *within the buffer line*
+    /// (already folds in `layout.scroll_left` and the row's
+    /// `segment_col_offset` for wrap-continuation rows) — callers
+    /// combine it with `hit_test`'s resolved `line` to get a full
+    /// buffer position:
+    ///
+    /// ```ignore
+    /// if let EditorHit::BufferPos { line, .. } = layout.hit_test(x, y) {
+    ///     let view_row = line - layout.scroll_top;
+    ///     let col = backend.editor_col_at_x(&layout, &editor, view_row, x);
+    ///     // (line, col) is the resolved buffer position.
+    /// }
+    /// ```
+    ///
+    /// Default implementation delegates to
+    /// [`EditorLayout::col_at_x`] (uniform monospace division) —
+    /// correct for TUI and any backend whose configured font renders
+    /// every glyph at the same advance width. `GtkBackend` overrides
+    /// this with an exact Pango `xy_to_index` resolution against the
+    /// same per-span-attributed layout `draw_editor` painted with, so
+    /// a line containing bold / italic / `font_scale` spans (e.g. a
+    /// markdown heading) resolves clicks against its *actual* painted
+    /// glyph positions instead of a uniform grid.
+    fn editor_col_at_x(
+        &self,
+        layout: &EditorLayout,
+        editor: &Editor,
+        view_row: usize,
+        x: f32,
+    ) -> usize {
+        layout.col_at_x(editor, view_row, x)
+    }
 
     /// Draw a [`MessageList`] (chat-style streaming row history).
     /// The backend pulls panel background from its current theme;

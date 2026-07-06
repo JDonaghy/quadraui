@@ -207,6 +207,17 @@ pub struct GtkBackend {
     /// font/size) closes that gap: "cache at paint, hit-test at
     /// click" (see `quadraui/docs/LESSONS.md`).
     last_menu_bar_pango_layout: Option<pango::Layout>,
+    /// Clone of the Pango layout `draw_editor` actually painted with,
+    /// stashed at the end of the frame's `draw_editor` call. Mirrors
+    /// [`Self::last_menu_bar_pango_layout`] (#407) for the same reason:
+    /// `editor_col_at_x` (#420) is invoked from click-time hit-testing,
+    /// which runs *outside* any frame scope — `current_frame_refs()` is
+    /// `None` there, so falling back to `pango_ctx` would resolve
+    /// against the wrong (UI, not editor) font and silently mis-place
+    /// every click. Caching the exact layout GObject the most recent
+    /// paint used (refcounted clone — cheap, always reflects the
+    /// current editor font) closes that gap.
+    last_editor_pango_layout: Option<pango::Layout>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -250,6 +261,7 @@ impl GtkBackend {
             pending_window_press: None,
             armed_window_drag: None,
             last_menu_bar_pango_layout: None,
+            last_editor_pango_layout: None,
         }
     }
 
@@ -1878,8 +1890,32 @@ impl Backend for GtkBackend {
             char_width,
             line_height,
         );
+        // Stash the exact layout just painted with — see the field doc
+        // on `last_editor_pango_layout` for why this is necessary
+        // rather than relying on `current_frame_refs()` alone.
+        self.last_editor_pango_layout = Some(pango_layout.clone());
         let _ = rect;
         crate::backend::EditorPaintResult::default()
+    }
+
+    fn editor_col_at_x(
+        &self,
+        layout: &crate::primitives::editor::EditorLayout,
+        editor: &crate::primitives::editor::Editor,
+        view_row: usize,
+        x: f32,
+    ) -> usize {
+        let Some(line) = editor.lines.get(view_row) else {
+            return layout.col_at_x(editor, view_row, x);
+        };
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout
+            .or_else(|| self.last_editor_pango_layout.clone())
+            .or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+        let Some(pango_layout) = pango_layout else {
+            return layout.col_at_x(editor, view_row, x);
+        };
+        crate::gtk::editor_col_at_x(&pango_layout, line, layout, x)
     }
 
     fn draw_message_list(

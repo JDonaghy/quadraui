@@ -79,7 +79,7 @@ pub use data_table::{draw_data_table, gtk_data_table_layout};
 pub use dialog::draw_dialog;
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
-pub use editor::draw_editor;
+pub use editor::{draw_editor, editor_col_at_x};
 pub use events::wire_da_events;
 pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
