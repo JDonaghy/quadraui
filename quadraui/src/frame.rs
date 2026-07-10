@@ -6,6 +6,12 @@
 //!
 //! This moves draw orchestration out of per-app backend code and into
 //! quadraui — apps describe the frame, quadraui executes it.
+//!
+//! Apps that already paint each surface at its natural call site
+//! (rather than in one batch immediately followed by `.draw()`) can
+//! instead push the same [`Surface`] entries into a `ScreenLayout`
+//! purely for hit-testing and call [`ScreenLayout::hit_map`], which
+//! registers every zone without invoking any `backend.draw_*()` call.
 
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
@@ -242,6 +248,11 @@ impl<'a> ScreenLayout<'a> {
     /// [`FrameHitMap`] for unified click dispatch. Each surface's
     /// bounding rect is registered as a hit zone; apps then use
     /// per-surface `hit_test()` methods for fine-grained resolution.
+    ///
+    /// If you're accumulating surfaces that are painted elsewhere
+    /// (e.g. at their natural call sites across an existing paint
+    /// pass) purely to recover a hit map, use [`Self::hit_map`]
+    /// instead — it skips every `backend.draw_*()` call.
     pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
         let mut hit_map = FrameHitMap::new();
 
@@ -249,7 +260,6 @@ impl<'a> ScreenLayout<'a> {
             match surface {
                 Surface::Editor { rect, editor } => {
                     backend.draw_editor(*rect, editor);
-                    hit_map.push(*rect, FrameZone::Editor { idx });
                 }
                 Surface::TabBar {
                     rect,
@@ -257,7 +267,6 @@ impl<'a> ScreenLayout<'a> {
                     hovered_close,
                 } => {
                     backend.draw_tab_bar(*rect, bar, *hovered_close);
-                    hit_map.push(*rect, FrameZone::TabBar { idx });
                 }
                 Surface::StatusBar {
                     rect,
@@ -266,95 +275,69 @@ impl<'a> ScreenLayout<'a> {
                     pressed,
                 } => {
                     backend.draw_status_bar(*rect, bar, *hovered, *pressed);
-                    hit_map.push(*rect, FrameZone::StatusBar { idx });
                 }
                 Surface::ActivityBar { rect, bar, hovered } => {
                     backend.draw_activity_bar(*rect, bar, *hovered);
-                    hit_map.push(*rect, FrameZone::ActivityBar { idx });
                 }
                 Surface::CommandLine { rect, cmd } => {
                     backend.draw_command_line(*rect, cmd);
-                    hit_map.push(*rect, FrameZone::CommandLine { idx });
                 }
                 Surface::Terminal { rect, term } => {
                     backend.draw_terminal(*rect, term);
-                    hit_map.push(*rect, FrameZone::Terminal { idx });
                 }
                 Surface::TextDisplay { rect, td } => {
                     backend.draw_text_display(*rect, td);
-                    hit_map.push(*rect, FrameZone::TextDisplay { idx });
                 }
                 Surface::MultiSectionView { rect, view } => {
                     backend.draw_multi_section_view(*rect, view);
-                    hit_map.push(*rect, FrameZone::MultiSectionView { idx });
                 }
                 Surface::Tree { rect, tree } => {
                     backend.draw_tree(*rect, tree);
-                    hit_map.push(*rect, FrameZone::Tree { idx });
                 }
                 Surface::List { rect, list } => {
                     backend.draw_list(*rect, list);
-                    hit_map.push(*rect, FrameZone::List { idx });
                 }
                 Surface::Form { rect, form } => {
                     backend.draw_form(*rect, form);
-                    hit_map.push(*rect, FrameZone::Form { idx });
                 }
                 Surface::MenuBar { rect, bar } => {
                     backend.draw_menu_bar(*rect, bar);
-                    hit_map.push(*rect, FrameZone::MenuBar { idx });
                 }
                 Surface::Split { rect, split } => {
                     backend.draw_split(*rect, split);
-                    hit_map.push(*rect, FrameZone::Split { idx });
                 }
                 Surface::Panel { rect, panel } => {
                     backend.draw_panel(*rect, panel);
-                    hit_map.push(*rect, FrameZone::Panel { idx });
                 }
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
-                    hit_map.push(*rect, FrameZone::Scrollbar { idx });
                 }
                 Surface::Palette { rect, palette } => {
                     backend.draw_palette(*rect, palette);
-                    hit_map.push(*rect, FrameZone::Palette { idx });
                 }
                 Surface::Tooltip { tooltip, layout } => {
                     backend.draw_tooltip(tooltip, layout);
-                    let bounds = layout.bounds;
-                    hit_map.push(bounds, FrameZone::Tooltip { idx });
                 }
                 Surface::ContextMenu { menu, layout } => {
                     backend.draw_context_menu(menu, layout);
-                    let bounds = layout.bounds;
-                    hit_map.push(bounds, FrameZone::ContextMenu { idx });
                 }
                 Surface::Dialog { dialog, layout } => {
                     backend.draw_dialog(dialog, layout);
-                    let bounds = layout.bounds;
-                    hit_map.push(bounds, FrameZone::Dialog { idx });
                 }
                 Surface::Completions {
                     completions,
                     layout,
                 } => {
                     backend.draw_completions(completions, layout);
-                    let bounds = layout.bounds;
-                    hit_map.push(bounds, FrameZone::Completions { idx });
                 }
                 Surface::FindReplace { rect, panel } => {
                     backend.draw_find_replace(*rect, panel);
-                    hit_map.push(*rect, FrameZone::FindReplace { idx });
                 }
                 Surface::RichTextPopup { popup, layout } => {
                     backend.draw_rich_text_popup(popup, layout);
-                    let bounds = layout.bounds;
-                    hit_map.push(bounds, FrameZone::RichTextPopup { idx });
                 }
                 Surface::Toast { rect, stack } => {
                     backend.draw_toast_stack(*rect, stack);
-                    hit_map.push(*rect, FrameZone::Toast { idx });
                 }
                 Surface::DataTable {
                     rect,
@@ -362,7 +345,6 @@ impl<'a> ScreenLayout<'a> {
                     hovered,
                 } => {
                     backend.draw_data_table(*rect, table, *hovered);
-                    hit_map.push(*rect, FrameZone::DataTable { idx });
                 }
                 Surface::Chart {
                     rect,
@@ -371,12 +353,66 @@ impl<'a> ScreenLayout<'a> {
                     crosshair_x,
                 } => {
                     backend.draw_chart(*rect, chart, *hovered_point, *crosshair_x);
-                    hit_map.push(*rect, FrameZone::Chart { idx });
                 }
             }
+
+            let (rect, zone) = Self::zone_for(idx, surface);
+            hit_map.push(rect, zone);
         }
 
         hit_map
+    }
+
+    /// Return the [`FrameHitMap`] that [`Self::draw`] would produce,
+    /// without invoking any `backend.draw_*()` call. For apps that
+    /// already painted these same surfaces elsewhere in the frame and
+    /// only need the hit-test result — pushing surfaces here re-invokes
+    /// no rendering, so it's safe to build this after (or interleaved
+    /// with) the app's real paint sequencing.
+    pub fn hit_map(&self) -> FrameHitMap {
+        let mut hit_map = FrameHitMap::new();
+
+        for (idx, surface) in self.surfaces.iter().enumerate() {
+            let (rect, zone) = Self::zone_for(idx, surface);
+            hit_map.push(rect, zone);
+        }
+
+        hit_map
+    }
+
+    /// Compute the hit-test rect/zone for a single surface at index `idx`.
+    /// Shared by [`Self::draw`] and [`Self::hit_map`] so the two stay in
+    /// lock-step by construction.
+    fn zone_for(idx: usize, surface: &Surface<'a>) -> (Rect, FrameZone) {
+        match surface {
+            Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
+            Surface::TabBar { rect, .. } => (*rect, FrameZone::TabBar { idx }),
+            Surface::StatusBar { rect, .. } => (*rect, FrameZone::StatusBar { idx }),
+            Surface::ActivityBar { rect, .. } => (*rect, FrameZone::ActivityBar { idx }),
+            Surface::CommandLine { rect, .. } => (*rect, FrameZone::CommandLine { idx }),
+            Surface::Terminal { rect, .. } => (*rect, FrameZone::Terminal { idx }),
+            Surface::TextDisplay { rect, .. } => (*rect, FrameZone::TextDisplay { idx }),
+            Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
+            Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
+            Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
+            Surface::Form { rect, .. } => (*rect, FrameZone::Form { idx }),
+            Surface::MenuBar { rect, .. } => (*rect, FrameZone::MenuBar { idx }),
+            Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
+            Surface::Panel { rect, .. } => (*rect, FrameZone::Panel { idx }),
+            Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
+            Surface::Palette { rect, .. } => (*rect, FrameZone::Palette { idx }),
+            Surface::Tooltip { layout, .. } => (layout.bounds, FrameZone::Tooltip { idx }),
+            Surface::ContextMenu { layout, .. } => (layout.bounds, FrameZone::ContextMenu { idx }),
+            Surface::Dialog { layout, .. } => (layout.bounds, FrameZone::Dialog { idx }),
+            Surface::Completions { layout, .. } => (layout.bounds, FrameZone::Completions { idx }),
+            Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
+            Surface::RichTextPopup { layout, .. } => {
+                (layout.bounds, FrameZone::RichTextPopup { idx })
+            }
+            Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
+            Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
+            Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
+        }
     }
 }
 
@@ -441,5 +477,73 @@ mod tests {
     fn screen_layout_default_is_empty() {
         let layout: ScreenLayout<'_> = ScreenLayout::default();
         assert_eq!(layout.surfaces.len(), 0);
+    }
+
+    #[test]
+    fn hit_map_registers_zones_without_a_backend() {
+        let editor = Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 0,
+            max_col: 0,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        };
+        let palette = Palette {
+            id: "pal".into(),
+            title: String::new(),
+            query: String::new(),
+            query_cursor: 0,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: false,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: crate::primitives::palette::PaletteMode::List,
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Editor {
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            editor: &editor,
+        });
+        layout.push(Surface::Palette {
+            rect: Rect::new(0.0, 0.0, 50.0, 50.0),
+            palette: &palette,
+        });
+
+        // No `&mut dyn Backend` in scope anywhere in this test — proves
+        // `hit_map()` needs no backend to recover the same zones `draw()`
+        // would have registered.
+        let hit_map = layout.hit_map();
+
+        assert_eq!(hit_map.len(), 2);
+        // Point in the overlay → highest-z (last-pushed) wins.
+        assert_eq!(hit_map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        // Point outside the overlay but inside the editor.
+        assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
+        // Point outside everything.
+        assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
 }
