@@ -463,6 +463,16 @@ path = "examples/gtk_frame_demo.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_hit_map_recover"
+path = "examples/tui_hit_map_recover.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_hit_map_recover"
+path = "examples/gtk_hit_map_recover.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_full_chrome_demo"
 path = "examples/tui_full_chrome_demo.rs"
 required-features = ["tui"]
