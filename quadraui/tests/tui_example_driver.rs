@@ -547,6 +547,51 @@ fn appshell_demo_escape_cancels_focus_without_switching_panel() {
     );
 }
 
+/// `ShellApp::take_requested_panel` (coord-tui #1029 bug A): an app can
+/// queue a panel switch from inside its own `handle()` — no ActivityBar
+/// click, no keyboard-cursor mode — and `ShellAdapter` must apply it to the
+/// *real* `AppShell` state (sidebar header) and re-notify `on_shell_event`,
+/// not just let the app's own internal view state drift out of sync with
+/// the chrome. Before this hook, the sidebar header would stay on
+/// "EXPLORER" here even though the app had "moved on" internally — the
+/// exact chrome-desync bug this regression guards against.
+#[test]
+fn appshell_demo_programmatic_panel_switch_updates_chrome() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 100, 30);
+
+    assert!(
+        driver.screen_contains("EXPLORER"),
+        "starts on the default (index 0) Explorer panel:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.type_char('p');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "queuing + applying a requested panel switch must redraw"
+    );
+
+    assert!(
+        driver.screen_contains("SOURCE CONTROL"),
+        "sidebar header must follow the programmatic switch to panel:git, \
+         not stay stuck on the previously-active panel:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("EXPLORER"),
+        "the stale Explorer header must not still be showing:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Panel: panel:git"),
+        "on_shell_event(PanelChanged) must fire for a programmatic switch \
+         exactly as it does for a mouse-driven one:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── DialogTableDemo (issue #225): table layout in dialog ───────────────────
 
 /// Initial screen renders dialog title and table headers.

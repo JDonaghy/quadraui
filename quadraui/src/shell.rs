@@ -366,6 +366,35 @@ pub trait ShellApp {
     /// programmatic). Optional.
     fn on_shell_event(&mut self, _event: &AppShellEvent) {}
 
+    /// Poll for a pending **app-initiated** panel switch — e.g. an action
+    /// handler that jumps straight to a different panel (a "launch
+    /// interactive session" command landing in the Terminal panel) without
+    /// the user clicking the ActivityBar.
+    ///
+    /// [`ShellAdapter`](crate::shell_adapter::ShellAdapter) calls this once
+    /// immediately after every [`Self::handle`] dispatch. Returning
+    /// `Some(panel_id)` applies the switch to the underlying `AppShell`
+    /// (updating the ActivityBar highlight and sidebar panel header, which
+    /// are otherwise owned entirely by `AppShell` and invisible to
+    /// `ShellApp` implementors) and re-notifies via
+    /// [`Self::on_shell_event`] with [`AppShellEvent::PanelChanged`], the
+    /// same notification a mouse click produces — so app code that already
+    /// syncs its own view state from `on_shell_event` doesn't need a
+    /// second code path.
+    ///
+    /// Before this hook existed, consumers had no way to keep the chrome in
+    /// sync with a raw internal view-state write: the ActivityBar highlight
+    /// and panel header would silently keep pointing at the
+    /// previously-active panel until the user clicked the ActivityBar
+    /// themselves (quadraui consumer coord-tui #1029 bug A).
+    ///
+    /// Default: never requests a switch — existing consumers are
+    /// unaffected. `&mut self` (not `&self`) so implementors can `.take()`
+    /// a stored `Option` field rather than needing interior mutability.
+    fn take_requested_panel(&mut self) -> Option<WidgetId> {
+        None
+    }
+
     /// Notified when the bottom panel tab strip emits an event
     /// (tab activation, close, maximise toggle, or resize).
     ///

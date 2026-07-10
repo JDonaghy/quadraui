@@ -71,6 +71,23 @@ impl<A: ShellApp> ShellAdapter<A> {
             editor_font,
         }
     }
+
+    /// Apply a pending [`ShellApp::take_requested_panel`] switch, if any.
+    /// Updates the underlying `AppShell`'s active panel (ActivityBar
+    /// highlight + sidebar header), mirrors it into `active_panel_id`, and
+    /// re-notifies the app via `on_shell_event` — the same notification a
+    /// mouse-driven switch produces. Returns `true` iff a switch was
+    /// applied (the caller should redraw).
+    fn apply_requested_panel(&mut self) -> bool {
+        let Some(panel_id) = self.app.take_requested_panel() else {
+            return false;
+        };
+        self.shell.show_panel(&panel_id);
+        self.active_panel_id = Some(panel_id.clone());
+        self.app
+            .on_shell_event(&AppShellEvent::PanelChanged { panel_id });
+        true
+    }
 }
 
 impl<A: ShellApp> AppLogic for ShellAdapter<A> {
@@ -302,11 +319,23 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
         }
 
+        if self.apply_requested_panel() {
+            reaction = Reaction::Redraw;
+        }
+
         reaction
     }
 
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
-        self.app.tick(backend)
+        let mut reaction = self.app.tick(backend);
+        // Timer-driven work (background poll completing, a queued command
+        // finishing) can also want to land the app on a different panel —
+        // poll the same hook `handle()` does so tick-driven switches aren't
+        // a second, forgotten code path.
+        if self.apply_requested_panel() && reaction == Reaction::Continue {
+            reaction = Reaction::Redraw;
+        }
+        reaction
     }
 }
 

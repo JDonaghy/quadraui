@@ -22,12 +22,19 @@ use quadraui::{
 
 pub struct AppShellDemo {
     last_event: String,
+    /// Set by the `p` key binding below; polled once via
+    /// `take_requested_panel` to exercise the programmatic panel-switch
+    /// hook (quadraui consumer coord-tui #1029 bug A) — proves an app can
+    /// jump straight to a panel (no ActivityBar click) and still get the
+    /// ActivityBar highlight + sidebar header updated to match.
+    pending_panel: Option<WidgetId>,
 }
 
 impl AppShellDemo {
     pub fn new() -> Self {
         Self {
-            last_event: "Tab=focus bar | click icons | drag divider | q=quit".into(),
+            last_event: "Tab=focus bar | click icons | drag divider | p=jump to Source Control | q=quit".into(),
+            pending_panel: None,
         }
     }
 
@@ -134,6 +141,17 @@ impl ShellApp for AppShellDemo {
                 self.last_event = "Activity bar focused (j/k, Enter, Esc)".into();
                 Reaction::Redraw
             }
+            // `p` = jump straight to the Source Control panel the way an
+            // action handler would (no ActivityBar click) — queues a
+            // `take_requested_panel()` switch for `ShellAdapter` to apply.
+            UiEvent::KeyPressed {
+                key: Key::Char('p'),
+                ..
+            } => {
+                self.pending_panel = Some(WidgetId::new("panel:git"));
+                self.last_event = "Requested programmatic switch to panel:git".into();
+                Reaction::Redraw
+            }
             UiEvent::MouseDown { position, .. } => {
                 if ctx.in_sidebar(position.x, position.y) {
                     self.last_event = format!(
@@ -170,5 +188,9 @@ impl ShellApp for AppShellDemo {
             }
             _ => return,
         };
+    }
+
+    fn take_requested_panel(&mut self) -> Option<WidgetId> {
+        self.pending_panel.take()
     }
 }
