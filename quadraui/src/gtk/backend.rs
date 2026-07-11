@@ -280,8 +280,11 @@ impl GtkBackend {
 
     /// Store the top-level window handle. Called once by `gtk::run::activate`
     /// right after the window is constructed. Backs
-    /// [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`].
+    /// [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`],
+    /// and hands the same window to [`GtkPlatformServices::set_window`] so
+    /// file dialogs (#427) open parented to it.
     pub fn set_window(&mut self, window: gtk4::ApplicationWindow) {
+        self.services.set_window(window.clone());
         self.window = Some(window);
     }
 
