@@ -28,6 +28,8 @@ mod clipboard_demo;
 mod demo;
 #[path = "../examples/common/dialog_table_demo.rs"]
 mod dialog_table_demo;
+#[path = "../examples/common/file_dialog_demo.rs"]
+mod file_dialog_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
 mod full_chrome_demo;
 #[path = "../examples/common/hit_map_recover_demo.rs"]
@@ -53,6 +55,7 @@ use appshell_demo::AppShellDemo;
 use clipboard_demo::ClipboardDemo;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
+use file_dialog_demo::FileDialogDemo;
 use full_chrome_demo::FullChromeDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
 use mini_app::MiniApp;
@@ -235,6 +238,57 @@ fn clipboard_demo_typing_then_backspace_edits_the_line() {
 #[test]
 fn clipboard_demo_escape_exits() {
     let mut driver = TuiDriver::new(ClipboardDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
+}
+
+// ─── FileDialogDemo: TUI's documented "unsupported" contract ───────────────
+//
+// #427 implements real file dialogs for GTK only; `PlatformServices`'s TUI
+// impl keeps returning `None` unconditionally (apps should provide an
+// in-TUI picker instead). These tests pin that documented contract so a
+// future change can't silently make the TUI path block waiting on
+// something that will never resolve headlessly. The GTK path (a real,
+// modal, nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
+// `TuiDriver` — it's covered by the `gtk_file_dialog` example's manual
+// smoke test instead (see SMOKE_TESTS in the #427 PR).
+
+#[test]
+fn file_dialog_demo_shows_starting_hint() {
+    let driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("o = open"),
+        "status bar should hint at the open/save keys:\n{screen}"
+    );
+}
+
+#[test]
+fn file_dialog_demo_open_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    driver.type_char('o');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("unsupported"),
+        "open dialog must report None as unsupported on TUI:\n{screen}"
+    );
+}
+
+#[test]
+fn file_dialog_demo_save_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    driver.type_char('s');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("unsupported"),
+        "save dialog must report None as unsupported on TUI:\n{screen}"
+    );
+}
+
+#[test]
+fn file_dialog_demo_escape_exits() {
+    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
     assert!(!driver.exited());
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the demo");

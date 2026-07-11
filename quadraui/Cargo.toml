@@ -576,3 +576,13 @@ required-features = ["gtk"]
 name = "gtk_editor_font"
 path = "examples/gtk_editor_font.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_file_dialog"
+path = "examples/tui_file_dialog.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_file_dialog"
+path = "examples/gtk_file_dialog.rs"
+required-features = ["gtk"]
