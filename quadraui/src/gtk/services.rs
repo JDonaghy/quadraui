@@ -7,8 +7,25 @@
 //! synchronous signature can be honored even though GTK4 only exposes
 //! an async dialog API (#427). Notifications remain stubbed pending an
 //! async-aware trait shape.
+//!
+//! ## Re-entrancy guard (#427 follow-up)
+//!
+//! `pump_until_ready` is called from inside `AppLogic::handle`, which
+//! `quadraui::gtk::run` invokes while holding the shared
+//! `Rc<RefCell<GtkBackend>>` mutably borrowed for the whole call. Pumping
+//! `glib::MainContext::iteration(true)` in that state lets *any* pending
+//! GLib source run — including the runner's own 33ms idle-drain timer and
+//! every input event controller, all of which also do
+//! `backend.borrow_mut()`. Left unguarded, that second borrow panics with
+//! "already borrowed", and because it happens inside a non-unwindable GLib
+//! callback frame, the panic aborts the whole process instead of
+//! propagating. `pumping` (a depth counter, not a bool, so nested dialogs
+//! stay guarded until the outermost pump finishes) lets those callbacks
+//! detect "a dialog pump is in flight further up the stack" and no-op
+//! instead of touching the backend. See `GtkBackend::pump_depth` /
+//! `quadraui::gtk::run::activate`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -30,6 +47,14 @@ pub struct GtkPlatformServices {
     /// unit tests, which never call it) — dialogs opened before that
     /// point, or in tests, still work, just without a parent.
     window: Rc<RefCell<Option<gtk4::ApplicationWindow>>>,
+    /// Depth counter, `> 0` while a [`pump_until_ready`] nested-mainloop
+    /// wait is in flight (possibly several, if a dialog is opened
+    /// re-entrantly from inside another dialog's pump). Shared (via
+    /// [`Self::pump_depth`]) with `quadraui::gtk::run`'s event
+    /// controllers and idle-drain timer so they can detect the
+    /// re-entrant-pump condition and skip touching the backend's
+    /// `RefCell` — see the module-level re-entrancy note.
+    pumping: Rc<Cell<u32>>,
 }
 
 impl GtkPlatformServices {
@@ -37,6 +62,7 @@ impl GtkPlatformServices {
         Self {
             clipboard: GtkClipboard::new(),
             window: Rc::new(RefCell::new(None)),
+            pumping: Rc::new(Cell::new(0)),
         }
     }
 
@@ -45,6 +71,15 @@ impl GtkPlatformServices {
     /// window is constructed.
     pub(crate) fn set_window(&self, window: gtk4::ApplicationWindow) {
         *self.window.borrow_mut() = Some(window);
+    }
+
+    /// Clone of the pump-depth counter (see the `pumping` field docs).
+    /// `quadraui::gtk::run::activate` fetches this once, before installing
+    /// any event controllers, and clones it into each closure that would
+    /// otherwise call `backend.borrow_mut()` — so they can check
+    /// `depth.get() > 0` and no-op while a dialog's nested pump is live.
+    pub(crate) fn pump_depth(&self) -> Rc<Cell<u32>> {
+        Rc::clone(&self.pumping)
     }
 }
 
@@ -67,7 +102,7 @@ impl PlatformServices for GtkPlatformServices {
         dialog.open(window.as_ref(), gio::Cancellable::NONE, move |res| {
             *result_cb.borrow_mut() = Some(res);
         });
-        pump_until_ready(&result)
+        pump_until_ready(&result, &self.pumping)
     }
 
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
@@ -79,7 +114,7 @@ impl PlatformServices for GtkPlatformServices {
         dialog.save(window.as_ref(), gio::Cancellable::NONE, move |res| {
             *result_cb.borrow_mut() = Some(res);
         });
-        pump_until_ready(&result)
+        pump_until_ready(&result, &self.pumping)
     }
 
     fn send_notification(&self, _n: Notification) {}
@@ -146,9 +181,19 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
 /// means dialogs can resolve out of call order. Apps should avoid
 /// opening a second file dialog from inside a callback that runs while
 /// one is already open.
+///
+/// Critically, this is called while `quadraui::gtk::run`'s caller (an
+/// `AppLogic::handle` invocation) still holds the shared
+/// `GtkBackend`'s `RefCell` mutably borrowed. `pumping` — bumped for the
+/// duration of this call — is how the runner's other backend-touching
+/// callbacks (idle-drain timer, input controllers, draw func) detect
+/// that and skip their own `backend.borrow_mut()` instead of panicking
+/// on a double-borrow (#427).
 fn pump_until_ready(
     result: &Rc<RefCell<Option<Result<gio::File, glib::Error>>>>,
+    pumping: &Rc<Cell<u32>>,
 ) -> Option<PathBuf> {
+    let _guard = PumpGuard::new(pumping);
     let ctx = glib::MainContext::default();
     while result.borrow().is_none() {
         ctx.iteration(true);
@@ -158,6 +203,29 @@ fn pump_until_ready(
         .take()
         .and_then(|res| res.ok())
         .and_then(|file| gtk4::prelude::FileExt::path(&file))
+}
+
+/// RAII bump/decrement for the shared pump-depth counter. A counter
+/// (rather than a bool) so a dialog opened re-entrantly from inside
+/// another dialog's pump (see the re-entrancy note above) doesn't have
+/// its `Drop` clear the guard out from under the still-running outer
+/// pump — the flag only reads "clear" once every nested pump has
+/// unwound.
+struct PumpGuard<'a> {
+    depth: &'a Rc<Cell<u32>>,
+}
+
+impl<'a> PumpGuard<'a> {
+    fn new(depth: &'a Rc<Cell<u32>>) -> Self {
+        depth.set(depth.get() + 1);
+        Self { depth }
+    }
+}
+
+impl Drop for PumpGuard<'_> {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get() - 1);
+    }
 }
 
 /// System clipboard via `arboard`. The handle is kept alive for the
@@ -269,5 +337,60 @@ mod tests {
     fn set_window_is_none_until_called() {
         let services = GtkPlatformServices::new();
         assert!(services.window.borrow().is_none());
+    }
+
+    /// Regression test for #427: the idle-drain timer (and every input
+    /// event controller) in `quadraui::gtk::run` reads this depth counter
+    /// before touching the backend's `RefCell`, to detect "a dialog's
+    /// nested-mainloop pump is in flight further up the call stack" and
+    /// no-op instead of double-borrowing (which used to abort the
+    /// process — see `pump_until_ready`'s doc comment). Exercises the
+    /// counter directly, including the re-entrant-dialog case (the
+    /// documented reason it's a depth counter and not a bool): the
+    /// counter must stay `> 0` for the whole time *any* pump is live, not
+    /// drop to zero the moment the innermost one finishes. No GTK object
+    /// construction here, so — unlike the `require_gtk()`-gated tests
+    /// above — this runs safely on any thread.
+    #[test]
+    fn pump_guard_depth_stays_positive_until_outermost_pump_unwinds() {
+        let depth: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+        assert_eq!(depth.get(), 0, "no pump in flight initially");
+        {
+            let _outer = PumpGuard::new(&depth);
+            assert_eq!(depth.get(), 1);
+            {
+                // A dialog opened re-entrantly from inside another
+                // dialog's pump (see `pump_until_ready`'s re-entrancy
+                // note).
+                let _inner = PumpGuard::new(&depth);
+                assert_eq!(depth.get(), 2);
+            }
+            // Inner guard dropped, but the outer pump is still running —
+            // callers must keep seeing "a pump is in flight".
+            assert_eq!(
+                depth.get(),
+                1,
+                "outer pump must still read as in-flight after inner unwinds"
+            );
+        }
+        assert_eq!(depth.get(), 0, "cleared once every pump has unwound");
+    }
+
+    /// `GtkPlatformServices::pump_depth()` — the handle
+    /// `quadraui::gtk::run::activate` clones into its event
+    /// controllers — must observe mutations `pump_until_ready` makes
+    /// through the services' own copy (same underlying `Cell` via `Rc`,
+    /// not an independent one).
+    #[test]
+    fn pump_depth_handle_observes_guard_mutations_on_the_services_copy() {
+        let services = GtkPlatformServices::new();
+        let handle = services.pump_depth();
+        assert_eq!(handle.get(), 0);
+        let _guard = PumpGuard::new(&services.pumping);
+        assert_eq!(
+            handle.get(),
+            1,
+            "handle must observe the mutation made through services.pumping"
+        );
     }
 }

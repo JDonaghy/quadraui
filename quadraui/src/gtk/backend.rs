@@ -288,6 +288,18 @@ impl GtkBackend {
         self.window = Some(window);
     }
 
+    /// Clone of the platform services' dialog-pump-depth counter — `> 0`
+    /// while a [`GtkPlatformServices`] file dialog's nested-mainloop wait
+    /// is in flight. `quadraui::gtk::run::activate` fetches this once
+    /// during setup (before any event controller can re-enter) and
+    /// clones it into every closure that calls `backend.borrow_mut()`,
+    /// so those closures can no-op instead of double-borrowing the
+    /// backend while `AppLogic::handle` (further up the call stack) is
+    /// blocked inside the dialog pump (#427).
+    pub(crate) fn pump_depth(&self) -> Rc<Cell<u32>> {
+        self.services.pump_depth()
+    }
+
     /// Stash the raw GDK context of a primary-button press. Called by
     /// `gtk/run.rs`'s `GestureClick::connect_pressed`, before the press is
     /// translated to a portable [`UiEvent`], so
