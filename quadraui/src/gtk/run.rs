@@ -110,6 +110,19 @@ fn activate<A: AppLogic + 'static>(
     // other backend, and GTK apps that don't opt into a CSD titlebar).
     backend.borrow_mut().set_window(window.clone());
 
+    // Re-entrancy guard shared with `GtkPlatformServices::pump_until_ready`
+    // (#427): `> 0` while a file dialog's nested-mainloop wait is in
+    // flight. Fetched once here, before any event controller is
+    // installed, and cloned (not re-derived via `backend.borrow()`) into
+    // every closure below that calls `backend.borrow_mut()` — those
+    // closures check it first and no-op while a dialog pump further up
+    // the call stack is already holding the backend's `RefCell`
+    // mutably borrowed. Without this, the 33ms idle-drain timer (or any
+    // input controller) re-enters via `MainContext::iteration(true)`
+    // and double-borrows, panicking inside a non-unwindable GLib
+    // callback frame and aborting the process.
+    let pump_depth = backend.borrow().pump_depth();
+
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
@@ -149,7 +162,16 @@ fn activate<A: AppLogic + 'static>(
     {
         let app = app.clone();
         let backend = backend.clone();
+        let pump_depth = pump_depth.clone();
         da.set_draw_func(move |da, cr, w, h| {
+            // #427 re-entrancy guard: skip this repaint entirely rather
+            // than double-borrow `backend` while a file dialog's nested
+            // pump (further up the call stack) already holds it. Worst
+            // case this frame stays stale until the dialog closes and a
+            // normal redraw fires; that beats aborting the process.
+            if pump_depth.get() > 0 {
+                return;
+            }
             let pango_ctx = pcfn::create_context(cr);
             let layout = pg::Layout::new(&pango_ctx);
             // Editor font — defaults to system monospace, size 11, but
@@ -227,7 +249,15 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
+        let pump_depth = pump_depth.clone();
         key_ctrl.connect_key_pressed(move |_ctrl, key, _code, modifier| {
+            // #427 re-entrancy guard: a dialog pump further up the call
+            // stack already holds `backend` mutably borrowed — don't
+            // re-enter it (and don't dispatch input to the app while a
+            // modal-ish dialog is up).
+            if pump_depth.get() > 0 {
+                return glib::Propagation::Proceed;
+            }
             let Some(ev) = gdk_key_to_uievent(key, modifier, false) else {
                 return glib::Propagation::Proceed;
             };
@@ -349,7 +379,12 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
+        let pump_depth = pump_depth.clone();
         click.connect_pressed(move |gesture, n_press, x, y| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.get() > 0 {
+                return;
+            }
             let gdk_button = gesture.current_button();
             let modifier = gesture.current_event_state();
             let button = gdk_button_to_quadraui(gdk_button);
@@ -451,7 +486,12 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
+        let pump_depth = pump_depth.clone();
         click.connect_released(move |gesture, _n_press, x, y| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.get() > 0 {
+                return;
+            }
             let mut backend_mut = backend.borrow_mut();
             // #400: if the button goes up before the pointer ever moved
             // past the drag threshold, this was a plain click (or the
@@ -499,8 +539,14 @@ fn activate<A: AppLogic + 'static>(
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         let cursor_pos = cursor_pos.clone();
+        let pump_depth = pump_depth.clone();
         motion.connect_motion(move |ctrl, x, y| {
             cursor_pos.set((x, y));
+
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.get() > 0 {
+                return;
+            }
 
             // #400: commit a deferred window-drag once the pointer has
             // moved past the drag threshold since the press that armed
@@ -582,7 +628,12 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
+        let pump_depth = pump_depth.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.get() > 0 {
+                return glib::Propagation::Proceed;
+            }
             let (x, y) = cursor_pos.get();
             let ev = gdk_scroll_to_uievent(dx, dy, x, y);
             let reaction = {
@@ -606,6 +657,17 @@ fn activate<A: AppLogic + 'static>(
     let drain_da = da.clone();
     let drain_window = window.clone();
     glib::timeout_add_local(Duration::from_millis(33), move || {
+        // #427 re-entrancy guard: this is the callback that produced the
+        // original crash report. A file dialog's nested `pump_until_ready`
+        // loop (invoked from `app.handle` above, while `backend` is still
+        // held mutably borrowed by that call) services *this* GLib timer
+        // source too — without the guard, `backend.borrow_mut()` below
+        // double-borrows and panics inside a non-unwindable GLib callback
+        // frame, aborting the process. Skip this tick entirely and let the
+        // next one (after the dialog closes) pick up any pending events.
+        if pump_depth.get() > 0 {
+            return glib::ControlFlow::Continue;
+        }
         let events = backend.borrow_mut().poll_events();
         for ev in events {
             let reaction = {
