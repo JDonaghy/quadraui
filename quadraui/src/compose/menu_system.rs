@@ -407,6 +407,63 @@ impl MenuSystem {
                 }
             }
 
+            // ── Mouse release ─────────────────────────────────────
+            // Some terminal/multiplexer combinations (Alacritty+tmux,
+            // certain gnome-terminal configs) drop `MouseDown(Left)` and
+            // only ever deliver `MouseUp(Left)` for a click. Without this
+            // arm, an outside click on those terminals never runs the
+            // "click outside all open menu levels → close" check the
+            // `MouseDown` arm's tail performs, so a dropdown never
+            // dismisses on outside click there.
+            //
+            // On terminals that deliver both `Down` and `Up` normally,
+            // `MouseDown` has already fully handled the click by the time
+            // `Up` arrives (opened/closed/switched the menu, or activated
+            // an item and closed). So this arm only needs to cover the
+            // "outside everything" case; it must NOT re-run bar-item
+            // toggling or item activation, or it would immediately
+            // re-close a menu that `Down` just opened, or double-fire
+            // `Activated`.
+            UiEvent::MouseUp {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => {
+                if self.open_item.is_none() {
+                    return MenuEvent::Ignored;
+                }
+
+                let bar = self.build_menu_bar();
+                let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+
+                // Clicks landing on the menu bar itself (open/close/switch)
+                // are `MouseDown`'s job — leave them alone here.
+                if !matches!(
+                    bar_layout.hit_test(position.x, position.y),
+                    MenuBarHit::Outside
+                ) {
+                    return MenuEvent::Ignored;
+                }
+
+                // Walk the open dropdown stack deepest-first. If the
+                // position lands inside any open level (item or inert
+                // region), that click was already handled by `MouseDown` —
+                // do nothing here to avoid double-activating.
+                let stack = self.dropdown_stack(backend, bar_rect);
+                for (_, layout) in stack.iter().rev() {
+                    if !matches!(
+                        layout.hit_test(position.x, position.y),
+                        ContextMenuHit::Empty
+                    ) {
+                        return MenuEvent::Ignored;
+                    }
+                }
+
+                // Outside the bar and every open dropdown level → close.
+                self.close(backend);
+                MenuEvent::StateChanged
+            }
+
             _ => MenuEvent::Ignored,
         }
     }
@@ -1318,6 +1375,97 @@ mod tests {
         assert!(
             ms.submenu_path.is_empty(),
             "submenu_path must be cleared on close"
+        );
+    }
+
+    // ── MouseUp outside-click dismiss (#429) ───────────────────────────────
+
+    fn mouse_up_ev(position: crate::event::Point) -> UiEvent {
+        UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position,
+        }
+    }
+
+    /// `MouseUp(Left)` landing outside the menu bar and outside every open
+    /// dropdown level must close the menu — this is the fix for terminals
+    /// that drop `MouseDown(Left)` and only deliver `MouseUp(Left)`.
+    #[test]
+    fn handle_mouse_up_outside_everything_closes_menu() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        ms.open_menu(0, &mut backend, bar_rect());
+        assert!(ms.open_item.is_some());
+
+        // Far outside the bar (height 1) and outside the viewport-clamped
+        // dropdown.
+        let ev = mouse_up_ev(crate::event::Point::new(999.0, 999.0));
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::StateChanged);
+        assert!(ms.open_item.is_none(), "menu must close on outside MouseUp");
+    }
+
+    /// `MouseUp(Left)` with no menu open must be a no-op `Ignored` — nothing
+    /// to close, and no panic touching layout state.
+    #[test]
+    fn handle_mouse_up_with_no_menu_open_is_ignored() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        let ev = mouse_up_ev(crate::event::Point::new(999.0, 999.0));
+
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Ignored);
+        assert!(ms.open_item.is_none());
+    }
+
+    /// `MouseUp(Left)` on the menu-bar item that `MouseDown` just opened
+    /// must NOT immediately re-close the menu — that zone belongs to
+    /// `MouseDown`, and closing here would defeat every normal
+    /// (Down-then-Up) click-to-open.
+    #[test]
+    fn handle_mouse_up_on_bar_item_does_not_close() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        ms.open_menu(0, &mut backend, bar_rect());
+
+        // Item 0 ("File") occupies x in [0, 10), y in [0, 1) per the mock
+        // backend's 10.0-wide, single-row layout.
+        let ev = mouse_up_ev(crate::event::Point::new(5.0, 0.0));
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Ignored);
+        assert!(
+            ms.open_item.is_some(),
+            "menu must remain open after Up on the bar item that opened it"
+        );
+    }
+
+    /// `MouseUp(Left)` landing on an actual open dropdown item must be
+    /// ignored, not re-activated — `MouseDown` already owns item
+    /// activation, so this arm must not double-fire `Activated`.
+    #[test]
+    fn handle_mouse_up_on_open_dropdown_item_is_ignored() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        ms.open_menu(0, &mut backend, bar_rect());
+
+        let stack = ms.dropdown_stack(&backend, bar_rect());
+        let item_bounds = stack[0].1.visible_items[0].bounds;
+        let pos = crate::event::Point::new(
+            item_bounds.x + item_bounds.width / 2.0,
+            item_bounds.y + item_bounds.height / 2.0,
+        );
+
+        let ev = mouse_up_ev(pos);
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Ignored);
+        assert!(
+            ms.open_item.is_some(),
+            "menu must remain open — MouseUp must not activate or close"
         );
     }
 }
