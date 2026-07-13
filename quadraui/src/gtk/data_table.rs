@@ -224,8 +224,9 @@ pub fn draw_data_table(
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
+    let footer_h = layout.footer_height as f64;
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
-        let hsb_y = y + height - layout.h_scrollbar_height as f64;
+        let hsb_y = y + height - footer_h - layout.h_scrollbar_height as f64;
         let track_w = (width - layout.scrollbar_width as f64).max(1.0);
         let hsb_track = crate::event::Rect::new(
             x as f32,
@@ -243,6 +244,89 @@ pub fn draw_data_table(
             line_height as f32,
         );
         super::draw_scrollbar(cr, &hsb, theme);
+    }
+
+    // ── Footer (pinned summary row) ─────────────────────────────────
+    if let Some(footer) = &table.footer {
+        if footer_h > 0.0 {
+            // `footer_h` reserves `line_height * 2.0` (see
+            // `DataTable::layout`): a divider row plus the content
+            // row. Fill the whole band, but keep text in the bottom
+            // `line_height` sub-band so it sits flush with the
+            // viewport edge, matching the TUI rasteriser.
+            let footer_band_top = y + height - footer_h;
+            let footer_y = y + height - line_height;
+
+            // Divider rule at the top of the reserved footer band.
+            set_source(cr, theme.separator);
+            cr.rectangle(x, footer_band_top - 0.5, width, 1.0);
+            cr.fill().ok();
+
+            let (fbr, fbg, fbb) = cairo_rgb(theme.tab_bar_bg);
+            cr.set_source_rgb(fbr, fbg, fbb);
+            cr.rectangle(x, footer_band_top, width, footer_h);
+            cr.fill().ok();
+
+            for (col_idx, rc) in layout.columns.iter().enumerate() {
+                let styled = match footer.cells.get(col_idx) {
+                    Some(c) if !c.spans.is_empty() => c,
+                    _ => continue,
+                };
+                if rc.width <= 0.0 {
+                    continue;
+                }
+
+                let col_w = rc.width as f64;
+                let col_x = x + rc.x as f64 - h_off;
+
+                cr.save().ok();
+                cr.rectangle(col_x, footer_y, col_w, line_height);
+                cr.clip();
+
+                let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+                pango_layout.set_text(&full_text);
+                pango_layout.set_attributes(Some(&bold_attrs));
+                let (text_w, _) = pango_layout.pixel_size();
+
+                let align = table
+                    .columns
+                    .get(col_idx)
+                    .map(|c| c.align)
+                    .unwrap_or(ColumnAlign::Left);
+                let text_x = match align {
+                    ColumnAlign::Left => col_x,
+                    ColumnAlign::Center => col_x + (col_w - text_w as f64) / 2.0,
+                    ColumnAlign::Right => col_x + col_w - text_w as f64,
+                };
+
+                // Bold weight for the whole cell (subtle style hook that
+                // separates the footer from body rows), plus per-span
+                // colour overrides.
+                let attrs = pango::AttrList::new();
+                attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
+                let mut byte_offset = 0u32;
+                for span in &styled.spans {
+                    let span_bytes = span.text.len() as u32;
+                    if let Some(fg) = span.fg {
+                        let mut color_attr = pango::AttrColor::new_foreground(
+                            fg.r as u16 * 257,
+                            fg.g as u16 * 257,
+                            fg.b as u16 * 257,
+                        );
+                        color_attr.set_start_index(byte_offset);
+                        color_attr.set_end_index(byte_offset + span_bytes);
+                        attrs.insert(color_attr);
+                    }
+                    byte_offset += span_bytes;
+                }
+                set_source(cr, theme.foreground);
+                pango_layout.set_attributes(Some(&attrs));
+                cr.move_to(text_x, footer_y);
+                pcfn::show_layout(cr, pango_layout);
+                pango_layout.set_attributes(None);
+                cr.restore().ok();
+            }
+        }
     }
 
     cr.restore().ok();

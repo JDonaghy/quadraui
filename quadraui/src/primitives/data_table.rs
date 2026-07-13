@@ -14,6 +14,14 @@
 //! Click on row → `DataTableEvent::RowActivated { idx }`.
 //! The app updates `selected_idx`, `scroll_offset`, and sort state
 //! for the next frame.
+//!
+//! When `footer` is `Some`, render it pinned below the (possibly
+//! shorter) visible body — laid out against the same resolved
+//! columns, separated by a divider rule. The footer never scrolls,
+//! is excluded from `visible_rows` / scrollbar math (reserved via
+//! `DataTableLayout::footer_height`, which is `row_height * 2.0` — a
+//! divider row plus the content row), and is not hit-testable as a
+//! row (`DataTableHit::Footer`, not `Row`).
 
 use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -111,6 +119,13 @@ pub struct DataTable {
     /// Must be the same length as `columns` or empty.
     #[serde(default)]
     pub column_overrides: Vec<Option<f32>>,
+    /// Optional pinned summary/totals row, laid out against the same
+    /// resolved columns as the body. Rendered below the visible body
+    /// rows regardless of `scroll_offset`; excluded from selection,
+    /// sort, and row hit-testing. `None` (the default) renders
+    /// byte-for-byte identical to a table with no footer.
+    #[serde(default)]
+    pub footer: Option<DataRow>,
 }
 
 /// Events a `DataTable` emits back to the app.
@@ -162,6 +177,8 @@ pub enum DataTableHit {
     HeaderDivider { col: usize },
     /// Click on a body row.
     Row { idx: usize },
+    /// Click on the pinned footer/summary row.
+    Footer,
     /// Click on empty space below the last row.
     Empty,
 }
@@ -184,6 +201,12 @@ pub struct DataTableLayout {
     /// Height reserved for the horizontal scrollbar (0 when not
     /// scrolling horizontally).
     pub h_scrollbar_height: f32,
+    /// Height reserved for the pinned footer (0 when `footer` is
+    /// `None`). Always `row_height * 2.0` when present — one row for
+    /// the divider rule, one for the summary content — so the divider
+    /// never overwrites the last body row in cell-granular backends
+    /// (TUI) and stays visually breathing-room'd in pixel backends.
+    pub footer_height: f32,
 }
 
 /// Grab zone half-width for column divider detection (surface units).
@@ -217,13 +240,20 @@ impl DataTableLayout {
                 None => DataTableHit::Empty,
             };
         }
-        let row_in_viewport = ((y - self.header_height) / self.row_height).floor() as usize;
-        let abs_idx = scroll_offset + row_in_viewport;
-        if abs_idx < total_rows {
-            DataTableHit::Row { idx: abs_idx }
-        } else {
-            DataTableHit::Empty
+        let body_bottom = self.header_height + self.visible_rows as f32 * self.row_height;
+        if y < body_bottom {
+            let row_in_viewport = ((y - self.header_height) / self.row_height).floor() as usize;
+            let abs_idx = scroll_offset + row_in_viewport;
+            return if abs_idx < total_rows {
+                DataTableHit::Row { idx: abs_idx }
+            } else {
+                DataTableHit::Empty
+            };
         }
+        if self.footer_height > 0.0 && y < body_bottom + self.footer_height {
+            return DataTableHit::Footer;
+        }
+        DataTableHit::Empty
     }
 
     pub fn column_hit(&self, x: f32) -> Option<usize> {
@@ -282,7 +312,12 @@ impl DataTable {
         } else {
             0.0
         };
-        let body_height = (viewport_height - header_height - h_sb_h).max(0.0);
+        let footer_height = if self.footer.is_some() {
+            row_height * 2.0
+        } else {
+            0.0
+        };
+        let body_height = (viewport_height - header_height - h_sb_h - footer_height).max(0.0);
         let visible_rows = if row_height > 0.0 {
             (body_height / row_height).floor() as usize
         } else {
@@ -298,6 +333,7 @@ impl DataTable {
             scrollbar_width: sb_w,
             content_width,
             h_scrollbar_height: h_sb_h,
+            footer_height,
         }
     }
 }
@@ -403,6 +439,7 @@ mod tests {
             min_total_width: None,
             h_scroll: 0.0,
             column_overrides: Vec::new(),
+            footer: None,
         }
     }
 
@@ -530,5 +567,120 @@ mod tests {
         let json = serde_json::to_string(&table).unwrap();
         let back: DataTable = serde_json::from_str(&json).unwrap();
         assert_eq!(table, back);
+    }
+
+    fn footer_row(ncols: usize) -> DataRow {
+        DataRow {
+            cells: (0..ncols)
+                .map(|c| StyledText::plain(format!("total{c}")))
+                .collect(),
+            decoration: Decoration::Normal,
+        }
+    }
+
+    #[test]
+    fn none_footer_is_byte_identical_to_pre_change_layout() {
+        // Regression guard (#432 req 5): a table with `footer: None`
+        // must lay out exactly as it did before the footer existed.
+        let table = make_table(2, 100);
+        let layout = table.layout(80.0, 25.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert_eq!(layout.footer_height, 0.0);
+        assert_eq!(layout.visible_rows, 24);
+    }
+
+    #[test]
+    fn footer_reserves_height_and_shrinks_visible_rows() {
+        let mut table = make_table(2, 100);
+        table.footer = Some(footer_row(2));
+        let layout = table.layout(80.0, 25.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        // Same viewport as `visible_rows_computed_from_body_height`
+        // (24 rows with no footer) — the footer eats two rows (a
+        // divider row + the content row).
+        assert_eq!(layout.footer_height, 2.0);
+        assert_eq!(layout.visible_rows, 22);
+    }
+
+    #[test]
+    fn footer_columns_align_with_body_columns() {
+        // Column-aligned totals (#432 req 1): the footer is laid out
+        // against the *same* resolved columns as the body, so a right
+        // -aligned numeric column's total lands directly under it.
+        let mut table = make_table(3, 10);
+        table.footer = Some(footer_row(3));
+        let layout = table.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        // `make_table` uses Flex(1.0) for every column — 30px each,
+        // identical resolved bounds regardless of body vs. footer.
+        assert_eq!(layout.columns.len(), 3);
+        assert!((layout.columns[0].x - 0.0).abs() < 0.01);
+        assert!((layout.columns[1].x - 30.0).abs() < 0.01);
+        assert!((layout.columns[2].x - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn hit_test_footer_is_pinned_regardless_of_scroll_offset() {
+        let mut table = make_table(2, 100);
+        table.footer = Some(footer_row(2));
+        let layout = table.layout(80.0, 25.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        // Footer band: header(1) + visible_rows(22) .. +footer_height(2)
+        // == y in [23, 25). Same regardless of `scroll_offset`.
+        for scroll_offset in [0, 5, 50, 76] {
+            assert_eq!(
+                layout.hit_test(10.0, 24.0, scroll_offset, 100),
+                DataTableHit::Footer,
+                "footer hit should be stable at scroll_offset={scroll_offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn hit_test_footer_is_not_a_row() {
+        // Selection/hit-testing must ignore the footer (#432 req 2/
+        // acceptance bullet 4): a click in the footer band is never a
+        // `Row` hit, even though `total_rows` exceeds what's visible.
+        let mut table = make_table(2, 3);
+        table.footer = Some(footer_row(2));
+        let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        // Body has only 3 rows; visible_rows is far larger, so the
+        // footer sits right after the header + visible-row band.
+        let body_bottom = layout.header_height + layout.visible_rows as f32 * layout.row_height;
+        let hit = layout.hit_test(10.0, body_bottom + 0.5, 0, table.rows.len());
+        assert_eq!(hit, DataTableHit::Footer);
+    }
+
+    #[test]
+    fn hit_test_same_band_is_empty_without_footer() {
+        // Contrast case for `hit_test_footer_is_not_a_row`: with no
+        // footer, the sliver between the last full visible row and the
+        // viewport edge (a real gap here — row_height=3 doesn't evenly
+        // divide the 19-unit body) is just empty space, not `Footer`.
+        let table = make_table(2, 3);
+        let layout = table.layout(80.0, 20.0, 3.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        let body_bottom = layout.header_height + layout.visible_rows as f32 * layout.row_height;
+        assert!(
+            body_bottom + 0.5 < layout.viewport_height,
+            "test setup should leave a real gap below the last visible row"
+        );
+        let hit = layout.hit_test(10.0, body_bottom + 0.5, 0, table.rows.len());
+        assert_eq!(hit, DataTableHit::Empty);
+    }
+
+    #[test]
+    fn footer_serde_round_trip() {
+        let mut table = make_table(2, 3);
+        table.footer = Some(footer_row(2));
+        let json = serde_json::to_string(&table).unwrap();
+        let back: DataTable = serde_json::from_str(&json).unwrap();
+        assert_eq!(table, back);
+    }
+
+    #[test]
+    fn footer_defaults_to_none_when_omitted_from_json() {
+        // `#[serde(default)]` back-compat (#432 req 5): older payloads
+        // with no `footer` key deserialize to `None`.
+        let table = make_table(2, 3);
+        let mut json: serde_json::Value = serde_json::to_value(&table).unwrap();
+        json.as_object_mut().unwrap().remove("footer");
+        let back: DataTable = serde_json::from_value(json).unwrap();
+        assert_eq!(back.footer, None);
     }
 }
