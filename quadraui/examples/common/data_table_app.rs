@@ -264,7 +264,8 @@ impl DataTableApp {
         let lh = backend.line_height();
         let sb_x = vp.width - layout.scrollbar_width;
         let track_y = layout.header_height;
-        let track_h = (vp.height - lh.max(1.0) * 1.5 - layout.header_height).max(1.0);
+        let track_h =
+            (vp.height - lh.max(1.0) * 1.5 - layout.header_height - layout.footer_height).max(1.0);
         let (thumb_start, thumb_len) = fit_thumb(
             self.scroll_offset as f32,
             total as f32,
@@ -368,7 +369,7 @@ impl AppLogic for DataTableApp {
                     let lh = backend.line_height();
                     let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
                     let table_h = vp.height - bar_h;
-                    let hsb_y = table_h - layout.h_scrollbar_height;
+                    let hsb_y = table_h - layout.footer_height - layout.h_scrollbar_height;
                     if position.y >= hsb_y && position.y < table_h {
                         let track_w = (vp.width - layout.scrollbar_width).max(1.0);
                         let visible_w = track_w;

@@ -201,6 +201,7 @@ pub fn draw_data_table(
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
+    let footer_h = layout.footer_height as f64;
     if table.show_scrollbar
         && table.rows.len() > layout.visible_rows
         && layout.scrollbar_width > 0.0
@@ -210,7 +211,7 @@ pub fn draw_data_table(
             sb_x as f32,
             (y + header_height) as f32,
             layout.scrollbar_width,
-            (height - header_height).max(0.0) as f32,
+            (height - header_height - footer_h).max(0.0) as f32,
         );
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id.clone(),
@@ -224,7 +225,6 @@ pub fn draw_data_table(
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
-    let footer_h = layout.footer_height as f64;
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
         let hsb_y = y + height - footer_h - layout.h_scrollbar_height as f64;
         let track_w = (width - layout.scrollbar_width as f64).max(1.0);

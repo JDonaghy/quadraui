@@ -213,13 +213,14 @@ pub unsafe fn draw_data_table(
     }
 
     // Vertical scrollbar — simple thumb on track.
+    let footer_h = layout.footer_height as f64;
     if table.show_scrollbar
         && table.rows.len() > layout.visible_rows
         && layout.scrollbar_width > 0.0
     {
         let sb_x = x + w - layout.scrollbar_width as f64;
         let track_y = body_y;
-        let track_h = (h - header_height - layout.h_scrollbar_height as f64).max(0.0);
+        let track_h = (h - header_height - layout.h_scrollbar_height as f64 - footer_h).max(0.0);
         fill_rect(
             ctx,
             sb_x,
@@ -245,7 +246,6 @@ pub unsafe fn draw_data_table(
     }
 
     // Horizontal scrollbar — same shape.
-    let footer_h = layout.footer_height as f64;
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
         let hsb_y = y + h - footer_h - layout.h_scrollbar_height as f64;
         let track_w = (w - layout.scrollbar_width as f64).max(1.0);
