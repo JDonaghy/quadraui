@@ -11,7 +11,9 @@
 //!    rendering the active view's [`ViewHelp`]. Composed from
 //!    [`crate::Panel`] (chrome: title bar + border — `Backend::draw_panel`
 //!    is implemented on every backend today) framing a
-//!    [`crate::TextDisplay`] (content: the note/action list).
+//!    [`crate::TextDisplay`] (content: the note/action list). Views with
+//!    no registered help still get a visible (if minimal) cheatsheet
+//!    rather than a silent no-op — see [`HelpOverlayController::render`].
 //! 3. **[`help_actions_to_palette_items`] / [`filter_help_actions`]** — feed
 //!    registered actions into the existing [`crate::Palette`] /
 //!    [`crate::DualModePaletteController`] so they're searchable by label
@@ -275,25 +277,50 @@ impl HelpOverlayController {
 
     /// Paint the cheatsheet centered over `container` if open; a no-op
     /// when closed.
-    pub fn render(&self, container: Rect, backend: &mut dyn Backend, help: &ViewHelp) {
+    ///
+    /// `help` is `None` when the caller's `HelpRegistry` has no
+    /// [`ViewHelp`] registered for the currently active view. This
+    /// controller doesn't own the registry (see the type docs), so it
+    /// can't refuse to open in that case — instead it paints a minimal
+    /// "no help available" panel rather than nothing at all. That
+    /// matters because `is_open()` is already `true` by the time
+    /// `render` runs (set by `open`/`toggle`/`handle`), and `handle`
+    /// unconditionally swallows every key while open (see its docs); if
+    /// `render` drew nothing here, the overlay would look "stuck" —
+    /// keys vanish with no on-screen indication anything is open — until
+    /// the user happens to guess `Escape` or `?` again. Painting
+    /// *something* keeps "overlay open" and "overlay visible" the same
+    /// fact.
+    pub fn render(&self, container: Rect, backend: &mut dyn Backend, help: Option<&ViewHelp>) {
         if !self.open {
             return;
         }
         let rect = Self::popup_rect(container, backend);
+        let title = match help {
+            Some(h) => format!("Help — {}  (Esc to close)", h.title),
+            None => "Help  (Esc to close)".to_string(),
+        };
         let panel = Panel {
             id: self.id.clone(),
-            title: Some(StyledText::plain(format!(
-                "Help — {}  (Esc to close)",
-                help.title
-            ))),
+            title: Some(StyledText::plain(title)),
             actions: vec![],
             accent: None,
             collapsed: false,
         };
         let layout = backend.draw_panel(rect, &panel);
+        let lines = match help {
+            Some(h) => build_cheatsheet_lines(h),
+            None => vec![TextDisplayLine {
+                spans: vec![StyledSpan::plain(
+                    "No help available for this view. (Esc to close)",
+                )],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }],
+        };
         let td = TextDisplay {
             id: WidgetId::new(format!("{}-content", self.id.as_str())),
-            lines: build_cheatsheet_lines(help),
+            lines,
             scroll_offset: 0,
             auto_scroll: false,
             max_lines: 0,
@@ -329,9 +356,18 @@ impl Default for HelpOverlayController {
 /// Build the cheatsheet body: a "Reference" section from `help.notes`
 /// (when non-empty) followed by an "Actions" section from `help.actions`
 /// (when non-empty), each entry hand-aligned into columns via padded
-/// `format!` widths (content formatting, not a backend-unit measurement —
-/// safe on both a monospace TUI grid and a proportional GTK font, since
-/// it's just string padding rather than pixel/cell math).
+/// `format!` widths.
+///
+/// That padding is fixed-*character-count*, so it lines up exactly on a
+/// monospace TUI grid — but `quadraui::gtk::text_display` renders
+/// `TextDisplay` spans through Pango with the proportional UI font
+/// (`"Sans 11"` by default; see `gtk/backend.rs`), where two
+/// equal-character-count strings can render to different pixel widths.
+/// The accelerator/description columns are therefore ragged on GTK
+/// today. Accepted for now — it's visual-only and GTK example coverage
+/// waits on `GtkDriver` (#301) — but a real fix would render each column
+/// as its own `StyledSpan` sized from a backend-measured text width
+/// instead of character count.
 fn build_cheatsheet_lines(help: &ViewHelp) -> Vec<TextDisplayLine> {
     let mut lines = Vec::new();
 
@@ -403,15 +439,25 @@ fn entry_line(label: &str, accelerator: Option<&str>, description: &str) -> Text
 /// accelerator, matching the convention documented on
 /// [`PaletteItem::detail`] ("shortcut" is a named example there).
 ///
+/// `query` is the current filter text (typically the same query passed
+/// to [`filter_help_actions`] to produce `actions`); every case-insensitive
+/// occurrence of it in the concatenated label+description text is
+/// recorded in [`PaletteItem::match_positions`] so backends highlight
+/// *why* a row matched, not just that it did. Pass `""` for an
+/// unfiltered/initial list — `match_positions` comes back empty, per
+/// [`PaletteItem::match_positions`]'s "empty means no highlighting"
+/// convention.
+///
 /// Apps typically call this after filtering with
 /// [`filter_help_actions`], mirroring the existing branch-picker demo
 /// pattern of recomputing the filtered slice from the query each time
 /// (see `examples/common/palette_dual_mode_app.rs`) so a selected index
 /// maps back to the same `HelpAction`.
-pub fn help_actions_to_palette_items<'a, I>(actions: I) -> Vec<PaletteItem>
+pub fn help_actions_to_palette_items<'a, I>(actions: I, query: &str) -> Vec<PaletteItem>
 where
     I: IntoIterator<Item = &'a HelpAction>,
 {
+    let query_lower = query.to_lowercase();
     actions
         .into_iter()
         .map(|action| {
@@ -422,6 +468,12 @@ where
             if !action.description.is_empty() {
                 spans.push(StyledSpan::plain(format!("  — {}", action.description)));
             }
+            let match_positions = if query_lower.is_empty() {
+                Vec::new()
+            } else {
+                let concatenated: String = spans.iter().map(|s| s.text.as_str()).collect();
+                match_byte_positions(&concatenated, &query_lower)
+            };
             PaletteItem {
                 text: StyledText { spans },
                 detail: action
@@ -429,13 +481,35 @@ where
                     .as_ref()
                     .map(|a| StyledText::plain(a.clone())),
                 icon: None,
-                match_positions: vec![],
+                match_positions,
                 depth: 0,
                 expandable: false,
                 expanded: false,
             }
         })
         .collect()
+}
+
+/// Byte offsets of every case-insensitive occurrence of `needle_lower`
+/// (already lowercased) inside `haystack` — highlights *every* match, not
+/// just the first, so a query appearing in both the label and the
+/// description span highlights both.
+fn match_byte_positions(haystack: &str, needle_lower: &str) -> Vec<usize> {
+    if needle_lower.is_empty() {
+        return Vec::new();
+    }
+    let haystack_lower = haystack.to_lowercase();
+    let mut positions = Vec::new();
+    let mut search_start = 0;
+    while search_start <= haystack_lower.len() {
+        let Some(found) = haystack_lower[search_start..].find(needle_lower) else {
+            break;
+        };
+        let match_start = search_start + found;
+        positions.extend(match_start..match_start + needle_lower.len());
+        search_start = match_start + needle_lower.len().max(1);
+    }
+    positions
 }
 
 /// Case-insensitive substring match against **both** `label` and
@@ -631,7 +705,7 @@ mod tests {
             HelpAction::new("a.save", "Save", "Write current file to disk")
                 .with_accelerator("Ctrl+S"),
         ];
-        let items = help_actions_to_palette_items(&actions);
+        let items = help_actions_to_palette_items(&actions, "");
         assert_eq!(items.len(), 1);
         let text: String = items[0]
             .text
@@ -647,8 +721,60 @@ mod tests {
     #[test]
     fn palette_items_omit_detail_when_no_accelerator() {
         let actions = vec![HelpAction::new("a.x", "X", "does x")];
-        let items = help_actions_to_palette_items(&actions);
+        let items = help_actions_to_palette_items(&actions, "");
         assert!(items[0].detail.is_none());
+    }
+
+    #[test]
+    fn palette_items_match_positions_empty_for_empty_query() {
+        let actions = vec![HelpAction::new("a.save", "Save", "Write to disk")];
+        let items = help_actions_to_palette_items(&actions, "");
+        assert!(items[0].match_positions.is_empty());
+    }
+
+    #[test]
+    fn palette_items_match_positions_highlight_label_match() {
+        let actions = vec![HelpAction::new("a.save", "Save", "Write to disk")];
+        let items = help_actions_to_palette_items(&actions, "sav");
+        // "Save" is the first span, so the match starts at byte 0.
+        assert_eq!(items[0].match_positions, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn palette_items_match_positions_highlight_description_match() {
+        let actions = vec![HelpAction::new("a.save", "Save", "Write to disk")];
+        let items = help_actions_to_palette_items(&actions, "disk");
+        let concatenated = "Save  — Write to disk";
+        let start = concatenated.find("disk").unwrap();
+        assert_eq!(
+            items[0].match_positions,
+            (start..start + "disk".len()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn palette_items_match_positions_case_insensitive() {
+        let actions = vec![HelpAction::new("a.save", "Save", "write to disk")];
+        let items = help_actions_to_palette_items(&actions, "SAVE");
+        assert_eq!(items[0].match_positions, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn palette_items_match_positions_multiple_occurrences() {
+        let actions = vec![HelpAction::new("a.x", "Cat", "concatenate files")];
+        let items = help_actions_to_palette_items(&actions, "cat");
+        // "Cat" matches the label, and "concatenate" contains "cat"
+        // again later in the description — both should highlight.
+        let concatenated_lower = "cat  — concatenate files";
+        let expected: Vec<usize> = concatenated_lower
+            .match_indices("cat")
+            .flat_map(|(i, m)| i..i + m.len())
+            .collect();
+        assert!(
+            expected.len() > 3,
+            "sanity check: query should match in two places"
+        );
+        assert_eq!(items[0].match_positions, expected);
     }
 
     // ── filter_help_actions ────────────────────────────────────────────
