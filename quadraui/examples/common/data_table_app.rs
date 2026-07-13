@@ -5,13 +5,14 @@
 //! - `k` / `↑` — select previous row
 //! - `s` — cycle sort column (Name → Status → Age → Restarts → none)
 //! - `d` — toggle sort direction
+//! - `f` — toggle the pinned footer/summary row (#432)
 //! - `q` / `Esc` — quit
 
 use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::{
-    AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableEvent,
-    DataTableHit, DataTableLayout, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit,
+    DataTableLayout, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar, StatusBarSegment,
+    StyledText, UiEvent, WidgetId,
 };
 
 pub struct DataTableApp {
@@ -27,6 +28,8 @@ pub struct DataTableApp {
     h_sb_drag: Option<(f32, f32, f32, f32)>,
     h_scroll: f32,
     hovered_idx: Option<usize>,
+    /// Toggle for the pinned footer/summary row demo (`f` key, #432).
+    show_footer: bool,
 }
 
 impl DataTableApp {
@@ -42,6 +45,7 @@ impl DataTableApp {
             h_sb_drag: None,
             h_scroll: 0.0,
             hovered_idx: None,
+            show_footer: true,
         }
     }
 
@@ -112,6 +116,29 @@ impl DataTableApp {
             .collect()
     }
 
+    /// Column-aligned totals row: pod count under Name, total restarts
+    /// under Restarts — demonstrates #432 (pinned footer/summary row).
+    fn footer_row(&self) -> DataRow {
+        let rows = Self::rows();
+        let total_restarts: u32 = rows
+            .iter()
+            .filter_map(|r| r.cells.get(3))
+            .filter_map(|c| {
+                let text: String = c.spans.iter().map(|s| s.text.as_str()).collect();
+                text.parse::<u32>().ok()
+            })
+            .sum();
+        DataRow {
+            cells: vec![
+                StyledText::plain(format!("{} pods", rows.len())),
+                StyledText::plain(""),
+                StyledText::plain(""),
+                StyledText::colored(total_restarts.to_string(), Color::rgb(220, 180, 50)),
+            ],
+            decoration: Default::default(),
+        }
+    }
+
     fn build_table(&self) -> DataTable {
         let mut rows = Self::rows();
         if let Some(col) = self.sort_col {
@@ -155,6 +182,11 @@ impl DataTableApp {
             min_total_width: None,
             h_scroll: self.h_scroll,
             column_overrides: Vec::new(),
+            footer: if self.show_footer {
+                Some(self.footer_row())
+            } else {
+                None
+            },
         }
     }
 
@@ -202,17 +234,10 @@ impl DataTableApp {
     }
 
     fn visible_rows(&self, backend: &dyn Backend) -> usize {
-        let vp = backend.viewport();
-        let lh = backend.line_height();
-        let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
-        let table_h = vp.height - bar_h;
-        let header_h = if lh > 1.5 { (lh * 1.2).round() } else { lh };
-        let body_h = (table_h - header_h).max(0.0);
-        if lh > 0.0 {
-            (body_h / lh).floor() as usize
-        } else {
-            0
-        }
+        // Delegate to the real layout (rather than re-deriving header/
+        // footer math here) so the footer row's reserved height is
+        // accounted for exactly once, in `DataTable::layout`.
+        self.table_layout(backend).visible_rows
     }
 
     fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
@@ -311,6 +336,9 @@ impl AppLogic for DataTableApp {
                     Key::Char('d') => {
                         self.sort_asc = !self.sort_asc;
                     }
+                    Key::Char('f') => {
+                        self.show_footer = !self.show_footer;
+                    }
                     Key::Named(NamedKey::Home) => {
                         self.selected = Some(0);
                     }
@@ -408,7 +436,8 @@ impl AppLogic for DataTableApp {
                         self.selected = Some(idx);
                         Reaction::Redraw
                     }
-                    DataTableHit::Empty => Reaction::Continue,
+                    // Pinned footer isn't selectable — same as empty space.
+                    DataTableHit::Footer | DataTableHit::Empty => Reaction::Continue,
                 }
             }
             UiEvent::MouseMoved { position, .. } => {

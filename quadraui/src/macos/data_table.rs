@@ -245,8 +245,9 @@ pub unsafe fn draw_data_table(
     }
 
     // Horizontal scrollbar — same shape.
+    let footer_h = layout.footer_height as f64;
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
-        let hsb_y = y + h - layout.h_scrollbar_height as f64;
+        let hsb_y = y + h - footer_h - layout.h_scrollbar_height as f64;
         let track_w = (w - layout.scrollbar_width as f64).max(1.0);
         fill_rect(
             ctx,
@@ -269,6 +270,63 @@ pub unsafe fn draw_data_table(
             layout.h_scrollbar_height as f64,
             theme.scrollbar_thumb,
         );
+    }
+
+    // Footer — pinned summary row, laid out against the same resolved
+    // columns as the body. Divider rule + tab_bar_bg background make
+    // it visually distinct from the scrollable body (bold weight is
+    // deferred with the rest of the text-attribute pass, see module
+    // docs).
+    if let Some(footer) = &table.footer {
+        if footer_h > 0.0 {
+            // `footer_h` reserves `line_height * 2.0` (see
+            // `DataTable::layout`): a divider row plus the content
+            // row. Fill the whole band, but keep text in the bottom
+            // `line_height` sub-band, matching the TUI/GTK rasterisers.
+            let footer_band_top = y + h - footer_h;
+            let footer_y = y + h - line_height;
+            fill_rect(ctx, x, footer_band_top - 0.5, w, 1.0, theme.separator);
+            fill_rect(ctx, x, footer_band_top, w, footer_h, theme.tab_bar_bg);
+
+            for (col_idx, rc) in layout.columns.iter().enumerate() {
+                let styled = match footer.cells.get(col_idx) {
+                    Some(c) if !c.spans.is_empty() => c,
+                    _ => continue,
+                };
+                if rc.width <= 0.0 {
+                    continue;
+                }
+                let col_w = rc.width as f64;
+                let col_x = x + rc.x as f64 - h_off;
+
+                let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+                let (text_w, text_h) = measure_text(font, &full_text);
+                let align = table
+                    .columns
+                    .get(col_idx)
+                    .map(|c| c.align)
+                    .unwrap_or(ColumnAlign::Left);
+                let text_x = match align {
+                    ColumnAlign::Left => col_x,
+                    ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
+                    ColumnAlign::Right => col_x + col_w - text_w,
+                };
+
+                CGContextSaveGState(ctx);
+                CGContextClipToRect(ctx, CGRect::new_xywh(col_x, footer_y, col_w, line_height));
+
+                let mut span_x = text_x;
+                let text_y = footer_y + (line_height - text_h) / 2.0;
+                for span in &styled.spans {
+                    let (sw, _) = measure_text(font, &span.text);
+                    let span_fg = span.fg.unwrap_or(theme.foreground);
+                    draw_text(ctx, font, &span.text, span_x, text_y, color_to_cg(span_fg));
+                    span_x += sw;
+                }
+
+                CGContextRestoreGState(ctx);
+            }
+        }
     }
 
     CGContextRestoreGState(ctx);
@@ -370,6 +428,7 @@ mod tests {
             min_total_width: None,
             h_scroll: 0.0,
             column_overrides: vec![],
+            footer: None,
         }
     }
 

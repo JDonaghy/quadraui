@@ -6,7 +6,8 @@
 //! pod list with column headers, hover row tint, and row selection.
 //!
 //! j/k or ↑/↓ to navigate, s to cycle sort column, d to flip direction,
-//! click header to sort, click row to select, q to quit.
+//! f to toggle the pinned footer/summary row (#432), click header to
+//! sort, click row to select, q to quit.
 
 #[path = "common/mod.rs"]
 mod common;

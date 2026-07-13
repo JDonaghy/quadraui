@@ -24,6 +24,8 @@ use toolbar_app::ToolbarApp;
 mod appshell_demo;
 #[path = "../examples/common/clipboard_demo.rs"]
 mod clipboard_demo;
+#[path = "../examples/common/data_table_app.rs"]
+mod data_table_app;
 #[path = "../examples/common/demo.rs"]
 mod demo;
 #[path = "../examples/common/dialog_table_demo.rs"]
@@ -53,6 +55,7 @@ mod text_input_demo;
 
 use appshell_demo::AppShellDemo;
 use clipboard_demo::ClipboardDemo;
+use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use file_dialog_demo::FileDialogDemo;
@@ -1696,5 +1699,110 @@ fn hit_map_recover_clicking_the_tab_bar_routes_through_hit_map() {
         after.contains("last-hit:TabBar"),
         "clicking the tab bar should route through the hit_map()-built \
          FrameHitMap to FrameZone::TabBar:\n{after}"
+    );
+}
+
+// ─── DataTableApp: pinned footer/summary row (#432) ─────────────────────────
+//
+// `DataTableApp` sorts by Name ascending by default, so alphabetically
+// "api-gateway-..." is the first row and "worker-batch-..." is the
+// last. The table's `min_total_width` is 80 columns, so the driver
+// uses a wide-enough viewport (100) to keep the Restarts column (and
+// its footer total) on-screen without horizontal scrolling.
+
+#[test]
+fn data_table_initial_screen_shows_footer_totals() {
+    let driver = TuiDriver::new(DataTableApp::new(), 100, 20);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("20 pods"),
+        "footer should show the pod count total:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("22"),
+        "footer should show the summed restarts total:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("api-gateway"),
+        "alphabetically-first pod row should be visible initially:\n{screen}"
+    );
+}
+
+#[test]
+fn data_table_footer_stays_pinned_while_body_scrolls() {
+    // A short viewport (12 rows) with 20 pods forces scrolling.
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 12);
+    let before = driver.screen();
+    assert!(
+        driver.screen_contains("20 pods"),
+        "footer should be visible before scrolling:\n{before}"
+    );
+    assert!(
+        driver.screen_contains("api-gateway"),
+        "alphabetically-first pod should be visible before scrolling:\n{before}"
+    );
+
+    // Jump selection to the last row — `ensure_visible` scrolls the
+    // body so the footer's pinned position is genuinely exercised.
+    driver.press_named(NamedKey::End);
+
+    let after = driver.screen();
+    assert_ne!(
+        before, after,
+        "scrolling to the end should change the screen"
+    );
+    assert!(
+        !after.contains("api-gateway"),
+        "first pod should have scrolled out of view:\n{after}"
+    );
+    assert!(
+        after.contains("worker-batch"),
+        "alphabetically-last pod should now be visible:\n{after}"
+    );
+    assert!(
+        after.contains("20 pods") && after.contains("22"),
+        "footer totals must stay pinned regardless of scroll_offset:\n{after}"
+    );
+}
+
+#[test]
+fn data_table_footer_click_does_not_change_selection() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 12);
+    driver.press_named(NamedKey::End); // select + scroll to the last row
+    let before = driver.screen();
+    assert!(
+        before.contains("row 20 / 20"),
+        "status bar should report the last row selected:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("pods")
+        .unwrap_or_else(|| panic!("footer 'pods' label not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("row 20 / 20"),
+        "clicking the pinned footer must not change row selection \
+         (footer is excluded from hit-testing as a row):\n{after}"
+    );
+}
+
+#[test]
+fn data_table_f_key_toggles_footer_off() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 20);
+    assert!(driver.screen_contains("20 pods"));
+
+    driver.type_char('f');
+    let after = driver.screen();
+    assert!(
+        !after.contains("20 pods"),
+        "'f' should hide the footer (regression guard for footer: None):\n{after}"
+    );
+
+    driver.type_char('f');
+    assert!(
+        driver.screen_contains("20 pods"),
+        "'f' should toggle the footer back on"
     );
 }
