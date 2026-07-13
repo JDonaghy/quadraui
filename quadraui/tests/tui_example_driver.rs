@@ -1971,3 +1971,64 @@ fn help_layer_demo_palette_query_matches_description_not_label() {
         "query matching neither the label nor description should filter the action out:\n{screen}"
     );
 }
+
+/// A panel with **no** registered help (the demo's "Settings" panel)
+/// still lets `?` open a visible cheatsheet and `Escape` still closes
+/// it — the fix for #431 review finding 1. Before the fix,
+/// `HelpOverlayController::render` silently drew nothing when the
+/// active view had no `ViewHelp`, while `handle()` still unconditionally
+/// swallowed every subsequent key as if a modal cheatsheet were open —
+/// an unrecoverable-looking freeze for any consumer that hasn't
+/// registered help for every panel.
+#[test]
+fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    // Explorer -> Source Control -> Settings (no help registered).
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j');
+    driver.type_char('j');
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("Panel: panel:settings"),
+        "activating the cursor item twice should switch to the settings panel:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.type_char('?');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "? should still open the cheatsheet even with no registered help"
+    );
+    let screen = driver.screen();
+    assert!(
+        screen.contains("No help available"),
+        "cheatsheet should show a visible fallback instead of rendering nothing:\n{screen}"
+    );
+
+    let reaction = driver.press_named(NamedKey::Escape);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Escape should close the cheatsheet even though no help was registered"
+    );
+    assert!(!driver.exited(), "Escape must not quit the demo");
+    assert!(
+        !driver.screen_contains("No help available"),
+        "closing the cheatsheet should remove the fallback message:\n{}",
+        driver.screen()
+    );
+
+    // And the app must not be left swallowing keys forever: a normal key
+    // now falls through to the app instead of being consumed by a
+    // still-open (but invisible) overlay.
+    let reaction = driver.type_char('q');
+    assert_eq!(
+        reaction,
+        Reaction::Exit,
+        "q should quit normally once the overlay is closed"
+    );
+}

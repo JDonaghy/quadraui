@@ -14,6 +14,12 @@
 //!   [`quadraui::help_actions_to_palette_items`]; typing filters by label
 //!   **and** description via [`quadraui::filter_help_actions`].
 //!
+//! A third panel ("Settings") intentionally has **no** registered help,
+//! demonstrating [`quadraui::HelpOverlayController::render`]'s fallback:
+//! `?` still opens a visible "no help available" cheatsheet rather than
+//! silently rendering nothing while still swallowing keys (#431 review
+//! finding — see the doc comment on `render`).
+//!
 //! Controls:
 //! - `?`                 toggle the help cheatsheet for the active panel
 //! - `p`                 open the command palette (Esc to cancel, Enter to run)
@@ -30,6 +36,7 @@ use quadraui::{
 
 const EXPLORER_PANEL: &str = "panel:explorer";
 const GIT_PANEL: &str = "panel:git";
+const SETTINGS_PANEL: &str = "panel:settings";
 
 pub struct HelpLayerDemo {
     registry: HelpRegistry,
@@ -104,6 +111,12 @@ impl HelpLayerDemo {
                     tooltip: "Source Control".into(),
                     title: "SOURCE CONTROL".into(),
                 },
+                PanelDefinition {
+                    id: WidgetId::new(SETTINGS_PANEL),
+                    icon: "S".into(),
+                    tooltip: "Settings (no help registered)".into(),
+                    title: "SETTINGS".into(),
+                },
             ],
         )
     }
@@ -121,7 +134,7 @@ impl HelpLayerDemo {
     }
 
     fn open_palette(&mut self) {
-        let items = help_actions_to_palette_items(self.filtered_actions(""));
+        let items = help_actions_to_palette_items(self.filtered_actions(""), "");
         self.palette = Some(DualModePaletteController::new("Commands", None, items));
         self.last_message =
             "Command palette open — type to search, Enter to run, Esc to cancel".into();
@@ -166,9 +179,12 @@ impl ShellApp for HelpLayerDemo {
         if let Some(palette) = &self.palette {
             let popup = popup_rect(layout.window_bounds, backend);
             palette.render(popup, backend);
-        } else if let Some(help) = self.active_view_help() {
+        } else {
+            // `active_view_help()` is `None` for the Settings panel — the
+            // overlay's own fallback (a visible "no help available"
+            // panel) handles that; see `HelpOverlayController::render`.
             self.help_overlay
-                .render(layout.window_bounds, backend, help);
+                .render(layout.window_bounds, backend, self.active_view_help());
         }
     }
 
@@ -200,7 +216,7 @@ impl ShellApp for HelpLayerDemo {
                 }
                 DualModePaletteEvent::QueryChanged { value } => {
                     let matched = self.filtered_actions(&value);
-                    palette.set_items(help_actions_to_palette_items(matched));
+                    palette.set_items(help_actions_to_palette_items(matched, &value));
                     self.palette = Some(palette);
                     return Reaction::Redraw;
                 }
