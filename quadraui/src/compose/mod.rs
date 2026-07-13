@@ -21,6 +21,9 @@
 //!   input + status strip.
 //! - [`TabGroupController`] — TabBar + Split + DropZone + FocusGroup wired into
 //!   editor-group-style tabbed split panes.
+//! - [`HelpRegistry`] / [`HelpOverlayController`] — per-view help registry +
+//!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
+//!   actions into the command palette.
 
 pub mod app_shell;
 pub mod bottom_panel;
@@ -30,6 +33,7 @@ pub mod focus_group;
 pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
+pub mod help_layer;
 pub mod markdown;
 pub mod menu_system;
 pub mod sidebar_system;
@@ -49,6 +53,10 @@ pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
 pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
 pub use form_controller::{FormController, FormControllerEvent};
+pub use help_layer::{
+    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
+    HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
+};
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use sidebar_system::{
