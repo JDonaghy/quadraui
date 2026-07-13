@@ -34,6 +34,8 @@ mod dialog_table_demo;
 mod file_dialog_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
 mod full_chrome_demo;
+#[path = "../examples/common/help_layer_demo.rs"]
+mod help_layer_demo;
 #[path = "../examples/common/hit_map_recover_demo.rs"]
 mod hit_map_recover_demo;
 #[path = "../examples/common/mini_app.rs"]
@@ -60,6 +62,7 @@ use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use file_dialog_demo::FileDialogDemo;
 use full_chrome_demo::FullChromeDemo;
+use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
 use mini_app::MiniApp;
 use palette_dual_mode_app::PaletteDualModeApp;
@@ -1804,5 +1807,167 @@ fn data_table_f_key_toggles_footer_off() {
     assert!(
         driver.screen_contains("20 pods"),
         "'f' should toggle the footer back on"
+    );
+}
+
+// ─── HelpLayerDemo (#431): context-sensitive help registry + cheatsheet ────
+//
+// `HelpLayerDemo` implements `ShellApp` with two panels ("Explorer" and
+// "Source Control"), each registered with distinct notes + actions via
+// `HelpRegistry`. `?` opens a cheatsheet (`HelpOverlayController`, built on
+// `Panel` + `TextDisplay`) for the *active* panel; `p` opens a command
+// palette (`DualModePaletteController`) populated from the same registered
+// actions via `help_actions_to_palette_items` / `filter_help_actions`.
+// These tests prove the acceptance bar from #431: registered help renders
+// via `?`, the palette lists the same actions, and the palette query
+// matches on description text as well as label.
+
+/// `?` opens the cheatsheet for the default active panel (Explorer) and
+/// renders its registered notes and actions — including the accelerator
+/// column, which only the "Actions" section carries.
+#[test]
+fn help_layer_demo_question_mark_opens_cheatsheet_for_active_panel() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    assert!(
+        driver.screen_contains("?=help"),
+        "initial hint should mention the ? trigger:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.type_char('?');
+    assert_eq!(reaction, Reaction::Redraw, "? should open the cheatsheet");
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Help — Explorer"),
+        "cheatsheet title should name the active panel:\n{screen}"
+    );
+    assert!(
+        screen.contains("File has unsaved changes"),
+        "cheatsheet should render the active panel's registered notes:\n{screen}"
+    );
+    assert!(
+        screen.contains("New File") && screen.contains("Ctrl+N"),
+        "cheatsheet should render the active panel's registered actions \
+         with their accelerator:\n{screen}"
+    );
+}
+
+/// `Escape` closes an open cheatsheet without quitting the demo, and the
+/// entries it was showing disappear from the screen.
+#[test]
+fn help_layer_demo_escape_closes_cheatsheet() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    driver.type_char('?');
+    assert!(driver.screen_contains("Help — Explorer"));
+
+    let reaction = driver.press_named(NamedKey::Escape);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Escape while the cheatsheet is open should close it, not quit"
+    );
+    assert!(!driver.exited(), "Escape must not quit the demo");
+    assert!(
+        !driver.screen_contains("New File"),
+        "closing the cheatsheet should remove its content from the screen:\n{}",
+        driver.screen()
+    );
+}
+
+/// Switching the active panel (Tab → focus bar → j → Enter, the same
+/// activity-bar keyboard flow proven by the `AppShellDemo` tests above)
+/// changes which panel's help `?` shows next — the "context-sensitive"
+/// half of #431.
+#[test]
+fn help_layer_demo_switching_panel_changes_cheatsheet_content() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j'); // explorer -> git
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("Panel: panel:git"),
+        "activating the cursor item should switch to the git panel:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('?');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Help — Source Control"),
+        "cheatsheet title should follow the newly active panel:\n{screen}"
+    );
+    assert!(
+        screen.contains("Commit") && screen.contains("Ctrl+Enter"),
+        "cheatsheet should show the git panel's own registered actions:\n{screen}"
+    );
+    assert!(
+        !screen.contains("New File"),
+        "cheatsheet must not leak the previous panel's actions:\n{screen}"
+    );
+}
+
+/// `p` opens a command palette listing the active panel's registered
+/// actions — same data the cheatsheet renders, fed through
+/// `help_actions_to_palette_items`.
+#[test]
+fn help_layer_demo_p_opens_command_palette_with_registered_actions() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    let reaction = driver.type_char('p');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "p should open the command palette"
+    );
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Commands"),
+        "palette should render its title:\n{screen}"
+    );
+    assert!(
+        screen.contains("New File") && screen.contains("Ctrl+N"),
+        "palette should list the registered action's label and accelerator:\n{screen}"
+    );
+    assert!(
+        screen.contains("Reveal in Finder"),
+        "palette should list every registered action for the active panel:\n{screen}"
+    );
+}
+
+/// Typing a query that matches only an action's *description* (not its
+/// label) still surfaces that action and filters out the rest — proving
+/// the palette integration is searchable by description, not just label.
+#[test]
+fn help_layer_demo_palette_query_matches_description_not_label() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    driver.type_char('p');
+    assert!(driver.screen_contains("New File"));
+
+    // "disk" appears only in "Reveal in Finder"'s description ("Show the
+    // selected file on disk"), never in either action's label.
+    for c in "disk".chars() {
+        driver.type_char(c);
+    }
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Reveal in Finder"),
+        "query matching only the description should still surface that action:\n{screen}"
+    );
+    assert!(
+        !screen.contains("New File"),
+        "query matching neither the label nor description should filter the action out:\n{screen}"
     );
 }

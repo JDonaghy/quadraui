@@ -453,6 +453,16 @@ path = "examples/gtk_appshell_demo.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_help_layer"
+path = "examples/tui_help_layer.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_help_layer"
+path = "examples/gtk_help_layer.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_frame_demo"
 path = "examples/tui_frame_demo.rs"
 required-features = ["tui"]

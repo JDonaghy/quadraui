@@ -292,15 +292,16 @@ pub use compose::markdown::{
     render_markdown_to_styled, render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown,
 };
 pub use compose::{
-    AppShell, AppShellEvent, AppShellLayout, BackendWidget, BottomPanelConfig,
-    BottomPanelController, BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController,
-    ChatControllerEvent, ChatRole, ChatTurn, DualModePaletteController, DualModePaletteEvent,
-    FocusGroup, FocusRing, FolderPickerController, FolderPickerEvent, FormController,
-    FormControllerEvent, GroupLayout, MenuDef, MenuEvent, MenuSystem, NavigationMode, Pane,
-    PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent,
-    SidebarSectionDef, SidebarSystem, StatusBarAction, StatusBarInteraction, TabGroupController,
-    TabGroupEvent, TabGroupLayout, ToolbarHoverTracker, TreeController, TreeControllerEvent,
-    PALETTE_CHROME_ROWS,
+    filter_help_actions, help_actions_to_palette_items, AppShell, AppShellEvent, AppShellLayout,
+    BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
+    BottomPanelTab, ChatController, ChatControllerEvent, ChatRole, ChatTurn,
+    DualModePaletteController, DualModePaletteEvent, FocusGroup, FocusRing, FolderPickerController,
+    FolderPickerEvent, FormController, FormControllerEvent, GroupLayout, HelpAction, HelpNote,
+    HelpOverlayController, HelpOverlayEvent, HelpRegistry, MenuDef, MenuEvent, MenuSystem,
+    NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition,
+    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction, StatusBarInteraction,
+    TabGroupController, TabGroupEvent, TabGroupLayout, ToolbarHoverTracker, TreeController,
+    TreeControllerEvent, ViewHelp, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
