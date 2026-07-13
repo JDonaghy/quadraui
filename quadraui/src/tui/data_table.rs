@@ -183,6 +183,7 @@ pub fn draw_data_table(
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
+    let footer_h = layout.footer_height.round() as u16;
     if table.show_scrollbar
         && table.rows.len() > layout.visible_rows
         && layout.scrollbar_width > 0.0
@@ -192,7 +193,7 @@ pub fn draw_data_table(
             sb_x as f32,
             (area.y + 1) as f32,
             1.0,
-            (area.height.saturating_sub(1)) as f32,
+            (area.height.saturating_sub(1).saturating_sub(footer_h)) as f32,
         );
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id.clone(),
@@ -206,7 +207,6 @@ pub fn draw_data_table(
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
-    let footer_h = layout.footer_height.round() as u16;
     if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
         let hsb_y = area.y + area.height - footer_h - layout.h_scrollbar_height.round() as u16;
         let track_w = (area.width as f32 - layout.scrollbar_width).max(1.0);
@@ -574,5 +574,50 @@ mod tests {
             row2.contains("pod-2"),
             "row 2 should paint normally, got: {row2}"
         );
+    }
+
+    #[test]
+    fn vertical_scrollbar_track_excludes_footer_band() {
+        // Regression guard: the vertical scrollbar's track must span
+        // only the body band (header..footer), not header..bottom-of
+        // -viewport. With area.height=10, header_height=1 and a footer
+        // present (footer_height=2), the track should be exactly
+        // `visible_rows` cells tall — not `area.height - 1` (9).
+        let mut table = make_scrolling_table(50);
+        table.show_scrollbar = true;
+        table.footer = Some(DataRow {
+            cells: vec![StyledText::plain("TOTAL")],
+            decoration: Decoration::Normal,
+        });
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        assert_eq!(layout.footer_height, 2.0);
+        assert_eq!(layout.visible_rows, 7);
+
+        // Scrollbar column sits at the right edge of the area.
+        let sb_x = area.width - 1;
+        let track_cells = (0..area.height)
+            .filter(|&y| matches!(buf[(sb_x, y)].symbol(), "█" | "░"))
+            .count();
+        assert_eq!(
+            track_cells, layout.visible_rows,
+            "scrollbar track should span exactly the body band (visible_rows), \
+             not bleed into the reserved footer band"
+        );
+
+        // The footer band itself (last `footer_height` rows) must be
+        // free of scrollbar track/thumb glyphs.
+        for y in (area.height - 2)..area.height {
+            let sym = buf[(sb_x, y)].symbol();
+            assert_ne!(
+                sym, "█",
+                "footer row {y} should not be painted over by the scrollbar thumb"
+            );
+            assert_ne!(
+                sym, "░",
+                "footer row {y} should not be painted over by the scrollbar track"
+            );
+        }
     }
 }
