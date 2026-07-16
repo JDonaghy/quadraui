@@ -118,6 +118,9 @@ pub fn ratatui_color(c: Color) -> RatatuiColor {
 fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: RatatuiColor) {
     let area = buf.area;
     if x < area.x + area.width && y < area.y + area.height {
+        // ratatui ≥ 0.30 debug_asserts when a single-byte ASCII control character is
+        // stored in a cell symbol (they are not renderable glyphs). Replace with space.
+        let ch = if ch.is_ascii_control() { ' ' } else { ch };
         let cell = &mut buf[(x, y)];
         cell.set_char(ch).set_fg(fg).set_bg(bg);
         cell.modifier = Modifier::empty();
@@ -223,6 +226,7 @@ fn set_cell_styled(
 ) {
     let area = buf.area;
     if x < area.x + area.width && y < area.y + area.height {
+        let ch = if ch.is_ascii_control() { ' ' } else { ch };
         let cell = &mut buf[(x, y)];
         cell.set_char(ch).set_fg(fg).set_bg(bg);
         cell.modifier = modifier;
