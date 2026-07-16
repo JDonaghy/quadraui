@@ -42,7 +42,13 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             let (draw_bg, draw_fg) = resolve_cell_colors(cell, theme);
 
             let buf_cell = &mut buf[(x, y)];
-            buf_cell.set_char(cell.ch).set_fg(draw_fg).set_bg(draw_bg);
+            // ratatui ≥ 0.30 debug_asserts on ASCII control chars in cell symbols.
+            let draw_ch = if cell.ch.is_ascii_control() {
+                ' '
+            } else {
+                cell.ch
+            };
+            buf_cell.set_char(draw_ch).set_fg(draw_fg).set_bg(draw_bg);
 
             let mut modifier = Modifier::empty();
             if cell.bold {

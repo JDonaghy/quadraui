@@ -33,7 +33,9 @@ pub struct AppShellDemo {
 impl AppShellDemo {
     pub fn new() -> Self {
         Self {
-            last_event: "Tab=focus bar | click icons | drag divider | p=jump to Source Control | q=quit".into(),
+            last_event:
+                "Tab=focus bar | click icons | drag divider | p=jump to Source Control | q=quit"
+                    .into(),
             pending_panel: None,
         }
     }

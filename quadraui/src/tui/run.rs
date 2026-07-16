@@ -168,24 +168,28 @@ where
     A: AppLogic,
     B: ratatui::backend::Backend,
 {
-    let size = terminal.size()?;
+    let size = terminal
+        .size()
+        .map_err(|e| io::Error::other(e.to_string()))?;
     backend.begin_frame(crate::Viewport::new(
         size.width as f32,
         size.height as f32,
         1.0,
     ));
-    terminal.draw(|frame| {
-        backend.enter_frame_scope(frame, |b| {
-            // TUI is single-area; always pass the app's default
-            // `AreaId`. Multi-area runners (GTK) pass the AreaId for
-            // whichever surface is repainting.
-            app.render(b, A::AreaId::default());
-        });
-        // After app.render: overlay selection highlight on the rendered
-        // buffer. Done outside enter_frame_scope so the closure lifetime
-        // doesn't conflict with the frame borrow.
-        backend.apply_selection_highlight(frame.buffer_mut());
-    })?;
+    terminal
+        .draw(|frame| {
+            backend.enter_frame_scope(frame, |b| {
+                // TUI is single-area; always pass the app's default
+                // `AreaId`. Multi-area runners (GTK) pass the AreaId for
+                // whichever surface is repainting.
+                app.render(b, A::AreaId::default());
+            });
+            // After app.render: overlay selection highlight on the rendered
+            // buffer. Done outside enter_frame_scope so the closure lifetime
+            // doesn't conflict with the frame borrow.
+            backend.apply_selection_highlight(frame.buffer_mut());
+        })
+        .map_err(|e| io::Error::other(e.to_string()))?;
     backend.end_frame();
     Ok(())
 }

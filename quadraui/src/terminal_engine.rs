@@ -743,7 +743,7 @@ impl TerminalSession {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
-        self.parser.set_size(rows, cols);
+        self.parser.screen_mut().set_size(rows, cols);
         let _ = self.master.resize(PtySize {
             rows,
             cols,
@@ -766,7 +766,7 @@ impl TerminalSession {
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset.min(self.history.len());
         // Keep the vt100 parser at the live view at all times.
-        self.parser.set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(0);
     }
 
     /// Scroll up into history by `n` rows.
@@ -846,7 +846,7 @@ impl TerminalSession {
                 if s.is_empty() {
                     " ".to_string()
                 } else {
-                    s
+                    s.to_string()
                 }
             } else {
                 " ".to_string()
@@ -904,7 +904,17 @@ impl TerminalSession {
             if b == b'\n' {
                 nl_count += 1;
                 if nl_count >= max_nl {
-                    self.parser.process(&data[start..=i]);
+                    let chunk = &data[start..=i];
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.parser.process(chunk);
+                    }))
+                    .is_err()
+                    {
+                        eprintln!(
+                            "quadraui: vt100 parser panic in process_with_capture; \
+                             dropping chunk, session kept alive"
+                        );
+                    }
                     self.capture_scrolled_rows(nl_count);
                     start = i + 1;
                     nl_count = 0;
@@ -914,7 +924,16 @@ impl TerminalSession {
         if start < data.len() {
             let chunk = &data[start..];
             let remaining_nl = chunk.iter().filter(|&&b| b == b'\n').count();
-            self.parser.process(chunk);
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.parser.process(chunk);
+            }))
+            .is_err()
+            {
+                eprintln!(
+                    "quadraui: vt100 parser panic in process_with_capture; \
+                     dropping chunk, session kept alive"
+                );
+            }
             if remaining_nl > 0 {
                 self.capture_scrolled_rows(remaining_nl);
             }
@@ -939,7 +958,7 @@ impl TerminalSession {
             return;
         }
         let to_capture = n_newlines.min(self.rows as usize);
-        self.parser.set_scrollback(to_capture);
+        self.parser.screen_mut().set_scrollback(to_capture);
         {
             let screen = self.parser.screen();
             for r in 0..to_capture as u16 {
@@ -965,7 +984,7 @@ impl TerminalSession {
                 self.history.push_back(row);
             }
         }
-        self.parser.set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(0);
     }
 
     /// Build the full cell grid for the current view.
@@ -1237,6 +1256,63 @@ pub fn default_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Regression: vt100 0.15.2 alt-screen resize cursor-clamp panic (#397) ─
+
+    /// Reproduces the exact crash sequence from issue #397:
+    ///
+    ///  1. Cursor is low in a tall grid (row ≥ future height after resize).
+    ///  2. Child enters the alternate screen (`ESC[?1049h`). vt100 DEC-saves the
+    ///     cursor position (`decsc`) — saving row 35.
+    ///  3. The pane is resized to 20 rows. On vt100 0.15.2 `Grid::set_size`
+    ///     clamped the live `pos` but **not** `saved_pos` — so `saved_pos.row`
+    ///     remained 35.
+    ///  4. Child exits the alternate screen (`ESC[?1049l`). vt100 restores the
+    ///     saved cursor (`decrc`) — restoring row 35 onto a 20-row grid.
+    ///  5. Any printable byte → `Grid::drawing_cell(35).unwrap()` → `None` → panic.
+    ///
+    /// vt100 ≥ 0.16 clamps `saved_pos.row` / `saved_pos.col` inside `set_size`,
+    /// so step 5 must **not** panic. The test also asserts the restored cursor row
+    /// is within the new bounds.
+    ///
+    /// **Fails on vt100 0.15.2** (panics at step 5). **Passes on vt100 0.16.x**.
+    /// No wide chars are involved — the trigger is purely cursor position + resize.
+    #[test]
+    fn vt100_alt_screen_resize_cursor_clamp_no_panic() {
+        // 40-row × 80-col grid.  Row indices are 0-based inside vt100.
+        let mut p = vt100::Parser::new(40, 80, 0);
+
+        // Move cursor to row 35 (1-indexed: ESC[36;1H).
+        // Row 35 ≥ the future 20-row height, so restoring it unpatched → OOB.
+        p.process(b"\x1b[36;1H");
+        let (row, col) = p.screen().cursor_position();
+        assert_eq!(row, 35, "cursor must be at row 35 before alt-screen enter");
+        assert_eq!(col, 0);
+
+        // Enter alternate screen — DEC saves cursor (saves row=35).
+        p.process(b"\x1b[?1049h");
+        assert!(p.screen().alternate_screen(), "must be on alternate screen");
+
+        // Resize to 20 rows.  On 0.15.2 saved_pos.row remains 35 — this is the bug.
+        p.screen_mut().set_size(20, 80);
+
+        // Exit alternate screen — restores saved cursor (row=35 on 0.15.2 → OOB panic).
+        p.process(b"\x1b[?1049l");
+        assert!(
+            !p.screen().alternate_screen(),
+            "must have left alternate screen"
+        );
+
+        // Print a printable byte.  On 0.15.2 this panics at Grid::drawing_cell.
+        p.process(b"X"); // must not panic
+
+        // The restored cursor row MUST be clamped inside the new 20-row grid.
+        let (restored_row, _) = p.screen().cursor_position();
+        assert!(
+            restored_row < 20,
+            "restored cursor row {restored_row} must be < 20 (new grid height)"
+        );
+    }
 
     // ── Regression: vt100 0.15.2 wide-char column-boundary panic (#377) ─────
 
