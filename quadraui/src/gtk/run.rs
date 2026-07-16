@@ -43,12 +43,25 @@ use pangocairo::functions as pcfn;
 
 use super::backend::GtkBackend;
 use super::events::{
-    gdk_button_to_quadraui, gdk_key_to_uievent, gdk_modifiers_to_quadraui, gdk_scroll_to_uievent,
+    gdk_button_to_quadraui, gdk_key_to_uievent, gdk_modifiers_to_quadraui, gdk_resize_to_uievent,
+    gdk_scroll_to_uievent,
 };
 use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
+
+/// Default window size, in DIPs. Matches the `ApplicationWindow`
+/// builder's `default_width`/`default_height` below. Also used to seed
+/// `GtkBackend`'s viewport *before* `app.setup()` runs, so
+/// `Backend::viewport()` returns a sane, non-zero size to apps that read
+/// it during setup (e.g. to size an embedded PTY — quadraui#437) instead
+/// of `GtkBackend::new()`'s zeroed default. `DrawingArea::connect_resize`
+/// (wired below) corrects this to the widget's *actual* allocated size
+/// as soon as it's realized, so this seed only matters for the brief
+/// window between `setup()` and the first resize signal.
+const DEFAULT_WINDOW_WIDTH: i32 = 800;
+const DEFAULT_WINDOW_HEIGHT: i32 = 600;
 
 /// Drive `app` to completion in a basic single-`DrawingArea` GTK
 /// environment.
@@ -100,8 +113,8 @@ fn activate<A: AppLogic + 'static>(
     let window = ApplicationWindow::builder()
         .application(gapp)
         .title("quadraui app")
-        .default_width(800)
-        .default_height(600)
+        .default_width(DEFAULT_WINDOW_WIDTH)
+        .default_height(DEFAULT_WINDOW_HEIGHT)
         .build();
 
     // Stash the window handle so `Backend::begin_window_drag` /
@@ -139,8 +152,20 @@ fn activate<A: AppLogic + 'static>(
     }
 
     // App setup hook (one-time).
+    //
+    // Seed the viewport with the window's default size first (see
+    // `DEFAULT_WINDOW_WIDTH`/`HEIGHT` above) — the `DrawingArea` has no
+    // allocation yet at this point, so without this `backend.viewport()`
+    // would return `GtkBackend::new()`'s zeroed default and any app that
+    // sizes something (e.g. a PTY) from the setup-time viewport would
+    // size it to ~zero (quadraui#437).
     {
         let mut backend_mut = backend.borrow_mut();
+        backend_mut.begin_frame(crate::Viewport::new(
+            DEFAULT_WINDOW_WIDTH as f32,
+            DEFAULT_WINDOW_HEIGHT as f32,
+            1.0,
+        ));
         let mut app_mut = app.borrow_mut();
         app_mut.setup(&mut *backend_mut);
     }
@@ -290,6 +315,42 @@ fn activate<A: AppLogic + 'static>(
                     // Suppress original Ctrl-C from reaching the app.
                     return glib::Propagation::Stop;
                 }
+            }
+
+            // ── Ctrl-V interception (paste) ──────────────────────────
+            //
+            // GTK has no native paste signal on a bespoke `DrawingArea`
+            // canvas the way a real `gtk4::Entry`/`TextView` would —
+            // unlike TUI, which gets bracketed paste from crossterm for
+            // free. Without this, `UiEvent::ClipboardPaste` was never
+            // constructed on GTK at all, so paste silently did nothing
+            // for every text-accepting primitive, including the
+            // embedded terminal (quadraui#437). Reads the system
+            // clipboard via the same `Clipboard` service used for the
+            // Ctrl-C copy path above and delivers `ClipboardPaste` —
+            // routing to the focused input is the app's job, same as
+            // TUI's bracketed paste.
+            if let UiEvent::KeyPressed {
+                key: Key::Char('v') | Key::Char('V'),
+                modifiers:
+                    Modifiers {
+                        ctrl: true,
+                        shift: false,
+                        alt: false,
+                        cmd: false,
+                    },
+                ..
+            } = &ev
+            {
+                let mut backend_mut = backend.borrow_mut();
+                if let Some(text) = backend_mut.services().clipboard().read_text() {
+                    let paste_ev = UiEvent::ClipboardPaste(text);
+                    let mut app_mut = app.borrow_mut();
+                    let reaction = app_mut.handle(paste_ev, &mut *backend_mut);
+                    drop(backend_mut);
+                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                }
+                return glib::Propagation::Stop;
             }
 
             // ── Ctrl-A interception (select-all for text regions) ────
@@ -646,6 +707,40 @@ fn activate<A: AppLogic + 'static>(
         });
     }
     da.add_controller(scroll);
+
+    // ── Resize ─────────────────────────────────────────────────────
+    //
+    // `Backend::begin_frame(viewport)` (in `set_draw_func` above) keeps
+    // `backend.viewport()` in sync with the DA's allocated size on every
+    // *render*, but apps with side effects on resize — not just
+    // re-painting — never learned about it: GTK didn't deliver
+    // `UiEvent::WindowResized` at all (quadraui#437; see
+    // `gdk_resize_to_uievent`'s doc comment). `DrawingArea::connect_resize`
+    // fires with the widget's real allocated pixel size both on first
+    // realization (correcting the `DEFAULT_WINDOW_WIDTH`/`HEIGHT` seed
+    // above) and on every subsequent resize, mirroring how the TUI
+    // runner delivers `WindowResized` from crossterm's `Resize` event.
+    {
+        let backend = backend.clone();
+        let app = app.clone();
+        let da_for_redraw = da.clone();
+        let window_for_close = window.clone();
+        let pump_depth = pump_depth.clone();
+        da.connect_resize(move |da, width, height| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.get() > 0 {
+                return;
+            }
+            let scale = da.scale_factor() as f32;
+            let ev = gdk_resize_to_uievent(width, height, scale);
+            let reaction = {
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                app_mut.handle(ev, &mut *backend_mut)
+            };
+            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+        });
+    }
 
     // ── Backend event-queue drain (low-rate idle) ─────────────────
     //

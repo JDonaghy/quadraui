@@ -74,21 +74,33 @@ impl TerminalApp {
 
     /// Return the PTY dimensions (cols, rows) from a viewport,
     /// reserving `FOOTER_ROWS` at the bottom for the hint bar.
-    fn viewport_to_pty(vp: Viewport) -> (u16, u16) {
-        // TUI backend: viewport units are cells (f32 but always integral).
-        let cols = vp.width.max(10.0) as u16;
-        let rows = (vp.height - FOOTER_ROWS as f32).max(3.0) as u16;
+    ///
+    /// `char_w`/`line_h` are `Backend::char_width()` /
+    /// `Backend::line_height()` — `1.0` on TUI (viewport units already
+    /// are cells, so this is a no-op division) and real Pango-resolved
+    /// pixel metrics on GTK, where `Viewport` is in pixels, not cells
+    /// (quadraui#437 — this used to treat GTK's pixel viewport as a
+    /// cell count directly, spawning wildly wrong PTY sizes).
+    fn viewport_to_pty(vp: Viewport, char_w: f32, line_h: f32) -> (u16, u16) {
+        let char_w = char_w.max(1.0);
+        let line_h = line_h.max(1.0);
+        let cols = (vp.width / char_w).max(10.0) as u16;
+        let rows = (Self::term_height(vp, line_h) / line_h).max(3.0) as u16;
         (cols, rows)
     }
 
-    /// Height of the terminal grid area (viewport height minus footer).
-    fn term_height(vp: Viewport) -> f32 {
-        (vp.height - FOOTER_ROWS as f32).max(0.0)
+    /// Height of the terminal grid area (viewport height minus footer),
+    /// in the same native units as `vp` (cells on TUI, pixels on GTK).
+    fn term_height(vp: Viewport, line_h: f32) -> f32 {
+        let line_h = line_h.max(1.0);
+        (vp.height - FOOTER_ROWS as f32 * line_h).max(0.0)
     }
 
-    /// X column of the scrollbar (rightmost column of the viewport).
-    fn scrollbar_col(vp: Viewport) -> f32 {
-        (vp.width - 1.0).max(0.0)
+    /// X position of the scrollbar (rightmost character column of the
+    /// viewport), in the same native units as `vp`.
+    fn scrollbar_col(vp: Viewport, char_w: f32) -> f32 {
+        let char_w = char_w.max(1.0);
+        (vp.width - char_w).max(0.0)
     }
 
     // ── Footer rendering ──────────────────────────────────────────────────────
@@ -98,8 +110,9 @@ impl TerminalApp {
     /// - Normal operation: shows keyboard shortcuts.
     /// - Process exited: shows the exit code and prompts the user to quit.
     fn render_footer(&self, backend: &mut dyn Backend, vp: Viewport) {
-        let y = vp.height - FOOTER_ROWS as f32;
-        let footer_rect = Rect::new(0.0, y, vp.width, FOOTER_ROWS as f32);
+        let footer_h = FOOTER_ROWS as f32 * backend.line_height().max(1.0);
+        let y = vp.height - footer_h;
+        let footer_rect = Rect::new(0.0, y, vp.width, footer_h);
 
         let (text, fg, bg) = if let Some(ref sess) = self.session {
             if sess.is_exited() {
@@ -187,7 +200,7 @@ impl AppLogic for TerminalApp {
     fn setup(&mut self, backend: &mut dyn Backend) {
         let vp = backend.viewport();
         self.last_viewport = vp;
-        let (cols, rows) = Self::viewport_to_pty(vp);
+        let (cols, rows) = Self::viewport_to_pty(vp, backend.char_width(), backend.line_height());
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let shell = default_shell();
         match TerminalSession::spawn(cols, rows, &shell, &cwd, 10_000) {
@@ -198,7 +211,7 @@ impl AppLogic for TerminalApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
-        let term_h = Self::term_height(vp);
+        let term_h = Self::term_height(vp, backend.line_height());
         let rect = Rect::new(0.0, 0.0, vp.width, term_h);
 
         if let Some(ref sess) = self.session {
@@ -228,7 +241,8 @@ impl AppLogic for TerminalApp {
                 }],
                 right_segments: vec![],
             };
-            let bar_rect = Rect::new(0.0, rect.height - 1.0, rect.width, 1.0);
+            let line_h = backend.line_height().max(1.0);
+            let bar_rect = Rect::new(0.0, (rect.height - line_h).max(0.0), rect.width, line_h);
             backend.draw_status_bar(bar_rect, &bar, None, None);
         }
 
@@ -248,7 +262,11 @@ impl AppLogic for TerminalApp {
             UiEvent::WindowResized { viewport } => {
                 self.last_viewport = viewport;
                 if let Some(ref mut sess) = self.session {
-                    let (cols, rows) = Self::viewport_to_pty(viewport);
+                    let (cols, rows) = Self::viewport_to_pty(
+                        viewport,
+                        backend.char_width(),
+                        backend.line_height(),
+                    );
                     sess.resize(cols, rows);
                 }
                 return Reaction::Redraw;
@@ -260,7 +278,7 @@ impl AppLogic for TerminalApp {
             } => {
                 if let Some(ref mut sess) = self.session {
                     let vp = self.last_viewport;
-                    let term_h = Self::term_height(vp);
+                    let term_h = Self::term_height(vp, backend.line_height());
                     let in_term = position.y >= 0.0 && position.y < term_h;
 
                     // Try to forward the wheel to the PTY first.
@@ -305,8 +323,8 @@ impl AppLogic for TerminalApp {
                 ..
             } => {
                 let vp = self.last_viewport;
-                let term_h = Self::term_height(vp);
-                let sb_col = Self::scrollbar_col(vp);
+                let term_h = Self::term_height(vp, backend.line_height());
+                let sb_col = Self::scrollbar_col(vp, backend.char_width());
 
                 // Left-button click on the scrollbar column → start a drag.
                 let in_scrollbar = button == MouseButton::Left
@@ -368,7 +386,7 @@ impl AppLogic for TerminalApp {
                 }
                 // Forward button release to the PTY when mouse reporting is on.
                 let vp = self.last_viewport;
-                let term_h = Self::term_height(vp);
+                let term_h = Self::term_height(vp, backend.line_height());
                 let in_term = position.y >= 0.0 && position.y < term_h;
                 if in_term {
                     if let Some(ref mut sess) = self.session {
@@ -1098,11 +1116,15 @@ mod tests {
     }
 
     // ── viewport_to_pty reserves footer row ───────────────────────────────────
+    //
+    // char_w = line_h = 1.0 exercises the TUI path (viewport units
+    // already are cells, so the conversion is a no-op) — mirrors what
+    // `TuiBackend::char_width()`/`line_height()` actually return.
 
     #[test]
     fn viewport_to_pty_reserves_footer() {
         let vp = Viewport::new(80.0, 24.0, 1.0);
-        let (cols, rows) = TerminalApp::viewport_to_pty(vp);
+        let (cols, rows) = TerminalApp::viewport_to_pty(vp, 1.0, 1.0);
         assert_eq!(cols, 80);
         // height 24 minus FOOTER_ROWS 1 = 23
         assert_eq!(rows, 23);
@@ -1112,7 +1134,58 @@ mod tests {
     fn viewport_to_pty_minimum_rows() {
         // Very small terminal — rows must not go below 3.
         let vp = Viewport::new(80.0, 3.0, 1.0);
-        let (_cols, rows) = TerminalApp::viewport_to_pty(vp);
+        let (_cols, rows) = TerminalApp::viewport_to_pty(vp, 1.0, 1.0);
         assert_eq!(rows, 3); // max(3.0 - 1.0 = 2.0, 3.0) = 3
+    }
+
+    // ── viewport_to_pty converts pixels → cells (GTK path) ────────────────────
+    //
+    // quadraui#437: GTK's `Viewport` is in pixels, not cells. These pin
+    // the conversion so a future edit can't silently regress back to
+    // treating pixel dimensions as cell counts.
+
+    #[test]
+    fn viewport_to_pty_converts_gtk_pixels_to_cells() {
+        // 800×600px window, 8px chars, 16px lines (GtkBackend's defaults
+        // before the first real Pango measurement) → 100 cols; 600/16 =
+        // 37.5 total rows minus the 1-row footer = 36.5, truncated to 36.
+        let vp = Viewport::new(800.0, 600.0, 1.0);
+        let (cols, rows) = TerminalApp::viewport_to_pty(vp, 8.0, 16.0);
+        assert_eq!(cols, 100);
+        assert_eq!(rows, 36);
+    }
+
+    #[test]
+    fn viewport_to_pty_gtk_minimum_rows() {
+        // A tiny GTK window still clamps to the same 10-col/3-row floor
+        // as TUI, once converted through the char metrics.
+        let vp = Viewport::new(40.0, 20.0, 1.0);
+        let (cols, rows) = TerminalApp::viewport_to_pty(vp, 8.0, 16.0);
+        assert_eq!(cols, 10); // (40/8=5) clamped up to the 10-col floor
+        assert_eq!(rows, 3); // (20/16=1.25 → term_height 4px/16=0) clamped up to 3
+    }
+
+    // ── term_height / scrollbar_col unit conversion ────────────────────────────
+
+    #[test]
+    fn term_height_tui_units_unchanged() {
+        // line_h = 1.0 (TUI): behaves exactly like the old hardcoded
+        // `vp.height - FOOTER_ROWS` formula.
+        let vp = Viewport::new(80.0, 24.0, 1.0);
+        assert_eq!(TerminalApp::term_height(vp, 1.0), 23.0);
+    }
+
+    #[test]
+    fn term_height_gtk_subtracts_pixel_footer() {
+        // line_h = 16px (GTK): footer is FOOTER_ROWS * line_h pixels,
+        // not a flat 1px sliver.
+        let vp = Viewport::new(800.0, 600.0, 1.0);
+        assert_eq!(TerminalApp::term_height(vp, 16.0), 584.0);
+    }
+
+    #[test]
+    fn scrollbar_col_gtk_uses_char_width() {
+        let vp = Viewport::new(800.0, 600.0, 1.0);
+        assert_eq!(TerminalApp::scrollbar_col(vp, 8.0), 792.0);
     }
 }
