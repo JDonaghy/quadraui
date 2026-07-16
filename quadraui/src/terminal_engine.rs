@@ -1314,6 +1314,66 @@ mod tests {
         );
     }
 
+    /// The same #397 crash sequence, driven end-to-end through a **real
+    /// `TerminalSession`** rather than a bare `vt100::Parser`.
+    ///
+    /// This is the test that actually covers the code this fix touches:
+    /// `TerminalSession::resize()` (which calls `screen_mut().set_size()` via
+    /// the 0.16 API) and `TerminalSession::poll()` →
+    /// `process_with_capture()` → the `catch_unwind`-guarded
+    /// `parser.process()` call sites. The raw-parser test above proves the
+    /// vt100 bump cures the underlying bug; this one proves the session
+    /// survives the sequence and stays usable — the issue's acceptance bar.
+    ///
+    /// A panic inside `process_with_capture` is caught by `catch_unwind`, so
+    /// a regression there surfaces as a *dead session* (the final "still
+    /// alive" assertion fails) rather than as a test-harness panic.
+    #[test]
+    #[cfg(unix)]
+    fn session_alt_screen_resize_cursor_clamp_no_panic() {
+        let cwd = std::env::temp_dir();
+        // 40 rows: tall enough to park the cursor at row 35, well below the
+        // 20-row height we shrink to mid-alt-screen.
+        let mut sess =
+            TerminalSession::spawn(80, 40, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+
+        // Steps 1+2: park the cursor at row 35 (ESC[36;1H, 1-indexed) and enter
+        // the alternate screen — vt100 DEC-saves the cursor, recording row 35.
+        sess.send_str("printf '\\033[36;1H\\033[?1049h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.on_alt_screen()),
+            "child should have entered the alternate screen"
+        );
+
+        // Step 3: the host shrinks the pane while the child is on the alt
+        // screen. On vt100 0.15.2 this clamped `pos` but left `saved_pos.row`
+        // at 35 — the bug.
+        sess.resize(80, 20);
+        assert_eq!(sess.rows(), 20, "resize should have taken effect");
+
+        // Steps 4+5: leave the alternate screen (DEC-restores the saved cursor)
+        // and print a byte at the restored position. On 0.15.2 the byte hit
+        // `Grid::drawing_cell(35).unwrap()` → `None` → panic inside
+        // `process_with_capture`.
+        sess.send_str("printf '\\033[?1049lX'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| !s.on_alt_screen()),
+            "child should have left the alternate screen"
+        );
+
+        // The session must still be usable: if the parser had panicked, the
+        // chunk would have been dropped — and a regression in the catch_unwind
+        // wiring (e.g. swallowing all subsequent input) shows up right here.
+        sess.send_str("echo still-alive\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.screen_text().contains("still-alive")),
+            "session must still process input after the alt-screen resize round-trip"
+        );
+        assert!(!sess.is_exited(), "session must not have died");
+
+        sess.send_str("exit\n");
+    }
+
     // ── Regression: vt100 0.15.2 wide-char column-boundary panic (#377) ─────
 
     /// Feed wide Unicode characters to the vt100 parser such that a 2-cell
