@@ -347,6 +347,25 @@ pub enum UiEvent {
         focus: Point,
     },
 
+    // ── Split-tree divider drag ────────────────────────────────────────
+    /// A [`crate::SplitTree`] divider drag moved. Emitted by
+    /// [`crate::dispatch::dispatch_mouse_drag`] while a
+    /// [`crate::DragTarget::SplitDivider`] is active.
+    ///
+    /// `tree` identifies which tree (apps may host more than one — e.g.
+    /// vimcode's editor-group tree and per-group window tree); apps
+    /// dispatch on it and apply the update to the corresponding
+    /// `SplitTree` state. `split_index` is the pre-order index of the
+    /// `SplitTree::Split` node being resized (see
+    /// [`crate::SplitTreeDivider::split_index`]). `new_ratio` is the
+    /// resolved, already-clamped `0.0..=1.0` ratio ready to feed
+    /// directly to [`crate::SplitTree::set_ratio_at_index`].
+    SplitDividerDragged {
+        tree: WidgetId,
+        split_index: usize,
+        new_ratio: f32,
+    },
+
     // ── Native menu activation ────────────────────────────────────────
     /// A menu item was activated via a native menu installer
     /// ([`Backend::install_menu_bar`][crate::Backend::install_menu_bar]).

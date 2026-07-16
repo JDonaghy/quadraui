@@ -1433,6 +1433,28 @@ impl Backend for TuiBackend {
         crate::tui::tui_split_layout(split, area)
     }
 
+    fn draw_split_tree(
+        &mut self,
+        rect: QRect,
+        tree: &crate::primitives::split_tree::SplitTree,
+    ) -> crate::primitives::split_tree::SplitTreeLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_split_tree called outside enter_frame_scope");
+        crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme)
+    }
+
+    fn split_tree_layout(
+        &self,
+        rect: QRect,
+        tree: &crate::primitives::split_tree::SplitTree,
+    ) -> crate::primitives::split_tree::SplitTreeLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_split_tree_layout(tree, area)
+    }
+
     fn draw_panel(
         &mut self,
         rect: QRect,
@@ -2069,6 +2091,30 @@ mod tests {
         fn split_layout(&self, _r: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
             let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
             split.layout(bounds, crate::primitives::split::SplitMeasure::new(1.0))
+        }
+
+        fn draw_split_tree(
+            &mut self,
+            _r: QRect,
+            tree: &crate::primitives::split_tree::SplitTree,
+        ) -> crate::primitives::split_tree::SplitTreeLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            tree.layout(
+                bounds,
+                crate::primitives::split_tree::SplitTreeMeasure::new(1.0),
+            )
+        }
+
+        fn split_tree_layout(
+            &self,
+            _r: QRect,
+            tree: &crate::primitives::split_tree::SplitTree,
+        ) -> crate::primitives::split_tree::SplitTreeLayout {
+            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
+            tree.layout(
+                bounds,
+                crate::primitives::split_tree::SplitTreeMeasure::new(1.0),
+            )
         }
 
         fn draw_panel(

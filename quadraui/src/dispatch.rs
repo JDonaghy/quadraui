@@ -32,6 +32,7 @@ use crate::event::{MouseButton, Point, ScrollDelta, UiEvent};
 use crate::modal_stack::ModalStack;
 use crate::primitives::palette::PaletteEvent;
 use crate::primitives::scrollbar::ScrollAxis;
+use crate::primitives::split_tree::SplitDirection;
 use crate::types::WidgetId;
 use crate::Modifiers;
 
@@ -123,6 +124,36 @@ pub enum DragTarget {
         region: WidgetId,
         /// Screen position where the drag started.
         anchor: Point,
+    },
+    /// A [`crate::SplitTree`] divider drag. `tree` identifies which
+    /// tree this divider belongs to — apps hosting more than one split
+    /// tree (e.g. vimcode's per-window-group tree and its own in-group
+    /// vim-window tree) use this to route the resulting event to the
+    /// right state. `split_index` is the divider's pre-order index
+    /// (see [`crate::SplitTreeDivider::split_index`]).
+    ///
+    /// `axis_start` / `axis_size` are the *parent* rect's extent along
+    /// the split axis — copied from
+    /// [`crate::SplitTreeDivider::axis_start`] /
+    /// [`crate::SplitTreeDivider::axis_size`] at drag-start so
+    /// [`dispatch_mouse_drag`] can convert a cursor position directly
+    /// into a ratio without re-running the tree's `layout()` on every
+    /// mouse-move:
+    ///
+    /// ```text
+    /// ratio = (cursor_axis - axis_start) / axis_size   (clamped 0..=1)
+    /// ```
+    ///
+    /// `direction` selects which cursor coordinate feeds `cursor_axis`
+    /// (`x` for [`SplitDirection::Horizontal`], `y` for
+    /// [`SplitDirection::Vertical`] — matching
+    /// [`crate::SplitTree::layout`]'s axis convention).
+    SplitDivider {
+        tree: WidgetId,
+        split_index: usize,
+        direction: SplitDirection,
+        axis_start: f32,
+        axis_size: f32,
     },
 }
 
@@ -318,6 +349,24 @@ pub fn dispatch_mouse_drag(
                 region: region.clone(),
                 anchor: *anchor,
                 focus: position,
+            });
+        }
+        Some(DragTarget::SplitDivider {
+            tree,
+            split_index,
+            direction,
+            axis_start,
+            axis_size,
+        }) if *axis_size > 0.0 => {
+            let cursor_axis = match direction {
+                SplitDirection::Horizontal => position.x,
+                SplitDirection::Vertical => position.y,
+            };
+            let new_ratio = ((cursor_axis - *axis_start) / *axis_size).clamp(0.0, 1.0);
+            events.push(UiEvent::SplitDividerDragged {
+                tree: tree.clone(),
+                split_index: *split_index,
+                new_ratio,
             });
         }
         _ => {}
@@ -923,6 +972,7 @@ mod tests {
             DragTarget::ScrollbarY { widget, .. } => assert_eq!(widget, &id("picker")),
             DragTarget::ScrollbarX { .. } => panic!("expected ScrollbarY"),
             DragTarget::TextSelection { .. } => panic!("expected ScrollbarY"),
+            DragTarget::SplitDivider { .. } => panic!("expected ScrollbarY"),
         }
         drag.end();
         assert!(!drag.is_active());
@@ -1030,6 +1080,117 @@ mod tests {
         let events = dispatch_mouse_up(&stack, &mut drag, pt(5.0, 5.0), MouseButton::Left);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], UiEvent::MouseUp { .. }));
+        assert!(!drag.is_active());
+    }
+
+    // ── SplitDivider drag tests ─────────────────────────────────────
+
+    #[test]
+    fn split_divider_drag_horizontal_computes_ratio() {
+        // Parent bounds 41 wide starting at x=0 (matches a SplitTree
+        // divider's axis_start/axis_size for a Horizontal split).
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::SplitDivider {
+            tree: id("tree"),
+            split_index: 0,
+            direction: SplitDirection::Horizontal,
+            axis_start: 0.0,
+            axis_size: 40.0,
+        });
+        // Cursor at x=30 → ratio 0.75.
+        let events = dispatch_mouse_drag(&drag, pt(30.0, 5.0), buttons_mask_left());
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
+        match &events[1] {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } => {
+                assert_eq!(tree, &id("tree"));
+                assert_eq!(*split_index, 0);
+                assert!((new_ratio - 0.75).abs() < 0.001);
+            }
+            other => panic!("expected SplitDividerDragged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn split_divider_drag_vertical_reads_y_axis() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::SplitDivider {
+            tree: id("tree"),
+            split_index: 2,
+            direction: SplitDirection::Vertical,
+            axis_start: 100.0,
+            axis_size: 50.0,
+        });
+        // Cursor at y=125 → (125-100)/50 = 0.5. x is irrelevant for Vertical.
+        let events = dispatch_mouse_drag(&drag, pt(999.0, 125.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::SplitDividerDragged {
+                split_index,
+                new_ratio,
+                ..
+            } => {
+                assert_eq!(*split_index, 2);
+                assert!((new_ratio - 0.5).abs() < 0.001);
+            }
+            other => panic!("expected SplitDividerDragged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn split_divider_drag_clamps_beyond_bounds() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::SplitDivider {
+            tree: id("tree"),
+            split_index: 0,
+            direction: SplitDirection::Horizontal,
+            axis_start: 0.0,
+            axis_size: 40.0,
+        });
+        // Cursor well before axis_start → clamps to 0.0.
+        let events = dispatch_mouse_drag(&drag, pt(-100.0, 5.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::SplitDividerDragged { new_ratio, .. } => assert_eq!(*new_ratio, 0.0),
+            other => panic!("expected SplitDividerDragged, got {:?}", other),
+        }
+        // Cursor well past axis_start + axis_size → clamps to 1.0.
+        let events = dispatch_mouse_drag(&drag, pt(1000.0, 5.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::SplitDividerDragged { new_ratio, .. } => assert_eq!(*new_ratio, 1.0),
+            other => panic!("expected SplitDividerDragged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn split_divider_drag_with_zero_axis_size_does_not_crash_or_emit() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::SplitDivider {
+            tree: id("tree"),
+            split_index: 0,
+            direction: SplitDirection::Horizontal,
+            axis_start: 0.0,
+            axis_size: 0.0,
+        });
+        let events = dispatch_mouse_drag(&drag, pt(5.0, 5.0), buttons_mask_left());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], UiEvent::MouseMoved { .. }));
+    }
+
+    #[test]
+    fn split_divider_drag_ends_on_mouse_up() {
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::SplitDivider {
+            tree: id("tree"),
+            split_index: 0,
+            direction: SplitDirection::Horizontal,
+            axis_start: 0.0,
+            axis_size: 40.0,
+        });
+        let stack = ModalStack::new();
+        dispatch_mouse_up(&stack, &mut drag, pt(5.0, 5.0), MouseButton::Left);
         assert!(!drag.is_active());
     }
 
@@ -1633,7 +1794,9 @@ mod tests {
         assert!(drag.is_active());
         match drag.target().unwrap() {
             DragTarget::ScrollbarY { inverted, .. } => assert!(*inverted),
-            DragTarget::ScrollbarX { .. } | DragTarget::TextSelection { .. } => {
+            DragTarget::ScrollbarX { .. }
+            | DragTarget::TextSelection { .. }
+            | DragTarget::SplitDivider { .. } => {
                 panic!("expected ScrollbarY")
             }
         }
@@ -1738,7 +1901,9 @@ mod tests {
                 assert_eq!(*max_scroll, 1800);
                 assert!(*grab_offset > 9.0 && *grab_offset < 11.0); // 60.0 - 50.0 = 10.0
             }
-            DragTarget::ScrollbarY { .. } | DragTarget::TextSelection { .. } => {
+            DragTarget::ScrollbarY { .. }
+            | DragTarget::TextSelection { .. }
+            | DragTarget::SplitDivider { .. } => {
                 panic!("expected ScrollbarX")
             }
         }

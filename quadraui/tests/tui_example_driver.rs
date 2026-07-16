@@ -50,6 +50,8 @@ mod pipeline_app;
 mod selection_app;
 #[path = "../examples/common/shell_menu_demo.rs"]
 mod shell_menu_demo;
+#[path = "../examples/common/split_tree_app.rs"]
+mod split_tree_app;
 #[path = "../examples/common/tab_group_demo.rs"]
 mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
@@ -70,6 +72,7 @@ use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
+use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
 
@@ -2031,4 +2034,117 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
         Reaction::Exit,
         "q should quit normally once the overlay is closed"
     );
+}
+
+// ─── SplitTreeApp: N-way nested split via DragTarget::SplitDivider ─────────
+//
+// Tree shape: Split(Horizontal, Split(Vertical, a, b), c) — split_index 0
+// is the root (outer, side-by-side) divider painted as `│`; split_index 1
+// is the nested (stacked) divider painted as `─`, only inside the left
+// column. Exercises issue #435's DragTarget::SplitDivider end to end:
+// hit-test -> DragState::begin -> dispatch_mouse_drag ->
+// UiEvent::SplitDividerDragged -> SplitTree::set_ratio_at_index.
+
+#[test]
+fn split_tree_initial_screen_paints_all_leaves_and_status() {
+    let driver = TuiDriver::new(SplitTreeApp::new(), 80, 24);
+    let screen = driver.screen();
+    assert!(
+        screen.contains(" a "),
+        "leaf a should be painted:\n{screen}"
+    );
+    assert!(
+        screen.contains(" b "),
+        "leaf b should be painted:\n{screen}"
+    );
+    assert!(
+        screen.contains(" c "),
+        "leaf c should be painted:\n{screen}"
+    );
+    assert!(
+        screen.contains("3 leaves, 2 dividers"),
+        "status bar should report the tree shape:\n{screen}"
+    );
+    assert_eq!(driver.app().tree().ratio_at_index(0), Some(0.5));
+    assert_eq!(driver.app().tree().ratio_at_index(1), Some(0.5));
+}
+
+#[test]
+fn split_tree_dragging_outer_divider_updates_root_ratio_only() {
+    let mut driver = TuiDriver::new(SplitTreeApp::new(), 80, 24);
+
+    // The root split is Horizontal (side-by-side) -> painted as a
+    // vertical `│` line. It's the only Horizontal split in this tree,
+    // so it's the only `│` on screen.
+    let (dx, dy) = driver
+        .find("│")
+        .unwrap_or_else(|| panic!("outer divider not painted:\n{}", driver.screen()));
+
+    driver.drag(dx, dy, dx - 20.0, dy);
+
+    let root_ratio = driver
+        .app()
+        .tree()
+        .ratio_at_index(0)
+        .expect("root split still present after drag");
+    assert!(
+        root_ratio < 0.4,
+        "dragging the outer divider 20 cols left should shrink ratio_at_index(0) well below 0.5, got {root_ratio}"
+    );
+    assert_eq!(
+        driver.app().tree().ratio_at_index(1),
+        Some(0.5),
+        "dragging the outer divider must not touch the nested split's ratio"
+    );
+}
+
+#[test]
+fn split_tree_dragging_inner_divider_updates_nested_ratio_only() {
+    let mut driver = TuiDriver::new(SplitTreeApp::new(), 80, 24);
+
+    // The nested split is Vertical (stacked) -> painted as a
+    // horizontal `─` line, only within the left column.
+    let (dx, dy) = driver
+        .find("─")
+        .unwrap_or_else(|| panic!("inner divider not painted:\n{}", driver.screen()));
+
+    driver.drag(dx, dy, dx, dy - 5.0);
+
+    let nested_ratio = driver
+        .app()
+        .tree()
+        .ratio_at_index(1)
+        .expect("nested split still present after drag");
+    assert!(
+        nested_ratio < 0.4,
+        "dragging the inner divider up should shrink ratio_at_index(1) well below 0.5, got {nested_ratio}"
+    );
+    assert_eq!(
+        driver.app().tree().ratio_at_index(0),
+        Some(0.5),
+        "dragging the inner divider must not touch the root split's ratio"
+    );
+}
+
+#[test]
+fn split_tree_r_resets_ratios_after_drag() {
+    let mut driver = TuiDriver::new(SplitTreeApp::new(), 80, 24);
+    let (dx, dy) = driver
+        .find("│")
+        .unwrap_or_else(|| panic!("outer divider not painted:\n{}", driver.screen()));
+    driver.drag(dx, dy, dx - 20.0, dy);
+    assert_ne!(driver.app().tree().ratio_at_index(0), Some(0.5));
+
+    let reaction = driver.type_char('r');
+    assert_eq!(reaction, Reaction::Redraw, "r should reset and redraw");
+    assert_eq!(driver.app().tree().ratio_at_index(0), Some(0.5));
+    assert_eq!(driver.app().tree().ratio_at_index(1), Some(0.5));
+}
+
+#[test]
+fn split_tree_q_exits() {
+    let mut driver = TuiDriver::new(SplitTreeApp::new(), 80, 24);
+    let reaction = driver.type_char('q');
+    assert_eq!(reaction, Reaction::Exit);
+    assert!(driver.exited());
 }

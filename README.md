@@ -81,6 +81,10 @@ Current set (declarative descriptions + layout + dual rasterisers):
   composition, hover-to-switch, Alt-key activation.
 - `Split` — two-pane container with draggable divider, horizontal +
   vertical, min-size constraints.
+- `SplitTree` — N-way recursive split tree (arbitrary nesting of
+  horizontal/vertical `Split` nodes, addressed by pre-order index) for
+  hosts like editor-group layouts or vim-style window splits that
+  `Split`'s fixed two-pane shape can't express.
 - `Panel` — container chrome with title bar, action buttons, content region.
 - `Toast` (`ToastStack`) — corner-stacked notification boxes with
   severity tint, dismiss, action buttons.
@@ -112,6 +116,7 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 | `msv_sc_panel` | `tui` | Source-Control consumer pattern: `SectionAux::Input` commit message editor + N collapsible `TreeView` sections (Changes / Staged / Worktrees). Adds input-mode keystroke routing + chevron-click collapse toggle on top of the multi-tree shape. |
 | `tui_menu_bar` / `gtk_menu_bar` | `tui` / `gtk` | Complete menu bar using `MenuSystem` compose helper: dropdown menus, hover-to-switch, keyboard navigation (Alt+key, arrows, Enter, Esc). See *Compose helpers* below. |
 | `tui_split` / `gtk_split` | `tui` / `gtk` | Draggable `Split` with two labelled panes. Toggle horizontal/vertical, reset ratio. |
+| `tui_split_tree` / `gtk_split_tree` | `tui` / `gtk` | `SplitTree` 3-way nested split (`Split(H, Split(V, A, B), C)`); every divider draggable via `DragTarget::SplitDivider`. |
 | `tui_panel` / `gtk_panel` | `tui` / `gtk` | `Panel` with title bar, close/maximize actions, content area, collapse toggle. |
 | `tui_toast` / `gtk_toast` | `tui` / `gtk` | `ToastStack` with severity tints, dismiss, action buttons. |
 | `tui_indicators` / `gtk_indicators` | `tui` / `gtk` | `ProgressBar` + `Spinner` demo — determinate/indeterminate, cancel. |

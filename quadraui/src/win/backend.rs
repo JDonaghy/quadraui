@@ -324,6 +324,22 @@ impl Backend for WinBackend {
         todo!("DirectWrite split layout")
     }
 
+    fn draw_split_tree(
+        &mut self,
+        _rect: Rect,
+        _tree: &crate::primitives::split_tree::SplitTree,
+    ) -> crate::primitives::split_tree::SplitTreeLayout {
+        todo!("Direct2D split-tree rasteriser")
+    }
+
+    fn split_tree_layout(
+        &self,
+        _rect: Rect,
+        _tree: &crate::primitives::split_tree::SplitTree,
+    ) -> crate::primitives::split_tree::SplitTreeLayout {
+        todo!("DirectWrite split-tree layout")
+    }
+
     fn draw_panel(&mut self, _rect: Rect, _panel: &Panel) -> PanelLayout {
         todo!("Direct2D panel rasteriser")
     }

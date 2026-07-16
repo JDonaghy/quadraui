@@ -2129,6 +2129,39 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn draw_split_tree(
+        &mut self,
+        rect: QRect,
+        tree: &crate::primitives::split_tree::SplitTree,
+    ) -> crate::primitives::split_tree::SplitTreeLayout {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_split_tree called outside enter_frame_scope");
+        crate::gtk::draw_split_tree(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            tree,
+            &self.current_theme,
+        )
+    }
+
+    fn split_tree_layout(
+        &self,
+        rect: QRect,
+        tree: &crate::primitives::split_tree::SplitTree,
+    ) -> crate::primitives::split_tree::SplitTreeLayout {
+        crate::gtk::gtk_split_tree_layout(
+            tree,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
+
     fn draw_panel(
         &mut self,
         rect: QRect,
