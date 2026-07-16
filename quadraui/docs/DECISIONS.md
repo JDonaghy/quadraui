@@ -356,6 +356,100 @@ Three vimcode panels migrate sequentially as the validation set:
 
 ---
 
+## D-004 — `SplitTree` is a distinct primitive from `Split` (issue #435)
+
+**Status:** Decided and shipped.
+
+**Date:** 2026-07-16.
+
+### Question
+
+`Split` (`quadraui/src/primitives/split.rs`) is a two-pane container
+with a draggable divider. vimcode's `GroupLayout`/`WindowLayout`
+(`vimcode/src/core/window.rs`) need arbitrary N-way *recursive*
+nesting of the same kind of divider — editor-group splits and in-group
+vim window splits can nest to any depth. Do we generalise `Split`
+itself (e.g. a `children: Vec<Split>` or a recursion flag), or ship a
+new primitive?
+
+### Decision
+
+**Separate primitive.** `quadraui::primitives::split_tree::{SplitTree,
+SplitTreeDivider, SplitTreeLayout, SplitTreeMeasure}`. `Split` is
+unchanged.
+
+### Why
+
+Applying D-001's principle: a recursive N-way split tree is a
+different UX/data concept from a fixed two-pane divider, not an
+algebraic generalisation that should live behind a flag on `Split`.
+
+1. **Different addressing model.** `Split` has exactly one divider and
+   one `ratio` field on the struct itself. `SplitTree` has zero-to-many
+   dividers, addressed by a stable pre-order `split_index` — the whole
+   point of `set_ratio_at_index` / `adjust_ratio_at_index` /
+   `parent_split_of` has no analogue in `Split`'s shape.
+2. **Different leaf identity.** `Split`'s two panes are `first`/`second`
+   by convention; a consumer paints into `first_bounds`/`second_bounds`
+   directly. `SplitTree` leaves carry a `WidgetId` each, resolved via
+   `SplitTreeLayout::leaves: Vec<(WidgetId, Rect)>` — an N-way host
+   needs to know *which* leaf a rect belongs to, a two-pane host never
+   does.
+3. **A `children: Vec<Split>` shape would still need a second type.**
+   Divider geometry for a tree (pre-order index, parent/child bounds
+   propagation) is structurally different from a single divider's
+   layout math — reusing `Split`'s `SplitLayout` (exactly one
+   `divider_bounds` field) for an N-way tree doesn't type-check without
+   changing its shape, which would break every existing `Split`
+   consumer for a feature most of them don't need.
+4. **Existing two-pane consumers stay untouched.** `Split` remains the
+   simple, zero-recursion-overhead primitive for sidebar/editor,
+   diff-view, and other genuinely-two-pane layouts — the common case
+   isn't forced to pay for tree traversal it doesn't use.
+
+### What's shared
+
+`SplitTree` reuses `Split`'s existing `SplitDirection` type (not a new
+enum) — same crate, same mental model, same TUI divider glyphs (`│`/
+`─`) and GTK divider chrome. The two primitives' rasterisers
+(`tui::draw_split` / `tui::draw_split_tree`,
+`gtk::draw_split` / `gtk::draw_split_tree`) are siblings, not one
+generalised over the other — see D-001's "share implementation via
+internal helpers, not public type-level parameters" if a genuinely
+shared internal helper emerges later (there wasn't enough duplication
+yet to justify one at ship time).
+
+### Cross-cutting infra landed alongside
+
+`DragTarget::SplitDivider` (`quadraui/src/dispatch.rs`) and
+`UiEvent::SplitDividerDragged` (`quadraui/src/event.rs`) — a divider
+drag now goes through the same `dispatch_mouse_drag` path scrollbars
+already use, instead of a backend hand-rolling `Option<usize>` drag
+state (vimcode's `dragging_group_divider` / `dragging_window_divider`
+pattern, duplicated per backend per tree today).
+
+### What this does NOT mean
+
+- We won't retrofit `Split` to be `SplitTree` with one `Split` node —
+  the single-divider case is `Split`, not a degenerate tree, matching
+  D-003's equivalent call for `MultiSectionView` vs. a single section.
+- `SplitTree`'s ratio clamp (`MIN_RATIO`/`MAX_RATIO` = 0.1/0.9) is a
+  simple ratio-based floor, not `Split`'s pixel-based
+  `first_min`/`second_min`. If a consumer needs pixel-precise per-node
+  minimums, that's an additive follow-up, not a reason to have blocked
+  this primitive on designing it up front.
+
+### Known gap (tracked, not blocking)
+
+The macOS backend (`quadraui/src/macos/`) does not yet implement
+`Backend::draw_split_tree`/`split_tree_layout` — that module only
+compiles under `cfg(target_os = "macos")`, so it can't be authored or
+verified from a Linux dev box. `win/backend.rs` has the standard
+`todo!()` stub, matching every other not-yet-implemented Win-GUI
+primitive.
+
+---
+
 ## Principle (established by D-001, applied to D-002 and D-003)
 
 **One primitive per UX concept, not per algebraic reduction.**

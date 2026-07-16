@@ -1560,6 +1560,12 @@ mod tests {
         fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
             unimplemented!()
         }
+        fn draw_split_tree(&mut self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
+            unimplemented!()
+        }
+        fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
+            unimplemented!()
+        }
         fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
             unimplemented!()
         }

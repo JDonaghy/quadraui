@@ -39,6 +39,7 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout};
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
@@ -693,6 +694,21 @@ pub trait Backend {
     /// Compute the split layout without painting. Hosts call this in
     /// drag handlers to recompute the ratio from cursor position.
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout;
+
+    /// Draw a [`SplitTree`]'s dividers. The backend computes the
+    /// layout with its native divider thickness (1 cell for TUI, ~4px
+    /// for GTK) and returns the [`SplitTreeLayout`] so hosts can route
+    /// clicks (via [`SplitTreeLayout::hit_test_divider`] /
+    /// [`SplitTreeLayout::hit_test_divider_cell`] /
+    /// [`SplitTreeLayout::hit_test_leaf`]) and drive drag operations
+    /// via [`crate::DragTarget::SplitDivider`]. Leaf content is NOT
+    /// drawn — hosts paint into each `layout.leaves[i].1` rect.
+    fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
+
+    /// Compute the split-tree layout without painting. Hosts call this
+    /// in drag handlers to recompute a divider's ratio from cursor
+    /// position without re-painting.
+    fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
 
     /// Draw a [`Panel`] chrome (title bar + action buttons). The
     /// backend computes the layout with its native title-bar height

@@ -32,6 +32,7 @@ pub mod scrollbar;
 pub mod sidebar_panel;
 pub mod spinner;
 pub mod split;
+pub mod split_tree;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod terminal;

@@ -231,6 +231,10 @@ pub use primitives::spinner::{Spinner, SpinnerEvent, SpinnerHit, SpinnerLayout, 
 pub use primitives::split::{
     Split, SplitDirection, SplitEvent, SplitHit, SplitLayout, SplitMeasure,
 };
+pub use primitives::split_tree::{
+    SplitTree, SplitTreeDivider, SplitTreeLayout, SplitTreeMeasure,
+    MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
+};
 pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
