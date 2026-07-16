@@ -109,12 +109,14 @@ pub fn gdk_scroll_to_uievent(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
 /// `scale` is the surface scale factor (HiDPI multiplier) — typically
 /// `widget.scale_factor() as f32`.
 ///
-/// Currently unused — GTK doesn't surface resize through this queue
-/// because `Backend::begin_frame(viewport)` already updates the
-/// viewport from the active DrawingArea each frame. Kept here as a
-/// reference translator for the day a non-DrawingArea-driven resize
-/// path needs to push into the queue.
-#[allow(dead_code)]
+/// `Backend::begin_frame(viewport)` keeps `Backend::viewport()` in sync
+/// with the DrawingArea's allocated size every frame, so pure `render`
+/// logic never needed this. But apps with *side effects* on resize
+/// (e.g. `TerminalApp` resizing its PTY — quadraui#437) need an actual
+/// event, not just an updated viewport the next time they happen to
+/// render. `src/gtk/run.rs` wires `DrawingArea::connect_resize` to this
+/// translator so GTK delivers `WindowResized` the same way TUI does via
+/// crossterm's `Resize` event.
 pub fn gdk_resize_to_uievent(width: i32, height: i32, scale: f32) -> UiEvent {
     UiEvent::WindowResized {
         viewport: crate::Viewport::new(width as f32, height as f32, scale),
