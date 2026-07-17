@@ -18,7 +18,9 @@ terminal = ["dep:portable-pty", "dep:vt100"]
 tui = ["dep:ratatui", "dep:arboard", "dep:unicode-width"]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
-gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard"]
+# `unicode-width` is needed for wide-char (CJK/emoji) cell-width detection
+# in the terminal rasteriser (#439).
+gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard", "dep:unicode-width"]
 
 # Public Win-GUI rasterisers in `quadraui::win`. No deps yet — the
 # feature gate exists so the module compiles and the Backend impl is
@@ -51,6 +53,8 @@ gtk4 = { version = "0.7", features = ["v4_10"], optional = true }
 pangocairo = { version = "0.18", optional = true }
 # Optional — pulled in by the `tui` feature.
 ratatui = { version = "0.30", optional = true }
+# Optional — pulled in by the `tui` and `gtk` features for wide-char
+# (CJK/emoji) cell-width detection.
 unicode-width = { version = "0.2.2", optional = true }
 # Optional — pulled in by `tui` and `gtk` for system clipboard access.
 arboard = { version = "3", optional = true }
