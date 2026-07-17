@@ -720,25 +720,77 @@ fn activate<A: AppLogic + 'static>(
     // realization (correcting the `DEFAULT_WINDOW_WIDTH`/`HEIGHT` seed
     // above) and on every subsequent resize, mirroring how the TUI
     // runner delivers `WindowResized` from crossterm's `Resize` event.
+    //
+    // The dispatch of `UiEvent::WindowResized` itself is **debounced**
+    // (quadraui#437 follow-up): a live edge-drag fires `connect_resize`
+    // dozens of times per second, and apps with PTY-backed side effects
+    // (`TerminalApp::handle` → `TerminalSession::resize` → SIGWINCH) were
+    // resizing the child shell on every single intermediate frame. A
+    // shell's line-editor (readline/zle) redraws its prompt on SIGWINCH;
+    // firing another SIGWINCH before that redraw finishes interleaves two
+    // half-written escape sequences and leaves the display permanently
+    // garbled — no amount of further resizing, scrolling, or typing
+    // recovers it, because the line-editor's internal notion of the
+    // screen is now out of sync with what's actually on screen. Real
+    // terminal emulators avoid this by resizing the PTY only once the
+    // drag settles, not on every intermediate frame; `resize_timer` below
+    // does the same via a short trailing-edge debounce. Painting itself
+    // is unaffected and stays perfectly live — `set_draw_func` re-reads
+    // the DA's actual allocated size every frame regardless of whether
+    // the debounced event has fired yet.
+    let resize_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
     {
         let backend = backend.clone();
         let app = app.clone();
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         let pump_depth = pump_depth.clone();
-        da.connect_resize(move |da, width, height| {
+        let resize_timer = resize_timer.clone();
+        da.connect_resize(move |_da, _width, _height| {
             // #427 re-entrancy guard — see the key-press handler above.
             if pump_depth.get() > 0 {
                 return;
             }
-            let scale = da.scale_factor() as f32;
-            let ev = gdk_resize_to_uievent(width, height, scale);
-            let reaction = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
-            };
-            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+            // Cancel any pending debounced dispatch — this signal
+            // supersedes it. `remove()` is a no-op-safe consume; the
+            // source may have already fired (Cell held `None`).
+            if let Some(id) = resize_timer.take() {
+                id.remove();
+            }
+            let backend = backend.clone();
+            let app = app.clone();
+            let da_for_redraw = da_for_redraw.clone();
+            let window_for_close = window_for_close.clone();
+            let pump_depth = pump_depth.clone();
+            let resize_timer_inner = resize_timer.clone();
+            let id = glib::source::timeout_add_local_once(Duration::from_millis(120), move || {
+                // The fired timer is no longer "pending" — clear so a
+                // future resize doesn't try to cancel a dead source.
+                resize_timer_inner.set(None);
+                // #427 re-entrancy guard, re-checked at fire time —
+                // a dialog pump may have started after this timer was
+                // scheduled.
+                if pump_depth.get() > 0 {
+                    return;
+                }
+                // Query the DA's *current* (settled) allocated size
+                // rather than replaying the size captured when this
+                // timer was scheduled — later `connect_resize` calls
+                // during the same drag reschedule (see above), so by
+                // the time this fires the widget has already reached
+                // its final size.
+                let width = da_for_redraw.width();
+                let height = da_for_redraw.height();
+                let scale = da_for_redraw.scale_factor() as f32;
+                let ev = gdk_resize_to_uievent(width, height, scale);
+                let reaction = {
+                    let mut backend_mut = backend.borrow_mut();
+                    let mut app_mut = app.borrow_mut();
+                    app_mut.handle(ev, &mut *backend_mut)
+                };
+                apply_reaction(reaction, &da_for_redraw, &window_for_close);
+            });
+            resize_timer.set(Some(id));
         });
     }
 
