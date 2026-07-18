@@ -287,6 +287,49 @@ fn activate<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             };
 
+            // ── ActivityBar keyboard focus intercept ────────────────
+            //
+            // When an `ActivityBar` declared `is_keyboard_focused = true`
+            // during the last render pass, redirect every `KeyPressed`
+            // event to it as `UiEvent::ActivityBar(id, KeyPressed { … })`
+            // so the app receives typed key events through a stable channel.
+            //
+            // This must run *before* the accelerator dispatch below,
+            // mirroring TUI's `apply_dispatch` (ActivityBar redirect) →
+            // `apply_accelerators` ordering (`src/tui/backend.rs:548-549`,
+            // `:583-594`) — a focused bar must be able to intercept any
+            // key, even one that also happens to match a registered
+            // `Global` accelerator. Reversing this priority would silently
+            // diverge GTK from TUI for the same `AppLogic` (#445 review).
+            //
+            // This runs at the window-level `EventControllerKey` (already
+            // attached to the window above), so it does NOT call
+            // `grab_focus()` on any `DrawingArea` and cannot silence other
+            // key controllers — the root cause of the vimcode#494 failure.
+            if let UiEvent::KeyPressed {
+                ref key, modifiers, ..
+            } = ev
+            {
+                let focused_bar = backend.borrow().focused_activity_bar_id().cloned();
+                if let Some(bar_id) = focused_bar {
+                    let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
+                    let bar_ev = UiEvent::ActivityBar(
+                        bar_id,
+                        crate::ActivityBarEvent::KeyPressed {
+                            key: key_str,
+                            modifiers,
+                        },
+                    );
+                    let reaction = {
+                        let mut backend_mut = backend.borrow_mut();
+                        let mut app_mut = app.borrow_mut();
+                        app_mut.handle(bar_ev, &mut *backend_mut)
+                    };
+                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                    return glib::Propagation::Stop;
+                }
+            }
+
             // ── Global accelerator dispatch (#445) ───────────────────
             //
             // Registered `Global`-scope accelerators
@@ -296,10 +339,11 @@ fn activate<A: AppLogic + 'static>(
             // nothing pushes real keypresses into on the
             // `run`/`run_with_shell` path. Mirror
             // `GtkBackend::apply_accelerators` here: rewrite a matching
-            // `KeyPressed` into `UiEvent::Accelerator` up front, before
-            // any of the runner's own special-cased key interceptions
-            // below (Ctrl-C/V/A, ActivityBar focus) get a chance to
-            // consume the raw `KeyPressed` instead.
+            // `KeyPressed` into `UiEvent::Accelerator`, after the
+            // ActivityBar focus intercept above (so a focused bar still
+            // wins) but before the runner's own special-cased key
+            // interceptions below (Ctrl-C/V/A) get a chance to consume
+            // the raw `KeyPressed` instead.
             let ev = if let UiEvent::KeyPressed { key, modifiers, .. } = &ev {
                 match backend.borrow().match_keypress(key, *modifiers) {
                     Some(id) => UiEvent::Accelerator(id, *modifiers),
@@ -400,41 +444,6 @@ fn activate<A: AppLogic + 'static>(
                 let handled = backend.borrow_mut().select_all_text_region();
                 if handled {
                     da_for_redraw.queue_draw();
-                    return glib::Propagation::Stop;
-                }
-            }
-
-            // ── ActivityBar keyboard focus intercept ────────────────
-            //
-            // When an `ActivityBar` declared `is_keyboard_focused = true`
-            // during the last render pass, redirect every `KeyPressed`
-            // event to it as `UiEvent::ActivityBar(id, KeyPressed { … })`
-            // so the app receives typed key events through a stable channel.
-            //
-            // This runs at the window-level `EventControllerKey` (already
-            // attached to the window above), so it does NOT call
-            // `grab_focus()` on any `DrawingArea` and cannot silence other
-            // key controllers — the root cause of the vimcode#494 failure.
-            if let UiEvent::KeyPressed {
-                ref key, modifiers, ..
-            } = ev
-            {
-                let focused_bar = backend.borrow().focused_activity_bar_id().cloned();
-                if let Some(bar_id) = focused_bar {
-                    let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
-                    let bar_ev = UiEvent::ActivityBar(
-                        bar_id,
-                        crate::ActivityBarEvent::KeyPressed {
-                            key: key_str,
-                            modifiers,
-                        },
-                    );
-                    let reaction = {
-                        let mut backend_mut = backend.borrow_mut();
-                        let mut app_mut = app.borrow_mut();
-                        app_mut.handle(bar_ev, &mut *backend_mut)
-                    };
-                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
                     return glib::Propagation::Stop;
                 }
             }
