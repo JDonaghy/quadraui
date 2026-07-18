@@ -191,6 +191,25 @@ items to land on non-integer rows with blank gaps. Fix: round
 to the nearest integer (`(lh * 1.4).round()`). For TUI this
 snaps to 1 cell; for GTK the rounding is sub-pixel and invisible.
 
+## `[patch.crates-io]` in quadraui's manifest does not reach downstream consumers
+
+Cargo only honors `[patch]` sections declared in the **root manifest of
+the workspace actually being built**. A `[patch.crates-io]` entry in
+quadraui's own `Cargo.toml` (e.g. the vendored `vt100` patch added for
+#452) has **zero effect** on a separate top-level crate/workspace (like
+vimcode) that depends on quadraui via path, git, or crates.io — even
+though it fixes dependency-resolution conflicts *inside* quadraui's own
+workspace. Proven by direct repro: a scratch crate depending on quadraui
+(patched) + `ratatui = "=0.29"` still hit the identical
+`unicode-width` resolution error quadraui's patch was meant to prevent.
+
+Rule: if a fix requires a `[patch]` to make a downstream consumer's
+build resolve, quadraui vendoring the patch is necessary but not
+sufficient — the consumer's own root `Cargo.toml` must add a matching
+`[patch.crates-io]` entry pointing at quadraui's vendored path/git
+location. Document that companion requirement explicitly wherever the
+quadraui-side patch is added; don't assume it propagates.
+
 ## What NOT to do
 
 - **Don't re-derive layouts with different inputs in click vs paint.**

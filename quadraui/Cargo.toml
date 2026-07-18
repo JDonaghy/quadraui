@@ -54,8 +54,13 @@ pangocairo = { version = "0.18", optional = true }
 # Optional — pulled in by the `tui` feature.
 ratatui = { version = "0.30", optional = true }
 # Optional — pulled in by the `tui` and `gtk` features for wide-char
-# (CJK/emoji) cell-width detection.
-unicode-width = { version = "0.2.2", optional = true }
+# (CJK/emoji) cell-width detection. Kept at the loosest bound quadraui
+# itself actually needs ("0.2", i.e. >=0.2.0) rather than pinned to
+# whatever patch version happened to resolve at bump time — see
+# vendor/vt100-0.16.2-patched/README-PATCH.md (#452) for why a tighter
+# bound here would NOT have prevented that conflict anyway (vt100's own
+# manifest is the binding constraint, not this line).
+unicode-width = { version = "0.2", optional = true }
 # Optional — pulled in by `tui` and `gtk` for system clipboard access.
 arboard = { version = "3", optional = true }
 # Optional — pulled in by the `terminal` feature.
