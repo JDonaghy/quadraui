@@ -277,11 +277,23 @@ mod tests {
     fn wide_cell_background_spans_two_columns() {
         let magenta = Color::rgb(200, 30, 200);
         let cyan = Color::rgb(30, 200, 200);
-        let white = Color::rgb(255, 255, 255);
         // '日' is a double-width CJK character. Its vt100-derived
         // continuation cell carries a *different* background (cyan) to
         // prove the rasteriser doesn't just get lucky on matching colours.
-        let row = vec![cell('日', white, magenta), cell(' ', white, cyan)];
+        //
+        // The wide glyph's foreground is set equal to its background
+        // (magenta on magenta) so the glyph is invisible. This isolates the
+        // thing under test — the two-column *background* fill — from the
+        // glyph raster itself: with wide glyphs now scaled to fill the full
+        // two-cell box (`wide_glyph_x_scale`), antialiased glyph ink reaches
+        // deep into the second column and its exact colour depends on which
+        // fallback font Pango picks, which varies by machine. A white glyph
+        // here made the probe read a magenta/white blend on some hosts and
+        // fail spuriously. Painting the glyph in the background colour keeps
+        // the probe a pure, deterministic background read on every host,
+        // while the glyph-scaling maths stays covered by the dedicated
+        // `wide_glyph_x_scale` unit tests below.
+        let row = vec![cell('日', magenta, magenta), cell(' ', magenta, cyan)];
         let term = Terminal {
             id: WidgetId::new("term"),
             cells: vec![row],
@@ -313,7 +325,13 @@ mod tests {
         let magenta = Color::rgb(200, 30, 200);
         let cyan = Color::rgb(30, 200, 200);
         let white = Color::rgb(255, 255, 255);
-        let row = vec![cell('A', white, magenta), cell('B', white, cyan)];
+        // 'B' (the probed cell) paints its glyph in its own background
+        // colour so antialiased glyph ink can't corrupt the background
+        // probe; 'A' keeps a visible (white) glyph as it isn't probed.
+        // This tests the *advance* logic — that 'A' occupies exactly one
+        // char_width and doesn't bleed into 'B''s column — independent of
+        // glyph rendering.
+        let row = vec![cell('A', white, magenta), cell('B', cyan, cyan)];
         let term = Terminal {
             id: WidgetId::new("term"),
             cells: vec![row],
