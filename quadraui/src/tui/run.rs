@@ -29,7 +29,7 @@
 //! because there is only one implementation of each.
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
@@ -48,6 +48,26 @@ use crate::{Key, UiEvent};
 /// continues which gives the app a chance to redraw if its state
 /// advanced asynchronously.
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
+
+/// Trailing-edge debounce for `WindowResized` dispatch (quadraui#437).
+///
+/// A live terminal edge-drag delivers a burst of crossterm `Resize`
+/// events (tens per second). Apps with PTY-backed side effects
+/// (`TerminalApp::handle` → `TerminalSession::resize` → SIGWINCH) were
+/// resizing the child shell on *every* intermediate size. A shell's
+/// line-editor (readline/zle) redraws its prompt for the width it was
+/// SIGWINCH'd with; if the grid is reflowed to a *different* width before
+/// that redraw is parsed, the cursor-relative bytes land in the wrong
+/// columns and scatter duplicated prompt fragments that stick until the
+/// next resize — the exact TUI corruption reported in round #209.
+///
+/// The GTK runner already debounces `connect_resize` (6816b62); this is
+/// the poll-loop equivalent for the TUI runner. We coalesce the burst and
+/// dispatch a single `WindowResized` at the final settled size once no new
+/// resize has arrived for this interval. Painting stays live throughout —
+/// [`render_frame`] re-reads the real terminal size every frame regardless
+/// of whether the debounced event has fired yet.
+const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
 /// Drive `app` to completion in a TUI environment.
 ///
@@ -120,11 +140,34 @@ fn run_inner<A: AppLogic>(
     backend: &mut TuiBackend,
     app: &mut A,
 ) -> io::Result<()> {
+    // ── Seed the viewport from the real terminal size BEFORE setup ──
+    //
+    // `TuiBackend::new()` seeds `Viewport::default()` (80×24). If
+    // `app.setup()` reads `backend.viewport()` to size a side effect
+    // — e.g. `TerminalApp` spawns its PTY at the viewport's cell
+    // dimensions — it would otherwise always get 80×24 and only snap to
+    // the real size on the first `WindowResized` event, leaving the pane
+    // under-filled until the user's first interaction (quadraui#437, the
+    // TUI counterpart of the original tiny-window bug). Sync the real
+    // size up front so `setup()` sees true dimensions.
+    let size = terminal.size()?;
+    backend.begin_frame(crate::Viewport::new(
+        size.width as f32,
+        size.height as f32,
+        1.0,
+    ));
+
     // ── App setup hook ─────────────────────────────────────────
     app.setup(backend);
 
     // ── Frame loop ─────────────────────────────────────────────
     let mut needs_redraw = true;
+    // Trailing-edge resize debounce state (quadraui#437). We hold the
+    // most recent viewport from a burst of `WindowResized` events and
+    // dispatch a single settled resize once `RESIZE_SETTLE` elapses with
+    // no newer one — see `RESIZE_SETTLE`.
+    let mut pending_resize: Option<crate::Viewport> = None;
+    let mut resize_deadline: Option<Instant> = None;
     loop {
         if needs_redraw {
             render_frame(terminal, backend, app)?;
@@ -134,10 +177,32 @@ fn run_inner<A: AppLogic>(
         // Drain events. `wait_events` blocks for up to POLL_TIMEOUT.
         let events = backend.wait_events(POLL_TIMEOUT);
         for event in events {
+            // Debounce PTY-thrashing resize storms: coalesce the burst to
+            // the latest size and defer dispatch until the drag settles.
+            // Painting stays live because `render_frame` re-reads the real
+            // terminal size every frame.
+            if let UiEvent::WindowResized { viewport } = event {
+                pending_resize = Some(viewport);
+                resize_deadline = Some(Instant::now() + RESIZE_SETTLE);
+                needs_redraw = true;
+                continue;
+            }
             match dispatch_event(event, backend, app) {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => needs_redraw = true,
                 EventOutcome::Exit => return Ok(()),
+            }
+        }
+
+        // Fire the debounced resize once the drag has settled.
+        if resize_deadline.is_some_and(|d| Instant::now() >= d) {
+            resize_deadline = None;
+            if let Some(viewport) = pending_resize.take() {
+                match dispatch_event(UiEvent::WindowResized { viewport }, backend, app) {
+                    EventOutcome::Continue => {}
+                    EventOutcome::Redraw => needs_redraw = true,
+                    EventOutcome::Exit => return Ok(()),
+                }
             }
         }
 

@@ -777,11 +777,31 @@ fn activate<A: AppLogic + 'static>(
         let window_for_close = window.clone();
         let pump_depth = pump_depth.clone();
         let resize_timer = resize_timer.clone();
-        da.connect_resize(move |_da, _width, _height| {
+        da.connect_resize(move |da, _width, _height| {
             // #427 re-entrancy guard — see the key-press handler above.
             if pump_depth.get() > 0 {
                 return;
             }
+            // Force a FULL-widget invalidation on every resize edge, not
+            // just at the debounced settle below (quadraui#437). This is the
+            // render-path half of the "stale ~ / > prompt fragments stuck on
+            // rows that should be blank after a shrink→expand" ghosting.
+            //
+            // GTK repaints a growing window with *partial* damage regions —
+            // typically only the newly-exposed strip at the right/bottom
+            // edge — and reuses the cached render node for the rest. The
+            // `set_draw_func` above opens every frame by clearing the whole
+            // DA to the theme background, but Cairo honours GTK's clip, so
+            // that "full" clear only ever covers the damaged strip. The
+            // undamaged middle keeps its pre-resize render node, so any
+            // glyph the pre-resize grid painted there survives — the ghost.
+            // A bare `queue_draw()` (no region) invalidates the entire
+            // widget, so the next `set_draw_func` runs unclipped and the
+            // whole-DA clear actually clears the whole DA. GTK coalesces
+            // repeated per-edge invalidations into one repaint per frame, so
+            // this stays cheap during a live drag. The PTY resize / SIGWINCH
+            // stays debounced below — only the *paint* is forced eager here.
+            da.queue_draw();
             // Cancel any pending debounced dispatch — this signal
             // supersedes it. `remove()` is a no-op-safe consume; the
             // source may have already fired (Cell held `None`).

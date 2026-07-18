@@ -1591,6 +1591,29 @@ impl Backend for GtkBackend {
         };
         let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
 
+        // Clear the entire terminal pane to the terminal background before
+        // painting cells (quadraui#437). `draw_terminal_cells` only fills
+        // each *live* cell's own background, so without this any pixel the
+        // current grid doesn't cover — a sub-cell sliver, the strip below the
+        // last row, or (critically) a region GTK didn't re-clear on an
+        // interactive-resize frame where the widget's cached render node is
+        // partially reused — keeps showing glyphs from the pre-resize frame.
+        // That was the "stale ~ / > prompt fragments stuck on rows that
+        // should be blank after a shrink-then-expand" ghosting. vimcode's
+        // bespoke renderer does the same full-pane fill first; the trait doc
+        // on `draw_terminal_cells` delegates this to the caller, and the GTK
+        // backend is that caller. (30,30,30) matches the vt100 default cell
+        // background used by `TerminalSession::build_rows`, so blank areas
+        // blend seamlessly with blank cells.
+        cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        cr.set_source_rgb(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0);
+        cr.fill().ok();
+
         crate::gtk::draw_terminal_cells(
             cr,
             layout,
@@ -1598,6 +1621,7 @@ impl Backend for GtkBackend {
             rect.x as f64,
             rect.y as f64,
             cell_area_w,
+            rect.height as f64,
             lh,
             cw,
             &theme,

@@ -48,6 +48,7 @@
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
+use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
 use crate::tui::backend::TuiBackend;
@@ -109,6 +110,12 @@ impl<A: AppLogic> TuiDriver<A> {
         let terminal =
             Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
         let mut backend = TuiBackend::new();
+        // Seed the viewport from the driver's terminal size BEFORE setup,
+        // exactly as the live runner does (quadraui#437). Without this,
+        // `app.setup()` would read the default 80×24 viewport instead of
+        // the requested `width`×`height`, so any setup-time sizing (e.g.
+        // `TerminalApp` spawning its PTY) would use the wrong dimensions.
+        backend.begin_frame(crate::Viewport::new(width as f32, height as f32, 1.0));
         let mut app = app;
         app.setup(&mut backend);
         let mut driver = Self {
@@ -300,5 +307,57 @@ impl<A: AppLogic> TuiDriver<A> {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Viewport;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// Minimal app that records the viewport it observes in `setup()`.
+    ///
+    /// This is the driver-reachable regression guard for quadraui#437's
+    /// TUI initial-layout bug: `setup()` must see the driver's real
+    /// terminal size, not the `Viewport::default()` (80×24) that
+    /// `TuiBackend::new()` seeds. An app that sizes a side effect from the
+    /// setup-time viewport (e.g. `TerminalApp` spawning its PTY) would
+    /// otherwise under-fill the pane until the first resize event.
+    struct SetupViewportRecorder {
+        seen: Rc<Cell<Option<Viewport>>>,
+    }
+
+    impl AppLogic for SetupViewportRecorder {
+        type AreaId = ();
+
+        fn setup(&mut self, backend: &mut dyn Backend) {
+            self.seen.set(Some(backend.viewport()));
+        }
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// `setup()` must observe the driver's real terminal dimensions, not
+    /// the default 80×24 viewport. Regression guard for the #437 TUI
+    /// initial-layout bug (pane under-filled until first interaction).
+    #[test]
+    fn setup_sees_real_viewport_not_default() {
+        let seen = Rc::new(Cell::new(None));
+        let app = SetupViewportRecorder { seen: seen.clone() };
+        // Deliberately not 80×24 so a regression to the default is visible.
+        let _driver = TuiDriver::new(app, 120, 40);
+
+        let vp = seen.get().expect("setup() should have run");
+        assert_eq!(
+            (vp.width, vp.height),
+            (120.0, 40.0),
+            "setup() must see the driver's real size, not Viewport::default() (80×24)"
+        );
     }
 }
