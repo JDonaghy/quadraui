@@ -276,6 +276,136 @@ pub fn encode_mouse_sgr(
 
 // ── TerminalSession ───────────────────────────────────────────────────────────
 
+/// Longest [`TerminalSession::resize`] waits for the child to *begin* its
+/// post-SIGWINCH redraw — i.e. for the **first** byte to arrive (quadraui#437,
+/// blocking #2).
+///
+/// SIGWINCH delivery + the shell's trap/prompt-reprint is normally a few ms,
+/// but under load (a busy machine, a scheduler-starved child) the child can
+/// take noticeably longer just to *start* writing. The settle must not give up
+/// during that initial silence — that was the original bug: an 8 ms idle
+/// window elapsed before the child had reacted at all, so `resize()` returned
+/// having consumed nothing and the redraw was later reparsed at a changed
+/// width (the ghost). This window is therefore generous. If nothing arrives
+/// within it the child is not redrawing (e.g. it ignores SIGWINCH) and
+/// `resize()` returns.
+const RESIZE_SETTLE_FIRST: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// Once the child's redraw is *flowing*, an idle gap this long means it has
+/// finished. Consuming stops here so a subsequent resize can't reparse the
+/// redraw against a grid whose width has since changed.
+const RESIZE_SETTLE_IDLE: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// Absolute cap on total settle time, so a continuously chatty child
+/// (e.g. `yes`) that never goes idle can't stall the UI indefinitely.
+const RESIZE_SETTLE_MAX: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Block for the child's post-SIGWINCH redraw and return the chunks it produced,
+/// in arrival order (quadraui#437, blocking #2).
+///
+/// This is the timing policy behind [`TerminalSession::settle_after_resize`],
+/// factored into a free function that takes only the receiver so it can be
+/// unit-tested against a synthetic [`std::sync::mpsc::channel`] — no PTY, no
+/// shell, no flaky dependence on when a particular shell chooses to run a
+/// WINCH trap.
+///
+/// Two phases:
+///
+/// 1. **Wait for the redraw to *start*.** Until the first chunk arrives we wait
+///    up to [`RESIZE_SETTLE_FIRST`]. Treating the initial silence as "settled"
+///    (waiting only [`RESIZE_SETTLE_IDLE`] from the outset) was the bug: under
+///    load the child hasn't reacted to SIGWINCH within a few ms, so the settle
+///    returned having consumed nothing and its redraw was later reparsed at a
+///    changed width — the ghost. If nothing arrives in this window the child is
+///    not redrawing and we return empty.
+/// 2. **Drain the redraw.** Once chunks are flowing we keep consuming until the
+///    channel has been idle for [`RESIZE_SETTLE_IDLE`] (redraw complete).
+///
+/// Total blocking is capped at [`RESIZE_SETTLE_MAX`].
+fn collect_post_resize_output(rx: &Receiver<Vec<u8>>) -> Vec<Vec<u8>> {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Instant;
+
+    let start = Instant::now();
+    let hard_deadline = start + RESIZE_SETTLE_MAX;
+    let first_deadline = start + RESIZE_SETTLE_FIRST;
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    loop {
+        let now = Instant::now();
+        let cap = hard_deadline.saturating_duration_since(now);
+        if cap.is_zero() {
+            break;
+        }
+        // Phase 1 (nothing captured yet): wait up to RESIZE_SETTLE_FIRST for the
+        // child to *begin* redrawing. Phase 2 (redraw flowing): wait only for
+        // the short idle gap that marks it complete. Both clamped to the cap.
+        let wait = if chunks.is_empty() {
+            first_deadline.saturating_duration_since(now)
+        } else {
+            RESIZE_SETTLE_IDLE
+        }
+        .min(cap);
+        if wait.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(wait) {
+            Ok(data) => chunks.push(data),
+            // Timeout → phase 1: child never reacted; phase 2: redraw done.
+            // Disconnected → child gone. Either way we are settled.
+            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    chunks
+}
+
+/// Re-wrap a vt100 parser's visible screen to a new size, preserving on-screen
+/// content across a **width** change (quadraui#437).
+///
+/// vt100 0.16's [`vt100::Screen::set_size`] is **non-reflowing**: shrinking the
+/// column count truncates each row's tail and widening pads with blanks, so a
+/// naive shrink→expand drag permanently loses text. This helper restores
+/// logical-line reflow using only vt100's public API — no vendored/patched
+/// crate:
+///
+/// 1. Snapshot the current screen as a formatted byte stream
+///    ([`vt100::Screen::contents_formatted`]). Wrapped rows are emitted as one
+///    continuous run (no interior line break), so a logical line keeps its
+///    structure regardless of where it currently wraps.
+/// 2. Resize the grid.
+/// 3. Replay the snapshot; vt100 re-wraps each logical line at the *new* width.
+///
+/// Gated to genuine **width** changes on the **normal** screen:
+///
+/// - A height-only change keeps the cheap [`vt100::Screen::set_size`] path — no
+///   horizontal content is at risk, and re-wrapping would be wasted work.
+/// - The **alternate** screen is never reflowed. Full-screen apps (vim, htop,
+///   tmux) repaint themselves from scratch on SIGWINCH and their
+///   absolute-positioned output must not be re-wrapped.
+///
+/// **Limitation:** `contents_formatted` covers only the *visible* screen, so a
+/// shrink deep enough to push rows into scrollback cannot restore those rows on
+/// a later expand — the public API exposes no formatted scrollback dump. The
+/// common case (the live prompt / on-screen command output) round-trips
+/// losslessly, which is the regression #437 chased.
+fn reflow_screen(parser: &mut vt100::Parser, rows: u16, cols: u16) {
+    let (cur_rows, cur_cols) = parser.screen().size();
+    if (rows, cols) == (cur_rows, cur_cols) {
+        return;
+    }
+    // Height-only change, or a self-repainting full-screen app: use the plain
+    // non-reflow resize. (`alternate_screen()` reads the parser immutably; the
+    // borrow ends before the `screen_mut()` below.)
+    if cols == cur_cols || parser.screen().alternate_screen() {
+        parser.screen_mut().set_size(rows, cols);
+        return;
+    }
+    // Width change on the normal screen: snapshot → resize → replay so each
+    // logical line re-wraps at the new width instead of being truncated.
+    let dump = parser.screen().contents_formatted();
+    parser.screen_mut().set_size(rows, cols);
+    parser.process(&dump);
+}
+
 /// A single PTY-backed terminal session: PTY process, reader thread,
 /// vt100 parser, and scrollback ring buffer.
 ///
@@ -536,7 +666,7 @@ impl TerminalSession {
                         if s.is_empty() {
                             line.push(' ');
                         } else {
-                            line.push_str(&s);
+                            line.push_str(s);
                         }
                     } else {
                         line.push(' ');
@@ -740,16 +870,107 @@ impl TerminalSession {
     ///
     /// Sends SIGWINCH to the child process so running programs
     /// (e.g. `vim`, `htop`) re-layout their output.
+    ///
+    /// # Preserving content across a width change (quadraui#437)
+    ///
+    /// upstream vt100 0.16 `set_size` does **not** reflow — it truncates each
+    /// row on a column shrink and pads with blanks on a widen, so a naive
+    /// shrink→expand drag loses text permanently. We restore logical-line
+    /// reflow via [`reflow_screen`] (public-API snapshot → resize → replay),
+    /// gated to genuine width changes on the normal screen. This runs in the
+    /// shared engine, so **both** the TUI and GTK backends get it for free.
+    ///
+    /// # Closing the shell-redraw-vs-resize race (quadraui#437)
+    ///
+    /// The corruption #437 also chased ("ghost copies of the prompt / status
+    /// line stuck at wrong columns after a fast resize drag") is a *timing* bug
+    /// in the shared engine, reproduced on **both** the TUI and GTK backends,
+    /// so the fix lives here rather than in a backend paint path:
+    ///
+    /// 1. We set the grid to width `N` and SIGWINCH the shell.
+    /// 2. The shell redraws its prompt/status line for width `N` — those
+    ///    bytes use cursor-relative moves that only make sense on an
+    ///    `N`-wide grid, and they queue in the reader thread's channel.
+    /// 3. A fast drag re-sizes the grid *again* to width `M` **before** those
+    ///    bytes are parsed.
+    /// 4. The width-`N` redraw is then applied to an `M`-wide grid: every
+    ///    relative move lands in the wrong column/row, scattering duplicated
+    ///    prompt fragments that stay stuck until the next resize churns them.
+    ///
+    /// Two guards close this race:
+    ///
+    /// - **Before** re-sizing we drain + process any output *already queued*
+    ///   at the current size, so bytes the shell already emitted are parsed on
+    ///   the grid they were computed for.
+    /// - **After** re-sizing + SIGWINCH we briefly wait for the reader thread
+    ///   to go quiescent (see [`settle_after_resize`](Self::settle_after_resize)),
+    ///   consuming *this* SIGWINCH's redraw at the width it was computed for.
+    ///   The pre-resize drain alone cannot do this: the redraw triggered by
+    ///   this resize has not been written by the child yet when `resize()` is
+    ///   called, so on a rapid multi-step drag the next `resize()` would change
+    ///   the width again before those bytes were parsed. Waiting for
+    ///   quiescence bounds that window deterministically.
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        // No-op guard: avoid a needless resize + SIGWINCH storm when the
+        // caller re-sends the current size (common when a backend recomputes
+        // the same cell dimensions every frame during a drag).
+        if cols == self.cols && rows == self.rows {
+            return;
+        }
+        // Drain + process any output queued at the *current* size before we
+        // change dimensions, so in-flight redraws land on the grid they were
+        // computed for rather than the one we are about to re-size to.
+        while let Ok(data) = self.rx.try_recv() {
+            self.process_with_capture(&data);
+        }
         self.cols = cols;
         self.rows = rows;
-        self.parser.screen_mut().set_size(rows, cols);
+        // Re-wrap on-screen content to the new width instead of truncating it
+        // (see [`reflow_screen`]); height-only / alt-screen changes fall back to
+        // the plain non-reflow resize internally.
+        reflow_screen(&mut self.parser, rows, cols);
         let _ = self.master.resize(PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         });
+        // Consume the child's post-SIGWINCH redraw at *this* width before we
+        // return, so a subsequent fast resize can't reparse it at a new width.
+        self.settle_after_resize();
+    }
+
+    /// Consume the child's post-SIGWINCH redraw so a rapid follow-up resize
+    /// can't reparse those cursor-relative bytes against a grid whose width has
+    /// since changed (quadraui#437, blocking #2).
+    ///
+    /// This blocks the caller, but only for a **bounded** window, and it runs
+    /// in two phases so it neither gives up too early nor stalls forever:
+    ///
+    /// 1. **Wait for the redraw to start.** Until the first byte arrives we
+    ///    wait up to [`RESIZE_SETTLE_FIRST`]. This is the fix for the original
+    ///    bug — the child needs time just to *react* to SIGWINCH, and treating
+    ///    that initial silence as "settled" (the old single-[`RESIZE_SETTLE_IDLE`]
+    ///    loop) returned before consuming anything, leaving the redraw to be
+    ///    reparsed later at the wrong width. If no byte arrives in this window
+    ///    the child isn't redrawing and we return.
+    /// 2. **Drain the redraw.** Once output is flowing we consume until the
+    ///    reader thread has been idle for [`RESIZE_SETTLE_IDLE`] (redraw done).
+    ///
+    /// The whole thing is capped at [`RESIZE_SETTLE_MAX`] so a continuously
+    /// chatty child (e.g. `yes`) can't stall the UI. Every byte it consumes is
+    /// parsed at the *current* grid width — exactly the width the child
+    /// computed the redraw for.
+    ///
+    /// The blocking/timing policy lives in [`collect_post_resize_output`] (a
+    /// free function so it can be unit-tested against a synthetic channel
+    /// without a real PTY — see the `settle_*` tests); this method only wires it
+    /// to the parser. Chunks are captured then processed in arrival order, so
+    /// vt100 parse time never inflates the idle-gap measurement.
+    fn settle_after_resize(&mut self) {
+        for chunk in collect_post_resize_output(&self.rx) {
+            self.process_with_capture(&chunk);
+        }
     }
 
     // ── Scrollback ───────────────────────────────────────────────────────────
@@ -1435,6 +1656,481 @@ mod tests {
             p.process(boundary_line.as_bytes()); // must not panic
             let _ = p.screen().cell(0, 0);
         }
+    }
+
+    // ── Regression: destructive resize corrupts content (#437) ──────────────
+    //
+    // These drive the vendored vt100 parser's `set_size` directly (no PTY),
+    // so they're deterministic. Before the reflow patch, shrinking the column
+    // count truncated every row's cells and widening back padded with blanks
+    // instead of restoring them — a shrink-then-expand window drag left the
+    // shell output permanently truncated. The reflow re-wraps logical lines
+    // so the round-trip is lossless.
+
+    /// Collect the visible screen rows as trimmed strings.
+    fn screen_lines(p: &vt100::Parser) -> Vec<String> {
+        let (rows, _cols) = p.screen().size();
+        (0..rows)
+            .map(|r| {
+                p.screen()
+                    .rows(0, p.screen().size().1)
+                    .nth(r as usize)
+                    .unwrap_or_default()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resize_height_only_preserves_content() {
+        // Upstream vt100 0.16 `set_size` does not reflow wrapped lines, but a
+        // height-only change (same width) must still keep existing rows intact.
+        let mut p = vt100::Parser::new(24, 80, 1000);
+        p.process(b"hello world\r\nsecond line");
+        p.screen_mut().set_size(40, 80); // taller, same width
+        let lines = screen_lines(&p);
+        assert!(lines.iter().any(|l| l == "hello world"));
+        assert!(lines.iter().any(|l| l == "second line"));
+    }
+
+    // ── Reflow round-trip (restored on vt100 0.16 via `reflow_screen`) ──────
+    //
+    // These drive `reflow_screen` — the public-API (snapshot → resize → replay)
+    // reflow that replaced the vendored vt100 0.15.2 `Grid::set_size` patch when
+    // develop moved to real vt100 0.16 (#397 deleted the vendored tree). vt100
+    // 0.16's own `set_size` is *non-reflowing*: a bare `screen_mut().set_size()`
+    // truncates every row on a column shrink and pads with blanks on widen, so a
+    // shrink→expand window drag left the shell output permanently truncated.
+    // `reflow_screen` re-wraps logical lines so the round-trip is lossless for
+    // on-screen content. (Scrollback-deep shrinks are out of scope — see the
+    // helper's doc comment.)
+
+    #[test]
+    fn resize_no_op_when_width_unchanged() {
+        // Height-only change routes through `reflow_screen`'s cheap non-reflow
+        // path (same width) and must not corrupt content.
+        let mut p = vt100::Parser::new(24, 80, 1000);
+        p.process(b"hello world\r\nsecond line");
+        reflow_screen(&mut p, 40, 80); // taller, same width
+        let lines = screen_lines(&p);
+        assert!(lines.iter().any(|l| l == "hello world"));
+        assert!(lines.iter().any(|l| l == "second line"));
+    }
+
+    #[test]
+    fn resize_shrink_wraps_without_losing_tail() {
+        // A single line longer than the shrunk width must wrap, not truncate.
+        let mut p = vt100::Parser::new(24, 100, 1000);
+        let long = "0123456789ABCDEFGHIJ0123456789ABCDEFGHIJ0123456789ABCDEFGHIJ";
+        p.process(long.as_bytes());
+        reflow_screen(&mut p, 24, 20);
+        // The full text must still be reconstructable from the wrapped rows.
+        let joined: String = screen_lines(&p).join("");
+        assert!(
+            joined.contains("GHIJ0123456789ABCDEFGHIJ"),
+            "tail of long line lost on shrink: {joined:?}"
+        );
+        // And expanding back restores the single unbroken line.
+        reflow_screen(&mut p, 24, 100);
+        assert!(
+            screen_lines(&p).iter().any(|l| l == long),
+            "long line not restored on expand: {:?}",
+            screen_lines(&p)
+        );
+    }
+
+    #[test]
+    fn resize_preserves_wide_chars() {
+        // Wide (CJK) glyphs must survive a reflow round-trip without being
+        // split from their continuation cell. One logical line, so no row ever
+        // scrolls into scrollback across the shrink.
+        let mut p = vt100::Parser::new(24, 100, 1000);
+        let line = "日本語テスト-CJK-日本語テスト-CJK-日本語テスト";
+        p.process(line.as_bytes());
+        reflow_screen(&mut p, 24, 30);
+        reflow_screen(&mut p, 24, 100);
+        assert!(
+            screen_lines(&p).iter().any(|l| l == line),
+            "wide-char line not restored across resize: {:?}",
+            screen_lines(&p)
+        );
+    }
+
+    #[test]
+    fn resize_shrink_then_expand_preserves_content() {
+        // Several full-width lines. Shrink hard on width, then expand back —
+        // every line must survive. The shrunk grid is kept tall enough that no
+        // wrapped row scrolls into scrollback (the public-API reflow only
+        // covers the visible screen; see `reflow_screen`'s doc comment).
+        let mut p = vt100::Parser::new(24, 100, 1000);
+        for i in 1..=6 {
+            let line = format!("ROW{i:02}-abcdefghijklmnopqrstuvwxyz-0123456789-END\r\n");
+            p.process(line.as_bytes());
+        }
+        for i in 1..=6 {
+            let needle = format!("ROW{i:02}-abcdefghijklmnopqrstuvwxyz-0123456789-END");
+            assert!(
+                screen_lines(&p).iter().any(|l| l == &needle),
+                "line {i} missing before resize"
+            );
+        }
+
+        // Shrink width to 40 (each 47-char line wraps to 2 rows → 12 rows); keep
+        // 20 rows so nothing scrolls off. Then expand back to the original size.
+        reflow_screen(&mut p, 20, 40);
+        reflow_screen(&mut p, 24, 100);
+
+        for i in 1..=6 {
+            let needle = format!("ROW{i:02}-abcdefghijklmnopqrstuvwxyz-0123456789-END");
+            assert!(
+                screen_lines(&p).iter().any(|l| l == &needle),
+                "line {i} lost across shrink→expand round-trip: {:?}",
+                screen_lines(&p)
+            );
+        }
+    }
+
+    #[test]
+    fn resize_multistep_drag_leaves_no_ghost_rows() {
+        // A window drag fires many intermediate resizes (shrink then expand).
+        // After it settles back at the start size, the reflowed grid must be
+        // byte-for-byte identical to the pre-drag grid — no duplicated prompt
+        // lines, no orphaned fragments stranded on rows that should be blank
+        // (quadraui#437: the on-screen "stale ~ / > ghost" symptom). Each line
+        // is unique, so any duplication shows up as a repeated needle. Sizes are
+        // chosen so wrapped rows never exceed the grid height — no scroll-off.
+        let mut p = vt100::Parser::new(14, 40, 1000);
+        for i in 1..=4 {
+            p.process(format!("unique_line_{i:02}_content\r\n").as_bytes());
+        }
+        p.process(b"prompt$ "); // fresh prompt, cursor after it
+        let before = screen_lines(&p);
+
+        // Multi-step drag: shrink through several widths (each 21-char line
+        // wraps to at most 2 rows → ≤ 9 rows, well under the 10-row floor),
+        // then expand back to the start size.
+        for (rows, cols) in [(11, 30), (10, 22), (10, 20), (12, 26), (13, 34), (14, 40)] {
+            reflow_screen(&mut p, rows, cols);
+        }
+        let after = screen_lines(&p);
+
+        assert_eq!(
+            before, after,
+            "grid changed across a shrink→expand drag round-trip (ghost rows)"
+        );
+        // Belt-and-braces: no unique content line appears more than once.
+        for i in 1..=4 {
+            let needle = format!("unique_line_{i:02}_content");
+            let count = after.iter().filter(|l| l.contains(&needle)).count();
+            assert_eq!(count, 1, "line {i} duplicated across resize: {after:?}");
+        }
+    }
+
+    // ── Regression: shell-redraw-vs-reflow race on fast resize (#437) ───────
+    //
+    // A fast resize drag reflows the grid to width N and SIGWINCHes the shell;
+    // the shell redraws its prompt for width N (cursor-relative bytes queued in
+    // the reader thread), then the drag reflows the grid *again* to width M
+    // before those bytes are processed. Applying a width-N redraw to a width-M
+    // grid scattered duplicated prompt fragments across the pane that stayed
+    // stuck until the next resize — reproduced on both TUI and GTK, so the bug
+    // was in this shared engine, not a backend paint path.
+    //
+    // `resize()` now drains + processes queued PTY output at the current size
+    // before reflowing, so each redraw lands on the grid it was computed for.
+    //
+    // This test locks the fix's *contract* deterministically: output that is
+    // already queued in the reader channel when `resize()` is called must be
+    // parsed **before** the grid changes size. We prove it by leaving a known
+    // sentinel line queued-but-unprocessed (write it, wait for the reader
+    // thread to enqueue it, but never `poll()`), then calling `resize()` to a
+    // new width. If `resize()` drains first, the sentinel is already on the
+    // (old-width) grid and survives the reflow, so it is visible immediately —
+    // with no intervening `poll()`. Before the fix, `resize()` reflowed without
+    // draining, so the queued width-N bytes were only parsed by a later
+    // `poll()` against the width-M grid — the corruption path. The absence of
+    // a `poll()` between the wait and the assertion is what makes this a real
+    // guard rather than a timing coincidence.
+    #[test]
+    fn resize_drains_queued_output_before_reflow() {
+        use std::thread::sleep;
+        use std::time::{Duration, Instant};
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let mut sess = match TerminalSession::spawn(80, 24, "/bin/bash", &cwd, 1000) {
+            Ok(s) => s,
+            // No PTY available (sandbox): skip rather than fail spuriously.
+            Err(_) => return,
+        };
+
+        // Poll until `needle` shows up or we time out (drains + processes).
+        fn wait_for(sess: &mut TerminalSession, needle: &str, ms: u64) -> bool {
+            let deadline = Instant::now() + Duration::from_millis(ms);
+            loop {
+                sess.poll();
+                if sess.screen_text().contains(needle) {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                sleep(Duration::from_millis(5));
+            }
+        }
+
+        // Quiet, fixed prompt and wait for the shell to be ready.
+        sess.write_input(b"PS1='RDYMARK$ '\n");
+        if !wait_for(&mut sess, "RDYMARK$", 4000) {
+            return; // cold shell — don't assert
+        }
+
+        // Emit a unique sentinel, then wait for the reader thread to have it
+        // enqueued WITHOUT processing it into the parser. We can't peek the
+        // channel, so give it a generous, machine-load-robust window.
+        sess.write_input(b"echo SENTINEL_QZX_9137\n");
+        sleep(Duration::from_millis(400));
+
+        // Precondition: the sentinel is NOT on the grid yet (still queued),
+        // because we have not polled since writing it. If the shell were
+        // somehow already drained, the test still holds but proves less; guard
+        // against a flaky environment by only asserting the core property when
+        // the sentinel is genuinely still queued.
+        let queued = !sess.screen_text().contains("SENTINEL_QZX_9137");
+
+        // The fix: resize() must drain + process the queued sentinel at the
+        // current (80-col) width *before* reflowing to the new width. No poll()
+        // is called here or before the assertion.
+        sess.resize(50, 18);
+
+        if queued {
+            assert!(
+                sess.screen_text().contains("SENTINEL_QZX_9137"),
+                "resize() must drain queued PTY output before reflowing so \
+                 in-flight redraws land on the width they were computed for \
+                 (quadraui#437); sentinel was still queued yet resize() did not \
+                 process it.\nscreen:\n{}",
+                sess.screen_text()
+            );
+        }
+
+        sess.write_input(b"exit\n");
+    }
+
+    #[test]
+    fn resize_noop_same_size_is_cheap() {
+        // Re-sending the current size must be a no-op (no reflow / SIGWINCH
+        // churn), matching the guard added for the #437 drag fix.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let mut sess = match TerminalSession::spawn(80, 24, "/bin/bash", &cwd, 100) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        assert_eq!((sess.cols(), sess.rows()), (80, 24));
+        sess.resize(80, 24); // no-op
+        assert_eq!((sess.cols(), sess.rows()), (80, 24));
+        sess.resize(100, 30);
+        assert_eq!((sess.cols(), sess.rows()), (100, 30));
+    }
+
+    // ── Regression: rapid multi-step resize drag (quadraui#437, blocking #2) ──
+    //
+    // The failure the earlier drain-only fix could NOT catch: a fast drag
+    // fires several `resize()` calls back-to-back with no settle time between
+    // them. Each resize SIGWINCHes the shell; the shell's redraw for that
+    // width is still being written when the *next* resize changes the width
+    // again. If that redraw is parsed at the wrong width, its cursor-relative
+    // moves scatter duplicated prompt/echo fragments that stick across rows.
+    //
+    // `resize()` now waits (bounded) for the reader thread to go quiescent
+    // after each SIGWINCH (`settle_after_resize`), so every redraw is parsed
+    // at the width it was computed for even under a no-pause drag. This test
+    // drives exactly that pattern — many resizes with no sleeps between them —
+    // and asserts a unique sentinel line never ends up duplicated on the grid.
+    #[test]
+    fn resize_rapid_multistep_drag_leaves_no_ghosts() {
+        use std::thread::sleep;
+        use std::time::{Duration, Instant};
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let mut sess = match TerminalSession::spawn(80, 24, "/bin/bash", &cwd, 2000) {
+            Ok(s) => s,
+            Err(_) => return, // no PTY in sandbox — skip rather than fail
+        };
+
+        fn wait_for(sess: &mut TerminalSession, needle: &str, ms: u64) -> bool {
+            let deadline = Instant::now() + Duration::from_millis(ms);
+            loop {
+                sess.poll();
+                if sess.screen_text().contains(needle) {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                sleep(Duration::from_millis(5));
+            }
+        }
+
+        // Fixed, unique prompt so its redraw is what churns on SIGWINCH.
+        sess.write_input(b"PS1='GHOSTMK> '\n");
+        if !wait_for(&mut sess, "GHOSTMK>", 4000) {
+            return; // cold shell — don't assert
+        }
+
+        // Emit a unique sentinel line, then let it land on the grid. The
+        // sentinel is assembled by `printf` from two fragments so the literal
+        // `GHOST_5571` appears ONLY in the command's *output*, never in the
+        // typed command line the tty echoes back — otherwise the harmless
+        // command echo would inflate the occurrence count and mask/forge a
+        // ghost. Any extra copy on the grid is therefore a genuine duplication.
+        let needle = "GHOST_5571";
+        sess.write_input(b"printf 'GHO%s\\n' ST_5571\n");
+        if !wait_for(&mut sess, needle, 4000) {
+            return;
+        }
+
+        // The actual failure trigger: a rapid multi-step drag — several
+        // resizes with NO settle time between the calls. `resize()` itself is
+        // responsible for consuming each width's redraw before returning.
+        for (cols, rows) in [(60, 20), (48, 16), (40, 14), (52, 18), (68, 22), (80, 24)] {
+            sess.resize(cols, rows);
+        }
+
+        // Drain anything still in flight and let the grid settle.
+        for _ in 0..40 {
+            sess.poll();
+            sleep(Duration::from_millis(10));
+        }
+
+        // The output line must appear at most once — the #437 ghost duplicated
+        // it (and scattered prompt fragments) across many rows.
+        let screen = sess.screen_text();
+        let count = screen.matches(needle).count();
+        assert!(
+            count <= 1,
+            "rapid multi-step resize drag duplicated a unique line \
+             ({count} copies) — the #437 resize ghost. screen:\n{screen}"
+        );
+        assert_eq!((sess.cols(), sess.rows()), (80, 24));
+
+        sess.write_input(b"exit\n");
+    }
+
+    // ── Regression: the post-SIGWINCH settle timing policy (blocking #2) ─────
+    //
+    // The deterministic core of blocking #2, isolated from any shell. A rapid
+    // resize drag corrupts the grid when a resize's SIGWINCH redraw is parsed
+    // at a *later* width because the next resize changed the width before that
+    // redraw was consumed. `resize()` closes the race by *waiting* (bounded)
+    // for the child's post-SIGWINCH output before returning, via
+    // `collect_post_resize_output`.
+    //
+    // These tests drive that timing policy against a synthetic
+    // `std::sync::mpsc::channel` — no PTY, no shell. That matters: the previous
+    // real-shell test relied on a bash `WINCH` trap firing during the resize,
+    // but bash defers a user WINCH trap while sitting at the readline prompt
+    // (it redraws the prompt line but runs the trap only after the next command
+    // is submitted), so the trap output never arrived and the test was a flaky
+    // false negative. The synthetic channel reproduces the exact bug — a child
+    // that reacts to SIGWINCH *later than the idle gap* — deterministically.
+
+    #[test]
+    fn settle_waits_past_idle_gap_for_a_delayed_redraw() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        // The child reacts to SIGWINCH after `child_delay` — deliberately
+        // *longer* than the idle gap (RESIZE_SETTLE_IDLE) so the ORIGINAL bug
+        // (return after one idle gap having consumed nothing) is exercised, yet
+        // comfortably *shorter* than the first-byte window (RESIZE_SETTLE_FIRST)
+        // so the fix captures it. `sleep` only ever overshoots, so the "> idle"
+        // side is unconditional; the margin below FIRST (4×) absorbs load.
+        let child_delay = Duration::from_millis(20);
+        assert!(
+            RESIZE_SETTLE_IDLE < child_delay,
+            "delay must exceed the idle gap"
+        );
+        assert!(
+            child_delay * 3 < RESIZE_SETTLE_FIRST,
+            "delay needs headroom below the first-byte window"
+        );
+
+        let (tx, rx) = channel::<Vec<u8>>();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(child_delay);
+            let _ = tx.send(b"post-winch-redraw".to_vec());
+            // Keep the channel connected briefly so the drain phase ends on a
+            // genuine idle gap (Timeout), not a Disconnected shortcut.
+            std::thread::sleep(Duration::from_millis(40));
+        });
+
+        let chunks = collect_post_resize_output(&rx);
+        sender.join().unwrap();
+
+        assert_eq!(
+            chunks.concat(),
+            b"post-winch-redraw",
+            "settle must wait past the initial idle gap for a child that reacts \
+             to SIGWINCH slowly — the blocking #2 ghost bug"
+        );
+    }
+
+    #[test]
+    fn settle_returns_bounded_when_child_stays_silent() {
+        use std::sync::mpsc::channel;
+        use std::time::{Duration, Instant};
+
+        // A child that ignores SIGWINCH (emits nothing). Settle must not hang:
+        // it waits up to RESIZE_SETTLE_FIRST for a first byte, then gives up.
+        // `_tx` is held so the channel is NOT disconnected — proving the return
+        // is driven by the first-byte timeout, not a Disconnected shortcut.
+        let (_tx, rx) = channel::<Vec<u8>>();
+
+        let start = Instant::now();
+        let chunks = collect_post_resize_output(&rx);
+        let elapsed = start.elapsed();
+
+        assert!(chunks.is_empty(), "silent child must yield no chunks");
+        assert!(
+            elapsed >= RESIZE_SETTLE_FIRST.saturating_sub(Duration::from_millis(10)),
+            "settle must actually wait ~RESIZE_SETTLE_FIRST for a first byte \
+             (waited {elapsed:?})"
+        );
+        assert!(
+            elapsed <= RESIZE_SETTLE_MAX + Duration::from_millis(80),
+            "settle must stay bounded and not hang (waited {elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn settle_drains_a_multi_chunk_redraw_then_stops() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        // A redraw delivered as several chunks. Settle must capture ALL of them
+        // in order and stop once the child goes quiet — not truncate mid-redraw.
+        // The chunks are sent back-to-back (no inter-send sleep) so the test has
+        // no dependence on a per-chunk gap staying under the idle window — the
+        // only timing requirement is the final hold exceeding the idle gap.
+        let (tx, rx) = channel::<Vec<u8>>();
+        let sender = std::thread::spawn(move || {
+            let _ = tx.send(b"aaa".to_vec());
+            let _ = tx.send(b"bbb".to_vec());
+            let _ = tx.send(b"ccc".to_vec());
+            // Hold the channel open past the idle gap so the drain ends via a
+            // Timeout (idle), not a Disconnected, exercising "redraw complete".
+            std::thread::sleep(Duration::from_millis(40));
+        });
+
+        let chunks = collect_post_resize_output(&rx);
+        sender.join().unwrap();
+
+        assert_eq!(
+            chunks.concat(),
+            b"aaabbbccc",
+            "settle must drain the whole multi-chunk redraw in arrival order"
+        );
     }
 
     #[test]

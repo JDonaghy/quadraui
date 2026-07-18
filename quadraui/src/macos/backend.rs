@@ -656,6 +656,7 @@ impl Backend for MacBackend {
                 rect.x as f64,
                 rect.y as f64,
                 cell_area_w,
+                rect.height as f64,
                 line_height,
                 char_width,
                 &theme,

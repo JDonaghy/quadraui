@@ -46,7 +46,13 @@ use crate::theme::Theme;
 /// grid stays consistent).
 ///
 /// `cell_area_w` clips per-row painting — cells past the right edge
-/// stop being drawn rather than wrapping. `line_height` and
+/// stop being drawn rather than wrapping. `cell_area_h` clips per-column
+/// painting vertically — rows whose top falls at or below the pane
+/// bottom stop being drawn rather than bleeding into whatever sits below
+/// the terminal (the footer, an adjacent pane). This matters during an
+/// interactive resize: painting is not debounced, so a frame can render a
+/// grid that still has the pre-resize (taller) row count into an
+/// already-shrunk pixel pane (quadraui#437). `line_height` and
 /// `char_width` are the per-cell dimensions in DIPs.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_terminal_cells(
@@ -56,12 +62,20 @@ pub fn draw_terminal_cells(
     x: f64,
     content_y: f64,
     cell_area_w: f64,
+    cell_area_h: f64,
     line_height: f64,
     char_width: f64,
     theme: &Theme,
 ) {
     for (row_idx, row) in term.cells.iter().enumerate() {
         let row_y = content_y + row_idx as f64 * line_height;
+        // Stop once a row's top has reached the pane bottom — such a row
+        // belongs to a taller (pre-resize) grid and would bleed past the
+        // pane. A row that merely straddles the bottom edge is still drawn
+        // (and clipped by the pane fill / footer painted over it).
+        if row_y >= content_y + cell_area_h {
+            break;
+        }
         let mut cell_x = x;
         let mut col = 0usize;
         while col < row.len() {
@@ -261,6 +275,7 @@ mod tests {
                 0.0,
                 0.0,
                 W as f64,
+                H as f64,
                 LINE_H,
                 CHAR_W,
                 &theme,
