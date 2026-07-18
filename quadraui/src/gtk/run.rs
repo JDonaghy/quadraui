@@ -287,6 +287,28 @@ fn activate<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             };
 
+            // ── Global accelerator dispatch (#445) ───────────────────
+            //
+            // Registered `Global`-scope accelerators
+            // (`Backend::register_accelerator()`) must fire on this,
+            // the real GTK key path — `poll_events()` /
+            // `apply_accelerators()` is a dormant idle-drain seam that
+            // nothing pushes real keypresses into on the
+            // `run`/`run_with_shell` path. Mirror
+            // `GtkBackend::apply_accelerators` here: rewrite a matching
+            // `KeyPressed` into `UiEvent::Accelerator` up front, before
+            // any of the runner's own special-cased key interceptions
+            // below (Ctrl-C/V/A, ActivityBar focus) get a chance to
+            // consume the raw `KeyPressed` instead.
+            let ev = if let UiEvent::KeyPressed { key, modifiers, .. } = &ev {
+                match backend.borrow().match_keypress(key, *modifiers) {
+                    Some(id) => UiEvent::Accelerator(id, *modifiers),
+                    None => ev,
+                }
+            } else {
+                ev
+            };
+
             // ── Ctrl-C interception (text selection) ────────────────
             if let UiEvent::KeyPressed {
                 key: Key::Char('c'),
