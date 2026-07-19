@@ -183,10 +183,12 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         if let Some(position) = mouse_event_position(&event) {
             if backend.modal_stack_mut().hit_test(position).is_some() {
                 let layout = self.shell.layout(area, backend.line_height());
+                let sidebar_visible = self.shell.sidebar_visible();
                 let ctx = ShellContext::new(
                     self.active_panel_id.as_ref(),
-                    self.shell.sidebar_visible(),
+                    sidebar_visible,
                     &layout,
+                    &mut self.shell,
                 );
                 return self.app.handle(event, backend, &ctx);
             }
@@ -301,10 +303,12 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         }
 
         let layout = self.shell.layout(area, backend.line_height());
+        let sidebar_visible = self.shell.sidebar_visible();
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
-            self.shell.sidebar_visible(),
+            sidebar_visible,
             &layout,
+            &mut self.shell,
         );
         let mut reaction = self.app.handle(event, backend, &ctx);
 

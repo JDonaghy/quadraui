@@ -6,9 +6,11 @@
 //! window creation, event wiring, AppShell chrome rendering, and event
 //! routing — the consumer renders only its own content.
 
-use std::cell::Cell;
+use std::cell::{Cell, Ref, RefCell, RefMut};
 
-use crate::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
+use crate::compose::app_shell::{
+    AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition,
+};
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
 use crate::types::WidgetId;
@@ -157,6 +159,25 @@ pub struct ShellContext<'a> {
     /// by shared reference — the consumer can request focus without a
     /// `&mut` hook back into the shell.
     activity_focus_requested: Cell<bool>,
+    /// A scoped mutable borrow of the [`AppShell`] instance
+    /// [`crate::shell_adapter::ShellAdapter`] actually renders, lent out for
+    /// the duration of one `ShellApp::handle` dispatch (#454).
+    ///
+    /// Before this existed, a `ShellApp` consumer had no way to reach the
+    /// rendered shell at all — `ShellAdapter::shell` is `pub(crate)` — so
+    /// driving shell state programmatically (e.g. a `Ctrl+B` toggle-sidebar
+    /// binding) required keeping a second, shadow `AppShell` that silently
+    /// drifted from the one actually painted (vimcode `Ctrl+B` was dead on
+    /// GTK because of exactly this: the shadow toggled, the rendered
+    /// instance never learned about it).
+    ///
+    /// `RefCell` because `ShellContext` is passed by shared reference (see
+    /// `activity_focus_requested` above) — access via [`Self::shell`] /
+    /// [`Self::shell_mut`]. `AppShell` remains solely owned and constructed
+    /// by `ShellAdapter`; this only lends a scoped borrow for one dispatch,
+    /// so the single-owner invariant that makes drift impossible is
+    /// preserved.
+    shell: RefCell<&'a mut AppShell>,
 }
 
 impl<'a> ShellContext<'a> {
@@ -167,13 +188,47 @@ impl<'a> ShellContext<'a> {
         active_panel_id: Option<&'a WidgetId>,
         sidebar_visible: bool,
         layout: &'a AppShellLayout,
+        shell: &'a mut AppShell,
     ) -> Self {
         Self {
             active_panel_id,
             sidebar_visible,
             layout,
             activity_focus_requested: Cell::new(false),
+            shell: RefCell::new(shell),
         }
+    }
+
+    /// Borrow the real, rendered [`AppShell`] read-only.
+    ///
+    /// Prefer the narrow accessors above (`in_sidebar`, `sidebar_bounds`,
+    /// ...) for layout queries — this exists for the rest of `AppShell`'s
+    /// API (e.g. `bottom_panel_visible()`, `activity_selected_id()`) that
+    /// `ShellContext` doesn't otherwise mirror.
+    ///
+    /// # Panics
+    /// Panics if [`Self::shell_mut`] is borrowed at the same time (standard
+    /// `RefCell` rules). Each borrow is meant to be short-lived — grab it,
+    /// read, drop.
+    pub fn shell(&self) -> Ref<'_, &'a mut AppShell> {
+        self.shell.borrow()
+    }
+
+    /// Borrow the real, rendered [`AppShell`] mutably.
+    ///
+    /// This is the fix for #454: call any `AppShell` mutator directly on
+    /// the instance [`crate::shell_adapter::ShellAdapter`] actually
+    /// renders — `ctx.shell_mut().toggle_sidebar()`,
+    /// `ctx.shell_mut().show_bottom_panel()`,
+    /// `ctx.shell_mut().set_sidebar_width(w)`, etc. — instead of tracking a
+    /// shadow copy that can silently drift from what's on screen.
+    ///
+    /// # Panics
+    /// Panics if [`Self::shell`] / [`Self::shell_mut`] is borrowed at the
+    /// same time (standard `RefCell` rules). Each borrow is meant to be
+    /// short-lived — grab it, mutate, drop.
+    pub fn shell_mut(&self) -> RefMut<'_, &'a mut AppShell> {
+        self.shell.borrow_mut()
     }
 
     /// Request that the activity bar take keyboard focus, with its cursor
@@ -419,7 +474,6 @@ pub trait ShellApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::app_shell::AppShell;
 
     /// Build a bare (no panels, no chrome) `AppShellLayout` sized `w x h`
     /// starting at the origin — just enough to exercise `window_bounds`.
@@ -427,8 +481,8 @@ mod tests {
         AppShell::new(Vec::new(), 20.0).layout(Rect::new(0.0, 0.0, w, h), 1.0)
     }
 
-    fn ctx(layout: &AppShellLayout) -> ShellContext<'_> {
-        ShellContext::new(None, false, layout)
+    fn ctx<'a>(layout: &'a AppShellLayout, shell: &'a mut AppShell) -> ShellContext<'a> {
+        ShellContext::new(None, false, layout, shell)
     }
 
     /// #422: a fresh `ShellConfig` has no editor-font override — backends
@@ -450,13 +504,15 @@ mod tests {
     #[test]
     fn window_edge_none_in_the_middle() {
         let layout = layout_for(100.0, 40.0);
-        assert_eq!(ctx(&layout).window_edge(50.0, 20.0, 4.0), None);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        assert_eq!(ctx(&layout, &mut shell).window_edge(50.0, 20.0, 4.0), None);
     }
 
     #[test]
     fn window_edge_detects_each_side() {
         let layout = layout_for(100.0, 40.0);
-        let c = ctx(&layout);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let c = ctx(&layout, &mut shell);
         assert_eq!(c.window_edge(50.0, 0.0, 4.0), Some(ResizeEdge::North));
         assert_eq!(c.window_edge(50.0, 40.0, 4.0), Some(ResizeEdge::South));
         assert_eq!(c.window_edge(0.0, 20.0, 4.0), Some(ResizeEdge::West));
@@ -466,7 +522,8 @@ mod tests {
     #[test]
     fn window_edge_detects_each_corner() {
         let layout = layout_for(100.0, 40.0);
-        let c = ctx(&layout);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let c = ctx(&layout, &mut shell);
         assert_eq!(c.window_edge(0.0, 0.0, 4.0), Some(ResizeEdge::NorthWest));
         assert_eq!(c.window_edge(100.0, 0.0, 4.0), Some(ResizeEdge::NorthEast));
         assert_eq!(c.window_edge(0.0, 40.0, 4.0), Some(ResizeEdge::SouthWest));
@@ -478,8 +535,9 @@ mod tests {
     #[test]
     fn window_edge_none_outside_window() {
         let layout = layout_for(100.0, 40.0);
-        assert_eq!(ctx(&layout).window_edge(-2.0, 20.0, 4.0), None);
-        assert_eq!(ctx(&layout).window_edge(50.0, 45.0, 4.0), None);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        assert_eq!(ctx(&layout, &mut shell).window_edge(-2.0, 20.0, 4.0), None);
+        assert_eq!(ctx(&layout, &mut shell).window_edge(50.0, 45.0, 4.0), None);
     }
 
     /// A window narrower/shorter than `2 * margin` must still resolve
@@ -488,10 +546,38 @@ mod tests {
     #[test]
     fn window_edge_degenerate_tiny_window_is_deterministic() {
         let layout = layout_for(3.0, 3.0);
-        let c = ctx(&layout);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let c = ctx(&layout, &mut shell);
         // Every point in a 3x3 window is within margin=4.0 of every edge;
         // just assert this doesn't panic and returns a corner (checked
         // first in the priority chain).
         assert_eq!(c.window_edge(1.5, 1.5, 4.0), Some(ResizeEdge::NorthWest));
+    }
+
+    /// #454: `ctx.shell_mut()` reaches the real `AppShell` — a `ShellApp`
+    /// can drive shell state (e.g. a `Ctrl+B` toggle-sidebar binding)
+    /// directly on the instance that's actually rendered, with no shadow
+    /// copy required.
+    #[test]
+    fn shell_mut_toggles_the_real_app_shell() {
+        let layout = layout_for(100.0, 40.0);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        assert!(shell.sidebar_visible());
+        {
+            let c = ctx(&layout, &mut shell);
+            c.shell_mut().toggle_sidebar();
+        }
+        assert!(!shell.sidebar_visible());
+    }
+
+    /// #454: `ctx.shell()` gives read access without requiring a mutable
+    /// borrow, mirroring the read-only convenience accessors above.
+    #[test]
+    fn shell_read_reflects_current_state() {
+        let layout = layout_for(100.0, 40.0);
+        let mut shell = AppShell::new(Vec::new(), 20.0);
+        shell.hide_sidebar();
+        let c = ctx(&layout, &mut shell);
+        assert!(!c.shell().sidebar_visible());
     }
 }
