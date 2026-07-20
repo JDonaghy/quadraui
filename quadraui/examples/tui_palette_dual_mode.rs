@@ -19,6 +19,6 @@ mod palette_dual_mode_app;
 
 use palette_dual_mode_app::PaletteDualModeApp;
 
-fn main() {
-    quadraui::tui::run(PaletteDualModeApp::new());
+fn main() -> std::io::Result<()> {
+    quadraui::tui::run(PaletteDualModeApp::new())
 }

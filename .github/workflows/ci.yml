@@ -57,7 +57,13 @@ jobs:
       # no Xvfb, no capability gate (quadraui#446/#447/#448, GD-1..GD-3).
       - name: Build (gtk + tui features)
         run: cargo build --features gtk,tui --workspace --exclude kubeui
+      # --no-fail-fast: without it, a failure in the `quadraui` lib unit-test
+      # target (e.g. pre-existing gtk::services main-thread panics) makes
+      # cargo abort before ever building/running the tests/*.rs integration
+      # targets — silently hiding the GD-3 smoke/parity suite's pass/fail
+      # status. With --no-fail-fast, cargo still runs (and reports) every
+      # target, and the step still fails overall if anything failed.
       - name: Test (gtk + tui features)
-        run: cargo test --features gtk,tui --workspace --exclude kubeui
+        run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast
       - name: Clippy (gtk + tui features)
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
