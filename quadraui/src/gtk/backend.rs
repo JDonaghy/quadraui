@@ -2315,7 +2315,7 @@ impl Backend for GtkBackend {
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_pipeline_view called outside enter_frame_scope");
-        crate::gtk::draw_pipeline_view(
+        let layout = crate::gtk::draw_pipeline_view(
             cr,
             pango_layout,
             rect.x as f64,
@@ -2324,7 +2324,19 @@ impl Backend for GtkBackend {
             rect.height as f64,
             view,
             &theme,
-        )
+        );
+        // Record each stage's label + action-button text into the
+        // painted-text map GtkDriver::find scans (quadraui#448, GD-3) —
+        // extends draw_status_bar's pattern (quadraui#447, GD-2) to the
+        // pipeline view so example-driver tests can locate stages/actions
+        // by text instead of hardcoding coordinates.
+        for (stage, bounds) in view.stages.iter().zip(layout.stages.iter()) {
+            self.record_painted_text(&stage.label, bounds.label_bounds);
+            if let (Some(action), Some(action_bounds)) = (&stage.action, bounds.action_bounds) {
+                self.record_painted_text(action, action_bounds);
+            }
+        }
+        layout
     }
 
     fn pipeline_view_layout(

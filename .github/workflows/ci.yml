@@ -50,9 +50,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Build (gtk feature)
-        run: cargo build --features gtk --workspace --exclude kubeui
-      - name: Test (gtk feature)
-        run: cargo test --features gtk --workspace --exclude kubeui
-      - name: Clippy (gtk feature)
-        run: cargo clippy --features gtk --workspace --exclude kubeui -- -D warnings
+      # `gtk,tui` (not just `gtk`) so the cross-backend parity suite
+      # (quadraui/tests/cross_backend_parity.rs, #448) — which needs both
+      # `TuiDriver` and `GtkDriver` compiled in to compare them — actually
+      # runs in CI. Both drivers are display-free, so this stays headless;
+      # no Xvfb, no capability gate (quadraui#446/#447/#448, GD-1..GD-3).
+      - name: Build (gtk + tui features)
+        run: cargo build --features gtk,tui --workspace --exclude kubeui
+      - name: Test (gtk + tui features)
+        run: cargo test --features gtk,tui --workspace --exclude kubeui
+      - name: Clippy (gtk + tui features)
+        run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
