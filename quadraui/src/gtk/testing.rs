@@ -273,6 +273,70 @@ impl<A: AppLogic> GtkDriver<A> {
         let off = y as usize * stride + x as usize * 4;
         (data[off + 2], data[off + 1], data[off])
     }
+
+    /// Raw `ARgb32` pixel buffer of the last [`Self::render`] — the
+    /// `screen()`-equivalent GD-2 raw-buffer accessor. Four bytes per
+    /// pixel, `[B, G, R, A]` (see [`Self::pixel`]); row stride is
+    /// [`Self::stride`], not necessarily `width * 4`. Copies out of the
+    /// surface (Cairo's borrow guard can't outlive this call) — prefer
+    /// [`Self::pixel`] / [`Self::find`] / [`Self::screen_contains`] for
+    /// assertions; this is the escape hatch for tests that need the whole
+    /// buffer (e.g. diffing two frames).
+    pub fn screen(&mut self) -> Vec<u8> {
+        self.surface.flush();
+        self.surface.data().expect("surface data").to_vec()
+    }
+
+    /// Row stride (bytes per row) of the surface [`Self::screen`] reads
+    /// back from. Cairo pads rows for alignment, so this can exceed
+    /// `width * 4`.
+    pub fn stride(&self) -> i32 {
+        self.surface.stride()
+    }
+
+    /// All text painted during the last [`Self::render`], as recorded by
+    /// [`super::backend::GtkBackend::record_painted_text`] — the
+    /// `(text, bounds)` map [`Self::find`] / [`Self::find_bounds`] /
+    /// [`Self::screen_contains`] query. See `GtkBackend::painted_text`'s
+    /// docs for which widgets currently report into it.
+    pub fn painted_texts(&self) -> Vec<&str> {
+        self.backend
+            .painted_text
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect()
+    }
+
+    /// True if any painted label contains `needle` — the GTK analogue of
+    /// [`crate::tui::testing::TuiDriver::screen_contains`].
+    pub fn screen_contains(&self, needle: &str) -> bool {
+        self.backend
+            .painted_text
+            .iter()
+            .any(|p| p.text.contains(needle))
+    }
+
+    /// Pixel bounds (backend coordinates) of the first painted label
+    /// containing `needle`, via the `(text, bounds)` map recorded at
+    /// paint time (quadraui#447, GD-2) — mirrors the `TuiDriver::find`
+    /// rule (*locate targets with `find`, never hardcode coords*), but
+    /// resolved from Pango-measured layout geometry rather than a
+    /// character grid.
+    pub fn find_bounds(&self, needle: &str) -> Option<crate::Rect> {
+        self.backend
+            .painted_text
+            .iter()
+            .find(|p| p.text.contains(needle))
+            .map(|p| p.bounds)
+    }
+
+    /// Center coordinates (pixels) of the first painted label containing
+    /// `needle` — pass straight to [`Self::click`]. `None` if nothing
+    /// painted this frame matched.
+    pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.find_bounds(needle)
+            .map(|b| (b.x + b.width / 2.0, b.y + b.height / 2.0))
+    }
 }
 
 #[cfg(test)]
@@ -333,6 +397,195 @@ mod tests {
             (r, g, b),
             (KNOWN_BG.r, KNOWN_BG.g, KNOWN_BG.b),
             "expected the status bar segment's known background colour, got ({r}, {g}, {b})"
+        );
+    }
+
+    /// `find`/`find_bounds` locate the segment's label via the
+    /// `(text, bounds)` map [`GtkBackend::draw_status_bar`] records — the
+    /// coordinate-free counterpart to
+    /// [`renders_offscreen_and_reads_back_known_pixel`]'s hardcoded
+    /// `pixel(4, H / 2)` (quadraui#447, GD-2).
+    #[test]
+    fn find_locates_status_bar_segment_by_text() {
+        let mut driver = GtkDriver::new(StatusBarApp, W, H);
+
+        let bounds = driver
+            .find_bounds("known-pixel")
+            .expect("find_bounds should locate the painted segment");
+        assert_eq!(
+            (bounds.x, bounds.y),
+            (0.0, 0.0),
+            "the only segment should start at the bar's origin"
+        );
+
+        let (x, y) = driver
+            .find("known-pixel")
+            .expect("find should locate the painted segment label");
+        assert!(
+            x >= bounds.x && x <= bounds.x + bounds.width,
+            "find()'s x should fall within the segment's own bounds"
+        );
+        assert!(
+            y >= bounds.y && y <= bounds.y + bounds.height,
+            "find()'s y should fall within the segment's own bounds"
+        );
+
+        // Sample the whole segment bounds and take the most common
+        // colour — the background fill, since it covers far more area
+        // than the label's thin anti-aliased glyph strokes — rather than
+        // guessing a coordinate known to dodge the text.
+        let (r, g, b) = dominant_pixel(&mut driver, bounds);
+        assert_eq!(
+            (r, g, b),
+            (KNOWN_BG.r, KNOWN_BG.g, KNOWN_BG.b),
+            "dominant colour within find_bounds() should be the segment's bg, got ({r}, {g}, {b})"
+        );
+
+        assert!(driver.screen_contains("known-pixel"));
+        assert!(!driver.screen_contains("no such label"));
+    }
+
+    /// Most common `(r, g, b)` pixel within `bounds` — the background
+    /// colour, since it covers far more area than a label's thin
+    /// anti-aliased glyph strokes. Used to assert on a text-tight
+    /// segment's fill colour without hardcoding a coordinate known (by
+    /// construction) to dodge the text.
+    fn dominant_pixel<A: AppLogic>(driver: &mut GtkDriver<A>, bounds: Rect) -> (u8, u8, u8) {
+        use std::collections::HashMap;
+
+        let mut counts: HashMap<(u8, u8, u8), u32> = HashMap::new();
+        for py in bounds.y as i32..(bounds.y + bounds.height) as i32 {
+            for px in bounds.x as i32..(bounds.x + bounds.width) as i32 {
+                *counts.entry(driver.pixel(px, py)).or_insert(0) += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(color, _)| color)
+            .expect("bounds should contain at least one pixel")
+    }
+
+    /// Fixture analogous to the issue's `make_test_app(BoardData)`: a
+    /// full GTK view built purely from in-memory state — one clickable
+    /// `StatusBar` segment that flips its background colour on click.
+    /// No live app, no example wiring — just an `AppLogic` a test can
+    /// hand straight to [`GtkDriver::new`].
+    struct ToggleStatusBarApp {
+        on: bool,
+    }
+
+    impl ToggleStatusBarApp {
+        const OFF_BG: Color = Color::rgb(40, 40, 40);
+        const ON_BG: Color = Color::rgb(0, 200, 0);
+
+        fn bar(&self) -> StatusBar {
+            StatusBar {
+                id: WidgetId::new("status"),
+                left_segments: vec![StatusBarSegment {
+                    text: "Toggle".to_string(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: if self.on { Self::ON_BG } else { Self::OFF_BG },
+                    bold: false,
+                    action_id: Some(WidgetId::new("toggle")),
+                }],
+                right_segments: vec![],
+            }
+        }
+    }
+
+    impl AppLogic for ToggleStatusBarApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_status_bar(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &self.bar(),
+                None,
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            // Hit-test via the non-painting `status_bar_layout` query
+            // (mirrors CLAUDE.md's "cached layout hit-test pattern" —
+            // recompute the layout from state, don't repaint to hit-test).
+            if let UiEvent::MouseDown { position, .. } = event {
+                let layout =
+                    backend.status_bar_layout(Rect::new(0.0, 0.0, W as f32, H as f32), &self.bar());
+                if layout.hit_test(position.x, position.y)
+                    == crate::primitives::status_bar::StatusBarHit::Segment(WidgetId::new("toggle"))
+                {
+                    self.on = !self.on;
+                    return Reaction::Redraw;
+                }
+            }
+            Reaction::Continue
+        }
+    }
+
+    /// GD-2 acceptance test: `find` locates the control (no hardcoded
+    /// coords), `click` activates it, and both a pixel-colour probe and a
+    /// geometry (bounds) assertion observe the resulting change.
+    #[test]
+    fn find_click_asserts_pixel_and_geometry_change() {
+        let mut driver = GtkDriver::new(ToggleStatusBarApp { on: false }, W, H);
+
+        let (x, y) = driver
+            .find("Toggle")
+            .expect("find should locate the toggle segment before any click");
+        let bounds_before = driver.find_bounds("Toggle").expect("bounds before click");
+        // The segment's bounds are text-tight (clickable segments aren't
+        // padded out to fill the bar, unlike the trailing non-clickable
+        // segment `renders_offscreen_and_reads_back_known_pixel` reads
+        // from), so no single fixed pixel is guaranteed to dodge the
+        // label's anti-aliased glyphs. Sample the whole bounds rect and
+        // take the most common colour — the background, since it covers
+        // far more area than the thin glyph strokes.
+        let pixel_before = dominant_pixel(&mut driver, bounds_before);
+        assert_eq!(
+            pixel_before,
+            (
+                ToggleStatusBarApp::OFF_BG.r,
+                ToggleStatusBarApp::OFF_BG.g,
+                ToggleStatusBarApp::OFF_BG.b
+            ),
+            "segment should start OFF-coloured"
+        );
+
+        let reaction = driver.click(x, y);
+        assert_eq!(reaction, Reaction::Redraw, "click should trigger a redraw");
+        assert!(
+            driver.app().on,
+            "click should have flipped the toggle state"
+        );
+
+        // Pixel assertion: same bounds (segment didn't move — the bar
+        // layout is unchanged), different dominant colour.
+        let pixel_after = dominant_pixel(&mut driver, bounds_before);
+        assert_eq!(
+            pixel_after,
+            (
+                ToggleStatusBarApp::ON_BG.r,
+                ToggleStatusBarApp::ON_BG.g,
+                ToggleStatusBarApp::ON_BG.b
+            ),
+            "segment should be ON-coloured after the click toggled state"
+        );
+        assert_ne!(
+            pixel_before, pixel_after,
+            "click should change the painted pixel"
+        );
+
+        // Geometry assertion: re-`find` after the click (the label text
+        // is unchanged, so this proves the API works post-redraw too) and
+        // confirm the bounds are stable across the repaint.
+        let bounds_after = driver
+            .find_bounds("Toggle")
+            .expect("bounds after click should still resolve");
+        assert_eq!(
+            bounds_before, bounds_after,
+            "segment geometry should be unchanged by a colour-only redraw"
         );
     }
 
