@@ -242,6 +242,33 @@ need a real display, terminal, window manager, or font server.
 
 New backends ship with their harness on day one.
 
+## Live-app headless smoke (GD-5, quadraui#450)
+
+The offscreen `GtkDriver` above is deliberately display-free — no
+`gtk::init`, no `Application`, no window, no `GdkDisplay` — which means
+it structurally cannot catch bugs that only exist in a *real* window:
+raw GDK signal delivery, widget realization/allocation, IME, or the real
+OS clipboard. That's exactly the bug class that motivated this: #437
+(`gtk_terminal` opening with a tiny/garbled window, paste not working at
+all) only reproduced against a live window.
+
+`quadraui::gtk::run` (every `gtk_*` example goes through it — no
+per-example code needed) honours `QUADRAUI_GTK_SMOKE_MS` /
+`QUADRAUI_GTK_SMOKE_PASTE` to run a scripted check against the real
+window and exit 0/non-zero — see the "Headless smoke mode" section of
+`quadraui/src/gtk/run.rs`'s module doc for exactly what's checked
+(window/`DrawingArea` size floor, OS clipboard round-trip + a synthetic
+Ctrl-V through the real interception path). `quadraui/scripts/gtk_smoke.sh`
+wraps the `xvfb-run -a env GSK_RENDERER=cairo ...` invocation.
+
+**This is an operator-run tier, not a CI gate.** The `gtk` CI job is
+deliberately Xvfb-free (see the comment in `.github/workflows/ci.yml`) —
+running it requires a box with `xvfb` installed (the quadraui#450
+`gtk-headless` capability routing). Only the size/clipboard *assertion
+logic* is unit-tested in-repo (`gtk::run::smoke_tests`, no display
+required); the live launch itself needs a human or an operator-run box
+to actually invoke `scripts/gtk_smoke.sh`.
+
 ## What unit tests don't cover
 
 Animation cadence, font-rendering quirks across host platforms,
