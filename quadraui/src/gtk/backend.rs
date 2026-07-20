@@ -59,6 +59,16 @@ use crate::{
 
 use super::services::GtkPlatformServices;
 
+/// One piece of text painted this frame, with its on-surface bounds in
+/// backend (pixel) coordinates. Recorded via
+/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`] —
+/// the map [`super::testing::GtkDriver::find`] scans (quadraui#447, GD-2).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PaintedText {
+    pub(crate) text: String,
+    pub(crate) bounds: QRect,
+}
+
 /// GTK backend implementing [`quadraui::Backend`].
 ///
 /// Field roles:
@@ -149,6 +159,15 @@ pub struct GtkBackend {
     /// [`Backend::register_text_region`]. Cleared at the start of each
     /// frame by [`Self::begin_frame`]. Parallels `TuiBackend::text_regions`.
     pub(crate) text_regions: Vec<TextRegion>,
+    /// The `(text, bounds)` map painted this frame — recorded by trait
+    /// methods that already compute a label's on-surface rect (e.g.
+    /// [`Self::draw_status_bar`]) so [`super::testing::GtkDriver::find`]
+    /// can locate a control without hardcoded coordinates (quadraui#447,
+    /// GD-2). Cleared at the start of each frame by [`Self::begin_frame`];
+    /// mirrors `text_regions`' lifecycle. Coverage is incremental — only
+    /// widgets whose trait method has been updated to call
+    /// [`Self::record_painted_text`] appear here; see that method's docs.
+    pub(crate) painted_text: Vec<PaintedText>,
     /// Active text selection (persists after mouse-up until a new click
     /// clears it). Set by [`Self::set_active_text_selection`], cleared by
     /// [`Self::clear_text_selection`] or [`Self::clear_selection_display`].
@@ -267,6 +286,7 @@ impl GtkBackend {
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
             text_regions: Vec::new(),
+            painted_text: Vec::new(),
             active_selection: None,
             last_text_region_id: None,
             focused_activity_bar: None,
@@ -652,6 +672,26 @@ impl GtkBackend {
         self.last_text_region_id = Some(id);
     }
 
+    /// Record one painted label into [`Self::painted_text`] — the
+    /// `(text, bounds)` map [`super::testing::GtkDriver::find`] scans.
+    ///
+    /// `bounds` is in backend (pixel) coordinates, matching what
+    /// [`super::testing::GtkDriver::click`] expects. Called by trait
+    /// methods that already compute a label's rect for hit-testing (e.g.
+    /// [`Backend::draw_status_bar`]) — coverage grows as more `draw_*`
+    /// methods adopt it; see `painted_text`'s docs for the current state.
+    /// Skips empty `text` so blank/placeholder segments don't pollute
+    /// `find` matches.
+    pub(crate) fn record_painted_text(&mut self, text: &str, bounds: QRect) {
+        if text.is_empty() {
+            return;
+        }
+        self.painted_text.push(PaintedText {
+            text: text.to_string(),
+            bounds,
+        });
+    }
+
     /// Paint the active text selection highlight onto `cr`. Must be called
     /// after `app.render` (so the highlight sits on top of the rendered
     /// content). Converts the pixel-based anchor/focus into cell-index space
@@ -1008,6 +1048,8 @@ impl Backend for GtkBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors TuiBackend::begin_frame.
         self.text_regions.clear();
+        // Clear last frame's painted-text map — see `painted_text`'s docs.
+        self.painted_text.clear();
         // Clear the focused activity bar — re-set by draw_activity_bar
         // during the render pass if still focused. Same lifecycle as
         // text_regions.
@@ -1393,7 +1435,7 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
-        crate::gtk::draw_status_bar(
+        let bar_layout = crate::gtk::draw_status_bar(
             cr,
             layout,
             rect.x as f64,
@@ -1404,7 +1446,26 @@ impl Backend for GtkBackend {
             &self.current_theme,
             hovered_id,
             pressed_id,
-        )
+        );
+        // Record each visible segment's label into the painted-text map
+        // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
+        // from `bar` via the segment's side + index, since
+        // `VisibleStatusSegment` carries the resolved bounds but not the
+        // label itself.
+        for seg in &bar_layout.visible_segments {
+            let text = match seg.side {
+                crate::primitives::status_bar::StatusSegmentSide::Left => {
+                    bar.left_segments.get(seg.segment_idx).map(|s| &s.text)
+                }
+                crate::primitives::status_bar::StatusSegmentSide::Right => {
+                    bar.right_segments.get(seg.segment_idx).map(|s| &s.text)
+                }
+            };
+            if let Some(text) = text {
+                self.record_painted_text(text, seg.bounds);
+            }
+        }
+        bar_layout
     }
 
     fn draw_tab_bar(
