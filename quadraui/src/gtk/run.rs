@@ -41,8 +41,51 @@
 //! (ActivityBar keyboard-focus intercept, accelerator matching, Ctrl-C/
 //! V/A interception, text-selection state) cannot drift, because every
 //! GTK signal closure below routes through these same two functions.
+//!
+//! ## Headless smoke mode (quadraui#450, GD-5)
+//!
+//! [`GtkDriver`][crate::gtk::testing::GtkDriver] (above) is deliberately
+//! display-free, so it structurally cannot catch bugs that only exist in
+//! a real `Application` + `ApplicationWindow` + `GdkDisplay` — the exact
+//! class that motivated this: quadraui#437 (`gtk_terminal` opening with a
+//! tiny/garbled window, paste not working at all) only reproduced against
+//! a live window.
+//!
+//! [`run`] honours two environment variables, read once at startup, so
+//! any `gtk_*` example is xvfb-run-friendly with zero example-specific
+//! code (every example already goes through this runner):
+//!
+//! - `QUADRAUI_GTK_SMOKE_MS=<u64>` — enables smoke mode. `after_ms`
+//!   milliseconds after the window is presented, the runner checks the
+//!   `DrawingArea`'s allocated size against a sane floor
+//!   ([`smoke_size_ok`] — the direct #437 tiny-window regression check),
+//!   then closes the window so an unattended process exits deterministically
+//!   instead of hanging forever waiting for a user who isn't there.
+//! - `QUADRAUI_GTK_SMOKE_PASTE=<text>` — optional. If set, the same timer
+//!   round-trips `<text>` through the **real OS clipboard** (`arboard`,
+//!   the same object the live Ctrl-V handler reads —
+//!   `backend.services().clipboard()`) and, if that succeeds, dispatches
+//!   a synthetic Ctrl-V `KeyPressed` through [`dispatch_event`] — the
+//!   exact code path the live key controller calls — so a regression in
+//!   the paste-interception wiring itself also fails the smoke, not just
+//!   a raw clipboard failure. `arboard` needs a real `DISPLAY` (Xvfb
+//!   provides one; the Broadway backend does not), which is why the
+//!   operator-run wrapper (`quadraui/scripts/gtk_smoke.sh`) uses Xvfb.
+//!
+//! Any assertion failure is printed to stderr and flips [`run`]'s return
+//! value to [`std::process::ExitCode::FAILURE`], overriding GLib's own
+//! exit code — see the end of [`run`]. Disabled (zero runtime cost)
+//! unless `QUADRAUI_GTK_SMOKE_MS` is set, so ordinary interactive
+//! launches are unaffected.
+//!
+//! This mechanism can't be exercised in CI (the `gtk` CI job is
+//! deliberately Xvfb-free — see `ci.yml`); it's the operator-run tier
+//! `quadraui/docs/TESTING.md` documents as "live-app headless smoke".
+//! The size/text assertion *logic* is unit-tested below with no display
+//! required.
 
 use std::cell::{Cell, RefCell};
+use std::env;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -77,6 +120,56 @@ use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
 const DEFAULT_WINDOW_WIDTH: i32 = 800;
 const DEFAULT_WINDOW_HEIGHT: i32 = 600;
 
+/// Minimum sane `DrawingArea` size for headless smoke mode (quadraui#450).
+/// Comfortably below [`DEFAULT_WINDOW_WIDTH`]/[`DEFAULT_WINDOW_HEIGHT`] so
+/// ordinary window-manager chrome/decoration insets don't false-positive,
+/// but well above the ~8-character-wide wrapped column quadraui#437
+/// actually produced.
+const SMOKE_MIN_WIDTH: i32 = 200;
+const SMOKE_MIN_HEIGHT: i32 = 150;
+
+/// Headless smoke-mode config (quadraui#450, GD-5) — see the module doc's
+/// "Headless smoke mode" section. `None` unless `QUADRAUI_GTK_SMOKE_MS` is
+/// set.
+#[derive(Clone)]
+struct SmokeConfig {
+    /// Delay after `window.present()` before the one-shot check fires and
+    /// the window is closed.
+    after_ms: u64,
+    /// `QUADRAUI_GTK_SMOKE_PASTE`, if set — round-tripped through the real
+    /// OS clipboard and then replayed as a synthetic Ctrl-V.
+    paste_text: Option<String>,
+}
+
+impl SmokeConfig {
+    /// Reads the smoke-mode env vars once. Returns `None` (the default —
+    /// zero behavioral change) unless `QUADRAUI_GTK_SMOKE_MS` parses as a
+    /// `u64`.
+    fn from_env() -> Option<Self> {
+        let after_ms = env::var("QUADRAUI_GTK_SMOKE_MS").ok()?.parse().ok()?;
+        let paste_text = env::var("QUADRAUI_GTK_SMOKE_PASTE").ok();
+        Some(Self {
+            after_ms,
+            paste_text,
+        })
+    }
+}
+
+/// Is `width`x`height` a plausible, non-broken `DrawingArea` allocation?
+/// The direct regression check for the quadraui#437 tiny/wrapped-window
+/// bug class. Pure and display-free so it's covered by an ordinary unit
+/// test (see `tests` below) with no Xvfb required.
+fn smoke_size_ok(width: i32, height: i32) -> bool {
+    width >= SMOKE_MIN_WIDTH && height >= SMOKE_MIN_HEIGHT
+}
+
+/// Did the OS clipboard round-trip `written` back byte-for-byte? Pure
+/// comparison, factored out so the pass/fail rule is unit-testable
+/// without a real clipboard.
+fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&str>) -> bool {
+    read_back == Some(written)
+}
+
 /// Drive `app` to completion in a basic single-`DrawingArea` GTK
 /// environment.
 ///
@@ -102,6 +195,10 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 600;
 pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(GtkBackend::new()));
+    // quadraui#450 (GD-5): `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
+    // see the module doc's "Headless smoke mode" section.
+    let smoke = SmokeConfig::from_env();
+    let smoke_failed = Rc::new(Cell::new(false));
 
     let gapp = Application::builder()
         .application_id("org.quadraui.app")
@@ -110,12 +207,27 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     {
         let app = app.clone();
         let backend = backend.clone();
+        let smoke = smoke.clone();
+        let smoke_failed = smoke_failed.clone();
         gapp.connect_activate(move |gapp| {
-            activate(gapp, app.clone(), backend.clone());
+            activate(
+                gapp,
+                app.clone(),
+                backend.clone(),
+                smoke.clone(),
+                smoke_failed.clone(),
+            );
         });
     }
 
     let glib_code = gapp.run();
+    // Smoke-mode failures (bad window size, clipboard round-trip mismatch
+    // — see `schedule_smoke_check`) override GLib's own exit code so an
+    // `xvfb-run` caller sees a non-zero status even though the app itself
+    // exited "cleanly" (a closed window, not a crash).
+    if smoke_failed.get() {
+        return std::process::ExitCode::FAILURE;
+    }
     std::process::ExitCode::from(glib_code.value() as u8)
 }
 
@@ -123,6 +235,8 @@ fn activate<A: AppLogic + 'static>(
     gapp: &Application,
     app: Rc<RefCell<A>>,
     backend: Rc<RefCell<GtkBackend>>,
+    smoke: Option<SmokeConfig>,
+    smoke_failed: Rc<Cell<bool>>,
 ) {
     let window = ApplicationWindow::builder()
         .application(gapp)
@@ -648,6 +762,10 @@ fn activate<A: AppLogic + 'static>(
     // drained here on each idle tick.
     let drain_da = da.clone();
     let drain_window = window.clone();
+    // Cloned (rather than moved) so `app`/`backend` stay available below
+    // for the quadraui#450 headless smoke-mode hook.
+    let drain_app = app.clone();
+    let drain_backend = backend.clone();
     glib::timeout_add_local(Duration::from_millis(33), move || {
         // #427 re-entrancy guard: this is the callback that produced the
         // original crash report. A file dialog's nested `pump_until_ready`
@@ -660,11 +778,11 @@ fn activate<A: AppLogic + 'static>(
         if pump_depth.get() > 0 {
             return glib::ControlFlow::Continue;
         }
-        let events = backend.borrow_mut().poll_events();
+        let events = drain_backend.borrow_mut().poll_events();
         for ev in events {
             let outcome = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
+                let mut backend_mut = drain_backend.borrow_mut();
+                let mut app_mut = drain_app.borrow_mut();
                 dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
             apply_event_outcome(outcome, &drain_da, &drain_window);
@@ -674,8 +792,8 @@ fn activate<A: AppLogic + 'static>(
         // idle ticks where no events arrived. Lets apps drive timer
         // logic without synthetic event injection.
         let tick_reaction = {
-            let mut backend_mut = backend.borrow_mut();
-            let mut app_mut = app.borrow_mut();
+            let mut backend_mut = drain_backend.borrow_mut();
+            let mut app_mut = drain_app.borrow_mut();
             app_mut.tick(&mut *backend_mut)
         };
         apply_reaction(tick_reaction, &drain_da, &drain_window);
@@ -684,6 +802,79 @@ fn activate<A: AppLogic + 'static>(
     });
 
     window.present();
+
+    // quadraui#450 (GD-5): opt-in, zero-cost unless `QUADRAUI_GTK_SMOKE_MS`
+    // is set — see the module doc's "Headless smoke mode" section.
+    if let Some(cfg) = smoke {
+        schedule_smoke_check(cfg, da, backend, app, window, smoke_failed);
+    }
+}
+
+/// Schedules the one-shot headless smoke-mode check (quadraui#450, GD-5;
+/// see the module doc's "Headless smoke mode" section). `cfg.after_ms`
+/// after the window is presented: checks the `DrawingArea`'s allocated
+/// size ([`smoke_size_ok`] — the #437 tiny-window regression check),
+/// optionally round-trips `cfg.paste_text` through the real OS clipboard
+/// and replays it as a synthetic Ctrl-V through [`dispatch_event`], then
+/// always closes the window so an unattended `xvfb-run` invocation exits
+/// deterministically instead of hanging.
+fn schedule_smoke_check<A: AppLogic + 'static>(
+    cfg: SmokeConfig,
+    da: DrawingArea,
+    backend: Rc<RefCell<GtkBackend>>,
+    app: Rc<RefCell<A>>,
+    window: ApplicationWindow,
+    smoke_failed: Rc<Cell<bool>>,
+) {
+    glib::source::timeout_add_local_once(Duration::from_millis(cfg.after_ms), move || {
+        let width = da.width();
+        let height = da.height();
+        if !smoke_size_ok(width, height) {
+            eprintln!(
+                "quadraui smoke: DrawingArea size looks broken ({width}x{height}px, \
+                 expected at least {SMOKE_MIN_WIDTH}x{SMOKE_MIN_HEIGHT}px) — \
+                 this is the quadraui#437 tiny-window regression class"
+            );
+            smoke_failed.set(true);
+        }
+
+        if let Some(text) = &cfg.paste_text {
+            let read_back = {
+                let backend_ref = backend.borrow();
+                let clipboard = backend_ref.services().clipboard();
+                clipboard.write_text(text);
+                clipboard.read_text()
+            };
+            if !smoke_clipboard_round_trip_ok(text, read_back.as_deref()) {
+                eprintln!(
+                    "quadraui smoke: OS clipboard round-trip failed — wrote {text:?}, \
+                     read back {read_back:?} (needs a real DISPLAY, e.g. Xvfb — \
+                     the Broadway GDK backend has no OS clipboard to round-trip through)"
+                );
+                smoke_failed.set(true);
+            } else {
+                // Also exercise the real Ctrl-V interception path (the
+                // exact code the live key controller calls), so a
+                // regression there — not just in the raw OS clipboard —
+                // fails the smoke too.
+                let ev = UiEvent::KeyPressed {
+                    key: Key::Char('v'),
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        shift: false,
+                        alt: false,
+                        cmd: false,
+                    },
+                    repeat: false,
+                };
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                dispatch_event(ev, &mut backend_mut, &mut *app_mut);
+            }
+        }
+
+        window.close();
+    });
 }
 
 fn apply_reaction(reaction: Reaction, da: &DrawingArea, window: &ApplicationWindow) {
@@ -956,5 +1147,62 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         }
         Reaction::Redraw => EventOutcome::Redraw,
         Reaction::Exit => EventOutcome::Exit,
+    }
+}
+
+#[cfg(test)]
+mod smoke_tests {
+    //! Unit tests for the headless smoke-mode helpers (quadraui#450,
+    //! GD-5). These are pure/display-free by design — the live
+    //! Xvfb/Broadway run itself is an operator-run tier documented in
+    //! `quadraui/docs/TESTING.md`, not something CI (no Xvfb — see
+    //! `ci.yml`) or this in-process test can exercise.
+    use super::*;
+
+    #[test]
+    fn smoke_size_ok_accepts_the_default_window_size() {
+        assert!(smoke_size_ok(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
+    }
+
+    #[test]
+    fn smoke_size_ok_accepts_exactly_the_floor() {
+        assert!(smoke_size_ok(SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT));
+    }
+
+    #[test]
+    fn smoke_size_ok_rejects_the_437_tiny_window_class() {
+        // quadraui#437: content wrapped into an ~8px-wide column.
+        assert!(!smoke_size_ok(8, DEFAULT_WINDOW_HEIGHT));
+        assert!(!smoke_size_ok(DEFAULT_WINDOW_WIDTH, 8));
+        assert!(!smoke_size_ok(8, 8));
+    }
+
+    #[test]
+    fn smoke_size_ok_rejects_just_under_the_floor() {
+        assert!(!smoke_size_ok(SMOKE_MIN_WIDTH - 1, SMOKE_MIN_HEIGHT));
+        assert!(!smoke_size_ok(SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT - 1));
+    }
+
+    #[test]
+    fn clipboard_round_trip_ok_when_read_back_matches() {
+        assert!(smoke_clipboard_round_trip_ok(
+            "quadraui smoke",
+            Some("quadraui smoke")
+        ));
+    }
+
+    #[test]
+    fn clipboard_round_trip_rejects_a_missing_read() {
+        // The failure mode a headless box with no OS clipboard access
+        // actually produces (e.g. Broadway, no real `DISPLAY`).
+        assert!(!smoke_clipboard_round_trip_ok("quadraui smoke", None));
+    }
+
+    #[test]
+    fn clipboard_round_trip_rejects_a_mismatched_read() {
+        assert!(!smoke_clipboard_round_trip_ok(
+            "quadraui smoke",
+            Some("something else")
+        ));
     }
 }
