@@ -61,6 +61,7 @@ mod split_tree;
 mod status_bar;
 mod tab_bar;
 mod terminal;
+pub mod testing;
 mod text_display;
 mod text_input;
 mod toast;

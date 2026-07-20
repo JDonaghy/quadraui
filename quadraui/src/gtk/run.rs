@@ -28,11 +28,25 @@
 //! DAs add GTK widget-tree complexity without benefit. The
 //! `AppLogic::AreaId` associated type remains in the trait as a
 //! compatibility seam but is always `()` in practice.
+//!
+//! ## Shared with the headless test driver
+//!
+//! [`render_frame`] and [`dispatch_event`] are `pub(crate)` so the
+//! in-process [`crate::gtk::testing::GtkDriver`] (quadraui#446, mirroring
+//! quadraui#300's TUI split) renders + dispatches through the *exact
+//! same* code as the live runner. The driver swaps the `DrawingArea`'s
+//! live `cairo::Context` for one backed by a headless
+//! `cairo::ImageSurface` and supplies scripted events instead of real
+//! GDK signals — but the frame paint and the event pre-processing
+//! (ActivityBar keyboard-focus intercept, accelerator matching, Ctrl-C/
+//! V/A interception, text-selection state) cannot drift, because every
+//! GTK signal closure below routes through these same two functions.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+use gtk4::cairo::Context;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
@@ -188,7 +202,7 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let backend = backend.clone();
         let pump_depth = pump_depth.clone();
-        da.set_draw_func(move |da, cr, w, h| {
+        da.set_draw_func(move |_da, cr, w, h| {
             // #427 re-entrancy guard: skip this repaint entirely rather
             // than double-borrow `backend` while a file dialog's nested
             // pump (further up the call stack) already holds it. Worst
@@ -197,69 +211,9 @@ fn activate<A: AppLogic + 'static>(
             if pump_depth.get() > 0 {
                 return;
             }
-            let pango_ctx = pcfn::create_context(cr);
-            let layout = pg::Layout::new(&pango_ctx);
-            // Editor font — defaults to system monospace, size 11, but
-            // is app-configurable via `Backend::set_editor_font`
-            // (`ShellConfig::with_editor_font` for `ShellApp` consumers).
-            // Read fresh every frame so a runtime font change takes
-            // effect on the next repaint (#422). Monospace is required
-            // because `draw_editor`'s scroll formula
-            // (`scroll_left * char_width`) assumes uniform glyph width;
-            // the untouched default resolves to the fontconfig monospace
-            // alias (DejaVu Sans Mono, JetBrains Mono, etc).
-            let font_desc_str = backend.borrow().editor_font_pango_string();
-            let font_desc = pg::FontDescription::from_string(&font_desc_str);
-            layout.set_font_description(Some(&font_desc));
-            // Single-line, no wrap. Belt-and-braces over the rasterisers
-            // that also call `set_width(-1)` themselves.
-            layout.set_width(-1);
-
-            // Resolve font metrics for the default font and seed the
-            // backend's per-frame state.
-            let metrics = pango_ctx.metrics(Some(&font_desc), None);
-            let line_h = (metrics.ascent() + metrics.descent()) as f64 / pg::SCALE as f64;
-            // Measure actual laid-out character width instead of
-            // `approximate_char_width()` — the approximate value
-            // doesn't account for font hinting and drifts over long
-            // lines (e.g. 9 chars short at 500-char scroll).
-            layout.set_text("0");
-            let (char_w_px, _) = layout.pixel_size();
-            let char_w = char_w_px as f64;
-
             let mut backend_mut = backend.borrow_mut();
-            backend_mut.begin_frame(crate::Viewport::new(w as f32, h as f32, 1.0));
-            backend_mut.set_current_line_height(line_h);
-            backend_mut.set_current_char_width(char_w);
-            backend_mut.set_ui_font("Sans 11");
-
-            // Clear the whole DA with the backend's current theme bg
-            // before the app's `render` runs. Without this, GTK's
-            // default light-theme white shows through anywhere the
-            // app doesn't explicitly paint, which clashes with the
-            // primitive surface colours. Vimcode does the same as
-            // step 1 of every draw flow.
-            let bg = backend_mut.current_theme().background;
-            cr.set_source_rgb(
-                bg.r as f64 / 255.0,
-                bg.g as f64 / 255.0,
-                bg.b as f64 / 255.0,
-            );
-            cr.paint().ok();
-
-            backend_mut.enter_frame_scope(cr, &layout, |b| {
-                let _ = da; // suppress unused
-                let app_ref = app.borrow();
-                // Single-area runner: pass the default `AreaId`.
-                app_ref.render(b, A::AreaId::default());
-            });
-
-            // After app.render: overlay selection highlight on top of the
-            // rendered content (mirrors TUI's apply_selection_highlight call
-            // in the terminal.draw closure).
-            backend_mut.apply_selection_highlight(cr);
-
-            backend_mut.end_frame();
+            let app_ref = app.borrow();
+            render_frame(&mut backend_mut, &*app_ref, cr, w, h);
         });
     }
 
@@ -287,173 +241,18 @@ fn activate<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             };
 
-            // ── ActivityBar keyboard focus intercept ────────────────
-            //
-            // When an `ActivityBar` declared `is_keyboard_focused = true`
-            // during the last render pass, redirect every `KeyPressed`
-            // event to it as `UiEvent::ActivityBar(id, KeyPressed { … })`
-            // so the app receives typed key events through a stable channel.
-            //
-            // This must run *before* the accelerator dispatch below,
-            // mirroring TUI's `apply_dispatch` (ActivityBar redirect) →
-            // `apply_accelerators` ordering (`src/tui/backend.rs:548-549`,
-            // `:583-594`) — a focused bar must be able to intercept any
-            // key, even one that also happens to match a registered
-            // `Global` accelerator. Reversing this priority would silently
-            // diverge GTK from TUI for the same `AppLogic` (#445 review).
-            //
-            // This runs at the window-level `EventControllerKey` (already
-            // attached to the window above), so it does NOT call
-            // `grab_focus()` on any `DrawingArea` and cannot silence other
-            // key controllers — the root cause of the vimcode#494 failure.
-            if let UiEvent::KeyPressed {
-                ref key, modifiers, ..
-            } = ev
-            {
-                let focused_bar = backend.borrow().focused_activity_bar_id().cloned();
-                if let Some(bar_id) = focused_bar {
-                    let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
-                    let bar_ev = UiEvent::ActivityBar(
-                        bar_id,
-                        crate::ActivityBarEvent::KeyPressed {
-                            key: key_str,
-                            modifiers,
-                        },
-                    );
-                    let reaction = {
-                        let mut backend_mut = backend.borrow_mut();
-                        let mut app_mut = app.borrow_mut();
-                        app_mut.handle(bar_ev, &mut *backend_mut)
-                    };
-                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
-                    return glib::Propagation::Stop;
-                }
-            }
-
-            // ── Global accelerator dispatch (#445) ───────────────────
-            //
-            // Registered `Global`-scope accelerators
-            // (`Backend::register_accelerator()`) must fire on this,
-            // the real GTK key path — `poll_events()` /
-            // `apply_accelerators()` is a dormant idle-drain seam that
-            // nothing pushes real keypresses into on the
-            // `run`/`run_with_shell` path. Mirror
-            // `GtkBackend::apply_accelerators` here: rewrite a matching
-            // `KeyPressed` into `UiEvent::Accelerator`, after the
-            // ActivityBar focus intercept above (so a focused bar still
-            // wins) but before the runner's own special-cased key
-            // interceptions below (Ctrl-C/V/A) get a chance to consume
-            // the raw `KeyPressed` instead.
-            let ev = if let UiEvent::KeyPressed { key, modifiers, .. } = &ev {
-                match backend.borrow().match_keypress(key, *modifiers) {
-                    Some(id) => UiEvent::Accelerator(id, *modifiers),
-                    None => ev,
-                }
-            } else {
-                ev
-            };
-
-            // ── Ctrl-C interception (text selection) ────────────────
-            if let UiEvent::KeyPressed {
-                key: Key::Char('c'),
-                modifiers:
-                    Modifiers {
-                        ctrl: true,
-                        shift: false,
-                        alt: false,
-                        cmd: false,
-                    },
-                ..
-            } = &ev
-            {
-                let mut backend_mut = backend.borrow_mut();
-                if backend_mut.active_text_selection().is_some() {
-                    let text = backend_mut.extract_selection_text();
-                    backend_mut.services().clipboard().write_text(&text);
-                    backend_mut.clear_text_selection();
-                    // Deliver TextCopied so the app can confirm
-                    // (e.g. update a status bar message). Mirrors TUI runner.
-                    let copy_ev = UiEvent::TextCopied(text);
-                    let mut app_mut = app.borrow_mut();
-                    let reaction = app_mut.handle(copy_ev, &mut *backend_mut);
-                    drop(backend_mut);
-                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
-                    // Suppress original Ctrl-C from reaching the app.
-                    return glib::Propagation::Stop;
-                }
-            }
-
-            // ── Ctrl-V interception (paste) ──────────────────────────
-            //
-            // GTK has no native paste signal on a bespoke `DrawingArea`
-            // canvas the way a real `gtk4::Entry`/`TextView` would —
-            // unlike TUI, which gets bracketed paste from crossterm for
-            // free. Without this, `UiEvent::ClipboardPaste` was never
-            // constructed on GTK at all, so paste silently did nothing
-            // for every text-accepting primitive, including the
-            // embedded terminal (quadraui#437). Reads the system
-            // clipboard via the same `Clipboard` service used for the
-            // Ctrl-C copy path above and delivers `ClipboardPaste` —
-            // routing to the focused input is the app's job, same as
-            // TUI's bracketed paste.
-            if let UiEvent::KeyPressed {
-                key: Key::Char('v') | Key::Char('V'),
-                modifiers:
-                    Modifiers {
-                        ctrl: true,
-                        shift: false,
-                        alt: false,
-                        cmd: false,
-                    },
-                ..
-            } = &ev
-            {
-                let mut backend_mut = backend.borrow_mut();
-                if let Some(text) = backend_mut.services().clipboard().read_text() {
-                    let paste_ev = UiEvent::ClipboardPaste(text);
-                    let mut app_mut = app.borrow_mut();
-                    let reaction = app_mut.handle(paste_ev, &mut *backend_mut);
-                    drop(backend_mut);
-                    apply_reaction(reaction, &da_for_redraw, &window_for_close);
-                }
-                return glib::Propagation::Stop;
-            }
-
-            // ── Ctrl-A interception (select-all for text regions) ────
-            //
-            // Accepts 'A' (CapsLock). Guards on !shift to avoid
-            // intercepting Ctrl-Shift-A. Falls through to the app when
-            // no TextRegion resolves so app-level Ctrl-A handlers
-            // (e.g. tree-node inline-edit select-all) are unaffected.
-            //
-            // Priority note: when a `TextRegion` is registered the runner
-            // takes Ctrl-A; apps that register a `TextRegion` and also
-            // want their own Ctrl-A handler should clear the region first.
-            if let UiEvent::KeyPressed {
-                key: Key::Char('a') | Key::Char('A'),
-                modifiers:
-                    Modifiers {
-                        ctrl: true,
-                        shift: false,
-                        alt: false,
-                        cmd: false,
-                    },
-                ..
-            } = &ev
-            {
-                let handled = backend.borrow_mut().select_all_text_region();
-                if handled {
-                    da_for_redraw.queue_draw();
-                    return glib::Propagation::Stop;
-                }
-            }
-
-            let reaction = {
+            // All key-press pre-processing — ActivityBar keyboard-focus
+            // intercept, `Global` accelerator matching (#445), Ctrl-C/V/A
+            // interception — lives in the shared `dispatch_event` (see the
+            // module doc's "Shared with the headless test driver" section)
+            // so the live GTK path and `GtkDriver::press`/`type_char`
+            // (quadraui#446) can't drift apart.
+            let outcome = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
+                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
-            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+            apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
             glib::Propagation::Stop
         });
     }
@@ -506,27 +305,31 @@ fn activate<A: AppLogic + 'static>(
 
             if n_press == 2 {
                 // Double-click: clear selection and deliver DoubleClick directly.
+                // (Not a `MouseDown`, so `dispatch_event`'s selection-display
+                // clear doesn't fire for it — do it explicitly here, same as
+                // before the refactor.)
                 let mut backend_mut = backend.borrow_mut();
                 backend_mut.clear_selection_display();
                 let ev = UiEvent::DoubleClick {
                     widget: None,
                     position,
                 };
-                let reaction = {
+                let outcome = {
                     let mut app_mut = app.borrow_mut();
-                    app_mut.handle(ev, &mut *backend_mut)
+                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                drop(backend_mut);
+                apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
                 return;
             }
 
             let mut backend_mut = backend.borrow_mut();
-            // Clear the previous selection highlight before dispatch so the
-            // old highlight doesn't flicker while the new drag is starting.
-            backend_mut.clear_selection_display();
 
             // Route through dispatch_click so text-region clicks begin a
             // TextSelection drag and scrollbar clicks begin scrollbar drags.
+            // The resulting `MouseDown` event(s) go through `dispatch_event`
+            // below, which clears the previous selection-highlight display
+            // (mirrors the TUI runner's own `MouseDown` pre-processing).
             let events = {
                 let stack_rc = backend_mut.modal_stack_handle();
                 let drag_rc = backend_mut.drag_state_handle();
@@ -555,14 +358,14 @@ fn activate<A: AppLogic + 'static>(
             for ev in events {
                 // Only `MouseDown` events are emitted by dispatch_click;
                 // pass them to the app.
-                let reaction = {
+                let outcome = {
                     let mut app_mut = app.borrow_mut();
-                    app_mut.handle(ev, &mut *backend_mut)
+                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                match reaction {
-                    Reaction::Continue => {}
-                    Reaction::Redraw => needs_redraw = true,
-                    Reaction::Exit => {
+                match outcome {
+                    EventOutcome::Continue => {}
+                    EventOutcome::Redraw => needs_redraw = true,
+                    EventOutcome::Exit => {
                         window_for_close.close();
                         return;
                     }
@@ -603,11 +406,11 @@ fn activate<A: AppLogic + 'static>(
                 dispatch_mouse_up(&stack, &mut drag, position, button)
             };
             for ev in events {
-                let reaction = {
+                let outcome = {
                     let mut app_mut = app.borrow_mut();
-                    app_mut.handle(ev, &mut *backend_mut)
+                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
             }
         });
     }
@@ -680,27 +483,18 @@ fn activate<A: AppLogic + 'static>(
                 dispatch_mouse_drag(&drag, position, buttons)
             };
 
+            // `TextSelectionChanged` (active-selection state update) and the
+            // fallback `app.handle` both live in the shared `dispatch_event`.
             let mut needs_redraw = false;
             for ev in events {
-                // Pre-process: update backend selection state so
-                // `apply_selection_highlight` paints the updated range.
-                if let UiEvent::TextSelectionChanged {
-                    region,
-                    anchor,
-                    focus,
-                } = &ev
-                {
-                    backend_mut.set_active_text_selection(region.clone(), *anchor, *focus);
-                    needs_redraw = true;
-                }
-                let reaction = {
+                let outcome = {
                     let mut app_mut = app.borrow_mut();
-                    app_mut.handle(ev, &mut *backend_mut)
+                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                match reaction {
-                    Reaction::Continue => {}
-                    Reaction::Redraw => needs_redraw = true,
-                    Reaction::Exit => {
+                match outcome {
+                    EventOutcome::Continue => {}
+                    EventOutcome::Redraw => needs_redraw = true,
+                    EventOutcome::Exit => {
                         window_for_close.close();
                         return;
                     }
@@ -728,12 +522,12 @@ fn activate<A: AppLogic + 'static>(
             }
             let (x, y) = cursor_pos.get();
             let ev = gdk_scroll_to_uievent(dx, dy, x, y);
-            let reaction = {
+            let outcome = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
+                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
-            apply_reaction(reaction, &da_for_redraw, &window_for_close);
+            apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
             glib::Propagation::Stop
         });
     }
@@ -834,12 +628,12 @@ fn activate<A: AppLogic + 'static>(
                 let height = da_for_redraw.height();
                 let scale = da_for_redraw.scale_factor() as f32;
                 let ev = gdk_resize_to_uievent(width, height, scale);
-                let reaction = {
+                let outcome = {
                     let mut backend_mut = backend.borrow_mut();
                     let mut app_mut = app.borrow_mut();
-                    app_mut.handle(ev, &mut *backend_mut)
+                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                apply_reaction(reaction, &da_for_redraw, &window_for_close);
+                apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
             });
             resize_timer.set(Some(id));
         });
@@ -868,12 +662,12 @@ fn activate<A: AppLogic + 'static>(
         }
         let events = backend.borrow_mut().poll_events();
         for ev in events {
-            let reaction = {
+            let outcome = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
-                app_mut.handle(ev, &mut *backend_mut)
+                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
-            apply_reaction(reaction, &drain_da, &drain_window);
+            apply_event_outcome(outcome, &drain_da, &drain_window);
         }
 
         // Periodic tick — called after every queue drain, including
@@ -897,5 +691,270 @@ fn apply_reaction(reaction: Reaction, da: &DrawingArea, window: &ApplicationWind
         Reaction::Continue => {}
         Reaction::Redraw => da.queue_draw(),
         Reaction::Exit => window.close(),
+    }
+}
+
+/// Same as [`apply_reaction`] but for the [`EventOutcome`] that
+/// [`dispatch_event`] returns.
+fn apply_event_outcome(outcome: EventOutcome, da: &DrawingArea, window: &ApplicationWindow) {
+    match outcome {
+        EventOutcome::Continue => {}
+        EventOutcome::Redraw => da.queue_draw(),
+        EventOutcome::Exit => window.close(),
+    }
+}
+
+/// Render one frame into `cr` at `width`×`height` pixels.
+///
+/// Builds a fresh Pango context + layout from `cr` (Cairo per-surface
+/// font metrics), seeds the backend's per-frame font/metric state,
+/// clears the surface to the current theme background, runs
+/// `app.render` inside [`GtkBackend::enter_frame_scope`], and overlays
+/// the active text-selection highlight. This is the exact body the live
+/// `set_draw_func` used to run inline — extracted so it never depends on
+/// a real `DrawingArea` widget, only a `Context` + pixel size. Shared by
+/// the live runner and [`crate::gtk::testing::GtkDriver`] (quadraui#446)
+/// — see the module doc's "Shared with the headless test driver"
+/// section.
+pub(crate) fn render_frame<A: AppLogic>(
+    backend: &mut GtkBackend,
+    app: &A,
+    cr: &Context,
+    width: i32,
+    height: i32,
+) {
+    let pango_ctx = pcfn::create_context(cr);
+    let layout = pg::Layout::new(&pango_ctx);
+    // Editor font — defaults to system monospace, size 11, but is
+    // app-configurable via `Backend::set_editor_font`
+    // (`ShellConfig::with_editor_font` for `ShellApp` consumers). Read
+    // fresh every frame so a runtime font change takes effect on the
+    // next repaint (#422). Monospace is required because `draw_editor`'s
+    // scroll formula (`scroll_left * char_width`) assumes uniform glyph
+    // width; the untouched default resolves to the fontconfig monospace
+    // alias (DejaVu Sans Mono, JetBrains Mono, etc).
+    let font_desc_str = backend.editor_font_pango_string();
+    let font_desc = pg::FontDescription::from_string(&font_desc_str);
+    layout.set_font_description(Some(&font_desc));
+    // Single-line, no wrap. Belt-and-braces over the rasterisers that
+    // also call `set_width(-1)` themselves.
+    layout.set_width(-1);
+
+    // Resolve font metrics for the default font and seed the backend's
+    // per-frame state.
+    let metrics = pango_ctx.metrics(Some(&font_desc), None);
+    let line_h = (metrics.ascent() + metrics.descent()) as f64 / pg::SCALE as f64;
+    // Measure actual laid-out character width instead of
+    // `approximate_char_width()` — the approximate value doesn't
+    // account for font hinting and drifts over long lines (e.g. 9 chars
+    // short at 500-char scroll).
+    layout.set_text("0");
+    let (char_w_px, _) = layout.pixel_size();
+    let char_w = char_w_px as f64;
+
+    backend.begin_frame(crate::Viewport::new(width as f32, height as f32, 1.0));
+    backend.set_current_line_height(line_h);
+    backend.set_current_char_width(char_w);
+    backend.set_ui_font("Sans 11");
+
+    // Clear the whole surface with the backend's current theme bg before
+    // the app's `render` runs. Without this, GTK's default light-theme
+    // white shows through anywhere the app doesn't explicitly paint,
+    // which clashes with the primitive surface colours. Vimcode does the
+    // same as step 1 of every draw flow.
+    let bg = backend.current_theme().background;
+    cr.set_source_rgb(
+        bg.r as f64 / 255.0,
+        bg.g as f64 / 255.0,
+        bg.b as f64 / 255.0,
+    );
+    cr.paint().ok();
+
+    backend.enter_frame_scope(cr, &layout, |b| {
+        // Single-area runner: pass the default `AreaId`.
+        app.render(b, A::AreaId::default());
+    });
+
+    // After app.render: overlay selection highlight on top of the
+    // rendered content (mirrors TUI's apply_selection_highlight call in
+    // the terminal.draw closure).
+    backend.apply_selection_highlight(cr);
+
+    backend.end_frame();
+}
+
+/// What the caller should do after [`dispatch_event`] handles one event.
+/// Mirrors [`crate::tui::run::EventOutcome`].
+pub(crate) enum EventOutcome {
+    /// No redraw needed; keep going.
+    Continue,
+    /// State changed; schedule a redraw.
+    Redraw,
+    /// The app requested exit.
+    Exit,
+}
+
+/// Dispatch one already-translated [`UiEvent`] through the app, applying
+/// the runner's built-in pre-processing first. This is the single funnel
+/// every GTK signal closure above routes through (key press, click
+/// press/release, motion, scroll, resize, idle-drain) — see the module
+/// doc's "Shared with the headless test driver" section for why that
+/// matters.
+///
+/// Pre-processing handled here (before — or instead of — the app's
+/// `handle`), in priority order:
+/// - `KeyPressed` while an `ActivityBar` declared
+///   `is_keyboard_focused = true`: redirect to
+///   `UiEvent::ActivityBar(id, KeyPressed { … })` instead of the app's
+///   normal `handle` (#445 review — must win over accelerators below).
+/// - `KeyPressed` matching a registered `Global` accelerator: rewrite to
+///   `UiEvent::Accelerator`.
+/// - Ctrl-C with an active text selection: copy to the clipboard and
+///   deliver `TextCopied` instead of forwarding the raw key press.
+/// - Ctrl-V: read the system clipboard and deliver `ClipboardPaste`
+///   (GTK has no native paste signal on a bespoke `DrawingArea`, unlike
+///   TUI's crossterm bracketed paste).
+/// - Ctrl-A: select the entire content of the most-recently focused
+///   `TextRegion`, if one is registered.
+/// - `MouseDown`: clear the displayed selection highlight (a fresh drag
+///   may be starting).
+/// - `TextSelectionChanged`: update the backend's active selection and
+///   force a redraw.
+///
+/// Anything not matched above falls through to `app.handle` unchanged.
+pub(crate) fn dispatch_event<A: AppLogic>(
+    event: UiEvent,
+    backend: &mut GtkBackend,
+    app: &mut A,
+) -> EventOutcome {
+    // ── ActivityBar keyboard focus intercept ────────────────────────
+    if let UiEvent::KeyPressed {
+        ref key, modifiers, ..
+    } = event
+    {
+        let focused_bar = backend.focused_activity_bar_id().cloned();
+        if let Some(bar_id) = focused_bar {
+            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
+            let bar_ev = UiEvent::ActivityBar(
+                bar_id,
+                crate::ActivityBarEvent::KeyPressed {
+                    key: key_str,
+                    modifiers,
+                },
+            );
+            return match app.handle(bar_ev, backend) {
+                Reaction::Continue => EventOutcome::Continue,
+                Reaction::Redraw => EventOutcome::Redraw,
+                Reaction::Exit => EventOutcome::Exit,
+            };
+        }
+    }
+
+    // ── Global accelerator dispatch (#445) ───────────────────────────
+    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        match backend.match_keypress(key, *modifiers) {
+            Some(id) => UiEvent::Accelerator(id, *modifiers),
+            None => event,
+        }
+    } else {
+        event
+    };
+
+    // ── Ctrl-C interception (text selection) ─────────────────────────
+    if let UiEvent::KeyPressed {
+        key: Key::Char('c'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if backend.active_text_selection().is_some() {
+            let text = backend.extract_selection_text();
+            backend.services().clipboard().write_text(&text);
+            backend.clear_text_selection();
+            // Deliver TextCopied so the app can confirm (e.g. update a
+            // status bar message). Mirrors the TUI runner.
+            return match app.handle(UiEvent::TextCopied(text), backend) {
+                Reaction::Continue => EventOutcome::Continue,
+                Reaction::Redraw => EventOutcome::Redraw,
+                Reaction::Exit => EventOutcome::Exit,
+            };
+        }
+    }
+
+    // ── Ctrl-V interception (paste) ───────────────────────────────────
+    if let UiEvent::KeyPressed {
+        key: Key::Char('v') | Key::Char('V'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if let Some(text) = backend.services().clipboard().read_text() {
+            return match app.handle(UiEvent::ClipboardPaste(text), backend) {
+                Reaction::Continue => EventOutcome::Continue,
+                Reaction::Redraw => EventOutcome::Redraw,
+                Reaction::Exit => EventOutcome::Exit,
+            };
+        }
+        return EventOutcome::Continue;
+    }
+
+    // ── Ctrl-A interception (select-all for text regions) ────────────
+    if let UiEvent::KeyPressed {
+        key: Key::Char('a') | Key::Char('A'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if backend.select_all_text_region() {
+            return EventOutcome::Redraw;
+        }
+    }
+
+    // ── MouseDown: clear the displayed selection highlight ────────────
+    if let UiEvent::MouseDown { .. } = &event {
+        backend.clear_selection_display();
+    }
+
+    // ── TextSelectionChanged: update active selection while dragging ──
+    let mut force_redraw = false;
+    if let UiEvent::TextSelectionChanged {
+        region,
+        anchor,
+        focus,
+    } = &event
+    {
+        backend.set_active_text_selection(region.clone(), *anchor, *focus);
+        force_redraw = true;
+    }
+
+    // ── Normal app dispatch ────────────────────────────────────────────
+    match app.handle(event, backend) {
+        Reaction::Continue => {
+            if force_redraw {
+                EventOutcome::Redraw
+            } else {
+                EventOutcome::Continue
+            }
+        }
+        Reaction::Redraw => EventOutcome::Redraw,
+        Reaction::Exit => EventOutcome::Exit,
     }
 }
