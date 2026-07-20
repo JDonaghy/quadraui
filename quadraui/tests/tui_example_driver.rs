@@ -655,6 +655,66 @@ fn appshell_demo_programmatic_panel_switch_updates_chrome() {
     );
 }
 
+/// #454: `ctx.shell_mut()` reaches the real `AppShell` instance
+/// `ShellAdapter` renders — `AppShellDemo` binds `Ctrl+B` to
+/// `ctx.shell_mut().toggle_sidebar()`, exactly the call a consumer like
+/// vimcode needs for a toggle-sidebar keybinding. Before #454 a `ShellApp`
+/// had no way to reach the rendered `AppShell` at all, so this had to be
+/// faked with a second, shadow `AppShell` that silently drifted from the
+/// one actually painted (vimcode's `Ctrl+B` was dead on GTK because of
+/// exactly this). Driving this through `driver_with_shell` — the same
+/// `ShellApp` → `ShellAdapter` → `AppShell` dispatch `run_with_shell` uses
+/// in production — proves the fix on the real path, not a synthetic
+/// `ShellContext` built by hand.
+#[test]
+fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 100, 30);
+
+    // Sidebar starts visible: the demo paints its sidebar-content
+    // placeholder text into `layout.sidebar_content_bounds`, which is
+    // `Some` only while the sidebar is shown.
+    assert!(
+        driver.screen_contains("(sidebar content"),
+        "sidebar should be visible on the initial screen:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.ctrl_char('b');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Ctrl+B toggling the real AppShell must redraw"
+    );
+    assert!(
+        !driver.screen_contains("(sidebar content"),
+        "Ctrl+B must hide the sidebar that ShellAdapter actually renders, \
+         not a shadow copy:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Sidebar hidden (Ctrl+B via ctx.shell_mut())"),
+        "status line should confirm the toggle went through ctx.shell_mut():\n{}",
+        driver.screen()
+    );
+
+    // Toggling again brings it back — proves `ctx.shell_mut()` mutates the
+    // same live instance `render_content` reads from on the next frame,
+    // round-tripping the real state rather than a one-way flag.
+    let reaction = driver.ctrl_char('b');
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("(sidebar content"),
+        "a second Ctrl+B should show the sidebar again:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Sidebar shown (Ctrl+B via ctx.shell_mut())"),
+        "status line should confirm the second toggle:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── DialogTableDemo (issue #225): table layout in dialog ───────────────────
 
 /// Initial screen renders dialog title and table headers.

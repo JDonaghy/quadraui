@@ -13,11 +13,18 @@
 //! `ShellApp` only needs to pick its own trigger key(s) and call
 //! `request_activity_keyboard_focus()`; a different consumer could bind
 //! `Ctrl+W` instead of `Tab` with no quadraui changes.
+//!
+//! `Ctrl+B` demonstrates the #454 fix: [`ShellContext::shell_mut`] reaches
+//! the real `AppShell` instance quadraui's internal `ShellAdapter` actually
+//! renders, so a consumer-driven binding can call
+//! `ctx.shell_mut().toggle_sidebar()` directly instead of tracking a shadow
+//! `AppShell` that can drift from what's on screen (the vimcode `Ctrl+B`
+//! bug this issue fixes).
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct AppShellDemo {
@@ -33,9 +40,9 @@ pub struct AppShellDemo {
 impl AppShellDemo {
     pub fn new() -> Self {
         Self {
-            last_event:
-                "Tab=focus bar | click icons | drag divider | p=jump to Source Control | q=quit"
-                    .into(),
+            last_event: "Tab=focus bar | click icons | drag divider | p=jump to Source Control \
+                         | Ctrl+B=toggle sidebar | q=quit"
+                .into(),
             pending_panel: None,
         }
     }
@@ -152,6 +159,28 @@ impl ShellApp for AppShellDemo {
             } => {
                 self.pending_panel = Some(WidgetId::new("panel:git"));
                 self.last_event = "Requested programmatic switch to panel:git".into();
+                Reaction::Redraw
+            }
+            // `Ctrl+B` = the #454 fix: `ctx.shell_mut()` reaches the real
+            // `AppShell` `ShellAdapter` renders, so this app can call
+            // `toggle_sidebar()` on it directly — no shadow `AppShell`, no
+            // drift between what this app thinks is visible and what's
+            // actually painted (the vimcode bug #454 fixes).
+            UiEvent::KeyPressed {
+                key: Key::Char('b'),
+                modifiers: Modifiers { ctrl: true, .. },
+                ..
+            } => {
+                let now_visible = {
+                    let mut shell = ctx.shell_mut();
+                    shell.toggle_sidebar();
+                    shell.sidebar_visible()
+                };
+                self.last_event = if now_visible {
+                    "Sidebar shown (Ctrl+B via ctx.shell_mut())".into()
+                } else {
+                    "Sidebar hidden (Ctrl+B via ctx.shell_mut())".into()
+                };
                 Reaction::Redraw
             }
             UiEvent::MouseDown { position, .. } => {
