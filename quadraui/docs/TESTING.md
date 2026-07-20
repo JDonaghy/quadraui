@@ -35,7 +35,7 @@ no per-issue restatement needed.
 | **Coordinate drift** between paint and click | Paint/click round-trip — paint into the backend's headless surface, find a painted glyph, hit_test that exact coordinate, assert the hit identifies the painted element. | `tui/<name>.rs::tests` and `gtk/<name>.rs::tests`. |
 | **Consumer-side click-routing drift** | Consumer-state round-trip — paint, simulate the consumer's click handler, assert the host's state mutation matches the painted UI. | Adjacent to the consumer pattern. Template: `tui::multi_section_view::tests`. |
 | **State-derived paint geometry** | Painted-indicator test — set state to a known value, paint, find the indicator in the buffer/surface, assert it lands at the position the formula predicts. | Same module as the rasteriser. |
-| **Example / app-wiring drift** | Example-driver round-trip — drive the *whole* `AppLogic` through the headless driver, script real `UiEvent`s, assert on the re-rendered screen. Catches mis-routed handlers, missing `Reaction::Redraw`, stale state — none of which (1)–(3) can see. | `tests/tui_example_driver.rs`. |
+| **Example / app-wiring drift** | Example-driver round-trip — drive the *whole* `AppLogic` through the headless driver, script real `UiEvent`s, assert on the re-rendered screen. Catches mis-routed handlers, missing `Reaction::Redraw`, stale state — none of which (1)–(3) can see. | `tests/tui_example_driver.rs` (TUI, `TuiDriver`) and `tests/gtk_example_driver.rs` (GTK, `GtkDriver`). |
 
 Every primitive needs (1). Primitives with consumer-pattern recipes
 need (2). Primitives with state-derived indicators need (3). Every
@@ -49,7 +49,7 @@ catch its bug class is theatre.
 
 ## Acceptance bar for new code
 
-**Every PR that adds or changes a primitive (`<name>.rs`) or an example (`examples/tui_*.rs` / `examples/gtk_*.rs`) must include the matching test from the coverage taxonomy above** — the paint/click round-trip for a primitive, the example-driver round-trip for an example (TUI today via `tests/tui_example_driver.rs`; GTK once `GtkDriver` lands, #301). **A PR missing its test is rejected at review.** This is enforced by the adversarial reviewer, which reads the project rules in [`CLAUDE.md`](../../CLAUDE.md) (see *"Demos are mandatory for visual features"*).
+**Every PR that adds or changes a primitive (`<name>.rs`) or an example (`examples/tui_*.rs` / `examples/gtk_*.rs`) must include the matching test from the coverage taxonomy above** — the paint/click round-trip for a primitive, the example-driver round-trip for an example (TUI via `tests/tui_example_driver.rs` / `TuiDriver`, GTK via `tests/gtk_example_driver.rs` / `GtkDriver` — both landed, #301 GD-1..GD-3). **A PR missing its test is rejected at review.** This is enforced by the adversarial reviewer, which reads the project rules in [`CLAUDE.md`](../../CLAUDE.md) (see *"Demos are mandatory for visual features"*).
 
 Tests must use the **high-level driver API** — `find("text")` to locate a painted target, then `click(x, y)` with the coords it returns, plus `screen_contains()`, `press()`, `type_char()`. **Hardcoded coordinates are brittle and out of policy** — locate, don't guess. A coordinate that's correct today silently rots the first time padding, a label, or a layout metric changes.
 
@@ -86,20 +86,77 @@ assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test�
   scroll surfaces — so there's nothing to drive there until a consumer
   adopts it; the offset math is unit-tested in `dispatch.rs`.)
 - **Generalizes across backends.** Because `AppLogic` is
-  backend-neutral, a future `GtkDriver` can feed identical scripted
-  events to the identical app and snapshot the Cairo surface — true
-  cross-backend parity from one event script.
+  backend-neutral, `GtkDriver` (below) feeds identical scripted events to
+  the identical app and snapshots the Cairo surface — true cross-backend
+  parity from one event script.
 
 **Limitation:** the driver renders into a `TestBackend` buffer, so it
 does *not* exercise real ANSI/escape emission — terminal-protocol bugs
 (raw-mode setup, escape parsing, SGR mouse decoding; e.g. #293) are out
 of scope and need a pty-based smoke test instead.
 
+## GtkDriver example-driver tests (end-to-end, in-process)
+
+`quadraui::gtk::testing::GtkDriver` is the GTK twin of `TuiDriver` (#301,
+GD-1..GD-3, #446-448): it drives a whole `AppLogic` impl — the same type
+the `gtk_*` examples instantiate — through the real
+event → `handle` → `render` path, against a headless
+`cairo::ImageSurface`. No `gtk::init`, no `Application`, no
+`GdkDisplay`, no Xvfb: deterministic and `cargo test --features
+gtk`-native, runs anywhere the `gtk4`/`cairo`/`pangocairo` crates link
+(incl. dellserver, no display server needed).
+
+```rust
+let mut d = GtkDriver::new(PipelineApp::new(), 800, 480);
+let (x, y) = d.find("Go").unwrap();   // locate the painted action button
+d.click(x, y);                         // MouseDown in pixel coords
+assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test→handle→render
+```
+
+- **No drift from production.** `render`/`dispatch` call the same
+  `gtk::run::render_frame` / `dispatch_event` the live `quadraui::gtk::run`
+  runner uses, and `click`/`drag` route through the same
+  `dispatch_click` / `dispatch_mouse_drag` / `dispatch_mouse_up` the live
+  handlers use, so the test path behaves identically to production.
+- **Assertion API mirrors `TuiDriver`'s shape** — `find("text")` /
+  `screen_contains()` / `press_named()` / `type_char()` — backed by the
+  `(text, bounds)` map recorded at paint time (GD-2, #447) plus pixel
+  readback via `pixel(x, y)` for colour/geometry assertions Pango text
+  search can't express.
+- **Core smoke set + cross-backend parity** live in
+  `tests/gtk_example_driver.rs` (GD-3, #448) and
+  `tests/cross_backend_parity.rs` — the latter runs one scripted event
+  sequence through both `TuiDriver` and `GtkDriver` and asserts they
+  reach the same logical state.
+
+### Out of scope / limitations
+
+The offscreen driver rasterises the `draw_*` primitives through
+`GtkBackend::enter_frame_scope`; it does **not** instantiate the real
+`Application`/`ApplicationWindow` or talk to a compositor. Therefore:
+
+- **Toplevel-window-sizing bugs** (e.g. #437 "opens with tiny/broken
+  window") are out of its reach — window geometry is negotiated with the
+  real WM/compositor, which this driver never touches.
+- **Real clipboard/paste** is out of its reach — quadraui's GTK backend
+  uses `arboard`, which hits the X11/Wayland selection; the headless
+  surface has no selection owner to talk to.
+- **Raw GDK signal delivery** is out of its reach — raw keycode
+  translation (`gdk_key_to_uievent`), IME composition, and actual
+  `EventController` wiring are bypassed; `GtkDriver` injects `UiEvent`s
+  directly, the same unified boundary `TuiDriver` uses.
+- **Terminal-protocol / real-GL rendering paths** likewise stay with the
+  live app.
+
+These all belong to **GD-5 (#450)** — live-app headless smoke that runs
+the *real* window under Xvfb/Broadway — or a real-display oracle
+(precision/elitebook) for cases GD-5 still can't reach.
+
 ### Cross-backend example tests: shared bodies, per-backend adapters
 
-When the `GtkDriver` lands (#301), example-driver tests should **not** be
-duplicated per backend. The split is hybrid — ~80% shares, ~20% is
-irreducibly backend-specific:
+Now that `GtkDriver` has landed (#301, GD-1..GD-3), example-driver tests
+should **not** be duplicated per backend. The split is hybrid — ~80%
+shares, ~20% is irreducibly backend-specific:
 
 | Layer | Shared? | Why |
 |---|---|---|
@@ -159,9 +216,14 @@ pixel colours, 1px borders, font rendering, double-width glyph handling.
 These genuinely differ — TUI keeps cell-style assertions; GTK gets
 pixel/Pango checks. Don't try to share these.
 
-**Plan of record:** fold the `ExampleDriver` trait extraction into #301
-so the existing TUI tests in `tests/tui_example_driver.rs` migrate to
-shared bodies as GTK comes online, rather than being copy-pasted.
+**Realized in `tests/cross_backend_parity.rs`:** the `ExampleDriver`
+trait sketched above is implemented for both `TuiDriver` and
+`GtkDriver`, and `pipeline_parity_tui_and_gtk_agree_on_logical_state`
+runs one shared script body against both. Per-example TUI/GTK suites
+(`tests/tui_example_driver.rs`, `tests/gtk_example_driver.rs`) stay
+separate for now — only the cross-backend parity test currently uses
+the shared-body pattern; migrating the full per-example suites onto it
+is follow-up work, not required by #301.
 
 ## Backend testability requirement
 
