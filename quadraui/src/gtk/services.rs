@@ -268,66 +268,95 @@ mod tests {
     /// `gtk::tab_bar` — Cairo `ImageSurface` tests intentionally sidestep
     /// this same problem). Cached in a `OnceLock` since `gtk4::init()`
     /// after a failed first attempt keeps failing.
+    ///
+    /// # Thread affinity (#460)
+    ///
+    /// gtk4-rs's thread-affinity guard is a per-thread flag
+    /// (`IS_MAIN_THREAD`, a `thread_local!` in gtk4-rs's `rt.rs`) set only
+    /// on whichever thread's call actually ran `gtk_init_check()`. Rust's
+    /// default test harness runs every `#[test]` fn on its own spawned OS
+    /// thread, so if more than one `#[test]` fn calls `require_gtk()`,
+    /// only the winner of this `OnceLock` race — one specific thread —
+    /// is ever GTK-safe; every other test's thread reads the cached
+    /// `true` without ever calling `gtk4::init()` itself, then panics
+    /// with "GTK may only be used from the main thread" the moment it
+    /// touches a real GTK object. gtk4-rs ships `#[gtk4::test]` /
+    /// `test_synced` for exactly this (marshal every GTK-touching test
+    /// onto one dedicated worker thread) — not used here because its
+    /// `Lazy` worker-thread init calls `gtk4::init().expect(...)`
+    /// unconditionally, with no graceful-skip path, which would turn a
+    /// headless dev box's "no display" case into a hard panic instead of
+    /// the skip this helper is designed to give it. So instead, every
+    /// `#[test]` fn that needs a real `gtk4::FileDialog` lives in
+    /// [`build_file_dialog_behaviors`] below — one function body, hence
+    /// one OS thread, guaranteeing it's the same thread that (first) runs
+    /// `gtk4::init()`. Do **not** add another separate `#[test]` fn that
+    /// calls `require_gtk()` and then constructs a real GTK object —
+    /// fold its assertions into `build_file_dialog_behaviors` instead, or
+    /// this panic comes back.
     fn require_gtk() -> bool {
         static INIT: OnceLock<bool> = OnceLock::new();
         *INIT.get_or_init(|| gtk4::init().is_ok())
     }
 
-    /// The dialog builder must apply every `FileDialogOptions` field GTK
-    /// has a settable property for, so a future maintainer changing the
-    /// wiring can't silently drop one (e.g. forgetting `set_filters`).
+    /// Covers every `build_file_dialog` behavior that requires
+    /// constructing a real `gtk4::FileDialog`. Deliberately one `#[test]`
+    /// fn (not three) — see the thread-affinity note on [`require_gtk`]
+    /// (#460): splitting these across separate `#[test]` fns lets the
+    /// Rust test harness run them on different OS threads, which
+    /// deterministically panics every thread except whichever one wins
+    /// the `require_gtk()` / `gtk4::init()` race.
     #[test]
-    fn build_file_dialog_applies_title_initial_dir_and_filters() {
+    fn build_file_dialog_behaviors() {
         if !require_gtk() {
             eprintln!("skipping: GTK failed to initialize (no display available)");
             return;
         }
-        let opts = FileDialogOptions {
-            title: Some("Open File".to_string()),
-            initial_dir: Some(PathBuf::from("/tmp")),
-            initial_filename: None,
-            filters: vec![("Rust files".to_string(), vec!["rs".to_string()])],
-        };
-        let dialog = build_file_dialog(&opts, None);
-        assert_eq!(dialog.title(), "Open File");
-        assert_eq!(
-            gtk4::prelude::FileExt::path(&dialog.initial_folder().unwrap()),
-            Some(PathBuf::from("/tmp"))
-        );
-        let filters = dialog.filters().expect("filters should be set");
-        assert_eq!(filters.n_items(), 1);
-    }
 
-    /// `initial_name` only applies when explicitly passed (the save-dialog
-    /// path) — `show_file_open_dialog` always passes `None` regardless of
-    /// `opts.initial_filename`, since that field is documented save-only.
-    #[test]
-    fn build_file_dialog_sets_initial_name_only_when_passed() {
-        if !require_gtk() {
-            eprintln!("skipping: GTK failed to initialize (no display available)");
-            return;
+        // The dialog builder must apply every `FileDialogOptions` field
+        // GTK has a settable property for, so a future maintainer
+        // changing the wiring can't silently drop one (e.g. forgetting
+        // `set_filters`).
+        {
+            let opts = FileDialogOptions {
+                title: Some("Open File".to_string()),
+                initial_dir: Some(PathBuf::from("/tmp")),
+                initial_filename: None,
+                filters: vec![("Rust files".to_string(), vec!["rs".to_string()])],
+            };
+            let dialog = build_file_dialog(&opts, None);
+            assert_eq!(dialog.title(), "Open File");
+            assert_eq!(
+                gtk4::prelude::FileExt::path(&dialog.initial_folder().unwrap()),
+                Some(PathBuf::from("/tmp"))
+            );
+            let filters = dialog.filters().expect("filters should be set");
+            assert_eq!(filters.n_items(), 1);
         }
-        let opts = FileDialogOptions {
-            initial_filename: Some("untitled.txt".to_string()),
-            ..Default::default()
-        };
-        let without = build_file_dialog(&opts, None);
-        assert_eq!(without.initial_name(), None);
 
-        let with = build_file_dialog(&opts, opts.initial_filename.as_deref());
-        assert_eq!(with.initial_name().as_deref(), Some("untitled.txt"));
-    }
+        // `initial_name` only applies when explicitly passed (the
+        // save-dialog path) — `show_file_open_dialog` always passes
+        // `None` regardless of `opts.initial_filename`, since that field
+        // is documented save-only.
+        {
+            let opts = FileDialogOptions {
+                initial_filename: Some("untitled.txt".to_string()),
+                ..Default::default()
+            };
+            let without = build_file_dialog(&opts, None);
+            assert_eq!(without.initial_name(), None);
 
-    /// No filters configured → `set_filters` must not be called (a `Some`
-    /// empty list would still change the dialog's filter-picker UI).
-    #[test]
-    fn build_file_dialog_leaves_filters_unset_when_empty() {
-        if !require_gtk() {
-            eprintln!("skipping: GTK failed to initialize (no display available)");
-            return;
+            let with = build_file_dialog(&opts, opts.initial_filename.as_deref());
+            assert_eq!(with.initial_name().as_deref(), Some("untitled.txt"));
         }
-        let dialog = build_file_dialog(&FileDialogOptions::default(), None);
-        assert!(dialog.filters().is_none());
+
+        // No filters configured → `set_filters` must not be called (a
+        // `Some` empty list would still change the dialog's
+        // filter-picker UI).
+        {
+            let dialog = build_file_dialog(&FileDialogOptions::default(), None);
+            assert!(dialog.filters().is_none());
+        }
     }
 
     /// `set_window` stores the handle used to parent future dialogs.
