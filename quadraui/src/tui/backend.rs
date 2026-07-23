@@ -143,6 +143,22 @@ pub struct TuiBackend {
     /// `KeyPressed` events to `UiEvent::ActivityBar(id, KeyPressed { … })`
     /// so app logic receives activity-bar keys through a typed channel.
     focused_activity_bar: Option<WidgetId>,
+    /// Screen-space `(x, y)` for `Frame::set_cursor_position`, cached from
+    /// the most recent [`Backend::draw_editor`] call this frame (quadraui#466).
+    ///
+    /// `draw_editor` only has access to the ratatui buffer, not the `Frame`
+    /// itself (see [`Self::current_frame_mut`]'s note on why trait methods
+    /// can't reach `Frame::set_cursor_position` directly), so it stashes
+    /// the position here. [`super::run::render_frame`] takes it via
+    /// [`Self::take_last_cursor_position`] after the render closure returns
+    /// and applies it to the real `Frame`, mirroring how
+    /// `apply_selection_highlight` bridges buffer-only paint to a
+    /// frame-level side effect.
+    ///
+    /// Cleared at the start of every frame by [`Self::begin_frame`] (same
+    /// lifecycle as `text_regions`) so a frame that doesn't paint an editor
+    /// doesn't inherit a stale cursor position from the previous one.
+    last_cursor_position: Option<(u16, u16)>,
 }
 
 impl TuiBackend {
@@ -169,6 +185,7 @@ impl TuiBackend {
             cached_selection_text: String::new(),
             last_text_region_id: None,
             focused_activity_bar: None,
+            last_cursor_position: None,
         }
     }
 
@@ -355,6 +372,20 @@ impl TuiBackend {
     /// the cache persists until the selection is cleared.
     pub(crate) fn cached_selection_text(&self) -> String {
         self.cached_selection_text.clone()
+    }
+
+    /// Take the editor cursor position cached by the most recent
+    /// [`Backend::draw_editor`] call this frame, leaving `None` behind.
+    ///
+    /// Called by [`super::run::render_frame`] once per frame, after the
+    /// render closure returns but still inside `terminal.draw(|frame| …)`,
+    /// so it can apply `frame.set_cursor_position(pos)` — the only place
+    /// with access to the real `Frame` (quadraui#466). "Take" (not a plain
+    /// getter) because the value is frame-scoped: [`Self::begin_frame`]
+    /// clears it again before the next `draw_editor` call, so nothing relies
+    /// on the value surviving past this one read.
+    pub(crate) fn take_last_cursor_position(&mut self) -> Option<(u16, u16)> {
+        self.last_cursor_position.take()
     }
 
     /// Set the active selection to cover the entire visible content of the
@@ -751,6 +782,11 @@ impl Backend for TuiBackend {
         // Clear the focused activity bar — re-set by draw_activity_bar
         // during the render pass if still focused.
         self.focused_activity_bar = None;
+        // Clear the cached editor cursor position — re-set by draw_editor
+        // during the render pass if an editor paints this frame. Without
+        // this a frame that stops painting an editor (e.g. it's hidden)
+        // would keep showing the terminal cursor at the last-known spot.
+        self.last_cursor_position = None;
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -1313,6 +1349,11 @@ impl Backend for TuiBackend {
             .current_frame_mut()
             .expect("TuiBackend::draw_editor called outside enter_frame_scope");
         let tui_result = crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme);
+        // Cache for `render_frame` (quadraui#466) — `draw_editor` only sees
+        // the buffer, not the `Frame`, so it can't call
+        // `Frame::set_cursor_position` itself. See
+        // `last_cursor_position`'s field doc for the full handoff.
+        self.last_cursor_position = tui_result.cursor_position;
         crate::backend::EditorPaintResult {
             cursor_position: tui_result.cursor_position,
         }
