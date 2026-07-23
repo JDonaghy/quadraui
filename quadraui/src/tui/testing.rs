@@ -281,10 +281,33 @@ impl<A: AppLogic> TuiDriver<A> {
         &self.app
     }
 
+    /// Mutable access to the app state for tests that need to poke state
+    /// directly rather than through a scripted [`UiEvent`] — e.g. asserting
+    /// a render-time invariant (like editor cursor placement) across a
+    /// state change with no dedicated event/handler of its own.
+    pub fn app_mut(&mut self) -> &mut A {
+        &mut self.app
+    }
+
     /// Access the backend for test assertions (e.g. active selection state,
     /// drag state).
     pub fn backend(&self) -> &TuiBackend {
         &self.backend
+    }
+
+    /// The `(x, y)` position `Terminal::draw` last applied to the
+    /// underlying `TestBackend` via `Frame::set_cursor_position` —
+    /// reflecting [`super::run::render_frame`]'s `take_last_cursor_position`
+    /// handoff from `TuiBackend::draw_editor` (quadraui#466).
+    ///
+    /// Note `TestBackend` tracks only the last-set position, not whether
+    /// the cursor is currently hidden — so this always returns the most
+    /// recent position ever applied, even on a later frame that painted no
+    /// editor and would hide the real terminal cursor. Fine for asserting
+    /// "the editor's cursor position reached the Frame", not for asserting
+    /// hide/show transitions.
+    pub fn terminal_cursor_position(&mut self) -> Option<(u16, u16)> {
+        self.terminal.get_cursor_position().ok().map(|p| (p.x, p.y))
     }
 
     /// Cell-centre coordinates of the first row containing `needle`, at

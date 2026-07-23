@@ -221,9 +221,10 @@ fn run_inner<A: AppLogic>(
 ///
 /// Syncs the viewport from the terminal size, runs `app.render` inside
 /// the backend's frame scope, overlays the active text-selection
-/// highlight, and finalises the frame. Generic over the ratatui backend
-/// `B` so the live runner (`CrosstermBackend`) and the headless test
-/// driver (`TestBackend`) share one paint path.
+/// highlight, applies any editor cursor position painted this frame, and
+/// finalises the frame. Generic over the ratatui backend `B` so the live
+/// runner (`CrosstermBackend`) and the headless test driver
+/// (`TestBackend`) share one paint path.
 pub(crate) fn render_frame<A, B>(
     terminal: &mut Terminal<B>,
     backend: &mut TuiBackend,
@@ -253,6 +254,16 @@ where
             // buffer. Done outside enter_frame_scope so the closure lifetime
             // doesn't conflict with the frame borrow.
             backend.apply_selection_highlight(frame.buffer_mut());
+            // Apply the editor cursor position cached by `draw_editor`
+            // (quadraui#466). `Backend::draw_editor` only has the buffer,
+            // not the `Frame`, so it stashes the position on `TuiBackend`
+            // for us to apply here — the one place per frame with access
+            // to the real `Frame::set_cursor_position`. `run_with_shell`
+            // and `TuiDriver` both go through this same `render_frame`, so
+            // they pick up the behavior for free.
+            if let Some(pos) = backend.take_last_cursor_position() {
+                frame.set_cursor_position(pos);
+            }
         })
         .map_err(|e| io::Error::other(e.to_string()))?;
     backend.end_frame();
@@ -618,6 +629,142 @@ mod tests {
         assert!(
             backend.active_text_selection().is_some(),
             "cancel_text_selection_drag must NOT clear the active selection display"
+        );
+    }
+
+    // ── Editor cursor-position pipeline (quadraui#466) ─────────────────────────
+    //
+    // `Backend::draw_editor`'s `EditorPaintResult::cursor_position` used to have
+    // no consumer downstream of `AppLogic::render` — the runner never applied it
+    // to the real ratatui `Frame`. These tests exercise the fix: `render_frame`
+    // takes `TuiBackend`'s cached position (set by the `draw_editor` trait impl)
+    // and calls `Frame::set_cursor_position`, observable via `TestBackend`'s own
+    // cursor state.
+
+    /// Minimal app that paints a single-line `Editor` with a `Bar`-shaped
+    /// cursor at a configurable column. `Bar`/`Underline` cursors are the
+    /// shapes `tui::draw_editor` reports via `EditorPaintResult::cursor_position`
+    /// (a `Block` cursor is drawn as an inverted cell instead — see
+    /// `tui/editor.rs`'s cursor-paint match).
+    struct EditorCursorApp {
+        cursor_col: usize,
+        /// When false, `render` paints no editor at all — used to verify the
+        /// cursor position doesn't linger from a previous frame.
+        show_editor: bool,
+    }
+
+    impl EditorCursorApp {
+        fn new(cursor_col: usize) -> Self {
+            Self {
+                cursor_col,
+                show_editor: true,
+            }
+        }
+
+        fn build_editor(&self) -> crate::Editor {
+            crate::Editor {
+                id: WidgetId::new("editor"),
+                rect: Rect::new(0.0, 0.0, 20.0, 5.0),
+                lines: vec![crate::EditorLine {
+                    raw_text: "hello world".into(),
+                    gutter_text: String::new(),
+                    spans: vec![],
+                    line_idx: 0,
+                    is_current_line: true,
+                    is_fold_header: false,
+                    folded_line_count: 0,
+                    git_diff: None,
+                    diff_status: None,
+                    diagnostics: vec![],
+                    spell_errors: vec![],
+                    is_breakpoint: false,
+                    is_conditional_bp: false,
+                    is_dap_current: false,
+                    is_wrap_continuation: false,
+                    segment_col_offset: 0,
+                    annotation: None,
+                    ghost_suffix: None,
+                    is_ghost_continuation: false,
+                    indent_guides: vec![],
+                    colorcolumns: vec![],
+                }],
+                cursor: Some(crate::EditorCursor {
+                    pos: crate::EditorCursorPos {
+                        view_line: 0,
+                        col: self.cursor_col,
+                    },
+                    shape: crate::EditorCursorShape::Bar,
+                }),
+                extra_cursors: vec![],
+                selection: None,
+                extra_selections: vec![],
+                yank_highlight: None,
+                scroll_top: 0,
+                scroll_left: 0,
+                total_lines: 1,
+                max_col: 11,
+                gutter_char_width: 0,
+                is_active: true,
+                show_active_bg: false,
+                has_git_diff: false,
+                has_breakpoints: false,
+                diagnostic_gutter: Default::default(),
+                code_action_lines: Default::default(),
+                bracket_match_positions: vec![],
+                active_indent_col: None,
+                tabstop: 4,
+                cursorline: false,
+                lightbulb_glyph: '\0',
+            }
+        }
+    }
+
+    impl AppLogic for EditorCursorApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            if self.show_editor {
+                let editor = self.build_editor();
+                backend.draw_editor(editor.rect, &editor);
+            }
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// A `Bar`-cursor `Editor` paints its `cursor_position` onto the real
+    /// `Frame` — `render_frame` must apply it via `Frame::set_cursor_position`,
+    /// observable through `TestBackend`'s own cursor state.
+    #[test]
+    fn editor_bar_cursor_position_reaches_the_terminal_frame() {
+        let mut driver = TuiDriver::new(EditorCursorApp::new(3), 40, 10);
+
+        // Gutter width 0, scroll_left 0 → screen x == cursor_col, screen y ==
+        // the editor rect's origin row (0).
+        assert_eq!(
+            driver.terminal_cursor_position(),
+            Some((3, 0)),
+            "draw_editor's cursor_position must reach Frame::set_cursor_position"
+        );
+    }
+
+    /// Moving the cursor and re-rendering updates the applied terminal
+    /// position — confirms the handoff isn't a one-shot artifact of the
+    /// first frame.
+    #[test]
+    fn editor_bar_cursor_position_updates_across_frames() {
+        let mut driver = TuiDriver::new(EditorCursorApp::new(3), 40, 10);
+        assert_eq!(driver.terminal_cursor_position(), Some((3, 0)));
+
+        driver.app_mut().cursor_col = 7;
+        driver.render();
+
+        assert_eq!(
+            driver.terminal_cursor_position(),
+            Some((7, 0)),
+            "a later frame's draw_editor call must overwrite the previous cursor position"
         );
     }
 }
