@@ -1150,6 +1150,22 @@ impl Backend for GtkBackend {
         }
     }
 
+    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
+        // Same `Rc<RefCell<>>`-leak rationale as `modal_stack_mut`
+        // above, applied to both fields. `drag_state` and
+        // `modal_stack` are separate `Rc<RefCell<>>`s, so the two
+        // leaked derefs never alias — this is just two independent
+        // instances of the same escape hatch, not a new hazard.
+        //
+        // SAFETY: see `modal_stack_mut`'s SAFETY comment; the same
+        // no-reentrancy contract applies to `drag_state` here.
+        unsafe {
+            let drag_ptr = Rc::as_ptr(&self.drag_state);
+            let modal_ptr = Rc::as_ptr(&self.modal_stack);
+            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
+        }
+    }
+
     fn services(&self) -> &dyn PlatformServices {
         &self.services
     }

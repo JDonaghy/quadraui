@@ -721,12 +721,14 @@ mod tests {
 
     struct MockBackend {
         modal_stack: crate::ModalStack,
+        drag_state: crate::DragState,
     }
 
     impl MockBackend {
         fn new() -> Self {
             Self {
                 modal_stack: crate::ModalStack::new(),
+                drag_state: crate::DragState::new(),
             }
         }
     }
@@ -747,6 +749,9 @@ mod tests {
         fn unregister_accelerator(&mut self, _: &crate::accelerator::AcceleratorId) {}
         fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
             &mut self.modal_stack
+        }
+        fn drag_and_modal_mut(&mut self) -> (&mut crate::DragState, &mut crate::ModalStack) {
+            (&mut self.drag_state, &mut self.modal_stack)
         }
         fn services(&self) -> &dyn crate::backend::PlatformServices {
             unimplemented!()

@@ -1364,6 +1364,9 @@ mod tests {
         fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
             unimplemented!()
         }
+        fn drag_and_modal_mut(&mut self) -> (&mut crate::DragState, &mut crate::ModalStack) {
+            unimplemented!()
+        }
         fn services(&self) -> &dyn crate::backend::PlatformServices {
             unimplemented!()
         }
