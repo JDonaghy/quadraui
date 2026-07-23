@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::backend::{Backend, EditorPaintResult, PlatformServices};
+use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -65,6 +66,7 @@ use super::services::WinPlatformServices;
 pub struct WinBackend {
     viewport: Viewport,
     modal_stack: ModalStack,
+    drag_state: DragState,
     accelerators: HashMap<AcceleratorId, Accelerator>,
     services: WinPlatformServices,
     current_line_height: f32,
@@ -80,6 +82,7 @@ impl WinBackend {
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: ModalStack::new(),
+            drag_state: DragState::new(),
             accelerators: HashMap::new(),
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
@@ -132,6 +135,10 @@ impl Backend for WinBackend {
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
         &mut self.modal_stack
+    }
+
+    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
+        (&mut self.drag_state, &mut self.modal_stack)
     }
 
     // ─── Platform services ────────────────────────────────────────────

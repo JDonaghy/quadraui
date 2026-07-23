@@ -36,6 +36,7 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::backend::{Backend, EditorPaintResult};
+use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -92,6 +93,7 @@ use super::services::MacPlatformServices;
 pub struct MacBackend {
     viewport: Viewport,
     modal_stack: ModalStack,
+    drag_state: DragState,
     accelerators: HashMap<AcceleratorId, Accelerator>,
     events: Rc<std::cell::RefCell<VecDeque<UiEvent>>>,
     services: MacPlatformServices,
@@ -133,6 +135,7 @@ impl MacBackend {
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: ModalStack::new(),
+            drag_state: DragState::new(),
             accelerators: HashMap::new(),
             events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
             services: MacPlatformServices::new(),
@@ -318,6 +321,10 @@ impl Backend for MacBackend {
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
         &mut self.modal_stack
+    }
+
+    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
+        (&mut self.drag_state, &mut self.modal_stack)
     }
 
     fn services(&self) -> &dyn PlatformServices {

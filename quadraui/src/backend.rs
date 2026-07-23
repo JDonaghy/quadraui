@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -343,6 +344,30 @@ pub trait Backend {
     /// See [`ModalStack`] and [`crate::dispatch::dispatch_mouse_down`]
     /// for the routing contract.
     fn modal_stack_mut(&mut self) -> &mut ModalStack;
+
+    // ─── Drag-state tracking ─────────────────────────────────────────
+    /// Disjoint mutable borrows of the backend's drag state and modal
+    /// stack, in one call.
+    ///
+    /// `ShellApp` mouse-dispatch consumers (see
+    /// `crate::dispatch::dispatch_mouse_down` / `_drag` / `_up`) often
+    /// need `&mut DragState` and `&mut ModalStack` *at the same time* —
+    /// e.g. to read the in-progress drag target while also consulting
+    /// (or updating) the modal stack for click routing. Two separate
+    /// `&mut self` accessors can't do that through `&mut dyn Backend`:
+    /// the first call's borrow would still be live when the second is
+    /// made, which the borrow checker rejects. This method exists
+    /// purely to hand back both borrows split from a single `&mut
+    /// self` call, the same way `TuiBackend::drag_and_modal_mut`
+    /// (pre-trait, #467) split its own fields.
+    ///
+    /// Backends that don't otherwise expose drag state on the trait
+    /// (it's normally a backend implementation detail — only the
+    /// dispatch helpers in `crate::dispatch::*` need to observe it)
+    /// implement this solely so `&mut dyn Backend` consumers can reach
+    /// it. Use [`Self::modal_stack_mut`] instead when only the modal
+    /// stack is needed.
+    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack);
 
     // ─── Platform services ─────────────────────────────────────────────
     /// Clipboard, file dialogs, notifications, URL opening, platform name.

@@ -27,10 +27,11 @@
 //! works against `TuiBackend`, `GtkBackend`, the test `MockBackend`,
 //! and any future Win-GUI / macOS backend implementer.
 //!
-//! Drag-state observation is deliberately not on the trait — only
-//! `crate::dispatch::*` needs to inspect it, and the backend keeps
-//! it as a struct field accessed through
-//! [`Self::drag_and_modal_mut`].
+//! Drag-state observation is normally a backend implementation
+//! detail — only `crate::dispatch::*` needs to inspect it directly.
+//! It's still exposed via [`crate::Backend::drag_and_modal_mut`] (#467)
+//! so `&mut dyn Backend` consumers (e.g. a `ShellApp`'s mouse-dispatch
+//! logic) can reach it without downcasting to the concrete backend.
 //!
 //! Event flow goes through the trait: [`Self::wait_events`] reads
 //! crossterm events, translates them via
@@ -227,17 +228,6 @@ impl TuiBackend {
     /// `draw_*` invocations consume the stored theme.
     pub fn set_current_theme(&mut self, theme: crate::Theme) {
         self.current_theme = theme;
-    }
-
-    /// Disjoint mutable borrows of drag state and modal stack.
-    /// `mouse.rs::handle_mouse` needs both at the same time, and
-    /// borrowing each field through a separate `&mut self` accessor
-    /// would conflict — this helper splits the field borrows in one
-    /// call. The trait deliberately doesn't expose drag state (it's
-    /// a backend implementation detail; only the dispatch helpers
-    /// in `crate::dispatch::*` need to observe it).
-    pub fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        (&mut self.drag_state, &mut self.modal_stack)
     }
 
     // ── Text selection ─────────────────────────────────────────────────────
@@ -854,6 +844,16 @@ impl Backend for TuiBackend {
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
         &mut self.modal_stack
+    }
+
+    /// Disjoint mutable borrows of drag state and modal stack.
+    /// `mouse.rs::handle_mouse` (quadraui + downstream consumers'
+    /// `ShellApp::handle` mouse dispatch) needs both at the same
+    /// time, and borrowing each field through a separate `&mut self`
+    /// accessor would conflict — this splits the field borrows in
+    /// one call. See [`crate::Backend::drag_and_modal_mut`] (#467).
+    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
+        (&mut self.drag_state, &mut self.modal_stack)
     }
 
     fn services(&self) -> &dyn PlatformServices {
@@ -1771,6 +1771,7 @@ mod tests {
     struct MockBackend {
         calls: Vec<DrawCall>,
         modal_stack: ModalStack,
+        drag_state: DragState,
         services: MockServices,
         viewport: Viewport,
         theme: crate::Theme,
@@ -1781,6 +1782,7 @@ mod tests {
             Self {
                 calls: Vec::new(),
                 modal_stack: ModalStack::new(),
+                drag_state: DragState::new(),
                 services: MockServices::new(),
                 viewport: Viewport::new(80.0, 24.0, 1.0),
                 theme: crate::Theme::default(),
@@ -1809,6 +1811,9 @@ mod tests {
         fn unregister_accelerator(&mut self, _id: &AcceleratorId) {}
         fn modal_stack_mut(&mut self) -> &mut ModalStack {
             &mut self.modal_stack
+        }
+        fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
+            (&mut self.drag_state, &mut self.modal_stack)
         }
         fn services(&self) -> &dyn PlatformServices {
             &self.services
