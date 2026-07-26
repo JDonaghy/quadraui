@@ -36,6 +36,18 @@ jobs:
         run: cargo test --features tui --workspace --exclude kubeui-gtk
       - name: Clippy (tui feature)
         run: cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
+      # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
+      # `cargo run --example` processes in a real PTY (portable-pty) and
+      # drives them with real ANSI escape sequences (vt100). No display
+      # server needed — a pty is just a kernel device — so unlike the GTK
+      # live-app smoke (GD-5, #450) this is a real CI gate, not an
+      # operator-run tier. Scoped to `-p quadraui` since the harness only
+      # exists there; `terminal` pulls in portable-pty/vt100 (already
+      # workspace deps behind that feature, see quadraui/Cargo.toml).
+      - name: Test (pty smoke, tui + terminal features)
+        run: cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
+      - name: Clippy (pty smoke, tui + terminal features)
+        run: cargo clippy -p quadraui --features tui,terminal --test tui_pty_smoke -- -D warnings
 
   gtk:
     name: gtk (build, test, clippy)

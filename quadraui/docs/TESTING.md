@@ -93,7 +93,47 @@ assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test�
 **Limitation:** the driver renders into a `TestBackend` buffer, so it
 does *not* exercise real ANSI/escape emission — terminal-protocol bugs
 (raw-mode setup, escape parsing, SGR mouse decoding; e.g. #293) are out
-of scope and need a pty-based smoke test instead.
+of scope and need a pty-based smoke test instead — see Tier-3 below.
+
+## Tier-3 pty smoke (real terminal-protocol black box, quadraui#302)
+
+`tests/tui_pty_smoke.rs` closes the exact gap the Limitation above
+calls out. It spawns the *actual* example binary
+(`cargo run --example <name> --features tui`) inside a real
+pseudo-terminal via [`portable-pty`](https://docs.rs/portable-pty)
+(the same crate `terminal_engine.rs` uses for the embedded-terminal
+primitive) and parses the emitted byte stream with
+[`vt100`](https://docs.rs/vt100) into a screen model — no `TestBackend`,
+no injected `UiEvent`s. Keystrokes and raw SGR mouse-report bytes are
+written to the pty's stdin exactly as a real terminal would deliver
+them; assertions read back the emulated screen (`vt100::Screen::contents`).
+
+```bash
+cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
+```
+
+- **What it catches that `TuiDriver` can't.** Raw-mode / alternate-screen
+  setup actually working on a real pty, the ANSI escape stream `tui::run`
+  emits parsing back to the expected screen, and SGR mouse-report
+  round-trips (the #293 class — motion events leaking their raw escape
+  bytes into a focused text input instead of decoding to a mouse event).
+- **The PTY master must behave like a terminal, not a dumb pipe.**
+  `ratatui`'s crossterm backend queries the cursor position
+  (`ESC [ 6 n`) once during `Terminal::new()` and treats a missing reply
+  as fatal — a real terminal always answers this. `PtyExample`'s
+  background reader thread plays that minimal terminal-emulator role,
+  replying `ESC [ row ; col R` from the `vt100` parser's tracked cursor
+  position. Skipping this makes every example fail before it ever
+  renders (confirmed empirically — see the harness's module doc).
+- **Deliberately thin — 2 representative examples** (`tui_pipeline`,
+  `tui_chat`), not broad coverage. This is wiring/integration
+  confidence for the terminal-protocol layer; `TuiDriver` (Tier "example
+  / app-wiring drift" above) remains the primary, deterministic tool for
+  everything else — coordinate drift, click routing, state-derived
+  paint, and per-example behavior all stay covered there.
+- **Runs as a real CI gate**, not an operator-only tier like the GTK
+  live-app smoke below. A pty is a kernel device, not a display server —
+  no Xvfb, no compositor, works headlessly anywhere `openpty` does.
 
 ## GtkDriver example-driver tests (end-to-end, in-process)
 
