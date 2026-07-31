@@ -222,7 +222,13 @@ fn worktree_add_git_status_is_empty() {
 
     run_ok(
         &base,
-        &["worktree", "add", wt.to_str().unwrap(), "-b", "feature-status"],
+        &[
+            "worktree",
+            "add",
+            wt.to_str().unwrap(),
+            "-b",
+            "feature-status",
+        ],
     );
 
     let out = run_ok(&wt, &["status", "--porcelain"]);
@@ -244,7 +250,13 @@ fn worktree_link_preserves_the_tracked_gitignore() {
 
     run_ok(
         &base,
-        &["worktree", "add", wt.to_str().unwrap(), "-b", "feature-gitignore"],
+        &[
+            "worktree",
+            "add",
+            wt.to_str().unwrap(),
+            "-b",
+            "feature-gitignore",
+        ],
     );
 
     let gitignore = wt.join("graphify-out/.gitignore");
@@ -280,11 +292,20 @@ fn worktree_remove_leaves_base_graph_intact() {
 
     run_ok(
         &base,
-        &["worktree", "add", wt.to_str().unwrap(), "-b", "feature-remove"],
+        &[
+            "worktree",
+            "add",
+            wt.to_str().unwrap(),
+            "-b",
+            "feature-remove",
+        ],
     );
     assert!(wt.join("graphify-out/cache/foo").is_file());
 
-    run_ok(&base, &["worktree", "remove", "--force", wt.to_str().unwrap()]);
+    run_ok(
+        &base,
+        &["worktree", "remove", "--force", wt.to_str().unwrap()],
+    );
 
     let base_out = base.join("graphify-out");
     assert!(base_out.join("graph.json").is_file());
@@ -347,10 +368,7 @@ fn worktree_add_without_base_graph_makes_no_symlink() {
          fire, the earlier 'no symlink' result was vacuous (hook never ran):\n{combined}"
     );
     assert!(symlink_target(&graph_link).is_some());
-    assert_eq!(
-        fs::read_to_string(&graph_link).unwrap(),
-        "BASE-GRAPH-V2"
-    );
+    assert_eq!(fs::read_to_string(&graph_link).unwrap(), "BASE-GRAPH-V2");
 }
 
 /// A real graph already present in the worktree (e.g. from a manual
