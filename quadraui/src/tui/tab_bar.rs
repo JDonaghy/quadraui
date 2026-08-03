@@ -11,7 +11,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use super::{cell_width, ratatui_color, set_cell, set_cell_styled, set_cell_wide};
+use super::text::char_cell_width;
+use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide};
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout};
 use crate::theme::Theme;
 
@@ -87,7 +88,7 @@ pub fn draw_tab_bar(
             if cx >= seg_end {
                 break;
             }
-            let w = cell_width(ch);
+            let w = char_cell_width(ch);
             if w == 2 {
                 if cx + 1 < seg_end + 1 {
                     set_cell_wide(buf, cx, area.y, ch, fg, bar_bg);

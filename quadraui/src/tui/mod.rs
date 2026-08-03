@@ -57,6 +57,7 @@ mod status_bar;
 mod tab_bar;
 mod terminal;
 pub mod testing;
+pub mod text;
 mod text_display;
 mod text_input;
 mod toast;
@@ -97,6 +98,7 @@ pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 pub use status_bar::draw_status_bar;
 pub use tab_bar::{draw_tab_bar, TAB_CLOSE_CHAR, TAB_CLOSE_COLS};
 pub use terminal::{draw_terminal, draw_terminal_divider};
+pub use text::{char_cell_width, display_width, truncate_to_width, truncate_to_width_ellipsis};
 pub use text_display::{draw_text_display, tui_text_display_layout};
 pub use text_input::{draw_text_input, tui_text_input_layout};
 pub use toast::{draw_toast_stack, tui_toast_stack_layout};
@@ -150,20 +152,6 @@ fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, b
             cont.underline_color = RatatuiColor::Reset;
         }
     }
-}
-
-/// Terminal cell width of a character. Uses the `unicode-width` crate's
-/// UAX#11 tables, with a range-based fallback for the Nerd Font
-/// Supplement PUA range (`U+F0000`–`U+F9999`) which terminals render
-/// as double-width but `unicode-width` returns `None` for.
-fn cell_width(c: char) -> u16 {
-    unicode_width::UnicodeWidthChar::width(c).unwrap_or(
-        if ('\u{F0000}'..='\u{F9999}').contains(&c) {
-            2
-        } else {
-            1
-        },
-    ) as u16
 }
 
 /// Convert a `quadraui::Color` to a ratatui palette colour, with `qc` as
