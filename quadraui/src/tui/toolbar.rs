@@ -28,22 +28,11 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{cell_width, qc, set_cell};
+use super::text::{char_cell_width, display_width};
+use super::{qc, set_cell};
 use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
-
-/// Cell width of a single character, accounting for double-width
-/// glyphs (CJK, Nerd Font PUA). Tiny wrapper over `super::cell_width`
-/// kept here so the toolbar's measurement is colocated with its paint.
-fn char_cells(c: char) -> usize {
-    cell_width(c) as usize
-}
-
-/// Cell width of a `&str` using UAX#11 double-width detection.
-fn str_cells(s: &str) -> usize {
-    s.chars().map(char_cells).sum()
-}
 
 /// Compute the TUI cell-unit width of a single toolbar item.
 ///
@@ -60,8 +49,8 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
             key_hint,
             ..
         } => {
-            let label_w = str_cells(label);
-            let icon_w = icon.as_ref().map(|s| str_cells(s)).unwrap_or(0);
+            let label_w = display_width(label);
+            let icon_w = icon.as_ref().map(|s| display_width(s)).unwrap_or(0);
             // Icon-only: drop the trailing space after the icon — pack
             // glyph snug between the brackets.
             let icon_block = if icon.is_some() && label_w > 0 {
@@ -71,13 +60,13 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
             };
             let hint_w = key_hint
                 .as_ref()
-                .map(|s| str_cells(s) + 3) // " (xxx)"
+                .map(|s| display_width(s) + 3) // " (xxx)"
                 .unwrap_or(0);
             // "[ " + icon_block + label + hint_w + " ]"
             (4 + icon_block + label_w + hint_w) as f32
         }
         ToolbarButton::Separator => 2.0,
-        ToolbarButton::Label { text, .. } => str_cells(text) as f32,
+        ToolbarButton::Label { text, .. } => display_width(text) as f32,
     }
 }
 
@@ -166,7 +155,7 @@ pub fn draw_toolbar(
 
                 // Build the rendered cells. Icon-only buttons compact
                 // to `[ icon ]` (no trailing space after the icon).
-                let label_w = str_cells(label);
+                let label_w = display_width(label);
                 let icon_only = icon.is_some() && label_w == 0;
                 let mut cells: Vec<char> = Vec::with_capacity(item_w as usize);
                 cells.push('[');
@@ -206,7 +195,7 @@ pub fn draw_toolbar(
                 // by the wide-char-aware cell width of each glyph.
                 let mut col: u16 = 0;
                 for ch in cells {
-                    let cw = char_cells(ch) as u16;
+                    let cw = char_cell_width(ch);
                     if col + cw > item_w {
                         break;
                     }
@@ -231,7 +220,7 @@ pub fn draw_toolbar(
                 let color = label_fg.map(qc).unwrap_or(muted);
                 let mut col: u16 = 0;
                 for ch in text.chars() {
-                    let cw = char_cells(ch) as u16;
+                    let cw = char_cell_width(ch);
                     if col + cw > item_w {
                         break;
                     }
