@@ -29,6 +29,10 @@ use pipeline_app::PipelineApp;
 mod appshell_demo;
 use appshell_demo::AppShellDemo;
 
+#[path = "../examples/common/data_table_app.rs"]
+mod data_table_app;
+use data_table_app::DataTableApp;
+
 /// Backend-agnostic driver surface a shared parity test body needs.
 /// Implemented once per backend below — the two rows that genuinely
 /// differ (screen representation, coordinate units) live entirely inside
@@ -183,5 +187,108 @@ fn appshell_demo_parity_tui_and_gtk_agree_on_logical_state() {
         vec![false, true, true],
         "expected: no Source Control mention before activating the cursor item, \
          a mention after Tab+j+j+Enter switches to panel:git, and exited after 'q'"
+    );
+}
+
+// ─── DataTableApp resize-direction parity (#516 defect 3) ──────────────────
+//
+// The acceptance bar for defect 3 is specifically that the fix landed in
+// the *shared* `primitives::data_table::resolve_columns`, not in one
+// rasteriser — so the same divider-drag script must produce the same
+// *direction* of change on both backends. `ExampleDriver` above is
+// generic over any `AppLogic` and can't reach `DataTableApp`-specific
+// methods (`table_layout`, `resolved_column_widths`), so this uses a
+// narrower trait implemented directly for the two concrete driver types
+// instead — same "one script body, two backends" shape, just scoped to
+// what this script needs.
+trait DataTableResizeDriver {
+    /// Resolved width of the "Age" column (index 2) — the one directly
+    /// before the last column ("Restarts"), the divider this script drags.
+    fn age_width(&self) -> f32;
+    /// Drag the Age|Restarts divider horizontally by `dx` (positive =
+    /// right = widen) in this backend's native coordinate space.
+    fn drag_age_divider(&mut self, dx: f32);
+}
+
+impl DataTableResizeDriver for TuiDriver<DataTableApp> {
+    fn age_width(&self) -> f32 {
+        self.app().resolved_column_widths(self.backend())[2]
+    }
+
+    fn drag_age_divider(&mut self, dx: f32) {
+        let layout = self.app().table_layout(self.backend());
+        let age = layout.columns[2];
+        let divider_x = age.x + age.width;
+        let y = 0.5;
+        self.drag(divider_x, y, divider_x + dx, y);
+    }
+}
+
+impl DataTableResizeDriver for GtkDriver<DataTableApp> {
+    fn age_width(&self) -> f32 {
+        self.app().resolved_column_widths(self.backend())[2]
+    }
+
+    fn drag_age_divider(&mut self, dx: f32) {
+        let layout = self.app().table_layout(self.backend());
+        let age = layout.columns[2];
+        let divider_x = age.x + age.width;
+        let y = layout.header_height / 2.0;
+        self.drag(divider_x, y, divider_x + dx, y);
+    }
+}
+
+/// One script, run against both concrete driver types: widen by dragging
+/// right, then widen further by a larger amount from scratch on a fresh
+/// driver (avoiding a second same-position `mouse_down`, which the TUI
+/// backend's double-click detector would fold into a `DoubleClick`
+/// instead of a fresh resize drag — see the sibling test in
+/// `tests/tui_example_driver.rs` for the full explanation). Returns
+/// whether each drag widened the column, for both backends to agree on.
+fn run_datatable_resize_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) -> bool {
+    let mut d = D::new_default();
+    let before = d.age_width();
+    d.drag_age_divider(dx);
+    let after = d.age_width();
+    after > before
+}
+
+/// Constructs a fresh driver wrapping a fresh `DataTableApp` — kept
+/// separate from `DataTableResizeDriver` so the resize trait stays
+/// focused on the drag script itself.
+trait DataTableDriverCtor {
+    fn new_default() -> Self;
+}
+
+impl DataTableDriverCtor for TuiDriver<DataTableApp> {
+    fn new_default() -> Self {
+        TuiDriver::new(DataTableApp::new(), 100, 26)
+    }
+}
+
+impl DataTableDriverCtor for GtkDriver<DataTableApp> {
+    fn new_default() -> Self {
+        GtkDriver::new(DataTableApp::new(), 900, 600)
+    }
+}
+
+#[test]
+fn data_table_divider_before_last_column_parity_tui_and_gtk_agree_on_direction() {
+    // Dragging the divider immediately before the last column (Age |
+    // Restarts) right must widen Age on *both* backends — the literal
+    // reported symptom was that this direction inverted. Age is
+    // Flex-declared and Restarts (last) is Fixed, the exact shape that
+    // reproduced the bug (see `resolve_columns`'s pass-2 doc comment in
+    // `src/primitives/data_table.rs` for the root cause).
+    let tui_widened = run_datatable_resize_script::<TuiDriver<DataTableApp>>(60.0);
+    let gtk_widened = run_datatable_resize_script::<GtkDriver<DataTableApp>>(120.0);
+
+    assert_eq!(
+        tui_widened, gtk_widened,
+        "TUI and GTK should agree on the resize direction for the identical drag script"
+    );
+    assert!(
+        tui_widened && gtk_widened,
+        "dragging the divider before the last column right should widen it on both backends"
     );
 }

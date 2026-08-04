@@ -198,6 +198,22 @@ pub fn draw_data_table(
             pango_layout.set_attributes(None);
             cr.restore().ok();
         }
+
+        // Body column separators (#516 defect 2) — mirrors the header
+        // separator above, at the same x, for every column except the
+        // last. Drawn *after* the cell text (not clipped to a per-column
+        // rect the way the text is) so a cell whose text exactly fills
+        // its column never paints over the divider — the acceptance bar
+        // is "no zero-gap abutment" even in that edge case.
+        set_source(cr, theme.separator);
+        for (col_idx, rc) in layout.columns.iter().enumerate() {
+            if col_idx + 1 >= layout.columns.len() || rc.width <= 0.0 {
+                continue;
+            }
+            let sep_x = x + (rc.x + rc.width) as f64 - h_off;
+            cr.rectangle(sep_x - 0.5, row_y, 1.0, line_height);
+            cr.fill().ok();
+        }
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
@@ -356,4 +372,203 @@ pub fn gtk_data_table_layout(
         8.0,
         measure,
     )
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+//
+// Headless paint tests (see `gtk/tab_bar.rs` for the pattern this follows):
+// a Cairo `ImageSurface`, no display, pixel readback. Gated on the `gtk`
+// feature so `cargo test --features tui` alone (this repo's coord
+// `test_command`) never runs them — `cargo test --features gtk,tui` does.
+//
+// #516: defect 1 (body clipping) is already correct on this backend —
+// `cr.clip()` around each body cell — so the guard here just pins it
+// against a future refactor dropping the clip. Defect 2 (body
+// separators) was genuinely missing and is fixed alongside these tests.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
+    use crate::theme::Theme;
+    use crate::types::{Color, Decoration, StyledText, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    const W: i32 = 300;
+    const H: i32 = 100;
+    const LINE_H: f64 = 16.0;
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y). Same
+    /// byte layout as `gtk/tab_bar.rs`'s test helper and `GtkDriver::pixel`.
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn rgb(c: Color) -> (u8, u8, u8) {
+        (c.r, c.g, c.b)
+    }
+
+    fn three_col_table(a: &str, b: &str, c: &str) -> DataTable {
+        DataTable {
+            id: WidgetId::new("clip-test"),
+            columns: vec![
+                Column {
+                    title: "A".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "B".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "C".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                },
+            ],
+            rows: vec![DataRow {
+                cells: vec![
+                    StyledText::plain(a),
+                    StyledText::plain(b),
+                    StyledText::plain(c),
+                ],
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        }
+    }
+
+    /// Paint `table` into a fresh `theme.background`-filled surface and
+    /// return the raw pixel buffer alongside the resolved layout.
+    fn paint(table: &DataTable, theme: &Theme) -> (Vec<u8>, i32, DataTableLayout) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let table_layout;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            table_layout = draw_data_table(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                table,
+                theme,
+                LINE_H,
+                None,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride, table_layout)
+    }
+
+    /// #516 defect 1 (GTK guard): an over-long *middle* column's text
+    /// must stay inside its own column's `cr.clip()` rect — pinning the
+    /// behaviour `src/gtk/data_table.rs:143-153` already had, so a future
+    /// refactor can't quietly drop the clip and reintroduce the TUI-side
+    /// bug on this backend too.
+    #[test]
+    fn body_cell_wider_than_column_does_not_paint_into_neighbour() {
+        let long = "this-value-is-far-wider-than-its-resolved-column-share-by-a-lot";
+        let table = three_col_table("A", long, "C");
+        let theme = Theme::default();
+        let (data, stride, layout) = paint(&table, &theme);
+
+        let c_col = &layout.columns[2];
+        // A point safely inside column C, well past where its own "C"
+        // glyph paints, must be untouched background — not B's overflow.
+        let probe_x = (c_col.x + c_col.width - 4.0) as i32;
+        let probe_y = (layout.header_height as f64 + LINE_H / 2.0) as i32;
+        let px = pixel(&data, stride as usize, probe_x, probe_y);
+        assert_eq!(
+            px,
+            rgb(theme.background),
+            "pixel inside column C ({probe_x},{probe_y}) should be background, \
+             not B's overflow text bleeding through the clip"
+        );
+    }
+
+    /// #516 defect 2: body rows previously drew no separator at all.
+    ///
+    /// The 1px separator rect straddles a half-pixel boundary
+    /// (`sep_x - 0.5 .. sep_x + 0.5`), so with antialiasing on, the pixel
+    /// column at `sep_x` is a 50/50 blend of `theme.separator` over the
+    /// background, not the pure separator colour — true for the header
+    /// separator too. So the meaningful comparison is body-vs-header at
+    /// the identical x (same blend, same rendering), not either against
+    /// a hardcoded `theme.separator` tuple.
+    #[test]
+    fn body_row_draws_separator_at_same_x_as_header() {
+        let table = three_col_table("A", "B", "C");
+        let theme = Theme::default();
+        let (data, stride, layout) = paint(&table, &theme);
+
+        let sep_x = (layout.columns[0].x + layout.columns[0].width) as i32;
+        let header_y = (layout.header_height as f64 / 2.0) as i32;
+        let body_y = (layout.header_height as f64 + LINE_H / 2.0) as i32;
+
+        let header_px = pixel(&data, stride as usize, sep_x, header_y);
+        let body_px = pixel(&data, stride as usize, sep_x, body_y);
+        assert_ne!(
+            header_px,
+            rgb(theme.background),
+            "sanity check: header separator pixel should differ from background"
+        );
+        assert_eq!(
+            body_px, header_px,
+            "body row should draw the same separator at sep_x={sep_x} the header uses: \
+             header pixel {header_px:?}, body pixel {body_px:?}"
+        );
+        assert_ne!(
+            body_px,
+            rgb(theme.background),
+            "separator pixel must differ from the row background"
+        );
+    }
+
+    /// Acceptance: a cell whose text reaches all the way to its column's
+    /// right edge must not paint over the divider — no zero-gap
+    /// abutment even in the tightest case. The fix draws the separator
+    /// *after* the cell text for exactly this reason.
+    #[test]
+    fn separator_survives_a_cell_that_fills_its_entire_column() {
+        let filling = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let table = three_col_table(filling, "B", "C");
+        let theme = Theme::default();
+        let (data, stride, layout) = paint(&table, &theme);
+
+        let sep_x = (layout.columns[0].x + layout.columns[0].width) as i32;
+        let header_y = (layout.header_height as f64 / 2.0) as i32;
+        let body_y = (layout.header_height as f64 + LINE_H / 2.0) as i32;
+
+        // Compare against this same render's header separator pixel
+        // (see the blending note above) rather than a hardcoded colour:
+        // if the fill text painted over the divider, `body_px` would
+        // read as foreground ink instead of matching the header's blend.
+        let header_px = pixel(&data, stride as usize, sep_x, header_y);
+        let body_px = pixel(&data, stride as usize, sep_x, body_y);
+        assert_eq!(
+            body_px, header_px,
+            "separator must survive even when the left column's text fills the \
+             entire column width: header pixel {header_px:?}, body pixel {body_px:?}"
+        );
+    }
 }

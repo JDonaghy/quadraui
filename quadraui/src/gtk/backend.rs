@@ -1316,7 +1316,7 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_data_table called outside enter_frame_scope");
-        crate::gtk::draw_data_table(
+        let table_layout = crate::gtk::draw_data_table(
             cr,
             layout,
             rect.x as f64,
@@ -1327,7 +1327,95 @@ impl Backend for GtkBackend {
             &theme,
             lh,
             hovered_idx,
-        )
+        );
+
+        // Record header + visible body + footer cell text into the
+        // painted-text map `GtkDriver::find`/`find_bounds`/`painted_texts`
+        // scan (mirrors `Self::draw_status_bar` above) — DataTable
+        // previously recorded nothing, so a test had no way to assert
+        // cell content short of raw pixel reads (#516). Bounds are
+        // derived from `table_layout` + the declarative `table`, not by
+        // re-deriving Cairo/Pango geometry, so they can't drift from
+        // what was actually drawn.
+        let h_off = table.h_scroll as f64;
+        let header_height = table_layout.header_height as f64;
+        for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+            if rc.width <= 0.0 {
+                continue;
+            }
+            if let Some(col) = table.columns.get(col_idx) {
+                let bounds = QRect::new(
+                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                    rect.y,
+                    rc.width,
+                    header_height as f32,
+                );
+                self.record_painted_text(&col.title, bounds);
+            }
+        }
+
+        let row_height = table_layout.row_height as f64;
+        let body_y = rect.y as f64 + header_height;
+        let visible = table_layout
+            .visible_rows
+            .min(table.rows.len().saturating_sub(table.scroll_offset));
+        for row_idx in 0..visible {
+            let abs_idx = table.scroll_offset + row_idx;
+            let row = &table.rows[abs_idx];
+            let row_y = body_y + row_idx as f64 * row_height;
+            for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+                if rc.width <= 0.0 {
+                    continue;
+                }
+                let Some(cell) = row.cells.get(col_idx) else {
+                    continue;
+                };
+                if cell.spans.is_empty() {
+                    continue;
+                }
+                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                if text.is_empty() {
+                    continue;
+                }
+                let bounds = QRect::new(
+                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                    row_y as f32,
+                    rc.width,
+                    row_height as f32,
+                );
+                self.record_painted_text(&text, bounds);
+            }
+        }
+
+        if let Some(footer) = &table.footer {
+            if table_layout.footer_height > 0.0 {
+                let footer_y = rect.y as f64 + rect.height as f64 - row_height;
+                for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+                    if rc.width <= 0.0 {
+                        continue;
+                    }
+                    let Some(cell) = footer.cells.get(col_idx) else {
+                        continue;
+                    };
+                    if cell.spans.is_empty() {
+                        continue;
+                    }
+                    let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let bounds = QRect::new(
+                        (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                        footer_y as f32,
+                        rc.width,
+                        row_height as f32,
+                    );
+                    self.record_painted_text(&text, bounds);
+                }
+            }
+        }
+
+        table_layout
     }
 
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {

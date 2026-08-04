@@ -137,18 +137,34 @@ pub fn draw_data_table(
         }
 
         for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let styled = match row.cells.get(col_idx) {
-                Some(c) if !c.spans.is_empty() => c,
-                _ => continue,
-            };
-            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
             let col_x_raw = area.x as i32 + rc.x.round() as i32 - h_off as i32;
             let col_x_end = col_x_raw + rc.width.round() as i32;
             if col_x_end <= area.x as i32 || col_x_raw >= (area.x + area.width) as i32 {
                 continue;
             }
             let col_w = rc.width.round() as u16;
-            if col_w == 0 || full_text.is_empty() {
+            if col_w == 0 {
+                continue;
+            }
+
+            // Column separator on the right edge (skip last column) —
+            // drawn regardless of whether this cell has text, mirroring
+            // the header separator. Body rows previously drew none at
+            // all, so adjacent cells butted directly together (#516
+            // defect 2).
+            if col_idx + 1 < table.columns.len() {
+                let sep_cx = col_x_raw + col_w as i32 - 1;
+                if sep_cx >= area.x as i32 && sep_cx < (area.x + area.width) as i32 {
+                    set_cell(buf, sep_cx as u16, y, '│', sep_fg, row_bg);
+                }
+            }
+
+            let styled = match row.cells.get(col_idx) {
+                Some(c) if !c.spans.is_empty() => c,
+                _ => continue,
+            };
+            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
+            if full_text.is_empty() {
                 continue;
             }
 
@@ -157,26 +173,57 @@ pub fn draw_data_table(
                 .get(col_idx)
                 .map(|c| c.align)
                 .unwrap_or(ColumnAlign::Left);
+
+            // Reserve one cell for the separator (except on the last
+            // column) — the same `usable_w` term the header already
+            // uses — so an over-long body cell is clipped at its own
+            // column boundary instead of painting across its neighbours
+            // (#516 defect 1: this was previously clipped only to the
+            // table's right edge, so it interleaved with every column
+            // to its right).
+            let usable_w: u16 = if col_idx + 1 < table.columns.len() {
+                col_w.saturating_sub(1)
+            } else {
+                col_w
+            };
+
             let text_len = full_text.chars().count() as u16;
-            let start = align_offset(align, text_len, col_w) as i32;
+            let (visible_len, needs_ellipsis) = if text_len <= usable_w {
+                (text_len, false)
+            } else if usable_w == 0 {
+                (0, false)
+            } else {
+                (usable_w - 1, true)
+            };
+            let displayed_len = visible_len + u16::from(needs_ellipsis);
+            let start = align_offset(align, displayed_len, usable_w) as i32;
 
             let is_muted = row.decoration == crate::types::Decoration::Muted;
-            let mut char_offset = 0i32;
-            for span in &styled.spans {
+            let mut char_idx = 0u16;
+            'cell: for span in &styled.spans {
                 let span_fg = if is_muted {
                     muted_fg
                 } else {
                     span.fg.map(ratatui_color).unwrap_or(row_fg)
                 };
                 for ch in span.text.chars() {
-                    let cx = col_x_raw + start + char_offset;
+                    if char_idx == visible_len {
+                        if needs_ellipsis {
+                            let cx = col_x_raw + start + char_idx as i32;
+                            if cx >= area.x as i32 && cx < (area.x + area.width) as i32 {
+                                set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
+                            }
+                        }
+                        break 'cell;
+                    }
+                    let cx = col_x_raw + start + char_idx as i32;
                     if cx >= (area.x + area.width) as i32 {
-                        break;
+                        break 'cell;
                     }
                     if cx >= area.x as i32 {
                         set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
                     }
-                    char_offset += 1;
+                    char_idx += 1;
                 }
             }
         }
@@ -312,6 +359,21 @@ mod tests {
     use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTable, DataTableHit};
     use crate::types::{Decoration, StyledText, WidgetId};
 
+    /// Char-cell index of `needle`'s first occurrence in `line` — unlike
+    /// `str::find`, which returns a *byte* offset and desyncs from the
+    /// screen column as soon as a row contains a multi-byte glyph (e.g.
+    /// the `'│'` separator, #516 defect 2).
+    fn find_char_pos(line: &str, needle: &str) -> Option<usize> {
+        let chars: Vec<char> = line.chars().collect();
+        let needle: Vec<char> = needle.chars().collect();
+        if needle.is_empty() || chars.len() < needle.len() {
+            return None;
+        }
+        chars
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+    }
+
     fn make_table() -> DataTable {
         DataTable {
             id: WidgetId::new("test"),
@@ -409,6 +471,139 @@ mod tests {
         assert!(
             row0.contains("Running"),
             "row 0 should contain 'Running', got: {row0}"
+        );
+    }
+
+    // ── #516 defect 1 & 2: body clipping, ellipsis, body separators ─────
+
+    #[test]
+    fn body_rows_draw_column_separator_at_same_x_as_header() {
+        // Previously `'│'` was only drawn in the header loop; body rows
+        // had none at all, so adjacent cells butted directly together.
+        let table = make_table();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let find_seps =
+            |y: u16| -> Vec<u16> { (0..40).filter(|&x| buf[(x, y)].symbol() == "│").collect() };
+
+        let header_seps = find_seps(0);
+        assert_eq!(
+            header_seps.len(),
+            table.columns.len() - 1,
+            "header should have one separator per internal column boundary, got {header_seps:?}"
+        );
+
+        // `make_table()` has 2 rows, painted at y=1 and y=2.
+        for row_y in [1u16, 2u16] {
+            let body_seps = find_seps(row_y);
+            assert_eq!(
+                body_seps, header_seps,
+                "body row {row_y} separators should sit at the same x as the header's"
+            );
+        }
+    }
+
+    #[test]
+    fn body_cell_exactly_filling_column_still_gets_a_separator() {
+        // Acceptance: a cell whose text exactly fills its column must
+        // still be separated from its neighbour — no zero-gap abutment.
+        let mut table = make_table();
+        // Column 0 ("Name") is Flex(2.0) of a 40-wide, 3-Flex-weight-unit
+        // area minus the 5-wide fixed "Age" column: (40-5)*2/3 ≈ 23.33 →
+        // resolves to 23 cells wide, of which 22 are usable (one cell is
+        // reserved for the separator, same as the header). Fill exactly
+        // that usable width.
+        table.rows[0].cells[0] = StyledText::plain("x".repeat(22));
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let sep_x = (layout.columns[0].x.round() as i32 + layout.columns[0].width.round() as i32
+            - 1) as u16;
+        let ch = buf[(sep_x, 1)].symbol().to_string();
+        assert_eq!(
+            ch, "│",
+            "an exactly-filling cell must not paint over the separator column"
+        );
+    }
+
+    #[test]
+    fn body_cell_wider_than_column_is_clipped_and_does_not_bleed_into_neighbour() {
+        // The core regression: an over-long *middle* column previously
+        // painted straight across every column to its right —
+        // interleaving, not truncation — because the body loop only
+        // clipped to the table's right edge (`area.x + area.width`),
+        // never to the column's own boundary the header loop already
+        // used.
+        let table = DataTable {
+            id: WidgetId::new("clip-test"),
+            columns: vec![
+                Column {
+                    title: "A".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "B".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "C".into(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                },
+            ],
+            rows: vec![DataRow {
+                cells: vec![
+                    StyledText::plain("A"),
+                    StyledText::plain("this-value-is-far-wider-than-its-resolved-column-share"),
+                    StyledText::plain("C"),
+                ],
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let row: Vec<char> = (0..30)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let row_str: String = row.iter().collect();
+
+        let c_col = &layout.columns[2];
+        let c_start = c_col.x.round() as usize;
+
+        // Column C's own value paints intact at its own column start...
+        assert_eq!(row[c_start], 'C', "row: {row_str:?}");
+        // ...and every other cell inside C's column is untouched
+        // background, never a stray character bled over from B.
+        for (x, &ch) in row.iter().enumerate().skip(c_start + 1) {
+            assert_eq!(
+                ch, ' ',
+                "cell at x={x} inside column C should be blank, not corrupted by B's overflow \
+                 (row: {row_str:?})"
+            );
+        }
+
+        // The overflowing B cell shows an ellipsis rather than a hard cut.
+        let b_col = &layout.columns[1];
+        let b_range = (b_col.x.round() as usize)..c_start;
+        assert!(
+            b_range.clone().any(|x| row[x] == '…'),
+            "over-long body cell should end in an ellipsis, not a hard cut: {row_str:?}"
         );
     }
 
@@ -524,8 +719,12 @@ mod tests {
         let body_line: String = (0..40)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
             .collect();
-        let footer_pos = footer_line.find("4d").expect("footer total painted");
-        let body_pos = body_line.find("3d").expect("body cell painted");
+        // Char-cell position, not byte offset: `str::find` returns a byte
+        // index, and body rows now paint a `'│'` separator (#516 defect
+        // 2) which is 3 bytes but exactly 1 cell — a byte-offset
+        // comparison would fail even though the two cells line up.
+        let footer_pos = find_char_pos(&footer_line, "4d").expect("footer total painted");
+        let body_pos = find_char_pos(&body_line, "3d").expect("body cell painted");
         assert_eq!(
             footer_pos, body_pos,
             "footer's Age total should align at the same x as a body row's Age cell"
