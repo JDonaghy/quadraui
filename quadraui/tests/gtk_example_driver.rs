@@ -24,6 +24,10 @@ use pipeline_app::PipelineApp;
 mod appshell_demo;
 use appshell_demo::AppShellDemo;
 
+#[path = "../examples/common/data_table_app.rs"]
+mod data_table_app;
+use data_table_app::DataTableApp;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -242,5 +246,117 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     assert!(
         driver.screen_contains("Sidebar shown (Ctrl+B via ctx.shell_mut())"),
         "status line should confirm the second toggle"
+    );
+}
+
+// ─── DataTableApp: body clipping, separators, resize direction (#516) ──────
+//
+// `DataTableApp` had zero GTK coverage before this issue. Pixel canvas big
+// enough (900x600) for all 20 pod rows + header + the 2-row footer band +
+// status bar at once, at GTK's default 8px char / 16px line metrics
+// (`min_total_width = 80 * char_width` = 640px), with no scrolling.
+
+const DT_W: i32 = 900;
+const DT_H: i32 = 600;
+
+/// #516 defect 1 (GTK guard, app level): the "Status" column (index 1, a
+/// *middle* column) holds a value far wider than its resolved share.
+/// `src/gtk/data_table.rs`'s own tests already pin the `cr.clip()`
+/// behaviour in isolation; this proves the same thing through the real
+/// app + the painted-text map this issue adds to `GtkBackend::draw_data_table`
+/// — a corrupted/merged cell would show up here as a missing or mangled
+/// `painted_texts()` entry, not just a pixel discrepancy.
+#[test]
+fn data_table_wide_middle_column_leaves_neighbours_intact_in_painted_texts() {
+    let driver = GtkDriver::new(DataTableApp::new(), DT_W, DT_H);
+    assert!(
+        driver.screen_contains("grafana"),
+        "wide-status pod row should be painted: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver
+            .painted_texts()
+            .iter()
+            .any(|t| t.contains("ImagePullBackOff waiting for registry retry backoff window")),
+        "the full over-long Status value should still be recorded intact (GTK clips visually \
+         via cr.clip(), not by truncating the underlying text): {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.find_bounds("1h").is_some(),
+        "Age cell for the wide-status row should be painted as its own intact entry: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.find_bounds("14").is_some(),
+        "Restarts cell for the wide-status row should be painted as its own intact entry: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// #516 defect 2 (GTK): body rows previously drew no separator at all.
+#[test]
+fn data_table_body_rows_draw_separators_at_same_x_as_header() {
+    let mut driver = GtkDriver::new(DataTableApp::new(), DT_W, DT_H);
+    let layout = driver.app().table_layout(driver.backend());
+    assert!(
+        layout.columns.len() > 1,
+        "sanity: table should have more than one column"
+    );
+
+    let header_y = (layout.header_height / 2.0) as i32;
+    // Row 1, not row 0: `DataTableApp` starts with row 0 selected, and
+    // the selection highlight tints the row background under the
+    // separator's antialiased blend — comparing against a differently
+    // -tinted body row would fail even with the fix correctly applied.
+    let body_y = (layout.header_height + layout.row_height * 1.5) as i32;
+
+    // Antialiasing rasterizes the header's and body's separator rects
+    // independently (different heights: `header_height` vs `line_height`),
+    // which can land a shared boundary pixel's blend fraction a shade of
+    // a channel apart (observed: off by 1/255) even though both are
+    // unmistakably "the separator colour blended over the row
+    // background" and not "background" or "text ink" — so compare with
+    // a small tolerance rather than bit-exact equality.
+    fn close(a: (u8, u8, u8), b: (u8, u8, u8), tol: i32) -> bool {
+        (a.0 as i32 - b.0 as i32).abs() <= tol
+            && (a.1 as i32 - b.1 as i32).abs() <= tol
+            && (a.2 as i32 - b.2 as i32).abs() <= tol
+    }
+
+    for col_idx in 0..layout.columns.len() - 1 {
+        let col = layout.columns[col_idx];
+        let sep_x = (col.x + col.width) as i32;
+        let header_px = driver.pixel(sep_x, header_y);
+        let body_px = driver.pixel(sep_x, body_y);
+        assert!(
+            close(body_px, header_px, 3),
+            "column {col_idx}'s body separator should sit at the same x={sep_x} as the \
+             header's: header pixel {header_px:?}, body pixel {body_px:?}"
+        );
+    }
+}
+
+/// #516 defect 3: same script as the TUI driver test, run against GTK —
+/// dragging the divider immediately before the last column (Age |
+/// Restarts) must widen Age when dragged right.
+#[test]
+fn data_table_divider_before_last_column_widens_on_right_drag() {
+    let mut driver = GtkDriver::new(DataTableApp::new(), DT_W, DT_H);
+
+    let before = driver.app().resolved_column_widths(driver.backend())[2];
+
+    let layout = driver.app().table_layout(driver.backend());
+    let age = layout.columns[2];
+    let divider_x = age.x + age.width;
+    let divider_y = layout.header_height / 2.0;
+    driver.drag(divider_x, divider_y, divider_x + 80.0, divider_y);
+
+    let widened = driver.app().resolved_column_widths(driver.backend())[2];
+    assert!(
+        widened > before,
+        "dragging the divider before the last column right should widen it: \
+         before={before}, after={widened}"
     );
 }

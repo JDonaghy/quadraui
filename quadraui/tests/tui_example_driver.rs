@@ -1873,6 +1873,142 @@ fn data_table_f_key_toggles_footer_off() {
     );
 }
 
+// ─── DataTableApp: body clipping, separators, resize direction (#516) ──────
+//
+// A tall-enough viewport (26 rows) fits all 20 pod rows + header + the
+// 2-row pinned footer band + the 1-row status bar with no scrolling, so
+// these tests don't have to scroll to reach any particular row first.
+
+#[test]
+fn data_table_wide_middle_column_does_not_corrupt_neighbouring_columns() {
+    // Defect 1 regression: "Status" (column index 1, a *middle* column —
+    // not last) holds a value far wider than its resolved Flex(1.5)
+    // share. Before the fix this interleaved into Age/Restarts instead
+    // of clipping at its own column boundary, corrupting their rendered
+    // values (the exact "precisi0n" / "abil…" symptom from the issue).
+    let driver = TuiDriver::new(DataTableApp::new(), 100, 26);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("grafana"),
+        "wide-status pod row should be visible:\n{screen}"
+    );
+
+    let (_, y) = driver
+        .find("grafana-5f4c8d")
+        .unwrap_or_else(|| panic!("grafana row not painted:\n{screen}"));
+    let row = screen
+        .lines()
+        .nth(y as usize)
+        .unwrap_or_else(|| panic!("row {y} missing from screen:\n{screen}"));
+
+    assert!(
+        row.contains("1h"),
+        "Age column must survive intact next to the over-long Status cell: {row:?}"
+    );
+    assert!(
+        row.contains("14"),
+        "Restarts column must survive intact next to the over-long Status cell: {row:?}"
+    );
+    assert!(
+        row.contains('…'),
+        "the over-long Status cell should be truncated with an ellipsis, not a hard cut: {row:?}"
+    );
+    assert!(
+        !row.contains("ImagePullBackOff waiting for registry retry backoff window"),
+        "the full over-long value must not render past its own column: {row:?}"
+    );
+}
+
+#[test]
+fn data_table_body_rows_show_column_separators_aligned_with_header() {
+    // Defect 2: body rows previously drew no separator at all, so
+    // adjacent cells butted directly together.
+    let driver = TuiDriver::new(DataTableApp::new(), 100, 26);
+    let screen = driver.screen();
+
+    fn sep_positions(line: &str) -> Vec<usize> {
+        // Char-cell index, not byte offset — a header cell can carry a
+        // multi-byte sort-arrow suffix that a body cell never has, which
+        // would desync a byte-based comparison even though the cells
+        // line up on screen.
+        line.chars()
+            .enumerate()
+            .filter(|&(_, c)| c == '│')
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    let mut lines = screen.lines();
+    let header = lines.next().expect("header row");
+    let header_seps = sep_positions(header);
+    assert_eq!(
+        header_seps.len(),
+        3,
+        "header should have 3 separators (4 columns): {header:?}"
+    );
+
+    let body_row = lines.next().expect("first body row");
+    let body_seps = sep_positions(body_row);
+    assert_eq!(
+        body_seps, header_seps,
+        "body row separators should sit at the same columns as the header's:\n\
+         header: {header:?}\nbody:   {body_row:?}"
+    );
+}
+
+#[test]
+fn data_table_divider_before_last_column_resizes_in_drag_direction() {
+    // Defect 3, the literal reported symptom: dragging the divider
+    // immediately before the last column (Age | Restarts) must widen
+    // Age when dragged right and narrow it when dragged left — the same
+    // direction as every other divider, never inverted. `Age` is
+    // Flex-declared and directly precedes the last column (`Restarts`),
+    // the exact shape that reproduced "resizes backward".
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 26);
+
+    let before = driver.app().resolved_column_widths(driver.backend())[2];
+
+    // Age's natural resolved width (Flex(0.5) among a small total weight)
+    // is well under the app's own 20-unit resize floor, so the deltas
+    // below are chosen generously enough that both the widen *and* the
+    // narrow target land clear of that floor — otherwise both drags
+    // would clamp to the same 20 and the direction assertion would be
+    // vacuous rather than a real test of #516 defect 3.
+    let layout = driver.app().table_layout(driver.backend());
+    let age = layout.columns[2];
+    let divider_x = age.x + age.width;
+    let divider_y = 0.5;
+    driver.drag(divider_x, divider_y, divider_x + 40.0, divider_y);
+
+    let widened = driver.app().resolved_column_widths(driver.backend())[2];
+    assert!(
+        widened > before,
+        "dragging the divider before the last column right should widen it: \
+         before={before}, after={widened}"
+    );
+
+    // Because `Restarts` (the last column) is `Fixed`, this divider's x
+    // (Age's right edge = Restarts' left edge) doesn't move when Age's
+    // width changes — it's invariant. A second `mouse_down` at that
+    // exact same point would fold into a synthetic `DoubleClick`
+    // (`DoubleClickDetector`, `DOUBLE_CLICK_RADIUS` = 1.5) instead of a
+    // fresh resize-drag start, so nudge the down-click 2 units off
+    // (still within `DIVIDER_GRAB_PX` = 3.0's hit-test tolerance) —
+    // the resize amount itself comes from the *move* target below, not
+    // the down position, so this doesn't affect what's being measured.
+    let layout2 = driver.app().table_layout(driver.backend());
+    let age2 = layout2.columns[2];
+    let divider_x2 = age2.x + age2.width;
+    driver.drag(divider_x2 + 2.0, divider_y, divider_x2 - 20.0, divider_y);
+
+    let narrowed = driver.app().resolved_column_widths(driver.backend())[2];
+    assert!(
+        narrowed < widened,
+        "dragging the divider before the last column left should narrow it: \
+         before={widened}, after={narrowed}"
+    );
+}
+
 // ─── HelpLayerDemo (#431): context-sensitive help registry + cheatsheet ────
 //
 // `HelpLayerDemo` implements `ShellApp` with two panels ("Explorer" and

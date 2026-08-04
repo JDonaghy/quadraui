@@ -22,6 +22,16 @@ pub struct DataTableApp {
     sort_col: Option<usize>,
     sort_asc: bool,
     resize_col: Option<usize>,
+    /// Per-column width overrides from divider drags, layered on top of
+    /// `columns`' declared strategy (#516 defect 3) — mirrors how a real
+    /// consumer (e.g. coord-tui's Audit panel) drives `DataTable`. Kept
+    /// separate from `columns[i].width` deliberately: overriding a
+    /// column must never rewrite its original declared strategy, only
+    /// lay a resolved width on top of it — that distinction is exactly
+    /// what `primitives::data_table::resolve_columns`'s pass 2 has to
+    /// respect (and, before the fix, didn't) for a `Flex`-declared
+    /// column.
+    column_overrides: Vec<Option<f32>>,
     /// Vertical scrollbar thumb drag: (track_start_y, track_height, thumb_length, grab_offset)
     sb_drag: Option<(f32, f32, f32, f32)>,
     /// Horizontal scrollbar thumb drag: (track_start_x, track_width, thumb_length, grab_offset)
@@ -41,6 +51,7 @@ impl DataTableApp {
             sort_col: Some(0),
             sort_asc: true,
             resize_col: None,
+            column_overrides: Vec::new(),
             sb_drag: None,
             h_sb_drag: None,
             h_scroll: 0.0,
@@ -61,9 +72,16 @@ impl DataTableApp {
                 width: ColumnWidth::Flex(1.5),
                 align: ColumnAlign::Left,
             },
+            // Flex (not Fixed) so the divider immediately before the
+            // last column (Restarts) sits between two Flex-declared
+            // columns — the exact shape that reproduced #516 defect 3
+            // ("divider before the last column resizes backward"): the
+            // *dragged* column (Age) must itself be Flex-declared for
+            // `resolve_columns`'s flex-redistribution pass to have a
+            // chance of clobbering its override.
             Column {
                 title: "Age".into(),
-                width: ColumnWidth::Fixed(8.0),
+                width: ColumnWidth::Flex(0.5),
                 align: ColumnAlign::Right,
             },
             Column {
@@ -90,7 +108,18 @@ impl DataTableApp {
             ("metrics-server-6d94bc", "Running", "7d", "0"),
             ("fluentd-daemonset-abc", "Running", "7d", "0"),
             ("prometheus-server-0", "Running", "3d", "0"),
-            ("grafana-5f4c8d-mn2q7", "CrashLoopBackOff", "1h", "14"),
+            // Status is the *middle* column (not last) and this value is
+            // far wider than its resolved Flex(1.5) share — #516 defect
+            // 1's regression case ("a table whose middle column contains
+            // text far wider than its resolved width renders every other
+            // column's value intact and readable"). Before the fix this
+            // interleaved into Age/Restarts instead of clipping.
+            (
+                "grafana-5f4c8d-mn2q7",
+                "CrashLoopBackOff: ImagePullBackOff waiting for registry retry backoff window",
+                "1h",
+                "14",
+            ),
             ("loki-0", "Running", "3d", "0"),
             ("argocd-server-6b8c9d-k3m8", "Running", "10d", "0"),
             ("vault-0", "Pending", "5m", "0"),
@@ -101,9 +130,9 @@ impl DataTableApp {
             .map(|(name, status, age, restarts)| DataRow {
                 cells: vec![
                     StyledText::plain(*name),
-                    if *status == "Running" {
+                    if status.starts_with("Running") {
                         StyledText::colored(*status, Color::rgb(80, 200, 80))
-                    } else if *status == "CrashLoopBackOff" {
+                    } else if status.starts_with("CrashLoopBackOff") {
                         StyledText::colored(*status, Color::rgb(220, 60, 60))
                     } else {
                         StyledText::colored(*status, Color::rgb(220, 180, 50))
@@ -181,13 +210,27 @@ impl DataTableApp {
             show_scrollbar: true,
             min_total_width: None,
             h_scroll: self.h_scroll,
-            column_overrides: Vec::new(),
+            column_overrides: self.column_overrides.clone(),
             footer: if self.show_footer {
                 Some(self.footer_row())
             } else {
                 None
             },
         }
+    }
+
+    /// Resolved column widths for the current viewport — a test-only
+    /// accessor exercising the exact same `DataTable::layout` (and thus
+    /// the shared `primitives::data_table::resolve_columns`) any real
+    /// backend paints through, so a driver test can assert on resize
+    /// direction without hardcoding per-backend layout math (#516
+    /// defect 3).
+    pub fn resolved_column_widths(&self, backend: &dyn Backend) -> Vec<f32> {
+        self.table_layout(backend)
+            .columns
+            .iter()
+            .map(|c| c.width)
+            .collect()
     }
 
     fn status_bar(&self) -> StatusBar {
@@ -240,7 +283,12 @@ impl DataTableApp {
         self.table_layout(backend).visible_rows
     }
 
-    fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
+    /// `pub` (not just an internal helper) so driver tests can locate
+    /// real hit-test targets (e.g. a column divider) instead of
+    /// hardcoding per-backend coordinates — see
+    /// `resolved_column_widths`'s docs for why this matters for #516
+    /// defect 3 coverage specifically.
+    pub fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
         let vp = backend.viewport();
         let lh = backend.line_height();
         let cw = backend.char_width();
@@ -464,7 +512,18 @@ impl AppLogic for DataTableApp {
                     if col < layout.columns.len() {
                         let col_x = layout.columns[col].x;
                         let new_w = (position.x - col_x).max(20.0);
-                        self.columns[col].width = ColumnWidth::Fixed(new_w);
+                        // Layer the resolved width on top of `columns`
+                        // via `column_overrides` — the real API surface
+                        // a consumer drags through (e.g. coord-tui's
+                        // Audit panel), rather than rewriting the
+                        // column's declared strategy directly. This is
+                        // what exercises `resolve_columns`'s override
+                        // path (#516 defect 3) instead of silently
+                        // sidestepping it.
+                        if self.column_overrides.len() != self.columns.len() {
+                            self.column_overrides = vec![None; self.columns.len()];
+                        }
+                        self.column_overrides[col] = Some(new_w);
                     }
                     return Reaction::Redraw;
                 }

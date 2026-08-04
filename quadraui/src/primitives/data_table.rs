@@ -386,8 +386,29 @@ where
     }
 
     // Pass 2: distribute remaining space among Flex columns.
+    //
+    // Must skip any column with an active override (#516 defect 3): pass 1
+    // already resolved that column's width from the override and folded
+    // its contribution *out* of `total_flex` (the `continue` above skips
+    // the `Flex` arm for overridden columns). But `col.width` here is
+    // still the column's *original* declared strategy — overriding a
+    // column never rewrites it, only layers a width on top — so a
+    // dragged column whose original strategy is `Flex` matches this `if
+    // let` too. Without this guard its pass-1 width gets clobbered by a
+    // flex share computed from a `total_flex` that already excludes its
+    // own weight, which can land smaller than its *original* pre-drag
+    // width — i.e. the column visibly *shrinks* while being dragged
+    // wider. This is the root cause of the "divider before the last
+    // column resizes backward" symptom: it reproduces on the divider
+    // before any column whose left-hand neighbour is Flex-declared, not
+    // just the last one, but a trailing pair of Flex text columns (the
+    // common server-data-driven layout) puts it right where the last
+    // divider lives.
     if total_flex > 0.0 && remaining > 0.0 {
         for (i, col) in columns.iter().enumerate() {
+            if matches!(overrides.get(i), Some(Some(_))) {
+                continue;
+            }
             if let ColumnWidth::Flex(weight) = col.width {
                 widths[i] = (weight.max(0.0) / total_flex) * remaining;
             }
@@ -551,6 +572,73 @@ mod tests {
         assert!((layout.columns[0].width - 20.0).abs() < 0.01);
         assert!((layout.columns[1].width - 40.0).abs() < 0.01);
         assert!((layout.columns[2].width - 20.0).abs() < 0.01);
+    }
+
+    // ── #516 defect 3: divider-before-last-column resize direction ──────
+
+    /// A column override on a `Flex`-declared column must win outright —
+    /// pass 2's flex redistribution must not re-derive (and clobber) a
+    /// width pass 1 already resolved from the override. This is the
+    /// direct regression test for the root cause: before the fix, pass 2
+    /// matched on `col.width` (the column's original declared strategy)
+    /// with no check for an active override, so an overridden `Flex`
+    /// column's width was silently overwritten by a bogus share.
+    #[test]
+    fn override_on_flex_column_is_not_clobbered_by_flex_redistribution() {
+        // Three equal-weight Flex columns, matching the pattern of a
+        // trailing pair of text columns with one more before them —
+        // dragging the divider before the last column overrides the
+        // *second* column (index 1).
+        let table = make_table(3, 0);
+        let mut overrides = vec![None; 3];
+        overrides[1] = Some(45.0_f32);
+        let layout = table.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert!(
+            (layout.columns[1].width - 30.0).abs() < 0.01,
+            "sanity: unoverridden layout gives each Flex(1.0) column an equal 30.0 share"
+        );
+
+        let mut table = table;
+        table.column_overrides = overrides;
+        let layout = table.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert!(
+            (layout.columns[1].width - 45.0).abs() < 0.01,
+            "override should win outright, not get re-derived by flex redistribution: \
+             expected 45.0, got {}",
+            layout.columns[1].width
+        );
+    }
+
+    /// The literal reported symptom: dragging the divider immediately
+    /// before the last column must widen that column when the override
+    /// grows and narrow it when the override shrinks — the same
+    /// direction as every other divider, never inverted.
+    #[test]
+    fn divider_before_last_column_resizes_in_drag_direction() {
+        let table = make_table(3, 0);
+        let baseline = table.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        let baseline_w = baseline.columns[1].width;
+
+        let mut widen = table.clone();
+        widen.column_overrides = vec![None, Some(baseline_w + 20.0), None];
+        let widen_layout = widen.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let mut narrow = table.clone();
+        narrow.column_overrides = vec![None, Some((baseline_w - 20.0).max(1.0)), None];
+        let narrow_layout = narrow.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        assert!(
+            widen_layout.columns[1].width > baseline_w,
+            "dragging the divider right (larger override) must widen the column: \
+             baseline={baseline_w}, widened={}",
+            widen_layout.columns[1].width
+        );
+        assert!(
+            narrow_layout.columns[1].width < baseline_w,
+            "dragging the divider left (smaller override) must narrow the column: \
+             baseline={baseline_w}, narrowed={}",
+            narrow_layout.columns[1].width
+        );
     }
 
     #[test]
