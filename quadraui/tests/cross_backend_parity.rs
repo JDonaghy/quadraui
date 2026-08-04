@@ -19,7 +19,7 @@
 
 use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriver};
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
-use quadraui::{AppLogic, NamedKey};
+use quadraui::{AppLogic, DataTableLayout, NamedKey};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -208,6 +208,16 @@ trait DataTableResizeDriver {
     /// Drag the Age|Restarts divider horizontally by `dx` (positive =
     /// right = widen) in this backend's native coordinate space.
     fn drag_age_divider(&mut self, dx: f32);
+    /// Drag the divider to the right of column `col` by `dx`, in this
+    /// backend's native coordinate space — generalized `drag_age_divider`
+    /// for #521's pair-resize and viewport-fill coverage, which needs to
+    /// drag dividers other than just the one before the last column.
+    fn drag_divider_at(&mut self, col: usize, dx: f32);
+    /// All resolved column widths, in this backend's native units.
+    fn column_widths(&self) -> Vec<f32>;
+    /// The current table layout — resolved column bounds, viewport and
+    /// content width, scrollbar reservation.
+    fn table_layout(&self) -> DataTableLayout;
 }
 
 impl DataTableResizeDriver for TuiDriver<DataTableApp> {
@@ -216,11 +226,23 @@ impl DataTableResizeDriver for TuiDriver<DataTableApp> {
     }
 
     fn drag_age_divider(&mut self, dx: f32) {
+        self.drag_divider_at(2, dx);
+    }
+
+    fn drag_divider_at(&mut self, col: usize, dx: f32) {
         let layout = self.app().table_layout(self.backend());
-        let age = layout.columns[2];
-        let divider_x = age.x + age.width;
+        let target = layout.columns[col];
+        let divider_x = target.x + target.width;
         let y = 0.5;
         self.drag(divider_x, y, divider_x + dx, y);
+    }
+
+    fn column_widths(&self) -> Vec<f32> {
+        self.app().resolved_column_widths(self.backend())
+    }
+
+    fn table_layout(&self) -> DataTableLayout {
+        self.app().table_layout(self.backend())
     }
 }
 
@@ -230,11 +252,23 @@ impl DataTableResizeDriver for GtkDriver<DataTableApp> {
     }
 
     fn drag_age_divider(&mut self, dx: f32) {
+        self.drag_divider_at(2, dx);
+    }
+
+    fn drag_divider_at(&mut self, col: usize, dx: f32) {
         let layout = self.app().table_layout(self.backend());
-        let age = layout.columns[2];
-        let divider_x = age.x + age.width;
+        let target = layout.columns[col];
+        let divider_x = target.x + target.width;
         let y = layout.header_height / 2.0;
         self.drag(divider_x, y, divider_x + dx, y);
+    }
+
+    fn column_widths(&self) -> Vec<f32> {
+        self.app().resolved_column_widths(self.backend())
+    }
+
+    fn table_layout(&self) -> DataTableLayout {
+        self.app().table_layout(self.backend())
     }
 }
 
@@ -290,5 +324,86 @@ fn data_table_divider_before_last_column_parity_tui_and_gtk_agree_on_direction()
     assert!(
         tui_widened && gtk_widened,
         "dragging the divider before the last column right should widen it on both backends"
+    );
+}
+
+// ─── #521 defect 1: divider drag isolation parity ───────────────────────────
+
+/// Drags the Age|Restarts divider (col 2) by `dx` and returns the resolved
+/// column widths before and after — used to check that columns 0 (Name)
+/// and 1 (Status), which the divider doesn't border, are untouched.
+fn run_pair_isolation_script<D: DataTableResizeDriver + DataTableDriverCtor>(
+    dx: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut d = D::new_default();
+    let before = d.column_widths();
+    d.drag_divider_at(2, dx);
+    let after = d.column_widths();
+    (before, after)
+}
+
+#[test]
+fn data_table_divider_drag_leaves_unrelated_columns_untouched_parity_tui_and_gtk_agree() {
+    // Grabbing and shrinking the Age|Restarts divider must leave Name and
+    // Status exactly as they were — the literal #521 defect 1 symptom was
+    // that shrinking one divider moved a column it didn't border. Shared
+    // `resolve_columns` logic, so this must hold on both backends.
+    let (tui_before, tui_after) = run_pair_isolation_script::<TuiDriver<DataTableApp>>(-20.0);
+    let (gtk_before, gtk_after) = run_pair_isolation_script::<GtkDriver<DataTableApp>>(-40.0);
+
+    for (backend, before, after) in [
+        ("TUI", &tui_before, &tui_after),
+        ("GTK", &gtk_before, &gtk_after),
+    ] {
+        assert!(
+            (before[0] - after[0]).abs() < 0.05,
+            "{backend}: column 0 (Name) must be byte-identical before/after a divider drag \
+             it doesn't border: before={before:?}, after={after:?}"
+        );
+        assert!(
+            (before[1] - after[1]).abs() < 0.05,
+            "{backend}: column 1 (Status) must be byte-identical before/after a divider drag \
+             it doesn't border: before={before:?}, after={after:?}"
+        );
+        assert!(
+            after[2] < before[2],
+            "{backend}: dragging the divider left should narrow the column to its left: \
+             before={before:?}, after={after:?}"
+        );
+    }
+}
+
+// ─── #521 defect 2: viewport-fill parity after resize ───────────────────────
+
+/// Drags several dividers in sequence (Name|Status, then Status|Age, then
+/// Age|Restarts) and returns whether the table still fills its viewport
+/// (no horizontal scrollbar triggered, and the resolved content flush
+/// with the visible column area) after all three.
+fn run_multi_drag_fill_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) -> bool {
+    let mut d = D::new_default();
+    d.drag_divider_at(0, dx);
+    d.drag_divider_at(1, -dx);
+    d.drag_divider_at(2, dx);
+    let layout = d.table_layout();
+    let visible_col_area = layout.viewport_width - layout.scrollbar_width;
+    layout.h_scrollbar_height == 0.0 && (layout.content_width - visible_col_area).abs() < 0.5
+}
+
+#[test]
+fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_gtk_agree() {
+    // After a sequence of divider drags, the table must still fill its
+    // viewport exactly — #521 defect 2's literal symptom was the
+    // rightmost column's right edge detaching from the frame's right
+    // edge once every `Flex` column had been overridden by a drag.
+    let tui_flush = run_multi_drag_fill_script::<TuiDriver<DataTableApp>>(10.0);
+    let gtk_flush = run_multi_drag_fill_script::<GtkDriver<DataTableApp>>(20.0);
+
+    assert!(
+        tui_flush,
+        "TUI: table must still fill its viewport after multiple divider drags"
+    );
+    assert!(
+        gtk_flush,
+        "GTK: table must still fill its viewport after multiple divider drags"
     );
 }

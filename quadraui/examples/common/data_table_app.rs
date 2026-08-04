@@ -478,6 +478,12 @@ impl AppLogic for DataTableApp {
                         Reaction::Redraw
                     }
                     DataTableHit::HeaderDivider { col } => {
+                        // Just remember which divider is being dragged;
+                        // `MouseMoved` below does the actual pair-resize
+                        // math against the *current* layout each move
+                        // (#521 defect 1) rather than snapshotting once
+                        // here, so a drag that never moves still leaves
+                        // `column_overrides` untouched.
                         self.resize_col = Some(col);
                         Reaction::Continue
                     }
@@ -509,22 +515,24 @@ impl AppLogic for DataTableApp {
                 }
                 if let Some(col) = self.resize_col {
                     let layout = self.table_layout(backend);
-                    if col < layout.columns.len() {
-                        let col_x = layout.columns[col].x;
-                        let new_w = (position.x - col_x).max(20.0);
-                        // Layer the resolved width on top of `columns`
-                        // via `column_overrides` — the real API surface
-                        // a consumer drags through (e.g. coord-tui's
-                        // Audit panel), rather than rewriting the
-                        // column's declared strategy directly. This is
-                        // what exercises `resolve_columns`'s override
-                        // path (#516 defect 3) instead of silently
-                        // sidestepping it.
-                        if self.column_overrides.len() != self.columns.len() {
-                            self.column_overrides = vec![None; self.columns.len()];
-                        }
-                        self.column_overrides[col] = Some(new_w);
-                    }
+                    // Pair-resize (#521 defect 1): a divider drag moves
+                    // width between `col` and `col + 1` only, combined
+                    // width held constant, every other column frozen at
+                    // its currently-resolved width. Layered on top of
+                    // `columns` via `column_overrides` — the real API
+                    // surface a consumer drags through (e.g. coord-tui's
+                    // Audit panel) — rather than rewriting the columns'
+                    // declared strategies directly.
+                    // A small absolute floor (not the old single-column
+                    // `.max(20.0)`): this table's own `Restarts` column
+                    // is declared `Fixed(10.0)` — the same literal value
+                    // in both cell (TUI) and pixel (GTK) units — so a
+                    // pair-conserving floor bigger than that would make
+                    // the divider immediately before it refuse to widen
+                    // at all, contradicting the #516 regression that the
+                    // same divider must resize in the drag's direction.
+                    self.column_overrides =
+                        layout.drag_divider(&self.column_overrides, col, position.x, 4.0);
                     return Reaction::Redraw;
                 }
                 let layout = self.table_layout(backend);

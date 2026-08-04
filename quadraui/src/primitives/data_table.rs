@@ -261,6 +261,66 @@ impl DataTableLayout {
             .iter()
             .position(|c| x >= c.x && x < c.x + c.width)
     }
+
+    /// Compute the `column_overrides` for a divider drag (#521 defect 1).
+    ///
+    /// `col` is the column to the LEFT of the dragged divider, as
+    /// returned by [`DataTableHit::HeaderDivider`]. `pointer_x` is the
+    /// drag pointer's current position, in this layout's coordinate
+    /// space. `min_width` clamps both halves of the dragged pair.
+    ///
+    /// A divider is the boundary between column `col` and `col + 1`, so
+    /// a drag must only ever move width between *those two* columns,
+    /// combined width held constant, and leave every other column's
+    /// resolved geometry untouched — including the dragged column's own
+    /// left edge, which is fixed by the columns before it.
+    ///
+    /// `overrides` is the `column_overrides` in effect *before* this
+    /// call (typically the in-progress drag's current state, or the
+    /// table's existing overrides at drag start). Any column that does
+    /// not already have an override is frozen here at its *currently
+    /// resolved* width before the pair is adjusted — this must happen
+    /// unconditionally, not just for `Flex` columns, because leaving an
+    /// unrelated `Flex` column unresolved would let pass 2's
+    /// redistribution reshuffle it the moment the pair's weights are
+    /// pulled out of `total_flex` (the exact "moving the left column
+    /// makes the problem disappear" mechanism reported in #521: whichever
+    /// columns are still unpinned divide up whatever space the pinned
+    /// ones didn't claim, so the split among *them* changes even though
+    /// the user never touched them). Freezing every column up front makes
+    /// the result independent of drag history: whatever the table's
+    /// current resolved widths are, that's what gets pinned, regardless
+    /// of which dividers produced them.
+    pub fn drag_divider(
+        &self,
+        overrides: &[Option<f32>],
+        col: usize,
+        pointer_x: f32,
+        min_width: f32,
+    ) -> Vec<Option<f32>> {
+        let mut next: Vec<Option<f32>> = if overrides.len() == self.columns.len() {
+            overrides.to_vec()
+        } else {
+            vec![None; self.columns.len()]
+        };
+        if col + 1 >= self.columns.len() {
+            return next;
+        }
+        for (i, rc) in self.columns.iter().enumerate() {
+            if next[i].is_none() {
+                next[i] = Some(rc.width);
+            }
+        }
+        let pair_total = self.columns[col].width + self.columns[col + 1].width;
+        let min_width = min_width.max(0.0);
+        let lo = min_width.min(pair_total);
+        let hi = (pair_total - min_width).max(lo);
+        let col_x = self.columns[col].x;
+        let new_left = (pointer_x - col_x).clamp(lo, hi);
+        next[col] = Some(new_left);
+        next[col + 1] = Some(pair_total - new_left);
+        next
+    }
 }
 
 impl DataTable {
@@ -417,14 +477,35 @@ where
 
     // Pass 3: compute x positions.
     let mut x = 0.0_f32;
-    widths
+    let mut resolved: Vec<ResolvedColumn> = widths
         .iter()
         .map(|&w| {
             let rc = ResolvedColumn { x, width: w };
             x += w;
             rc
         })
-        .collect()
+        .collect();
+
+    // Pass 4: fill any leftover space into the last column (#521 defect
+    // 2). Pass 2 is gated on `total_flex > 0.0`: once every `Flex`
+    // column has an active override, `total_flex` is `0` (pass 1's
+    // `continue` for overridden columns never contributes to it), so
+    // pass 2 is skipped entirely and whatever space `remaining` still
+    // held goes unclaimed — the resolved widths sum to less than
+    // `viewport_width` and the table visibly stops filling its area.
+    // One-directional (only ever *grows* the last column to reach
+    // `viewport_width`, never shrinks it): when columns legitimately
+    // exceed the viewport (e.g. `min_total_width`), `x + width` here is
+    // already `>= viewport_width` and this is a no-op, so h-scroll is
+    // untouched.
+    if let Some(last) = resolved.last_mut() {
+        let shortfall = viewport_width - (last.x + last.width);
+        if shortfall > 0.0 {
+            last.width += shortfall;
+        }
+    }
+
+    resolved
 }
 
 #[cfg(test)]
@@ -638,6 +719,187 @@ mod tests {
             "dragging the divider left (smaller override) must narrow the column: \
              baseline={baseline_w}, narrowed={}",
             narrow_layout.columns[1].width
+        );
+    }
+
+    // ── #521 defect 1: pair-resize (a divider drag moves only the two
+    //    columns it separates) ────────────────────────────────────────
+
+    /// Builds the same column shape the shipped sample app uses to
+    /// reproduce #521: 3 `Flex` columns (weights 3.0, 1.5, 0.5) then one
+    /// `Fixed(10.0)` — the divider dragged in these tests is the one
+    /// between the 3rd and 4th columns (`col: 2`), matching "Age" |
+    /// "Restarts" in the sample.
+    fn make_sample_shaped_table() -> DataTable {
+        let mut table = make_table(4, 0);
+        table.columns[0].width = ColumnWidth::Flex(3.0);
+        table.columns[1].width = ColumnWidth::Flex(1.5);
+        table.columns[2].width = ColumnWidth::Flex(0.5);
+        table.columns[3].width = ColumnWidth::Fixed(10.0);
+        table
+    }
+
+    #[test]
+    fn drag_divider_moves_only_the_two_columns_it_separates() {
+        let table = make_sample_shaped_table();
+        let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // Grab the divider between col 2 ("Age") and col 3 ("Restarts")
+        // and drag it right by 20 units.
+        let pointer_x = baseline.columns[2].x + baseline.columns[2].width + 20.0;
+        let overrides = baseline.drag_divider(&[], 2, pointer_x, 4.0);
+
+        let mut dragged = table.clone();
+        dragged.column_overrides = overrides;
+        let after = dragged.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // Columns 0 and 1 (Name, Status) are untouched by a divider that
+        // doesn't border them: byte-identical x *and* width.
+        assert_eq!(
+            baseline.columns[0], after.columns[0],
+            "column 0 must be untouched"
+        );
+        assert_eq!(
+            baseline.columns[1], after.columns[1],
+            "column 1 must be untouched"
+        );
+
+        // The dragged column's own left edge doesn't move — only the
+        // grabbed boundary (its right edge) does.
+        assert_eq!(
+            baseline.columns[2].x, after.columns[2].x,
+            "dragged column's left edge must not move"
+        );
+        assert!(
+            after.columns[2].width > baseline.columns[2].width,
+            "dragging the divider right must widen the column to its left"
+        );
+
+        // The pair's combined width is conserved — the drag redistributes
+        // width between col 2 and col 3, it doesn't change the total.
+        let baseline_pair = baseline.columns[2].width + baseline.columns[3].width;
+        let after_pair = after.columns[2].width + after.columns[3].width;
+        assert!(
+            (baseline_pair - after_pair).abs() < 0.01,
+            "pair's combined width must be conserved: before={baseline_pair}, after={after_pair}"
+        );
+    }
+
+    #[test]
+    fn drag_divider_result_is_independent_of_prior_drag_history() {
+        let table = make_sample_shaped_table();
+        let fresh = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // Scenario A: drag divider 2 (Age | Restarts) by +15 from a
+        // never-touched table.
+        let a_pointer = fresh.columns[2].x + fresh.columns[2].width + 15.0;
+        let a_overrides = fresh.drag_divider(&[], 2, a_pointer, 4.0);
+        let mut a_table = table.clone();
+        a_table.column_overrides = a_overrides;
+        let a_after = a_table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        let a_delta = a_after.columns[2].width - fresh.columns[2].width;
+
+        // Scenario B: first drag divider 0 (Name | Status) by some
+        // unrelated amount, *then* drag divider 2 by the same +15.
+        let b_pointer0 = fresh.columns[0].x + fresh.columns[0].width - 8.0;
+        let b_overrides0 = fresh.drag_divider(&[], 0, b_pointer0, 4.0);
+        let mut b_table0 = table.clone();
+        b_table0.column_overrides = b_overrides0;
+        let b_mid = b_table0.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let b_pointer2 = b_mid.columns[2].x + b_mid.columns[2].width + 15.0;
+        let b_overrides2 = b_mid.drag_divider(&b_table0.column_overrides, 2, b_pointer2, 4.0);
+        let mut b_table2 = table.clone();
+        b_table2.column_overrides = b_overrides2;
+        let b_after = b_table2.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        let b_delta = b_after.columns[2].width - b_mid.columns[2].width;
+
+        assert!(
+            (a_delta - b_delta).abs() < 0.01,
+            "the same +15 divider-2 drag must produce the same width delta \
+             regardless of whether divider 0 was dragged first: \
+             a_delta={a_delta}, b_delta={b_delta}"
+        );
+    }
+
+    #[test]
+    fn drag_divider_stops_at_minimum_without_displacing_other_columns() {
+        let table = make_sample_shaped_table();
+        let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // Drag divider 2 far left — an enormous negative pointer offset —
+        // trying to shrink col 2 to nothing and hand everything to col 3.
+        let overrides = baseline.drag_divider(&[], 2, -1000.0, 4.0);
+        let mut dragged = table.clone();
+        dragged.column_overrides = overrides;
+        let after = dragged.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        assert!(
+            (after.columns[2].width - 4.0).abs() < 0.01,
+            "col 2 should stop at its 4.0 minimum, got {}",
+            after.columns[2].width
+        );
+        // The freed space all goes to col 3 (the other half of the
+        // pair) — never to unrelated columns.
+        assert_eq!(baseline.columns[0], after.columns[0]);
+        assert_eq!(baseline.columns[1], after.columns[1]);
+        let pair_total = baseline.columns[2].width + baseline.columns[3].width;
+        assert!((after.columns[3].width - (pair_total - 4.0)).abs() < 0.01);
+    }
+
+    // ── #521 defect 2: a fully-overridden table must still fill its
+    //    viewport ──────────────────────────────────────────────────────
+
+    #[test]
+    fn overriding_every_flex_column_still_fills_the_viewport() {
+        let mut table = make_sample_shaped_table();
+        // Override all 3 Flex columns (0, 1, 2) — zeroing `total_flex`
+        // and, before the fix, skipping pass 2 entirely and stranding
+        // whatever space these overrides didn't claim.
+        table.column_overrides = vec![Some(20.0), Some(15.0), Some(8.0), None];
+        let layout = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let total_width: f32 = layout.columns.iter().map(|c| c.width).sum();
+        assert!(
+            (total_width - 100.0).abs() < 0.01,
+            "resolved widths must still sum to the viewport width, got {total_width}"
+        );
+        let last = layout.columns.last().unwrap();
+        assert!(
+            (last.x + last.width - 100.0).abs() < 0.01,
+            "the rightmost column's right edge must be flush with the viewport's right edge"
+        );
+    }
+
+    #[test]
+    fn fill_never_shrinks_content_that_legitimately_overflows_the_viewport() {
+        // All columns Fixed and their sum (150) exceeds the visible
+        // area (40) — the `min_total_width` h-scroll case (see
+        // `DataTable::layout`: when `min_total_width` exceeds the
+        // visible column area, columns are laid out at
+        // `min_total_width` and a horizontal scrollbar appears, rather
+        // than being squeezed to fit). The fill must be one-directional:
+        // it only ever grows the *last* column to reach the width it's
+        // laid out against, never shrinks it back down to the smaller
+        // visible area.
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::Fixed(50.0);
+        table.columns[1].width = ColumnWidth::Fixed(50.0);
+        table.columns[2].width = ColumnWidth::Fixed(50.0);
+        table.min_total_width = Some(150.0);
+        let layout = table.layout(40.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert!(
+            (layout.columns[2].width - 50.0).abs() < 0.01,
+            "fixed columns legitimately exceeding the viewport must not be squeezed by the \
+             fill: got {}",
+            layout.columns[2].width
+        );
+        assert!(
+            layout.content_width > layout.viewport_width,
+            "content legitimately exceeding the viewport must still be reported as overflowing \
+             (h-scroll), not squeezed to fit: content_width={}, viewport_width={}",
+            layout.content_width,
+            layout.viewport_width
         );
     }
 
