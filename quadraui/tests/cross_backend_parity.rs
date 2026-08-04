@@ -17,13 +17,17 @@
 //! `--features tui,gtk` (the CI `gtk` job builds/tests with both).
 #![cfg(all(feature = "tui", feature = "gtk"))]
 
-use quadraui::gtk::testing::GtkDriver;
-use quadraui::tui::testing::TuiDriver;
+use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriver};
+use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
 use quadraui::{AppLogic, NamedKey};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
 use pipeline_app::PipelineApp;
+
+#[path = "../examples/common/appshell_demo.rs"]
+mod appshell_demo;
+use appshell_demo::AppShellDemo;
 
 /// Backend-agnostic driver surface a shared parity test body needs.
 /// Implemented once per backend below — the two rows that genuinely
@@ -126,5 +130,58 @@ fn pipeline_parity_tui_and_gtk_agree_on_logical_state() {
         vec![false, true, true],
         "expected: no stage-3 mention before the click, a mention after \
          clicking Go, and exited after 'q'"
+    );
+}
+
+// ─── Shell-level parity (quadraui#518): a ShellApp, not just an AppLogic ───
+//
+// `pipeline_parity_*` above proves parity for the `AppLogic`-level harness
+// (#448/GD-3). But every *real* quadraui consumer (coord-tui included)
+// implements `ShellApp` and is driven by `{tui,gtk}::testing::driver_with_shell`,
+// not `AppLogic` directly — so this lifts the same claim to the shell level:
+// one `ShellApp` (`AppShellDemo`), one script, both `driver_with_shell`
+// entry points, same logical outcome. `ExampleDriver` is reused unchanged —
+// both `driver_with_shell` functions return a driver generic over
+// `impl AppLogic` (the `ShellAdapter` wrapping the `ShellApp`), which the
+// existing blanket `impl<A: AppLogic> ExampleDriver for {Tui,Gtk}Driver<A>`
+// already covers.
+
+/// Script: focus the activity bar, move the keyboard cursor down two items
+/// (explorer → search → git), activate the selection, then quit. Returns
+/// the observations a test wants to compare across backends: whether the
+/// sidebar-header text for the *destination* panel appears before the
+/// switch, after it, and whether 'q' exits.
+fn run_appshell_script<D: ExampleDriver>(d: &mut D) -> Vec<bool> {
+    let before = d.screen_has("SOURCE CONTROL");
+    d.press_named(NamedKey::Tab);
+    d.type_char('j');
+    d.type_char('j');
+    d.press_named(NamedKey::Enter);
+    let after_activate = d.screen_has("SOURCE CONTROL");
+    d.type_char('q');
+    vec![before, after_activate, d.exited()]
+}
+
+#[test]
+fn appshell_demo_parity_tui_and_gtk_agree_on_logical_state() {
+    // Same native-unit split as the `AppLogic`-level test: TUI cells vs
+    // GTK pixels for the identical logical shell chrome.
+    let mut tui = tui_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 100, 30);
+    let mut gtk = gtk_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 800, 480);
+
+    let tui_observations = run_appshell_script(&mut tui);
+    let gtk_observations = run_appshell_script(&mut gtk);
+
+    assert_eq!(
+        tui_observations, gtk_observations,
+        "TUI and GTK should reach the same logical state \
+         (mentions-SOURCE-CONTROL before activation, after activation, exited-on-q) \
+         for the identical AppShellDemo (ShellApp) event script"
+    );
+    assert_eq!(
+        tui_observations,
+        vec![false, true, true],
+        "expected: no Source Control mention before activating the cursor item, \
+         a mention after Tab+j+j+Enter switches to panel:git, and exited after 'q'"
     );
 }
