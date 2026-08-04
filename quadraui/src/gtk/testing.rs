@@ -49,10 +49,53 @@ use pangocairo::cairo::{Context, Format, ImageSurface};
 use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
+use crate::shell::{ShellApp, ShellConfig};
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 use super::backend::GtkBackend;
 use super::run::{dispatch_event, render_frame, EventOutcome};
+
+/// Build a [`GtkDriver`] that wraps `app` in the full
+/// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
+/// [`crate::gtk::shell_runner::run_with_shell`] does at runtime — but
+/// returning a testable driver instead of entering the live event loop.
+/// The GTK twin of [`crate::tui::testing::driver_with_shell`]; the two share
+/// the same [`crate::shell::ShellApp`] + [`ShellConfig`] input, differing
+/// only in the native units their respective drivers take (TUI cells vs
+/// GTK pixels, per [`GtkDriver::new`]).
+///
+/// Use this constructor in tests that need to verify the full
+/// `ShellApp → ShellAdapter → dispatch_event` integration path on the GTK
+/// backend — e.g. confirming that shell chrome (activity bar, sidebar
+/// panel) renders and that panel switches reach the real [`AppShell`]
+/// instance [`crate::shell_adapter::ShellAdapter`] paints, not a shadow
+/// copy.
+///
+/// [`AppShell`]: crate::compose::app_shell::AppShell
+///
+/// # Example
+///
+/// ```no_run
+/// # use quadraui::gtk::testing::driver_with_shell;
+/// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
+/// # struct MyApp;
+/// # impl ShellApp for MyApp {
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
+/// # }
+/// let config = ShellConfig::new("Demo", vec![]);
+/// let mut driver = driver_with_shell(MyApp, config, 800, 480);
+/// let _ = driver.pixel(0, 0);
+/// ```
+pub fn driver_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+    width: i32,
+    height: i32,
+) -> GtkDriver<impl AppLogic> {
+    let adapter = super::shell_runner::build_shell_adapter(app, config);
+    GtkDriver::new(adapter, width, height)
+}
 
 /// Drives an [`AppLogic`] impl headlessly against the GTK backend for
 /// tests. Construct with [`Self::new`] (runs `setup` + paints the first

@@ -12,8 +12,20 @@ use crate::compose::bottom_panel::BottomPanelController;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::ShellAdapter;
 
-/// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
-pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+/// Assemble the [`AppShell`] + [`ShellAdapter`] stack for a [`ShellApp`].
+///
+/// This is the single source of truth for shell construction — both the
+/// live runner ([`run_with_shell`]) and the headless test driver
+/// ([`crate::gtk::testing::driver_with_shell`]) call this so they cannot
+/// drift apart as [`ShellConfig`] grows. Mirrors
+/// [`crate::tui::shell_runner::build_shell_adapter`] line for line; GTK has
+/// no backend-specific wiring beyond what [`ShellAdapter`] already
+/// encapsulates (editor font, bottom-panel init), so the two are identical
+/// today.
+pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> ShellAdapter<A> {
     let editor_font = config.editor_font.clone();
     let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
@@ -43,6 +55,8 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
     // and create the controller. Initial height is set in setup() once we
     // have the backend's viewport + line_height.
     let bottom_panel = if let Some(bp_config) = config.bottom_panel {
+        // Enable the panel with a generous initial height; setup() will
+        // recalculate from height_fraction once the backend is ready.
         shell = shell
             .with_bottom_panel(10.0)
             .with_bottom_panel_limits(3.0, 40.0);
@@ -53,7 +67,11 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
 
     let active_panel_id = shell.active_panel_id().cloned();
 
-    let adapter = ShellAdapter::new(app, shell, active_panel_id, bottom_panel, editor_font);
+    ShellAdapter::new(app, shell, active_panel_id, bottom_panel, editor_font)
+}
 
+/// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
+pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
+    let adapter = build_shell_adapter(app, config);
     super::run::run(adapter);
 }
