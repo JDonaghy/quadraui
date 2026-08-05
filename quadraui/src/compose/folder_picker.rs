@@ -669,29 +669,13 @@ fn filter_dir_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
 /// at word boundaries (`/`, `\`, `_`, `-`, `.`). Both forward and backward
 /// slashes count so that Windows paths get the same boundary bonus as
 /// POSIX paths.
+///
+/// Thin wrapper over [`crate::text_util::fuzzy_score`] (#474) — the match
+/// positions it also returns aren't needed here (the folder picker doesn't
+/// highlight per-character matches), so this drops them and keeps the
+/// score-only signature the rest of this module already expects.
 fn dir_fuzzy_score(path: &str, query: &str) -> Option<i32> {
-    let pb = path.as_bytes();
-    let qb = query.as_bytes();
-    let mut qi = 0usize;
-    let mut score = 100i32;
-    let mut last_pi = 0usize;
-    for (pi, &byte) in pb.iter().enumerate() {
-        if qi < qb.len() && byte == qb[qi] {
-            if qi > 0 {
-                score -= (pi - last_pi - 1) as i32;
-            }
-            if pi == 0 || matches!(pb[pi - 1], b'/' | b'\\' | b'_' | b'-' | b'.') {
-                score += 5;
-            }
-            last_pi = pi;
-            qi += 1;
-        }
-    }
-    if qi == qb.len() {
-        Some(score)
-    } else {
-        None
-    }
+    crate::text_util::fuzzy_score(path, query).map(|(score, _positions)| score)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

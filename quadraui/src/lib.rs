@@ -87,6 +87,7 @@ pub mod diff;
 pub mod frame;
 pub mod primitives;
 pub mod shell;
+pub mod text_util;
 pub mod theme;
 pub mod types;
 
@@ -270,6 +271,7 @@ pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
     VisibleTreeRow,
 };
+pub use text_util::{fuzzy_score, word_wrap};
 pub use theme::Theme;
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,

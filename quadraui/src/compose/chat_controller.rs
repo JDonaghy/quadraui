@@ -146,11 +146,19 @@ struct ChatLayout {
 ///
 /// # Wrapping
 ///
-/// Transcript turns are **hard-wrapped at the column boundary**, not
-/// word-wrapped: a turn is broken at exactly `floor(width / char_width)`
-/// characters per row, so a long word can split mid-word (e.g. with a
-/// 10-column budget `"implementation"` becomes `"implementa"` + `"tion"`).
-/// Word-aware soft-wrap is deferred to a future pass.
+/// Plain-text turns (from [`push_turn`](Self::push_turn) /
+/// [`set_transcript`](Self::set_transcript)) are **word-wrapped** via
+/// [`crate::text_util::word_wrap`] (#474): rows break at whitespace where
+/// possible, and only a single word wider than the column budget falls
+/// back to a mid-word hard break (e.g. with a 10-column budget
+/// `"implementation"` becomes `"implementa"` + `"tion"`).
+///
+/// Styled turns (from
+/// [`push_turn_markdown`](Self::push_turn_markdown)) still wrap per-span
+/// at exactly `floor(width / char_width)` characters, ignoring word
+/// boundaries — [`wrap_spans`] hasn't been migrated to word-aware
+/// wrapping yet, since splitting a [`StyledSpan`] on whitespace without
+/// losing its style needs more care than the flat-text path.
 pub struct ChatController {
     id: WidgetId,
     // ── Per-frame data pushed by the app ──────────────────────────────
@@ -1133,31 +1141,16 @@ fn build_scrollbar(
     sb
 }
 
-/// Hard-wrap `text` at the column boundary: break every `col_budget`
-/// characters regardless of word boundaries.
+/// Word-aware soft-wrap of `text` to `col_budget` characters per row.
 ///
-/// This is a deliberate v1 simplification — words can split mid-word (a
-/// 10-column budget turns `"implementation"` into `"implementa"` + `"tion"`).
-/// Word-aware soft-wrap is deferred to a future pass.
+/// Thin wrapper over [`crate::text_util::word_wrap`] (#474) — this used to
+/// be a private hard char-break (splitting `"implementation"` into
+/// `"implementa"` + `"tion"` regardless of word boundaries) with "word-aware
+/// soft-wrap is deferred to a future pass" as a known v1 gap. That gap is
+/// now closed: only a single word wider than `col_budget` still hard-breaks
+/// (there's no other way to fit it), everything else wraps at whitespace.
 fn wrap_text(text: &str, col_budget: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    if col_budget == 0 {
-        return vec![text.to_string()];
-    }
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= col_budget {
-        return vec![text.to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut start = 0;
-    while start < chars.len() {
-        let end = (start + col_budget).min(chars.len());
-        lines.push(chars[start..end].iter().collect());
-        start = end;
-    }
-    lines
+    crate::text_util::word_wrap(text, col_budget)
 }
 
 /// Split a flat span list (where `\n`-only spans act as line delimiters)
