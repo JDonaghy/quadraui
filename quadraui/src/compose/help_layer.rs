@@ -512,11 +512,18 @@ fn match_byte_positions(haystack: &str, needle_lower: &str) -> Vec<usize> {
     positions
 }
 
-/// Case-insensitive substring match against **both** `label` and
+/// Case-insensitive subsequence fuzzy match against **both** `label` and
 /// `description` — the "searchable with descriptions" half of #431's
 /// acceptance bar. An empty `query` matches everything (preserving
 /// order), matching [`Palette`]'s "empty query shows everything"
 /// convention.
+///
+/// Uses [`crate::text_util::fuzzy_score`] (#474) rather than a plain
+/// substring check — a query like `"sv"` now matches a label like
+/// `"Save"` (s...v as a subsequence) even though `"sv"` never appears
+/// contiguously. Matching order among non-empty-query results is
+/// unchanged (original registration order, not re-ranked by score) —
+/// only *which* actions pass the filter changes.
 pub fn filter_help_actions<'a>(actions: &'a [HelpAction], query: &str) -> Vec<&'a HelpAction> {
     if query.is_empty() {
         return actions.iter().collect();
@@ -525,7 +532,8 @@ pub fn filter_help_actions<'a>(actions: &'a [HelpAction], query: &str) -> Vec<&'
     actions
         .iter()
         .filter(|a| {
-            a.label.to_lowercase().contains(&q) || a.description.to_lowercase().contains(&q)
+            let haystack = format!("{} {}", a.label, a.description).to_lowercase();
+            crate::text_util::fuzzy_score(&haystack, &q).is_some()
         })
         .collect()
 }
@@ -814,5 +822,19 @@ mod tests {
     fn filter_no_match_returns_empty() {
         let actions = vec![HelpAction::new("a", "Save", "write to disk")];
         assert!(filter_help_actions(&actions, "zzz").is_empty());
+    }
+
+    #[test]
+    fn filter_matches_non_contiguous_subsequence() {
+        // #474: filter_help_actions moved from substring to subsequence
+        // matching. "sv" never appears contiguously in "Save", but s...v
+        // is a subsequence of it.
+        let actions = vec![
+            HelpAction::new("a", "Save", "write current file to disk"),
+            HelpAction::new("b", "Quit", "exit the application"),
+        ];
+        let matched = filter_help_actions(&actions, "sv");
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].label, "Save");
     }
 }
