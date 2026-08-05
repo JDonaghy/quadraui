@@ -243,7 +243,10 @@ impl BoardModel {
     /// [`handle_key`] instead. This method is for apps (like `BoardApp`) that
     /// just want the state to update immediately.
     pub fn move_selection(&mut self, dir: MoveDir) {
-        let (cur_col, cur_card) = self.selected_position();
+        let (cur_col, cur_card) = match self.selected_position() {
+            Some((ci, ri)) => (Some(ci), Some(ri)),
+            None => (None, None),
+        };
         match dir {
             MoveDir::Down => {
                 if let Some(ci) = cur_col {
@@ -317,17 +320,17 @@ impl BoardModel {
             .position(|col| col.cards.iter().any(|c| &c.id == id))
     }
 
-    /// Return `(col_index, card_index)` of the currently-selected card.
-    fn selected_position(&self) -> (Option<usize>, Option<usize>) {
-        let Some(id) = self.selected_card_id.as_ref() else {
-            return (None, None);
-        };
+    /// Return `(col_index, card_index)` of the currently-selected card, or
+    /// `None` if no card is selected (or the selected id is no longer
+    /// present on the board).
+    pub fn selected_position(&self) -> Option<(usize, usize)> {
+        let id = self.selected_card_id.as_ref()?;
         for (ci, col) in self.columns.iter().enumerate() {
             if let Some(ri) = col.cards.iter().position(|c| &c.id == id) {
-                return (Some(ci), Some(ri));
+                return Some((ci, ri));
             }
         }
-        (None, None)
+        None
     }
 
     pub fn handle_key(&self, key: &str, _modifiers: Modifiers) -> Option<BoardAction> {
@@ -796,6 +799,43 @@ mod tests {
         let m = make_model();
         let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         assert_eq!(layout.hit_test(500.0, 500.0), BoardHit::Empty);
+    }
+
+    // ── Selection ────────────────────────────────────────────────────
+
+    #[test]
+    fn selected_position_returns_col_and_card_index() {
+        let m = make_model();
+        // "card:362" is columns[0].cards[0]
+        assert_eq!(m.selected_position(), Some((0, 0)));
+    }
+
+    #[test]
+    fn selected_position_second_card_in_column() {
+        let mut m = make_model();
+        m.selected_card_id = Some(WidgetId::new("card:300"));
+        assert_eq!(m.selected_position(), Some((0, 1)));
+    }
+
+    #[test]
+    fn selected_position_other_column() {
+        let mut m = make_model();
+        m.selected_card_id = Some(WidgetId::new("card:521"));
+        assert_eq!(m.selected_position(), Some((1, 0)));
+    }
+
+    #[test]
+    fn selected_position_none_when_nothing_selected() {
+        let mut m = make_model();
+        m.selected_card_id = None;
+        assert_eq!(m.selected_position(), None);
+    }
+
+    #[test]
+    fn selected_position_none_when_id_not_found() {
+        let mut m = make_model();
+        m.selected_card_id = Some(WidgetId::new("card:missing"));
+        assert_eq!(m.selected_position(), None);
     }
 
     // ── Keyboard handling ────────────────────────────────────────────
