@@ -345,7 +345,7 @@ mod tests {
 
     /// A label carrying a newline renders as two centred rows inside the box —
     /// no literal newline cell on row 1, second line on its own row. Regression
-    /// guard for the off-box "black gap" glitch (coord-tui #280).
+    /// guard for the off-box "black gap" glitch.
     #[test]
     fn two_line_label_renders_on_separate_rows() {
         let area = Rect::new(0, 0, 40, 8);
@@ -353,7 +353,7 @@ mod tests {
         let view = PipelineView {
             id: WidgetId::new("pipe"),
             stages: vec![PipelineStage {
-                label: "Review T12\n3:45".into(),
+                label: "Stage One\n3:45".into(),
                 status: StageStatus::Active,
                 action: None,
             }],
@@ -374,8 +374,8 @@ mod tests {
             .map(|x| cell_char(&buf, x, first_row + 1))
             .collect();
 
-        // Line 1 holds the stage + turn count; line 2 holds the elapsed time.
-        assert!(row1.contains("Review T12"), "row1 = {row1:?}");
+        // Line 1 holds the stage name; line 2 holds the elapsed time.
+        assert!(row1.contains("Stage One"), "row1 = {row1:?}");
         assert!(row2.contains("3:45"), "row2 = {row2:?}");
         // The elapsed segment must NOT bleed onto row 1 (the old glitch).
         assert!(!row1.contains("3:45"), "elapsed leaked onto row1: {row1:?}");

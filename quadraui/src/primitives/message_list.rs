@@ -1,14 +1,14 @@
 //! `MessageList` primitive: a scrollable list of styled lines used by
-//! chat-style panels (vimcode's AI assistant sidebar).
+//! chat-style panels (e.g. an AI assistant sidebar).
 //!
 //! Each row carries its own foreground colour and a small left-indent
 //! offset so role labels (`You:` / `AI:`) line up flush-left while
 //! content lines indent. The panel background is supplied by the
 //! caller — message bodies share one fill. Per-message bg highlighting
 //! could be added later as an optional `bg_override` field; the current
-//! shape mirrors what both vimcode rasterisers emit today.
+//! shape mirrors what both rasterisers emit today.
 //!
-//! Wrapping happens at the call site (vimcode's adapter splits message
+//! Wrapping happens at the call site (a host's adapter splits message
 //! content into wrap-width chunks before pushing rows) — the primitive
 //! is data-only.
 //!

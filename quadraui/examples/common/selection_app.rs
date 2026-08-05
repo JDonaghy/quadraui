@@ -3,7 +3,7 @@
 //! [`SelectionDemo`] implements [`ShellApp`] and proves that the selection
 //! pipeline — drag to select, Ctrl-A select-all, Ctrl-C copy — works
 //! identically when an app is driven by [`quadraui::tui::shell_runner::run_with_shell`]
-//! (the path used by coord-tui) as it does with the plain `tui::run` path.
+//! (the path used by shell-driven hosts) as it does with the plain `tui::run` path.
 //!
 //! The pipeline lives in `quadraui::tui::run::dispatch_event`; both runners
 //! converge on it. This demo is the acceptance smoke-test for issue #283.

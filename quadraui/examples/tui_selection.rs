@@ -1,8 +1,9 @@
 //! Mouse-drag text-selection + Ctrl-C copy — TUI example.
 //!
 //! Exercises the selection pipeline through `run_with_shell`, proving that
-//! the pipeline works for shell apps (coord-tui's entry point) just as it
-//! does for direct `tui::run` apps. This is the acceptance demo for issue #283.
+//! the pipeline works for shell apps (the entry point a host app would use)
+//! just as it does for direct `tui::run` apps. This is the acceptance demo
+//! for issue #283.
 //!
 //! ## Controls
 //!
