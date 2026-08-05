@@ -2,7 +2,7 @@
 //!
 //! Paints columns side by side using Cairo rounded rectangles. Each column
 //! has a header strip and a vertical stack of card boxes. Cards show the
-//! issue title, an inline badge icon row, and an optional `decision_hint`
+//! issue title, an inline badge icon row, and an optional `BoardCard::hint`
 //! callout strip.
 //!
 //! ## Layout constants
@@ -159,14 +159,13 @@ pub fn draw_board(
             // ── Badge row ────────────────────────────────────────────────
             let badge_y = by + 26.0;
             let mut badge_x = bx + CARD_H_PAD;
-            for (stage, status) in &card.stage_badges {
-                let icon = badge_icon(*status);
-                let letter = stage.short_label();
-                let badge_str = format!("{}{} ", icon, letter);
+            for badge in &card.badges {
+                let icon = badge_icon(badge.status);
+                let badge_str = format!("{}{} ", icon, badge.label);
                 pango_layout.set_text(&badge_str);
                 set_pango_size(pango_layout, BADGE_FONT_SIZE);
                 set_pango_width(pango_layout, -1.0);
-                let col = badge_fg_color(*status, theme);
+                let col = badge_fg_color(badge.status, theme);
                 set_source(cr, col);
                 cr.move_to(badge_x, badge_y);
                 pcfn::show_layout(cr, pango_layout);
@@ -177,19 +176,19 @@ pub fn draw_board(
                 }
             }
 
-            // ── Decision hint ────────────────────────────────────────────
-            if let Some(hint) = &card.decision_hint {
+            // ── Hint ─────────────────────────────────────────────────────
+            if let Some(hint) = &card.hint {
                 let hint_y = by + bh - 18.0;
                 if hint_y > badge_y + 10.0 {
                     // Background strip.
-                    set_source(cr, theme.decision_hint_bg);
+                    set_source(cr, theme.card_hint_bg);
                     cr.rectangle(bx + 2.0, hint_y - 2.0, bw - 4.0, 14.0);
                     let _ = cr.fill();
                     // Text.
                     pango_layout.set_text(hint);
                     set_pango_size(pango_layout, HINT_FONT_SIZE);
                     set_pango_width(pango_layout, (bw - CARD_H_PAD * 2.0) as f32);
-                    set_source(cr, theme.decision_hint_fg);
+                    set_source(cr, theme.card_hint_fg);
                     cr.move_to(bx + CARD_H_PAD, hint_y);
                     pcfn::show_layout(cr, pango_layout);
                 }
@@ -205,7 +204,7 @@ fn badge_icon(status: BadgeStatus) -> char {
     match status {
         BadgeStatus::Passed => '✓',
         BadgeStatus::Running => '●',
-        BadgeStatus::RequestChanges => '↩',
+        BadgeStatus::Warning => '↩',
         BadgeStatus::Blocked => '✗',
         BadgeStatus::Pending => '·',
     }
@@ -216,7 +215,7 @@ fn badge_fg_color(status: BadgeStatus, theme: &Theme) -> Color {
     match status {
         BadgeStatus::Passed => theme.badge_passed,
         BadgeStatus::Running => theme.badge_running,
-        BadgeStatus::RequestChanges => theme.badge_request_changes,
+        BadgeStatus::Warning => theme.badge_warning,
         BadgeStatus::Blocked => theme.badge_blocked,
         BadgeStatus::Pending => theme.muted_fg,
     }

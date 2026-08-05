@@ -1,6 +1,8 @@
 //! `Board` primitive: a kanban/pipeline widget that renders columns of cards
-//! with stage badges, supports keyboard + mouse navigation, and is **pure
-//! render + input** — no data fetching, no business logic.
+//! with inline status badges, supports keyboard + mouse navigation, and is
+//! **pure render + input** — no data fetching, no business logic. The host
+//! defines its own badge vocabulary (labels, order, meaning); the primitive
+//! only knows how to lay them out and colour them by [`BadgeStatus`].
 //!
 //! Data-in (`BoardModel`), actions-out (`BoardAction`).
 //!
@@ -26,9 +28,11 @@
 //!
 //! ## Portability
 //!
-//! Part of the `Backend` trait: every backend implements `draw_board`.
-//! Apps write `backend.draw_board(rect, &model)` once and all backends
-//! rasterise correctly.
+//! Part of the `Backend` trait: `draw_board` has a default (no-op paint)
+//! impl so every backend satisfies the trait, and backends override it
+//! once they have a real rasteriser. Apps write
+//! `backend.draw_board(rect, &model)` once and pick up each backend's
+//! rasteriser as it lands.
 
 use crate::event::{Point, Rect};
 use crate::types::{Modifiers, WidgetId};
@@ -41,42 +45,11 @@ pub type CardId = WidgetId;
 
 // ── Badge model ───────────────────────────────────────────────────────────────
 
-/// A pipeline stage tracked per card.
-///
-/// The canonical order (left-to-right in the badge row) is
-/// `Plan → Work → Test → Review → Merge`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Stage {
-    /// Planning / refinement.
-    Plan,
-    /// Active implementation.
-    Work,
-    /// Automated test run.
-    Test,
-    /// Human code review.
-    Review,
-    /// Merge to target branch.
-    Merge,
-}
-
-impl Stage {
-    /// Short display label used in the badge row (1 char).
-    pub fn short_label(self) -> char {
-        match self {
-            Stage::Plan => 'P',
-            Stage::Work => 'W',
-            Stage::Test => 'T',
-            Stage::Review => 'R',
-            Stage::Merge => 'M',
-        }
-    }
-}
-
-/// Status of a single pipeline badge on a card.
+/// Status of a single inline badge on a card.
 ///
 /// Distinct from `PipelineView::StageStatus` — the board variant adds
-/// `RequestChanges` and `Blocked` which are not meaningful in a CI
-/// pipeline context.
+/// `Warning` and `Blocked`, which don't map cleanly onto a CI pipeline's
+/// pass/fail/skip vocabulary but are common in review/approval workflows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BadgeStatus {
     /// Not yet started — rendered dim (·).
@@ -85,10 +58,26 @@ pub enum BadgeStatus {
     Running,
     /// Completed successfully — rendered green (✓).
     Passed,
-    /// Reviewer has requested changes — rendered with warning tint (↩).
-    RequestChanges,
+    /// Needs attention before it can proceed — rendered with warning tint (↩).
+    Warning,
     /// Blocked on an upstream condition — rendered error colour (✗).
     Blocked,
+}
+
+/// A single inline badge on a card (e.g. one step of a host-defined
+/// workflow).
+///
+/// The board primitive has no notion of what a badge *means* — the host
+/// supplies both the short display `label` (typically one character,
+/// e.g. `"P"`) and the `status` driving its icon + colour. Order and
+/// vocabulary are entirely host-defined; render as many or as few
+/// badges per card as the host's workflow needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardBadge {
+    /// Short display label rendered next to the status icon.
+    pub label: String,
+    /// Status driving the badge's icon + colour.
+    pub status: BadgeStatus,
 }
 
 // ── Data model ────────────────────────────────────────────────────────────────
@@ -104,21 +93,15 @@ pub struct BoardCard {
     /// renders them before the title, separated by a space.
     #[serde(default)]
     pub labels: Vec<String>,
-    /// Inline badge row — one entry per pipeline stage. Rendered as a
-    /// compact icon row: `✓P ●W ·T ·R ·M`. Informational-only in v1
-    /// (no per-stage hit target).
+    /// Inline badge row — one entry per host-defined workflow step.
+    /// Rendered as a compact icon row: `✓P ●W ·T`. Informational-only
+    /// in v1 (no per-badge hit target).
     #[serde(default)]
-    pub stage_badges: Vec<(Stage, BadgeStatus)>,
-    /// Optional assignee handle shown at the trailing edge of the card.
+    pub badges: Vec<CardBadge>,
+    /// One-line callout rendered at the bottom of the card (host-defined
+    /// content, e.g. a note or blocking reason). `None` = omitted.
     #[serde(default)]
-    pub assignee: Option<String>,
-    /// Machine / runner name displayed below the badge row.
-    #[serde(default)]
-    pub machine: Option<String>,
-    /// One-line decision callout rendered at the bottom of the card
-    /// (e.g. `"decision: use approach B"`). `None` = omitted.
-    #[serde(default)]
-    pub decision_hint: Option<String>,
+    pub hint: Option<String>,
 }
 
 /// A single kanban column.
@@ -159,14 +142,6 @@ pub struct BoardModel {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-/// A verdict on a test result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TestVerdict {
-    Pass,
-    Skip,
-    Fail,
-}
-
 /// Semantic direction for keyboard navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MoveDir {
@@ -196,21 +171,8 @@ pub enum BoardAction {
     JumpToTop,
     /// `G` — host should scroll the focused column to the bottom.
     JumpToBottom,
-    /// Refinement action on a card (`r` key).
-    Refine(CardId),
-    /// Dispatch / pipeline action on a card (`P` key).
-    Dispatch(CardId),
-    /// Record a test verdict on a card (`F` key for fail, `S` for skip,
-    /// `p`/`P` for pass depending on consumer keymap).
-    RecordTest(CardId, TestVerdict),
-    /// Start review on a card.
-    StartReview(CardId),
     /// Open the review for a card.
     OpenReview(CardId),
-    /// Merge action on a card.
-    Merge(CardId),
-    /// Drop a card back to the backlog.
-    DropToBacklog(CardId),
 }
 
 // ── Keyboard handling ─────────────────────────────────────────────────────────
@@ -221,7 +183,7 @@ impl BoardModel {
     /// Returns a [`BoardAction`] if the key is consumed, `None` if the
     /// caller should handle it.
     ///
-    /// ### Keybindings (v1 hardcoded, coord-tui–compatible)
+    /// ### Keybindings (v1 hardcoded, generic navigation only)
     ///
     /// | Key | Action |
     /// |-----|--------|
@@ -232,10 +194,11 @@ impl BoardModel {
     /// | `Enter` | Open issue |
     /// | `g` | Jump to top of focused column |
     /// | `G` | Jump to bottom of focused column |
-    /// | `r` | Refine selected card |
-    /// | `d` / `P` | Dispatch selected card |
-    /// | `m` | Merge selected card |
-    /// | `b` | Drop selected card to backlog |
+    ///
+    /// Hosts that need workflow-specific verbs (e.g. merge, dispatch,
+    /// review) should handle those keys themselves before or after calling
+    /// this method — it only ever consumes the generic navigation keys
+    /// above.
     /// Move the selection in the given direction, updating `selected_card_id`
     /// and `col_scroll_offset` as needed.
     ///
@@ -343,10 +306,6 @@ impl BoardModel {
             "Enter" => selected.map(|id| BoardAction::OpenIssue(id.clone())),
             "g" => Some(BoardAction::JumpToTop),
             "G" => Some(BoardAction::JumpToBottom),
-            "r" => selected.map(|id| BoardAction::Refine(id.clone())),
-            "d" | "P" => selected.map(|id| BoardAction::Dispatch(id.clone())),
-            "m" => selected.map(|id| BoardAction::Merge(id.clone())),
-            "b" => selected.map(|id| BoardAction::DropToBacklog(id.clone())),
             _ => None,
         }
     }
@@ -597,16 +556,29 @@ mod tests {
             id: WidgetId::new(id),
             title: title.to_string(),
             labels: vec![],
-            stage_badges: vec![
-                (Stage::Plan, BadgeStatus::Passed),
-                (Stage::Work, BadgeStatus::Running),
-                (Stage::Test, BadgeStatus::Pending),
-                (Stage::Review, BadgeStatus::Pending),
-                (Stage::Merge, BadgeStatus::Pending),
+            badges: vec![
+                CardBadge {
+                    label: "P".into(),
+                    status: BadgeStatus::Passed,
+                },
+                CardBadge {
+                    label: "W".into(),
+                    status: BadgeStatus::Running,
+                },
+                CardBadge {
+                    label: "T".into(),
+                    status: BadgeStatus::Pending,
+                },
+                CardBadge {
+                    label: "R".into(),
+                    status: BadgeStatus::Pending,
+                },
+                CardBadge {
+                    label: "M".into(),
+                    status: BadgeStatus::Pending,
+                },
             ],
-            assignee: None,
-            machine: None,
-            decision_hint: None,
+            hint: None,
         }
     }
 
@@ -655,7 +627,46 @@ mod tests {
         assert_eq!(m.columns[0].cards.len(), 2);
         assert_eq!(m.columns[0].cards[0].id.as_str(), "card:362");
         // 3 cards × 5 badges each = 15
-        assert_eq!(m.stage_badges_count(), 15);
+        assert_eq!(m.badges_count(), 15);
+    }
+
+    /// Badge vocabulary is entirely host-defined — the primitive has no
+    /// fixed notion of a "stage" or pipeline order (#476: the framework
+    /// previously hardcoded one consumer's `Plan/Work/Test/Review/Merge`
+    /// workflow via a `Stage` enum). Any label string and any order is
+    /// valid; this test uses a vocabulary unrelated to that workflow to
+    /// prove there's no hidden coupling.
+    #[test]
+    fn badge_vocabulary_is_host_defined() {
+        let card = BoardCard {
+            id: WidgetId::new("card:1"),
+            title: "Bake bread".to_string(),
+            labels: vec![],
+            badges: vec![
+                CardBadge {
+                    label: "Mix".to_string(),
+                    status: BadgeStatus::Passed,
+                },
+                CardBadge {
+                    label: "Proof".to_string(),
+                    status: BadgeStatus::Running,
+                },
+                CardBadge {
+                    label: "Bake".to_string(),
+                    status: BadgeStatus::Blocked,
+                },
+            ],
+            hint: Some("oven is out of order".to_string()),
+        };
+        assert_eq!(card.badges.len(), 3);
+        assert_eq!(card.badges[0].label, "Mix");
+        assert_eq!(card.badges[2].status, BadgeStatus::Blocked);
+        assert_eq!(card.hint.as_deref(), Some("oven is out of order"));
+
+        // Round-trips through serde like any other card.
+        let json = serde_json::to_string(&card).unwrap();
+        let back: BoardCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(card, back);
     }
 
     // ── Layout ───────────────────────────────────────────────────────
@@ -888,6 +899,23 @@ mod tests {
         assert_eq!(m.handle_key("Escape", Modifiers::default()), None);
     }
 
+    /// #476: the v1 hardcoded keymap used to bind `r`/`d`/`P`/`m`/`b` to
+    /// coord-tui's workflow verbs (refine/dispatch/merge/drop-to-backlog).
+    /// Those verbs are gone from `BoardAction`, so `handle_key` must leave
+    /// these keys unconsumed — hosts that want them are free to bind their
+    /// own meaning without fighting the primitive's default keymap.
+    #[test]
+    fn handle_key_no_longer_consumes_former_workflow_verb_keys() {
+        let m = make_model();
+        for key in ["r", "d", "P", "m", "b"] {
+            assert_eq!(
+                m.handle_key(key, Modifiers::default()),
+                None,
+                "key {key:?} should not be consumed by the generic board keymap"
+            );
+        }
+    }
+
     // ── Serde ────────────────────────────────────────────────────────
 
     #[test]
@@ -903,7 +931,7 @@ mod tests {
         let actions = vec![
             BoardAction::SelectCard(WidgetId::new("card:1")),
             BoardAction::MoveSelection(MoveDir::Down),
-            BoardAction::RecordTest(WidgetId::new("card:2"), TestVerdict::Pass),
+            BoardAction::OpenReview(WidgetId::new("card:2")),
             BoardAction::ContextMenu(WidgetId::new("card:3"), Point { x: 10.0, y: 20.0 }),
         ];
         for a in &actions {
@@ -919,11 +947,11 @@ mod tests {
 impl BoardModel {
     /// Total badge count across all cards (useful for tests / assertions).
     #[cfg(test)]
-    fn stage_badges_count(&self) -> usize {
+    fn badges_count(&self) -> usize {
         self.columns
             .iter()
             .flat_map(|c| c.cards.iter())
-            .map(|card| card.stage_badges.len())
+            .map(|card| card.badges.len())
             .sum()
     }
 }
