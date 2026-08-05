@@ -301,11 +301,11 @@ pub use compose::{
     BottomPanelTab, ChatController, ChatControllerEvent, ChatRole, ChatTurn,
     DualModePaletteController, DualModePaletteEvent, FocusGroup, FocusRing, FolderPickerController,
     FolderPickerEvent, FormController, FormControllerEvent, GroupLayout, HelpAction, HelpNote,
-    HelpOverlayController, HelpOverlayEvent, HelpRegistry, MenuDef, MenuEvent, MenuSystem,
-    NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition,
-    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction, StatusBarInteraction,
-    TabGroupController, TabGroupEvent, TabGroupLayout, ToolbarHoverTracker, TreeController,
-    TreeControllerEvent, ViewHelp, PALETTE_CHROME_ROWS,
+    HelpOverlayController, HelpOverlayEvent, HelpRegistry, KeyContext, KeyMap, MenuDef, MenuEvent,
+    MenuSystem, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind,
+    ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction,
+    StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToolbarHoverTracker,
+    TreeController, TreeControllerEvent, ViewHelp, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
