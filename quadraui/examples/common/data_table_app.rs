@@ -24,7 +24,7 @@ pub struct DataTableApp {
     resize_col: Option<usize>,
     /// Per-column width overrides from divider drags, layered on top of
     /// `columns`' declared strategy (#516 defect 3) — mirrors how a real
-    /// consumer (e.g. coord-tui's Audit panel) drives `DataTable`. Kept
+    /// consumer app drives `DataTable`. Kept
     /// separate from `columns[i].width` deliberately: overriding a
     /// column must never rewrite its original declared strategy, only
     /// lay a resolved width on top of it — that distinction is exactly
@@ -520,9 +520,8 @@ impl AppLogic for DataTableApp {
                     // width held constant, every other column frozen at
                     // its currently-resolved width. Layered on top of
                     // `columns` via `column_overrides` — the real API
-                    // surface a consumer drags through (e.g. coord-tui's
-                    // Audit panel) — rather than rewriting the columns'
-                    // declared strategies directly.
+                    // surface a consumer drags through — rather than
+                    // rewriting the columns' declared strategies directly.
                     // A small absolute floor (not the old single-column
                     // `.max(20.0)`): this table's own `Restarts` column
                     // is declared `Fixed(10.0)` — the same literal value

@@ -18,7 +18,7 @@
 //! the real `AppShell` instance quadraui's internal `ShellAdapter` actually
 //! renders, so a consumer-driven binding can call
 //! `ctx.shell_mut().toggle_sidebar()` directly instead of tracking a shadow
-//! `AppShell` that can drift from what's on screen (the vimcode `Ctrl+B`
+//! `AppShell` that can drift from what's on screen (the class of `Ctrl+B`
 //! bug this issue fixes).
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
@@ -31,7 +31,7 @@ pub struct AppShellDemo {
     last_event: String,
     /// Set by the `p` key binding below; polled once via
     /// `take_requested_panel` to exercise the programmatic panel-switch
-    /// hook (quadraui consumer coord-tui #1029 bug A) — proves an app can
+    /// hook (a bug class seen in consumer apps) — proves an app can
     /// jump straight to a panel (no ActivityBar click) and still get the
     /// ActivityBar highlight + sidebar header updated to match.
     pending_panel: Option<WidgetId>,
@@ -165,7 +165,7 @@ impl ShellApp for AppShellDemo {
             // `AppShell` `ShellAdapter` renders, so this app can call
             // `toggle_sidebar()` on it directly — no shadow `AppShell`, no
             // drift between what this app thinks is visible and what's
-            // actually painted (the vimcode bug #454 fixes).
+            // actually painted (the class of bug #454 fixes).
             UiEvent::KeyPressed {
                 key: Key::Char('b'),
                 modifiers: Modifiers { ctrl: true, .. },

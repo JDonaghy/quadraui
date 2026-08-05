@@ -441,7 +441,7 @@ pub trait ShellApp {
     /// sync with a raw internal view-state write: the ActivityBar highlight
     /// and panel header would silently keep pointing at the
     /// previously-active panel until the user clicked the ActivityBar
-    /// themselves (quadraui consumer coord-tui #1029 bug A).
+    /// themselves (a bug class seen in consumer apps).
     ///
     /// Default: never requests a switch — existing consumers are
     /// unaffected. `&mut self` (not `&self`) so implementors can `.take()`

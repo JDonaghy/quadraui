@@ -5,8 +5,7 @@
 //!
 //! ## Why this isn't `StatusBar`
 //!
-//! Two downstream apps (vimcode debug toolbar, coord-tui sidebar action bar)
-//! historically faked toolbars by stuffing clickable verbs into
+//! Downstream apps historically faked toolbars by stuffing clickable verbs into
 //! [`crate::StatusBar`] segments with `action_id` set. That works on TUI
 //! (it's just a row of cells) but breaks the abstraction the moment a
 //! backend wants to render the strip natively:

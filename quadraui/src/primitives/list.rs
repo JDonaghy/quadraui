@@ -44,7 +44,7 @@ pub struct ListView {
     pub bordered: bool,
     /// Horizontal scroll offset in chars (number of content columns to skip
     /// from the left before rendering). Default `0` = no scroll.
-    /// The caller (e.g. coord-tui) increments / decrements this in response
+    /// The caller increments / decrements this in response
     /// to Left / Right key events.
     #[serde(default)]
     pub h_scroll: usize,

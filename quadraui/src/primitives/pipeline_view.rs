@@ -47,7 +47,7 @@ pub enum StageStatus {
     /// Intentionally bypassed — rendered with strikethrough / grey dash (─).
     Skipped,
     /// Previously completed (or failed), but an upstream stage has since been
-    /// re-dispatched — the result is against an older revision and should not
+    /// re-run — the result is against an older revision and should not
     /// be trusted. Distinct from Pending ("never run") and Done ("trustworthy").
     /// Rendered dim with an `↻` icon to suggest re-running.
     Stale,

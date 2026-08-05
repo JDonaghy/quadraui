@@ -74,7 +74,7 @@ use crate::types::{Color, Modifiers, WidgetId};
 /// A single captured terminal cell in the scrollback ring buffer.
 ///
 /// Uses `vt100::Color` directly to defer RGB resolution until paint time,
-/// matching the approach in vimcode's `HistCell`.
+/// matching the approach used by downstream terminal-history cell types.
 #[derive(Clone, Copy)]
 struct HistCell {
     ch: char,
@@ -125,8 +125,8 @@ fn normalize_selection(sel: &TerminalSelection) -> (u16, u16, u16, u16) {
 
 /// Map a `vt100::Color` to an RGB triple.
 ///
-/// `Default` resolves to dark-theme terminal defaults matching the
-/// vimcode OneDark baseline (`#e5e5e5` fg, `#1e1e1e` bg). Callers
+/// `Default` resolves to dark-theme terminal defaults matching a
+/// common OneDark-style baseline (`#e5e5e5` fg, `#1e1e1e` bg). Callers
 /// that want theme-aware colours should post-process cells after
 /// calling [`TerminalSession::to_terminal`].
 fn map_vt100_color(color: vt100::Color, is_bg: bool) -> (u8, u8, u8) {
@@ -495,7 +495,7 @@ impl TerminalSession {
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
         // Present the embedded terminal as a clean, top-level terminal. When
-        // the host app (e.g. coord-tui) is itself launched from inside tmux,
+        // the host app is itself launched from inside tmux,
         // the spawned shell would otherwise inherit $TMUX/$TMUX_PANE and any
         // tmux command run here would be treated as *nested* in the host's
         // outer session — e.g. `tmux attach-session` refuses ("sessions should
@@ -591,7 +591,7 @@ impl TerminalSession {
     /// Send a UTF-8 string as input to the shell.
     ///
     /// Convenience wrapper around [`write_input`](Self::write_input).
-    /// The coordinator uses this to inject prompts programmatically.
+    /// A supervising process uses this to inject prompts programmatically.
     pub fn send_str(&mut self, s: &str) {
         self.write_input(s.as_bytes());
     }
@@ -726,7 +726,7 @@ impl TerminalSession {
     ///    pollute the shell's scrollback (quadraui #335).
     /// 2. **Route the wheel** — when the child is on the alt-screen, wheel
     ///    events forward to the PTY rather than scrolling our local
-    ///    scrollback (quadraui #334, coord #446). See
+    ///    scrollback (quadraui #334). See
     ///    [`should_forward_wheel`](Self::should_forward_wheel).
     ///
     /// Backed by vt100's `Screen::alternate_screen()`.
@@ -760,7 +760,7 @@ impl TerminalSession {
     /// `less` usable: even when those programs don't request mouse reporting,
     /// scrolling our local (now-empty, alt-screen-shadowed) scrollback would
     /// be jarring — forwarding the wheel lets the inner app paginate
-    /// (quadraui #334 / coord #446).
+    /// (quadraui #334).
     pub fn should_forward_wheel(&self) -> bool {
         self.mouse_reporting_enabled() || self.on_alt_screen()
     }
@@ -852,7 +852,7 @@ impl TerminalSession {
     /// [`screen_text`](Self::screen_text) into a single string, separated
     /// by a newline when both are non-empty.
     ///
-    /// Useful for coordinator scraping: scan `full_text()` for a prompt or
+    /// Useful for programmatic scraping: scan `full_text()` for a prompt or
     /// completion marker after each `poll()` cycle.
     pub fn full_text(&self) -> String {
         let hist = self.scrollback_text();
@@ -1222,8 +1222,8 @@ impl TerminalSession {
         let hist_len = self.history.len();
 
         // Selection coordinates are always in display-row space (0 = visible
-        // top), matching the coordinate system used by coord-tui's
-        // `terminal_pixel_to_cell`.  The gate on `scroll_offset == 0` that
+        // top), matching the coordinate system expected by a host's
+        // pixel-to-cell mapping helper.  The gate on `scroll_offset == 0` that
         // previously existed here was overly conservative: the `display_r`
         // comparison below is correct at any offset.
         let sel_bounds = self.selection.as_ref().map(normalize_selection);
@@ -2301,8 +2301,7 @@ mod tests {
 
     /// `bracketed_paste_enabled()` reflects the child's DEC private mode
     /// 2004 (`ESC[?2004h` / `ESC[?2004l`) — the input-readiness signal a
-    /// programmatic driver waits on before injecting input (quadraui #343,
-    /// consumed by coord-tui #446).
+    /// programmatic driver waits on before injecting input (quadraui #343).
     #[test]
     #[cfg(unix)]
     fn bracketed_paste_enabled_tracks_mode_2004() {
@@ -2629,8 +2628,8 @@ mod tests {
     }
 
     /// Alt-screen entry alone (without explicit mouse reporting) makes the
-    /// engine forward wheel events to the child — the routing rule from
-    /// coord #446 that fixes embedded `claude` / `tmux` / `less`.
+    /// engine forward wheel events to the child — the routing rule that
+    /// fixes embedded `claude` / `tmux` / `less`.
     #[test]
     #[cfg(unix)]
     fn wheel_forwards_on_alt_screen_even_without_mouse_reporting() {
@@ -2676,7 +2675,7 @@ mod tests {
 
     /// Scrollback must NOT grow while the child is on the alternate screen,
     /// and MUST resume growing after the child returns to the primary screen
-    /// (quadraui #335 + coord #446 — without this, `claude` / `tmux` / `vim`
+    /// (quadraui #335 — without this, `claude` / `tmux` / `vim`
     /// frames leak into the shell's scrollback as cold-frame garbage).
     #[test]
     #[cfg(unix)]

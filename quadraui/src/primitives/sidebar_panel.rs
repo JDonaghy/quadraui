@@ -15,9 +15,9 @@
 //! The compose layer already exports a `SidebarEvent` enum tied to
 //! the multi-section [`crate::SidebarSystem`]. Adding a `Sidebar`
 //! primitive with its own `SidebarEvent` would collide at the lib
-//! re-export boundary. `SidebarPanel` reads correctly at the use
-//! sites in claude-coordinator + vimcode (each panel IS a sidebar
-//! panel) and keeps the names disjoint.
+//! re-export boundary. `SidebarPanel` reads correctly at consumer
+//! use sites (each panel IS a sidebar panel) and keeps the names
+//! disjoint.
 //!
 //! ## Shape
 //!
@@ -25,8 +25,8 @@
 //!   - `None`: no slot reserved. Content occupies the full rect.
 //!   - `Some(bar)`: header slot reserved at `toolbar_height`. Reserved
 //!     *even when `bar.buttons.is_empty()`*, so content below doesn't
-//!     shift as toolbar items come and go (the actual bug coord-tui
-//!     hit when toolbar appearance was state-dependent).
+//!     shift as toolbar items come and go (a bug a consumer app hit
+//!     when toolbar appearance was state-dependent).
 //! - `toolbar_height`: optional explicit height in native units. When
 //!   `None`, backends pick an idiomatic default (`1.0` cells TUI,
 //!   `line_height` GTK / macOS).
@@ -205,7 +205,7 @@ impl SidebarPanel {
             Some(bar) => {
                 // Reserve the slot even when `bar.buttons.is_empty()`
                 // so content doesn't shift as toolbar items come and
-                // go (the bug coord-tui hit twice).
+                // go (a bug a consumer app hit twice).
                 let slot_height = toolbar_height.min(bounds.height).max(0.0);
                 let toolbar_bounds = Rect::new(bounds.x, bounds.y, bounds.width, slot_height);
                 let content_y = bounds.y + slot_height;

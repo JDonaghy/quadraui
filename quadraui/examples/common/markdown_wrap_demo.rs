@@ -1,11 +1,11 @@
 //! Demo for [`render_markdown_to_styled_wrapped`]: word-wrapped markdown rows
 //! displayed in a [`ListView`].
 //!
-//! This is the canonical consumer pattern for coord-tui's issue-body panels:
-//! call [`render_markdown_to_styled_wrapped`] with the current content width,
-//! convert each output row to a [`ListItem`], and hand the list to the
-//! backend. Long paragraphs reflow to the viewport; code blocks are
-//! intentionally never wrapped.
+//! This is the canonical consumer pattern for a host's scrollable
+//! markdown-body panels: call [`render_markdown_to_styled_wrapped`] with
+//! the current content width, convert each output row to a [`ListItem`],
+//! and hand the list to the backend. Long paragraphs reflow to the
+//! viewport; code blocks are intentionally never wrapped.
 //!
 //! Keys:
 //! - `j` / `↓`  — scroll down
