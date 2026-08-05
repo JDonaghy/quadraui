@@ -164,7 +164,7 @@ Meanwhile the crate contains **seven private copies** of the boundary-snapping f
 - 13 of 27 `pub enum *Event` types referenced only in their own file (`CompletionsEvent`, `ContextMenuEvent`, `DialogEvent`, `DiffViewEvent`, `ModalEvent`, `PanelEvent`, `ProgressBarEvent`, `RichTextPopupEvent`, `SidebarPanelEvent`, `SpinnerEvent`, `SplitEvent`, `ToastEvent`, `ToolbarEvent`, `TooltipEvent`); 9 more ride `UiEvent` but no workspace consumer matches on them.
 - `primitives/drop_zone.rs`: everything except `DropOverlay` has one internal consumer (`compose/tab_group.rs`), zero external.
 - `compose/focus_group.rs` vs `compose/focus_ring.rs`: two wrap-around Tab-cycling implementations; `FocusGroup`'s own module doc admits the overlap; zero external consumers for `FocusGroup`.
-- `primitives/board.rs`: confirmed #476 (already filed — `TestVerdict`, `CardLayout`, `ColumnLayout`, `CardId` at 0 consumers; `board_layout` is a free fn contra every sibling).
+- `primitives/board.rs`: confirmed #476 (already filed — `CardLayout`, `ColumnLayout`, `CardId` at 0 consumers; `board_layout` is a free fn contra every sibling; `TestVerdict` was in this list too but #476 deleted it).
 - Overall: ~215 of 485 `lib.rs` re-exports have zero consumers in-repo. Theme is fine (76 fields, only 1 under-consumed).
 
 **SM-05 · M · Guard-by-distance unwraps in input-path state machines** (Size S)

@@ -178,34 +178,15 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
             // ── Badge row (row 2 inside the card) ───────────────────────
             if bh >= 3 {
                 let badge_row = by + 2;
-                let inner_w = bw.saturating_sub(2) as usize;
-                let badge_str = build_badge_str(&card.badges);
-                let badge_chars: Vec<char> = badge_str.chars().collect();
-                let mut col_x = bx + 1;
-                for ch in badge_chars.iter().take(inner_w) {
-                    if col_x < bx + bw.saturating_sub(1) {
-                        // Badge chars come in pairs: icon + letter; colour
-                        // the icon char based on the badge status.
-                        set_cell(buf, col_x, badge_row, *ch, muted, text_bg);
-                    }
-                    col_x += 1;
-                }
+                let end_x = bx + bw.saturating_sub(1);
+                let written =
+                    paint_badges(buf, bx + 1, badge_row, end_x, &card.badges, theme, text_bg);
                 // Pad remaining with spaces.
-                while col_x < bx + bw.saturating_sub(1) {
+                let mut col_x = written;
+                while col_x < end_x {
                     set_cell(buf, col_x, badge_row, ' ', fg, text_bg);
                     col_x += 1;
                 }
-
-                // Re-colour the badge icons individually.
-                paint_badge_colors(
-                    buf,
-                    bx + 1,
-                    badge_row,
-                    bw.saturating_sub(2),
-                    &card.badges,
-                    text_bg,
-                    theme,
-                );
             }
 
             // ── Hint (row 3 inside the card, if present) ─────────────────
@@ -284,20 +265,6 @@ fn draw_card_border(
     }
 }
 
-/// Build the compact badge string for the badge row.
-/// Format: `✓P ●W ·T` (icon + badge label, space-separated).
-fn build_badge_str(badges: &[CardBadge]) -> String {
-    let mut s = String::new();
-    for (i, badge) in badges.iter().enumerate() {
-        if i > 0 {
-            s.push(' ');
-        }
-        s.push(badge_icon(badge.status));
-        s.push_str(&badge.label);
-    }
-    s
-}
-
 /// Return the icon character for a [`BadgeStatus`].
 fn badge_icon(status: BadgeStatus) -> char {
     match status {
@@ -309,40 +276,50 @@ fn badge_icon(status: BadgeStatus) -> char {
     }
 }
 
-/// Re-paint the badge icon characters with per-status colours.
+/// Paint the badge row in a single pass: `✓Passed ●Running ·Pending`
+/// (icon + host-supplied label, space-separated), each badge coloured by
+/// its status.
 ///
-/// The `build_badge_str` step painted everything in `muted`; this pass
-/// overwrites the icon cells (even-indexed chars) with the right colour.
-fn paint_badge_colors(
+/// `CardBadge::label` is an arbitrary host-supplied string (see
+/// `primitives::board` docs) — it is *not* guaranteed to be one
+/// character — so this walks each badge's actual rendered width rather
+/// than assuming a fixed per-badge stride. Mirrors how `gtk/board.rs`
+/// measures `pango_layout.pixel_size()` per badge and advances by the
+/// real rendered width. Returns the x position just past the last cell
+/// written, so the caller can pad the remainder of the row.
+fn paint_badges(
     buf: &mut Buffer,
     start_x: u16,
     row: u16,
-    avail_w: u16,
+    end_x: u16,
     badges: &[CardBadge],
-    bg: RatatuiColor,
     theme: &Theme,
-) {
-    // Each badge occupies 2 chars (icon + label's first char) plus 1 space
-    // separator. Total per badge: 3 chars (except the last which is 2).
+    bg: RatatuiColor,
+) -> u16 {
     let mut x = start_x;
     for (i, badge) in badges.iter().enumerate() {
-        if i > 0 {
-            x += 1; // space separator
-        }
-        if x >= start_x + avail_w {
+        if x >= end_x {
             break;
         }
-        let icon = badge_icon(badge.status);
-        let icon_color = badge_color(badge.status, theme);
-        set_cell(buf, x, row, icon, icon_color, bg);
-        x += 1;
-        if x < start_x + avail_w {
-            // Label's first char inherits the same colour as the icon.
-            let label_ch = badge.label.chars().next().unwrap_or(' ');
-            set_cell(buf, x, row, label_ch, icon_color, bg);
+        if i > 0 {
+            set_cell(buf, x, row, ' ', ratatui_color(theme.muted_fg), bg);
+            x += 1;
+            if x >= end_x {
+                break;
+            }
         }
+        let color = badge_color(badge.status, theme);
+        set_cell(buf, x, row, badge_icon(badge.status), color, bg);
         x += 1;
+        for ch in badge.label.chars() {
+            if x >= end_x {
+                break;
+            }
+            set_cell(buf, x, row, ch, color, bg);
+            x += 1;
+        }
     }
+    x
 }
 
 /// Return the foreground colour for a badge icon.
@@ -566,6 +543,64 @@ mod tests {
             cell_char(&buf, 1, 4),
             'u',
             "hint row (row 4) must contain first char of hint"
+        );
+    }
+
+    #[test]
+    fn multi_char_badge_labels_do_not_corrupt_neighbouring_cells() {
+        // Regression test for #476: paint_badges must track each badge's
+        // actual rendered width instead of assuming a fixed "icon + 1
+        // char" stride (a leftover from when `label` was always exactly
+        // one character), or a later badge's icon paints over an earlier
+        // multi-char label's trailing cells.
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let mut model = make_model();
+        model.columns[0].cards[0].badges = vec![
+            CardBadge {
+                label: "Mix".into(),
+                status: BadgeStatus::Passed,
+            },
+            CardBadge {
+                label: "Proof".into(),
+                status: BadgeStatus::Running,
+            },
+        ];
+        draw_board(&mut buf, area, &model, &Theme::default());
+
+        // Badge row is row 3 (header=0, card top border=1, title=2, badge=3).
+        let badge_row = 3;
+        let expected = "✓Mix ●Proof";
+        for (i, ch) in expected.chars().enumerate() {
+            let x = 1 + i as u16;
+            assert_eq!(
+                cell_char(&buf, x, badge_row),
+                ch,
+                "cell ({x}, {badge_row}) mismatch: expected badge text {expected:?} intact"
+            );
+        }
+
+        // Each badge must be coloured by its own status, at its own real
+        // offset, not the fixed 3-cells-per-badge offset a single-char
+        // assumption would compute.
+        let theme = Theme::default();
+        let mix_last_char_x = 4; // 'x' in "Mix" — must survive untouched.
+        let proof_icon_x = 6; // '●' — the old stride math would have put
+                              // this at x=4, clobbering "Mix".
+        assert_eq!(
+            buf[(mix_last_char_x, badge_row)].fg,
+            ratatui_color(theme.badge_passed),
+            "'Mix' label cells must keep the first badge's colour"
+        );
+        assert_eq!(
+            cell_char(&buf, proof_icon_x, badge_row),
+            '●',
+            "second badge's icon must land past the full 'Mix' label"
+        );
+        assert_eq!(
+            buf[(proof_icon_x, badge_row)].fg,
+            ratatui_color(theme.badge_running),
+            "second badge's icon must be coloured by its own status"
         );
     }
 

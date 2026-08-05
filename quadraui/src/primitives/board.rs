@@ -8,12 +8,16 @@
 //!
 //! ## Layout model
 //!
+//! Column titles and badge vocabulary below are illustrative only — the
+//! primitive has no opinion on either; a host picks whatever columns and
+//! badge labels/order fit its own workflow.
+//!
 //! ```text
 //! ┌─ Board ────────────────────────────────────────────────────────┐
-//! │  Backlog          Refining      Ready          Pipeline    Done │
+//! │  Column A         Column B       Column C        Column D  ... │
 //! │ ┌──────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌─┐│
-//! │ │#362 Board    │ │#550 board  │ │#521 Issues │ │#207 GTK  │ │…││
-//! │ │✓P ●W ·T ·R ·M│ │✓P ·W ·T ·R │ │✓P ✓W ✓T ●R │ │✓P✓W✓T✓R…│ │ ││
+//! │ │#123 Card one │ │#456 card   │ │#789 Item   │ │#012 Item │ │…││
+//! │ │✓A ●B ·C ·D ·E│ │✓A ·B ·C ·D │ │✓A ✓B ✓C ●D │ │✓A✓B✓C✓D…│ │ ││
 //! │ └──────────────┘ └────────────┘ └────────────┘ └──────────┘ └─┘│
 //! └────────────────────────────────────────────────────────────────┘
 //! ```
