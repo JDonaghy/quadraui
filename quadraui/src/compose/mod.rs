@@ -24,6 +24,9 @@
 //! - [`HelpRegistry`] / [`HelpOverlayController`] — per-view help registry +
 //!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
 //!   actions into the command palette.
+//! - [`KeyMap`] — ordered, scope-aware key binding table so consumers
+//!   declare `AcceleratorScope` once instead of hand-gating every key
+//!   match arm (#473).
 
 pub mod app_shell;
 pub mod bottom_panel;
@@ -34,6 +37,7 @@ pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod help_layer;
+pub mod key_map;
 pub mod markdown;
 pub mod menu_system;
 pub mod sidebar_system;
@@ -57,6 +61,7 @@ pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
 };
+pub use key_map::{KeyContext, KeyMap};
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use sidebar_system::{

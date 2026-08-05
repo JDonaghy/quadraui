@@ -17,6 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::event::{Key, NamedKey};
 use crate::types::{Modifiers, WidgetId};
 
 /// Stable identifier for a registered accelerator. Apps match on this in the
@@ -207,6 +208,101 @@ fn normalise_key_name(s: &str) -> String {
         s.to_ascii_lowercase()
     } else {
         s.to_string()
+    }
+}
+
+// ─── Matching ───────────────────────────────────────────────────────────────
+
+/// Parse a [`KeyBinding`] (any variant) into a [`ParsedBinding`]. Returns
+/// `None` for unparseable literals — those silently miss matching, same
+/// as [`parse_key_binding`]'s contract. The universal arms map to the
+/// canonical vim-style strings [`parse_key_binding`] itself accepts, so a
+/// `KeyBinding::Save` and a `KeyBinding::Literal("<C-s>".into())` resolve
+/// identically.
+///
+/// Shared by [`crate::tui::TuiBackend`]'s native accelerator matching and
+/// [`crate::compose::key_map::KeyMap`]'s scope-aware resolution, so the
+/// universal-binding → key mapping only lives in one place.
+pub fn parse_binding(b: &KeyBinding) -> Option<ParsedBinding> {
+    match b {
+        KeyBinding::Literal(s) if s.is_empty() => None,
+        KeyBinding::Literal(s) => parse_key_binding(s),
+        KeyBinding::Save => parse_key_binding("<C-s>"),
+        KeyBinding::Open => parse_key_binding("<C-o>"),
+        KeyBinding::New => parse_key_binding("<C-n>"),
+        KeyBinding::Close => parse_key_binding("<C-w>"),
+        KeyBinding::Copy => parse_key_binding("<C-c>"),
+        KeyBinding::Cut => parse_key_binding("<C-x>"),
+        KeyBinding::Paste => parse_key_binding("<C-v>"),
+        KeyBinding::Undo => parse_key_binding("<C-z>"),
+        KeyBinding::Redo => parse_key_binding("<C-S-z>"),
+        KeyBinding::SelectAll => parse_key_binding("<C-a>"),
+        KeyBinding::Find => parse_key_binding("<C-f>"),
+        KeyBinding::Replace => parse_key_binding("<C-h>"),
+        KeyBinding::Quit => parse_key_binding("<C-q>"),
+    }
+}
+
+/// Canonical key name for a native [`Key`], in the same form
+/// [`ParsedBinding`]'s `key` field uses — lowercased single ASCII
+/// characters, named keys in their `normalise_key_name` TitleCase.
+/// Backends and resolvers match a native key press against a registered
+/// binding by comparing this name (plus modifiers) against
+/// `ParsedBinding::key`.
+pub fn key_to_binding_name(key: &Key) -> String {
+    match key {
+        Key::Char(c) => {
+            // Single ASCII letters parse as lowercase in
+            // `parse_key_binding`; mirror that so `<C-S-T>` and
+            // `Ctrl+Shift+t` both match here.
+            if c.is_ascii() {
+                c.to_ascii_lowercase().to_string()
+            } else {
+                c.to_string()
+            }
+        }
+        Key::Named(named) => named_key_to_binding_name(*named).to_string(),
+    }
+}
+
+/// Map a [`NamedKey`] to the canonical name [`parse_key_binding`]
+/// produces. Letter case follows [`normalise_key_name`]: single letters
+/// lowercase, named keys TitleCase-preserved.
+fn named_key_to_binding_name(named: NamedKey) -> &'static str {
+    use NamedKey::*;
+    match named {
+        Escape => "Escape",
+        Tab => "Tab",
+        BackTab => "BackTab",
+        Enter => "Enter",
+        Backspace => "Backspace",
+        Delete => "Delete",
+        Insert => "Insert",
+        Home => "Home",
+        End => "End",
+        PageUp => "PageUp",
+        PageDown => "PageDown",
+        Up => "Up",
+        Down => "Down",
+        Left => "Left",
+        Right => "Right",
+        F(1) => "F1",
+        F(2) => "F2",
+        F(3) => "F3",
+        F(4) => "F4",
+        F(5) => "F5",
+        F(6) => "F6",
+        F(7) => "F7",
+        F(8) => "F8",
+        F(9) => "F9",
+        F(10) => "F10",
+        F(11) => "F11",
+        F(12) => "F12",
+        F(_) => "",
+        CapsLock => "CapsLock",
+        NumLock => "NumLock",
+        ScrollLock => "ScrollLock",
+        Menu => "Menu",
     }
 }
 
@@ -525,5 +621,42 @@ mod tests {
         let json = serde_json::to_string(&acc).unwrap();
         let back: Accelerator = serde_json::from_str(&json).unwrap();
         assert_eq!(acc, back);
+    }
+
+    // ── parse_binding / key_to_binding_name ─────────────────────────────
+
+    #[test]
+    fn parse_binding_universal_matches_literal_equivalent() {
+        assert_eq!(parse_binding(&KeyBinding::Save), parse_key_binding("<C-s>"));
+        assert_eq!(
+            parse_binding(&KeyBinding::Redo),
+            parse_key_binding("<C-S-z>")
+        );
+    }
+
+    #[test]
+    fn parse_binding_literal_delegates_to_parse_key_binding() {
+        assert_eq!(
+            parse_binding(&KeyBinding::Literal("Ctrl+P".into())),
+            parse_key_binding("Ctrl+P")
+        );
+    }
+
+    #[test]
+    fn parse_binding_empty_literal_is_none() {
+        assert!(parse_binding(&KeyBinding::Literal(String::new())).is_none());
+    }
+
+    #[test]
+    fn key_to_binding_name_lowercases_ascii_char() {
+        assert_eq!(key_to_binding_name(&Key::Char('P')), "p");
+        assert_eq!(key_to_binding_name(&Key::Char('p')), "p");
+    }
+
+    #[test]
+    fn key_to_binding_name_named_key_matches_parsed_binding() {
+        assert_eq!(key_to_binding_name(&Key::Named(NamedKey::F(5))), "F5");
+        let parsed = parse_key_binding("<F5>").unwrap();
+        assert_eq!(key_to_binding_name(&Key::Named(NamedKey::F(5))), parsed.key);
     }
 }

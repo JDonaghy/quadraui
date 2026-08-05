@@ -45,14 +45,20 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
 use crate::dispatch::TextRegion;
 use crate::{
-    parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    CommandLine, DragState, DragTarget, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
-    ParsedBinding, PlatformServices, Point, Rect as QRect, Split, StatusBar, TabBar,
-    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, CommandLine, DragState,
+    DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
+    Point, Rect as QRect, Split, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay,
+    TreeView, UiEvent, Viewport, WidgetId,
 };
+// `KeyBinding` is only referenced by `#[cfg(test)]` code below (the rest of
+// this file matches already-parsed `Accelerator`s) — gate the import the
+// same way so a non-test build doesn't flag it as unused.
+#[cfg(test)]
+use crate::KeyBinding;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
@@ -619,19 +625,7 @@ impl TuiBackend {
         key: &crate::Key,
         modifiers: crate::Modifiers,
     ) -> Option<AcceleratorId> {
-        let key_name = match key {
-            crate::Key::Char(c) => {
-                // Single ASCII letters parse as lowercase in
-                // `parse_key_binding`; mirror that so `<C-S-T>` and
-                // `Ctrl+Shift+t` both match here.
-                if c.is_ascii() {
-                    c.to_ascii_lowercase().to_string()
-                } else {
-                    c.to_string()
-                }
-            }
-            crate::Key::Named(named) => named_key_to_binding_name(*named).to_string(),
-        };
+        let key_name = key_to_binding_name(key);
         for (parsed, id) in &self.parsed_accelerators {
             if parsed.modifiers == modifiers && parsed.key == key_name {
                 // Skip non-Global-scope entries — the backend doesn't
@@ -644,71 +638,6 @@ impl TuiBackend {
             }
         }
         None
-    }
-}
-
-/// Parse a `KeyBinding` (any variant) into a `ParsedBinding`. Returns
-/// `None` for unparseable literals — those silently miss matching, same
-/// as the engine-side B.2 path. The universal arms map to the canonical
-/// vim-style strings the rest of vimcode already uses.
-fn parse_binding(b: &KeyBinding) -> Option<ParsedBinding> {
-    match b {
-        KeyBinding::Literal(s) if s.is_empty() => None,
-        KeyBinding::Literal(s) => parse_key_binding(s),
-        KeyBinding::Save => parse_key_binding("<C-s>"),
-        KeyBinding::Open => parse_key_binding("<C-o>"),
-        KeyBinding::New => parse_key_binding("<C-n>"),
-        KeyBinding::Close => parse_key_binding("<C-w>"),
-        KeyBinding::Copy => parse_key_binding("<C-c>"),
-        KeyBinding::Cut => parse_key_binding("<C-x>"),
-        KeyBinding::Paste => parse_key_binding("<C-v>"),
-        KeyBinding::Undo => parse_key_binding("<C-z>"),
-        KeyBinding::Redo => parse_key_binding("<C-S-z>"),
-        KeyBinding::SelectAll => parse_key_binding("<C-a>"),
-        KeyBinding::Find => parse_key_binding("<C-f>"),
-        KeyBinding::Replace => parse_key_binding("<C-h>"),
-        KeyBinding::Quit => parse_key_binding("<C-q>"),
-    }
-}
-
-/// Map a `crate::NamedKey` to the canonical name `parse_key_binding`
-/// produces. Letter case follows `accelerator::normalise_key_name`:
-/// single letters lowercase, named keys TitleCase-preserved.
-fn named_key_to_binding_name(named: crate::NamedKey) -> &'static str {
-    use crate::NamedKey::*;
-    match named {
-        Escape => "Escape",
-        Tab => "Tab",
-        BackTab => "BackTab",
-        Enter => "Enter",
-        Backspace => "Backspace",
-        Delete => "Delete",
-        Insert => "Insert",
-        Home => "Home",
-        End => "End",
-        PageUp => "PageUp",
-        PageDown => "PageDown",
-        Up => "Up",
-        Down => "Down",
-        Left => "Left",
-        Right => "Right",
-        F(1) => "F1",
-        F(2) => "F2",
-        F(3) => "F3",
-        F(4) => "F4",
-        F(5) => "F5",
-        F(6) => "F6",
-        F(7) => "F7",
-        F(8) => "F8",
-        F(9) => "F9",
-        F(10) => "F10",
-        F(11) => "F11",
-        F(12) => "F12",
-        F(_) => "",
-        CapsLock => "CapsLock",
-        NumLock => "NumLock",
-        ScrollLock => "ScrollLock",
-        Menu => "Menu",
     }
 }
 
