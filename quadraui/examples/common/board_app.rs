@@ -19,7 +19,8 @@ use std::cell::RefCell;
 
 use quadraui::{
     AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardLayout, BoardModel,
-    Key, MoveDir, NamedKey, Reaction, Rect, Stage, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    CardBadge, Key, MoveDir, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
+    WidgetId,
 };
 
 pub struct BoardApp {
@@ -236,6 +237,16 @@ fn key_to_board_action(key: &Key) -> Option<BoardAction> {
 
 // ── Demo data ───────────────────────────────────────────────────────────────
 
+/// Shorthand for building a [`CardBadge`] in the demo data below. The
+/// board primitive doesn't assign meaning to `label` or badge order —
+/// this demo happens to use single-letter workflow-step labels.
+fn badge(label: &str, status: BadgeStatus) -> CardBadge {
+    CardBadge {
+        label: label.into(),
+        status,
+    }
+}
+
 fn demo_board() -> BoardModel {
     let backlog = BoardColumn {
         id: WidgetId::new("col:backlog"),
@@ -245,31 +256,25 @@ fn demo_board() -> BoardModel {
                 id: WidgetId::new("card:1"),
                 title: "Improve search indexing perf".into(),
                 labels: vec!["perf".into()],
-                stage_badges: vec![
-                    (Stage::Plan, BadgeStatus::Passed),
-                    (Stage::Work, BadgeStatus::Pending),
+                badges: vec![
+                    badge("P", BadgeStatus::Passed),
+                    badge("W", BadgeStatus::Pending),
                 ],
-                assignee: Some("alice".into()),
-                machine: None,
-                decision_hint: None,
+                hint: None,
             },
             BoardCard {
                 id: WidgetId::new("card:2"),
                 title: "Add dark-mode toggle".into(),
                 labels: vec!["ui".into()],
-                stage_badges: vec![(Stage::Plan, BadgeStatus::Running)],
-                assignee: Some("bob".into()),
-                machine: None,
-                decision_hint: Some("Waiting for design sign-off".into()),
+                badges: vec![badge("P", BadgeStatus::Running)],
+                hint: Some("Waiting for design sign-off".into()),
             },
             BoardCard {
                 id: WidgetId::new("card:3"),
                 title: "Fix memory leak in parser".into(),
                 labels: vec!["bug".into()],
-                stage_badges: vec![],
-                assignee: None,
-                machine: None,
-                decision_hint: None,
+                badges: vec![],
+                hint: None,
             },
         ],
         scroll_offset: 0,
@@ -283,27 +288,23 @@ fn demo_board() -> BoardModel {
                 id: WidgetId::new("card:4"),
                 title: "Refactor auth middleware".into(),
                 labels: vec!["refactor".into(), "security".into()],
-                stage_badges: vec![
-                    (Stage::Plan, BadgeStatus::Passed),
-                    (Stage::Work, BadgeStatus::Running),
-                    (Stage::Test, BadgeStatus::Pending),
+                badges: vec![
+                    badge("P", BadgeStatus::Passed),
+                    badge("W", BadgeStatus::Running),
+                    badge("T", BadgeStatus::Pending),
                 ],
-                assignee: Some("carol".into()),
-                machine: Some("ci-runner-03".into()),
-                decision_hint: None,
+                hint: None,
             },
             BoardCard {
                 id: WidgetId::new("card:5"),
                 title: "Upgrade dependency stack".into(),
                 labels: vec!["deps".into()],
-                stage_badges: vec![
-                    (Stage::Plan, BadgeStatus::Passed),
-                    (Stage::Work, BadgeStatus::Passed),
-                    (Stage::Test, BadgeStatus::Blocked),
+                badges: vec![
+                    badge("P", BadgeStatus::Passed),
+                    badge("W", BadgeStatus::Passed),
+                    badge("T", BadgeStatus::Blocked),
                 ],
-                assignee: Some("dave".into()),
-                machine: None,
-                decision_hint: Some("blocked: upstream async-std 2.0 compat".into()),
+                hint: Some("blocked: upstream async-std 2.0 compat".into()),
             },
         ],
         scroll_offset: 0,
@@ -317,29 +318,25 @@ fn demo_board() -> BoardModel {
                 id: WidgetId::new("card:6"),
                 title: "Paginate API list endpoints".into(),
                 labels: vec!["api".into()],
-                stage_badges: vec![
-                    (Stage::Plan, BadgeStatus::Passed),
-                    (Stage::Work, BadgeStatus::Passed),
-                    (Stage::Test, BadgeStatus::Passed),
-                    (Stage::Review, BadgeStatus::RequestChanges),
+                badges: vec![
+                    badge("P", BadgeStatus::Passed),
+                    badge("W", BadgeStatus::Passed),
+                    badge("T", BadgeStatus::Passed),
+                    badge("R", BadgeStatus::Warning),
                 ],
-                assignee: Some("alice".into()),
-                machine: None,
-                decision_hint: Some("reviewer: needs integration test".into()),
+                hint: Some("reviewer: needs integration test".into()),
             },
             BoardCard {
                 id: WidgetId::new("card:7"),
                 title: "Export CSV for analytics".into(),
                 labels: vec!["feature".into()],
-                stage_badges: vec![
-                    (Stage::Plan, BadgeStatus::Passed),
-                    (Stage::Work, BadgeStatus::Passed),
-                    (Stage::Test, BadgeStatus::Passed),
-                    (Stage::Review, BadgeStatus::Running),
+                badges: vec![
+                    badge("P", BadgeStatus::Passed),
+                    badge("W", BadgeStatus::Passed),
+                    badge("T", BadgeStatus::Passed),
+                    badge("R", BadgeStatus::Running),
                 ],
-                assignee: Some("eve".into()),
-                machine: None,
-                decision_hint: None,
+                hint: None,
             },
         ],
         scroll_offset: 0,

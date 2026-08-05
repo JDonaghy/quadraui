@@ -7,7 +7,7 @@
 //! ╭────────────────────╮
 //! │#362 Board           │
 //! │✓P ●W ·T ·R ·M       │
-//! │hint: use approach B │   ← decision_hint (if present)
+//! │hint: use approach B │   ← BoardCard::hint (if present)
 //! ╰────────────────────╯
 //! ```
 //!
@@ -16,13 +16,13 @@
 //!
 //! ## Colour mapping
 //!
-//! | BadgeStatus     | Icon | Colour                        |
-//! |-----------------|------|-------------------------------|
-//! | Passed          | ✓    | green (`theme.badge_passed`)   |
-//! | Running         | ●    | yellow (`theme.badge_running`) |
-//! | RequestChanges  | ↩    | orange (`theme.badge_request_changes`) |
-//! | Blocked         | ✗    | red (`theme.badge_blocked`)    |
-//! | Pending         | ·    | muted (`theme.muted_fg`)       |
+//! | BadgeStatus | Icon | Colour                         |
+//! |-------------|------|---------------------------------|
+//! | Passed      | ✓    | green (`theme.badge_passed`)    |
+//! | Running     | ●    | yellow (`theme.badge_running`)  |
+//! | Warning     | ↩    | orange (`theme.badge_warning`)  |
+//! | Blocked     | ✗    | red (`theme.badge_blocked`)     |
+//! | Pending     | ·    | muted (`theme.muted_fg`)        |
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -30,7 +30,7 @@ use ratatui::style::Color as RatatuiColor;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::board::{
-    board_layout, BadgeStatus, BoardLayout, BoardMeasure, BoardModel, Stage,
+    board_layout, BadgeStatus, BoardLayout, BoardMeasure, BoardModel, CardBadge,
 };
 use crate::theme::Theme;
 
@@ -79,8 +79,8 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
     let selected_border = ratatui_color(theme.accent_bg);
     let card_border = ratatui_color(theme.border_fg);
     let card_bg = ratatui_color(theme.surface_bg);
-    let hint_bg = ratatui_color(theme.decision_hint_bg);
-    let hint_fg = ratatui_color(theme.decision_hint_fg);
+    let hint_bg = ratatui_color(theme.card_hint_bg);
+    let hint_fg = ratatui_color(theme.card_hint_fg);
 
     for (li, col_layout) in layout.columns.iter().enumerate() {
         let col = &model.columns[col_layout.col_index];
@@ -179,7 +179,7 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
             if bh >= 3 {
                 let badge_row = by + 2;
                 let inner_w = bw.saturating_sub(2) as usize;
-                let badge_str = build_badge_str(&card.stage_badges);
+                let badge_str = build_badge_str(&card.badges);
                 let badge_chars: Vec<char> = badge_str.chars().collect();
                 let mut col_x = bx + 1;
                 for ch in badge_chars.iter().take(inner_w) {
@@ -202,16 +202,16 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
                     bx + 1,
                     badge_row,
                     bw.saturating_sub(2),
-                    &card.stage_badges,
+                    &card.badges,
                     text_bg,
                     theme,
                 );
             }
 
-            // ── Decision hint (row 3 inside the card, if present) ────────
+            // ── Hint (row 3 inside the card, if present) ─────────────────
             // Requires bh >= 5: top_border(0) + title(1) + badge(2) + hint(3) + bottom(4).
             if bh >= 5 {
-                if let Some(hint) = &card.decision_hint {
+                if let Some(hint) = &card.hint {
                     let hint_row = by + 3;
                     // Check that the hint row is inside the card border.
                     if hint_row < by + bh.saturating_sub(1) {
@@ -285,16 +285,15 @@ fn draw_card_border(
 }
 
 /// Build the compact badge string for the badge row.
-/// Format: `✓P ●W ·T` (icon + stage letter, space-separated).
-fn build_badge_str(badges: &[(Stage, BadgeStatus)]) -> String {
+/// Format: `✓P ●W ·T` (icon + badge label, space-separated).
+fn build_badge_str(badges: &[CardBadge]) -> String {
     let mut s = String::new();
-    for (i, (stage, status)) in badges.iter().enumerate() {
+    for (i, badge) in badges.iter().enumerate() {
         if i > 0 {
             s.push(' ');
         }
-        let icon = badge_icon(*status);
-        s.push(icon);
-        s.push(stage.short_label());
+        s.push(badge_icon(badge.status));
+        s.push_str(&badge.label);
     }
     s
 }
@@ -304,7 +303,7 @@ fn badge_icon(status: BadgeStatus) -> char {
     match status {
         BadgeStatus::Passed => '✓',
         BadgeStatus::Running => '●',
-        BadgeStatus::RequestChanges => '↩',
+        BadgeStatus::Warning => '↩',
         BadgeStatus::Blocked => '✗',
         BadgeStatus::Pending => '·',
     }
@@ -319,27 +318,28 @@ fn paint_badge_colors(
     start_x: u16,
     row: u16,
     avail_w: u16,
-    badges: &[(Stage, BadgeStatus)],
+    badges: &[CardBadge],
     bg: RatatuiColor,
     theme: &Theme,
 ) {
-    // Each badge occupies 2 chars (icon + letter) plus 1 space separator.
-    // Total per badge: 3 chars (except the last which is 2).
+    // Each badge occupies 2 chars (icon + label's first char) plus 1 space
+    // separator. Total per badge: 3 chars (except the last which is 2).
     let mut x = start_x;
-    for (i, (stage, status)) in badges.iter().enumerate() {
+    for (i, badge) in badges.iter().enumerate() {
         if i > 0 {
             x += 1; // space separator
         }
         if x >= start_x + avail_w {
             break;
         }
-        let icon = badge_icon(*status);
-        let icon_color = badge_color(*status, theme);
+        let icon = badge_icon(badge.status);
+        let icon_color = badge_color(badge.status, theme);
         set_cell(buf, x, row, icon, icon_color, bg);
         x += 1;
         if x < start_x + avail_w {
-            // Stage letter inherits the same colour as the icon.
-            set_cell(buf, x, row, stage.short_label(), icon_color, bg);
+            // Label's first char inherits the same colour as the icon.
+            let label_ch = badge.label.chars().next().unwrap_or(' ');
+            set_cell(buf, x, row, label_ch, icon_color, bg);
         }
         x += 1;
     }
@@ -350,7 +350,7 @@ fn badge_color(status: BadgeStatus, theme: &Theme) -> RatatuiColor {
     match status {
         BadgeStatus::Passed => ratatui_color(theme.badge_passed),
         BadgeStatus::Running => ratatui_color(theme.badge_running),
-        BadgeStatus::RequestChanges => ratatui_color(theme.badge_request_changes),
+        BadgeStatus::Warning => ratatui_color(theme.badge_warning),
         BadgeStatus::Blocked => ratatui_color(theme.badge_blocked),
         BadgeStatus::Pending => ratatui_color(theme.muted_fg),
     }
@@ -373,16 +373,29 @@ mod tests {
             id: WidgetId::new(id),
             title: title.to_string(),
             labels: vec!["#1".to_string()],
-            stage_badges: vec![
-                (Stage::Plan, BadgeStatus::Passed),
-                (Stage::Work, BadgeStatus::Running),
-                (Stage::Test, BadgeStatus::Pending),
-                (Stage::Review, BadgeStatus::Pending),
-                (Stage::Merge, BadgeStatus::Pending),
+            badges: vec![
+                CardBadge {
+                    label: "P".into(),
+                    status: BadgeStatus::Passed,
+                },
+                CardBadge {
+                    label: "W".into(),
+                    status: BadgeStatus::Running,
+                },
+                CardBadge {
+                    label: "T".into(),
+                    status: BadgeStatus::Pending,
+                },
+                CardBadge {
+                    label: "R".into(),
+                    status: BadgeStatus::Pending,
+                },
+                CardBadge {
+                    label: "M".into(),
+                    status: BadgeStatus::Pending,
+                },
             ],
-            assignee: None,
-            machine: None,
-            decision_hint: None,
+            hint: None,
         }
     }
 
@@ -535,24 +548,24 @@ mod tests {
     }
 
     #[test]
-    fn decision_hint_drawn_when_present() {
+    fn hint_drawn_when_present() {
         // Card height = 5 rows:
         //   row 0 (card_y + 0 = 1): ╭ top border
         //   row 1 (card_y + 1 = 2): title
         //   row 2 (card_y + 2 = 3): badge row
-        //   row 3 (card_y + 3 = 4): decision_hint  ← assert here
+        //   row 3 (card_y + 3 = 4): hint  ← assert here
         //   row 4 (card_y + 4 = 5): ╰ bottom border
         // Header occupies row 0, so card_y = 1 and hint_row = 4.
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
         let mut model = make_model();
-        model.columns[0].cards[0].decision_hint = Some("use plan B".to_string());
+        model.columns[0].cards[0].hint = Some("use plan B".to_string());
         draw_board(&mut buf, area, &model, &Theme::default());
         // Cell (1, 4) should hold 'u', the first character of "use plan B".
         assert_eq!(
             cell_char(&buf, 1, 4),
             'u',
-            "hint row (row 4) must contain first char of decision_hint"
+            "hint row (row 4) must contain first char of hint"
         );
     }
 

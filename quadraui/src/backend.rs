@@ -856,14 +856,24 @@ pub trait Backend {
     ///
     /// The backend paints columns side by side, each with a header title
     /// and a vertical stack of card boxes. Each card shows the issue
-    /// title, an inline badge row (stage icons), and an optional
-    /// `decision_hint` callout strip. The selected card is highlighted.
+    /// title, an inline badge row, and an optional `hint` callout strip.
+    /// The selected card is highlighted.
     ///
     /// Returns a [`BoardLayout`] so hosts can route clicks via
     /// `layout.hit_test(x, y)` and implement selection-follow clamping
     /// (DataTable pattern: host reads `layout.columns[i].visible_cards`
     /// and adjusts `column.scroll_offset` accordingly).
-    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
+    ///
+    /// Has a default impl that computes layout without painting anything
+    /// (an empty `BoardLayout` sized to `rect`), so backends that haven't
+    /// implemented a board rasteriser yet (macOS, Windows) still satisfy
+    /// the trait. Override once the backend has a real rasteriser.
+    fn draw_board(&mut self, rect: Rect, _model: &BoardModel) -> BoardLayout {
+        BoardLayout {
+            bounds: rect,
+            columns: vec![],
+        }
+    }
 }
 
 // ── Shared layout helpers ───────────────────────────────────────────────

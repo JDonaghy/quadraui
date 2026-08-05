@@ -264,14 +264,14 @@ pub struct Theme {
     pub badge_running: Color,
     /// `BadgeStatus::Passed` colour (green).
     pub badge_passed: Color,
-    /// `BadgeStatus::RequestChanges` colour (warning orange).
-    pub badge_request_changes: Color,
+    /// `BadgeStatus::Warning` colour (warning orange).
+    pub badge_warning: Color,
     /// `BadgeStatus::Blocked` colour (red).
     pub badge_blocked: Color,
-    /// Background of the `decision_hint` callout strip at the bottom of a card.
-    pub decision_hint_bg: Color,
-    /// Text colour of the `decision_hint` callout.
-    pub decision_hint_fg: Color,
+    /// Background of the `BoardCard::hint` callout strip at the bottom of a card.
+    pub card_hint_bg: Color,
+    /// Text colour of the `BoardCard::hint` callout.
+    pub card_hint_fg: Color,
 }
 
 impl Default for Theme {
@@ -359,10 +359,10 @@ impl Default for Theme {
             board_col_header_bg: Color::rgb(40, 44, 56),
             badge_running: Color::rgb(220, 180, 80),
             badge_passed: Color::rgb(120, 200, 120),
-            badge_request_changes: Color::rgb(220, 140, 60),
+            badge_warning: Color::rgb(220, 140, 60),
             badge_blocked: Color::rgb(220, 80, 80),
-            decision_hint_bg: Color::rgb(35, 40, 55),
-            decision_hint_fg: Color::rgb(180, 190, 210),
+            card_hint_bg: Color::rgb(35, 40, 55),
+            card_hint_fg: Color::rgb(180, 190, 210),
         }
     }
 }
