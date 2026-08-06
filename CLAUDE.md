@@ -4,11 +4,12 @@ Agent-facing guide for working in the **quadraui** repo. This file
 stays slim — reference docs live in `quadraui/docs/` and are read on
 demand.
 
-This repo is **self-contained**: no consumer depends on quadraui from
-inside the repo at compile time except the demo apps (`kubeui*`).
-Vimcode and any other downstream consumer pin a published version
-externally. Don't introduce assumptions about specific downstream
-consumers.
+This repo is **self-contained at design time**: no consumer depends on
+quadraui from inside the repo at compile time except the demo apps
+(`kubeui*`), and no primitive should encode a specific consumer's domain
+model. **It is not self-contained at delivery time** — two external
+consumers build against this repo's `develop` tip with no version pin.
+Read *Downstream consumers* below before changing any `pub` item.
 
 ## Codebase navigation — query the graph first
 
@@ -30,7 +31,7 @@ line-level confirmation — not the first move.
 **Read on demand** (when the task requires it):
 
 - `quadraui/docs/ARCHITECTURE.md` — workspace layout, two-layer split, compose helpers, GTK hosting helpers, backend trait.
-- `quadraui/docs/PRIMITIVE_RULES.md` — the 7 rules for adding/changing primitives + maturity levels. **Read when touching primitives.**
+- `quadraui/docs/PRIMITIVE_RULES.md` — the 8 rules for adding/changing primitives + maturity levels. **Rule 8 (public-API lifecycle) is mandatory reading before removing or renaming anything `pub`.**
 - `quadraui/docs/CONSUMER_PATTERNS.md` — MSV debug-sidebar and SC panel recipes. **Read when working on consumer integrations.**
 - `quadraui/docs/TESTING.md` — coverage taxonomy, backend testability requirement, quality gate commands. **Read when writing tests.**
 - `quadraui/docs/LESSONS.md` — durable rules from real failures + "What NOT to do." **Read at session start; apply as you work.**
@@ -49,6 +50,47 @@ This is non-negotiable. Every architectural decision in this repo serves it.
 6. **Events are unified at the `UiEvent` boundary.** Every backend translates native events into `quadraui::UiEvent` before reaching `AppLogic::handle`.
 
 If you're tempted to take a shortcut — bypass the runner, copy-paste an example across backends, build a per-backend layout helper — **stop and ask: does this violate the portability commitment?** If yes, fix the trait gap first.
+
+## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
+
+quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** Two external consumers depend on it by *relative path to a sibling checkout*, and both their CI jobs clone `develop`:
+
+| Consumer | Declaration | Its CI |
+|---|---|---|
+| `coord-tui` — `JDonaghy/claude-coordinator`, `tui/` | `quadraui = { path = "../../quadraui/quadraui", features = ["tui","terminal"] }` | `cargo-test.yml` clones this repo's **default branch** — which is `develop` |
+| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop` |
+
+Consequences, all of which have already bitten:
+
+- A breaking change is **live in both repos the instant it merges to `develop`**. Not at their next release — at their next `cargo build`.
+- It turns **every open PR in both repos red**, including PRs that touch nothing related, retroactively.
+- There is **no version bump to blame and no downstream compile gate in this repo's CI**. `ci.yml` builds quadraui and its own examples only, so quadraui being green proves nothing about consumers. You are the gate.
+
+This is not hypothetical. #476 ("de-coord board.rs") replaced `Stage` with `CardBadge`, renamed `BadgeStatus::RequestChanges` → `Warning`, deleted two `BoardCard` fields and `BoardAction`'s domain verbs — all correct as *design*. Both consumers broke on 2026-08-05 and coord-tui needed a migration PR (`claude-coordinator#1864`). The change shipped believing it was safe partly because this file used to claim consumers "pin a published version externally." They never did.
+
+**The design rule and the delivery rule point in opposite directions, and both hold.** Keep one consumer's vocabulary *out* of the primitives (that is what #476 was fixing, and it was right). Keep both consumers' *compile status* in mind while landing it.
+
+### Before you change, rename, or remove any `pub` item
+
+1. **Measure the blast radius.** Both consumers are checked out beside this repo:
+   ```bash
+   grep -rn '<symbol>' ~/src/claude-coordinator/tui/src ~/src/vimcode/src
+   ```
+   Zero hits in both, and no in-tree use ⇒ free to remove; **paste the grep output in the PR body** rather than asserting it. Any hit ⇒ this is a breaking change, and rules 2–4 apply.
+2. **Prefer a shape that isn't breaking at all.** In order:
+   - a **default impl on any trait a consumer implements** — today that is `ShellApp` and `AppLogic`, the only quadraui traits `coord-tui` and `vimcode` implement. (`Backend` is in-tree-only: rule 7's deliberate no-default compile error is a to-do list for our own backends and costs consumers nothing. Don't "fix" it with defaults.)
+   - `#[non_exhaustive]` on public structs and enums, so later fields and variants are additive;
+   - a new field carrying `Default`, or a builder, instead of a new required constructor argument;
+   - a new function *alongside* the old one instead of a rename.
+3. **If it must break, deprecate first — that is two PRs, not one.**
+   - **PR 1** adds the new shape **and keeps the old one compiling** behind `#[deprecated(since = "…", note = "use X instead")]`: a `pub use Old as New` alias, a `From` impl, a forwarding method. Consumers keep building, with a warning that names their fix. Open the consumer migration issue in the same session and link it here.
+   - **PR 2** deletes the shim, *after* those migrations merge. Reference them.
+
+   A rename under this rule costs one `pub use` + one attribute. That is the entire difference between a compiler warning and two repos' CI going red.
+4. **Don't batch unrelated removals.** #476 removed a type, renamed a variant, deleted two fields and gutted a keymap in one commit, so the consumer migration was all-or-nothing with no partially-compiling state to bisect from. One breaking change per PR.
+5. **Declare it.** Any PR touching a `pub` item gets a `## Downstream impact` section naming each consumer file that must move (or stating "no consumer hits", with the grep). **A public-API PR without that section should be sent back at review.**
+
+Mechanics, worked examples, and the deprecation-shim patterns live in `quadraui/docs/PRIMITIVE_RULES.md` rule 8.
 
 ## Development Workflow
 
