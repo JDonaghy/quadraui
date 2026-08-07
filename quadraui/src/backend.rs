@@ -541,6 +541,20 @@ pub trait Backend {
     /// terminal selection is driven by mouse drag against cell
     /// dimensions, which the app already tracks.
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
+    /// Draw a vertical divider between two split terminal panes.
+    /// `rect.x` is the divider's column, `rect.y` its top row, and
+    /// `rect.height` its length; `rect.width` is ignored — the
+    /// divider is always a single cell (TUI) or 1px (GTK/macOS) wide.
+    /// See `tui::draw_terminal_divider` / `gtk::draw_terminal_divider`
+    /// for the exact glyph/fill painted.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser
+    /// (`BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    /// Do not add a no-op default here; see
+    /// `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
+    /// portability risk, not a precedent to follow.
+    fn draw_terminal_divider(&mut self, rect: Rect);
     /// Draw a `TextDisplay` (streaming-text panel — log viewer, output
     /// pane, YAML view, etc). No hit-region data is returned;
     /// `TextDisplay` itself is non-interactive (selection / scroll

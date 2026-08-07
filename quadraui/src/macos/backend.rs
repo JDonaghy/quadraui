@@ -688,6 +688,24 @@ impl Backend for MacBackend {
             unsafe { super::scrollbar::draw_scrollbar(ctx, &sb, &theme) }
         }
     }
+    fn draw_terminal_divider(&mut self, rect: Rect) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_terminal_divider called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::terminal::draw_terminal_divider(
+                ctx,
+                rect.x as f64,
+                rect.y as f64,
+                rect.height as f64,
+                &theme,
+            );
+        }
+    }
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
         let ctx = self.current_cg();
         debug_assert!(

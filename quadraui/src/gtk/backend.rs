@@ -1836,6 +1836,20 @@ impl Backend for GtkBackend {
         }
     }
 
+    fn draw_terminal_divider(&mut self, rect: QRect) {
+        let theme = self.current_theme;
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_terminal_divider called outside enter_frame_scope");
+        crate::gtk::draw_terminal_divider(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.height as f64,
+            &theme,
+        );
+    }
+
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
         let (cr, layout) = self
             .current_frame_refs()
