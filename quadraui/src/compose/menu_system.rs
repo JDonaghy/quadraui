@@ -824,6 +824,7 @@ mod tests {
             unimplemented!()
         }
         fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
+        fn draw_terminal_divider(&mut self, _r: Rect) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
         fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {

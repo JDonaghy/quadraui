@@ -251,6 +251,10 @@ impl Backend for WinBackend {
         todo!("Direct2D terminal cell grid rasteriser")
     }
 
+    fn draw_terminal_divider(&mut self, _rect: Rect) {
+        todo!("Direct2D terminal split divider rasteriser")
+    }
+
     fn draw_text_display(&mut self, _rect: Rect, _td: &TextDisplay) {
         todo!("Direct2D text display rasteriser")
     }

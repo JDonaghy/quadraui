@@ -1145,6 +1145,15 @@ impl Backend for TuiBackend {
         crate::tui::draw_terminal(frame.buffer_mut(), area, term, &theme);
     }
 
+    fn draw_terminal_divider(&mut self, rect: QRect) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_terminal_divider called outside enter_frame_scope");
+        crate::tui::draw_terminal_divider(frame.buffer_mut(), area.x, area.y, area.height, &theme);
+    }
+
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -1915,6 +1924,7 @@ mod tests {
             Vec::new()
         }
         fn draw_terminal(&mut self, _r: QRect, _t: &TerminalPrim) {}
+        fn draw_terminal_divider(&mut self, _r: QRect) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
         fn status_bar_layout(&self, _r: QRect, _b: &StatusBar) -> crate::StatusBarLayout {
