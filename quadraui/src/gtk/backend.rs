@@ -1509,6 +1509,32 @@ impl Backend for GtkBackend {
         );
     }
 
+    fn draw_settings_chrome(
+        &mut self,
+        rect: QRect,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_settings_chrome called outside enter_frame_scope");
+        crate::gtk::draw_settings_chrome(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            self.current_line_height,
+            header_text,
+            query,
+            placeholder,
+            active,
+            &self.current_theme,
+        );
+    }
+
     // ─── Layout-passthrough primitives ─────────────────────────────────────
     //
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter per

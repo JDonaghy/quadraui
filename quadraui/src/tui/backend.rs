@@ -936,6 +936,30 @@ impl Backend for TuiBackend {
         crate::tui::draw_palette(frame.buffer_mut(), area, palette, &theme, nerd_fonts);
     }
 
+    fn draw_settings_chrome(
+        &mut self,
+        rect: QRect,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_settings_chrome called outside enter_frame_scope");
+        crate::tui::draw_settings_chrome(
+            frame.buffer_mut(),
+            area,
+            header_text,
+            query,
+            placeholder,
+            active,
+            &theme,
+        );
+    }
+
     // ─── Layout-passthrough primitives — Stage 3 / trait migration ──────
     //
     // These take a pre-computed `*Layout` in their existing TUI

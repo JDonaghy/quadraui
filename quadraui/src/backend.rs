@@ -457,6 +457,26 @@ pub trait Backend {
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 
+    /// Draw settings-panel chrome: a 2-row strip with a header row and a
+    /// search input row, designed to sit immediately above a [`Form`]
+    /// body. See `tui::draw_settings_chrome` / `gtk::draw_settings_chrome`
+    /// for the exact row layout, `" / "`-prefixed prompt construction, and
+    /// placeholder logic.
+    ///
+    /// Has a default impl that no-ops, so backends that haven't
+    /// implemented a settings-chrome rasteriser yet (macOS, Windows)
+    /// still satisfy the trait — same pattern as [`Backend::draw_board`].
+    /// Override once the backend has a real rasteriser.
+    fn draw_settings_chrome(
+        &mut self,
+        _rect: Rect,
+        _header_text: &str,
+        _query: &str,
+        _placeholder: &str,
+        _active: bool,
+    ) {
+    }
+
     // Layout-passthrough primitives (per BACKEND_TRAIT_PROPOSAL.md
     // §6.2). Each backend computes the primitive's layout internally
     // using its native measurer (cells for TUI, Pango / DirectWrite /
