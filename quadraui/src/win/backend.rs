@@ -171,6 +171,7 @@ impl Backend for WinBackend {
         &mut self,
         _rect: Rect,
         _table: &crate::DataTable,
+        _hovered_idx: Option<usize>,
     ) -> crate::DataTableLayout {
         todo!("Direct2D data table rasteriser")
     }
@@ -193,6 +194,17 @@ impl Backend for WinBackend {
 
     fn draw_palette(&mut self, _rect: Rect, _palette: &Palette) {
         todo!("Direct2D palette rasteriser")
+    }
+
+    fn draw_settings_chrome(
+        &mut self,
+        _rect: Rect,
+        _header_text: &str,
+        _query: &str,
+        _placeholder: &str,
+        _active: bool,
+    ) {
+        todo!("Direct2D settings chrome rasteriser")
     }
 
     fn draw_status_bar(
@@ -223,12 +235,32 @@ impl Backend for WinBackend {
         todo!("Direct2D activity bar rasteriser")
     }
 
+    fn status_bar_layout(&self, _rect: Rect, _bar: &StatusBar) -> StatusBarLayout {
+        todo!("DirectWrite status bar layout")
+    }
+
+    fn tab_bar_layout(&self, _rect: Rect, _bar: &TabBar) -> TabBarHits {
+        todo!("DirectWrite tab bar layout")
+    }
+
+    fn activity_bar_layout(&self, _rect: Rect, _bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
+        todo!("DirectWrite activity bar layout")
+    }
+
     fn draw_terminal(&mut self, _rect: Rect, _term: &Terminal) {
         todo!("Direct2D terminal cell grid rasteriser")
     }
 
     fn draw_text_display(&mut self, _rect: Rect, _td: &TextDisplay) {
         todo!("Direct2D text display rasteriser")
+    }
+
+    fn draw_command_line(
+        &mut self,
+        _rect: Rect,
+        _cmd: &crate::primitives::command_line::CommandLine,
+    ) {
+        todo!("Direct2D command line rasteriser")
     }
 
     fn text_display_layout(&self, _rect: Rect, _td: &TextDisplay) -> TextDisplayLayout {
@@ -445,5 +477,23 @@ impl Backend for WinBackend {
         _view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
         todo!("Direct2D DiffView rasteriser")
+    }
+
+    fn draw_chart(
+        &mut self,
+        _rect: Rect,
+        _chart: &crate::primitives::chart::Chart,
+        _hovered_point: Option<(usize, usize)>,
+        _crosshair_x: Option<f64>,
+    ) -> crate::primitives::chart::ChartLayout {
+        todo!("Direct2D chart rasteriser")
+    }
+
+    fn chart_layout(
+        &self,
+        _rect: Rect,
+        _chart: &crate::primitives::chart::Chart,
+    ) -> crate::primitives::chart::ChartLayout {
+        todo!("DirectWrite chart layout")
     }
 }
