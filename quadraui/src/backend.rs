@@ -463,19 +463,19 @@ pub trait Backend {
     /// for the exact row layout, `" / "`-prefixed prompt construction, and
     /// placeholder logic.
     ///
-    /// Has a default impl that no-ops, so backends that haven't
-    /// implemented a settings-chrome rasteriser yet (macOS, Windows)
-    /// still satisfy the trait — same pattern as [`Backend::draw_board`].
-    /// Override once the backend has a real rasteriser.
+    /// No default impl — every backend implementer sees this as a compile
+    /// error and fills in a real rasteriser (`BACKEND_TRAIT_PROPOSAL.md`
+    /// §4, `PRIMITIVE_RULES.md` rule 7). Do not add a no-op default here;
+    /// see `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
+    /// portability risk, not a precedent to follow.
     fn draw_settings_chrome(
         &mut self,
-        _rect: Rect,
-        _header_text: &str,
-        _query: &str,
-        _placeholder: &str,
-        _active: bool,
-    ) {
-    }
+        rect: Rect,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    );
 
     // Layout-passthrough primitives (per BACKEND_TRAIT_PROPOSAL.md
     // §6.2). Each backend computes the primitive's layout internally
