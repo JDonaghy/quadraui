@@ -181,6 +181,9 @@ impl AppShell {
         self
     }
 
+    /// Reserve a title-bar row at construction time. See
+    /// [`Self::set_title_bar_visible`] to show/hide the row at runtime
+    /// (e.g. a toggleable menu bar) without rebuilding the `AppShell`.
     pub fn with_title_bar(mut self, height_lh: f32) -> Self {
         self.has_title_bar = true;
         self.title_bar_height_lh = height_lh;
@@ -229,6 +232,13 @@ impl AppShell {
 
     pub fn position(&self) -> ShellPosition {
         self.position
+    }
+
+    /// Whether the title-bar row is currently reserved. See
+    /// [`Self::set_title_bar_visible`] for the runtime toggle and
+    /// [`Self::with_title_bar`] for the construction-time builder.
+    pub fn title_bar_visible(&self) -> bool {
+        self.has_title_bar
     }
 
     pub fn hovered_activity_idx(&self) -> Option<usize> {
@@ -332,6 +342,36 @@ impl AppShell {
 
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+    }
+
+    /// Runtime toggle for whether the title-bar row is reserved (#532).
+    ///
+    /// Unlike [`Self::with_title_bar`] — a construction-time builder that
+    /// permanently commits to reserving the row for the lifetime of the
+    /// `AppShell` — this can be flipped at any point after construction
+    /// without rebuilding the shell. `compute_layout` re-derives every
+    /// downstream bound (activity bar, sidebar, main content, bottom
+    /// panel, ...) from `area` and current state on every
+    /// `render`/`layout`/`handle` call, so toggling this and calling any
+    /// of those next is sufficient — no other field needs to change in
+    /// lockstep, and no fixed offset is cached anywhere that would go
+    /// stale.
+    ///
+    /// Motivating case (vimcode#605, issue #532): a menu bar painted into
+    /// the title-bar row that the user can show/hide at runtime
+    /// (`engine.menu_bar_visible`). Always reserving the row would cost
+    /// the editor a row even while the menu is hidden; never reserving it
+    /// would make a shown menu overwrite the activity bar's first row
+    /// (which starts at `y = 0` when `has_title_bar` is `false`).
+    /// Toggling this from the app's own visibility state avoids both.
+    ///
+    /// If [`Self::with_title_bar`] was never called, toggling visible for
+    /// the first time reserves the default height (`title_bar_height_lh`,
+    /// 1.5 line-heights). The configured height is otherwise preserved
+    /// across visible → hidden → visible round-trips — hiding does not
+    /// forget it.
+    pub fn set_title_bar_visible(&mut self, visible: bool) {
+        self.has_title_bar = visible;
     }
 
     pub fn set_sidebar_width(&mut self, width: f32) {
@@ -1851,6 +1891,76 @@ mod tests {
             area(),
         );
         assert!(matches!(ev, AppShellEvent::BottomPanelResized { .. }));
+    }
+
+    // ── Runtime title-bar toggle (#532) ─────────────────────────────
+
+    #[test]
+    fn title_bar_visible_reflects_construction_state() {
+        assert!(!shell().title_bar_visible());
+        assert!(full_chrome_shell().title_bar_visible());
+    }
+
+    #[test]
+    fn set_title_bar_visible_toggles_at_runtime_without_with_title_bar() {
+        let mut s = shell(); // never called with_title_bar()
+        assert!(s.layout(area(), 1.0).title_bar_bounds.is_none());
+
+        s.set_title_bar_visible(true);
+        assert!(s.title_bar_visible());
+        let tb = s
+            .layout(area(), 1.0)
+            .title_bar_bounds
+            .expect("row now reserved");
+        // Falls back to the default height (1.5 line-heights) since
+        // `with_title_bar` was never called: (1.5 * lh=1.0).round() == 2.0.
+        assert_eq!(tb.height, 2.0);
+
+        s.set_title_bar_visible(false);
+        assert!(!s.title_bar_visible());
+        assert!(s.layout(area(), 1.0).title_bar_bounds.is_none());
+    }
+
+    /// The operator's explicit ask on #532: confirm the activity bar and
+    /// main content re-derive their origins from scratch in both states
+    /// rather than assuming a fixed offset cached from construction.
+    #[test]
+    fn set_title_bar_visible_shifts_activity_bar_and_main_origin_both_ways() {
+        let mut s = full_chrome_shell(); // with_title_bar(1.5)
+        let l = s.layout(area(), 1.0);
+        let tb = l.title_bar_bounds.unwrap();
+        assert_eq!(l.activity_bar_bounds.y, tb.y + tb.height);
+        assert_eq!(l.main_content_bounds.y, tb.y + tb.height);
+
+        s.set_title_bar_visible(false);
+        let l = s.layout(area(), 1.0);
+        assert!(l.title_bar_bounds.is_none());
+        assert_eq!(l.activity_bar_bounds.y, area().y);
+        assert_eq!(l.main_content_bounds.y, area().y);
+
+        // Toggle back on: restores the height configured via
+        // `with_title_bar` (2.0, from 1.5 lh) — hiding does not forget it
+        // and fall back to some other default.
+        s.set_title_bar_visible(true);
+        let l = s.layout(area(), 1.0);
+        let tb = l.title_bar_bounds.unwrap();
+        assert_eq!(tb.height, 2.0);
+        assert_eq!(l.activity_bar_bounds.y, tb.y + tb.height);
+    }
+
+    #[test]
+    fn set_title_bar_visible_false_reclaims_the_row_for_content() {
+        let mut s = full_chrome_shell();
+        let visible_main_h = s.layout(area(), 1.0).main_content_bounds.height;
+
+        s.set_title_bar_visible(false);
+        let hidden_main_h = s.layout(area(), 1.0).main_content_bounds.height;
+
+        assert!(
+            hidden_main_h > visible_main_h,
+            "hiding the title bar should hand its row back to content: \
+             hidden={hidden_main_h}, visible={visible_main_h}"
+        );
     }
 
     // ── Mock backend for handle() tests ─────────────────────────────
