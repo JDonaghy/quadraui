@@ -1874,6 +1874,15 @@ mod tests {
         // records the ones the cross-backend test actually exercises.
         fn draw_tree(&mut self, _r: QRect, _t: &TreeView) {}
         fn draw_form(&mut self, _r: QRect, _f: &Form) {}
+        fn draw_settings_chrome(
+            &mut self,
+            _r: QRect,
+            _header_text: &str,
+            _query: &str,
+            _placeholder: &str,
+            _active: bool,
+        ) {
+        }
         fn draw_status_bar(
             &mut self,
             _r: QRect,

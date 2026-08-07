@@ -789,6 +789,15 @@ mod tests {
         }
         fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
         fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
+        fn draw_settings_chrome(
+            &mut self,
+            _r: Rect,
+            _header_text: &str,
+            _query: &str,
+            _placeholder: &str,
+            _active: bool,
+        ) {
+        }
         fn draw_status_bar(
             &mut self,
             _r: Rect,
