@@ -15,10 +15,21 @@
 //! hints the resize cursor via `Backend::set_cursor` while hovering one.
 //! Same no-op-on-TUI story as #400 — there's no window to resize, so both
 //! calls report back `false` and the status line says so.
+//!
+//! `Ctrl+T` demonstrates the #532 runtime toggle:
+//! `ctx.shell_mut().set_title_bar_visible(!visible)` shows/hides the title
+//! bar band without rebuilding the shell, the same `ctx.shell_mut()` path
+//! `Ctrl+B` uses for the sidebar in `appshell_demo.rs` (#454). This is the
+//! shape vimcode's runtime-toggleable menu bar (vimcode#605) needs: the
+//! activity bar and main content must re-derive their top origin from
+//! `AppShell::layout()` on the very next frame, not from a cached offset —
+//! toggle title bar off and the "TITLE BAR" label disappears while the
+//! activity bar/content shift up to reclaim the row; toggle it back on and
+//! they shift back down without losing the configured height.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, MouseButton, NamedKey, PointerShape, Reaction, Rect,
+    Backend, Color, Key, Modifiers, MouseButton, NamedKey, PointerShape, Reaction, Rect,
     ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar, StatusBarAction,
     StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
@@ -41,7 +52,7 @@ pub struct FullChromeDemo {
 impl FullChromeDemo {
     pub fn new() -> Self {
         Self {
-            last_event: "click icons | drag dividers | drag/double-click title bar | drag edges to resize | q=quit"
+            last_event: "click icons | drag dividers | drag/double-click title bar | drag edges to resize | Ctrl+T=toggle title bar | q=quit"
                 .into(),
             title_bar_interaction: StatusBarInteraction::new(),
         }
@@ -290,6 +301,32 @@ impl ShellAppTrait for FullChromeDemo {
                 key: Key::Char('q') | Key::Named(NamedKey::Escape),
                 ..
             } => Reaction::Exit,
+            // `Ctrl+T` = the #532 runtime toggle: `ctx.shell_mut()` reaches
+            // the same real `AppShell` `ShellAdapter` renders (the #454
+            // pattern `Ctrl+B` uses for the sidebar in `appshell_demo.rs`),
+            // so this app can show/hide the title-bar row without
+            // rebuilding the shell. `compute_layout` re-derives the
+            // activity bar and main content origins from `has_title_bar`
+            // on the very next `layout()` call, so no other state needs to
+            // change in lockstep.
+            UiEvent::KeyPressed {
+                key: Key::Char('t'),
+                modifiers: Modifiers { ctrl: true, .. },
+                ..
+            } => {
+                let now_visible = {
+                    let mut shell = ctx.shell_mut();
+                    let visible = !shell.title_bar_visible();
+                    shell.set_title_bar_visible(visible);
+                    visible
+                };
+                self.last_event = if now_visible {
+                    "Title bar shown (Ctrl+T via ctx.shell_mut())".into()
+                } else {
+                    "Title bar hidden (Ctrl+T via ctx.shell_mut())".into()
+                };
+                Reaction::Redraw
+            }
             UiEvent::MouseDown {
                 position, button, ..
             } => {

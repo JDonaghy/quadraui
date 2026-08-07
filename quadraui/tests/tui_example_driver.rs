@@ -1478,6 +1478,105 @@ fn full_chrome_title_bar_close_button_exits() {
     );
 }
 
+// ─── FullChromeDemo: runtime title-bar visibility toggle (#532) ────────────
+//
+// `AppShell::set_title_bar_visible` (#532) is the runtime counterpart to the
+// construction-time `ShellConfig::with_title_bar` builder — see its doc
+// comment in `compose/app_shell.rs` for the motivating vimcode case (a menu
+// bar painted into the title-bar row that the app shows/hides at runtime).
+// Unit tests alongside `AppShell::layout()` already prove the layout math
+// directly; these tests prove the `ctx.shell_mut()` integration point a
+// `ShellApp` actually uses works end-to-end through the real
+// `ShellAdapter`-rendered `AppShell` — the same precedent
+// `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar` set for
+// `toggle_sidebar()` (#454).
+
+/// `Ctrl+T` on `FullChromeDemo` (which reserves a title bar via
+/// `with_title_bar` in `config()`) hides the real rendered title-bar band
+/// and shows it again, round-tripping through
+/// `ctx.shell_mut().set_title_bar_visible`.
+#[test]
+fn full_chrome_ctrl_t_hides_and_shows_the_real_rendered_title_bar() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    // Title bar starts visible: `with_title_bar(1.5)` in `config()` reserves
+    // the row, so the "TITLE BAR" label painted into `title_bar_bounds`
+    // should be on the initial screen.
+    assert!(
+        driver.screen_contains("TITLE BAR"),
+        "title bar should be visible on the initial screen:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.ctrl_char('t');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Ctrl+T toggling the real AppShell must redraw"
+    );
+    assert!(
+        !driver.screen_contains("TITLE BAR"),
+        "Ctrl+T must hide the title bar that ShellAdapter actually renders, \
+         not a shadow copy:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Title bar hidden (Ctrl+T via ctx.shell_mut())"),
+        "status line should confirm the toggle went through ctx.shell_mut():\n{}",
+        driver.screen()
+    );
+
+    // Toggling again brings it back — proves `ctx.shell_mut()` mutates the
+    // same live instance `render_content` reads from on the next frame,
+    // round-tripping the real state rather than a one-way flag, and that
+    // the configured height (1.5 line-heights) survives the round trip.
+    let reaction = driver.ctrl_char('t');
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("TITLE BAR"),
+        "a second Ctrl+T should show the title bar again:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Title bar shown (Ctrl+T via ctx.shell_mut())"),
+        "status line should confirm the second toggle:\n{}",
+        driver.screen()
+    );
+}
+
+/// The operator's pinned ask on #532: confirm the activity bar reclaims the
+/// title bar's row rather than leaving it blank, through the *real*
+/// rendered path (not `AppShell::layout()` called directly, which the
+/// `compose/app_shell.rs` unit tests already cover). Row 0 must switch from
+/// the title bar's label to the activity bar's top icon once the title bar
+/// is hidden — proving `ShellAdapter` re-paints from the freshly toggled
+/// `has_title_bar`, not a stale cached offset.
+#[test]
+fn full_chrome_ctrl_t_hands_the_title_bar_row_to_the_activity_bar() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let visible_top_row = driver.screen().lines().next().unwrap().to_string();
+    assert!(
+        visible_top_row.contains("TITLE BAR"),
+        "row 0 should be the title bar band while it's reserved:\n{visible_top_row}"
+    );
+
+    driver.ctrl_char('t');
+    let hidden_top_row = driver.screen().lines().next().unwrap().to_string();
+    assert!(
+        !hidden_top_row.contains("TITLE BAR"),
+        "row 0 should no longer show the title bar label once it's hidden:\n{hidden_top_row}"
+    );
+    assert!(
+        hidden_top_row.contains('E'),
+        "row 0 should now be the activity bar's top row (Explorer icon 'E'), \
+         proving the activity bar reclaimed the row rather than it going \
+         blank:\n{hidden_top_row}"
+    );
+}
+
 // ─── FullChromeDemo: window-edge resize escape hatch (#406) ────────────────
 //
 // `FullChromeDemo` hit-tests `ShellContext::window_edge` on `MouseDown` and
