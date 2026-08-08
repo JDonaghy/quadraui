@@ -29,9 +29,24 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         .with_max_width(config.max_sidebar_width)
         .with_position(config.position);
 
-    if config.has_title_bar {
-        shell = shell.with_title_bar(config.title_bar_height_lh);
-    }
+    // Configure the height unconditionally and let `has_title_bar` control
+    // only initial visibility. Gating the whole call on `has_title_bar`
+    // (as before) silently discarded `title_bar_height_lh` whenever the
+    // bar started hidden — exactly the case where it matters later: a
+    // consumer that reveals the bar at runtime via `set_title_bar_visible`
+    // got the `AppShell` struct default (1.5 line-heights) instead of the
+    // height it configured (#547).
+    shell = shell.with_title_bar(config.title_bar_height_lh);
+    shell.set_title_bar_visible(config.has_title_bar);
+
+    // Bottom panel does NOT share this defect, despite the parallel shape:
+    // `AppShell` has no runtime setter that flips `has_bottom_panel` alone
+    // the way `set_title_bar_visible` flips `has_title_bar`. The only way
+    // to enable it is `with_bottom_panel(height)`, which sets the flag and
+    // height together — `show_bottom_panel`/`hide_bottom_panel`/
+    // `toggle_bottom_panel` only touch the independent `bottom_panel_visible`
+    // flag and are no-ops while `has_bottom_panel` is false. So gating this
+    // call on `config.has_bottom_panel` cannot later reveal a stale height.
     if config.has_bottom_panel {
         shell = shell
             .with_bottom_panel(config.bottom_panel_height_lh)
@@ -70,4 +85,75 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
 pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) {
     let adapter = build_shell_adapter(app, config);
     let _ = super::run::run(adapter);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::app_shell::AppShellLayout;
+    use crate::event::Rect;
+    use crate::shell::ShellContext;
+    use crate::{Backend, Reaction, UiEvent};
+
+    struct NoopApp;
+
+    impl ShellApp for NoopApp {
+        fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+        fn handle(
+            &mut self,
+            _event: UiEvent,
+            _backend: &mut dyn Backend,
+            _ctx: &ShellContext,
+        ) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// #547: `title_bar_height_lh` must survive a start-hidden title bar.
+    ///
+    /// Before the fix, `build_shell_adapter` only called
+    /// `shell.with_title_bar(height)` when `config.has_title_bar` was
+    /// already `true`, so a consumer configuring a 1-line-height bar but
+    /// starting it hidden (the common case: reveal on demand, e.g. a menu
+    /// bar toggled via `Alt` or `:set menu`) had the height silently
+    /// discarded. `set_title_bar_visible(true)` would then reserve the
+    /// `AppShell` struct default of 1.5 line-heights — 2 rows at
+    /// `line_height = 1.0` — instead of the configured 1 row. This test
+    /// must fail before the fix.
+    #[test]
+    fn title_bar_height_lh_survives_start_hidden_then_shown() {
+        let mut config = ShellConfig::new("t", Vec::new());
+        config.has_title_bar = false;
+        config.title_bar_height_lh = 1.0;
+
+        let mut adapter = build_shell_adapter(NoopApp, config);
+        assert!(!adapter.shell.title_bar_visible());
+
+        adapter.shell.set_title_bar_visible(true);
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let tb = layout.title_bar_bounds.expect("row now reserved");
+        assert_eq!(
+            tb.height, 1.0,
+            "configured height (1.0 lh) must be honoured, not the 1.5 lh AppShell default"
+        );
+    }
+
+    /// Companion case: `has_title_bar: true` consumers are unaffected —
+    /// same height, visible from the first frame, no behaviour change.
+    #[test]
+    fn title_bar_height_lh_honoured_when_started_visible() {
+        let mut config = ShellConfig::new("t", Vec::new());
+        config.has_title_bar = true;
+        config.title_bar_height_lh = 1.0;
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        assert!(adapter.shell.title_bar_visible());
+
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let tb = layout
+            .title_bar_bounds
+            .expect("row reserved from construction");
+        assert_eq!(tb.height, 1.0);
+    }
 }
