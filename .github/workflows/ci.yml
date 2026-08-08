@@ -16,11 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # @master (not @stable) so this reads the channel out of
-      # rust-toolchain.toml instead of always fetching the latest stable
-      # release — see rust-toolchain.toml and issue #544. `@stable` ignores
-      # the toolchain file and would silently undo the pin.
-      - uses: dtolnay/rust-toolchain@master
+      # Toolchain is pinned in rust-toolchain.toml (see its header comment
+      # for why); rustup's own override resolution honors that file
+      # regardless of what this action installs as its "default".
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -30,11 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # @master (not @stable) so this reads the channel out of
-      # rust-toolchain.toml instead of always fetching the latest stable
-      # release — see rust-toolchain.toml and issue #544. `@stable` ignores
-      # the toolchain file and would silently undo the pin.
-      - uses: dtolnay/rust-toolchain@master
+      # Toolchain is pinned in rust-toolchain.toml (see its header comment
+      # for why); rustup's own override resolution honors that file
+      # regardless of what this action installs as its "default".
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -62,11 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # @master (not @stable) so this reads the channel out of
-      # rust-toolchain.toml instead of always fetching the latest stable
-      # release — see rust-toolchain.toml and issue #544. `@stable` ignores
-      # the toolchain file and would silently undo the pin.
-      - uses: dtolnay/rust-toolchain@master
+      # Toolchain is pinned in rust-toolchain.toml (see its header comment
+      # for why); rustup's own override resolution honors that file
+      # regardless of what this action installs as its "default".
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - name: Install GTK4 system libraries

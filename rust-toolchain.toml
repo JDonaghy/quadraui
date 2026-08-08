@@ -1,5 +1,11 @@
-# Pins the toolchain used by `cargo` for this workspace (and by CI, which
-# reads this file via `dtolnay/rust-toolchain@stable` — see ci.yml).
+# Pins the toolchain used by `cargo` for this workspace. CI (ci.yml) installs
+# a toolchain via `dtolnay/rust-toolchain@stable`, but that's not what pins
+# the version: rustup's own per-directory override resolution reads *this*
+# file directly and installs/uses 1.97.1 for any `cargo`/`rustup` invocation
+# under this checkout, regardless of what the Action fetched as its
+# "default" toolchain. (`dtolnay/rust-toolchain@master` would instead take
+# an explicit `with: toolchain:` input and has no file-based auto-detection
+# — don't switch to it expecting that.)
 #
 # Why: ci.yml sets `RUSTFLAGS: "-D warnings"` at the workflow level, so it
 # applies to every cargo step, not just clippy. Without a pin, a new Rust
