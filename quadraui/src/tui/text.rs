@@ -2,12 +2,11 @@
 //!
 //! Every TUI consumer measuring or truncating text needs to reckon in
 //! terminal display columns, not bytes or `char`s: CJK and wide-emoji
-//! glyphs occupy two columns, Nerd Font Private-Use-Area glyphs render
-//! double-width in terminals regardless of what `unicode-width` reports
-//! for them, and a byte-indexed slice (`&s[..n]`) can land mid-codepoint
-//! and panic. Before this module existed, every consumer re-rolled this
-//! by hand (coord-tui alone had ~24 inline `s.chars().take(n).collect()`
-//! sites, none of which accounted for display width). See issue #472.
+//! glyphs occupy two columns, and a byte-indexed slice (`&s[..n]`) can
+//! land mid-codepoint and panic. Before this module existed, every
+//! consumer re-rolled this by hand (coord-tui alone had ~24 inline
+//! `s.chars().take(n).collect()` sites, none of which accounted for
+//! display width). See issue #472.
 //!
 //! [`char_cell_width`] and [`display_width`] measure; [`truncate_to_width`]
 //! and [`truncate_to_width_ellipsis`] clip a string to a column budget
@@ -18,17 +17,17 @@ use std::borrow::Cow;
 
 /// Terminal cell width of a single character (0, 1, or 2).
 ///
-/// Uses the `unicode-width` crate's UAX#11 tables, with a range-based
-/// override for the Nerd Font Supplement PUA range (`U+F0000`–`U+F9999`),
-/// which terminals render as double-width. This is checked *before*
-/// falling through to `unicode-width` rather than only as a fallback for
-/// `None`: some `unicode-width` releases report `Some(1)` rather than
-/// `None` for this range, which would otherwise silently undersize
-/// Nerd Font glyphs depending on the exact dependency version resolved.
+/// Uses the `unicode-width` crate's UAX#11 tables directly, with no
+/// codepoint-range overrides. Private-Use-Area codepoints — including
+/// both Nerd Font PUA blocks (BMP `U+E000`–`U+F8FF` and Supplementary-A
+/// `U+F0000`–`U+FFFFD`) — measure as width 1, matching `unicode-width`
+/// and `Nerd Font Mono` (the terminal-recommended, single-cell variant).
+/// Non-Mono Nerd Font variants are genuinely double-width, but that is a
+/// font/theme property, not something derivable from the codepoint
+/// alone; if double-width PUA glyphs ever need supporting, it must come
+/// in as an explicit input (theme/config/probe), not a range guess here.
+/// See issue #545.
 pub fn char_cell_width(c: char) -> u16 {
-    if ('\u{F0000}'..='\u{F9999}').contains(&c) {
-        return 2;
-    }
     unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u16
 }
 
@@ -99,12 +98,17 @@ mod tests {
     }
 
     #[test]
-    fn char_cell_width_nerd_font_pua_override_is_two() {
-        // Always 2, regardless of what unicode-width reports for these
-        // codepoints (it varies by release — Some(1) or None).
-        assert_eq!(char_cell_width('\u{F0000}'), 2);
-        assert_eq!(char_cell_width('\u{F0001}'), 2);
-        assert_eq!(char_cell_width('\u{F9999}'), 2);
+    fn char_cell_width_pua_glyphs_are_width_one_and_consistent_across_blocks() {
+        // No codepoint-range special cases: both Nerd Font PUA blocks
+        // measure the same width (1), per unicode-width / Nerd Font Mono.
+        // BMP PUA, e.g. nf-fa-github (U+F09B).
+        let bmp_pua = char_cell_width('\u{F09B}');
+        // Supplementary PUA-A, U+F0000 — inside the range this override
+        // used to hardcode to width 2.
+        let spua_a = char_cell_width('\u{F0000}');
+        assert_eq!(bmp_pua, 1);
+        assert_eq!(spua_a, 1);
+        assert_eq!(bmp_pua, spua_a);
     }
 
     #[test]
