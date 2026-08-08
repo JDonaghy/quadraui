@@ -16,7 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # @master (not @stable) so this reads the channel out of
+      # rust-toolchain.toml instead of always fetching the latest stable
+      # release — see rust-toolchain.toml and issue #544. `@stable` ignores
+      # the toolchain file and would silently undo the pin.
+      - uses: dtolnay/rust-toolchain@master
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -26,7 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # @master (not @stable) so this reads the channel out of
+      # rust-toolchain.toml instead of always fetching the latest stable
+      # release — see rust-toolchain.toml and issue #544. `@stable` ignores
+      # the toolchain file and would silently undo the pin.
+      - uses: dtolnay/rust-toolchain@master
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -54,7 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # @master (not @stable) so this reads the channel out of
+      # rust-toolchain.toml instead of always fetching the latest stable
+      # release — see rust-toolchain.toml and issue #544. `@stable` ignores
+      # the toolchain file and would silently undo the pin.
+      - uses: dtolnay/rust-toolchain@master
         with:
           components: clippy
       - name: Install GTK4 system libraries
