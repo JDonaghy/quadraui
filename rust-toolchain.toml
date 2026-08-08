@@ -1,0 +1,16 @@
+# Pins the toolchain used by `cargo` for this workspace (and by CI, which
+# reads this file via `dtolnay/rust-toolchain@stable` — see ci.yml).
+#
+# Why: ci.yml sets `RUSTFLAGS: "-D warnings"` at the workflow level, so it
+# applies to every cargo step, not just clippy. Without a pin, a new Rust
+# stable release can turn this repo's CI red with zero code changes — every
+# release ships new clippy lints, and some tighten existing ones. quadraui is
+# the strictest of the three Rust repos in the fleet and the most-depended-on
+# (kubeui-gtk in-tree, coord-tui and vimcode downstream), so a spontaneous red
+# here blocks two consumers at once.
+#
+# Bumping the toolchain is now a deliberate, reviewable commit to this file —
+# the same argument as pinning a dependency, one layer down. See issue #544.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
