@@ -2108,6 +2108,124 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
     );
 }
 
+// ─── DataTableApp: horizontally-scrolled click routing (#550) ──────────────
+//
+// `DataTableApp` sets `min_total_width = 80` cells, so a viewport
+// narrower than that lays the columns out wider than the visible area
+// and `h_scroll` becomes genuinely drivable (`L`/`H` step it by 5).
+//
+// Before #550 the renderer subtracted `h_scroll` when painting but
+// `DataTableLayout::hit_test` did not add it back, so every click
+// resolved against the *unscrolled* column geometry — the defect
+// coord-tui had latent in its Audit table (claude-coordinator#1853),
+// where a header click sorted whichever column happened to sit at that
+// x before scrolling.
+
+/// Which column title carries the sort indicator, read off the painted
+/// header row. The status bar's `sort:` segment is the more direct
+/// signal but does not fit in the narrow viewport these tests need to
+/// force horizontal scrolling in the first place, so the header's own
+/// `▲`/`▼` suffix is the observable.
+fn sorted_header(screen: &str) -> Option<&'static str> {
+    let header = screen.lines().next()?;
+    ["Name", "Status", "Age", "Restarts"]
+        .into_iter()
+        .find(|title| {
+            header.contains(&format!("{title} ▲")) || header.contains(&format!("{title} ▼"))
+        })
+}
+
+/// The Audit regression: with the table scrolled horizontally, clicking
+/// a painted header must sort *that* column — not the one that used to
+/// occupy those cells at `h_scroll == 0`.
+#[test]
+fn data_table_h_scrolled_header_click_sorts_the_column_under_the_cursor() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 50, 26);
+    assert_eq!(
+        sorted_header(&driver.screen()),
+        Some("Name"),
+        "app starts sorted by Name:\n{}",
+        driver.screen()
+    );
+
+    // Scroll right far enough that "Status" no longer sits over the
+    // cells "Name" occupied at rest.
+    let unscrolled_status_x = driver
+        .find("Status")
+        .unwrap_or_else(|| panic!("Status header not painted:\n{}", driver.screen()))
+        .0;
+    for _ in 0..6 {
+        driver.type_char('L');
+    }
+    let screen = driver.screen();
+    let (status_x, status_y) = driver
+        .find("Status")
+        .unwrap_or_else(|| panic!("Status header not painted after scrolling:\n{screen}"));
+    assert_eq!(
+        status_y, 0.5,
+        "Status should be on the header row:\n{screen}"
+    );
+    assert!(
+        status_x < unscrolled_status_x - 1.0,
+        "'L' should have scrolled the Status header left (was {unscrolled_status_x}, \
+         now {status_x}):\n{screen}"
+    );
+
+    // Click a few cells into the title, clear of the preceding column's
+    // ±3-cell divider grab zone.
+    driver.click(status_x + 4.0, status_y);
+
+    let after = driver.screen();
+    assert_eq!(
+        sorted_header(&after),
+        Some("Status"),
+        "clicking the painted 'Status' header while h-scrolled must sort Status, and must \
+         not sort whichever column occupied those cells before scrolling (the \
+         claude-coordinator#1853 mis-routing):\n{after}"
+    );
+}
+
+/// `h_scroll == 0` routing is untouched: the same header click sorts the
+/// same column it always did.
+#[test]
+fn data_table_unscrolled_header_click_still_sorts_that_column() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 50, 26);
+    let (x, y) = driver
+        .find("Status")
+        .unwrap_or_else(|| panic!("Status header not painted:\n{}", driver.screen()));
+    driver.click(x + 4.0, y);
+    let after = driver.screen();
+    assert_eq!(
+        sorted_header(&after),
+        Some("Status"),
+        "unscrolled header click must keep routing to the column under the cursor:\n{after}"
+    );
+}
+
+/// A body click while h-scrolled still selects the row under the cursor
+/// — the vertical axis is orthogonal to `h_scroll` and must not shift.
+#[test]
+fn data_table_h_scrolled_body_click_selects_the_row_under_the_cursor() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 50, 26);
+    for _ in 0..6 {
+        driver.type_char('L');
+    }
+    let screen = driver.screen();
+    // "Running" is a Status-column value; at this scroll offset it is
+    // painted well left of where it sits at rest.
+    let (x, y) = driver
+        .find("Running")
+        .unwrap_or_else(|| panic!("no Running row painted while scrolled:\n{screen}"));
+    driver.click(x, y);
+    let after = driver.screen();
+    let expected_row = y as usize; // header occupies row 0, body starts at 1
+    assert!(
+        after.contains(&format!("row {expected_row} / 20")),
+        "a body click while h-scrolled should select the row it landed on \
+         (expected row {expected_row}):\n{after}"
+    );
+}
+
 // ─── HelpLayerDemo (#431): context-sensitive help registry + cheatsheet ────
 //
 // `HelpLayerDemo` implements `ShellApp` with two panels ("Explorer" and

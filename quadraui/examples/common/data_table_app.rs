@@ -6,7 +6,14 @@
 //! - `s` — cycle sort column (Name → Status → Age → Restarts → none)
 //! - `d` — toggle sort direction
 //! - `f` — toggle the pinned footer/summary row (#432)
+//! - `H` / `←`, `L` / `→` — scroll horizontally by 5 units (#550)
 //! - `q` / `Esc` — quit
+//!
+//! Horizontal scrolling only has anywhere to go when the terminal is
+//! narrower than the table's `min_total_width` (80 cells) — run this at
+//! ~50 columns to exercise it. Clicks stay routed to the column painted
+//! under the cursor at any `h_scroll`: `DataTableLayout::hit_test`
+//! undoes the same offset the rasteriser applies (#550).
 
 use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::{

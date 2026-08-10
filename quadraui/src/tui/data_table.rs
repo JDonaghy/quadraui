@@ -775,6 +775,172 @@ mod tests {
         );
     }
 
+    // ── #550: paint/click round-trip under horizontal scrolling ────────
+
+    /// A table laid out wider than its viewport, so `h_scroll` is
+    /// genuinely drivable: 4 × `Fixed(12.0)` columns (48 content cells)
+    /// inside a 24-cell viewport.
+    fn make_h_scrolling_table() -> DataTable {
+        let titles = ["Alpha", "Bravo", "Charlie", "Delta"];
+        DataTable {
+            id: WidgetId::new("hscroll"),
+            columns: titles
+                .iter()
+                .map(|t| Column {
+                    title: (*t).into(),
+                    width: ColumnWidth::Fixed(12.0),
+                    align: ColumnAlign::Left,
+                })
+                .collect(),
+            rows: vec![DataRow {
+                cells: vec![
+                    StyledText::plain("a-one"),
+                    StyledText::plain("b-two"),
+                    StyledText::plain("c-three"),
+                    StyledText::plain("d-four"),
+                ],
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: Some(48.0),
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        }
+    }
+
+    /// The core #550 round-trip: whatever header title the rasteriser
+    /// paints at a given screen cell, hit-testing that cell must name the
+    /// same column — at every scroll offset, including one large enough
+    /// to push the first column fully off-screen.
+    #[test]
+    fn h_scrolled_header_click_resolves_to_the_painted_column() {
+        let area = Rect::new(0, 0, 24, 6);
+        // 0 → nothing scrolled; 14 → "Alpha" partially off; 30 → "Alpha"
+        // and "Bravo" both fully off-screen.
+        for h_scroll in [0.0_f32, 6.0, 14.0, 30.0] {
+            let mut table = make_h_scrolling_table();
+            table.h_scroll = h_scroll;
+            let mut buf = Buffer::empty(area);
+            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+            let header: String = (0..area.width)
+                .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+
+            let mut checked = 0;
+            for (col_idx, col) in table.columns.iter().enumerate() {
+                let Some(pos) = find_char_pos(&header, &col.title) else {
+                    continue; // title scrolled off (or clipped) — nothing to click
+                };
+                checked += 1;
+                // Click the last painted char of the title: still inside
+                // the column, and for a fully-visible title far enough
+                // from the left edge that the previous column's divider
+                // grab zone can't claim it.
+                let x = pos + col.title.chars().count() - 1;
+                assert_eq!(
+                    layout.hit_test(x as f32 + 0.5, 0.5, 0, table.rows.len()),
+                    DataTableHit::Header { col: col_idx },
+                    "h_scroll={h_scroll}: cell {x} paints '{}' but hit-tests elsewhere\n\
+                     header: {header:?}",
+                    col.title
+                );
+            }
+            assert!(
+                checked > 0,
+                "h_scroll={h_scroll} painted no fully-visible header title — the assertion \
+                 loop above would be vacuous\nheader: {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn h_scrolled_body_cell_click_resolves_to_the_painted_column() {
+        let area = Rect::new(0, 0, 24, 6);
+        for h_scroll in [0.0_f32, 6.0, 14.0, 30.0] {
+            let mut table = make_h_scrolling_table();
+            table.h_scroll = h_scroll;
+            let mut buf = Buffer::empty(area);
+            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+            let row: String = (0..area.width)
+                .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+
+            let mut checked = 0;
+            for (col_idx, cell) in table.rows[0].cells.iter().enumerate() {
+                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                let Some(pos) = find_char_pos(&row, &text) else {
+                    continue;
+                };
+                checked += 1;
+                // The body band still routes to a row...
+                assert_eq!(
+                    layout.hit_test(pos as f32 + 0.5, 1.5, 0, table.rows.len()),
+                    DataTableHit::Row { idx: 0 },
+                    "h_scroll={h_scroll}: body click should stay row 0"
+                );
+                // ...and `column_hit` names the cell painted there.
+                assert_eq!(
+                    layout.column_hit(pos as f32 + 0.5),
+                    Some(col_idx),
+                    "h_scroll={h_scroll}: cell {pos} paints '{text}' but column_hit disagrees\n\
+                     row: {row:?}"
+                );
+            }
+            assert!(
+                checked > 0,
+                "h_scroll={h_scroll} painted no fully-visible body cell — the assertion loop \
+                 above would be vacuous\nrow: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn h_scrolled_header_divider_click_resolves_to_the_painted_separator() {
+        let area = Rect::new(0, 0, 24, 6);
+        for h_scroll in [0.0_f32, 6.0, 14.0, 30.0] {
+            let mut table = make_h_scrolling_table();
+            table.h_scroll = h_scroll;
+            let mut buf = Buffer::empty(area);
+            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+            // The rasteriser paints '│' on the right edge cell of every
+            // column but the last, i.e. one cell *before* the boundary
+            // `hit_test` measures the grab zone from.
+            let painted_seps: Vec<u16> = (0..area.width)
+                .filter(|&x| buf[(x, 0)].symbol() == "│")
+                .collect();
+            assert!(
+                !painted_seps.is_empty(),
+                "h_scroll={h_scroll}: expected at least one painted separator"
+            );
+            for sep_x in painted_seps {
+                let hit = layout.hit_test(sep_x as f32 + 0.5, 0.5, 0, table.rows.len());
+                let DataTableHit::HeaderDivider { col } = hit else {
+                    panic!(
+                        "h_scroll={h_scroll}: separator painted at x={sep_x} must hit-test as a \
+                         divider, got {hit:?}"
+                    );
+                };
+                // Round-trip the column index back to the boundary it
+                // owns and confirm it is the one painted here.
+                let boundary = layout.columns[col].x + layout.columns[col].width;
+                assert!(
+                    ((boundary - h_scroll) - (sep_x as f32 + 1.0)).abs() < 0.01,
+                    "h_scroll={h_scroll}: separator at x={sep_x} resolved to divider {col}, \
+                     whose boundary paints at {}",
+                    boundary - h_scroll
+                );
+            }
+        }
+    }
+
     #[test]
     fn vertical_scrollbar_track_excludes_footer_band() {
         // Regression guard: the vertical scrollbar's track must span
