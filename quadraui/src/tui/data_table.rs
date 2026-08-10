@@ -26,7 +26,7 @@ pub fn draw_data_table(
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
-    let layout = table.layout(
+    let mut layout = table.layout(
         area.width as f32,
         area.height as f32,
         1.0,
@@ -34,6 +34,18 @@ pub fn draw_data_table(
         1.0,
         |col| ColumnMeasure::new(col.title.chars().count() as f32),
     );
+
+    // TUI is cell-granular: every column paints at a *rounded* offset
+    // (`h_off` below), not the raw fractional `h_scroll`. `hit_test` /
+    // `column_hit` do no rounding of their own — they trust
+    // `DataTableLayout::h_scroll` to already equal what was painted — so
+    // this must be rounded here, once, before the layout is handed back
+    // to callers for hit-testing. Skipping this left a gap whenever
+    // `h_scroll`'s fractional part crossed 0.5: painting rounded up a
+    // full cell while hit-testing added the un-rounded value back,
+    // misrouting clicks on the leftmost visible cell of whichever column
+    // scrolled into view (#550 round 2).
+    layout.h_scroll = table.h_scroll.round();
 
     if area.width == 0 || area.height == 0 {
         return layout;
@@ -53,7 +65,10 @@ pub fn draw_data_table(
     }
 
     let sep_fg = ratatui_color(theme.separator);
-    let h_off = table.h_scroll.round() as i16;
+    // Same rounded value now carried on `layout.h_scroll` — kept as a
+    // local `i16` here since every paint-position computation below
+    // works in signed cell-offset arithmetic.
+    let h_off = layout.h_scroll as i16;
 
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() {
@@ -898,6 +913,164 @@ mod tests {
                 "h_scroll={h_scroll} painted no fully-visible body cell — the assertion loop \
                  above would be vacuous\nrow: {row:?}"
             );
+        }
+    }
+
+    // ── #550 round 2: raw integer pointer coordinates, fractional h_scroll ──
+    //
+    // Every test above (and the primitive-layer sweep in
+    // `primitives::data_table::tests`) drives `hit_test` with cell-centre
+    // coordinates (`cell as f32 + 0.5`). Real TUI pointer input is never
+    // that: `tui::events` builds it as
+    // `Point::new(event.column as f32, event.row as f32)` — a raw
+    // integer cell index. The two only coincide when `h_scroll`'s
+    // fractional part is `< 0.5`; above that, painting rounds up a full
+    // cell while a `+ 0.5` click coordinate still lands inside the
+    // "old" rounding bucket and hides the gap. These tests use raw
+    // integer `x`, matching real input, at deliberately fractional
+    // `h_scroll` values whose fractional part is `>= 0.5`.
+
+    /// Exactly the geometry from the #550 round-2 review: 4 ×
+    /// `Fixed(30.0)` columns (content boundaries 0/30/60/90/120) inside a
+    /// 60-wide viewport.
+    fn make_wide_hscroll_table() -> DataTable {
+        let titles = ["Alpha", "Bravo", "Charlie", "Delta"];
+        DataTable {
+            id: WidgetId::new("wide-hscroll"),
+            columns: titles
+                .iter()
+                .map(|t| Column {
+                    title: (*t).into(),
+                    width: ColumnWidth::Fixed(30.0),
+                    align: ColumnAlign::Left,
+                })
+                .collect(),
+            rows: vec![DataRow {
+                cells: vec![
+                    StyledText::plain("a-one"),
+                    StyledText::plain("b-two"),
+                    StyledText::plain("c-three"),
+                    StyledText::plain("d-four"),
+                ],
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: Some(120.0),
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        }
+    }
+
+    #[test]
+    fn raw_integer_click_at_fractional_h_scroll_hits_the_painted_column() {
+        // The exact repro from the #550 round-2 review: h_scroll = 15.6
+        // → h_off = round(15.6) = 16. The renderer paints column c1
+        // (content [30,60)) at screen [14,44). A real click at integer
+        // screen x=14 is squarely on c1 as painted, and `column_hit` —
+        // the divider-agnostic "which column is painted here" query — is
+        // the API the review's repro exercises directly (it has no
+        // resize-grab zone to land in, unlike `hit_test`'s header
+        // branch; see the next test for that case).
+        let area = Rect::new(0, 0, 60, 3);
+        let mut table = make_wide_hscroll_table();
+        table.h_scroll = 15.6;
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        assert_eq!(layout.h_scroll, 16.0, "TUI layout must carry the rounded offset");
+
+        // Raw integer coordinate (no `+ 0.5`), exactly as `tui::events`
+        // constructs a real pointer position.
+        assert_eq!(
+            layout.column_hit(14.0),
+            Some(1),
+            "integer click x=14 sits on c1's painted left edge at h_scroll=15.6"
+        );
+
+        // The pre-fix bug: adding the *un-rounded* 15.6 back would put
+        // this at content x=29.6, inside c0's [0,30) — never c1's.
+        assert_ne!(layout.column_hit(14.0), Some(0));
+
+        // The header branch of `hit_test` sits at the exact same screen
+        // x, but content x=30 lands precisely on the c0/c1 divider's
+        // grab zone (`DIVIDER_GRAB_PX = 3.0`), so per the review's own
+        // analysis it resolves to `HeaderDivider` rather than either
+        // header — never the *wrong* header (`Header { col: 0 }`, the
+        // original defect this fix closes).
+        assert_eq!(
+            layout.hit_test(14.0, 0.0, 0, table.rows.len()),
+            DataTableHit::HeaderDivider { col: 0 },
+            "residual at an exact boundary falls in the pre-existing divider grab zone"
+        );
+        assert_ne!(
+            layout.hit_test(14.0, 0.0, 0, table.rows.len()),
+            DataTableHit::Header { col: 0 },
+        );
+    }
+
+    #[test]
+    fn raw_integer_body_click_at_fractional_h_scroll_hits_the_painted_column() {
+        // Same geometry, but a body-row click — the "cell hit" half of
+        // the same repro.
+        let area = Rect::new(0, 0, 60, 3);
+        let mut table = make_wide_hscroll_table();
+        table.h_scroll = 15.6;
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        assert_eq!(
+            layout.hit_test(14.0, 1.0, 0, table.rows.len()),
+            DataTableHit::Row { idx: 0 },
+            "row resolution is unaffected by h_scroll rounding"
+        );
+        assert_eq!(layout.column_hit(14.0), Some(1));
+    }
+
+    #[test]
+    fn raw_integer_header_click_at_fractional_h_scroll_does_not_silently_arm_a_resize_drag() {
+        // The header-click half of the same repro, at several fractional
+        // offsets whose fractional part is >= 0.5: the residual always
+        // falls inside DIVIDER_GRAB_PX of *some* boundary (by
+        // construction — see the module doc), so per #550's own
+        // analysis this resolves to `HeaderDivider`, not a wrong
+        // `Header`. This test pins that this is the ONLY acceptable
+        // non-exact-header outcome — never a header for a different,
+        // wrong column (the original defect: a sort click silently
+        // hitting the wrong column instead of silently arming a
+        // resize-drag).
+        let area = Rect::new(0, 0, 60, 3);
+        for h_scroll in [15.6_f32, 45.7, 75.9] {
+            let mut table = make_wide_hscroll_table();
+            table.h_scroll = h_scroll;
+            let mut buf = Buffer::empty(area);
+            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let h_off = h_scroll.round();
+
+            for x in 0..60u16 {
+                let hit = layout.hit_test(x as f32, 0.0, 0, table.rows.len());
+                if let DataTableHit::Header { col } = hit {
+                    // The column this integer x resolves to must be the
+                    // column actually painted there — content x is
+                    // `x + h_off` (the rounded offset baked into
+                    // `layout.h_scroll`).
+                    let content_x = x as f32 + h_off;
+                    let painted = layout
+                        .columns
+                        .iter()
+                        .position(|rc| content_x >= rc.x && content_x < rc.x + rc.width);
+                    assert_eq!(
+                        painted,
+                        Some(col),
+                        "h_scroll={h_scroll}: integer x={x} resolved to Header{{col: {col}}} \
+                         but the renderer paints column {painted:?} there"
+                    );
+                }
+            }
         }
     }
 

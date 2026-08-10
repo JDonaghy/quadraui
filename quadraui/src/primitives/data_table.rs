@@ -38,6 +38,28 @@
 //! space** and adds [`DataTableLayout::h_scroll`] back before comparing
 //! against `columns`. At `h_scroll == 0.0` the two spaces coincide and
 //! the conversion is a no-op (#550).
+//!
+//! ## `h_scroll` must already agree with what was painted
+//!
+//! Pointer positions are **raw pixel/cell coordinates** — for the TUI
+//! backend, `Point::new(event.column as f32, event.row as f32)`
+//! (`tui::events`), an integer cell index, *not* a cell-centre `+ 0.5`.
+//! `DataTableLayout::h_scroll` therefore has to be exactly the value the
+//! renderer subtracted when it painted, not merely "close" to it — any
+//! rounding a backend applies at paint time must already be baked into
+//! the `h_scroll` carried on the layout `hit_test` runs against, because
+//! `hit_test` does no rounding of its own (#550 round 2).
+//!
+//! Pixel backends (GTK/macOS) paint at the exact fractional `h_scroll`,
+//! so the layout's `h_scroll` — copied verbatim from `DataTable::h_scroll`
+//! in [`DataTable::layout`] — already matches. The TUI backend is
+//! cell-granular: it paints at `h_scroll.round()` (`tui::data_table`'s
+//! `h_off`), so `tui::data_table::draw_data_table` overwrites the
+//! returned layout's `h_scroll` with that same rounded value before
+//! returning it, keeping every `hit_test`/`column_hit` call downstream
+//! in agreement with the paint. A caller that hand-builds a
+//! `DataTableLayout` for a cell-granular surface without going through
+//! that backend function must apply the same rounding itself.
 
 use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -204,7 +226,15 @@ pub enum DataTableHit {
 }
 
 /// Fully-resolved DataTable layout.
+///
+/// `#[non_exhaustive]`: per PRIMITIVE_RULES rule 8, this keeps future
+/// field additions non-breaking regardless of what downstream ends up
+/// doing with the struct. Today (#550) no downstream crate constructs or
+/// pattern-matches this type directly — both `coord-tui` and `vimcode`
+/// only ever receive it from `.layout()` — but there's no reason to
+/// leave that door open for free.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct DataTableLayout {
     pub header_height: f32,
     pub row_height: f32,
@@ -227,14 +257,23 @@ pub struct DataTableLayout {
     /// never overwrites the last body row in cell-granular backends
     /// (TUI) and stays visually breathing-room'd in pixel backends.
     pub footer_height: f32,
-    /// The horizontal scroll offset this layout was painted at — a copy
-    /// of [`DataTable::h_scroll`], carried here so hit-testing can undo
-    /// the same shift the renderer applied (#550).
+    /// The horizontal scroll offset this layout was **painted** at — not
+    /// necessarily a bit-for-bit copy of [`DataTable::h_scroll`], carried
+    /// here so hit-testing can undo the same shift the renderer applied
+    /// (#550).
     ///
     /// Backends paint column `i` at `columns[i].x - h_scroll`, so a
     /// pointer `x` in viewport space maps to `x + h_scroll` in the
     /// content space `columns` is expressed in. `0.0` (the overwhelmingly
     /// common case) makes every conversion an identity.
+    ///
+    /// For pixel backends this is exactly `DataTable::h_scroll`. For
+    /// cell-granular backends (TUI) it is `DataTable::h_scroll.round()`
+    /// — the same rounding the renderer applies before subtracting it
+    /// from each column's `x` — because `hit_test`/`column_hit` add this
+    /// field back with no rounding of their own; a mismatch here
+    /// misroutes clicks whenever `DataTable::h_scroll`'s fractional part
+    /// crosses 0.5 (#550 round 2). See `tui::data_table::draw_data_table`.
     pub h_scroll: f32,
 }
 
@@ -248,12 +287,14 @@ impl DataTableLayout {
     ///
     /// Identity when `h_scroll == 0.0`.
     ///
-    /// Cell-granular backends (TUI) round `h_scroll` to whole cells when
-    /// painting; this deliberately does not, because a click inside cell
-    /// `v` arrives as `v + 0.5` and `floor(v + 0.5 + h)` equals
-    /// `v + round(h)` for every `h >= 0` — the un-rounded add already
-    /// agrees with the rounded paint, and staying in `f32` keeps pixel
-    /// backends exact.
+    /// This performs no rounding of its own — it trusts `self.h_scroll`
+    /// to already be exactly the value the renderer subtracted at paint
+    /// time (see the module-level "`h_scroll` must already agree with
+    /// what was painted" section). Pointer coordinates are raw pixel/cell
+    /// positions, not cell-centres, so there is no `+ 0.5` to lean on:
+    /// a cell-granular backend that fed this an un-rounded `h_scroll`
+    /// while painting at a rounded offset would misroute clicks whenever
+    /// `h_scroll`'s fractional part crosses 0.5 (#550 round 2).
     #[inline]
     fn content_x(&self, x: f32) -> f32 {
         x + self.h_scroll
@@ -326,6 +367,18 @@ impl DataTableLayout {
                 None => DataTableHit::Empty,
             };
         }
+        // Row resolution is intentionally purely `y`-based and does NOT
+        // consult `in_v_scrollbar_strip` — a v-scrollbar-track click here
+        // already fell through to `Row { .. }` before #550 (row
+        // resolution never looked at `x` at all), so this fix does not
+        // regress it. It is, however, still uncovered by this layer: the
+        // issue's acceptance bullet ("a track click must not fall
+        // through to a header or a row") is only satisfied for rows by a
+        // caller intercepting the strip itself before calling
+        // `hit_test` — e.g. coord-tui's `audit_scrollbar_hit`. See
+        // `scrollbar_strips_keep_priority_when_horizontally_scrolled`
+        // (header case) and `v_scrollbar_strip_row_click_is_a_caller_concern`
+        // (documents this row-branch gap) in the tests below.
         let body_bottom = self.header_height + self.visible_rows as f32 * self.row_height;
         if y < body_bottom {
             let row_in_viewport = ((y - self.header_height) / self.row_height).floor() as usize;
@@ -1355,6 +1408,35 @@ mod tests {
             !matches!(hit, DataTableHit::Row { .. } | DataTableHit::Header { .. }),
             "a horizontal-scrollbar track click must not fall through to a header or a row, \
              got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn v_scrollbar_strip_row_click_is_a_caller_concern() {
+        // Documents the non-blocking #550-review gap: unlike the header
+        // branch, `hit_test`'s row branch never consults `x` at all (row
+        // resolution is purely `y`-based, both before and after #550),
+        // so a click over the vertical-scrollbar track on a body row
+        // falls through to `Row { .. }` here rather than `Empty`. This
+        // is pre-existing behaviour, not a #550 regression — asserted
+        // against explicitly so a future change can't silently start
+        // relying on `hit_test` filtering this out. Callers that own a
+        // vertical scrollbar (e.g. coord-tui's `audit_scrollbar_hit`)
+        // are expected to intercept the strip themselves before forwarding
+        // to `hit_test`.
+        let mut table = make_wide_table(200);
+        table.show_scrollbar = true;
+        table.h_scroll = 45.0;
+        let layout = table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+        assert!(layout.scrollbar_width > 0.0);
+
+        let sb_x = layout.viewport_width - layout.scrollbar_width;
+        let y_in_body = layout.header_height + 0.5;
+        assert_eq!(
+            layout.hit_test(sb_x + 0.5, y_in_body, 0, 200),
+            DataTableHit::Row { idx: 0 },
+            "row branch does not filter the v-scrollbar strip — intentional, see comment on \
+             the row branch in `hit_test`"
         );
     }
 
