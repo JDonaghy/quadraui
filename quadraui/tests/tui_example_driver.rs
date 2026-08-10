@@ -1577,6 +1577,45 @@ fn full_chrome_ctrl_t_hands_the_title_bar_row_to_the_activity_bar() {
     );
 }
 
+/// Regression test for vimcode#634's recurring smoke bug: with a title bar
+/// pushing the activity bar off row 0, clicking an icon's *painted* row
+/// must activate that icon — not the one above it. The TUI rasteriser used
+/// to return `ActivityBarRowHit`s in absolute rows (unlike its GTK/macOS
+/// siblings and `backend::activity_bar_hits`, which are rect-relative), so
+/// `AppShell::cached_activity_hit` — which adds the cached bar bounds' `y`
+/// itself — double-counted the title-bar offset and every hit region
+/// landed one band lower than its paint.
+#[test]
+fn full_chrome_activity_icon_click_matches_paint_below_title_bar() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    // Title bar reserved (2 rows) → activity icons paint at rows 2..=5:
+    // Explorer@2, Search@3, Source Control@4, Debug@5. Sanity-check the
+    // startup state so the assertion below can't pass vacuously.
+    assert!(
+        driver.screen_contains("EXPLORER"),
+        "startup sidebar should be Explorer:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("SEARCH"),
+        "Search panel must not be open before the click:\n{}",
+        driver.screen()
+    );
+
+    // Click the Search icon on its painted row (row 3, below the 2-row
+    // title bar). With the old absolute hit rows this click fell into a
+    // region shifted two rows down and did NOT open Search.
+    driver.click(1.0, 3.0);
+    assert!(
+        driver.screen_contains("SEARCH"),
+        "clicking the Search icon's painted row must open the SEARCH \
+         panel:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── FullChromeDemo: window-edge resize escape hatch (#406) ────────────────
 //
 // `FullChromeDemo` hit-tests `ShellContext::window_edge` on `MouseDown` and

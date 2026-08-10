@@ -122,9 +122,19 @@ pub fn draw_activity_bar(
             }
         }
 
+        // Hit rows are RECT-RELATIVE (`y - area.y`), matching the GTK and
+        // macOS rasterisers and the shared no-paint helper
+        // (`backend::activity_bar_hits`). Consumers — notably
+        // `AppShell::cached_activity_hit`/`update_hover` — add the cached
+        // bar bounds' own `y` back on top, so returning absolute rows here
+        // double-counted `area.y` and shifted every hit region down by the
+        // bar's offset the moment the bar stopped starting at row 0 (e.g.
+        // after `set_title_bar_visible(true)` reserved the title-bar row):
+        // clicking icon N activated icon N-1 while paint stayed correct
+        // (vimcode#634's recurring smoke bug).
         regions.push(ActivityBarRowHit {
-            y_start: y as f64,
-            y_end: (y + 1) as f64,
+            y_start: (y - area.y) as f64,
+            y_end: (y - area.y + 1) as f64,
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
         });
@@ -133,4 +143,63 @@ pub fn draw_activity_bar(
     }
 
     regions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WidgetId;
+
+    fn item(id: &str, icon: &str) -> crate::primitives::activity_bar::ActivityItem {
+        crate::primitives::activity_bar::ActivityItem {
+            id: WidgetId::new(id),
+            icon: icon.into(),
+            tooltip: String::new(),
+            is_active: false,
+            is_keyboard_selected: false,
+        }
+    }
+
+    fn sample_bar() -> ActivityBar {
+        ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![item("activity:explorer", "E"), item("activity:search", "S")],
+            bottom_items: vec![item("activity:settings", "*")],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        }
+    }
+
+    /// Hit rows must be RECT-RELATIVE — same convention as the GTK and
+    /// macOS rasterisers and `backend::activity_bar_hits` — even when the
+    /// bar is painted at a non-zero `area.y`. Regression test for
+    /// vimcode#634: absolute rows here made `AppShell::cached_activity_hit`
+    /// (which adds the bar bounds' `y` itself) double-count the offset the
+    /// moment a runtime-revealed title bar pushed the bar off row 0, so a
+    /// click on icon N's painted row activated icon N-1.
+    #[test]
+    fn row_hits_are_rect_relative_even_with_offset_area() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        // Bar painted 3 rows down / 2 cols in — e.g. below a title bar.
+        let area = Rect::new(2, 3, 3, 10);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 16));
+        let regions = draw_activity_bar(&mut buf, area, &bar, &theme, None);
+
+        // `ActivityBar::layout` emits bottom-pinned items first (they win
+        // on collision), then top items — regions follow that order.
+        assert_eq!(regions.len(), 3);
+        // Bottom-pinned item hugs the rect's bottom edge (height 10).
+        assert_eq!(regions[0].y_start, 9.0);
+        assert_eq!(regions[0].y_end, 10.0);
+        assert_eq!(regions[0].id, WidgetId::new("activity:settings"));
+        // Top items start at the top of the RECT, not of the screen.
+        assert_eq!(regions[1].y_start, 0.0);
+        assert_eq!(regions[1].y_end, 1.0);
+        assert_eq!(regions[1].id, WidgetId::new("activity:explorer"));
+        assert_eq!(regions[2].y_start, 1.0);
+        assert_eq!(regions[2].y_end, 2.0);
+        assert_eq!(regions[2].id, WidgetId::new("activity:search"));
+    }
 }
