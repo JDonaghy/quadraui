@@ -52,14 +52,30 @@
 //!
 //! Pixel backends (GTK/macOS) paint at the exact fractional `h_scroll`,
 //! so the layout's `h_scroll` — copied verbatim from `DataTable::h_scroll`
-//! in [`DataTable::layout`] — already matches. The TUI backend is
-//! cell-granular: it paints at `h_scroll.round()` (`tui::data_table`'s
-//! `h_off`), so `tui::data_table::draw_data_table` overwrites the
-//! returned layout's `h_scroll` with that same rounded value before
-//! returning it, keeping every `hit_test`/`column_hit` call downstream
-//! in agreement with the paint. A caller that hand-builds a
-//! `DataTableLayout` for a cell-granular surface without going through
-//! that backend function must apply the same rounding itself.
+//! in [`DataTable::layout`] — already matches, and both their
+//! `draw_data_table` and their `Backend::data_table_layout` are
+//! self-consistent for free.
+//!
+//! The TUI backend is cell-granular: it paints at `h_scroll.round()`
+//! (`tui::data_table`'s `h_off`), so it must overwrite the returned
+//! layout's `h_scroll` with that same rounded value. It does that in one
+//! place — [`tui::data_table_layout`](crate::tui::data_table_layout) —
+//! which **both** `tui::data_table::draw_data_table` and
+//! `Backend::data_table_layout` route through, so the layout-on-demand
+//! hit-test path (no repaint) agrees with the paint path bit-for-bit.
+//! Adding a third TUI entry point that calls [`DataTable::layout`]
+//! directly would reopen #550; go through `tui::data_table_layout`
+//! instead. The same applies to any caller that hand-builds a
+//! `DataTableLayout` for a cell-granular surface: it must apply the
+//! rounding itself.
+//!
+//! One residual, pre-existing and unrelated to `h_scroll`: the TUI paint
+//! loop rounds each column's `rc.x` and the scroll offset independently
+//! (`rc.x.round() - h_off`), while `hit_test` compares against the
+//! continuous `rc.x`. For columns whose resolved boundaries aren't
+//! integers (`Flex`/`Content` widths that don't divide evenly) the two
+//! can disagree by up to one cell. That predates #550 and is not
+//! addressed here.
 
 use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -273,7 +289,10 @@ pub struct DataTableLayout {
     /// from each column's `x` — because `hit_test`/`column_hit` add this
     /// field back with no rounding of their own; a mismatch here
     /// misroutes clicks whenever `DataTable::h_scroll`'s fractional part
-    /// crosses 0.5 (#550 round 2). See `tui::data_table::draw_data_table`.
+    /// crosses 0.5 (#550 round 2). Both TUI entry points that produce a
+    /// layout — `tui::data_table::draw_data_table` and
+    /// `Backend::data_table_layout` — apply it via
+    /// [`tui::data_table_layout`](crate::tui::data_table_layout).
     pub h_scroll: f32,
 }
 

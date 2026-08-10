@@ -72,7 +72,7 @@ pub use chart::{draw_chart, tui_chart_layout};
 pub use command_center::{draw_command_center, tui_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::{draw_context_menu, draw_context_menu_with_submenus};
-pub use data_table::draw_data_table;
+pub use data_table::{data_table_layout, draw_data_table};
 pub use dialog::{draw_dialog, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;

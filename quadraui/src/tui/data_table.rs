@@ -15,6 +15,40 @@ use crate::primitives::data_table::{
 };
 use crate::theme::Theme;
 
+/// Resolve the layout `draw_data_table` paints `table` at, without
+/// touching a buffer.
+///
+/// This is the **single** definition of TUI DataTable geometry: both
+/// [`draw_data_table`] and `Backend::data_table_layout` go through it,
+/// so the layout a cache-free, layout-on-demand hit-test runs against is
+/// bit-for-bit the layout that was painted. Resolving the geometry in
+/// two places instead let them drift on the `h_scroll` rounding below
+/// (#550 round 3) — don't reintroduce a second `table.layout(..)` call
+/// site for the TUI.
+pub fn data_table_layout(area: Rect, table: &DataTable) -> DataTableLayout {
+    let mut layout = table.layout(
+        area.width as f32,
+        area.height as f32,
+        1.0,
+        1.0,
+        1.0,
+        |col| ColumnMeasure::new(col.title.chars().count() as f32),
+    );
+
+    // TUI is cell-granular: every column paints at a *rounded* offset
+    // (`draw_data_table`'s `h_off`), not the raw fractional `h_scroll`.
+    // `hit_test` / `column_hit` do no rounding of their own — they trust
+    // `DataTableLayout::h_scroll` to already equal what was painted — so
+    // this must be rounded here, once, before the layout is handed back
+    // to callers for hit-testing. Skipping this left a gap whenever
+    // `h_scroll`'s fractional part crossed 0.5: painting rounded up a
+    // full cell while hit-testing added the un-rounded value back,
+    // misrouting clicks on the leftmost visible cell of whichever column
+    // scrolled into view (#550 round 2).
+    layout.h_scroll = table.h_scroll.round();
+    layout
+}
+
 /// Draw a `DataTable` into `area`. `hovered_idx` carries per-frame
 /// hover state so the rasteriser can tint the hovered row. Returns
 /// the layout used for painting so callers can hit-test at the same
@@ -26,26 +60,7 @@ pub fn draw_data_table(
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
-    let mut layout = table.layout(
-        area.width as f32,
-        area.height as f32,
-        1.0,
-        1.0,
-        1.0,
-        |col| ColumnMeasure::new(col.title.chars().count() as f32),
-    );
-
-    // TUI is cell-granular: every column paints at a *rounded* offset
-    // (`h_off` below), not the raw fractional `h_scroll`. `hit_test` /
-    // `column_hit` do no rounding of their own — they trust
-    // `DataTableLayout::h_scroll` to already equal what was painted — so
-    // this must be rounded here, once, before the layout is handed back
-    // to callers for hit-testing. Skipping this left a gap whenever
-    // `h_scroll`'s fractional part crossed 0.5: painting rounded up a
-    // full cell while hit-testing added the un-rounded value back,
-    // misrouting clicks on the leftmost visible cell of whichever column
-    // scrolled into view (#550 round 2).
-    layout.h_scroll = table.h_scroll.round();
+    let layout = data_table_layout(area, table);
 
     if area.width == 0 || area.height == 0 {
         return layout;
@@ -982,7 +997,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
 
-        assert_eq!(layout.h_scroll, 16.0, "TUI layout must carry the rounded offset");
+        assert_eq!(
+            layout.h_scroll, 16.0,
+            "TUI layout must carry the rounded offset"
+        );
 
         // Raw integer coordinate (no `+ 0.5`), exactly as `tui::events`
         // constructs a real pointer position.

@@ -876,15 +876,14 @@ impl Backend for TuiBackend {
     }
 
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
+        // Must go through the *same* resolver `draw_data_table` uses —
+        // in particular the cell-granular `h_scroll.round()`. This is the
+        // cache-free, layout-on-demand path real apps hit-test through
+        // (see `examples/common/data_table_app.rs`), so resolving the
+        // geometry independently here reopened #550 for every fractional
+        // `h_scroll` (round 3).
         let area = q_rect_to_ratatui(rect);
-        table.layout(
-            area.width as f32,
-            area.height as f32,
-            1.0,
-            1.0,
-            1.0,
-            |col| crate::ColumnMeasure::new(col.title.chars().count() as f32),
-        )
+        crate::tui::data_table_layout(area, table)
     }
 
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
@@ -2531,6 +2530,102 @@ mod tests {
             binding: KeyBinding::Literal(binding.to_string()),
             scope: AcceleratorScope::Global,
             label: None,
+        }
+    }
+
+    /// Four `Fixed(30.0)` columns (content boundaries 0/30/60/90/120)
+    /// in a 60-wide viewport — the #550 repro geometry.
+    fn wide_hscroll_table() -> crate::DataTable {
+        crate::DataTable {
+            id: WidgetId::new("wide-hscroll"),
+            columns: ["a", "b", "c", "d"]
+                .iter()
+                .map(|t| crate::Column {
+                    title: (*t).into(),
+                    width: crate::ColumnWidth::Fixed(30.0),
+                    align: crate::ColumnAlign::Left,
+                })
+                .collect(),
+            rows: vec![crate::DataRow {
+                cells: vec![
+                    StyledText::plain("a-one"),
+                    StyledText::plain("b-two"),
+                    StyledText::plain("c-three"),
+                    StyledText::plain("d-four"),
+                ],
+                decoration: crate::Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: Some(120.0),
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        }
+    }
+
+    /// #550 round 3: `Backend::data_table_layout` is the *cache-free,
+    /// layout-on-demand* hit-test path (see
+    /// `examples/common/data_table_app.rs`, which calls it from every
+    /// mouse handler without repainting). It resolved geometry with its
+    /// own `table.layout(..)` call and so returned the raw fractional
+    /// `h_scroll`, while `draw_data_table` painted at the rounded one —
+    /// reopening the original defect through a second entry point.
+    #[test]
+    fn data_table_layout_rounds_h_scroll_like_the_renderer() {
+        let backend = TuiBackend::new();
+        let rect = QRect::new(0.0, 0.0, 60.0, 3.0);
+        let mut table = wide_hscroll_table();
+
+        // A trackpad/wheel h-scroll lands on an arbitrary fraction; the
+        // example's `UiEvent::Scroll` handler does no rounding at all.
+        table.h_scroll = 23.7;
+        let layout = backend.data_table_layout(rect, &table);
+        assert_eq!(
+            layout.h_scroll, 24.0,
+            "layout-on-demand must carry the same rounded offset the renderer paints at"
+        );
+
+        // The review's exact repro value, and the click it misroutes.
+        table.h_scroll = 15.6;
+        let layout = backend.data_table_layout(rect, &table);
+        assert_eq!(layout.h_scroll, 16.0);
+        assert_eq!(
+            layout.column_hit(14.0),
+            Some(1),
+            "integer click x=14 sits on c1 as painted at h_scroll=15.6"
+        );
+        assert_ne!(
+            layout.column_hit(14.0),
+            Some(0),
+            "un-rounded 15.6 would put this at content x=29.6, inside c0"
+        );
+    }
+
+    /// The two TUI entry points must be interchangeable: a consumer that
+    /// hit-tests against a repaint-free layout has to land on exactly
+    /// what the last `draw_data_table` put on screen.
+    #[test]
+    fn data_table_layout_matches_draw_data_table_at_every_fractional_offset() {
+        let backend = TuiBackend::new();
+        let rect = QRect::new(0.0, 0.0, 60.0, 3.0);
+        let area = q_rect_to_ratatui(rect);
+        let mut table = wide_hscroll_table();
+
+        for tenths in 0..=600u32 {
+            table.h_scroll = tenths as f32 / 10.0;
+            let on_demand = backend.data_table_layout(rect, &table);
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            let painted =
+                crate::tui::draw_data_table(&mut buf, area, &table, &backend.current_theme, None);
+            assert_eq!(
+                on_demand, painted,
+                "layouts diverged at h_scroll = {}",
+                table.h_scroll
+            );
         }
     }
 
