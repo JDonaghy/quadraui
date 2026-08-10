@@ -159,8 +159,11 @@ pub enum ActivityBarHit {
 /// it. See issue #552; the height half of the same seam was #547.
 ///
 /// Rasterisers: keep the absolute value for *painting*, but push the
-/// bar-relative offset here. The `backends_agree_on_*` tests in
-/// `compose::app_shell` pin this across TUI/GTK.
+/// bar-relative offset here. Pinned across TUI/GTK by
+/// `tui::activity_bar::tests::hit_regions_are_bar_relative_not_absolute`
+/// / `hit_regions_do_not_move_when_the_bar_does`, plus the
+/// `activity_click_*_parity` / `activity_hover_*_parity` cross-backend
+/// tests in `tests/cross_backend_parity.rs`.
 ///
 /// [`Backend::draw_activity_bar`]: crate::Backend::draw_activity_bar
 /// [`TabBarHits`]: crate::TabBarHits

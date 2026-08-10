@@ -531,9 +531,12 @@ pub trait Backend {
     /// shared [`activity_bar_hits`] helper already produced, and what
     /// `AppShell` assumes in both its click and hover readers.
     ///
-    /// [`Self::activity_bar_layout`] must return the same space, and the
-    /// `backends_agree_*` tests in `compose::app_shell` fail if a backend
-    /// drifts.
+    /// [`Self::activity_bar_layout`] must return the same space. A
+    /// drifting backend fails
+    /// `tui::activity_bar::tests::hit_regions_are_bar_relative_not_absolute`
+    /// / `hit_regions_do_not_move_when_the_bar_does`, plus the
+    /// `activity_click_*_parity` / `activity_hover_*_parity` cross-backend
+    /// tests in `tests/cross_backend_parity.rs`.
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -570,6 +573,29 @@ pub trait Backend {
     /// use. Note the tab bar's absolute convention is the opposite of
     /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
     /// now stated on both.
+    ///
+    /// # Downstream impact (issue #552)
+    ///
+    /// This changes the actual values `tab_bar_layout` returns, not just
+    /// its doc. `grep -rn "tab_bar_layout" ~/src/claude-coordinator/tui/src
+    /// ~/src/vimcode/src`: `coord-tui`'s `tui/src/app/render.rs:229` only
+    /// reads `.correct_scroll_offset`, unaffected. `vimcode`'s
+    /// `src/gtk/mod.rs` — `tab_hits_to_pixel_hits` (~line 141),
+    /// `abs_visible_slots` (~line 216), `abs_close_record` (~line 198),
+    /// plus the call sites in `src/gtk/click.rs` and `src/gtk/draw.rs` —
+    /// all consume `hits.slot_positions` / `close_bounds` under the
+    /// explicit assumption the doc comment at `gtk/mod.rs:135-137` states
+    /// ("absolute pixel x, from `Backend::tab_bar_layout`"). Since the
+    /// pre-fix implementation didn't actually deliver that, vimcode's
+    /// `tab_hits_to_pixel_hits` — which subtracts `bar_left_x` from
+    /// already-relative input via its `rel()` closure — was very likely
+    /// silently double-subtracting whenever `rect.x != 0` (sidebar
+    /// visible, or the 2nd+ split-group tab bar), shifting GTK tab-bar
+    /// click/close-button hit-testing left by `rect.x`. This PR is
+    /// believed to **fix** that latent bug, not introduce a regression —
+    /// but that is this repo's analysis, not a vimcode-side confirmation;
+    /// vimcode should verify with its own GTK tab-bar click tests before
+    /// relying on the corrected geometry.
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute activity bar row hit regions without painting. Returns
