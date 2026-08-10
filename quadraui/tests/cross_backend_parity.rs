@@ -27,7 +27,7 @@ use pipeline_app::PipelineApp;
 
 #[path = "../examples/common/appshell_demo.rs"]
 mod appshell_demo;
-use appshell_demo::AppShellDemo;
+use appshell_demo::{ActivityProbe, AppShellDemo};
 
 #[path = "../examples/common/data_table_app.rs"]
 mod data_table_app;
@@ -45,6 +45,19 @@ trait ExampleDriver {
     fn click_text(&mut self, needle: &str);
     fn screen_has(&self, needle: &str) -> bool;
     fn exited(&self) -> bool;
+
+    /// Click at an explicit point in this backend's native units.
+    ///
+    /// Shared bodies must derive the point from geometry the *shell*
+    /// reported (see `ActivityProbe`), never from a literal — a literal
+    /// would be cells on one backend and pixels on the other.
+    fn click_at(&mut self, x: f32, y: f32);
+    /// Move the pointer, buttons up, to update hover state.
+    fn hover_at(&mut self, x: f32, y: f32);
+    /// Height of one activity-bar row in this backend's native units.
+    /// This is the one genuinely per-backend number the #552 bodies need:
+    /// the TUI bar is one text row per icon, GTK a fixed 48px button.
+    fn activity_row_height(&self) -> f32;
 }
 
 impl<A: AppLogic> ExampleDriver for TuiDriver<A> {
@@ -70,6 +83,20 @@ impl<A: AppLogic> ExampleDriver for TuiDriver<A> {
     fn exited(&self) -> bool {
         TuiDriver::exited(self)
     }
+
+    fn click_at(&mut self, x: f32, y: f32) {
+        TuiDriver::click(self, x, y);
+    }
+
+    fn hover_at(&mut self, x: f32, y: f32) {
+        TuiDriver::mouse_move(self, x, y);
+    }
+
+    fn activity_row_height(&self) -> f32 {
+        // `tui::activity_bar` lays out with a row height of 1.0 — one
+        // terminal text row per icon.
+        1.0
+    }
 }
 
 impl<A: AppLogic> ExampleDriver for GtkDriver<A> {
@@ -94,6 +121,18 @@ impl<A: AppLogic> ExampleDriver for GtkDriver<A> {
 
     fn exited(&self) -> bool {
         GtkDriver::exited(self)
+    }
+
+    fn click_at(&mut self, x: f32, y: f32) {
+        GtkDriver::click(self, x, y);
+    }
+
+    fn hover_at(&mut self, x: f32, y: f32) {
+        GtkDriver::mouse_move(self, x, y);
+    }
+
+    fn activity_row_height(&self) -> f32 {
+        quadraui::gtk::ACTIVITY_ROW_PX as f32
     }
 }
 
@@ -405,5 +444,241 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
     assert!(
         gtk_flush,
         "GTK: table must still fill its viewport after multiple divider drags"
+    );
+}
+
+// ─── Issue #552: activity-bar hit regions vs. a revealed title bar ───────
+//
+// `Backend::draw_activity_bar` returns `ActivityBarRowHit`s whose
+// `y_start`/`y_end` are **bar-relative** — measured from the `rect` the bar
+// was drawn into. `AppShell` adds `activity_bar_bounds.y` itself in both its
+// click reader (`cached_activity_hit`) and its hover reader
+// (`update_hover`). The TUI rasteriser used to fold that origin in a second
+// time, so every TUI hit region sat `activity_bar_bounds.y` too low.
+//
+// That offset is **zero while the title bar is hidden**, which is why the
+// bug was invisible to every existing test: they all construct in a fixed
+// state, and `AppShell`'s own layout assertions only ever check
+// `activity_bar_bounds.y` against the title bar, never a hit region against
+// a click. Only the *transition* — hidden bar, then `set_title_bar_visible(
+// true)` — makes the origin nonzero and the double-count observable. Same
+// trap #547 documented ("static construction tests cannot catch it … only a
+// toggle exercises the defect"); this is its coordinate-space half.
+//
+// Symptom downstream (JDonaghy/vimcode#634, three consecutive failed smoke
+// rounds): reveal the menu bar, click the Search icon, and the *adjacent*
+// panel opens — icons painted correctly, click-to-action mapping off by one
+// row. Hover drifted identically, because both readers share the bug.
+//
+// GTK was always correct here, so the GTK half of each test below is the
+// parity guard `GtkDriver` (#301/#446) exists for: it pins the behaviour
+// TUI now has to match, and would catch a "fix" that merely moved the error
+// to the other backend.
+
+/// Center of activity-bar row `idx` in the driver's native units, derived
+/// from the bounds the *shell* reported this frame — never a literal.
+fn activity_row_center<D: ExampleDriver>(d: &D, probe: &ActivityProbe, idx: usize) -> (f32, f32) {
+    let ab = probe
+        .bounds()
+        .expect("render_content should have published activity_bar_bounds");
+    let row_h = d.activity_row_height();
+    (ab.x + ab.width / 2.0, ab.y + row_h * (idx as f32 + 0.5))
+}
+
+/// Reveal the title bar (`t`), then click the center of activity-bar row
+/// `idx`. Returns whether the *expected* panel's sidebar header is showing
+/// afterwards, plus the `last_event` line the shell reported.
+///
+/// Row 1 is Search and row 2 is Source Control. Both are deliberately
+/// **not** the initially-active panel (Explorer, row 0): clicking the
+/// already-active icon is a sidebar *toggle*, not a panel switch, so it
+/// would mask an off-by-one instead of exposing it.
+fn run_activity_click_after_title_bar_reveal<D: ExampleDriver>(
+    d: &mut D,
+    probe: &ActivityProbe,
+    idx: usize,
+    expected_header: &str,
+) -> bool {
+    // Title bar starts hidden: `AppShellDemo::config()` never calls
+    // `with_title_bar`, so `activity_bar_bounds.y == 0` and the old
+    // double-count added nothing.
+    let ab_before = probe.bounds().expect("bounds published on first frame");
+
+    d.type_char('t');
+
+    let ab_after = probe.bounds().expect("bounds republished after reveal");
+    assert!(
+        ab_after.y > ab_before.y,
+        "revealing the title bar must push the activity bar down — otherwise \
+         this test proves nothing (before={}, after={})",
+        ab_before.y,
+        ab_after.y
+    );
+
+    let (x, y) = activity_row_center(d, probe, idx);
+    d.click_at(x, y);
+    d.screen_has(expected_header)
+}
+
+#[test]
+fn activity_click_hits_the_clicked_row_after_title_bar_reveal_parity() {
+    // Row 1 = Search. Pre-fix the TUI resolved this click into a different
+    // row's region (or none at all), so "SEARCH" never appeared.
+    let tui_app = AppShellDemo::new();
+    let tui_probe = tui_app.probe();
+    let mut tui = tui_driver_with_shell(tui_app, AppShellDemo::config(), 100, 30);
+
+    let gtk_app = AppShellDemo::new();
+    let gtk_probe = gtk_app.probe();
+    let mut gtk = gtk_driver_with_shell(gtk_app, AppShellDemo::config(), 800, 480);
+
+    let tui_hit = run_activity_click_after_title_bar_reveal(&mut tui, &tui_probe, 1, "SEARCH");
+    let gtk_hit = run_activity_click_after_title_bar_reveal(&mut gtk, &gtk_probe, 1, "SEARCH");
+
+    assert!(
+        tui_hit,
+        "TUI: clicking activity row 1 with the title bar revealed must open \
+         the Search panel, not a neighbour (issue #552):\n{}",
+        tui.screen()
+    );
+    assert!(
+        gtk_hit,
+        "GTK: clicking activity row 1 with the title bar revealed must open \
+         the Search panel (this backend was always correct — it is the \
+         parity guard that the fix did not just move the error here)"
+    );
+    assert_eq!(
+        tui_hit, gtk_hit,
+        "both backends must agree on which panel a row-1 click opens"
+    );
+}
+
+#[test]
+fn activity_click_row_two_hits_row_two_after_title_bar_reveal_parity() {
+    // A second, further-down row: an off-by-one shows up at every index, so
+    // pinning two of them rules out a fix that merely re-centred row 1.
+    let tui_app = AppShellDemo::new();
+    let tui_probe = tui_app.probe();
+    let mut tui = tui_driver_with_shell(tui_app, AppShellDemo::config(), 100, 30);
+
+    let gtk_app = AppShellDemo::new();
+    let gtk_probe = gtk_app.probe();
+    let mut gtk = gtk_driver_with_shell(gtk_app, AppShellDemo::config(), 800, 480);
+
+    let tui_hit =
+        run_activity_click_after_title_bar_reveal(&mut tui, &tui_probe, 2, "SOURCE CONTROL");
+    let gtk_hit =
+        run_activity_click_after_title_bar_reveal(&mut gtk, &gtk_probe, 2, "SOURCE CONTROL");
+
+    assert!(
+        tui_hit,
+        "TUI: clicking activity row 2 must open Source Control:\n{}",
+        tui.screen()
+    );
+    assert!(
+        gtk_hit,
+        "GTK: clicking activity row 2 must open Source Control"
+    );
+}
+
+/// Hover the center of visual activity row `idx` and report what the shell
+/// decided is hovered.
+///
+/// Note the returned index is a position in the shell's hit-region list,
+/// which is **bottom-pinned-first** (see `ActivityBarLayout::visible_items`)
+/// — so it is deliberately not asserted against `idx` directly. What
+/// matters for #552 is that the answer does not *change* when the bar
+/// moves.
+fn hover_row<D: ExampleDriver>(d: &mut D, probe: &ActivityProbe, idx: usize) -> Option<usize> {
+    let (x, y) = activity_row_center(d, probe, idx);
+    d.hover_at(x, y);
+    probe.hovered_idx()
+}
+
+/// For visual row `idx`: hover it with the title bar hidden (the state in
+/// which the double-count added zero, i.e. the known-good baseline), then
+/// reveal the title bar and hover the same visual row again. Returns both
+/// answers.
+///
+/// Hover shared the click path's double-counted comparison, which is why
+/// the reported symptom was "hovering icon N highlights icon N+1" — the
+/// highlight followed the wrong icon exactly as activation did. Comparing
+/// hidden vs revealed states the invariant without hard-coding the shell's
+/// internal ordering: revealing chrome above the bar must not change which
+/// icon a given on-screen row belongs to.
+fn hover_before_and_after_title_bar_reveal<D: ExampleDriver>(
+    d: &mut D,
+    probe: &ActivityProbe,
+    idx: usize,
+) -> (Option<usize>, Option<usize>) {
+    let hidden = hover_row(d, probe, idx);
+    d.type_char('t');
+    let revealed = hover_row(d, probe, idx);
+    (hidden, revealed)
+}
+
+#[test]
+fn activity_hover_highlights_the_hovered_row_after_title_bar_reveal_parity() {
+    for idx in [0usize, 1, 2] {
+        let tui_app = AppShellDemo::new();
+        let tui_probe = tui_app.probe();
+        let mut tui = tui_driver_with_shell(tui_app, AppShellDemo::config(), 100, 30);
+
+        let gtk_app = AppShellDemo::new();
+        let gtk_probe = gtk_app.probe();
+        let mut gtk = gtk_driver_with_shell(gtk_app, AppShellDemo::config(), 800, 480);
+
+        let (tui_hidden, tui_revealed) =
+            hover_before_and_after_title_bar_reveal(&mut tui, &tui_probe, idx);
+        let (gtk_hidden, gtk_revealed) =
+            hover_before_and_after_title_bar_reveal(&mut gtk, &gtk_probe, idx);
+
+        assert!(
+            tui_hidden.is_some(),
+            "sanity: hovering row {idx} with the title bar hidden should \
+             highlight *something* on TUI"
+        );
+        assert_eq!(
+            tui_revealed, tui_hidden,
+            "TUI: revealing the title bar must not change which activity \
+             icon visual row {idx} maps to — hover drifted by \
+             activity_bar_bounds.y (issue #552)"
+        );
+        assert_eq!(
+            gtk_revealed, gtk_hidden,
+            "GTK: hover must be stable across the title-bar reveal (this \
+             backend was already correct — parity guard)"
+        );
+        assert_eq!(
+            tui_revealed, gtk_revealed,
+            "both backends must agree on the hovered activity row for \
+             visual row {idx}"
+        );
+    }
+}
+
+/// Guard for the assertion above: `hover_row` must actually discriminate
+/// between rows, otherwise "stable across the reveal" would be satisfied by
+/// a hover that always returned the same thing (or always `None`).
+#[test]
+fn activity_hover_distinguishes_adjacent_rows_after_title_bar_reveal() {
+    let app = AppShellDemo::new();
+    let probe = app.probe();
+    let mut d = tui_driver_with_shell(app, AppShellDemo::config(), 100, 30);
+
+    d.type_char('t');
+    let row0 = hover_row(&mut d, &probe, 0);
+    let row1 = hover_row(&mut d, &probe, 1);
+    let row2 = hover_row(&mut d, &probe, 2);
+
+    assert!(
+        row0.is_some() && row1.is_some() && row2.is_some(),
+        "every activity row should highlight something once hovered: \
+         {row0:?} {row1:?} {row2:?}"
+    );
+    assert!(
+        row0 != row1 && row1 != row2 && row0 != row2,
+        "three distinct rows must map to three distinct icons — got \
+         {row0:?} {row1:?} {row2:?}"
     );
 }

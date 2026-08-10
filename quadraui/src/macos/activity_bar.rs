@@ -10,6 +10,23 @@
 //!
 //! Returns per-row [`ActivityBarRowHit`]s so callers can route clicks
 //! and query tooltips against the same frame's painted positions.
+//!
+//! # Coordinate space (issue #552)
+//!
+//! Spans are **bar-relative**, matching the [`crate::Backend::draw_activity_bar`]
+//! contract: this function paints into `(0, 0, width, height)` and is never
+//! handed the bar's origin at all (`MacBackend::draw_activity_bar` passes only
+//! `rect.width` / `rect.height`), so it *cannot* fold the origin in — the
+//! mistake the TUI rasteriser made. Audited and compliant; no change needed.
+//!
+//! Known divergence, deliberately left alone: this rasteriser emits **top
+//! items first, then bottom-pinned**, whereas the TUI and GTK rasterisers
+//! follow `ActivityBarLayout::visible_items`, which is bottom-pinned first.
+//! The flat index a backend derives from its own list is what
+//! `hovered_idx` is compared against, so each backend is self-consistent —
+//! but a host that hardcoded an index across backends would disagree. Out
+//! of scope for the coordinate-space fix; flagged here so it isn't
+//! rediscovered from scratch.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;

@@ -134,9 +134,43 @@ pub enum ActivityBarHit {
 /// span. Apps that need both click routing AND hover tooltips (e.g.
 /// vimcode's GTK activity bar with `connect_query_tooltip`) read
 /// from this list rather than re-resolving via the layout.
+///
+/// # Coordinate space — **relative to the bar** (issue #552)
+///
+/// `y_start` / `y_end` are measured from the **top edge of the `rect`
+/// passed to [`Backend::draw_activity_bar`]**, i.e. the first row always
+/// starts at `0.0` regardless of where the bar sits on screen. They are
+/// **not** target-surface (absolute) coordinates — this is the opposite
+/// convention from [`TabBarHits`], whose `x` spans *are* absolute.
+///
+/// Callers therefore add the bar's origin themselves before comparing
+/// against a raw click position:
+///
+/// ```ignore
+/// let hit_top = hit.y_start as f32 + activity_bar_bounds.y;
+/// ```
+///
+/// This is the space every backend already agreed on except the TUI's
+/// `draw_activity_bar`, which leaked its absolute paint `y` into the
+/// returned regions. Because `AppShell` adds the origin a second time,
+/// TUI hits were shifted down by `activity_bar_bounds.y` — invisible
+/// while the title bar was hidden (origin `0`), a one-row off-by-one for
+/// clicks *and* hover the moment `set_title_bar_visible(true)` revealed
+/// it. See issue #552; the height half of the same seam was #547.
+///
+/// Rasterisers: keep the absolute value for *painting*, but push the
+/// bar-relative offset here. The `backends_agree_on_*` tests in
+/// `compose::app_shell` pin this across TUI/GTK.
+///
+/// [`Backend::draw_activity_bar`]: crate::Backend::draw_activity_bar
+/// [`TabBarHits`]: crate::TabBarHits
 #[derive(Debug, Clone)]
 pub struct ActivityBarRowHit {
+    /// Top edge of the row, **relative to the bar's `rect.y`** (first
+    /// row is `0.0`). Add the bar origin before hit-testing a click.
     pub y_start: f64,
+    /// Bottom edge (exclusive) of the row, **relative to the bar's
+    /// `rect.y`**. Add the bar origin before hit-testing a click.
     pub y_end: f64,
     pub id: WidgetId,
     pub tooltip: String,
@@ -148,8 +182,18 @@ pub struct ActivityBarRowHit {
 pub struct ActivityBarLayout {
     pub viewport_width: f32,
     pub viewport_height: f32,
-    /// All visible items — top-pinned first (in order), then
-    /// bottom-pinned (in order).
+    /// All visible items — **bottom-pinned first** (in order), then
+    /// top-pinned (in order). That is the order [`ActivityBar::layout`]
+    /// appends them in, because bottom items are placed first (they win
+    /// on collision, see that method's "Collision policy"). It is *not*
+    /// visual top-to-bottom order.
+    ///
+    /// This matters because backends `enumerate()` this list to derive
+    /// the flat index they compare against `hovered_idx`, and
+    /// `AppShell` derives that same index by position in the returned
+    /// `ActivityBarRowHit` list — so the two agree, but neither is
+    /// "the n-th icon from the top". Corrected while fixing #552; the
+    /// doc previously claimed top-first, which no caller could rely on.
     pub visible_items: Vec<VisibleActivityItem>,
     pub hit_regions: Vec<(Rect, ActivityBarHit)>,
 }

@@ -1712,6 +1712,9 @@ impl Backend for GtkBackend {
         );
 
         let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        // Match `draw_tab_bar` (gtk/tab_bar.rs), which shifts by the same
+        // origin: `TabBarHits` are target-surface coordinates. Issue #552.
+        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
 
         let active_idx = bar.tabs.iter().position(|t| t.is_active);
         let reserved_px: f32 = bar

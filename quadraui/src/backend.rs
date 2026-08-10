@@ -514,6 +514,26 @@ pub trait Backend {
     /// Draw an activity bar. `hovered_idx` carries per-frame hover
     /// state so the rasteriser can paint a tint on the hovered row.
     /// Returns per-row hit regions for click + tooltip dispatch.
+    ///
+    /// # Coordinate space — **relative to `rect`** (issue #552)
+    ///
+    /// Each [`ActivityBarRowHit`]'s `y_start` / `y_end` is measured from
+    /// the **top edge of `rect`**: the first row starts at `0.0` no
+    /// matter where the bar sits on the target surface. Implementors
+    /// must **not** fold `rect.y` into the returned spans, even though
+    /// they need the absolute value to paint. Callers add the bar origin
+    /// themselves (`hit.y_start + rect.y`).
+    ///
+    /// Note this is deliberately the *opposite* convention from
+    /// [`Self::tab_bar_layout`] / [`Self::draw_tab_bar`], whose
+    /// [`TabBarHits`] spans are absolute. The split is historical but now
+    /// pinned: the activity bar's space is what GTK, macOS, and the
+    /// shared [`activity_bar_hits`] helper already produced, and what
+    /// `AppShell` assumes in both its click and hover readers.
+    ///
+    /// [`Self::activity_bar_layout`] must return the same space, and the
+    /// `backends_agree_*` tests in `compose::app_shell` fail if a backend
+    /// drifts.
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -524,6 +544,16 @@ pub trait Backend {
     /// Compute the status bar layout without painting. Same measurement
     /// logic as `draw_status_bar` — call after `ScreenLayout::draw()` to
     /// recover hit regions for click dispatch.
+    ///
+    /// Returns `hit_regions` in the same **bar-local** space as
+    /// [`Self::draw_status_bar`] (relative to `rect.x` / `rect.y`).
+    ///
+    /// Audited under issue #552 and **ruled out**: all four paths (TUI /
+    /// GTK × draw / layout) return the primitive's own unshifted
+    /// `StatusBar::layout` output, so paint and no-paint already agree and
+    /// no backend folds the origin in. Unlike the activity bar, nothing
+    /// here needed changing — only this note, so the next reader doesn't
+    /// have to re-derive it.
     fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
 
     /// Compute the tab bar layout without painting. Returns the same
@@ -532,9 +562,20 @@ pub trait Backend {
     /// coordinates**, i.e. shifted by `rect.x` / `rect.y` so callers can
     /// compare them directly against raw click coordinates without any
     /// further adjustment.
+    ///
+    /// Audited under issue #552 and **fixed**: this was documented
+    /// absolute but returned bar-relative x on *both* TUI and GTK, because
+    /// only `draw_tab_bar` applied the origin shift. Both impls now route
+    /// through [`shift_tab_bar_hits`], the same helper the rasterisers
+    /// use. Note the tab bar's absolute convention is the opposite of
+    /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
+    /// now stated on both.
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
-    /// Compute activity bar row hit regions without painting.
+    /// Compute activity bar row hit regions without painting. Returns
+    /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
+    /// `y_start` / `y_end` measured from `rect.y`, first row at `0.0`.
+    /// See that method for the full contract (issue #552).
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
 
     /// Draw a terminal cell grid. No hit-region data is returned;
@@ -912,7 +953,46 @@ pub trait Backend {
 
 // ── Shared layout helpers ───────────────────────────────────────────────
 
+/// Shift every x-span in `hits` right by `dx`.
+///
+/// [`tab_bar_layout_to_hits`] yields **bar-relative** x (the primitive
+/// measures from `0.0`), but the [`TabBarHits`] contract is
+/// target-surface (absolute) coordinates. Rasterisers and the no-paint
+/// `tab_bar_layout` variants both call this with `rect.x` so the two
+/// paths return the same space.
+///
+/// Audited under issue #552: `draw_tab_bar` applied this shift on both
+/// TUI and GTK, but `Backend::tab_bar_layout` applied it on neither — so
+/// the documented-absolute no-paint path silently returned relative x,
+/// off by `rect.x`. That is nonzero for any tab bar right of a sidebar,
+/// i.e. the same latent seam as the activity bar's, one primitive over.
+pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
+    if dx == 0.0 {
+        return;
+    }
+    for sp in &mut hits.slot_positions {
+        // `(0.0, 0.0)` is the sentinel for tabs scrolled out of view —
+        // leave it recognisable rather than shifting it to `(dx, dx)`.
+        if *sp != (0.0, 0.0) {
+            sp.0 += dx;
+            sp.1 += dx;
+        }
+    }
+    for cb in hits.close_bounds.iter_mut().flatten() {
+        cb.0 += dx;
+        cb.1 += dx;
+    }
+    for rb in &mut hits.right_segment_bounds {
+        rb.0 += dx;
+        rb.1 += dx;
+    }
+}
+
 /// Convert a `TabBarLayout` to the legacy `TabBarHits` struct.
+///
+/// Spans are **bar-relative** on return; callers that owe the
+/// [`TabBarHits`] absolute contract must follow up with
+/// [`shift_tab_bar_hits`] using `rect.x`.
 pub fn tab_bar_layout_to_hits(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];
@@ -940,6 +1020,10 @@ pub fn tab_bar_layout_to_hits(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits
 }
 
 /// Compute activity bar hit regions from geometry (no paint).
+///
+/// Spans are **relative to `rect`** per the [`Backend::draw_activity_bar`]
+/// contract: the first top-pinned row starts at `0.0` and only `rect.height`
+/// is consulted (to pin the bottom group), never `rect.y`. Issue #552.
 pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<ActivityBarRowHit> {
     let mut hits = Vec::new();
     let mut y = 0.0_f32;

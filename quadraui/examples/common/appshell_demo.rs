@@ -21,11 +21,51 @@
 //! `AppShell` that can drift from what's on screen (the class of `Ctrl+B`
 //! bug this issue fixes).
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
     Backend, Color, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
     StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
+
+/// Shared handle onto the activity-bar rect the shell last handed this
+/// app in `render_content`, in the backend's native units.
+///
+/// Exists for the issue #552 regression tests: they must click the
+/// *n*-th activity-bar row after revealing the title bar, and the row
+/// origin differs per backend (TUI cells vs GTK pixels). Reading the
+/// real painted bounds beats hardcoding a coordinate that would be
+/// silently wrong on one backend — and `driver_with_shell` hands back a
+/// driver over the opaque `ShellAdapter`, so `driver.app()` cannot reach
+/// this `ShellApp` directly.
+#[derive(Clone, Default)]
+pub struct ActivityProbe {
+    bounds: Rc<Cell<Option<Rect>>>,
+    hovered: Rc<Cell<Option<usize>>>,
+}
+
+// This module is `#[path]`-included by several test binaries and by the
+// `tui_/gtk_appshell_demo` examples. Only `cross_backend_parity` reads the
+// probe, so every other target sees these accessors as dead — the standard
+// cost of a shared example module, not a sign they're unused.
+#[allow(dead_code)]
+impl ActivityProbe {
+    /// The activity bar's rect as of the most recent frame.
+    pub fn bounds(&self) -> Option<Rect> {
+        self.bounds.get()
+    }
+
+    /// `AppShell::hovered_activity_idx()` as of the last pointer move
+    /// this app saw. `AppShell` reports `MouseMoved` as `Ignored`, so the
+    /// event reaches `ShellApp::handle` *after* the shell has already
+    /// updated its hover state — making this an honest read of what the
+    /// shell decided, not a re-derivation.
+    pub fn hovered_idx(&self) -> Option<usize> {
+        self.hovered.get()
+    }
+}
 
 pub struct AppShellDemo {
     last_event: String,
@@ -35,16 +75,29 @@ pub struct AppShellDemo {
     /// jump straight to a panel (no ActivityBar click) and still get the
     /// ActivityBar highlight + sidebar header updated to match.
     pending_panel: Option<WidgetId>,
+    /// Written every frame from `render_content`; read by tests.
+    probe: ActivityProbe,
 }
 
 impl AppShellDemo {
     pub fn new() -> Self {
         Self {
             last_event: "Tab=focus bar | click icons | drag divider | p=jump to Source Control \
-                         | Ctrl+B=toggle sidebar | q=quit"
+                         | Ctrl+B=toggle sidebar | t=toggle title bar | q=quit"
                 .into(),
             pending_panel: None,
+            probe: ActivityProbe::default(),
         }
+    }
+
+    /// Clone the activity-bar geometry handle before moving `self` into a
+    /// driver. See [`ActivityProbe`].
+    ///
+    /// Dead in every target except `cross_backend_parity` — see the note
+    /// on `impl ActivityProbe`.
+    #[allow(dead_code)]
+    pub fn probe(&self) -> ActivityProbe {
+        self.probe.clone()
     }
 
     pub fn config() -> ShellConfig {
@@ -89,6 +142,9 @@ impl Default for AppShellDemo {
 impl ShellApp for AppShellDemo {
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         let lh = backend.line_height();
+        // Publish the activity bar's real painted bounds for the #552
+        // regression tests (see `ActivityProbe`). Harmless in the demo.
+        self.probe.bounds.set(Some(layout.activity_bar_bounds));
 
         if let Some(content) = layout.sidebar_content_bounds {
             let label = StatusBar {
@@ -182,6 +238,40 @@ impl ShellApp for AppShellDemo {
                     "Sidebar hidden (Ctrl+B via ctx.shell_mut())".into()
                 };
                 Reaction::Redraw
+            }
+            // `t` = reveal/hide the title bar at runtime, the way vimcode
+            // toggles its menu bar (`engine.menu_bar_visible`). This is the
+            // transition issue #552 lives in: while the bar is hidden the
+            // activity bar's origin is 0, so a hit-region that wrongly
+            // folded that origin in still lined up. The moment the title
+            // bar is revealed the origin becomes nonzero and the error
+            // appears — which is why static construction tests never saw
+            // it and only a toggle exercises the defect (same trap #547
+            // documented).
+            UiEvent::KeyPressed {
+                key: Key::Char('t'),
+                ..
+            } => {
+                let now_visible = {
+                    let mut shell = ctx.shell_mut();
+                    let next = !shell.title_bar_visible();
+                    shell.set_title_bar_visible(next);
+                    next
+                };
+                self.last_event = if now_visible {
+                    "Title bar shown (t)".into()
+                } else {
+                    "Title bar hidden (t)".into()
+                };
+                Reaction::Redraw
+            }
+            // Pointer moves are `Ignored` by `AppShell` (it updates hover
+            // and passes the event on), so by the time we see one the
+            // shell's hover state is already settled — record it for the
+            // #552 hover regression test.
+            UiEvent::MouseMoved { .. } => {
+                self.probe.hovered.set(ctx.shell().hovered_activity_idx());
+                Reaction::Continue
             }
             UiEvent::MouseDown { position, .. } => {
                 if ctx.in_sidebar(position.x, position.y) {
