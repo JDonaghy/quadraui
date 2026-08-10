@@ -122,9 +122,20 @@ pub fn draw_activity_bar(
             }
         }
 
+        // Hit regions are **bar-relative**, not absolute: report the
+        // row offset within `area`, not the screen row `y` we painted
+        // at. Keeping `area.y` in here double-counted the bar origin,
+        // because `AppShell` adds `activity_bar_bounds.y` itself in
+        // both its click and hover readers — a shift that was zero
+        // (invisible) while the title bar was hidden and became a
+        // one-row off-by-one the instant `set_title_bar_visible(true)`
+        // revealed it. GTK, macOS, and `backend::activity_bar_hits`
+        // all already used this space; the TUI was the lone outlier.
+        // Issue #552 (the coordinate-space half of #547's height fix).
+        let rel_y = (y - area.y) as f64;
         regions.push(ActivityBarRowHit {
-            y_start: y as f64,
-            y_end: (y + 1) as f64,
+            y_start: rel_y,
+            y_end: rel_y + 1.0,
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
         });
@@ -133,4 +144,138 @@ pub fn draw_activity_bar(
     }
 
     regions
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::activity_bar::ActivityItem;
+    use crate::types::WidgetId;
+
+    fn item(id: &str, icon: &str) -> ActivityItem {
+        ActivityItem {
+            id: WidgetId::new(id),
+            icon: icon.into(),
+            tooltip: format!("{id} tooltip"),
+            is_active: false,
+            is_keyboard_selected: false,
+        }
+    }
+
+    fn bar() -> ActivityBar {
+        ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![item("explorer", "E"), item("search", "S"), item("git", "G")],
+            bottom_items: vec![item("settings", "*")],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        }
+    }
+
+    /// The #552 contract, stated as an assertion: hit regions are
+    /// **bar-relative**, so the top row starts at `0.0` no matter where
+    /// the bar is painted.
+    ///
+    /// This is the test that fails against pre-fix `develop`: with
+    /// `area.y == 3` the rasteriser returned `y_start == 3.0` for the
+    /// first top row (its absolute paint row), which `AppShell` then
+    /// shifted by `activity_bar_bounds.y` a second time.
+    ///
+    /// Looks rows up **by id** rather than by position: `visible_items`
+    /// (and therefore this list) is bottom-pinned-first, not visual
+    /// top-to-bottom order.
+    #[test]
+    fn hit_regions_are_bar_relative_not_absolute() {
+        let b = bar();
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        let area = Rect::new(0, 3, 3, 10);
+        let hits = draw_activity_bar(&mut buf, area, &b, &theme, None);
+
+        let span = |id: &str| {
+            let h = hits
+                .iter()
+                .find(|h| h.id.as_str() == id)
+                .unwrap_or_else(|| panic!("no hit region for {id:?}"));
+            (h.y_start, h.y_end)
+        };
+
+        assert_eq!(
+            span("explorer"),
+            (0.0, 1.0),
+            "the top row must start at 0.0 relative to the bar, not at \
+             area.y ({}) — folding the origin in here double-counts it \
+             against AppShell's own `+ activity_bar_bounds.y` (issue #552)",
+            area.y
+        );
+        assert_eq!(span("search"), (1.0, 2.0), "second row is one row down");
+        assert_eq!(span("git"), (2.0, 3.0));
+        // Bottom-pinned: `area.height` (10) - 1 row, still measured from
+        // the bar's own top edge, not the screen's.
+        assert_eq!(span("settings"), (9.0, 10.0));
+    }
+
+    /// The same regions must come back for *any* `area.y`. Pinning
+    /// invariance rather than a single value is what stops the bug from
+    /// reappearing: the pre-fix output was correct at `area.y == 0` (title
+    /// bar hidden) and wrong everywhere else, which is exactly why every
+    /// existing static test passed.
+    #[test]
+    fn hit_regions_do_not_move_when_the_bar_does() {
+        let b = bar();
+        let theme = Theme::default();
+
+        let spans = |y: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 30));
+            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, None);
+            hits.iter()
+                .map(|h| (h.y_start, h.y_end))
+                .collect::<Vec<_>>()
+        };
+
+        let at_zero = spans(0);
+        assert!(!at_zero.is_empty(), "sanity: some rows were painted");
+        for y in [1u16, 2, 5] {
+            assert_eq!(
+                spans(y),
+                at_zero,
+                "hit regions must be independent of the bar's screen origin; \
+                 they differed at area.y = {y} (issue #552)"
+            );
+        }
+    }
+
+    /// Painting still uses the absolute row — the fix must not move the
+    /// glyphs, only the reported regions. The operator's note on
+    /// vimcode#634 was explicit that rendering was already correct and
+    /// only the click mapping was wrong.
+    #[test]
+    fn icons_still_paint_at_the_absolute_row() {
+        let b = bar();
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        let area = Rect::new(0, 3, 4, 10);
+        draw_activity_bar(&mut buf, area, &b, &theme, None);
+
+        let row_text = |y: u16| {
+            (area.x..area.x + area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(
+            row_text(3).contains('E'),
+            "first icon should paint on the bar's first *screen* row (3), \
+             got {:?}",
+            row_text(3)
+        );
+        assert!(
+            row_text(4).contains('S'),
+            "second icon on screen row 4, got {:?}",
+            row_text(4)
+        );
+    }
 }

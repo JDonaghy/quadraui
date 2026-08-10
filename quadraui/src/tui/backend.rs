@@ -1110,6 +1110,11 @@ impl Backend for TuiBackend {
         );
 
         let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        // `TabBarHits` are target-surface (absolute) coordinates per the
+        // trait doc — the same space `draw_tab_bar` returns. Without this
+        // the no-paint path returned bar-relative x, off by `rect.x`
+        // (nonzero for any tab bar right of a sidebar). Issue #552.
+        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
 
         let active_idx = bar.tabs.iter().position(|t| t.is_active);
         let reserved: usize = bar
@@ -3163,6 +3168,131 @@ mod tests {
             matches!(&out[2], UiEvent::MouseMoved { position, .. } if position.x == 6.0),
             "second run must collapse to x=6, got {:?}",
             out[2]
+        );
+    }
+
+    // ── Issue #552 sibling audit: tab-bar hit geometry ──────────────
+    //
+    // `TabBarHits` is documented as **target-surface (absolute)**
+    // coordinates — the opposite convention from `ActivityBarRowHit`,
+    // which is bar-relative. `draw_tab_bar` honoured that on both TUI and
+    // GTK by shifting the primitive's bar-relative output by the bar's
+    // origin. `Backend::tab_bar_layout` honoured it on neither: it
+    // returned `tab_bar_layout_to_hits` verbatim, so the no-paint path
+    // was off by `rect.x` — nonzero for any tab bar sitting right of a
+    // sidebar, which is every AppShell layout.
+    //
+    // Same class of defect as #552 itself (a hit-region seam silently
+    // disagreeing about coordinate space), one primitive over, found by
+    // the audit the issue asked for. Both backends now route through the
+    // shared `backend::shift_tab_bar_hits`.
+
+    fn audit_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                crate::primitives::tab_bar::TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                crate::primitives::tab_bar::TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    #[test]
+    fn tab_bar_layout_returns_absolute_x_not_bar_relative() {
+        let backend = TuiBackend::new();
+        let bar = audit_bar();
+
+        let at_origin = backend.tab_bar_layout(QRect::new(0.0, 0.0, 40.0, 1.0), &bar);
+        let shifted = backend.tab_bar_layout(QRect::new(12.0, 0.0, 40.0, 1.0), &bar);
+
+        assert!(
+            !at_origin.slot_positions.is_empty(),
+            "sanity: some tabs should be laid out"
+        );
+        for (i, (base, moved)) in at_origin
+            .slot_positions
+            .iter()
+            .zip(shifted.slot_positions.iter())
+            .enumerate()
+        {
+            if *base == (0.0, 0.0) {
+                // Scrolled-out sentinel — must stay recognisable, not
+                // become (12.0, 12.0).
+                assert_eq!(
+                    *moved,
+                    (0.0, 0.0),
+                    "tab {i}: the scrolled-out sentinel must not be shifted"
+                );
+                continue;
+            }
+            assert_eq!(
+                (moved.0, moved.1),
+                (base.0 + 12.0, base.1 + 12.0),
+                "tab {i}: `tab_bar_layout` is documented to return \
+                 target-surface coordinates, so moving the bar right by 12 \
+                 must move its hit spans right by 12 (issue #552 audit)"
+            );
+        }
+    }
+
+    /// The no-paint path must agree with the painting path, since callers
+    /// use them interchangeably to route the same clicks. Runs
+    /// `draw_tab_bar` through a real frame scope so it goes down the
+    /// production rasteriser, not a reimplementation of it.
+    #[test]
+    fn tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        let bar = audit_bar();
+        // Nonzero x: the whole point. At x = 0 the two paths agreed even
+        // before the fix, which is exactly how the defect stayed hidden.
+        let rect = QRect::new(12.0, 0.0, 40.0, 1.0);
+
+        let from_layout = backend.tab_bar_layout(rect, &bar);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let mut painted = None;
+        terminal
+            .draw(|frame| {
+                painted =
+                    Some(backend.enter_frame_scope(frame, |b| b.draw_tab_bar(rect, &bar, None)));
+            })
+            .expect("draw");
+        let from_paint = painted.expect("draw closure ran");
+
+        assert!(
+            from_paint.slot_positions.iter().any(|s| *s != (0.0, 0.0)),
+            "sanity: the rasteriser should have placed at least one tab"
+        );
+        assert_eq!(
+            from_layout.slot_positions, from_paint.slot_positions,
+            "`tab_bar_layout` and `draw_tab_bar` must report tab slots in \
+             the same coordinate space (issue #552 audit)"
+        );
+        assert_eq!(
+            from_layout.close_bounds, from_paint.close_bounds,
+            "close-button spans must match between the paint and no-paint \
+             paths too"
         );
     }
 }
