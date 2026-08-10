@@ -1846,6 +1846,7 @@ mod tests {
                 content_width: 0.0,
                 h_scrollbar_height: 0.0,
                 footer_height: 0.0,
+                h_scroll: 0.0,
             }
         }
         fn data_table_layout(
@@ -1864,6 +1865,7 @@ mod tests {
                 content_width: 0.0,
                 h_scrollbar_height: 0.0,
                 footer_height: 0.0,
+                h_scroll: 0.0,
             }
         }
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {

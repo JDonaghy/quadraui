@@ -22,6 +22,22 @@
 //! `DataTableLayout::footer_height`, which is `row_height * 2.0` — a
 //! divider row plus the content row), and is not hit-testable as a
 //! row (`DataTableHit::Footer`, not `Row`).
+//!
+//! # Coordinate spaces (`h_scroll`)
+//!
+//! [`ResolvedColumn::x`] lives in **content space**: it always starts at
+//! `0.0` for the first column and runs to `content_width`, which may be
+//! wider than the viewport when `min_total_width` is set. Backends paint
+//! a column at `rc.x - h_scroll` (see `tui::data_table::draw_data_table`
+//! and its GTK/macOS peers), so **viewport space** — the space every
+//! click arrives in — is content space shifted left by `h_scroll`.
+//!
+//! Everything on [`DataTableLayout`] that takes an `x` from a pointer
+//! ([`DataTableLayout::hit_test`], [`DataTableLayout::column_hit`],
+//! [`DataTableLayout::drag_divider`]) therefore takes it in **viewport
+//! space** and adds [`DataTableLayout::h_scroll`] back before comparing
+//! against `columns`. At `h_scroll == 0.0` the two spaces coincide and
+//! the conversion is a no-op (#550).
 
 use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -161,6 +177,10 @@ impl ColumnMeasure {
 }
 
 /// Resolved column position after layout.
+///
+/// `x` is in **content space** — measured from the left edge of the
+/// first column, *not* from the left edge of the viewport. When
+/// `h_scroll` is non-zero the two differ; see the module header.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResolvedColumn {
     pub x: f32,
@@ -207,12 +227,69 @@ pub struct DataTableLayout {
     /// never overwrites the last body row in cell-granular backends
     /// (TUI) and stays visually breathing-room'd in pixel backends.
     pub footer_height: f32,
+    /// The horizontal scroll offset this layout was painted at — a copy
+    /// of [`DataTable::h_scroll`], carried here so hit-testing can undo
+    /// the same shift the renderer applied (#550).
+    ///
+    /// Backends paint column `i` at `columns[i].x - h_scroll`, so a
+    /// pointer `x` in viewport space maps to `x + h_scroll` in the
+    /// content space `columns` is expressed in. `0.0` (the overwhelmingly
+    /// common case) makes every conversion an identity.
+    pub h_scroll: f32,
 }
 
 /// Grab zone half-width for column divider detection (surface units).
 const DIVIDER_GRAB_PX: f32 = 3.0;
 
 impl DataTableLayout {
+    /// Convert a pointer `x` in **viewport space** into the **content
+    /// space** [`ResolvedColumn::x`] is expressed in, undoing the same
+    /// `- h_scroll` shift the renderer applies when painting (#550).
+    ///
+    /// Identity when `h_scroll == 0.0`.
+    ///
+    /// Cell-granular backends (TUI) round `h_scroll` to whole cells when
+    /// painting; this deliberately does not, because a click inside cell
+    /// `v` arrives as `v + 0.5` and `floor(v + 0.5 + h)` equals
+    /// `v + round(h)` for every `h >= 0` — the un-rounded add already
+    /// agrees with the rounded paint, and staying in `f32` keeps pixel
+    /// backends exact.
+    #[inline]
+    fn content_x(&self, x: f32) -> f32 {
+        x + self.h_scroll
+    }
+
+    /// Is viewport-space `x` inside the vertical scrollbar's track, on a
+    /// table whose columns only reach there *because* of `h_scroll`?
+    ///
+    /// The strip is the rightmost `scrollbar_width` of the viewport —
+    /// painted over by the scrollbar itself, so nothing under it is
+    /// clickable column geometry. Adding `h_scroll` back would otherwise
+    /// slide a real column beneath the track and let a track click sort
+    /// the wrong header.
+    ///
+    /// Deliberately inert at `h_scroll == 0.0`. A `min_total_width`
+    /// table's columns already extend past the strip's left edge at zero
+    /// scroll, so an unconditional exclusion would change what such a
+    /// table's *unscrolled* clicks resolve to — and acceptance bullet 3
+    /// of #550 requires zero-scroll routing to stay bit-identical for
+    /// the many callers that pin `h_scroll` at 0. Pre-existing
+    /// strip-fall-through at zero scroll is the callers' to intercept
+    /// (coord-tui already does, via `audit_scrollbar_hit`); this fix's
+    /// job is only to avoid *introducing* a new one.
+    #[inline]
+    fn in_v_scrollbar_strip(&self, x: f32) -> bool {
+        self.h_scroll != 0.0
+            && self.scrollbar_width > 0.0
+            && x >= (self.viewport_width - self.scrollbar_width).max(0.0)
+    }
+
+    /// Resolve a click to a header / divider / row / footer.
+    ///
+    /// `x` and `y` are **viewport-relative** (see the module header):
+    /// `x` is measured from the table's left edge, *before* `h_scroll`
+    /// is added back, so callers pass the raw pointer position exactly
+    /// as they did before #550.
     pub fn hit_test(
         &self,
         x: f32,
@@ -224,17 +301,26 @@ impl DataTableLayout {
             return DataTableHit::Empty;
         }
         if y < self.header_height {
+            // The vertical scrollbar owns its strip outright — never let
+            // horizontally-scrolled column geometry leak underneath it.
+            if self.in_v_scrollbar_strip(x) {
+                return DataTableHit::Empty;
+            }
+            let cx = self.content_x(x);
             // Check dividers first (higher priority than header body).
             for (i, rc) in self.columns.iter().enumerate() {
                 let right_edge = rc.x + rc.width;
-                if (x - right_edge).abs() <= DIVIDER_GRAB_PX && i + 1 < self.columns.len() {
+                if (cx - right_edge).abs() <= DIVIDER_GRAB_PX && i + 1 < self.columns.len() {
                     return DataTableHit::HeaderDivider { col: i };
                 }
             }
+            // No clamping: a `cx` before the first column's left edge or
+            // past the last column's right edge is genuinely *no* column,
+            // not column 0 and not the last column.
             let col = self
                 .columns
                 .iter()
-                .position(|c| x >= c.x && x < c.x + c.width);
+                .position(|c| cx >= c.x && cx < c.x + c.width);
             return match col {
                 Some(col) => DataTableHit::Header { col },
                 None => DataTableHit::Empty,
@@ -256,18 +342,30 @@ impl DataTableLayout {
         DataTableHit::Empty
     }
 
+    /// Which column is painted under viewport-space `x`, if any.
+    ///
+    /// This is the cell-resolution counterpart to [`Self::hit_test`]
+    /// (which reports rows, not cells) and takes `x` in the same
+    /// **viewport space**: `h_scroll` is added back before the lookup,
+    /// and the vertical scrollbar strip resolves to `None` (#550).
     pub fn column_hit(&self, x: f32) -> Option<usize> {
+        if self.in_v_scrollbar_strip(x) {
+            return None;
+        }
+        let cx = self.content_x(x);
         self.columns
             .iter()
-            .position(|c| x >= c.x && x < c.x + c.width)
+            .position(|c| cx >= c.x && cx < c.x + c.width)
     }
 
     /// Compute the `column_overrides` for a divider drag (#521 defect 1).
     ///
     /// `col` is the column to the LEFT of the dragged divider, as
     /// returned by [`DataTableHit::HeaderDivider`]. `pointer_x` is the
-    /// drag pointer's current position, in this layout's coordinate
-    /// space. `min_width` clamps both halves of the dragged pair.
+    /// drag pointer's current position in **viewport space** — the same
+    /// space [`Self::hit_test`] took to produce `col`, so a caller keeps
+    /// forwarding the raw pointer `x` and this converts once, internally
+    /// (#550). `min_width` clamps both halves of the dragged pair.
     ///
     /// A divider is the boundary between column `col` and `col + 1`, so
     /// a drag must only ever move width between *those two* columns,
@@ -316,7 +414,7 @@ impl DataTableLayout {
         let lo = min_width.min(pair_total);
         let hi = (pair_total - min_width).max(lo);
         let col_x = self.columns[col].x;
-        let new_left = (pointer_x - col_x).clamp(lo, hi);
+        let new_left = (self.content_x(pointer_x) - col_x).clamp(lo, hi);
         next[col] = Some(new_left);
         next[col + 1] = Some(pair_total - new_left);
         next
@@ -394,6 +492,7 @@ impl DataTable {
             content_width,
             h_scrollbar_height: h_sb_h,
             footer_height,
+            h_scroll: self.h_scroll,
         }
     }
 }
@@ -1021,6 +1120,308 @@ mod tests {
         let json = serde_json::to_string(&table).unwrap();
         let back: DataTable = serde_json::from_str(&json).unwrap();
         assert_eq!(table, back);
+    }
+
+    // ── #550: `hit_test` must undo the renderer's `h_scroll` shift ──────
+    //
+    // Geometry shared by the tests below: 4 × `Fixed(30.0)` columns laid
+    // out at `min_total_width = 120` inside a 60-wide viewport, so
+    // content space is exactly twice the viewport and every column
+    // boundary lands on a round number.
+    //
+    //   content x:  0───30───60───90───120
+    //   column:      c0 │ c1 │ c2 │ c3
+    //
+    // A backend paints column `i` at `columns[i].x - h_scroll`, so at
+    // `h_scroll = 45` the operator sees c1's right half, all of c2, and
+    // c3's left half — and c0 not at all.
+    fn make_wide_table(nrows: usize) -> DataTable {
+        let mut table = make_table(4, nrows);
+        for c in &mut table.columns {
+            c.width = ColumnWidth::Fixed(30.0);
+        }
+        table.min_total_width = Some(120.0);
+        table
+    }
+
+    fn wide_layout(h_scroll: f32, nrows: usize) -> DataTableLayout {
+        let mut table = make_wide_table(nrows);
+        table.h_scroll = h_scroll;
+        table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0))
+    }
+
+    /// The pre-#550 algorithm, verbatim, as the oracle for the
+    /// "`h_scroll == 0.0` is bit-identical" acceptance bullet.
+    fn legacy_hit_test(
+        l: &DataTableLayout,
+        x: f32,
+        y: f32,
+        scroll_offset: usize,
+        total_rows: usize,
+    ) -> DataTableHit {
+        if x < 0.0 || y < 0.0 || x >= l.viewport_width || y >= l.viewport_height {
+            return DataTableHit::Empty;
+        }
+        if y < l.header_height {
+            for (i, rc) in l.columns.iter().enumerate() {
+                let right_edge = rc.x + rc.width;
+                if (x - right_edge).abs() <= DIVIDER_GRAB_PX && i + 1 < l.columns.len() {
+                    return DataTableHit::HeaderDivider { col: i };
+                }
+            }
+            return match l.columns.iter().position(|c| x >= c.x && x < c.x + c.width) {
+                Some(col) => DataTableHit::Header { col },
+                None => DataTableHit::Empty,
+            };
+        }
+        let body_bottom = l.header_height + l.visible_rows as f32 * l.row_height;
+        if y < body_bottom {
+            let row_in_viewport = ((y - l.header_height) / l.row_height).floor() as usize;
+            let abs_idx = scroll_offset + row_in_viewport;
+            return if abs_idx < total_rows {
+                DataTableHit::Row { idx: abs_idx }
+            } else {
+                DataTableHit::Empty
+            };
+        }
+        if l.footer_height > 0.0 && y < body_bottom + l.footer_height {
+            return DataTableHit::Footer;
+        }
+        DataTableHit::Empty
+    }
+
+    #[test]
+    fn layout_carries_h_scroll_through_to_the_layout() {
+        assert_eq!(wide_layout(0.0, 10).h_scroll, 0.0);
+        assert_eq!(wide_layout(45.0, 10).h_scroll, 45.0);
+    }
+
+    #[test]
+    fn hit_test_header_resolves_to_the_painted_column_at_every_h_scroll() {
+        // For each offset, walk every viewport cell centre and check the
+        // hit against the column the renderer paints there — derived
+        // from the same `rc.x - h_scroll` the rasterisers use, not from
+        // a hardcoded table.
+        for h_scroll in [0.0_f32, 10.0, 30.0, 45.0, 62.0] {
+            let layout = wide_layout(h_scroll, 10);
+            for cell in 0..60u32 {
+                let x = cell as f32 + 0.5;
+                let content_x = x + h_scroll;
+                // Skip the divider grab zones — they take priority and
+                // are covered by their own test below.
+                let near_divider = layout.columns[..layout.columns.len() - 1]
+                    .iter()
+                    .any(|rc| (content_x - (rc.x + rc.width)).abs() <= DIVIDER_GRAB_PX);
+                if near_divider {
+                    continue;
+                }
+                let painted = layout
+                    .columns
+                    .iter()
+                    .position(|rc| content_x >= rc.x && content_x < rc.x + rc.width);
+                let expected = match painted {
+                    Some(col) => DataTableHit::Header { col },
+                    None => DataTableHit::Empty,
+                };
+                assert_eq!(
+                    layout.hit_test(x, 0.5, 0, 10),
+                    expected,
+                    "h_scroll={h_scroll}, viewport x={x} (content x={content_x})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hit_test_header_at_scroll_that_pushes_the_first_column_off_screen() {
+        // `h_scroll = 45` puts content x 45 at viewport x 0 — c0 (content
+        // 0..30) is entirely off-screen to the left, so *nothing* in the
+        // viewport may resolve to column 0 any more.
+        let layout = wide_layout(45.0, 10);
+        assert_eq!(
+            layout.hit_test(5.0, 0.5, 0, 10),
+            DataTableHit::Header { col: 1 },
+            "viewport x=5 sits over c1's painted right half"
+        );
+        assert_eq!(
+            layout.hit_test(25.0, 0.5, 0, 10),
+            DataTableHit::Header { col: 2 }
+        );
+        assert_eq!(
+            layout.hit_test(50.0, 0.5, 0, 10),
+            DataTableHit::Header { col: 3 }
+        );
+        for cell in 0..60u32 {
+            assert_ne!(
+                layout.hit_test(cell as f32 + 0.5, 0.5, 0, 10),
+                DataTableHit::Header { col: 0 },
+                "column 0 is scrolled fully off-screen; no viewport x may resolve to it \
+                 (viewport x={cell})"
+            );
+        }
+    }
+
+    #[test]
+    fn hit_test_header_past_the_last_column_is_no_column() {
+        // Over-scrolled to the very end: content x 90..120 fills the left
+        // half of the viewport, and the right half is past the last
+        // column's right edge — no column, not a clamp to the last one.
+        let layout = wide_layout(90.0, 10);
+        assert_eq!(
+            layout.hit_test(10.0, 0.5, 0, 10),
+            DataTableHit::Header { col: 3 }
+        );
+        assert_eq!(
+            layout.hit_test(45.0, 0.5, 0, 10),
+            DataTableHit::Empty,
+            "content x=135 is past the 120-wide content — no column lives there"
+        );
+    }
+
+    #[test]
+    fn hit_test_header_divider_follows_h_scroll() {
+        // Divider between c1 and c2 sits at content x 60 → viewport 15
+        // when h_scroll is 45; the one between c2 and c3 (content 90)
+        // lands at viewport 45.
+        let layout = wide_layout(45.0, 10);
+        assert_eq!(
+            layout.hit_test(15.0, 0.5, 0, 10),
+            DataTableHit::HeaderDivider { col: 1 }
+        );
+        assert_eq!(
+            layout.hit_test(45.0, 0.5, 0, 10),
+            DataTableHit::HeaderDivider { col: 2 }
+        );
+        // The *unscrolled* positions of those dividers must no longer
+        // grab: viewport 60 is off-viewport, and viewport 30 is now the
+        // middle of c2.
+        assert_eq!(
+            layout.hit_test(30.0, 0.5, 0, 10),
+            DataTableHit::Header { col: 2 }
+        );
+    }
+
+    #[test]
+    fn column_hit_follows_h_scroll() {
+        let unscrolled = wide_layout(0.0, 10);
+        assert_eq!(unscrolled.column_hit(5.0), Some(0));
+        assert_eq!(unscrolled.column_hit(35.0), Some(1));
+
+        let scrolled = wide_layout(45.0, 10);
+        assert_eq!(scrolled.column_hit(5.0), Some(1));
+        assert_eq!(scrolled.column_hit(25.0), Some(2));
+        assert_eq!(scrolled.column_hit(50.0), Some(3));
+    }
+
+    #[test]
+    fn hit_test_row_index_is_unaffected_by_h_scroll() {
+        // Vertical routing is orthogonal — the same body click resolves
+        // to the same absolute row at every horizontal offset.
+        for h_scroll in [0.0_f32, 30.0, 45.0, 90.0] {
+            let layout = wide_layout(h_scroll, 40);
+            assert_eq!(
+                layout.hit_test(10.0, 3.5, 5, 40),
+                DataTableHit::Row { idx: 7 },
+                "h_scroll={h_scroll} must not shift row resolution"
+            );
+        }
+    }
+
+    #[test]
+    fn scrollbar_strips_keep_priority_when_horizontally_scrolled() {
+        let mut table = make_wide_table(200);
+        table.show_scrollbar = true;
+        table.h_scroll = 45.0;
+        let layout = table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+        assert!(layout.scrollbar_width > 0.0);
+        assert!(layout.h_scrollbar_height > 0.0);
+
+        // Vertical track: the rightmost `scrollbar_width` columns. Under
+        // h_scroll a naive offset would land this on a real column and
+        // sort it — the track must stay inert instead.
+        let sb_x = layout.viewport_width - layout.scrollbar_width;
+        assert_eq!(
+            layout.hit_test(sb_x + 0.5, 0.5, 0, 200),
+            DataTableHit::Empty,
+            "a vertical-scrollbar track click must not fall through to a header"
+        );
+        assert_eq!(layout.column_hit(sb_x + 0.5), None);
+
+        // Horizontal track: the band below the last body row. It is not
+        // a header and not a row.
+        let body_bottom = layout.header_height + layout.visible_rows as f32 * layout.row_height;
+        let hit = layout.hit_test(10.0, body_bottom + 0.5, 0, 200);
+        assert!(
+            !matches!(hit, DataTableHit::Row { .. } | DataTableHit::Header { .. }),
+            "a horizontal-scrollbar track click must not fall through to a header or a row, \
+             got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn drag_divider_reads_pointer_x_in_viewport_space() {
+        // A divider drag started from a `HeaderDivider` hit keeps passing
+        // the raw viewport pointer x, so the resolved widths must come
+        // out the same whether or not the table is scrolled.
+        let unscrolled = wide_layout(0.0, 10);
+        let baseline = unscrolled.drag_divider(&[], 1, 70.0, 4.0);
+
+        let scrolled = wide_layout(45.0, 10);
+        // Same content-space pointer (70), expressed in viewport space.
+        let dragged = scrolled.drag_divider(&[], 1, 70.0 - 45.0, 4.0);
+        assert_eq!(
+            baseline, dragged,
+            "the same physical divider position must resize identically at any h_scroll"
+        );
+        assert_eq!(dragged[1], Some(40.0), "c1 grows from 30 to 70 - 30 = 40");
+        assert_eq!(dragged[2], Some(20.0), "the pair's 60 total is conserved");
+    }
+
+    #[test]
+    fn h_scroll_zero_hit_testing_is_bit_identical_to_the_pre_change_algorithm() {
+        // Acceptance bullet 3. Swept exhaustively over half-cell
+        // positions across the whole viewport for four table shapes —
+        // with and without a vertical scrollbar, with and without a
+        // footer, narrow and `min_total_width`-wide.
+        let mut shapes: Vec<DataTable> = Vec::new();
+        shapes.push(make_table(4, 40));
+        let mut with_sb = make_table(4, 40);
+        with_sb.show_scrollbar = true;
+        shapes.push(with_sb);
+        let mut with_footer = make_table(3, 40);
+        with_footer.show_scrollbar = true;
+        with_footer.footer = Some(footer_row(3));
+        shapes.push(with_footer);
+        let mut wide = make_wide_table(40);
+        wide.show_scrollbar = true;
+        shapes.push(wide);
+
+        for (i, table) in shapes.iter().enumerate() {
+            assert_eq!(table.h_scroll, 0.0, "shape {i} must pin h_scroll at zero");
+            let layout = table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+            for cell_x in 0..62u32 {
+                for cell_y in 0..22u32 {
+                    let x = cell_x as f32 + 0.5;
+                    let y = cell_y as f32 + 0.5;
+                    for scroll_offset in [0usize, 7] {
+                        assert_eq!(
+                            layout.hit_test(x, y, scroll_offset, 40),
+                            legacy_hit_test(&layout, x, y, scroll_offset, 40),
+                            "shape {i}: hit_test({x}, {y}, {scroll_offset}, 40) must match the \
+                             pre-#550 algorithm exactly"
+                        );
+                    }
+                    assert_eq!(
+                        layout.column_hit(x),
+                        layout
+                            .columns
+                            .iter()
+                            .position(|c| x >= c.x && x < c.x + c.width),
+                        "shape {i}: column_hit({x}) must match the pre-#550 algorithm exactly"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
