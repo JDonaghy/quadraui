@@ -80,7 +80,17 @@ pub unsafe fn draw_menu_bar(
             (theme.tab_inactive_fg, theme.tab_bar_bg)
         };
 
-        let item_x = x + vi.bounds.x as f64;
+        // `vi.bounds.x` is already absolute — `mac_menu_bar_layout` passes
+        // `bounds.x = x` into `MenuBar::layout`, which starts its internal
+        // cursor at `bounds.x`, so item bounds already carry the bar's
+        // origin. Adding `x` again here double-counted it, invisibly at
+        // `x == 0` (every existing test) and shifting painted glyphs away
+        // from their own hit-test bounds at any other origin — the
+        // LESSONS.md "layout helpers must return coords in the same frame
+        // across backends" bug class. Same bug found and fixed in
+        // `tui::menu_bar::draw_menu_bar` via the quadraui#494 non-zero-
+        // origin regression test.
+        let item_x = vi.bounds.x as f64;
         let item_w = vi.bounds.width as f64;
 
         if is_active {
@@ -258,6 +268,39 @@ mod tests {
         let (_surface, layout) = paint_via_backend(&bar);
         // Clickable items (File, Edit) resolve as Item(i). Disabled
         // View falls through to Bar — matches the primitive contract.
+        for (i, vi) in layout.visible_items.iter().enumerate() {
+            let cx = vi.bounds.x + vi.bounds.width * 0.5;
+            let cy = vi.bounds.y + vi.bounds.height * 0.5;
+            let expected = if vi.clickable {
+                MenuBarHit::Item(i)
+            } else {
+                MenuBarHit::Bar
+            };
+            assert_eq!(
+                layout.hit_test(cx, cy),
+                expected,
+                "item {} (clickable={})",
+                i,
+                vi.clickable
+            );
+        }
+    }
+
+    #[test]
+    fn hit_test_resolves_clickable_items_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": every other
+        // test in this file lays out at origin (0, 0). `mac_menu_bar_
+        // layout` bakes `x`/`y` straight into `visible_items[].bounds`
+        // (absolute frame, matching the GTK/TUI twins) via
+        // `MenuBar::layout`, whose cursor starts at `bounds.x` — call it
+        // directly (pure fn, no paint needed) at a non-zero origin and
+        // prove hit_test still resolves the right item.
+        let bar = sample_bar();
+        let f = font();
+        let origin_x = 7.0;
+        let origin_y = 13.0;
+        let layout = mac_menu_bar_layout(&f, origin_x, origin_y, W as f64, H as f64, &bar);
         for (i, vi) in layout.visible_items.iter().enumerate() {
             let cx = vi.bounds.x + vi.bounds.width * 0.5;
             let cy = vi.bounds.y + vi.bounds.height * 0.5;

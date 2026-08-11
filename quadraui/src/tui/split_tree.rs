@@ -93,34 +93,57 @@ mod tests {
         )
     }
 
-    #[test]
-    fn horizontal_paint_and_click_round_trip() {
-        // 41 cols so available=40, 0.5*40=20 -> divider at cell x=20.
-        let area = Rect::new(0, 0, 41, 10);
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends"
+    // (quadraui#494). `tui_split_tree_layout` bakes `area.x`/`area.y`
+    // straight into `tree.layout`'s returned bounds (absolute frame),
+    // so the regression guard is a full paint+hit_test round trip
+    // re-run at a non-zero origin.
+    fn horizontal_round_trip_at(origin_x: u16, origin_y: u16) {
+        // 41 cols so available=40, 0.5*40=20 -> divider at cell x=origin_x+20.
+        let area = Rect::new(origin_x, origin_y, 41, 10);
         let mut buf = Buffer::empty(area);
         let tree = two_pane(SplitDirection::Horizontal, 0.5);
         let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
 
         let d = &layout.dividers[0];
         let cell = d.cell_position();
-        assert_eq!(cell_char(&buf, cell, 0), '│');
+        assert_eq!(cell_char(&buf, cell, origin_y), '│');
 
+        let cross_cell = origin_y + 5;
         // hit_test_divider_cell at the exact painted cell resolves the
         // same split_index the paint loop used.
-        assert_eq!(layout.hit_test_divider_cell(cell, 5), Some(d.split_index));
+        assert_eq!(
+            layout.hit_test_divider_cell(cell, cross_cell),
+            Some(d.split_index)
+        );
 
         // Leaf hit-test resolves panes on either side of the divider.
         assert_eq!(
-            layout.hit_test_leaf(Point { x: 1.0, y: 5.0 }),
+            layout.hit_test_leaf(Point {
+                x: origin_x as f32 + 1.0,
+                y: cross_cell as f32
+            }),
             Some(&wid("a"))
         );
         assert_eq!(
             layout.hit_test_leaf(Point {
                 x: cell as f32 + 2.0,
-                y: 5.0
+                y: cross_cell as f32
             }),
             Some(&wid("b"))
         );
+    }
+
+    #[test]
+    fn horizontal_paint_and_click_round_trip() {
+        horizontal_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    #[test]
+    fn horizontal_paint_and_click_round_trip_at_nonzero_origin() {
+        horizontal_round_trip_at(7, 13);
     }
 
     #[test]
@@ -196,34 +219,53 @@ mod tests {
         assert_eq!(layout.leaves.len(), 3);
     }
 
-    #[test]
-    fn hit_test_agrees_with_actually_painted_cell_for_fractional_ratio() {
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends"
+    // (quadraui#494). This is a genuine paint→hit_test round trip (it
+    // reads the actually-painted column back out of the buffer), so it
+    // gets the same non-zero-origin treatment as the other round trips
+    // in this file.
+    fn fractional_ratio_round_trip_at(origin_x: u16, origin_y: u16) {
         // A ratio chosen so the divider position is NOT cell-aligned —
         // this is the vimcode #452 regression case: paint must truncate
         // (`as u16`) the same way `SplitTreeDivider::cell_position()`
         // does, not round — otherwise a click on the visually-painted
         // divider misses.
-        let area = Rect::new(0, 0, 101, 10); // available = 100
+        let area = Rect::new(origin_x, origin_y, 101, 10); // available = 100
         let mut buf = Buffer::empty(area);
-        let tree = two_pane(SplitDirection::Horizontal, 0.207); // position = 20.7
+        let tree = two_pane(SplitDirection::Horizontal, 0.207); // position = origin_x + 20.7
         let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
-        assert!((layout.dividers[0].position - 20.7).abs() < 0.01);
+        assert!((layout.dividers[0].position - (origin_x as f32 + 20.7)).abs() < 0.01);
 
+        let cross_row = origin_y + 5;
         // Find the column the divider glyph actually painted at —
         // don't assume a formula, read the buffer.
-        let painted_col = (0..area.width)
-            .find(|&x| cell_char(&buf, x, 5) == '│')
+        let painted_col = (area.x..area.x + area.width)
+            .find(|&x| cell_char(&buf, x, cross_row) == '│')
             .expect("divider glyph should have painted somewhere");
 
         // hit_test_divider_cell at the ACTUAL painted column must
         // resolve to this divider — proving paint and hit-test agree
         // on the same float -> cell conversion.
         assert_eq!(
-            layout.hit_test_divider_cell(painted_col, 5),
+            layout.hit_test_divider_cell(painted_col, cross_row),
             Some(layout.dividers[0].split_index),
             "painted at column {painted_col} but hit_test_divider_cell disagrees \
              (paint and click used different float->cell conversions)"
         );
+    }
+
+    #[test]
+    fn hit_test_agrees_with_actually_painted_cell_for_fractional_ratio() {
+        fractional_ratio_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
+    /// the #452 paint/hit-test agreement must also hold when the tree
+    /// isn't painted at the screen origin.
+    #[test]
+    fn hit_test_agrees_with_actually_painted_cell_for_fractional_ratio_at_nonzero_origin() {
+        fractional_ratio_round_trip_at(7, 13);
     }
 
     #[test]

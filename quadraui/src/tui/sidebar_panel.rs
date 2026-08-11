@@ -123,16 +123,34 @@ mod tests {
         assert_eq!(layout.content_bounds.height, 9.0);
     }
 
-    #[test]
-    fn click_in_header_resolves_to_toolbar_button() {
-        let area = Rect::new(0, 0, 40, 10);
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends"
+    // (quadraui#494). `tui_sidebar_panel_layout` bakes `area.x`/
+    // `area.y` straight into `panel.layout`'s returned bounds
+    // (absolute frame), so the regression guard is a full
+    // paint+hit_test round trip re-run at a non-zero origin.
+    fn click_in_header_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 10);
         let mut buf = Buffer::empty(area);
         let panel = panel_with_toolbar();
         let layout = draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None);
-        match layout.hit_test(2.0, 0.0) {
+        match layout.hit_test(origin_x as f32 + 2.0, origin_y as f32) {
             SidebarPanelHit::ToolbarButton(id) => assert_eq!(id.as_str(), "refine"),
             other => panic!("expected ToolbarButton, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn click_in_header_resolves_to_toolbar_button() {
+        click_in_header_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
+    /// the same header-click round trip must hold when the panel isn't
+    /// painted at the screen origin.
+    #[test]
+    fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {
+        click_in_header_round_trip_at(7, 13);
     }
 
     #[test]

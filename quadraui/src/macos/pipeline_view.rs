@@ -316,3 +316,135 @@ extern "C" {
     fn CGContextClosePath(c: CGContextRef);
     fn CGContextFillPath(c: CGContextRef);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::headless::BitmapSurface;
+    use super::super::text::make_font;
+    use super::super::MacBackend;
+    use super::*;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::primitives::pipeline_view::{PipelineHit, PipelineStage};
+    use crate::types::WidgetId;
+    use crate::Backend;
+
+    const W: u32 = 300;
+    const H: u32 = 80;
+
+    fn font() -> CTFont {
+        make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    fn make_view() -> PipelineView {
+        PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![
+                PipelineStage {
+                    label: "Build".into(),
+                    status: StageStatus::Done,
+                    action: None,
+                },
+                PipelineStage {
+                    label: "Test".into(),
+                    status: StageStatus::Active,
+                    action: Some("Retry".into()),
+                },
+            ],
+            focused_stage: None,
+        }
+    }
+
+    fn paint_via_backend(view: &PipelineView) -> (BitmapSurface, PipelineViewLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_pipeline_view(QRect::new(0.0, 0.0, W as f32, H as f32), view);
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    #[test]
+    fn draws_without_panic_and_has_two_stages() {
+        let view = make_view();
+        let (_surface, layout) = paint_via_backend(&view);
+        assert_eq!(layout.stages.len(), 2);
+    }
+
+    /// Shared body for the action↔click round trip, run at both the
+    /// origin and a non-zero origin (quadraui#494 / LESSONS.md "Layout
+    /// helpers must return coords in the same frame across backends").
+    /// `mac_pipeline_view_layout` bakes `x`/`y` straight into the
+    /// returned bounds (absolute frame, matching the GTK/TUI twins) —
+    /// and *also* adds `MAC_FOCUS_INDICATOR_H` to `y` itself before
+    /// laying out, an extra reason a non-zero-origin regression is
+    /// plausible here. Deriving `ab`/`bb` from the layout (not
+    /// hardcoding them) means this exercises whatever origin math the
+    /// function actually does, at any origin. Calls
+    /// `mac_pipeline_view_layout` directly (pure fn, no font/paint
+    /// dependency — it forwards to `PipelineView::layout`, which is
+    /// plain geometry).
+    fn layout_hit_test_action_round_trip_at(origin_x: f64, origin_y: f64) {
+        let view = make_view();
+        let layout = mac_pipeline_view_layout(&view, origin_x, origin_y, 300.0, 80.0);
+
+        // Box top must sit exactly at origin_y + MAC_FOCUS_INDICATOR_H,
+        // not a hardcoded absolute value — pins the offset math
+        // independently of the hit_test round trip below.
+        let bb0 = layout.stages[0].box_bounds;
+        assert!(
+            (bb0.y as f64 - (origin_y + MAC_FOCUS_INDICATOR_H)).abs() < 0.001,
+            "stage box top should be origin_y + MAC_FOCUS_INDICATOR_H, got {}",
+            bb0.y,
+        );
+
+        // Stage 1 has action bounds.
+        let ab = layout.stages[1]
+            .action_bounds
+            .expect("action bounds for stage 1");
+        let hit = layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0);
+        assert_eq!(hit, PipelineHit::Action(1));
+    }
+
+    #[test]
+    fn layout_hit_test_action_round_trip() {
+        layout_hit_test_action_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn layout_hit_test_action_round_trip_at_nonzero_origin() {
+        layout_hit_test_action_round_trip_at(7.0, 13.0);
+    }
+
+    fn layout_hit_test_body_round_trip_at(origin_x: f64, origin_y: f64) {
+        let view = make_view();
+        let layout = mac_pipeline_view_layout(&view, origin_x, origin_y, 300.0, 80.0);
+
+        let bb = layout.stages[0].box_bounds;
+        assert!(
+            (bb.y as f64 - (origin_y + MAC_FOCUS_INDICATOR_H)).abs() < 0.001,
+            "stage box top should be origin_y + MAC_FOCUS_INDICATOR_H, got {}",
+            bb.y,
+        );
+        // Stage 0 has no action, so a click inside its box resolves to Body.
+        let hit = layout.hit_test(bb.x + 1.0, bb.y + 1.0);
+        assert_eq!(hit, PipelineHit::Body(0));
+    }
+
+    #[test]
+    fn layout_hit_test_body_round_trip() {
+        layout_hit_test_body_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn layout_hit_test_body_round_trip_at_nonzero_origin() {
+        layout_hit_test_body_round_trip_at(7.0, 13.0);
+    }
+}

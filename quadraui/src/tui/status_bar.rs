@@ -272,8 +272,15 @@ mod tests {
         assert!(result.hit_regions.is_empty());
     }
 
-    #[test]
-    fn returns_hit_regions_for_action_segments() {
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends" (quadraui#494).
+    // `hit_regions` are bar-local by construction (`bar.layout` only takes
+    // width/height, never `area.x`/`area.y`), but `draw_status_bar` paints
+    // each segment's text at `area.x + vs.bounds.x` — so the only way to
+    // prove painting is correct at a non-zero origin is a full round trip:
+    // lay out, paint, and check the glyph lands at the *absolute* screen
+    // position while the returned hit region stays bar-local.
+    fn round_trip_at(origin_x: u16, origin_y: u16) {
         // Bar with an action_id'd segment in the middle of the left half.
         let bar = StatusBar {
             id: WidgetId::new("test-bar"),
@@ -298,10 +305,10 @@ mod tests {
         let layout = bar.layout(20.0, 1.0, 0.0, |seg| {
             StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         });
-        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 20, origin_y + 1));
         let result = draw_status_bar(
             &mut buf,
-            Rect::new(0, 0, 20, 1),
+            Rect::new(origin_x, origin_y, 20, 1),
             &bar,
             &layout,
             &Theme::default(),
@@ -316,10 +323,34 @@ mod tests {
             StatusBarHit::Segment(id) => assert_eq!(id.as_str(), "middle-action"),
             other => panic!("expected Segment, got {:?}", other),
         }
-        // Region starts after "AAA" (x=3.0) and is 4 cells wide ("BBBB").
+        // Region starts after "AAA" (x=3.0) and is 4 cells wide ("BBBB") —
+        // bar-local, independent of `origin_x`/`origin_y`.
         let r = &result.hit_regions[0].0;
         assert_eq!(r.x, 3.0);
         assert_eq!(r.width, 4.0);
+
+        // Painting must land at the *absolute* screen position
+        // (area.x + bounds.x, area.y), not at the bar-local coordinates.
+        let painted_x = origin_x + r.x as u16;
+        assert_eq!(
+            cell_char(&buf, painted_x, origin_y),
+            'B',
+            "segment text should paint at area.x ({origin_x}) + bounds.x ({}), area.y ({origin_y})",
+            r.x
+        );
+    }
+
+    #[test]
+    fn returns_hit_regions_for_action_segments() {
+        round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
+    /// same hit-region + paint round trip must hold when the bar isn't
+    /// painted at the screen origin.
+    #[test]
+    fn returns_hit_regions_for_action_segments_at_nonzero_origin() {
+        round_trip_at(7, 13);
     }
 
     fn make_clickable_bar() -> StatusBar {

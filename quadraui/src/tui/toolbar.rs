@@ -272,9 +272,14 @@ mod tests {
         assert_eq!(cell_char(&buf, 1, 0), ' ');
     }
 
-    #[test]
-    fn click_round_trip_through_layout() {
-        let area = Rect::new(0, 0, 40, 1);
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends" (quadraui#494).
+    // `tui_toolbar_layout` bakes `area.x`/`area.y` straight into
+    // `bar.layout`'s returned bounds (absolute frame), so the regression
+    // guard is a full paint+hit_test round trip re-run at a non-zero
+    // origin.
+    fn click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 1);
         let mut buf = Buffer::empty(area);
         let bar = Toolbar {
             id: WidgetId::new("tb"),
@@ -285,6 +290,14 @@ mod tests {
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // Click inside the first button.
         let b = layout.visible_items[0].bounds;
+        assert_eq!(
+            b.x, origin_x as f32,
+            "bounds should be absolute (area.x baked in)"
+        );
+        assert_eq!(
+            b.y, origin_y as f32,
+            "bounds should be absolute (area.y baked in)"
+        );
         let hit = layout.hit_test(b.x + 1.0, b.y);
         match hit {
             ToolbarHit::Button(id) => assert_eq!(id.as_str(), "a"),
@@ -297,6 +310,19 @@ mod tests {
             ToolbarHit::Button(id) => assert_eq!(id.as_str(), "b"),
             _ => panic!("expected button-b hit"),
         }
+    }
+
+    #[test]
+    fn click_round_trip_through_layout() {
+        click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
+    /// same click round trip must hold when the toolbar isn't painted at
+    /// the screen origin.
+    #[test]
+    fn click_round_trip_through_layout_at_nonzero_origin() {
+        click_round_trip_at(7, 13);
     }
 
     #[test]

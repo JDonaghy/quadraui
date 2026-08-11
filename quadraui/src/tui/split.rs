@@ -89,46 +89,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn horizontal_paint_and_click_round_trip() {
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends"
+    // (quadraui#494). `tui_split_layout` bakes `area.x`/`area.y`
+    // straight into `split.layout`'s returned bounds (absolute frame),
+    // so the regression guard is a full paint+hit_test round trip
+    // re-run at a non-zero origin.
+
+    fn horizontal_round_trip_at(origin_x: u16, origin_y: u16) {
         // Use 41 cols so available=40, 0.5*40=20 → divider at x=20, integer.
-        let area = Rect::new(0, 0, 41, 10);
+        let area = Rect::new(origin_x, origin_y, 41, 10);
         let mut buf = Buffer::empty(area);
         let split = hsplit(0.5);
         let layout = draw_split(&mut buf, area, &split, &Theme::default());
 
         let div_x = layout.divider_bounds.x.round() as u16;
-        assert_eq!(cell_char(&buf, div_x, 0), '│');
+        assert_eq!(cell_char(&buf, div_x, origin_y), '│');
 
-        let hit = layout.hit_test(layout.divider_bounds.x + 0.5, 5.0);
+        let mid_y = origin_y as f32 + 5.0;
+        let hit = layout.hit_test(layout.divider_bounds.x + 0.5, mid_y);
         assert_eq!(hit, SplitHit::Divider(WidgetId::new("split")));
 
-        let hit_first = layout.hit_test(1.0, 5.0);
+        let hit_first = layout.hit_test(origin_x as f32 + 1.0, mid_y);
         assert_eq!(hit_first, SplitHit::FirstPane(WidgetId::new("split")));
 
-        let hit_second = layout.hit_test(layout.divider_bounds.x + 1.5, 5.0);
+        let hit_second = layout.hit_test(layout.divider_bounds.x + 1.5, mid_y);
         assert_eq!(hit_second, SplitHit::SecondPane(WidgetId::new("split")));
     }
 
     #[test]
-    fn vertical_paint_and_click_round_trip() {
+    fn horizontal_paint_and_click_round_trip() {
+        horizontal_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    #[test]
+    fn horizontal_paint_and_click_round_trip_at_nonzero_origin() {
+        horizontal_round_trip_at(7, 13);
+    }
+
+    fn vertical_round_trip_at(origin_x: u16, origin_y: u16) {
         // Use 21 rows so available=20, 0.5*20=10 → divider at y=10, integer.
-        let area = Rect::new(0, 0, 40, 21);
+        let area = Rect::new(origin_x, origin_y, 40, 21);
         let mut buf = Buffer::empty(area);
         let split = vsplit(0.5);
         let layout = draw_split(&mut buf, area, &split, &Theme::default());
 
         let div_y = layout.divider_bounds.y.round() as u16;
-        assert_eq!(cell_char(&buf, 0, div_y), '─');
+        assert_eq!(cell_char(&buf, origin_x, div_y), '─');
 
-        let hit = layout.hit_test(20.0, layout.divider_bounds.y + 0.5);
+        let mid_x = origin_x as f32 + 20.0;
+        let hit = layout.hit_test(mid_x, layout.divider_bounds.y + 0.5);
         assert_eq!(hit, SplitHit::Divider(WidgetId::new("split")));
 
-        let hit_first = layout.hit_test(20.0, 1.0);
+        let hit_first = layout.hit_test(mid_x, origin_y as f32 + 1.0);
         assert_eq!(hit_first, SplitHit::FirstPane(WidgetId::new("split")));
 
-        let hit_second = layout.hit_test(20.0, layout.divider_bounds.y + 1.5);
+        let hit_second = layout.hit_test(mid_x, layout.divider_bounds.y + 1.5);
         assert_eq!(hit_second, SplitHit::SecondPane(WidgetId::new("split")));
+    }
+
+    #[test]
+    fn vertical_paint_and_click_round_trip() {
+        vertical_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    #[test]
+    fn vertical_paint_and_click_round_trip_at_nonzero_origin() {
+        vertical_round_trip_at(7, 13);
     }
 
     #[test]

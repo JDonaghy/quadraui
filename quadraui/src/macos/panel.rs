@@ -264,6 +264,36 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_resolves_action_vs_title_vs_content_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": every other
+        // test in this file lays out at origin (0, 0). `mac_panel_
+        // layout` bakes `x`/`y` straight into `bounds` (absolute frame,
+        // matching the GTK/TUI twins) — call it directly (pure fn, no
+        // paint needed) at a non-zero origin and prove action/title/
+        // content clicks still resolve through `hit_test`.
+        let panel = sample_panel();
+        let layout = mac_panel_layout(&panel, 7.0, 13.0, W as f64, H as f64, 16.0);
+
+        let first_action = &layout.visible_actions[0];
+        let hit = layout.hit_test(
+            first_action.bounds.x + first_action.bounds.width * 0.5,
+            first_action.bounds.y + first_action.bounds.height * 0.5,
+        );
+        assert!(matches!(hit, PanelHit::Action(_)));
+
+        // Title body (left of actions).
+        let tb = layout.title_bar_bounds.unwrap();
+        let hit = layout.hit_test(tb.x + 10.0, tb.y + tb.height * 0.5);
+        assert!(matches!(hit, PanelHit::TitleBar(_)), "hit was {:?}", hit);
+
+        // Content area.
+        let cb = layout.content_bounds;
+        let hit = layout.hit_test(cb.x + cb.width * 0.5, cb.y + cb.height * 0.5);
+        assert!(matches!(hit, PanelHit::Content(_)));
+    }
+
+    #[test]
     fn collapsed_panel_zero_content_height() {
         let mut panel = sample_panel();
         panel.collapsed = true;

@@ -244,6 +244,14 @@ mod tests {
     }
 
     fn paint(td: &TextDisplay) -> (BitmapSurface, TextDisplayLayout) {
+        paint_at(td, QRect::new(0.0, 0.0, W as f32, H as f32))
+    }
+
+    /// Like [`paint`] but paints (and derives the layout) at an
+    /// arbitrary `rect` instead of always `QRect::new(0.0, 0.0, ...)`.
+    /// Lets tests exercise the paint-time `x`/`y`/title-strip shift
+    /// independently of the body-local `TextDisplayLayout` it returns.
+    fn paint_at(td: &TextDisplay, rect: QRect) -> (BitmapSurface, TextDisplayLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
@@ -251,8 +259,8 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_text_display(QRect::new(0.0, 0.0, W as f32, H as f32), td);
-            let l = b.text_display_layout(QRect::new(0.0, 0.0, W as f32, H as f32), td);
+            b.draw_text_display(rect, td);
+            let l = b.text_display_layout(rect, td);
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
@@ -324,6 +332,55 @@ mod tests {
         let cx = vis.bounds.x + vis.bounds.width / 2.0;
         let cy = vis.bounds.y + vis.bounds.height / 2.0;
         match layout.hit_test(cx, cy) {
+            TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
+            other => panic!("expected Line, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn layout_hit_test_resolves_lines_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": the module
+        // doc comment says `mac_text_display_layout`'s coordinates are
+        // body-local (y=0 at the top of the body region) —
+        // `TextDisplay::layout` never receives x/y at all. The plain
+        // `layout_hit_test_resolves_lines` case above paints at
+        // `QRect::new(0, 0, ...)` with no title, so `body_y == rect.y
+        // == 0` there too — localisation is a no-op and can't catch a
+        // paint/layout frame mismatch (the #44-class bug this doc
+        // section documents). Paint at a non-zero rect origin WITH a
+        // title row present (so `body_y = rect.y + line_height !=
+        // rect.y`), then round-trip an absolute click the way a real
+        // host does: localise via `abs - (rect.x, body_y)` before
+        // calling `hit_test`.
+        let mut td = make_td(20, false);
+        td.title = Some(StyledText::plain("Logs"));
+
+        let rect_x = 9.0_f32;
+        let rect_y = 17.0_f32;
+        let rect = QRect::new(rect_x, rect_y, W as f32 - rect_x, H as f32 - rect_y);
+        let (_surface, layout) = paint_at(&td, rect);
+
+        // MacBackend::new()'s default `current_line_height`, matching
+        // `paint_at`'s backend construction (no explicit line-height
+        // override in this test module).
+        let line_height = 16.0_f32;
+        let body_y = rect_y + line_height;
+
+        let vis = &layout.visible_lines[0];
+        // Sanity: layout stays body-local even though paint used a
+        // non-zero rect + title strip.
+        assert_eq!(
+            vis.bounds.y, 0.0,
+            "visible_lines bounds.y must be body-local, got {}",
+            vis.bounds.y,
+        );
+
+        let abs_x = rect_x + vis.bounds.x + vis.bounds.width * 0.5;
+        let abs_y = body_y + vis.bounds.y + vis.bounds.height * 0.5;
+        let local_x = abs_x - rect_x;
+        let local_y = abs_y - body_y;
+        match layout.hit_test(local_x, local_y) {
             TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
             other => panic!("expected Line, got {:?}", other),
         }

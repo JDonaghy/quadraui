@@ -655,6 +655,29 @@ mod tests {
         assert_eq!(hit, DataTableHit::Header { col: 1 });
     }
 
+    /// LESSONS.md non-zero-origin regression guard (quadraui#494):
+    /// `data_table_layout` never reads `area.x`/`area.y` (see its doc
+    /// comment) — it, and therefore `hit_test`, is table-**local**, unlike
+    /// most of this batch's other layout fns which bake the origin in.
+    /// Painting still happens at the absolute `area.x`/`area.y` (mirrors
+    /// `tui/activity_bar.rs`'s relative-hit-regions / absolute-paint split),
+    /// so this scans the buffer at the shifted absolute position but keeps
+    /// the resulting index — and the `hit_test` call — table-local.
+    #[test]
+    fn paint_click_round_trip_header_at_nonzero_origin() {
+        let table = make_table();
+        let area = Rect::new(7, 13, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let header: String = (area.x..area.x + 40)
+            .map(|x| buf[(x, area.y)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let status_pos = header.find("Status").expect("Status should be in header");
+        let hit = layout.hit_test(status_pos as f32 + 3.0, 0.5, 0, table.rows.len());
+        assert_eq!(hit, DataTableHit::Header { col: 1 });
+    }
+
     #[test]
     fn paint_click_round_trip_row() {
         let table = make_table();
@@ -669,6 +692,52 @@ mod tests {
         let pod_pos = row1.find("pod-xyz").expect("pod-xyz should be in row 1");
         let hit = layout.hit_test(pod_pos as f32, 2.5, 0, table.rows.len());
         assert_eq!(hit, DataTableHit::Row { idx: 1 });
+    }
+
+    /// Non-zero-origin sibling of `paint_click_round_trip_row` — see
+    /// `paint_click_round_trip_header_at_nonzero_origin` (quadraui#494).
+    #[test]
+    fn paint_click_round_trip_row_at_nonzero_origin() {
+        let table = make_table();
+        let area = Rect::new(7, 13, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        // Row 1 paints on the *absolute* screen row `area.y + 2`.
+        let row1: String = (area.x..area.x + 40)
+            .map(|x| buf[(x, area.y + 2)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let pod_pos = row1.find("pod-xyz").expect("pod-xyz should be in row 1");
+        let hit = layout.hit_test(pod_pos as f32, 2.5, 0, table.rows.len());
+        assert_eq!(hit, DataTableHit::Row { idx: 1 });
+    }
+
+    /// Direct "bounds do not move" guard, mirroring
+    /// `tui/activity_bar.rs`'s `hit_regions_do_not_move_when_the_bar_does`:
+    /// the resolved column bounds must be byte-for-byte identical no matter
+    /// where `area` sits on screen, since `data_table_layout` is table-local
+    /// by construction (quadraui#494).
+    #[test]
+    fn column_bounds_do_not_move_when_the_table_does() {
+        let table = make_table();
+        let cols_at = |origin_x: u16, origin_y: u16| {
+            let area = Rect::new(origin_x, origin_y, 40, 10);
+            let mut buf = Buffer::empty(area);
+            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            layout
+                .columns
+                .iter()
+                .map(|c| (c.x, c.width))
+                .collect::<Vec<_>>()
+        };
+
+        let at_zero = cols_at(0, 0);
+        assert!(!at_zero.is_empty(), "sanity: some columns were resolved");
+        assert_eq!(
+            cols_at(7, 13),
+            at_zero,
+            "column bounds must be table-local, independent of area.x/area.y"
+        );
     }
 
     /// A table with many more rows than fit the viewport, for footer

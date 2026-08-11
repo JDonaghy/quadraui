@@ -129,28 +129,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn determinate_fill_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 20, 1);
+    // Shared bodies parametrized over the area's origin — LESSONS.md
+    // "Layout helpers must return coords in the same frame across
+    // backends" (quadraui#494). `tui_progress_layout` bakes `area.x`/
+    // `area.y` straight into `bar.layout`'s returned bounds (absolute
+    // frame), so the regression guard is a full paint+hit_test round
+    // trip re-run at a non-zero origin, not a relative-coords check.
+
+    fn determinate_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 20, 1);
         let mut buf = Buffer::empty(area);
         let bar = det_bar(0.5);
         let layout = draw_progress(&mut buf, area, &bar, &Theme::default());
 
-        // Fill should cover ~10 cells (50% of 20).
+        // Fill should cover ~10 cells (50% of 20) starting at the area's origin.
         let fb = layout.fill_bounds.expect("fill bounds present");
         let fill_end = (fb.x + fb.width).round() as u16;
-        assert_eq!(fill_end, 10);
-        assert_eq!(cell_char(&buf, 0, 0), '█');
-        assert_eq!(cell_char(&buf, 9, 0), '█');
-        assert_eq!(cell_char(&buf, 10, 0), '░');
+        assert_eq!(fill_end, origin_x + 10);
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '█');
+        assert_eq!(cell_char(&buf, origin_x + 9, origin_y), '█');
+        assert_eq!(cell_char(&buf, origin_x + 10, origin_y), '░');
 
-        let hit = layout.hit_test(5.0, 0.5);
+        let hit = layout.hit_test(origin_x as f32 + 5.0, origin_y as f32 + 0.5);
         assert_eq!(hit, ProgressBarHit::Body(WidgetId::new("prog")));
     }
 
     #[test]
-    fn cancel_button_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 20, 1);
+    fn determinate_fill_paint_and_click_round_trip() {
+        determinate_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
+    /// the same fill+hit_test round trip must hold when the bar isn't
+    /// painted at the screen origin.
+    #[test]
+    fn determinate_fill_paint_and_click_round_trip_at_nonzero_origin() {
+        determinate_round_trip_at(7, 13);
+    }
+
+    fn cancel_button_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 20, 1);
         let mut buf = Buffer::empty(area);
         let mut bar = det_bar(0.5);
         bar.cancellable = true;
@@ -158,10 +176,21 @@ mod tests {
 
         let cb = layout.cancel_bounds.expect("cancel bounds present");
         let cx = cb.x.round() as u16 + 1;
-        assert_eq!(cell_char(&buf, cx, 0), '×');
+        assert_eq!(cell_char(&buf, cx, origin_y), '×');
 
-        let hit = layout.hit_test(cx as f32 + 0.5, 0.5);
+        let hit = layout.hit_test(cx as f32 + 0.5, origin_y as f32 + 0.5);
         assert_eq!(hit, ProgressBarHit::Cancel(WidgetId::new("prog")));
+    }
+
+    #[test]
+    fn cancel_button_paint_and_click_round_trip() {
+        cancel_button_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    #[test]
+    fn cancel_button_paint_and_click_round_trip_at_nonzero_origin() {
+        cancel_button_round_trip_at(7, 13);
     }
 
     #[test]

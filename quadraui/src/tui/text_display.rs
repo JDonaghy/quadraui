@@ -317,9 +317,15 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
-    #[test]
-    fn scrollbar_thumb_paint_and_click_round_trip() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends" (quadraui#494).
+    // `tui_text_display_layout` is local-frame (it only takes `body`
+    // width/height, never `area.x`/`area.y`), but `draw_text_display`
+    // paints each row at `body.y + vis.bounds.y` (and the scrollbar gutter
+    // at `body.x`/`body.y`) — untested at a non-zero `area.y`/`area.x`
+    // until now.
+    fn scrollbar_thumb_round_trip_at(origin_x: u16, origin_y: u16) {
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 20, origin_y + 5));
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
@@ -332,15 +338,17 @@ mod tests {
         };
         draw_text_display(
             &mut buf,
-            Rect::new(0, 0, 20, 5),
+            Rect::new(origin_x, origin_y, 20, 5),
             &display,
             &Theme::default(),
         );
 
-        // Scrollbar gutter at column 19. Thumb should be at top (scroll_offset=0).
-        assert_eq!(cell_char(&buf, 19, 0), '█');
+        // Scrollbar gutter at the last column of the area. Thumb should be
+        // at top (scroll_offset=0).
+        assert_eq!(cell_char(&buf, origin_x + 19, origin_y), '█');
 
-        // Use layout for hit-test.
+        // Use layout for hit-test — layout is local-frame (0,0-based), so
+        // the hit_test coordinates are NOT shifted by origin_x/origin_y.
         let layout = display
             .layout_with_scrollbar(20.0, 5.0, 1.0, 1.0, |_| TextDisplayLineMeasure::new(1.0));
         let thumb = layout.thumb_bounds.expect("thumb bounds present");
@@ -349,6 +357,19 @@ mod tests {
             hit,
             crate::primitives::text_display::TextDisplayHit::ScrollbarThumb
         );
+    }
+
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip() {
+        scrollbar_thumb_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
+    /// same scrollbar paint + hit_test round trip must hold when the
+    /// display isn't painted at the screen origin.
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip_at_nonzero_origin() {
+        scrollbar_thumb_round_trip_at(7, 13);
     }
 
     #[test]

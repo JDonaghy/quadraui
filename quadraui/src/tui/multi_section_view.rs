@@ -843,9 +843,20 @@ mod tests {
     /// hit_test that coordinate, assert the hit identifies the same
     /// section. Uses a fractional `EqualShare` distribution (4 sections
     /// in 21 cells = 5.25 each) — the worst case for paint/click drift.
-    #[test]
-    fn header_clicks_land_in_painted_section_under_fractional_distribution() {
-        let area = TuiRect::new(0, 0, 30, 21);
+    ///
+    /// Run at both the origin and a non-zero `area` origin (quadraui#494 /
+    /// LESSONS.md "Layout helpers must return coords in the same frame
+    /// across backends"). `tui_msv_layout` bakes `area.x`/`area.y`
+    /// straight into the returned bounds (absolute frame), and
+    /// `paint_then_layout` already takes `area` as a parameter, so this
+    /// re-runs the identical logic at a shifted origin. `find_row_with`/
+    /// `row_text` derive their scan range from `buf.area` (not a
+    /// hardcoded rect), so they track the origin too.
+    fn header_clicks_land_in_painted_section_under_fractional_distribution_at(
+        origin_x: u16,
+        origin_y: u16,
+    ) {
+        let area = TuiRect::new(origin_x, origin_y, 30, 21);
         let mut buf = Buffer::empty(area);
         let v = view_with(vec![
             tree_section("alpha", &["a1", "a2", "a3"], SectionSize::EqualShare),
@@ -884,15 +895,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn header_clicks_land_in_painted_section_under_fractional_distribution() {
+        header_clicks_land_in_painted_section_under_fractional_distribution_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn header_clicks_land_in_painted_section_under_fractional_distribution_at_nonzero_origin() {
+        header_clicks_land_in_painted_section_under_fractional_distribution_at(7, 13);
+    }
+
     /// Round-trip: paint, find each section's body item rows (rows
     /// containing item glyphs but NOT the title), hit_test those
     /// coordinates, assert each lands in the SAME section's `Body`.
     /// Catches the off-by-one drift that the band-aid #296 smokes
     /// chased — a body row paints in section N but hit_test returns
     /// Body{N-1} or Header{N+1}.
-    #[test]
-    fn body_clicks_land_in_painted_section_under_fractional_distribution() {
-        let area = TuiRect::new(0, 0, 30, 21);
+    ///
+    /// Run at both the origin and a non-zero `area` origin (quadraui#494 /
+    /// LESSONS.md non-zero-origin regression guard) — see
+    /// `header_clicks_land_in_painted_section_under_fractional_distribution_at`
+    /// for why this needs no coordinate translation beyond passing a
+    /// shifted `area` through.
+    fn body_clicks_land_in_painted_section_under_fractional_distribution_at(
+        origin_x: u16,
+        origin_y: u16,
+    ) {
+        let area = TuiRect::new(origin_x, origin_y, 30, 21);
         let mut buf = Buffer::empty(area);
         let v = view_with(vec![
             tree_section("alpha", &["a1", "a2", "a3"], SectionSize::EqualShare),
@@ -949,6 +979,17 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn body_clicks_land_in_painted_section_under_fractional_distribution() {
+        body_clicks_land_in_painted_section_under_fractional_distribution_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn body_clicks_land_in_painted_section_under_fractional_distribution_at_nonzero_origin() {
+        body_clicks_land_in_painted_section_under_fractional_distribution_at(7, 13);
     }
 
     /// Sections with overflowing content reserve a 1-cell scrollbar

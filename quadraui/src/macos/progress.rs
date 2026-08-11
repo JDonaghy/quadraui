@@ -216,8 +216,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cancellable_bar_reserves_cancel_bounds() {
+    /// Shared body for the cancel-bounds↔hit_test round trip, run at
+    /// both the origin and a non-zero origin (quadraui#494 /
+    /// LESSONS.md "Layout helpers must return coords in the same
+    /// frame across backends"). `mac_progress_layout` bakes `x`/`y`
+    /// straight into the returned `cancel_bounds` (absolute frame,
+    /// matching the GTK/TUI twins) — call it directly (pure fn, no
+    /// paint needed) and prove a click at the resulting absolute
+    /// cancel-bounds position still resolves through `hit_test`.
+    fn cancellable_bar_reserves_cancel_bounds_at(origin_x: f64, origin_y: f64) {
         let bar = ProgressBar {
             id: WidgetId::new("pb"),
             label: String::new(),
@@ -226,13 +233,24 @@ mod tests {
             cancellable: true,
             accent: None,
         };
-        let (_surface, layout) = paint_via_backend(&bar);
+        let layout = mac_progress_layout(&bar, origin_x, origin_y, W as f64, H as f64);
         let cb = layout.cancel_bounds.expect("cancel bounds present");
         assert!((cb.width - CANCEL_WIDTH_PX).abs() < 0.01);
         // Hit-test at the cancel center returns Cancel.
         let cx = cb.x + cb.width * 0.5;
         let cy = cb.y + cb.height * 0.5;
         assert!(matches!(layout.hit_test(cx, cy), ProgressBarHit::Cancel(_),));
+    }
+
+    #[test]
+    fn cancellable_bar_reserves_cancel_bounds() {
+        cancellable_bar_reserves_cancel_bounds_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn cancellable_bar_reserves_cancel_bounds_at_nonzero_origin() {
+        cancellable_bar_reserves_cancel_bounds_at(7.0, 13.0);
     }
 
     #[test]

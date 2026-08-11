@@ -286,6 +286,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hit_test_resolves_back_forward_search_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": every other
+        // test in this file lays out at origin (0, 0). `mac_command_
+        // center_layout` bakes `x`/`y` straight into `back_bounds` /
+        // `forward_bounds` / `search_bounds` (absolute frame, matching
+        // the GTK/TUI twins) — call it directly (pure fn, no paint
+        // needed) at a non-zero origin and prove clicks at the
+        // resulting absolute bounds still resolve through `hit_test`.
+        let cc = sample_cc();
+        let f = font();
+        let layout = mac_command_center_layout(&cc, &f, 7.0, 13.0, W as f64, H as f64);
+        let back = layout.back_bounds.unwrap();
+        let fwd = layout.forward_bounds.unwrap();
+        let search = layout.search_bounds.unwrap();
+
+        assert_eq!(
+            layout.hit_test(back.x + 1.0, back.y + 1.0),
+            CommandCenterHit::Back,
+        );
+        assert_eq!(
+            layout.hit_test(fwd.x + 1.0, fwd.y + 1.0),
+            CommandCenterHit::Forward,
+        );
+        assert_eq!(
+            layout.hit_test(search.x + 5.0, search.y + 5.0),
+            CommandCenterHit::SearchBox,
+        );
+    }
+
     /// `cargo test -p quadraui --features macos -- --ignored --nocapture macos::command_center::tests::dump_smoke_ppm`
     ///
     /// Paints the sample CC (back enabled, forward disabled, "project"

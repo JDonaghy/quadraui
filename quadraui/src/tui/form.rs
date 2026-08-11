@@ -963,10 +963,17 @@ mod tests {
         assert!(row.contains(".*"), "expected '.*' in row: {row:?}");
     }
 
-    #[test]
-    fn toggle_group_click_hits_correct_item() {
-        let area = Rect::new(0, 0, 40, 3);
-        let mut buf = Buffer::empty(area);
+    /// Shared body for the ToggleGroup paint↔click round trip, run at both
+    /// the origin and a non-zero `area` origin (quadraui#494 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"). `tui_form_layout`/`Form::layout` never read `area.x`/
+    /// `area.y` — the returned layout is field-local by construction, even
+    /// though `draw_form` separately adds `area.x`/`area.y` per cell when
+    /// painting. So `hit_test` always takes LOCAL coordinates (painted
+    /// column minus `area.x`), regardless of where the form is painted.
+    fn toggle_group_click_hits_correct_item_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
         let f = make_toggle_group_form();
         draw_form(&mut buf, area, &f, &Theme::default());
 
@@ -989,45 +996,63 @@ mod tests {
             }
         });
 
-        // Find where "Aa" is painted (first toggle).
+        // Find where "Aa" is painted (first toggle) on the form's absolute row.
         let mut aa_col = None;
-        for x in 0..40u16 {
-            if cell_char(&buf, x, 0) == 'A' {
-                if x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'a' {
+        for x in area.x..area.x + area.width {
+            if cell_char(&buf, x, area.y) == 'A' {
+                if x + 1 < area.x + area.width && cell_char(&buf, x + 1, area.y) == 'a' {
                     aa_col = Some(x);
                     break;
                 }
             }
         }
         let aa_col = aa_col.expect("'Aa' must be painted");
-        let hit = layout.hit_test(aa_col as f32, 0.0);
+        let hit = layout.hit_test((aa_col - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("case")));
 
         // Find where "Ab|" is painted (second toggle).
         let mut ab_col = None;
-        for x in (aa_col + 2)..40u16 {
-            if cell_char(&buf, x, 0) == 'A' {
-                if x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'b' {
+        for x in (aa_col + 2)..area.x + area.width {
+            if cell_char(&buf, x, area.y) == 'A' {
+                if x + 1 < area.x + area.width && cell_char(&buf, x + 1, area.y) == 'b' {
                     ab_col = Some(x);
                     break;
                 }
             }
         }
         let ab_col = ab_col.expect("'Ab|' must be painted");
-        let hit = layout.hit_test(ab_col as f32, 0.0);
+        let hit = layout.hit_test((ab_col - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("word")));
 
         // Find ".*" (third toggle).
         let mut dot_col = None;
-        for x in (ab_col + 3)..40u16 {
-            if cell_char(&buf, x, 0) == '.' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == '*' {
+        for x in (ab_col + 3)..area.x + area.width {
+            if cell_char(&buf, x, area.y) == '.'
+                && x + 1 < area.x + area.width
+                && cell_char(&buf, x + 1, area.y) == '*'
+            {
                 dot_col = Some(x);
                 break;
             }
         }
         let dot_col = dot_col.expect("'.*' must be painted");
-        let hit = layout.hit_test(dot_col as f32, 0.0);
+        let hit = layout.hit_test((dot_col - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("regex")));
+    }
+
+    #[test]
+    fn toggle_group_click_hits_correct_item() {
+        toggle_group_click_hits_correct_item_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// painted at a shifted `area` origin, proving the local-frame contract
+    /// holds even when the form isn't painted at (0, 0). See
+    /// `toggle_group_click_hits_correct_item_at` for why `hit_test` still
+    /// takes local (not absolute) coordinates here.
+    #[test]
+    fn toggle_group_click_hits_correct_item_at_nonzero_origin() {
+        toggle_group_click_hits_correct_item_at(7, 13);
     }
 
     // ── ButtonRow paint↔click round-trip ────────────────────────────────
@@ -1084,10 +1109,13 @@ mod tests {
         assert!(row.contains("[All]"), "expected '[All]' in row: {row:?}");
     }
 
-    #[test]
-    fn button_row_click_hits_correct_item() {
-        let area = Rect::new(0, 0, 40, 3);
-        let mut buf = Buffer::empty(area);
+    /// Shared body for the ButtonRow paint↔click round trip — see
+    /// `toggle_group_click_hits_correct_item_at` for why `hit_test` takes
+    /// local (not absolute) coordinates even at a non-zero `area` origin
+    /// (quadraui#494 / LESSONS.md local-vs-absolute-frame guard).
+    fn button_row_click_hits_correct_item_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
         let f = make_button_row_form();
         draw_form(&mut buf, area, &f, &Theme::default());
 
@@ -1110,45 +1138,66 @@ mod tests {
             }
         });
 
-        // Find "[Next]" — the 'N' inside brackets.
+        // Find "[Next]" — the 'N' inside brackets, on the form's absolute row.
         let mut next_col = None;
-        for x in 0..40u16 {
-            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'N' {
+        for x in area.x..area.x + area.width {
+            if cell_char(&buf, x, area.y) == '['
+                && x + 1 < area.x + area.width
+                && cell_char(&buf, x + 1, area.y) == 'N'
+            {
                 next_col = Some(x);
                 break;
             }
         }
         let next_col = next_col.expect("'[Next]' must be painted");
-        let hit = layout.hit_test(next_col as f32, 0.0);
+        let hit = layout.hit_test((next_col - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("next")));
 
         // Click inside "Next" text (col + 2).
-        let hit = layout.hit_test((next_col + 2) as f32, 0.0);
+        let hit = layout.hit_test((next_col + 2 - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("next")));
 
         // Find "[Repl]".
         let mut repl_col = None;
-        for x in (next_col + 5)..40u16 {
-            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'R' {
+        for x in (next_col + 5)..area.x + area.width {
+            if cell_char(&buf, x, area.y) == '['
+                && x + 1 < area.x + area.width
+                && cell_char(&buf, x + 1, area.y) == 'R'
+            {
                 repl_col = Some(x);
                 break;
             }
         }
         let repl_col = repl_col.expect("'[Repl]' must be painted");
-        let hit = layout.hit_test(repl_col as f32, 0.0);
+        let hit = layout.hit_test((repl_col - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("replace")));
 
         // Find "[All]".
         let mut all_col = None;
-        for x in (repl_col + 5)..40u16 {
-            if cell_char(&buf, x, 0) == '[' && x + 1 < 40 && cell_char(&buf, x + 1, 0) == 'A' {
+        for x in (repl_col + 5)..area.x + area.width {
+            if cell_char(&buf, x, area.y) == '['
+                && x + 1 < area.x + area.width
+                && cell_char(&buf, x + 1, area.y) == 'A'
+            {
                 all_col = Some(x);
                 break;
             }
         }
         let all_col = all_col.expect("'[All]' must be painted");
-        let hit = layout.hit_test(all_col as f32, 0.0);
+        let hit = layout.hit_test((all_col - area.x) as f32, 0.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("all")));
+    }
+
+    #[test]
+    fn button_row_click_hits_correct_item() {
+        button_row_click_hits_correct_item_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// painted at a shifted `area` origin.
+    #[test]
+    fn button_row_click_hits_correct_item_at_nonzero_origin() {
+        button_row_click_hits_correct_item_at(7, 13);
     }
 
     #[test]

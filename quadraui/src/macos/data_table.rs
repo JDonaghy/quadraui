@@ -540,4 +540,49 @@ mod tests {
         );
         assert!(matches!(hit, DataTableHit::Row { idx: 1 }));
     }
+
+    #[test]
+    fn layout_returns_local_coords_when_area_offset() {
+        // Cross-backend contract: `mac_data_table_layout` explicitly
+        // discards `x`/`y` (`let _ = (x, y);` in the fn body) — the
+        // returned bounds are LOCAL (origin 0, 0) regardless of where
+        // the table is painted, matching the tree/form/list/palette
+        // family (unlike chart/command_center/menu_bar/panel/msv in
+        // this same batch, which bake x/y into their bounds). Only
+        // `draw_data_table`'s paint path adds `x`/`y` back in.
+        //
+        // Regression guard for quadraui#494 / LESSONS.md "Layout
+        // helpers must return coords in the same frame across
+        // backends": prove the origin genuinely has no effect on the
+        // returned layout, then round-trip a click through hit_test —
+        // callers never localise here since bounds are already local.
+        let table = sample_table();
+        let f = font();
+        let layout_origin = mac_data_table_layout(&table, &f, 0.0, 0.0, W as f64, H as f64, 16.0);
+        let layout_offset = mac_data_table_layout(&table, &f, 7.0, 13.0, W as f64, H as f64, 16.0);
+        assert_eq!(
+            layout_origin, layout_offset,
+            "mac_data_table_layout must ignore (x, y) — bounds are local by construction",
+        );
+
+        let total = table.rows.len();
+
+        // Header row center → Header { col: 0 }.
+        let hit = layout_offset.hit_test(
+            layout_offset.columns[0].x + layout_offset.columns[0].width * 0.5,
+            layout_offset.header_height * 0.5,
+            table.scroll_offset,
+            total,
+        );
+        assert!(matches!(hit, DataTableHit::Header { col: 0 }));
+
+        // Body row 1 (selected) → Row { idx: 1 }.
+        let hit = layout_offset.hit_test(
+            10.0,
+            layout_offset.header_height + layout_offset.row_height * 1.5,
+            table.scroll_offset,
+            total,
+        );
+        assert!(matches!(hit, DataTableHit::Row { idx: 1 }));
+    }
 }

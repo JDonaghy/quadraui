@@ -280,12 +280,31 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 1), '╭');
     }
 
-    #[test]
-    fn layout_hit_test_action_round_trip() {
-        let area = Rect::new(0, 0, 40, 5);
+    /// Shared body for the action↔click round trip, run at both the
+    /// origin and a non-zero `area` origin (quadraui#494 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"). `tui_pipeline_view_layout` bakes `area.x`/`area.y`
+    /// straight into the returned bounds (absolute frame, matching the
+    /// GTK/macOS twins) — and *also* adds `TUI_FOCUS_INDICATOR_H` to
+    /// `area.y` itself before laying out, an extra reason a non-zero
+    /// `area.y` regression is plausible here. Deriving `ab`/`bb` from the
+    /// layout (not hardcoding them) means this exercises whatever origin
+    /// math the function actually does, at any origin.
+    fn layout_hit_test_action_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 5);
         let mut buf = Buffer::empty(area);
         let view = make_view();
         let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        // Box top must sit exactly one row below area.y + the reserved
+        // focus-indicator row, not at a hardcoded absolute row — pins the
+        // offset math independently of the hit_test round trip below.
+        let bb0 = layout.stages[0].box_bounds;
+        assert_eq!(
+            bb0.y,
+            (area.y + TUI_FOCUS_INDICATOR_H) as f32,
+            "stage box top should be area.y + TUI_FOCUS_INDICATOR_H"
+        );
 
         // Stage 1 has action bounds.
         let ab = layout.stages[1]
@@ -296,15 +315,41 @@ mod tests {
     }
 
     #[test]
-    fn layout_hit_test_body_round_trip() {
-        let area = Rect::new(0, 0, 40, 5);
+    fn layout_hit_test_action_round_trip() {
+        layout_hit_test_action_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn layout_hit_test_action_round_trip_at_nonzero_origin() {
+        layout_hit_test_action_round_trip_at(7, 13);
+    }
+
+    fn layout_hit_test_body_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 5);
         let mut buf = Buffer::empty(area);
         let view = make_view();
         let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
 
         let bb = layout.stages[0].box_bounds;
+        assert_eq!(
+            bb.y,
+            (area.y + TUI_FOCUS_INDICATOR_H) as f32,
+            "stage box top should be area.y + TUI_FOCUS_INDICATOR_H"
+        );
         let hit = layout.hit_test(bb.x + 1.0, bb.y + 1.0);
         assert_eq!(hit, PipelineHit::Body(0));
+    }
+
+    #[test]
+    fn layout_hit_test_body_round_trip() {
+        layout_hit_test_body_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn layout_hit_test_body_round_trip_at_nonzero_origin() {
+        layout_hit_test_body_round_trip_at(7, 13);
     }
 
     #[test]

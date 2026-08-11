@@ -245,6 +245,14 @@ mod tests {
     /// the layout (for hit_test). Establishes the harness shape every
     /// chrome rasteriser test follows.
     fn paint_via_backend(bar: &StatusBar) -> (BitmapSurface, StatusBarLayout) {
+        paint_via_backend_at(bar, 0.0, 0.0)
+    }
+
+    /// Like [`paint_via_backend`] but paints at an arbitrary `(x, y)`
+    /// origin instead of always `(0, 0)`. Lets tests exercise the
+    /// paint-time `x`/`y` shift independently of the bar-local
+    /// `StatusBarLayout` it returns.
+    fn paint_via_backend_at(bar: &StatusBar, x: f32, y: f32) -> (BitmapSurface, StatusBarLayout) {
         let surface = BitmapSurface::new(W, H);
         // Clear so we can distinguish "painted by status_bar" from
         // "untouched memory" cleanly.
@@ -256,7 +264,12 @@ mod tests {
 
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_status_bar(QRect::new(0.0, 0.0, W as f32, H as f32), bar, None, None);
+            let l = b.draw_status_bar(
+                QRect::new(x, y, W as f32 - x, H as f32 - y),
+                bar,
+                None,
+                None,
+            );
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
@@ -293,13 +306,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn round_trip_click_hits_clickable_segment() {
-        // Paint the bar, then hit-test a coordinate inside the
-        // clickable "Save" segment's painted bounds. Assert the layout
-        // reports a hit on the segment's action_id.
+    /// Shared body for `round_trip_click_hits_clickable_segment` and its
+    /// `_at_nonzero_origin` sibling. Paints `sample_bar()` at
+    /// `(origin_x, origin_y)`, then round-trips an absolute click through
+    /// localisation the way a real host (`ScreenLayout` / `AppLogic`)
+    /// does before calling `hit_test`, and — since this file's rasteriser
+    /// DOES use `x`/`y` for paint even though the returned layout is
+    /// bar-local (see module doc comment) — also checks the *painted*
+    /// segment lands at the origin-shifted absolute position. Guards
+    /// against a #44-class paint/layout frame mismatch
+    /// (quadraui#494 / LESSONS.md "Layout helpers must return coords in
+    /// the same frame across backends").
+    fn round_trip_click_hits_clickable_segment_at(origin_x: f32, origin_y: f32) {
         let bar = sample_bar();
-        let (_surface, layout) = paint_via_backend(&bar);
+        let (surface, layout) = paint_via_backend_at(&bar, origin_x, origin_y);
 
         let save = layout
             .visible_segments
@@ -307,15 +327,31 @@ mod tests {
             .filter(|vs| vs.side == StatusSegmentSide::Left)
             .nth(1)
             .expect("save segment visible");
-        let hit_x = save.bounds.x + save.bounds.width * 0.5;
-        let hit_y = save.bounds.y + save.bounds.height * 0.5;
-        let hit = layout.hit_test(hit_x, hit_y);
+
+        // Paint-vs-layout frame check: the segment's bg must be painted
+        // at the origin-shifted absolute x, not at the bar-local x.
+        let probe_x = (origin_x + save.bounds.x) as u32 + 1;
+        let probe_y = origin_y as u32 + 2;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (40, 80, 120),
+            "painted Save segment bg should be at absolute x = origin_x + local bounds.x",
+        );
+
+        // Round trip: absolute click position -> localise like a real
+        // host -> hit_test against the bar-local layout.
+        let abs_x = origin_x + save.bounds.x + save.bounds.width * 0.5;
+        let abs_y = origin_y + save.bounds.y + save.bounds.height * 0.5;
+        let local_x = abs_x - origin_x;
+        let local_y = abs_y - origin_y;
+        let hit = layout.hit_test(local_x, local_y);
         assert_eq!(
             hit,
             StatusBarHit::Segment(WidgetId::new("status:save")),
-            "expected clickable Save segment hit at ({}, {})",
-            hit_x,
-            hit_y,
+            "expected clickable Save segment hit at local ({}, {})",
+            local_x,
+            local_y,
         );
 
         // Sanity check: the right segment is non-clickable, so a hit
@@ -334,6 +370,20 @@ mod tests {
             StatusBarHit::Empty,
             "non-clickable right segment must hit Empty",
         );
+    }
+
+    #[test]
+    fn round_trip_click_hits_clickable_segment() {
+        round_trip_click_hits_clickable_segment_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn round_trip_click_hits_clickable_segment_at_nonzero_origin() {
+        // The origin-(0,0) variant above can't exercise localisation —
+        // `abs_x - x` is a no-op when `x == 0`. Paint at a non-zero
+        // origin so the round trip only passes if paint and layout agree
+        // on which frame `x`/`y` apply in.
+        round_trip_click_hits_clickable_segment_at(7.0, 4.0);
     }
 
     #[test]
