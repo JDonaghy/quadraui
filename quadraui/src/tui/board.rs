@@ -472,9 +472,15 @@ mod tests {
 
     // ── Layout / hit-test round-trip ──────────────────────────────────
 
-    #[test]
-    fn hit_test_card_round_trip() {
-        let area = Rect::new(0, 0, 60, 10);
+    /// Shared body for `hit_test_card_round_trip[_at_nonzero_origin]`:
+    /// `tui_board_layout` bakes `area.x`/`area.y` into the returned bounds
+    /// (absolute frame, see `board_layout`'s `origin_x`/`origin_y`
+    /// threading), so a click must resolve correctly at a non-zero origin
+    /// too — not just at `(0, 0)`, where the LESSONS.md "layout helpers
+    /// must return coords in the same frame across backends" bug class is
+    /// invisible (quadraui#494).
+    fn hit_test_card_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 10);
         let mut buf = Buffer::empty(area);
         let model = make_model();
         let layout = draw_board(&mut buf, area, &model, &Theme::default());
@@ -490,8 +496,19 @@ mod tests {
     }
 
     #[test]
-    fn hit_test_column_header_round_trip() {
-        let area = Rect::new(0, 0, 60, 10);
+    fn hit_test_card_round_trip() {
+        hit_test_card_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn hit_test_card_round_trip_at_nonzero_origin() {
+        hit_test_card_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `hit_test_column_header_round_trip[_at_nonzero_origin]`
+    /// — see `hit_test_card_round_trip_at` for the non-zero-origin rationale.
+    fn hit_test_column_header_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 10);
         let mut buf = Buffer::empty(area);
         let model = make_model();
         let layout = draw_board(&mut buf, area, &model, &Theme::default());
@@ -501,6 +518,16 @@ mod tests {
             BoardHit::ColumnHeader(id) => assert_eq!(id.as_str(), "col:backlog"),
             other => panic!("expected ColumnHeader hit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hit_test_column_header_round_trip() {
+        hit_test_column_header_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn hit_test_column_header_round_trip_at_nonzero_origin() {
+        hit_test_column_header_round_trip_at(7, 13);
     }
 
     #[test]

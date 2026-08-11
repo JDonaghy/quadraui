@@ -10,7 +10,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{ButtonMask, NamedKey, Point, Reaction, UiEvent};
+use quadraui::{Backend, ButtonMask, NamedKey, Point, Reaction, UiEvent};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -1608,9 +1608,11 @@ fn full_chrome_right_edge_click_requests_window_resize() {
     let config = FullChromeDemo::config();
     let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
 
-    // x=99 is the last column (the right border); y=15 sits well below the
-    // 2-row title bar and above the bottom-panel resize grip.
-    driver.click(99.0, 15.0);
+    // Right border = the last column, whatever the driver's width; mid
+    // height sits well below the 2-row title bar and above the
+    // bottom-panel resize grip regardless of the driver's height.
+    let viewport = driver.backend().viewport();
+    driver.click(viewport.width - 0.5, viewport.height / 2.0);
     assert!(
         driver.screen_contains("Edge resize (no window) (East)"),
         "clicking the right border should call begin_window_resize(East), \
@@ -1627,9 +1629,10 @@ fn full_chrome_bottom_right_corner_click_requests_window_resize() {
     let config = FullChromeDemo::config();
     let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
 
-    // (99, 29) is the last valid cell in a 100x30 grid — the bottom-right
-    // corner, nowhere near the title bar.
-    driver.click(99.0, 29.0);
+    // The last valid cell of the driver's grid — the bottom-right corner,
+    // nowhere near the title bar — whatever the driver's dimensions.
+    let viewport = driver.backend().viewport();
+    driver.click(viewport.width - 0.5, viewport.height - 0.5);
     assert!(
         driver.screen_contains("Edge resize (no window) (SouthEast)"),
         "clicking the bottom-right corner should call \
@@ -1673,13 +1676,14 @@ fn full_chrome_title_bar_wins_over_window_edge_at_top_corner() {
 fn full_chrome_mouse_moved_over_edge_does_not_crash() {
     let config = FullChromeDemo::config();
     let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+    let viewport = driver.backend().viewport();
 
     // Hover with no button held (a plain move, not a drag) over the right
     // border, then back over plain main-content — both must return
     // `Continue` (a cursor hint never triggers a repaint) and leave the
     // rest of the screen exactly as it was.
     let reaction = driver.dispatch(UiEvent::MouseMoved {
-        position: Point::new(99.0, 15.0),
+        position: Point::new(viewport.width - 0.5, viewport.height / 2.0),
         buttons: ButtonMask::default(),
     });
     assert_eq!(
@@ -1697,7 +1701,7 @@ fn full_chrome_mouse_moved_over_edge_does_not_crash() {
     );
 
     let reaction = driver.dispatch(UiEvent::MouseMoved {
-        position: Point::new(50.0, 15.0),
+        position: Point::new(viewport.width / 2.0, viewport.height / 2.0),
         buttons: ButtonMask::default(),
     });
     assert_eq!(
@@ -1751,8 +1755,9 @@ fn shell_menu_dropdown_item_over_activity_bar_activates() {
         driver.screen()
     );
 
-    // Click at the item's row, at x=1 — inside the activity bar strip.
-    driver.click(1.0, item_y);
+    // Click at the item's own painted position — already confirmed above
+    // (`item_x < 3.0`) to land inside the activity bar strip.
+    driver.click(item_x, item_y);
     assert!(
         driver.screen_contains("activated: new"),
         "clicking the dropdown item over the activity bar should activate it \
@@ -1772,29 +1777,33 @@ fn shell_menu_dropdown_item_over_activity_bar_activates() {
 /// hit-testing unconditionally, only when a modal is actually open under the
 /// cursor.
 ///
-/// This scans down the activity bar column for the row that actually
-/// toggles the (already-active) Explorer panel rather than asserting a
-/// specific row: `AppShell`'s cached click-region for an activity item is
-/// not guaranteed to be pixel-identical to the row its icon glyph paints on
-/// (padding/margins are an internal layout detail, unrelated to #411), so
-/// pinning an exact coordinate here would make this test fragile to changes
-/// in that unrelated geometry. What #411 cares about — and what this test
-/// asserts — is that *some* position within the activity bar's column still
-/// reaches shell chrome and toggles it, proving the fix didn't disable
-/// chrome hit-testing altogether.
+/// Locates the click target instead of guessing a row: `ShellMenuDemo`'s
+/// first panel (Explorer) is active by default, and
+/// `tui::activity_bar::draw_activity_bar` paints its left-edge accent glyph
+/// (`'▎'`) at exactly the row `AppShell`'s cached hit-region reports for
+/// that item — see that module's `icons_still_paint_at_the_absolute_row`
+/// and `hit_regions_are_bar_relative_not_absolute` tests. `'▎'` is unique
+/// to that one call site (nothing else in the TUI backend paints it), so
+/// `find` unambiguously locates the active item's row without a brute-force
+/// scan.
 #[test]
 fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
-    let toggled = (0..20).map(|i| 1.0 + i as f32 * 0.5).any(|y| {
-        let mut probe = driver_with_shell(ShellMenuDemo::new(), ShellMenuDemo::config(), 100, 30);
-        probe.click(1.0, y);
-        probe.screen_contains("Sidebar hidden")
+    let mut driver = driver_with_shell(ShellMenuDemo::new(), ShellMenuDemo::config(), 100, 30);
+
+    let (x, y) = driver.find("▎").unwrap_or_else(|| {
+        panic!(
+            "Explorer (active by default) should paint its accent bar:\n{}",
+            driver.screen()
+        )
     });
+    driver.click(x, y);
 
     assert!(
-        toggled,
-        "no click within the activity bar column toggled the sidebar — a \
-         plain chrome click with no modal open should still be handled by \
-         shell chrome (AppShellEvent::SidebarHidden)"
+        driver.screen_contains("Sidebar hidden"),
+        "clicking the active panel's activity-bar row with no modal open \
+         should still be handled by shell chrome \
+         (AppShellEvent::SidebarHidden):\n{}",
+        driver.screen()
     );
 }
 

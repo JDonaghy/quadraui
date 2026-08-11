@@ -121,42 +121,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn arrows_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 40, 1);
+    /// Shared body for `arrows_paint_and_click_round_trip[_at_nonzero_origin]`:
+    /// `tui_command_center_layout` bakes `area.x`/`area.y` into
+    /// `CommandCenter::layout`'s `bounds` (absolute frame), so paint + click
+    /// must agree at a non-zero origin too, per LESSONS.md's "layout
+    /// helpers must return coords in the same frame across backends"
+    /// (quadraui#494).
+    fn arrows_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 1);
         let mut buf = Buffer::empty(area);
         let cc = mk_cc("Search");
         let layout = draw_command_center(&mut buf, area, &cc, &Theme::default());
 
         let bb = layout.back_bounds.unwrap();
         let bx = bb.x.round() as u16;
-        assert_eq!(cell_char(&buf, bx, 0), '◀');
+        assert_eq!(cell_char(&buf, bx, origin_y), '◀');
 
-        let hit = layout.hit_test(bb.x + 0.5, 0.5);
+        let hit = layout.hit_test(bb.x + 0.5, origin_y as f32 + 0.5);
         assert_eq!(hit, CommandCenterHit::Back);
 
         let fb = layout.forward_bounds.unwrap();
         let fx = fb.x.round() as u16;
-        assert_eq!(cell_char(&buf, fx, 0), '▶');
+        assert_eq!(cell_char(&buf, fx, origin_y), '▶');
 
-        let hit = layout.hit_test(fb.x + 0.5, 0.5);
+        let hit = layout.hit_test(fb.x + 0.5, origin_y as f32 + 0.5);
         assert_eq!(hit, CommandCenterHit::Forward);
     }
 
     #[test]
-    fn search_box_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 40, 1);
+    fn arrows_paint_and_click_round_trip() {
+        arrows_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn arrows_paint_and_click_round_trip_at_nonzero_origin() {
+        arrows_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `search_box_paint_and_click_round_trip[_at_nonzero_origin]`
+    /// — see `arrows_paint_and_click_round_trip_at` for the non-zero-origin
+    /// rationale (quadraui#494).
+    fn search_box_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 1);
         let mut buf = Buffer::empty(area);
         let cc = mk_cc("Test");
         let layout = draw_command_center(&mut buf, area, &cc, &Theme::default());
 
         let sb = layout.search_bounds.unwrap();
         let sx = sb.x.round() as u16;
-        assert_eq!(cell_char(&buf, sx, 0), '[');
-        assert_eq!(cell_char(&buf, sx + 1, 0), 'T');
+        assert_eq!(cell_char(&buf, sx, origin_y), '[');
+        assert_eq!(cell_char(&buf, sx + 1, origin_y), 'T');
 
-        let hit = layout.hit_test(sb.x + 2.0, 0.5);
+        let hit = layout.hit_test(sb.x + 2.0, origin_y as f32 + 0.5);
         assert_eq!(hit, CommandCenterHit::SearchBox);
+    }
+
+    #[test]
+    fn search_box_paint_and_click_round_trip() {
+        search_box_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn search_box_paint_and_click_round_trip_at_nonzero_origin() {
+        search_box_paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]

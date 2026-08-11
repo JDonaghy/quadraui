@@ -85,18 +85,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn glyph_paint_and_hit_round_trip() {
-        let area = Rect::new(0, 0, 30, 1);
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends"
+    // (quadraui#494). `tui_spinner_layout` bakes `area.x`/`area.y`
+    // straight into `spinner.layout`'s returned bounds (absolute
+    // frame), so the regression guard is a full paint+hit_test round
+    // trip re-run at a non-zero origin.
+    fn glyph_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 1);
         let mut buf = Buffer::empty(area);
         let spinner = mk_spinner("Loading", 0);
         let layout = draw_spinner(&mut buf, area, &spinner, &Theme::default());
 
-        assert_eq!(cell_char(&buf, 0, 0), '⠋');
-        assert_eq!(cell_char(&buf, 2, 0), 'L');
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '⠋');
+        assert_eq!(cell_char(&buf, origin_x + 2, origin_y), 'L');
 
-        let hit = layout.hit_test(0.5, 0.5, &spinner.id);
+        let hit = layout.hit_test(origin_x as f32 + 0.5, origin_y as f32 + 0.5, &spinner.id);
         assert_eq!(hit, SpinnerHit::Body(WidgetId::new("spin")));
+    }
+
+    #[test]
+    fn glyph_paint_and_hit_round_trip() {
+        glyph_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
+    /// the same glyph paint + hit_test round trip must hold when the
+    /// spinner isn't painted at the screen origin.
+    #[test]
+    fn glyph_paint_and_hit_round_trip_at_nonzero_origin() {
+        glyph_round_trip_at(7, 13);
     }
 
     #[test]

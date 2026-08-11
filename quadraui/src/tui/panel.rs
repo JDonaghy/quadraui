@@ -146,26 +146,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn title_bar_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 30, 10);
-        let mut buf = Buffer::empty(area);
+    /// Shared body for the title-bar paint↔click round trip, run at both
+    /// the origin and a non-zero `area` origin (quadraui#494 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"). `tui_panel_layout` bakes `area.x`/`area.y` straight
+    /// into the returned bounds (absolute frame, matching the GTK/macOS
+    /// twins), so both the painted glyph position AND the `hit_test`
+    /// coordinates must shift together with the origin.
+    fn title_bar_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 10);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 30, origin_y + 10));
         let panel = titled_panel();
         let layout = draw_panel(&mut buf, area, &panel, &Theme::default());
 
-        // Title text should appear starting at column 1.
-        assert_eq!(cell_char(&buf, 1, 0), 'M');
-        assert_eq!(cell_char(&buf, 2, 0), 'y');
+        // Title text should appear starting at column area.x + 1.
+        assert_eq!(cell_char(&buf, area.x + 1, area.y), 'M');
+        assert_eq!(cell_char(&buf, area.x + 2, area.y), 'y');
 
-        // Hit the title bar body (column 1) → TitleBar.
-        let hit = layout.hit_test(1.5, 0.5);
+        // Hit the title bar body (column area.x + 1) → TitleBar.
+        let hit = layout.hit_test(area.x as f32 + 1.5, area.y as f32 + 0.5);
         assert_eq!(hit, PanelHit::TitleBar(WidgetId::new("panel")));
     }
 
     #[test]
-    fn action_button_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 30, 10);
-        let mut buf = Buffer::empty(area);
+    fn title_bar_paint_and_click_round_trip() {
+        title_bar_paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// painted at a shifted `area` origin.
+    #[test]
+    fn title_bar_paint_and_click_round_trip_at_nonzero_origin() {
+        title_bar_paint_and_click_round_trip_at(7, 13);
+    }
+
+    fn action_button_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 10);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 30, origin_y + 10));
         let panel = titled_panel();
         let layout = draw_panel(&mut buf, area, &panel, &Theme::default());
 
@@ -180,22 +197,32 @@ mod tests {
         let glyph_x = ax + aw / 2;
 
         // The "×" glyph should be painted at the centre of the button.
-        assert_eq!(cell_char(&buf, glyph_x, 0), '×');
+        assert_eq!(cell_char(&buf, glyph_x, area.y), '×');
 
         // Hit-test at that glyph position → Action("close").
-        let hit = layout.hit_test(glyph_x as f32 + 0.5, 0.5);
+        let hit = layout.hit_test(glyph_x as f32 + 0.5, area.y as f32 + 0.5);
         assert_eq!(hit, PanelHit::Action(WidgetId::new("close")));
     }
 
     #[test]
-    fn content_region_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::empty(area);
+    fn action_button_paint_and_click_round_trip() {
+        action_button_paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn action_button_paint_and_click_round_trip_at_nonzero_origin() {
+        action_button_paint_and_click_round_trip_at(7, 13);
+    }
+
+    fn content_region_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 20, 10);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 20, origin_y + 10));
         let panel = titled_panel();
         let layout = draw_panel(&mut buf, area, &panel, &Theme::default());
 
-        // Content should start at y=1 (below 1-cell title bar).
-        assert!(layout.content_bounds.y >= 1.0);
+        // Content should start at area.y + 1 (below 1-cell title bar).
+        assert!(layout.content_bounds.y >= area.y as f32 + 1.0);
         assert!(layout.content_bounds.height > 0.0);
 
         // Hit-test inside content → Content.
@@ -203,6 +230,17 @@ mod tests {
         let cy = layout.content_bounds.y + 1.0;
         let hit = layout.hit_test(cx, cy);
         assert_eq!(hit, PanelHit::Content(WidgetId::new("panel")));
+    }
+
+    #[test]
+    fn content_region_paint_and_click_round_trip() {
+        content_region_paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn content_region_paint_and_click_round_trip_at_nonzero_origin() {
+        content_region_paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]

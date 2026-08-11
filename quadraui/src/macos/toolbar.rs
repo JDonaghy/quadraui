@@ -261,3 +261,152 @@ extern "C" {
     fn CGContextStrokePath(c: CGContextRef);
     fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::headless::BitmapSurface;
+    use super::super::text::make_font;
+    use super::super::MacBackend;
+    use super::*;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::primitives::toolbar::ToolbarHit;
+    use crate::types::WidgetId;
+    use crate::Backend;
+
+    const W: u32 = 240;
+    const H: u32 = 40;
+
+    fn font() -> CTFont {
+        make_font("Menlo", 14.0).expect("Menlo installed on every macOS host")
+    }
+
+    fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
+        ToolbarButton::Action {
+            id: WidgetId::new(id),
+            label: label.into(),
+            icon: None,
+            key_hint: None,
+            enabled,
+            is_active: false,
+            tooltip: String::new(),
+        }
+    }
+
+    /// Two-button bar, both enabled, no separators/labels — so
+    /// `visible_items` order matches `buttons` order 1:1 and index 0
+    /// is always the "Refine" action.
+    fn sample_bar() -> Toolbar {
+        Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("tb:refine", "Refine", true),
+                mk_action("tb:drop", "Drop", true),
+            ],
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    /// Paint a bar through the full `MacBackend::draw_toolbar` path at
+    /// origin `(0, 0)` and return both the surface and the resolved
+    /// layout (for hit_test). Establishes the harness shape every
+    /// chrome rasteriser test in this crate follows (see e.g.
+    /// `macos::panel::tests::paint_via_backend`).
+    fn paint_via_backend(bar: &Toolbar) -> (BitmapSurface, ToolbarLayout) {
+        paint_via_backend_at(bar, 0.0, 0.0)
+    }
+
+    /// Like [`paint_via_backend`] but paints at an arbitrary `(x, y)`
+    /// origin. Unlike `StatusBar`/`TextDisplay` in this same module
+    /// family (bar/body-LOCAL layouts — see their doc comments),
+    /// `Toolbar::layout` bakes `x`/`y` straight into each item's
+    /// `bounds` (ABSOLUTE frame, matching `mac_toolbar_layout`'s doc
+    /// comment). This lets tests confirm painted buttons and the
+    /// returned layout still agree at a non-zero origin.
+    fn paint_via_backend_at(bar: &Toolbar, x: f32, y: f32) -> (BitmapSurface, ToolbarLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_toolbar(
+                QRect::new(x, y, W as f32 - x, H as f32 - y),
+                bar,
+                None,
+                None,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    #[test]
+    fn round_trip_click_hits_enabled_button() {
+        // Paint at origin (0, 0), then hit-test the centre of the
+        // first visible ("Refine") button's painted bounds. Assert the
+        // layout reports a hit on that button's id.
+        let bar = sample_bar();
+        let (_surface, layout) = paint_via_backend(&bar);
+        assert_eq!(layout.visible_items.len(), 2);
+
+        let refine = &layout.visible_items[0];
+        let hit = layout.hit_test(
+            refine.bounds.x + refine.bounds.width * 0.5,
+            refine.bounds.y + refine.bounds.height * 0.5,
+        );
+        assert_eq!(
+            hit,
+            ToolbarHit::Button(WidgetId::new("tb:refine")),
+            "expected Refine button hit",
+        );
+    }
+
+    #[test]
+    fn round_trip_click_hits_enabled_button_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": the
+        // origin-(0,0) test above can't distinguish a `Toolbar::layout`
+        // that (correctly) bakes `x`/`y` into `bounds` from one that
+        // (incorrectly) ignores them — both look identical when
+        // x == y == 0. Paint at a non-zero origin and confirm both the
+        // painted button position and the `hit_test` round trip agree
+        // on the same absolute frame. This file has no `#[cfg(test)]`
+        // module prior to quadraui#494; unlike sibling files' nonzero-
+        // origin regressions this isn't a refactor of a pre-existing
+        // test, so it's written fresh per LESSONS.md's guidance and is
+        // unverified by the compiler in this sandbox (no macOS target).
+        let bar = sample_bar();
+        let origin_x = 7.0_f32;
+        let origin_y = 13.0_f32;
+        let (_surface, layout) = paint_via_backend_at(&bar, origin_x, origin_y);
+
+        let refine = &layout.visible_items[0];
+        assert!(
+            (refine.bounds.x - origin_x).abs() < 0.01,
+            "first button should start at origin_x={}, got {}",
+            origin_x,
+            refine.bounds.x,
+        );
+        assert!(
+            (refine.bounds.y - origin_y).abs() < 0.01,
+            "first button should start at origin_y={}, got {}",
+            origin_y,
+            refine.bounds.y,
+        );
+
+        let hit = layout.hit_test(
+            refine.bounds.x + refine.bounds.width * 0.5,
+            refine.bounds.y + refine.bounds.height * 0.5,
+        );
+        assert_eq!(
+            hit,
+            ToolbarHit::Button(WidgetId::new("tb:refine")),
+            "expected Refine button hit at non-zero origin",
+        );
+    }
+}

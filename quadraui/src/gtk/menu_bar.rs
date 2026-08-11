@@ -81,7 +81,16 @@ pub fn draw_menu_bar(
             (theme.tab_inactive_fg, theme.tab_bar_bg)
         };
 
-        let item_x = x + vi.bounds.x as f64;
+        // `vi.bounds.x` is already absolute — `gtk_menu_bar_layout` seeds
+        // `MenuBar::layout`'s internal cursor at `bounds.x = x`, so item
+        // bounds already carry the bar's origin. Adding `x` again here
+        // double-counted it, invisibly at `x == 0` (every existing test)
+        // and shifting painted glyphs away from their own hit-test bounds
+        // at any other origin — the same LESSONS.md "layout helpers must
+        // return coords in the same frame across backends" bug class
+        // already found and fixed in the TUI and macOS twins
+        // (quadraui#494).
+        let item_x = vi.bounds.x as f64;
         let item_w = vi.bounds.width as f64;
 
         if is_active {
@@ -166,4 +175,156 @@ fn alt_char_byte_range(label: &str, display: &str) -> Option<(usize, usize)> {
         byte_start += ch.len_utf8();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::menu_bar::{MenuBarHit, MenuBarItem};
+    use crate::types::{Color, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    const W: i32 = 300;
+    const H: i32 = 40;
+
+    fn make_bar() -> MenuBar {
+        MenuBar {
+            id: WidgetId::new("bar"),
+            items: vec![
+                MenuBarItem {
+                    id: WidgetId::new("bar:file"),
+                    label: "&File".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+                MenuBarItem {
+                    id: WidgetId::new("bar:edit"),
+                    label: "&Edit".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+            ],
+            open_item: None,
+            focused_item: None,
+        }
+    }
+
+    /// White bar background so only glyphs (not the bar's own background
+    /// fill, which otherwise paints every cell from `origin_x` onward and
+    /// would swamp the pixel scan below) show up as non-white pixels.
+    fn test_theme() -> Theme {
+        Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            tab_inactive_fg: Color::rgb(0, 0, 0),
+            tab_active_fg: Color::rgb(0, 0, 0),
+            tab_active_bg: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        }
+    }
+
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn is_painted(data: &[u8], stride: usize, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 || x >= W || y >= H {
+            return false;
+        }
+        let (r, g, b) = pixel(data, stride, x, y);
+        !(r == 255 && g == 255 && b == 255)
+    }
+
+    /// Leftmost painted column in row `y`, scanning `[x_from, W)`.
+    fn leftmost_painted_in_row(data: &[u8], stride: usize, y: i32, x_from: i32) -> Option<i32> {
+        (x_from..W).find(|&x| is_painted(data, stride, x, y))
+    }
+
+    /// Paint→click round trip at `(origin_x, origin_y)`: paints the bar,
+    /// then for each item, confirms the painted label's leftmost pixel
+    /// lands close to `vi.bounds.x` (plus the fixed 8px padding
+    /// `gtk_menu_bar_layout`'s measure closure reserves) — not shifted an
+    /// extra `origin_x` to the right — and that `hit_test` at the
+    /// item's own painted position still resolves to that item.
+    ///
+    /// This is the LESSONS.md "layout helpers must return coords in the
+    /// same frame across backends" regression shape (quadraui#494):
+    /// `vi.bounds.x` is already absolute (the bar's `layout()` seeds its
+    /// cursor at `bounds.x = origin_x`), so `draw_menu_bar` must paint at
+    /// `vi.bounds.x` directly, not `origin_x + vi.bounds.x` — the bug this
+    /// test guards against painted glyphs `origin_x` cells to the right of
+    /// where `hit_test` expects them, invisible at `origin_x == 0`.
+    fn paint_and_click_round_trip_at(origin_x: f64, origin_y: f64) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let bar = make_bar();
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_menu_bar(
+                &cr,
+                &pango_layout,
+                origin_x,
+                origin_y,
+                (W as f64) - origin_x,
+                20.0,
+                &bar,
+                &test_theme(),
+            )
+        };
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        assert_eq!(layout.visible_items.len(), 2, "both items should fit");
+        for vi in &layout.visible_items {
+            let row_y = (origin_y + 10.0) as i32; // inside the 20px-tall bar
+            let scan_from = vi.bounds.x.floor() as i32;
+            let painted_x = leftmost_painted_in_row(&data, stride, row_y, scan_from)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "item {} ({:?}) should paint a visible glyph on row {row_y} at or after x={scan_from}",
+                        vi.item_idx, vi.id,
+                    )
+                });
+            // 8px left padding (see `gtk_menu_bar_layout`'s measure
+            // closure: `pixel_size().0 + 16.0`, split evenly). Generous
+            // tolerance for antialiasing/font metrics — the point is
+            // catching a whole extra `origin_x` of drift (7px in the
+            // non-zero-origin test below), not pixel-perfect kerning.
+            let expected = vi.bounds.x + 8.0;
+            assert!(
+                (painted_x as f32 - expected).abs() < 4.0,
+                "item {} painted glyph at x={painted_x}, expected near {expected} \
+                 (vi.bounds.x={}, origin_x={origin_x}) — painting must not add \
+                 origin_x on top of vi.bounds.x, which is already absolute",
+                vi.item_idx,
+                vi.bounds.x,
+            );
+
+            // Round-trip: a click at the item's own (absolute) bounds
+            // centre must resolve back to that item via `hit_test`.
+            let cx = vi.bounds.x + vi.bounds.width / 2.0;
+            let cy = vi.bounds.y + vi.bounds.height / 2.0;
+            assert_eq!(
+                layout.hit_test(cx, cy),
+                MenuBarHit::Item(vi.item_idx),
+                "item {} centre should hit-test back to itself",
+                vi.item_idx,
+            );
+        }
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
+    /// same round trip, painted at a shifted bar origin.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7.0, 13.0);
+    }
 }

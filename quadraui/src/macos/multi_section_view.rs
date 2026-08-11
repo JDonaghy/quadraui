@@ -764,6 +764,46 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_resolves_header_and_body_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": the sibling
+        // at-origin test above only exercises (0, 0), where an origin
+        // bug is invisible. `mac_msv_layout` bakes `bounds.x`/`bounds.y`
+        // straight into every returned Rect (absolute frame, matching
+        // the GTK/TUI twins) — call it directly (pure fn, no paint
+        // needed) at a non-zero origin and round-trip both a header
+        // click AND a section body click through `hit_test` (the
+        // existing at-origin test only covers a header click).
+        let view = two_section_view();
+        let origin = QRect::new(7.0, 13.0, W as f32, H as f32);
+        let layout = mac_msv_layout(&view, origin, 16.0);
+
+        let hdr = layout.sections[0].header_bounds;
+        let cx = hdr.x + hdr.width * 0.5;
+        let cy = hdr.y + hdr.height * 0.5;
+        let hit = layout.hit_test(cx, cy);
+        assert!(
+            matches!(hit, MultiSectionViewHit::Header { section: 0, .. }),
+            "header click hit was {:?}",
+            hit,
+        );
+
+        let body = layout.sections[0].body_bounds;
+        assert!(
+            body.width > 0.0 && body.height > 0.0,
+            "section 0 body must have non-zero size to round-trip a click",
+        );
+        let bx = body.x + body.width * 0.5;
+        let by = body.y + body.height * 0.5;
+        let hit = layout.hit_test(bx, by);
+        assert!(
+            matches!(hit, MultiSectionViewHit::Body { section: 0 }),
+            "body click hit was {:?}",
+            hit,
+        );
+    }
+
+    #[test]
     fn collapsed_section_zero_body_height() {
         let mut view = two_section_view();
         view.sections[0].collapsed = true;

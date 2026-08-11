@@ -583,12 +583,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn body_toolbar_click_routes_to_body_toolbar_button() {
+    /// Shared body for `body_toolbar_click_routes_to_body_toolbar_button[_at_nonzero_origin]`:
+    /// `tui_dialog_layout` bakes `viewport.x`/`viewport.y` into `Dialog::layout`'s
+    /// `box_x`/`box_y` (absolute frame), so paint + click must agree at a
+    /// non-zero viewport origin too, per LESSONS.md's "layout helpers must
+    /// return coords in the same frame across backends" (quadraui#494). The
+    /// dialog is centered in an 80×30 viewport and never exceeds ~60×30, so
+    /// a buffer sized to the viewport's far corner (`origin + 80/30`) always
+    /// has room for it.
+    fn body_toolbar_click_routes_to_body_toolbar_button_at(origin_x: f32, origin_y: f32) {
         let d = make_toolbar_dialog();
-        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let viewport = crate::event::Rect::new(origin_x, origin_y, 80.0, 30.0);
         let layout = tui_dialog_layout(&d, viewport);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        let buf_w = (origin_x + 80.0).ceil() as u16;
+        let buf_h = (origin_y + 30.0).ceil() as u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, buf_w, buf_h));
         draw_dialog(&mut buf, &d, &layout, &Theme::default());
 
         let tl = layout
@@ -615,9 +624,21 @@ mod tests {
     }
 
     #[test]
-    fn body_toolbar_apply_button_also_routes() {
+    fn body_toolbar_click_routes_to_body_toolbar_button() {
+        body_toolbar_click_routes_to_body_toolbar_button_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn body_toolbar_click_routes_to_body_toolbar_button_at_nonzero_origin() {
+        body_toolbar_click_routes_to_body_toolbar_button_at(7.0, 13.0);
+    }
+
+    /// Shared body for `body_toolbar_apply_button_also_routes[_at_nonzero_origin]`
+    /// — see `body_toolbar_click_routes_to_body_toolbar_button_at` for the
+    /// non-zero-origin rationale (quadraui#494).
+    fn body_toolbar_apply_button_also_routes_at(origin_x: f32, origin_y: f32) {
         let d = make_toolbar_dialog();
-        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let viewport = crate::event::Rect::new(origin_x, origin_y, 80.0, 30.0);
         let layout = tui_dialog_layout(&d, viewport);
 
         let tl = layout
@@ -638,6 +659,16 @@ mod tests {
             }
             other => panic!("expected BodyToolbarButton(apply), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn body_toolbar_apply_button_also_routes() {
+        body_toolbar_apply_button_also_routes_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn body_toolbar_apply_button_also_routes_at_nonzero_origin() {
+        body_toolbar_apply_button_also_routes_at(7.0, 13.0);
     }
 
     // ── Serde round-trip for DialogInput::Toolbar ─────────────────────────

@@ -113,3 +113,76 @@ pub fn draw_text_input(
 
     layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Point;
+    use crate::primitives::text_input::TextInputHit;
+    use crate::types::WidgetId;
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn mk_input(lines: Vec<&str>) -> TextInput {
+        TextInput {
+            id: WidgetId::new("ti"),
+            lines: lines.into_iter().map(String::from).collect(),
+            cursor_line: 0,
+            cursor_col: 0,
+            placeholder: None,
+            scroll_offset: 0,
+            scroll_col: 0,
+            has_focus: true,
+        }
+    }
+
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends" (quadraui#494).
+    // `tui_text_input_layout` bakes `rect.x`/`rect.y` straight into
+    // `ti.layout`'s returned bounds (absolute frame: `TextInput::layout`
+    // computes `content_x = rect.x + border + pad_x`), so the regression
+    // guard is a full paint+hit_test round trip re-run at a non-zero
+    // origin. There was no existing `#[cfg(test)] mod tests` in this file
+    // at all before quadraui#494, hence this doubles as the origin-(0,0)
+    // baseline test too.
+    fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let rect = Rect::new(origin_x, origin_y, 10, 4);
+        let mut buf = Buffer::empty(rect);
+        let ti = mk_input(vec!["hello"]);
+        let layout = draw_text_input(&mut buf, rect, &ti, &Theme::default());
+
+        // Border top-left corner paints at the absolute origin.
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '┌');
+
+        // Content starts after the 1-cell border + 1-char horizontal
+        // padding, at the absolute screen position.
+        let content_x = origin_x + 2;
+        let content_y = origin_y + 1;
+        assert_eq!(cell_char(&buf, content_x, content_y), 'h');
+
+        // hit_test: a click at the first content cell (absolute coords)
+        // should resolve to the (only) visible line.
+        let p = Point::new(content_x as f32 + 0.5, content_y as f32 + 0.5);
+        let hit = layout
+            .hit_regions
+            .iter()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, h)| h.clone());
+        assert_eq!(hit, Some(TextInputHit::Line { line_idx: 0 }));
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
+    /// same paint + hit_test round trip must hold when the input isn't
+    /// painted at the screen origin.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7, 13);
+    }
+}

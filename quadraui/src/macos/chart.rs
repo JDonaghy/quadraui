@@ -573,6 +573,28 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_inside_plot_area_at_nonzero_origin() {
+        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
+        // return coords in the same frame across backends": every other
+        // test in this file lays out at origin (0, 0), where an
+        // origin-offset bug is invisible (see #44's mac_tree_layout).
+        // `mac_chart_layout` bakes `x`/`y` straight into `plot_area`
+        // (absolute frame, matching the GTK/TUI twins) — call it
+        // directly (no paint needed; it's a pure fn) at a non-zero
+        // origin and prove a click at the resulting absolute plot-area
+        // centre still resolves through `hit_test`. Not exercised by
+        // `cargo build --features macos` on this (Linux) machine —
+        // this crate's macOS backend is verified on real Mac hardware.
+        let chart = sample_line();
+        let origin_x = 7.0_f64;
+        let origin_y = 13.0_f64;
+        let layout = mac_chart_layout(&chart, origin_x, origin_y, W as f64, H as f64, 16.0, 8.0);
+        let cx = layout.plot_area.x + layout.plot_area.width * 0.5;
+        let cy = layout.plot_area.y + layout.plot_area.height * 0.5;
+        assert_eq!(layout.hit_test(cx, cy), ChartHit::Body(WidgetId::new("ch")),);
+    }
+
+    #[test]
     fn hover_marker_painted_when_set() {
         let chart = sample_line();
         let (surface, layout) = paint_via_backend(&chart, Some((0, 2)));

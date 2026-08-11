@@ -65,7 +65,16 @@ pub fn draw_menu_bar(buf: &mut Buffer, area: Rect, bar: &MenuBar, theme: &Theme)
             (ratatui_color(theme.tab_inactive_fg), bar_bg)
         };
 
-        let start_x = area.x + vi.bounds.x.round() as u16;
+        // `vi.bounds.x` is already absolute — `tui_menu_bar_layout` passes
+        // `bounds.x = area.x` into `MenuBar::layout`, which starts its
+        // internal cursor at `bounds.x`, so item bounds already carry the
+        // bar's origin. Adding `area.x` again here double-counted it,
+        // invisibly at `area.x == 0` (every existing test) and shifting
+        // painted glyphs away from their own hit-test bounds at any other
+        // origin — the LESSONS.md "layout helpers must return coords in
+        // the same frame across backends" bug class. Found via the
+        // quadraui#494 non-zero-origin regression test.
+        let start_x = vi.bounds.x.round() as u16;
         let end_x = start_x + vi.bounds.width.round() as u16;
 
         if is_active {
@@ -151,10 +160,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 40, 1);
-        let mut buf = Buffer::empty(area);
+    /// Shared body for the paint↔click round trip, run at both the origin
+    /// and a non-zero `area` origin (quadraui#494 / LESSONS.md "Layout
+    /// helpers must return coords in the same frame across backends").
+    /// `tui_menu_bar_layout` bakes `area.x`/`area.y` straight into the
+    /// returned bounds (absolute frame, matching the GTK/macOS twins), so
+    /// unlike `activity_bar.rs`'s bar-relative hit regions, both the
+    /// painted glyph position AND the `hit_test` coordinates here must
+    /// shift together with the origin.
+    fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 40, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 1));
         let bar = make_bar();
         let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
 
@@ -174,7 +190,7 @@ mod tests {
             let first_display_char = label.chars().find(|&c| c != '&').unwrap();
             let start_col = vi.bounds.x.round() as u16 + 1; // after padding
             assert_eq!(
-                cell_char(&buf, start_col, 0),
+                cell_char(&buf, start_col, area.y),
                 first_display_char,
                 "first display char of item {} should be '{}' at col {}",
                 vi.item_idx,
@@ -182,6 +198,20 @@ mod tests {
                 start_col,
             );
         }
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// painted at a shifted `area` origin — proves `hit_test` still
+    /// resolves against the absolute (not local) bounds `draw_menu_bar`
+    /// painted into.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]

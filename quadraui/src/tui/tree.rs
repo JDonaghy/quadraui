@@ -484,9 +484,14 @@ mod tests {
     /// Accepts both `Row(idx)` and `Chevron(idx)` as valid hits — the
     /// test verifies row-position consistency, not whether the click
     /// landed on the chevron or the body.
-    #[test]
-    fn clicks_land_on_painted_row() {
-        let area = Rect::new(0, 0, 30, 8);
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends" (quadraui#494).
+    // This harness already subtracts `area.y` before calling `hit_test`
+    // (tree-local coords), but every pre-existing call site used
+    // `Rect::new(0, 0, ...)`, so the subtraction was never exercised with
+    // a non-zero value. Re-run at a non-zero origin to close that gap.
+    fn clicks_land_on_painted_row_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 8);
         let mut buf = Buffer::empty(area);
         let tree = long_tree(5);
         let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
@@ -517,6 +522,20 @@ mod tests {
                 visible.row_idx, needle, painted_y, hit_idx
             );
         }
+    }
+
+    #[test]
+    fn clicks_land_on_painted_row() {
+        clicks_land_on_painted_row_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
+    /// same paint + hit_test round trip must hold when the tree isn't
+    /// painted at the screen origin — exercises the `local_y = painted_y
+    /// - area.y` subtraction with a non-zero `area.y` for the first time.
+    #[test]
+    fn clicks_land_on_painted_row_at_nonzero_origin() {
+        clicks_land_on_painted_row_at(7, 13);
     }
 
     /// Click below the last visible row returns Empty.

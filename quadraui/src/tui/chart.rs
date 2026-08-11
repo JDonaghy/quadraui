@@ -527,21 +527,36 @@ mod tests {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
     }
 
-    #[test]
-    fn sparkline_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 5, 1);
+    /// Shared body for `sparkline_paint_and_click_round_trip[_at_nonzero_origin]`:
+    /// `tui_chart_layout` bakes `area.x`/`area.y` into `Chart::layout`'s
+    /// `origin_x`/`origin_y` (absolute frame), so paint + click must agree
+    /// at a non-zero origin too, per LESSONS.md's "layout helpers must
+    /// return coords in the same frame across backends" (quadraui#494).
+    fn sparkline_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 5, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![0.0, 0.25, 0.5, 0.75, 1.0]);
         let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
-        assert_eq!(cell_char(&buf, 0, 0), '▁');
-        assert_eq!(cell_char(&buf, 4, 0), '█');
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '▁');
+        assert_eq!(cell_char(&buf, origin_x + 4, origin_y), '█');
 
+        let (ox, oy) = (origin_x as f32, origin_y as f32);
         assert_eq!(
-            layout.hit_test(2.5, 0.5),
+            layout.hit_test(ox + 2.5, oy + 0.5),
             ChartHit::Body(WidgetId::new("c"))
         );
-        assert_eq!(layout.hit_test(10.0, 0.5), ChartHit::Empty);
+        assert_eq!(layout.hit_test(ox + 10.0, oy + 0.5), ChartHit::Empty);
+    }
+
+    #[test]
+    fn sparkline_paint_and_click_round_trip() {
+        sparkline_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn sparkline_paint_and_click_round_trip_at_nonzero_origin() {
+        sparkline_paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]
@@ -597,10 +612,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bar_chart_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::empty(area);
+    /// Shared body for `bar_chart_paint_and_click_round_trip[_at_nonzero_origin]`
+    /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
+    /// rationale (quadraui#494).
+    fn bar_chart_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 10, 5);
+        // A full-screen-sized buffer, not one exactly matching `area`:
+        // y-axis tick-label painting can spill a few cells left of
+        // `area.x` when there's no reserved label gutter (pre-existing
+        // rasteriser behaviour, unrelated to this regression guard) —
+        // mirrors `tui/activity_bar.rs`'s tests, which likewise paint
+        // into a buffer larger than the widget's own area.
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 10, origin_y + 5));
         let chart = Chart {
             id: WidgetId::new("c"),
             kind: ChartKind::Bar,
@@ -627,16 +650,32 @@ mod tests {
         let bar_y = pa.y.round() as u16 + (pa.height.round() as u16) - 2;
         assert_eq!(cell_char(&buf, bar_x, bar_y), '█');
 
+        // No y_label/legend, so the plot area's origin equals `area`'s.
+        let (ox, oy) = (origin_x as f32, origin_y as f32);
         assert_eq!(
-            layout.hit_test(5.0, 2.0),
+            layout.hit_test(ox + 5.0, oy + 2.0),
             ChartHit::Body(WidgetId::new("c"))
         );
     }
 
     #[test]
-    fn legend_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 30, 10);
-        let mut buf = Buffer::empty(area);
+    fn bar_chart_paint_and_click_round_trip() {
+        bar_chart_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn bar_chart_paint_and_click_round_trip_at_nonzero_origin() {
+        bar_chart_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `legend_paint_and_click_round_trip[_at_nonzero_origin]`
+    /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
+    /// rationale (quadraui#494).
+    fn legend_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 10);
+        // See `bar_chart_paint_and_click_round_trip_at`: a full-screen
+        // buffer, since axis-label painting can spill left of `area.x`.
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 30, origin_y + 10));
         let chart = Chart {
             id: WidgetId::new("c"),
             kind: ChartKind::Line,
@@ -676,6 +715,16 @@ mod tests {
             layout.hit_test(mid, lb.y + 0.5),
             ChartHit::Legend(WidgetId::new("c"), 0)
         );
+    }
+
+    #[test]
+    fn legend_paint_and_click_round_trip() {
+        legend_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn legend_paint_and_click_round_trip_at_nonzero_origin() {
+        legend_paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]

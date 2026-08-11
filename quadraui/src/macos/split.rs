@@ -163,10 +163,18 @@ mod tests {
         assert_eq!((r, g, b), (255, 255, 255), "left pane should be unpainted");
     }
 
-    #[test]
-    fn hit_test_resolves_divider_and_panes() {
+    /// Shared body for the divider/first-pane/second-pane hit_test
+    /// round trip, run at both the origin and a non-zero origin
+    /// (quadraui#494 / LESSONS.md "Layout helpers must return coords
+    /// in the same frame across backends"). `mac_split_layout` bakes
+    /// `bounds.x`/`bounds.y` into `first_bounds`/`divider_bounds`/
+    /// `second_bounds` (absolute frame, matching the GTK/TUI twins) —
+    /// call it directly (pure fn, no paint needed) and prove clicks at
+    /// the resulting absolute positions still resolve through
+    /// `hit_test` for all three regions.
+    fn hit_test_resolves_divider_and_panes_at(origin_x: f64, origin_y: f64) {
         let split = sample_split(SplitDirection::Horizontal);
-        let (_surface, layout) = paint_via_backend(&split);
+        let layout = mac_split_layout(&split, origin_x, origin_y, W as f64, H as f64);
 
         let d = layout.divider_bounds;
         let hit = layout.hit_test(d.x + d.width / 2.0, d.y + d.height / 2.0);
@@ -176,13 +184,32 @@ mod tests {
             hit
         );
 
-        // First pane: well left of the divider.
-        let hit = layout.hit_test(10.0, 10.0);
-        assert!(matches!(hit, SplitHit::FirstPane(_)));
+        // First pane: well left of the divider, relative to origin.
+        let hit = layout.hit_test(origin_x as f32 + 10.0, origin_y as f32 + 10.0);
+        assert!(
+            matches!(hit, SplitHit::FirstPane(_)),
+            "first pane hit was {:?}",
+            hit
+        );
 
-        // Second pane: well right of the divider.
-        let hit = layout.hit_test((W - 10) as f32, 10.0);
-        assert!(matches!(hit, SplitHit::SecondPane(_)));
+        // Second pane: well right of the divider, relative to origin.
+        let hit = layout.hit_test(origin_x as f32 + W as f32 - 10.0, origin_y as f32 + 10.0);
+        assert!(
+            matches!(hit, SplitHit::SecondPane(_)),
+            "second pane hit was {:?}",
+            hit
+        );
+    }
+
+    #[test]
+    fn hit_test_resolves_divider_and_panes() {
+        hit_test_resolves_divider_and_panes_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494).
+    #[test]
+    fn hit_test_resolves_divider_and_panes_at_nonzero_origin() {
+        hit_test_resolves_divider_and_panes_at(7.0, 13.0);
     }
 
     #[test]
