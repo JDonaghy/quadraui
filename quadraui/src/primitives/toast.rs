@@ -166,6 +166,11 @@ pub struct ToastStackLayout {
     pub hit_regions: Vec<(Rect, ToastHit)>,
 }
 
+/// Translate a `Rect` by `(dx, dy)`, keeping its size.
+fn shift_rect(r: Rect, dx: f32, dy: f32) -> Rect {
+    Rect::new(r.x + dx, r.y + dy, r.width, r.height)
+}
+
 impl ToastStackLayout {
     pub fn hit_test(&self, x: f32, y: f32) -> ToastHit {
         for (rect, hit) in &self.hit_regions {
@@ -182,8 +187,15 @@ impl ToastStack {
     ///
     /// # Arguments
     ///
-    /// - `viewport_width`, `viewport_height` — the app's overlay area.
-    ///   Toasts are positioned relative to this.
+    /// - `origin_x`, `origin_y` — the top-left corner of the app's
+    ///   overlay area, in the backend's absolute (screen/buffer) frame.
+    ///   Returned `bounds` / `hit_regions` are absolute — callers pass
+    ///   `hit_test` raw click coordinates in that same frame, matching
+    ///   the `MenuBar`/`Panel` convention (unlike `TreeView`'s
+    ///   viewport-local frame). Pass `(0.0, 0.0)` for an overlay
+    ///   anchored at the buffer/window origin.
+    /// - `viewport_width`, `viewport_height` — the app's overlay area
+    ///   size. Toasts are positioned relative to this.
     /// - `margin` — spacing between the stack and the viewport edges.
     /// - `gap` — vertical gap between consecutive toasts.
     /// - `measure_toast(i)` — per-toast width/height/sub-region widths.
@@ -198,8 +210,11 @@ impl ToastStack {
     /// Toasts are iterated oldest-first (matching `self.toasts` order);
     /// the layout positions them in reverse of that for bottom corners
     /// so the newest stays pinned.
+    #[allow(clippy::too_many_arguments)]
     pub fn layout<F>(
         &self,
+        origin_x: f32,
+        origin_y: f32,
         viewport_width: f32,
         viewport_height: f32,
         margin: f32,
@@ -333,6 +348,28 @@ impl ToastStack {
                 if y_cursor >= viewport_height {
                     break;
                 }
+            }
+        }
+
+        // Shift from the viewport-local frame computed above into the
+        // caller's absolute frame. Matches `MenuBar::layout` /
+        // `Panel::layout`'s convention (bounds already carry the origin,
+        // so paint loops use them verbatim and hosts `hit_test` with raw
+        // click coordinates) rather than `TreeView`'s local-frame
+        // convention. Before this, `ToastStack::layout` had no origin
+        // parameter at all, so every backend's `*_toast_stack_layout`
+        // silently dropped `rect.x` / `rect.y` — invisible at the origin
+        // (every prior test) and a real drift for any non-zero-origin
+        // overlay (quadraui#494 / LESSONS.md "Layout helpers must return
+        // coords in the same frame across backends").
+        if origin_x != 0.0 || origin_y != 0.0 {
+            for vt in &mut visible_toasts {
+                vt.bounds = shift_rect(vt.bounds, origin_x, origin_y);
+                vt.dismiss_bounds = vt.dismiss_bounds.map(|r| shift_rect(r, origin_x, origin_y));
+                vt.action_bounds = vt.action_bounds.map(|r| shift_rect(r, origin_x, origin_y));
+            }
+            for (rect, _) in &mut hit_regions {
+                *rect = shift_rect(*rect, origin_x, origin_y);
             }
         }
 

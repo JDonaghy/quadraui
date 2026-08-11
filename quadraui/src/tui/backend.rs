@@ -1502,7 +1502,8 @@ impl Backend for TuiBackend {
         rect: QRect,
         stack: &crate::primitives::toast::ToastStack,
     ) -> crate::primitives::toast::ToastStackLayout {
-        crate::tui::tui_toast_stack_layout(stack, rect.width, rect.height)
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_toast_stack_layout(stack, area)
     }
 
     fn draw_pipeline_view(
@@ -2164,7 +2165,7 @@ mod tests {
             _r: QRect,
             stack: &crate::primitives::toast::ToastStack,
         ) -> crate::primitives::toast::ToastStackLayout {
-            stack.layout(_r.width, _r.height, 1.0, 1.0, |_| {
+            stack.layout(_r.x, _r.y, _r.width, _r.height, 1.0, 1.0, |_| {
                 crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
             })
         }
@@ -2174,7 +2175,7 @@ mod tests {
             _r: QRect,
             stack: &crate::primitives::toast::ToastStack,
         ) -> crate::primitives::toast::ToastStackLayout {
-            stack.layout(_r.width, _r.height, 1.0, 1.0, |_| {
+            stack.layout(_r.x, _r.y, _r.width, _r.height, 1.0, 1.0, |_| {
                 crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
             })
         }

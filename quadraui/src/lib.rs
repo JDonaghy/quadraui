@@ -2525,7 +2525,9 @@ mod tests {
     #[test]
     fn toast_layout_empty() {
         let stack = make_toast_stack(ToastCorner::BottomRight, vec![]);
-        let layout = stack.layout(800.0, 600.0, 16.0, 8.0, |_| ToastMeasure::new(300.0, 64.0));
+        let layout = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
         assert_eq!(layout.visible_toasts.len(), 0);
         assert_eq!(layout.hit_test(100.0, 100.0), ToastHit::Empty);
     }
@@ -2540,7 +2542,9 @@ mod tests {
                 make_toast("third", "Third"),
             ],
         );
-        let layout = stack.layout(800.0, 600.0, 16.0, 8.0, |_| ToastMeasure::new(300.0, 64.0));
+        let layout = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
         assert_eq!(layout.visible_toasts.len(), 3);
         // Newest (idx=2, "third") pinned at the bottom.
         let newest = &layout.visible_toasts[0];
@@ -2561,7 +2565,9 @@ mod tests {
             ToastCorner::TopLeft,
             vec![make_toast("a", "A"), make_toast("b", "B")],
         );
-        let layout = stack.layout(800.0, 600.0, 10.0, 5.0, |_| ToastMeasure::new(200.0, 50.0));
+        let layout = stack.layout(0.0, 0.0, 800.0, 600.0, 10.0, 5.0, |_| {
+            ToastMeasure::new(200.0, 50.0)
+        });
         assert_eq!(layout.visible_toasts.len(), 2);
         // Iteration is oldest-first for top corners.
         let first = &layout.visible_toasts[0];
@@ -2580,7 +2586,7 @@ mod tests {
             label: "Open log".to_string(),
         });
         let stack = make_toast_stack(ToastCorner::BottomRight, vec![toast]);
-        let layout = stack.layout(800.0, 600.0, 16.0, 8.0, |_| ToastMeasure {
+        let layout = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| ToastMeasure {
             width: 300.0,
             height: 64.0,
             dismiss_width: 24.0,
@@ -2623,12 +2629,61 @@ mod tests {
                 .map(|i| make_toast(&format!("t{i}"), &format!("T{i}")))
                 .collect(),
         );
-        let layout = stack.layout(800.0, 200.0, 10.0, 8.0, |_| ToastMeasure::new(300.0, 64.0));
+        let layout = stack.layout(0.0, 0.0, 800.0, 200.0, 10.0, 8.0, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
         // Bottom stack. Newest at y = 200 - 10 - 64 = 126. Each subsequent
         // goes up 64+8=72. Next: 126-72=54. Next: 54-72=-18 (would be off-top).
         // So only 2-3 fit. Specifically we break when y_cursor <= 0.
         assert!(layout.visible_toasts.len() >= 2);
         assert!(layout.visible_toasts.len() <= 3);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
+    /// `ToastStack::layout` previously had no origin parameter at all,
+    /// so it could only ever be called with an implicit `(0, 0)`
+    /// origin — a shape no `*_toast_stack_layout` backend wrapper could
+    /// correct for. Confirms every returned bound (toast, dismiss,
+    /// action, hit region) shifts rigidly by `(origin_x, origin_y)`
+    /// relative to the origin-`(0, 0)` layout for the same stack.
+    #[test]
+    fn toast_layout_nonzero_origin_shifts_every_bound() {
+        let mut toast = make_toast("t1", "Build failed");
+        toast.action = Some(ToastAction {
+            id: WidgetId::new("open_log"),
+            label: "Open log".to_string(),
+        });
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![toast]);
+        let measure = |_: usize| ToastMeasure {
+            width: 300.0,
+            height: 64.0,
+            dismiss_width: 24.0,
+            action_width: 80.0,
+        };
+        let origin = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
+        let shifted = stack.layout(7.0, 13.0, 800.0, 600.0, 16.0, 8.0, measure);
+
+        let o = &origin.visible_toasts[0];
+        let s = &shifted.visible_toasts[0];
+        assert_eq!(s.bounds.x, o.bounds.x + 7.0);
+        assert_eq!(s.bounds.y, o.bounds.y + 13.0);
+        assert_eq!(s.bounds.width, o.bounds.width);
+        assert_eq!(
+            s.dismiss_bounds.unwrap().x,
+            o.dismiss_bounds.unwrap().x + 7.0
+        );
+        assert_eq!(
+            s.action_bounds.unwrap().y,
+            o.action_bounds.unwrap().y + 13.0
+        );
+
+        // Round trip: an absolute hit against the shifted layout must
+        // resolve the same way the origin layout resolves its local hit.
+        let db = s.dismiss_bounds.unwrap();
+        assert_eq!(
+            shifted.hit_test(db.x + 5.0, db.y + 10.0),
+            ToastHit::Dismiss(WidgetId::new("t1")),
+        );
     }
 
     // ── D6 Terminal layout API tests ──────────────────────────────────

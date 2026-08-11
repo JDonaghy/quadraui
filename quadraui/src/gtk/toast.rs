@@ -31,14 +31,24 @@ fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
 }
 
 /// Compute the GTK pixel-unit layout for a [`ToastStack`] without painting.
+///
+/// `(origin_x, origin_y)` is baked into the returned bounds (absolute
+/// window coordinates, matching `gtk_menu_bar_layout` / `gtk_panel_layout`)
+/// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
+/// localisation needed.
+#[allow(clippy::too_many_arguments)]
 pub fn gtk_toast_stack_layout(
     stack: &ToastStack,
     pango_layout: &pango::Layout,
+    origin_x: f32,
+    origin_y: f32,
     viewport_width: f32,
     viewport_height: f32,
     line_height: f64,
 ) -> ToastStackLayout {
     stack.layout(
+        origin_x,
+        origin_y,
         viewport_width,
         viewport_height,
         GTK_TOAST_MARGIN_PX,
@@ -75,6 +85,8 @@ pub fn gtk_toast_stack_layout(
 pub fn draw_toast_stack(
     cr: &Context,
     pango_layout: &pango::Layout,
+    origin_x: f64,
+    origin_y: f64,
     viewport_width: f64,
     viewport_height: f64,
     stack: &ToastStack,
@@ -84,6 +96,8 @@ pub fn draw_toast_stack(
     let layout = gtk_toast_stack_layout(
         stack,
         pango_layout,
+        origin_x as f32,
+        origin_y as f32,
         viewport_width as f32,
         viewport_height as f32,
         line_height,
@@ -165,5 +179,131 @@ fn paint_toast(
             );
             super::painted_text::show_layout(cr, pango_layout);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::toast::{ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack};
+    use crate::types::WidgetId;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    // Fixed overlay size, independent of the test's origin — this file
+    // had no test module at all before quadraui#494 (the reviewed gap:
+    // `gtk_toast_stack_layout`/`draw_toast_stack` never received the
+    // overlay's origin, so a non-zero-origin toast stack — e.g.
+    // coord-tui's `main_content_bounds`, which sits right of a sidebar —
+    // painted at the wrong screen position and hit-tested against the
+    // wrong coordinates).
+    const VIEW_W: f64 = 340.0;
+    const VIEW_H: f64 = 200.0;
+    const LINE_HEIGHT: f64 = 16.0;
+    const BOX_COLOR: Color = Color::rgb(10, 20, 30);
+
+    /// A toast with a distinct `accent` fill (overrides the severity
+    /// tint) so its painted box is trivially distinguishable from the
+    /// white canvas background by colour, without scanning for glyphs.
+    fn colored_toast(id: &str, title: &str) -> ToastItem {
+        ToastItem {
+            id: WidgetId::new(id),
+            title: title.into(),
+            body: String::new(),
+            severity: ToastSeverity::Info,
+            action: None,
+            accent: Some(BOX_COLOR),
+        }
+    }
+
+    fn stack_br(toasts: Vec<ToastItem>) -> ToastStack {
+        ToastStack {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts,
+        }
+    }
+
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// Paint→click round trip at `(origin_x, origin_y)`: paints a single
+    /// toast through [`draw_toast_stack`], confirms the box's fill
+    /// colour lands at the origin-shifted *absolute* position — not the
+    /// viewport-local one `gtk_toast_stack_layout` used to compute
+    /// internally before shifting — and that `hit_test` resolves clicks
+    /// at that same absolute position through Dismiss and Body.
+    ///
+    /// Canvas grows with the origin (`VIEW_W`/`VIEW_H` stay fixed) so a
+    /// dropped-origin regression shows up as a shifted absolute paint
+    /// position rather than being masked by a shrinking viewport.
+    fn paint_and_click_round_trip_at(origin_x: f64, origin_y: f64) {
+        let canvas_w = (origin_x + VIEW_W).ceil() as i32;
+        let canvas_h = (origin_y + VIEW_H).ceil() as i32;
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, canvas_w, canvas_h).expect("create ImageSurface");
+        let stack = stack_br(vec![colored_toast("t1", "Hello")]);
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_toast_stack(
+                &cr,
+                &pango_layout,
+                origin_x,
+                origin_y,
+                VIEW_W,
+                VIEW_H,
+                &stack,
+                &Theme::default(),
+                LINE_HEIGHT,
+            )
+        };
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        assert_eq!(layout.visible_toasts.len(), 1);
+        let vt = &layout.visible_toasts[0];
+
+        // Probe near the box's own bottom-left corner — inset, away
+        // from glyphs/dismiss — must be the toast's fill colour at the
+        // *absolute* bounds `draw_toast_stack` painted into.
+        let probe_x = (vt.bounds.x + 2.0) as i32;
+        let probe_y = (vt.bounds.y + vt.bounds.height - 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, probe_x, probe_y),
+            (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b),
+            "toast box should be painted at its own absolute bounds \
+             (origin=({origin_x}, {origin_y}), bounds={:?})",
+            vt.bounds,
+        );
+
+        // Round trip: absolute clicks at the dismiss and body positions
+        // resolve through hit_test.
+        let db = vt.dismiss_bounds.expect("dismiss bounds present");
+        let hit = layout.hit_test(db.x + db.width * 0.5, db.y + db.height * 0.5);
+        assert_eq!(hit, ToastHit::Dismiss(WidgetId::new("t1")));
+
+        let body_hit = layout.hit_test(vt.bounds.x + 5.0, vt.bounds.y + vt.bounds.height * 0.5);
+        assert_eq!(body_hit, ToastHit::Body(WidgetId::new("t1")));
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"): before this fix `gtk_toast_stack_layout` had no
+    /// origin parameter at all, so `draw_toast_stack` could only ever
+    /// paint correctly when the overlay's own rect started at `(0, 0)`.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7.0, 13.0);
     }
 }

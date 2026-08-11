@@ -39,14 +39,24 @@ fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
 }
 
 /// Compute the macOS pixel-unit layout for a [`ToastStack`].
+///
+/// `(origin_x, origin_y)` is baked into the returned bounds (absolute
+/// screen coordinates, matching `mac_menu_bar_layout` / `mac_panel_layout`)
+/// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
+/// localisation needed.
+#[allow(clippy::too_many_arguments)]
 pub fn mac_toast_stack_layout(
     stack: &ToastStack,
     font: &CTFont,
+    origin_x: f32,
+    origin_y: f32,
     viewport_width: f32,
     viewport_height: f32,
     line_height: f64,
 ) -> ToastStackLayout {
     stack.layout(
+        origin_x,
+        origin_y,
         viewport_width,
         viewport_height,
         TOAST_MARGIN_PX,
@@ -87,6 +97,8 @@ pub fn mac_toast_stack_layout(
 pub unsafe fn draw_toast_stack(
     ctx: CGContextRef,
     font: &CTFont,
+    origin_x: f64,
+    origin_y: f64,
     viewport_width: f64,
     viewport_height: f64,
     stack: &ToastStack,
@@ -96,6 +108,8 @@ pub unsafe fn draw_toast_stack(
     let layout = mac_toast_stack_layout(
         stack,
         font,
+        origin_x as f32,
+        origin_y as f32,
         viewport_width as f32,
         viewport_height as f32,
         line_height,
@@ -247,6 +261,23 @@ mod tests {
     }
 
     fn paint_via_backend(stack: &ToastStack) -> (BitmapSurface, ToastStackLayout) {
+        paint_via_backend_at(stack, 0.0, 0.0)
+    }
+
+    /// Like [`paint_via_backend`] but paints the toast overlay anchored
+    /// at an arbitrary `(origin_x, origin_y)` instead of always `(0, 0)`.
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"): `mac_toast_stack_layout` bakes the origin straight
+    /// into the returned bounds (absolute frame, matching
+    /// `mac_menu_bar_layout` / `mac_panel_layout`), so `hit_test` must
+    /// keep resolving against raw (unshifted) click coordinates at any
+    /// origin, not just `(0, 0)`.
+    fn paint_via_backend_at(
+        stack: &ToastStack,
+        origin_x: f32,
+        origin_y: f32,
+    ) -> (BitmapSurface, ToastStackLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
@@ -254,7 +285,10 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_toast_stack(QRect::new(0.0, 0.0, W as f32, H as f32), stack);
+            let l = b.draw_toast_stack(
+                QRect::new(origin_x, origin_y, W as f32 - origin_x, H as f32 - origin_y),
+                stack,
+            );
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
@@ -302,10 +336,12 @@ mod tests {
         assert_eq!((r, g, b), (expected.r, expected.g, expected.b));
     }
 
-    #[test]
-    fn hit_test_dismiss_vs_body() {
+    /// Shared body for `hit_test_dismiss_vs_body` — see
+    /// [`paint_via_backend_at`] for the quadraui#494 non-zero-origin
+    /// rationale.
+    fn hit_test_dismiss_vs_body_at(origin_x: f32, origin_y: f32) {
         let stack = sample_stack();
-        let (_surface, layout) = paint_via_backend(&stack);
+        let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
         let t = &layout.visible_toasts[0];
         let db = t.dismiss_bounds.expect("dismiss bounds present");
         let hit = layout.hit_test(db.x + db.width * 0.5, db.y + db.height * 0.5);
@@ -317,7 +353,21 @@ mod tests {
     }
 
     #[test]
-    fn action_button_reserves_action_bounds() {
+    fn hit_test_dismiss_vs_body() {
+        hit_test_dismiss_vs_body_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// painted at a shifted overlay origin.
+    #[test]
+    fn hit_test_dismiss_vs_body_at_nonzero_origin() {
+        hit_test_dismiss_vs_body_at(7.0, 13.0);
+    }
+
+    /// Shared body for `action_button_reserves_action_bounds` — see
+    /// [`paint_via_backend_at`] for the quadraui#494 non-zero-origin
+    /// rationale.
+    fn action_button_reserves_action_bounds_at(origin_x: f32, origin_y: f32) {
         let stack = ToastStack {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
@@ -329,12 +379,22 @@ mod tests {
                 ..toast("t", "Did the thing", ToastSeverity::Info)
             }],
         };
-        let (_surface, layout) = paint_via_backend(&stack);
+        let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
         let t = &layout.visible_toasts[0];
         let ab = t.action_bounds.expect("action bounds present");
         // Hit-test the action returns Action.
         let hit = layout.hit_test(ab.x + ab.width * 0.5, ab.y + ab.height * 0.5);
         assert!(matches!(hit, ToastHit::Action(_)), "hit was {:?}", hit);
+    }
+
+    #[test]
+    fn action_button_reserves_action_bounds() {
+        action_button_reserves_action_bounds_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn action_button_reserves_action_bounds_at_nonzero_origin() {
+        action_button_reserves_action_bounds_at(7.0, 13.0);
     }
 
     #[test]

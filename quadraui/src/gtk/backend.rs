@@ -2526,6 +2526,8 @@ impl Backend for GtkBackend {
         crate::gtk::draw_toast_stack(
             cr,
             pango_layout,
+            rect.x as f64,
+            rect.y as f64,
             rect.width as f64,
             rect.height as f64,
             stack,
@@ -2659,7 +2661,7 @@ impl Backend for GtkBackend {
         // runs outside the frame scope (from click handlers). Use a
         // fixed-size approximation — same pattern as menu_bar_layout
         // which uses current_char_width.
-        stack.layout(rect.width, rect.height, 12.0, 8.0, |i| {
+        stack.layout(rect.x, rect.y, rect.width, rect.height, 12.0, 8.0, |i| {
             let toast = &stack.toasts[i];
             let h = if toast.body.is_empty() {
                 self.current_line_height as f32 + 16.0

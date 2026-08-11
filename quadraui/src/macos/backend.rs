@@ -1109,6 +1109,8 @@ impl Backend for MacBackend {
             super::toast::draw_toast_stack(
                 ctx,
                 font,
+                rect.x as f64,
+                rect.y as f64,
                 rect.width as f64,
                 rect.height as f64,
                 stack,
@@ -1125,6 +1127,8 @@ impl Backend for MacBackend {
         super::toast::mac_toast_stack_layout(
             stack,
             font,
+            rect.x,
+            rect.y,
             rect.width,
             rect.height,
             self.current_line_height,
