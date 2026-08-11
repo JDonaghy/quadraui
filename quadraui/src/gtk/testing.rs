@@ -50,7 +50,8 @@ use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, ScrollDelta, UiEvent};
 
 use super::backend::GtkBackend;
 use super::run::{dispatch_event, render_frame, EventOutcome};
@@ -296,6 +297,13 @@ impl<A: AppLogic> GtkDriver<A> {
         &self.app
     }
 
+    /// Mutable access to the app state for tests that need to poke state
+    /// directly rather than through a scripted [`UiEvent`] — mirrors
+    /// [`crate::tui::testing::TuiDriver::app_mut`] (quadraui#488).
+    pub fn app_mut(&mut self) -> &mut A {
+        &mut self.app
+    }
+
     /// Access the backend for test assertions (e.g. active selection
     /// state, drag state).
     pub fn backend(&self) -> &GtkBackend {
@@ -379,6 +387,94 @@ impl<A: AppLogic> GtkDriver<A> {
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
         self.find_bounds(needle)
             .map(|b| (b.x + b.width / 2.0, b.y + b.height / 2.0))
+    }
+}
+
+impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
+    type App = A;
+
+    fn new_fixture(app: Self::App, viewport: LogicalViewport) -> Self {
+        // GTK's native unit is the pixel. Scale the logical cols/rows by
+        // `GtkBackend::new()`'s nominal char_width/line_height (8px/16px)
+        // — the driver's first frame (and therefore the app's real font
+        // metrics) doesn't exist yet to measure from, so this is the same
+        // nominal default the backend itself starts with.
+        const NOMINAL_CHAR_WIDTH: i32 = 8;
+        const NOMINAL_LINE_HEIGHT: i32 = 16;
+        GtkDriver::new(
+            app,
+            viewport.cols as i32 * NOMINAL_CHAR_WIDTH,
+            viewport.rows as i32 * NOMINAL_LINE_HEIGHT,
+        )
+    }
+
+    fn press_named(&mut self, key: NamedKey) {
+        GtkDriver::press_named(self, key);
+    }
+
+    fn type_char(&mut self, c: char) {
+        GtkDriver::type_char(self, c);
+    }
+
+    fn click_text_at(&mut self, needle: &str, at: Anchor) {
+        let bounds = self
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("GtkDriver: {needle:?} not painted"));
+        let y = bounds.y + bounds.height / 2.0;
+        let x = match at {
+            Anchor::Center => bounds.x + bounds.width / 2.0,
+            Anchor::LeftEdge => bounds.x + 1.0,
+            Anchor::RightEdge => bounds.x + bounds.width - 1.0,
+        };
+        self.click(x, y);
+    }
+
+    fn drag_text(&mut self, from: &str, to: &str) {
+        let (x0, y0) = self
+            .find(from)
+            .unwrap_or_else(|| panic!("GtkDriver: {from:?} not painted"));
+        let (x1, y1) = self
+            .find(to)
+            .unwrap_or_else(|| panic!("GtkDriver: {to:?} not painted"));
+        self.drag(x0, y0, x1, y1);
+    }
+
+    fn scroll_at(&mut self, needle: &str, lines: i32) {
+        let (x, y) = self
+            .find(needle)
+            .unwrap_or_else(|| panic!("GtkDriver: {needle:?} not painted"));
+        let line_height = self.backend.line_height();
+        self.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, lines as f32 * line_height),
+            position: Point::new(x, y),
+        });
+    }
+
+    fn inventory(&self) -> FrameInventory {
+        FrameInventory {
+            text_runs: self
+                .backend
+                .painted_text
+                .iter()
+                .map(|p| TextRun {
+                    text: p.text.clone(),
+                    bounds: p.bounds,
+                })
+                .collect(),
+            // Widget-zone recording (`ZoneRec`) is B3/`docs/SMELL_AUDIT_2026-07.md`
+            // §6.2 follow-up work — no `FrameHitMap`-sourced zone log exists
+            // yet on either backend.
+            zones: Vec::new(),
+        }
+    }
+
+    fn screen_has(&self, needle: &str) -> bool {
+        self.screen_contains(needle)
+    }
+
+    fn exited(&self) -> bool {
+        GtkDriver::exited(self)
     }
 }
 
@@ -667,6 +763,109 @@ mod tests {
             (vp.width, vp.height),
             (200.0, 60.0),
             "setup() must see the driver's real size, not a zeroed default"
+        );
+    }
+
+    // ─── quadraui#488 ────────────────────────────────────────────────────
+
+    const STACKED_ROW_H: f32 = 20.0;
+
+    /// Two `StatusBar`s stacked vertically at different `rect.y` offsets —
+    /// the shape `examples/common/panel_app.rs`'s per-line content
+    /// rendering uses, and the one that exposed the `draw_status_bar` bug
+    /// this regression test guards.
+    struct StackedRowsApp;
+
+    impl AppLogic for StackedRowsApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
+                backend.draw_status_bar(
+                    Rect::new(0.0, i as f32 * STACKED_ROW_H, 200.0, STACKED_ROW_H),
+                    &StatusBar {
+                        id: WidgetId::new(format!("row-{i}")),
+                        left_segments: vec![StatusBarSegment {
+                            text: label.to_string(),
+                            fg: Color::rgb(255, 255, 255),
+                            bg: Color::rgb(20, 20, 20),
+                            bold: false,
+                            action_id: None,
+                        }],
+                        right_segments: vec![],
+                    },
+                    None,
+                    None,
+                );
+            }
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// Regression guard for quadraui#488's `GtkBackend::draw_status_bar`
+    /// fix: each row's painted text must record its *own* absolute `y`,
+    /// not the bar-local `y = 0` every row shared before the fix (which
+    /// meant a multi-row caller's `find`/`find_bounds` always reported the
+    /// top row's `y` no matter which row's text actually matched).
+    #[test]
+    fn find_bounds_reports_each_stacked_rows_own_absolute_y() {
+        let driver = GtkDriver::new(StackedRowsApp, 200, 60);
+
+        let row0 = driver
+            .find_bounds("row zero")
+            .expect("row zero should be painted");
+        let row1 = driver
+            .find_bounds("row one")
+            .expect("row one should be painted");
+
+        assert_eq!(row0.y, 0.0, "row 0 should record at its own rect's y");
+        assert_eq!(
+            row1.y, STACKED_ROW_H,
+            "row 1 should record at its own rect's y, not row 0's"
+        );
+    }
+
+    /// `app_mut` mirrors `TuiDriver::app_mut` (quadraui#488): tests can
+    /// poke app state directly rather than only through a scripted
+    /// `UiEvent`.
+    #[test]
+    fn app_mut_allows_direct_state_mutation() {
+        let mut driver = GtkDriver::new(ToggleStatusBarApp { on: false }, W, H);
+        assert!(!driver.app().on);
+
+        driver.app_mut().on = true;
+
+        assert!(
+            driver.app().on,
+            "app_mut should mutate the wrapped app in place"
+        );
+    }
+
+    /// `ConformanceDriver` smoke test for the GTK impl: `new_fixture`
+    /// (the `LogicalViewport`-aligned constructor), `click_text_at` with
+    /// each `Anchor`, and `screen_has`/`exited` all round-trip through
+    /// the promoted trait, not just the inherent methods the other tests
+    /// in this module exercise directly.
+    #[test]
+    fn conformance_driver_new_fixture_and_click_text_at_round_trip() {
+        use crate::testing::{Anchor, ConformanceDriver, LogicalViewport};
+
+        let mut driver: GtkDriver<ToggleStatusBarApp> = GtkDriver::new_fixture(
+            ToggleStatusBarApp { on: false },
+            LogicalViewport::new(30, 5),
+        );
+        assert!(!ConformanceDriver::exited(&driver));
+        assert!(ConformanceDriver::screen_has(&driver, "Toggle"));
+
+        driver.click_text_at("Toggle", Anchor::Center);
+
+        assert!(
+            driver.app().on,
+            "click_text_at(Anchor::Center) should activate the toggle segment \
+             exactly like the existing find()+click() path does"
         );
     }
 }

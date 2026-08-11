@@ -51,9 +51,11 @@ use ratatui::Terminal;
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
+use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+use crate::tui::text::char_cell_width;
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent};
 
 /// Build a [`TuiDriver`] that wraps `app` in the full
 /// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
@@ -310,26 +312,182 @@ impl<A: AppLogic> TuiDriver<A> {
         self.terminal.get_cursor_position().ok().map(|p| (p.x, p.y))
     }
 
-    /// Cell-centre coordinates of the first row containing `needle`, at
-    /// the start of the match. Counts in *character cells* (not bytes),
-    /// so it works on rows full of multi-byte box-drawing glyphs.
-    /// Assumes 1 cell per char (no double-width CJK) — adequate for
-    /// clicking painted ASCII labels in tests.
-    pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
+    /// This row's cells as `(char, cell_x, cell_width)` triples, in
+    /// left-to-right order — the shared scan [`Self::find_bounds`] and
+    /// [`ConformanceDriver::inventory`] both walk.
+    ///
+    /// Skips the reserved continuation cell(s) a double-width glyph's
+    /// rendering leaves behind: ratatui resets them to a blank cell whose
+    /// `symbol()` reads back as `" "`, indistinguishable from a real space
+    /// by content alone, so the *width* of the character just placed (via
+    /// [`char_cell_width`]), not the following cell's symbol, drives how
+    /// far `x` advances. Without this, two adjacent double-width
+    /// characters (e.g. CJK) get a spurious blank cell wedged between them
+    /// in the reconstructed row, and a needle spanning them would never
+    /// match (quadraui#488).
+    fn row_cells(&self, y: u16) -> Vec<(char, u16, u16)> {
+        let buf = self.terminal.backend().buffer();
+        let area = buf.area;
+        let mut cells = Vec::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            let ch = symbol.chars().next().unwrap_or(' ');
+            let w = char_cell_width(ch).max(1);
+            cells.push((ch, x, w));
+            x += w;
+        }
+        cells
+    }
+
+    /// Cell bounds of the first row containing `needle`, wide-char aware
+    /// (see [`Self::row_cells`]): a needle spanning two double-width
+    /// glyphs (CJK, most emoji) matches and reports the full cell span,
+    /// not just its first character's cell.
+    pub fn find_bounds(&self, needle: &str) -> Option<Rect> {
         let needle: Vec<char> = needle.chars().collect();
         if needle.is_empty() {
             return None;
         }
-        for (y, line) in self.screen().lines().enumerate() {
-            let row: Vec<char> = line.chars().collect();
-            if let Some(col) = row
+        let area = self.terminal.backend().buffer().area;
+        for y in area.top()..area.bottom() {
+            let cells = self.row_cells(y);
+            if cells.len() < needle.len() {
+                continue;
+            }
+            if let Some(start) = cells
                 .windows(needle.len())
-                .position(|w| w == needle.as_slice())
+                .position(|w| w.iter().map(|(c, _, _)| *c).eq(needle.iter().copied()))
             {
-                return Some((col as f32 + 0.5, y as f32 + 0.5));
+                let (_, start_x, _) = cells[start];
+                let (_, last_x, last_w) = cells[start + needle.len() - 1];
+                let width = (last_x + last_w).saturating_sub(start_x);
+                return Some(Rect::new(start_x as f32, y as f32, width as f32, 1.0));
             }
         }
         None
+    }
+
+    /// Coordinates of the first row containing `needle`, at the center of
+    /// the matched span's *first* cell — preserved from the pre-#488
+    /// behaviour (a click there always lands inside the match regardless
+    /// of span width) even though [`Self::find_bounds`] now reports the
+    /// full wide-char-aware span. Callers that want the full span's
+    /// center use `find_bounds` directly (e.g.
+    /// [`ConformanceDriver::click_text_at`]'s `Anchor::Center`).
+    pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.find_bounds(needle)
+            .map(|b| (b.x + 0.5, b.y + b.height / 2.0))
+    }
+}
+
+impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
+    type App = A;
+
+    fn new_fixture(app: Self::App, viewport: LogicalViewport) -> Self {
+        // TUI's native unit *is* the cell, so a `LogicalViewport` maps
+        // straight through — no char_width/line_height scaling needed
+        // (contrast `GtkDriver::new_fixture`, a pixel backend).
+        TuiDriver::new(app, viewport.cols as u16, viewport.rows as u16)
+    }
+
+    fn press_named(&mut self, key: NamedKey) {
+        TuiDriver::press_named(self, key);
+    }
+
+    fn type_char(&mut self, c: char) {
+        TuiDriver::type_char(self, c);
+    }
+
+    fn click_text_at(&mut self, needle: &str, at: Anchor) {
+        let bounds = self
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("TuiDriver: {needle:?} not painted:\n{}", self.screen()));
+        let y = bounds.y + bounds.height / 2.0;
+        let x = match at {
+            Anchor::Center => bounds.x + bounds.width / 2.0,
+            // Half a cell in from each edge — the outermost cell's
+            // center — so the click reliably lands inside the run even
+            // for a single-cell-wide match.
+            Anchor::LeftEdge => bounds.x + 0.5,
+            Anchor::RightEdge => bounds.x + bounds.width - 0.5,
+        };
+        self.click(x, y);
+    }
+
+    fn drag_text(&mut self, from: &str, to: &str) {
+        let (x0, y0) = self
+            .find(from)
+            .unwrap_or_else(|| panic!("TuiDriver: {from:?} not painted:\n{}", self.screen()));
+        let (x1, y1) = self
+            .find(to)
+            .unwrap_or_else(|| panic!("TuiDriver: {to:?} not painted:\n{}", self.screen()));
+        self.drag(x0, y0, x1, y1);
+    }
+
+    fn scroll_at(&mut self, needle: &str, lines: i32) {
+        let (x, y) = self
+            .find(needle)
+            .unwrap_or_else(|| panic!("TuiDriver: {needle:?} not painted:\n{}", self.screen()));
+        let line_height = self.backend.line_height();
+        self.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, lines as f32 * line_height),
+            position: Point::new(x, y),
+        });
+    }
+
+    fn inventory(&self) -> FrameInventory {
+        let area = self.terminal.backend().buffer().area;
+        let mut text_runs = Vec::new();
+        for y in area.top()..area.bottom() {
+            let cells = self.row_cells(y);
+            let mut run: Option<(String, u16, u16)> = None; // (text, start_x, end_x)
+            for (ch, x, w) in cells {
+                if ch == ' ' {
+                    if let Some((text, start_x, end_x)) = run.take() {
+                        text_runs.push(TextRun {
+                            text,
+                            bounds: Rect::new(
+                                start_x as f32,
+                                y as f32,
+                                (end_x - start_x) as f32,
+                                1.0,
+                            ),
+                        });
+                    }
+                    continue;
+                }
+                match &mut run {
+                    Some((text, _start_x, end_x)) => {
+                        text.push(ch);
+                        *end_x = x + w;
+                    }
+                    None => run = Some((ch.to_string(), x, x + w)),
+                }
+            }
+            if let Some((text, start_x, end_x)) = run {
+                text_runs.push(TextRun {
+                    text,
+                    bounds: Rect::new(start_x as f32, y as f32, (end_x - start_x) as f32, 1.0),
+                });
+            }
+        }
+        FrameInventory {
+            text_runs,
+            // Widget-zone recording (`ZoneRec`) is B3/`docs/SMELL_AUDIT_2026-07.md`
+            // §6.2 follow-up work — no `FrameHitMap`-sourced zone log exists
+            // yet on either backend.
+            zones: Vec::new(),
+        }
+    }
+
+    fn screen_has(&self, needle: &str) -> bool {
+        self.screen_contains(needle)
+    }
+
+    fn exited(&self) -> bool {
+        TuiDriver::exited(self)
     }
 }
 
@@ -382,5 +540,120 @@ mod tests {
             (120.0, 40.0),
             "setup() must see the driver's real size, not Viewport::default() (80×24)"
         );
+    }
+
+    // ─── quadraui#488 ────────────────────────────────────────────────────
+
+    use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+    use crate::types::{Color, WidgetId};
+
+    /// Paints one status-bar line whose text is given verbatim (no
+    /// automatic padding), so a test can control exactly which glyphs are
+    /// adjacent — needed to exercise the double-width continuation-cell
+    /// case `find`/`find_bounds` must handle correctly.
+    struct OneLineApp {
+        text: &'static str,
+    }
+
+    impl AppLogic for OneLineApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_status_bar(
+                Rect::new(0.0, 0.0, 30.0, 1.0),
+                &StatusBar {
+                    id: WidgetId::new("status"),
+                    left_segments: vec![StatusBarSegment {
+                        text: self.text.to_string(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: Color::rgb(0, 0, 0),
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                None,
+                None,
+            );
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// Regression guard for quadraui#488's wide-char `find`/`find_bounds`
+    /// fix: two adjacent double-width (CJK) glyphs must be found as one
+    /// 4-cell-wide span, not silently unmatched because ratatui wedges a
+    /// blank continuation cell between them that isn't a real space.
+    #[test]
+    fn find_bounds_is_wide_char_aware_for_adjacent_cjk_glyphs() {
+        let driver = TuiDriver::new(
+            OneLineApp {
+                text: "你好 world"
+            },
+            30,
+            3,
+        );
+
+        let cjk = driver.find_bounds("你好").expect(
+            "adjacent double-width glyphs should match as one span, not be split by a \
+             spurious blank continuation cell",
+        );
+        assert_eq!(
+            (cjk.x, cjk.width),
+            (0.0, 4.0),
+            "two double-width glyphs occupy 4 cells total"
+        );
+
+        // `find` still returns the first cell's center (pre-#488
+        // behaviour preserved — see its doc comment), not the span's
+        // midpoint.
+        let (x, y) = driver.find("你好").expect("find should also locate it");
+        assert_eq!((x, y), (0.5, 0.5));
+
+        // "world" is offset past the 4-cell CJK run and the separating
+        // space — proves the continuation-cell fix didn't just get the
+        // *first* match right by accident.
+        let world = driver
+            .find_bounds("world")
+            .expect("world should be found after the CJK run");
+        assert_eq!(world.x, cjk.x + cjk.width + 1.0);
+    }
+
+    /// `ConformanceDriver` smoke test for the TUI impl: `new_fixture` (the
+    /// `LogicalViewport`-aligned constructor), `scroll_at`, and
+    /// `inventory` all round-trip through the promoted trait.
+    #[test]
+    fn conformance_driver_new_fixture_scroll_at_and_inventory_round_trip() {
+        let driver: TuiDriver<OneLineApp> = ConformanceDriver::new_fixture(
+            OneLineApp {
+                text: "你好 world"
+            },
+            LogicalViewport::new(30, 3),
+        );
+        assert_eq!(
+            (
+                driver.backend().viewport().width,
+                driver.backend().viewport().height
+            ),
+            (30.0, 3.0),
+            "new_fixture's LogicalViewport should map straight through to TUI cells"
+        );
+
+        let inv = ConformanceDriver::inventory(&driver);
+        let texts: Vec<&str> = inv.text_runs().iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            texts.contains(&"你好") && texts.contains(&"world"),
+            "inventory() should synthesize a TextRun per whitespace-separated \
+             run on the cell grid, wide-char aware: {texts:?}"
+        );
+
+        // scroll_at must not panic when the target text exists — the
+        // dispatched Scroll event's downstream handling is exercised by
+        // primitive-level tests; this just confirms the driver-level
+        // find-then-dispatch plumbing works.
+        let mut driver = driver;
+        driver.scroll_at("world", 1);
     }
 }

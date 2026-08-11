@@ -4,20 +4,22 @@
 //! the two backends agree on logical state. A pty-only tool can never do
 //! this — it only ever sees one backend.
 //!
-//! Follows the `ExampleDriver` trait shape already sketched in
-//! `docs/TESTING.md` ("Cross-backend example tests: shared bodies,
-//! per-backend adapters"): the test body is written **once**, generic over
-//! `ExampleDriver`, and the two backend-specific rows (reading "the
-//! screen", coordinate units) are hidden behind the trait's small surface.
-//! Locate targets with `find`/`click_text`, never a hardcoded coordinate —
-//! TUI cells and GTK pixels are different units, so a literal `click(x, y)`
-//! in a shared body would silently be wrong on one side.
+//! Runs each shared test body generic over the promoted
+//! [`quadraui::testing::ConformanceDriver`] trait (quadraui#488 — formerly
+//! a test-local `ExampleDriver` copy here that dropped `drag_text` from
+//! `docs/TESTING.md`'s canonical sketch). The two backend-specific rows
+//! (reading "the screen", coordinate units) are hidden behind the trait's
+//! small surface. Locate targets with `find`/`click_text`, never a
+//! hardcoded coordinate — TUI cells and GTK pixels are different units, so
+//! a literal `click(x, y)` in a shared body would silently be wrong on one
+//! side.
 //!
 //! Needs both drivers compiled in, so this file only runs under
 //! `--features tui,gtk` (the CI `gtk` job builds/tests with both).
 #![cfg(all(feature = "tui", feature = "gtk"))]
 
 use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriver};
+use quadraui::testing::{ConformanceDriver, LogicalViewport};
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
 use quadraui::{AppLogic, DataTableLayout, NamedKey};
 
@@ -33,57 +35,27 @@ use appshell_demo::{ActivityProbe, AppShellDemo};
 mod data_table_app;
 use data_table_app::DataTableApp;
 
-/// Backend-agnostic driver surface a shared parity test body needs.
-/// Implemented once per backend below — the two rows that genuinely
-/// differ (screen representation, coordinate units) live entirely inside
-/// these impls, never in the shared test bodies.
-trait ExampleDriver {
-    fn press_named(&mut self, key: NamedKey);
-    fn type_char(&mut self, c: char);
-    /// Locate `needle`'s painted bounds in this backend's native
-    /// coordinate space and click its center.
-    fn click_text(&mut self, needle: &str);
-    fn screen_has(&self, needle: &str) -> bool;
-    fn exited(&self) -> bool;
+#[path = "../examples/common/panel_app.rs"]
+mod panel_app;
+use panel_app::PanelApp;
 
+/// Extra backend-specific surface the #552 activity-bar section below
+/// needs on top of [`ConformanceDriver`]: raw-coordinate click/hover
+/// (always derived from shell-reported geometry — see `activity_row_center`
+/// — never a literal) and the one genuinely per-backend number, activity
+/// row height. Kept separate from `ConformanceDriver` itself, which by
+/// design never exposes raw coordinates to a shared body.
+trait ActivityBarProbeDriver: ConformanceDriver {
     /// Click at an explicit point in this backend's native units.
-    ///
-    /// Shared bodies must derive the point from geometry the *shell*
-    /// reported (see `ActivityProbe`), never from a literal — a literal
-    /// would be cells on one backend and pixels on the other.
     fn click_at(&mut self, x: f32, y: f32);
     /// Move the pointer, buttons up, to update hover state.
     fn hover_at(&mut self, x: f32, y: f32);
     /// Height of one activity-bar row in this backend's native units.
-    /// This is the one genuinely per-backend number the #552 bodies need:
-    /// the TUI bar is one text row per icon, GTK a fixed 48px button.
+    /// The TUI bar is one text row per icon, GTK a fixed 48px button.
     fn activity_row_height(&self) -> f32;
 }
 
-impl<A: AppLogic> ExampleDriver for TuiDriver<A> {
-    fn press_named(&mut self, key: NamedKey) {
-        TuiDriver::press_named(self, key);
-    }
-
-    fn type_char(&mut self, c: char) {
-        TuiDriver::type_char(self, c);
-    }
-
-    fn click_text(&mut self, needle: &str) {
-        let (x, y) = self
-            .find(needle)
-            .unwrap_or_else(|| panic!("TuiDriver: {needle:?} not painted:\n{}", self.screen()));
-        self.click(x, y);
-    }
-
-    fn screen_has(&self, needle: &str) -> bool {
-        self.screen_contains(needle)
-    }
-
-    fn exited(&self) -> bool {
-        TuiDriver::exited(self)
-    }
-
+impl<A: AppLogic> ActivityBarProbeDriver for TuiDriver<A> {
     fn click_at(&mut self, x: f32, y: f32) {
         TuiDriver::click(self, x, y);
     }
@@ -99,30 +71,7 @@ impl<A: AppLogic> ExampleDriver for TuiDriver<A> {
     }
 }
 
-impl<A: AppLogic> ExampleDriver for GtkDriver<A> {
-    fn press_named(&mut self, key: NamedKey) {
-        GtkDriver::press_named(self, key);
-    }
-
-    fn type_char(&mut self, c: char) {
-        GtkDriver::type_char(self, c);
-    }
-
-    fn click_text(&mut self, needle: &str) {
-        let (x, y) = self
-            .find(needle)
-            .unwrap_or_else(|| panic!("GtkDriver: {needle:?} not painted"));
-        self.click(x, y);
-    }
-
-    fn screen_has(&self, needle: &str) -> bool {
-        self.screen_contains(needle)
-    }
-
-    fn exited(&self) -> bool {
-        GtkDriver::exited(self)
-    }
-
+impl<A: AppLogic> ActivityBarProbeDriver for GtkDriver<A> {
     fn click_at(&mut self, x: f32, y: f32) {
         GtkDriver::click(self, x, y);
     }
@@ -139,7 +88,7 @@ impl<A: AppLogic> ExampleDriver for GtkDriver<A> {
 /// One scripted event sequence, written once: move focus right, fire the
 /// Deploy stage's "Go" action by text (no per-backend coordinates), then
 /// quit. Returns the observations a test wants to compare across backends.
-fn run_pipeline_script<D: ExampleDriver>(d: &mut D) -> Vec<bool> {
+fn run_pipeline_script<D: ConformanceDriver>(d: &mut D) -> Vec<bool> {
     let before = d.screen_has("stage 3");
     d.press_named(NamedKey::Right);
     d.click_text("Go");
@@ -183,18 +132,18 @@ fn pipeline_parity_tui_and_gtk_agree_on_logical_state() {
 // implements `ShellApp` and is driven by `{tui,gtk}::testing::driver_with_shell`,
 // not `AppLogic` directly — so this lifts the same claim to the shell level:
 // one `ShellApp` (`AppShellDemo`), one script, both `driver_with_shell`
-// entry points, same logical outcome. `ExampleDriver` is reused unchanged —
-// both `driver_with_shell` functions return a driver generic over
-// `impl AppLogic` (the `ShellAdapter` wrapping the `ShellApp`), which the
-// existing blanket `impl<A: AppLogic> ExampleDriver for {Tui,Gtk}Driver<A>`
-// already covers.
+// entry points, same logical outcome. `ConformanceDriver` is reused
+// unchanged — both `driver_with_shell` functions return a driver generic
+// over `impl AppLogic` (the `ShellAdapter` wrapping the `ShellApp`), which
+// the blanket `impl<A: AppLogic> ConformanceDriver for {Tui,Gtk}Driver<A>`
+// in `quadraui::{tui,gtk}::testing` already covers.
 
 /// Script: focus the activity bar, move the keyboard cursor down two items
 /// (explorer → search → git), activate the selection, then quit. Returns
 /// the observations a test wants to compare across backends: whether the
 /// sidebar-header text for the *destination* panel appears before the
 /// switch, after it, and whether 'q' exits.
-fn run_appshell_script<D: ExampleDriver>(d: &mut D) -> Vec<bool> {
+fn run_appshell_script<D: ConformanceDriver>(d: &mut D) -> Vec<bool> {
     let before = d.screen_has("SOURCE CONTROL");
     d.press_named(NamedKey::Tab);
     d.type_char('j');
@@ -229,12 +178,64 @@ fn appshell_demo_parity_tui_and_gtk_agree_on_logical_state() {
     );
 }
 
+// ─── quadraui#488: promoted `ConformanceDriver` — a shared `drag_text` step ─
+//
+// `docs/TESTING.md`'s canonical `ExampleDriver` sketch included a
+// `drag_text(from, to)` method; the test-local trait this file used to
+// define dropped it, so no drag scenario could be written once and shared
+// across backends. Promoting it to `quadraui::testing::ConformanceDriver`
+// (see the top of this file) restores it — this is the acceptance case:
+// one generic test body, one `drag_text` step, constructed via the
+// trait's `LogicalViewport`-aligned `new_fixture` and run against both
+// drivers unmodified.
+
+/// Drag-select from "brown" (content line 0) to "wizards" (content line 3)
+/// across `PanelApp`'s selectable content block — the same fixture and
+/// substrings `tests/tui_example_driver.rs::panel_drag_selects_text_and_ctrl_c_copies_it`
+/// already proves work — and report whether the shell reacted with a
+/// "Selecting row…" status message, i.e. the drag actually started a
+/// `TextSelectionChanged` sequence rather than a no-op click.
+fn run_panel_drag_select_script<D: ConformanceDriver<App = PanelApp>>(d: &mut D) -> bool {
+    let before = d.screen_has("Selecting row");
+    d.drag_text("brown", "wizards");
+    let after = d.screen_has("Selecting row");
+    !before && after
+}
+
+#[test]
+fn panel_drag_text_selects_across_lines_parity_tui_and_gtk_agree() {
+    // `new_fixture` is `ConformanceDriver`'s LogicalViewport-aligned
+    // constructor (quadraui#488 TEST-07) — the same 80×24 logical size on
+    // both backends, each interpreting it in its own native units.
+    let mut tui = TuiDriver::new_fixture(PanelApp::new(), LogicalViewport::new(80, 24));
+    let mut gtk = GtkDriver::new_fixture(PanelApp::new(), LogicalViewport::new(80, 24));
+
+    let tui_selected = run_panel_drag_select_script(&mut tui);
+    let gtk_selected = run_panel_drag_select_script(&mut gtk);
+
+    assert!(
+        tui_selected,
+        "TUI: dragging from \"brown\" to \"wizards\" should start a text \
+         selection spanning both content lines:\n{}",
+        tui.screen()
+    );
+    assert!(
+        gtk_selected,
+        "GTK: dragging from \"brown\" to \"wizards\" should start a text \
+         selection spanning both content lines"
+    );
+    assert_eq!(
+        tui_selected, gtk_selected,
+        "both backends should agree that drag_text produced a selection"
+    );
+}
+
 // ─── DataTableApp resize-direction parity (#516 defect 3) ──────────────────
 //
 // The acceptance bar for defect 3 is specifically that the fix landed in
 // the *shared* `primitives::data_table::resolve_columns`, not in one
 // rasteriser — so the same divider-drag script must produce the same
-// *direction* of change on both backends. `ExampleDriver` above is
+// *direction* of change on both backends. `ConformanceDriver` above is
 // generic over any `AppLogic` and can't reach `DataTableApp`-specific
 // methods (`table_layout`, `resolved_column_widths`), so this uses a
 // narrower trait implemented directly for the two concrete driver types
@@ -477,7 +478,11 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
 
 /// Center of activity-bar row `idx` in the driver's native units, derived
 /// from the bounds the *shell* reported this frame — never a literal.
-fn activity_row_center<D: ExampleDriver>(d: &D, probe: &ActivityProbe, idx: usize) -> (f32, f32) {
+fn activity_row_center<D: ActivityBarProbeDriver>(
+    d: &D,
+    probe: &ActivityProbe,
+    idx: usize,
+) -> (f32, f32) {
     let ab = probe
         .bounds()
         .expect("render_content should have published activity_bar_bounds");
@@ -493,7 +498,7 @@ fn activity_row_center<D: ExampleDriver>(d: &D, probe: &ActivityProbe, idx: usiz
 /// **not** the initially-active panel (Explorer, row 0): clicking the
 /// already-active icon is a sidebar *toggle*, not a panel switch, so it
 /// would mask an off-by-one instead of exposing it.
-fn run_activity_click_after_title_bar_reveal<D: ExampleDriver>(
+fn run_activity_click_after_title_bar_reveal<D: ActivityBarProbeDriver>(
     d: &mut D,
     probe: &ActivityProbe,
     idx: usize,
@@ -589,7 +594,11 @@ fn activity_click_row_two_hits_row_two_after_title_bar_reveal_parity() {
 /// — so it is deliberately not asserted against `idx` directly. What
 /// matters for #552 is that the answer does not *change* when the bar
 /// moves.
-fn hover_row<D: ExampleDriver>(d: &mut D, probe: &ActivityProbe, idx: usize) -> Option<usize> {
+fn hover_row<D: ActivityBarProbeDriver>(
+    d: &mut D,
+    probe: &ActivityProbe,
+    idx: usize,
+) -> Option<usize> {
     let (x, y) = activity_row_center(d, probe, idx);
     d.hover_at(x, y);
     probe.hovered_idx()
@@ -606,7 +615,7 @@ fn hover_row<D: ExampleDriver>(d: &mut D, probe: &ActivityProbe, idx: usize) -> 
 /// hidden vs revealed states the invariant without hard-coding the shell's
 /// internal ordering: revealing chrome above the bar must not change which
 /// icon a given on-screen row belongs to.
-fn hover_before_and_after_title_bar_reveal<D: ExampleDriver>(
+fn hover_before_and_after_title_bar_reveal<D: ActivityBarProbeDriver>(
     d: &mut D,
     probe: &ActivityProbe,
     idx: usize,
