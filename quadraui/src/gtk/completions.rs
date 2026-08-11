@@ -23,7 +23,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::completions::{Completions, CompletionsLayout};
@@ -94,6 +93,6 @@ pub fn draw_completions(
         pango_layout.set_text(&display);
         pango_layout.set_attributes(None);
         cr.move_to(item_x, item_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 }

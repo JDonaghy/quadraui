@@ -6,7 +6,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -80,7 +79,7 @@ pub fn draw_tooltip(
                 layout.set_text(&span.text);
                 layout.set_attributes(None);
                 cr.move_to(x_off, row_y);
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 let (text_w, _) = layout.pixel_size();
                 x_off += text_w as f64;
             }
@@ -97,6 +96,6 @@ pub fn draw_tooltip(
         layout.set_text(text_line);
         layout.set_attributes(None);
         cr.move_to(text_x, row_y);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     }
 }

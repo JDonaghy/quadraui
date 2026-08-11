@@ -13,7 +13,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout, TextSelection};
@@ -246,7 +245,7 @@ pub fn draw_rich_text_popup(
 
             cr.set_source_rgb(fg_r, fg_g, fg_b);
             cr.move_to(line_x, row_y);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
             pango_layout.set_attributes(None);
         }
     }

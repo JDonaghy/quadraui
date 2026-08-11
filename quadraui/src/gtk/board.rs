@@ -12,7 +12,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{rounded_rect_path, set_source};
 use crate::primitives::board::{board_layout, BadgeStatus, BoardLayout, BoardMeasure, BoardModel};
@@ -98,7 +97,7 @@ pub fn draw_board(
         set_pango_size(pango_layout, TITLE_FONT_SIZE);
         set_source(cr, theme.header_fg);
         cr.move_to(hb.x as f64 + CARD_H_PAD, hb.y as f64 + 4.0);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
 
         // ── Cards ────────────────────────────────────────────────────────
         for card_layout in &col_layout.cards {
@@ -154,7 +153,7 @@ pub fn draw_board(
             set_pango_width(pango_layout, (bw - CARD_H_PAD * 2.0) as f32);
             set_source(cr, text_fg);
             cr.move_to(bx + CARD_H_PAD, by + 6.0);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
 
             // ── Badge row ────────────────────────────────────────────────
             let badge_y = by + 26.0;
@@ -168,7 +167,7 @@ pub fn draw_board(
                 let col = badge_fg_color(badge.status, theme);
                 set_source(cr, col);
                 cr.move_to(badge_x, badge_y);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
                 let (pw, _) = pango_layout.pixel_size();
                 badge_x += pw as f64;
                 if badge_x > bx + bw - CARD_H_PAD {
@@ -190,7 +189,7 @@ pub fn draw_board(
                     set_pango_width(pango_layout, (bw - CARD_H_PAD * 2.0) as f32);
                     set_source(cr, theme.card_hint_fg);
                     cr.move_to(bx + CARD_H_PAD, hint_y);
-                    pcfn::show_layout(cr, pango_layout);
+                    super::painted_text::show_layout(cr, pango_layout);
                 }
             }
         }

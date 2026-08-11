@@ -27,7 +27,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::message_list::MessageList;
@@ -120,7 +119,7 @@ pub fn draw_message_list(
             layout.set_attributes(Some(&attrs));
             let (_, lh) = layout.pixel_size();
             cr.move_to(x + row.indent as f64, ry + (line_height - lh as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             layout.set_attributes(None);
         } else {
             // ── Flat path (unchanged from before spans were added) ───────
@@ -129,7 +128,7 @@ pub fn draw_message_list(
             layout.set_text(&row.text);
             let (_, lh) = layout.pixel_size();
             cr.move_to(x + row.indent as f64, ry + (line_height - lh as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
     }
 }

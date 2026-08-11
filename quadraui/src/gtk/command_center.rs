@@ -5,7 +5,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::set_source;
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout, CommandCenterMeasure};
@@ -82,7 +81,7 @@ pub fn draw_command_center(
         let tw = pango_layout.pixel_size().0 as f64;
         set_source(cr, fg);
         cr.move_to(bb.x as f64 + (bb.width as f64 - tw) / 2.0, text_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Forward arrow.
@@ -97,7 +96,7 @@ pub fn draw_command_center(
         let tw = pango_layout.pixel_size().0 as f64;
         set_source(cr, fg);
         cr.move_to(fb.x as f64 + (fb.width as f64 - tw) / 2.0, text_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Search box.
@@ -142,7 +141,7 @@ pub fn draw_command_center(
         pango_layout.set_attributes(None);
         set_source(cr, theme.tab_inactive_fg);
         cr.move_to(bx + GTK_SEARCH_PAD_PX, text_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     layout

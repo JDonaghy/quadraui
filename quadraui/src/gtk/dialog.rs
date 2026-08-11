@@ -15,7 +15,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout, DialogTable};
@@ -116,7 +115,7 @@ fn draw_table_gtk(
                 pango_layout.set_text(h);
                 pango_layout.set_attributes(None);
                 cr.move_to(col_x[j], row_y);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
             }
         }
         // Separators.
@@ -126,7 +125,7 @@ fn draw_table_gtk(
             pango_layout.set_text(" │ ");
             pango_layout.set_attributes(None);
             cr.move_to(sep_x, row_y);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
         }
         row_y += line_height;
 
@@ -138,7 +137,7 @@ fn draw_table_gtk(
         pango_layout.set_text(&dash_str);
         pango_layout.set_attributes(None);
         cr.move_to(table_x, row_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
         row_y += line_height;
     }
 
@@ -150,7 +149,7 @@ fn draw_table_gtk(
                 pango_layout.set_text(cell);
                 pango_layout.set_attributes(None);
                 cr.move_to(col_x[j], row_y);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
             }
         }
         // Separators.
@@ -160,7 +159,7 @@ fn draw_table_gtk(
             pango_layout.set_text(" │ ");
             pango_layout.set_attributes(None);
             cr.move_to(sep_x, row_y);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
         }
         row_y += line_height;
     }
@@ -221,7 +220,7 @@ pub fn draw_dialog(
         pango_layout.set_text(&flatten(&dialog.title));
         pango_layout.set_attributes(None);
         cr.move_to(title_rect.x as f64, title_rect.y as f64);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Body + input render in the layout's saved (editor / mono) font.
@@ -238,7 +237,7 @@ pub fn draw_dialog(
         pango_layout.set_text(&text);
         pango_layout.set_attributes(None);
         cr.move_to(body_b.x as f64, row_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Optional table slot.
@@ -278,7 +277,7 @@ pub fn draw_dialog(
                 pango_layout.set_attributes(None);
                 let (_, ilh) = pango_layout.pixel_size();
                 cr.move_to(ix + 2.0, iy + (ih - ilh as f64) / 2.0);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
             }
             DialogInput::Toolbar(toolbar) => {
                 // Render the embedded toolbar using the GTK toolbar
@@ -340,7 +339,7 @@ pub fn draw_dialog(
         };
         let label_y = btn_by + (btn_bh - lh) / 2.0;
         cr.move_to(label_x, label_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Restore the layout's font_description so subsequent paints in

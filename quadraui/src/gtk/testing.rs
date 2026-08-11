@@ -119,6 +119,12 @@ impl<A: AppLogic> GtkDriver<A> {
         let surface =
             ImageSurface::create(Format::ARgb32, width, height).expect("create ImageSurface");
         let mut backend = GtkBackend::new();
+        // Record every painted text run into `GtkBackend::painted_text`
+        // so `find`/`find_bounds`/`screen_contains` can locate text from
+        // *any* primitive, not just the three whose trait methods
+        // hand-roll a `record_painted_text` call (quadraui#489). Off in
+        // production runners — a live app never reads the map.
+        backend.set_painted_text_recording(true);
         // Seed the viewport from the driver's surface size BEFORE setup,
         // exactly as the live `gtk::run::activate` does (quadraui#437):
         // without this, `app.setup()` would read `GtkBackend::new()`'s
@@ -348,8 +354,18 @@ impl<A: AppLogic> GtkDriver<A> {
     /// All text painted during the last [`Self::render`], as recorded by
     /// [`super::backend::GtkBackend::record_painted_text`] — the
     /// `(text, bounds)` map [`Self::find`] / [`Self::find_bounds`] /
-    /// [`Self::screen_contains`] query. See `GtkBackend::painted_text`'s
-    /// docs for which widgets currently report into it.
+    /// [`Self::screen_contains`] query.
+    ///
+    /// Every text-bearing primitive reports in (quadraui#489), recorded at
+    /// the `show_layout` choke point every GTK rasteriser paints through —
+    /// so a run here is one Pango run, which for multi-span content (a
+    /// styled tree row, a syntax-highlighted editor line) means one entry
+    /// *per span* rather than one per logical row. Match on a substring
+    /// within a span, the way [`Self::screen_contains`] does, rather than
+    /// on a phrase that straddles a style change. The exceptions are
+    /// `draw_terminal` (a per-cell grid — deliberately not recorded) and
+    /// the primitives that paint no text at all (`draw_split`,
+    /// `draw_split_tree`, `draw_scrollbar`, `draw_drop_overlay`).
     pub fn painted_texts(&self) -> Vec<&str> {
         self.backend
             .painted_text

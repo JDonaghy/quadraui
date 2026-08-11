@@ -154,7 +154,7 @@ pub fn draw_activity_bar(
         };
         cr.set_source_rgb(fg.0, fg.1, fg.2);
         cr.move_to((width - iw as f64) / 2.0, y + (row_h - ih as f64) / 2.0);
-        pangocairo::functions::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
 
         regions.push(ActivityBarRowHit {
             y_start: y,

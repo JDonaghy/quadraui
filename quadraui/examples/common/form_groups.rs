@@ -18,7 +18,7 @@
 //! - `q` / `Esc`            → quit
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormEvent, FormField,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField,
     FormHit, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
     ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };

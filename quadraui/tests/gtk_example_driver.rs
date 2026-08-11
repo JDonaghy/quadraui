@@ -28,6 +28,18 @@ use appshell_demo::AppShellDemo;
 mod data_table_app;
 use data_table_app::DataTableApp;
 
+#[path = "../examples/common/toolbar_app.rs"]
+mod toolbar_app;
+use toolbar_app::ToolbarApp;
+
+#[path = "../examples/common/shell_app.rs"]
+mod shell_app;
+use shell_app::ShellApp;
+
+#[path = "../examples/common/menu_bar_app.rs"]
+mod menu_bar_app;
+use menu_bar_app::MenuBarApp;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -336,6 +348,138 @@ fn data_table_body_rows_draw_separators_at_same_x_as_header() {
              header's: header pixel {header_px:?}, body pixel {body_px:?}"
         );
     }
+}
+
+// ─── ToolbarApp / ShellApp / MenuBarApp: unblocked by quadraui#489 ──────────
+//
+// These three apps had zero GTK coverage before #489, and could not have
+// had any: every assertion below needs `find`/`screen_contains` to see
+// text painted by a rasteriser that recorded nothing into
+// `GtkBackend::painted_text` (toolbar buttons, tree rows, menu-bar
+// items). With the paint-time recorder in place they are straight twins
+// of the TUI suite's scripts. Breadth-first coverage of the recorder
+// itself lives in `tests/gtk_painted_text_coverage.rs`; these are the
+// behavioural round trips.
+
+/// GTK twin of `tui_example_driver.rs`'s
+/// `toolbar_initial_screen_paints_action_buttons`.
+#[test]
+fn toolbar_initial_screen_paints_action_buttons() {
+    let driver = GtkDriver::new(ToolbarApp::new(), W, H);
+    let painted = driver.painted_texts();
+    for label in ["Continue", "Pause", "Filter", "Reset"] {
+        assert!(
+            driver.screen_contains(label),
+            "{label} button should be painted: {painted:?}"
+        );
+    }
+    // "Debug" is permanently disabled but must still be painted (dimmed).
+    assert!(
+        driver.screen_contains("Debug"),
+        "disabled Debug button should still be painted: {painted:?}"
+    );
+}
+
+/// GTK twin of `tui_example_driver.rs`'s
+/// `toolbar_click_fires_action_without_focus`: a click round-trips paint
+/// → hit_test → handle → state → re-render with **no hardcoded
+/// coordinates**, on a primitive whose labels only became locatable in
+/// #489.
+#[test]
+fn toolbar_clicking_filter_toggles_it_without_keyboard_focus() {
+    let mut driver = GtkDriver::new(ToolbarApp::new(), W, H);
+    assert!(
+        !driver.screen_contains("Filter on"),
+        "filter should start off: {:?}",
+        driver.painted_texts()
+    );
+
+    let (x, y) = driver
+        .find("Filter")
+        .expect("Filter toolbar button should be painted with locatable bounds");
+    // `ToolbarApp` follows the press-then-release click contract (fire
+    // only if the release lands on the same button as the press), so this
+    // also proves the recorded label rect sits inside the button's hit
+    // region for *both* events, not just one.
+    driver.mouse_down(x, y);
+    let reaction = driver.mouse_up(x, y);
+
+    assert_eq!(reaction, Reaction::Redraw, "click should trigger a redraw");
+    assert!(
+        driver.screen_contains("Filter on"),
+        "clicking Filter should flip it on and update the status: {:?}",
+        driver.painted_texts()
+    );
+
+    // Same coordinates, second click — toggles back off.
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+    assert!(
+        driver.screen_contains("Filter off"),
+        "a second click should toggle the filter back off: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// `ShellApp`'s sidebar rows are painted by `draw_tree`. Clicking one by
+/// text (not by coordinate) must select it, which the main-content label
+/// echoes — the shell round trip the GTK suite could not assert before
+/// #489.
+#[test]
+fn shell_app_clicking_a_sidebar_tree_row_selects_it() {
+    let mut driver = GtkDriver::new(ShellApp::new(), SHELL_W, SHELL_H);
+    assert!(
+        driver.screen_contains("Selected: nothing selected"),
+        "nothing should be selected on the initial frame: {:?}",
+        driver.painted_texts()
+    );
+
+    let (x, y) = driver
+        .find("backend.rs")
+        .expect("sidebar tree row should be painted with locatable bounds");
+    let reaction = driver.click(x, y);
+
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "clicking a sidebar row should redraw"
+    );
+    assert!(
+        !driver.screen_contains("Selected: nothing selected"),
+        "the click should have selected a row: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("Selected: section"),
+        "the main-content label should name the selected section/row: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// `MenuBarApp`'s items are painted by `draw_menu_bar`. Clicking one by
+/// text opens its dropdown — and the dropdown's own items become
+/// locatable in the same map, so the whole menu interaction is now
+/// scriptable coordinate-free on GTK.
+#[test]
+fn menu_bar_clicking_an_item_opens_its_dropdown() {
+    let mut driver = GtkDriver::new(MenuBarApp::new(), W, H);
+    assert!(
+        driver.screen_contains("menu closed"),
+        "no menu should be open initially: {:?}",
+        driver.painted_texts()
+    );
+
+    let (x, y) = driver
+        .find("View")
+        .expect("menu bar item should be painted with locatable bounds");
+    let reaction = driver.click(x, y);
+
+    assert_eq!(reaction, Reaction::Redraw, "opening a menu should redraw");
+    assert!(
+        driver.screen_contains("menu open"),
+        "clicking the View item should open its dropdown: {:?}",
+        driver.painted_texts()
+    );
 }
 
 /// #516 defect 3: same script as the TUI driver test, run against GTK —

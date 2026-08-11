@@ -6,7 +6,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::set_source;
 use crate::primitives::spinner::{Spinner, SpinnerLayout, SpinnerMeasure};
@@ -61,7 +60,7 @@ pub fn draw_spinner(
     let fg = spinner.accent.unwrap_or(theme.foreground);
     set_source(cr, fg);
     cr.move_to(x, y);
-    pcfn::show_layout(cr, pango_layout);
+    super::painted_text::show_layout(cr, pango_layout);
 
     layout
 }

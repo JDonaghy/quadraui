@@ -29,7 +29,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{rounded_rect_path, set_source};
 use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout};
@@ -237,7 +236,7 @@ pub fn draw_toolbar(
                 let tx = item_x + (item_w - tw as f64) / 2.0;
                 let ty = item_y + (item_h - th as f64) / 2.0;
                 cr.move_to(tx, ty);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
             }
             ToolbarButton::Separator => {
                 set_source(cr, theme.muted_fg);
@@ -255,7 +254,7 @@ pub fn draw_toolbar(
                 let (_tw, th) = pango_layout.pixel_size();
                 let ty = item_y + (item_h - th as f64) / 2.0;
                 cr.move_to(item_x, ty);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
             }
         }
     }

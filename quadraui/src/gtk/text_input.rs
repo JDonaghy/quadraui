@@ -6,7 +6,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::text_input::{TextInput, TextInputLayout, TextInputMeasure};
@@ -101,7 +100,7 @@ pub fn draw_text_input(
                 cr.set_source_rgb(muted_r, muted_g, muted_b);
                 let row_y = first.bounds.y as f64 + (first.bounds.height as f64 - th as f64) / 2.0;
                 cr.move_to(first.bounds.x as f64, row_y);
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
     } else {
@@ -117,7 +116,7 @@ pub fn draw_text_input(
             cr.set_source_rgb(fg_r, fg_g, fg_b);
             let row_y = vis.bounds.y as f64 + (vis.bounds.height as f64 - th as f64) / 2.0;
             cr.move_to(vis.bounds.x as f64, row_y);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
     }
 

@@ -8,7 +8,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
 use crate::event::Rect;
@@ -111,7 +110,7 @@ pub fn draw_menu_bar(
 
         set_source(cr, fg_color);
         cr.move_to(text_x, text_y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     pango_layout.set_attributes(None);

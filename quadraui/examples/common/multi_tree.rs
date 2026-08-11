@@ -18,7 +18,7 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    ScrollMode, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
+    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
     StatusBarAction, StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent,
     WidgetId,
 };

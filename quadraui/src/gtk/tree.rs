@@ -9,7 +9,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::event::Rect as QRect;
@@ -169,7 +168,7 @@ pub fn draw_tree(
                 layout.set_text(chevron);
                 let (cw, ch) = layout.pixel_size();
                 cr.move_to(cursor_x, (row_y + (row_h - ch as f64) / 2.0).round());
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 cursor_x += cw as f64 + 4.0;
             }
         } else {
@@ -186,7 +185,7 @@ pub fn draw_tree(
             layout.set_text(glyph);
             let (iw, ih) = layout.pixel_size();
             cr.move_to(cursor_x, (row_y + (row_h - ih as f64) / 2.0).round());
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             cursor_x += iw as f64 + 6.0;
         }
 
@@ -245,7 +244,7 @@ pub fn draw_tree(
                 layout.set_text(&span.text);
                 let (sw, sh) = layout.pixel_size();
                 cr.move_to(cursor_x, (row_y + (row_h - sh as f64) / 2.0).round());
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 cursor_x += sw as f64;
             }
 
@@ -261,7 +260,7 @@ pub fn draw_tree(
                     layout.set_text(&btext);
                     let (_, bh) = layout.pixel_size();
                     cr.move_to(bx, row_y + (row_h - bh as f64) / 2.0);
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                 }
             }
         }
@@ -294,7 +293,7 @@ fn paint_edit_input_gtk(
             layout.set_text(ph);
             let (_, th) = layout.pixel_size();
             cr.move_to(text_x, (row_y + (row_h - th as f64) / 2.0).round());
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
         // Caret at position 0.
         cr.set_source_rgb(fg.0, fg.1, fg.2);
@@ -330,7 +329,7 @@ fn paint_edit_input_gtk(
     layout.set_text(&edit.text);
     let (_, th) = layout.pixel_size();
     cr.move_to(text_x, (row_y + (row_h - th as f64) / 2.0).round());
-    pcfn::show_layout(cr, layout);
+    super::painted_text::show_layout(cr, layout);
 
     // Thin vertical caret bar.
     let cursor_byte = edit.cursor.min(edit.text.len());

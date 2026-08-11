@@ -180,8 +180,22 @@ Meanwhile the crate contains **seven private copies** of the boundary-snapping f
 
 ---
 
-**TEST-01 · H · GtkDriver's observable surface is fed by 2 of 37 rasterisers — the structural blocker on all GTK driver tests** (Size M)
+**TEST-01 · H · GtkDriver's observable surface is fed by 2 of 37 rasterisers — the structural blocker on all GTK driver tests** (Size M) — **RESOLVED by #489**
 `GtkDriver::find`/`screen_contains` read `GtkBackend::painted_text` (`gtk/backend.rs:170`), populated only by `draw_status_bar` (`:1481`) and `draw_pipeline_view` (`:2350-2352`); acknowledged as incremental at `:167-169`. Until `record_painted_text` is adopted across rasterisers, the GTK example-driver suite cannot grow past PipelineApp regardless of test-writing effort — this, not authoring, blocks the #305–#309 GTK twins. Feeds directly into the conformance suite's text-inventory contract (§6).
+
+> **Resolution (#489).** Rather than re-derive each primitive's label rects
+> after the fact (what the three adopters did), recording moved to the one
+> choke point every GTK rasteriser already funnels text through:
+> `pangocairo`'s `show_layout`, wrapped as `gtk::painted_text::show_layout`
+> — the same "single text-draw choke point" shape §6 prescribes for macOS
+> and Windows. All 139 rasteriser call sites route through it; recorded
+> bounds are the painted glyphs' own extents (converted to device space,
+> so transformed paints like `draw_activity_bar` still record absolute
+> coordinates) and therefore cannot drift from what is on screen. Gate:
+> `tests/gtk_painted_text_coverage.rs`. Still uncovered by design:
+> `draw_terminal` (per-cell runs need the cheaper row-coalescing path) and
+> the primitives that paint no text at all (`draw_split`,
+> `draw_split_tree`, `draw_scrollbar`, `draw_drop_overlay`).
 
 **TEST-02 · H · The stated acceptance bar is 53% unmet, and nothing machine-checks it** (backfill covered by #305–#309; gate by #311)
 23 of 43 `tui_*` examples have no driver test (CLAUDE.md: "Every TUI example also ships an automated black-box test"). #305–#309 are 9/25 done (#308: 0/5). 39/40 `gtk_*`, 16/16 `macos_*`, 2/2 `msv_*` uncovered. Enforcement is "the adversarial reviewer" — #311 (CI gate) is the real fix. Report-only; do not re-file.
@@ -304,7 +318,7 @@ pub trait FrameInventory {
 }
 ```
 - TUI synthesizes `TextRun`s from the cell grid (existing `screen()` scan, wide-char aware).
-- GTK: `record_painted_text` generalized to **all** rasterisers (TEST-01 is the prerequisite).
+- GTK: done in #489 — recorded at the `show_layout` choke point (`gtk/painted_text.rs`), not per rasteriser.
 - macOS: record at each Core Text line draw (`macos/text.rs::draw_text` is the single choke point).
 - Web (#322): the id→rect map *is* `zones()`; DOM text *is* `text_runs()`.
 - Windows: record at the DirectWrite draw call.

@@ -10,7 +10,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
 use crate::backend::tab_bar_layout_to_hits;
@@ -200,7 +199,7 @@ pub fn draw_tab_bar(
         }));
         pango_layout.set_text(&tab.label);
         cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
 
         // Paint the close glyph only when both the bar-level flag and the
         // per-tab `is_closable` flag are set — matching the measurement above.
@@ -268,7 +267,7 @@ pub fn draw_tab_bar(
                 pango_layout.set_font_description(Some(&normal_font));
                 pango_layout.set_text(close_glyph);
                 cr.move_to(x_offset + close_x, text_y_offset);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
             }
         }
     }
@@ -285,7 +284,7 @@ pub fn draw_tab_bar(
         pango_layout.set_font_description(Some(&normal_font));
         pango_layout.set_text(&seg.text);
         cr.move_to(x_offset + vs.bounds.x as f64, text_y_offset);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // ── Correct scroll offset (engine feedback) ─────────────────────

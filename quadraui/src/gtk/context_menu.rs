@@ -11,7 +11,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, rounded_rect_path};
 use crate::accelerator::{render_accelerator, Platform};
@@ -133,7 +132,7 @@ pub fn draw_context_menu(
         let (_, lh) = layout.pixel_size();
         let text_y = row_y + (row_h - lh as f64) * 0.5;
         cr.move_to(row_x + 8.0, text_y);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
 
         if let Some(shortcut) = shortcut_text(item, Platform::Linux) {
             if !shortcut.is_empty() {
@@ -141,7 +140,7 @@ pub fn draw_context_menu(
                 let (sw, _) = layout.pixel_size();
                 cr.set_source_rgb(dim.0, dim.1, dim.2);
                 cr.move_to(row_x + row_w - sw as f64 - 8.0, text_y);
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
     }
