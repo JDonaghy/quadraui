@@ -163,6 +163,18 @@ Examples follow a paired pattern: one `AppLogic` impl in `examples/common/<shape
 
 **Every TUI example also ships an automated black-box test** (the acceptance bar — #304). A runnable demo proves it compiles + paints; a driver test proves it *behaves* and catches regressions with no human re-running it. A new or changed `tui_*` example → a **`TuiDriver` end-to-end test** in `tests/tui_example_driver.rs` (Tier-1, #300): build the example's `AppLogic` / `ShellApp`, drive the real `event → handle → render` path against the headless `TestBackend`, and assert with `find()` + `screen_contains()` — **never hardcode coordinates**. (`quadraui::tui::testing::{TuiDriver, driver_with_shell}`.) Primitive paint/click changes stay covered by the round-trip harness (Tier-2, above); GTK-example coverage waits on `GtkDriver` (#301) — **TUI only for now**. The tier-by-tier *how* lives in [`quadraui/docs/TESTING.md`](quadraui/docs/TESTING.md); this is the *bar*. The **adversarial reviewer enforces it** — a PR that adds or changes a `tui_*` example without its driver test should be rejected.
 
+## Oracle acceptance suite (sealed — do not edit)
+
+`quadraui/tests/acceptance.rs` is the sealed entrypoint the oracle loop drives (#556). The fleet config's `acceptance.drivers.quadraui` entry (`~/src/coord-settings/coord/coordinator.yml` on the daemon host — not in this repo) runs:
+
+```sh
+cd quadraui && RUSTC_BOOTSTRAP=1 cargo test --test acceptance --features tui,gtk -- -Z unstable-options --format json
+```
+
+The file has two parts: an unsealed seam (fixture `#[path]` includes into `examples/common/`, plus one driver test per backend proving the harness reaches an example `AppLogic`) and a **sealed block**, marked with a `SEALED` banner comment, that `include!`s each milestone's acceptance slices from the repo-root `tests/acceptance/<ms>/<name>.rs` (e.g. `tests/acceptance/ms-11/`).
+
+**Workers must not create, edit, or delete anything under the repo-root `tests/acceptance/` directory, and must not touch the sealed block in `quadraui/tests/acceptance.rs` below its `SEALED` marker.** Those slices are authored independently as part of a milestone's own Gate A sign-off (`coord gate-a --approved`), not by a Work dispatch — see `quadraui/tests/acceptance.rs`'s module doc for the full seam/sealed split.
+
 ## Event model: TextCopied vs ClipboardPaste
 
 Two clipboard events that must not be conflated:

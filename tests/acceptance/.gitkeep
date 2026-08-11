@@ -1,0 +1,9 @@
+This directory holds sealed, oracle-authored acceptance slices, one
+subdirectory per milestone (e.g. `ms-11/`), each `include!`d from
+`quadraui/tests/acceptance.rs`. See quadraui#556.
+
+Workers must not create, edit, or delete anything under this directory —
+slices here are authored independently as part of each milestone's Gate A
+sign-off (`coord gate-a --approved`), not by a Work dispatch. This file
+exists only to keep the empty directory present in git before the first
+slice lands.
