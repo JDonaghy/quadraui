@@ -37,14 +37,18 @@ fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
 }
 
 /// Compute the TUI cell-unit layout for a [`ToastStack`] without painting.
-pub fn tui_toast_stack_layout(
-    stack: &ToastStack,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> ToastStackLayout {
+///
+/// `area`'s origin is baked into the returned bounds (absolute buffer
+/// coordinates, matching `tui_menu_bar_layout` / `tui_panel_layout`) —
+/// hosts call `layout.hit_test(x, y)` with raw click coordinates, no
+/// localisation needed.
+pub fn tui_toast_stack_layout(stack: &ToastStack, area: Rect) -> ToastStackLayout {
+    let viewport_width = area.width as f32;
     stack.layout(
+        area.x as f32,
+        area.y as f32,
         viewport_width,
-        viewport_height,
+        area.height as f32,
         TUI_TOAST_MARGIN,
         TUI_TOAST_GAP,
         |i| {
@@ -72,7 +76,7 @@ pub fn draw_toast_stack(
     stack: &ToastStack,
     theme: &Theme,
 ) -> ToastStackLayout {
-    let layout = tui_toast_stack_layout(stack, area.width as f32, area.height as f32);
+    let layout = tui_toast_stack_layout(stack, area);
 
     for vt in &layout.visible_toasts {
         let toast = &stack.toasts[vt.toast_idx];
@@ -192,10 +196,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn single_toast_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 60, 20);
-        let mut buf = Buffer::empty(area);
+    /// Shared body for `single_toast_paint_and_click_round_trip`, run at
+    /// both the origin and a non-zero `area` origin (quadraui#494 /
+    /// LESSONS.md "Layout helpers must return coords in the same frame
+    /// across backends"). `tui_toast_stack_layout` bakes `area.x`/`area.y`
+    /// straight into the returned bounds (absolute frame, matching
+    /// `tui_menu_bar_layout`/`tui_panel_layout`), so both the painted
+    /// glyph position AND the `hit_test` coordinates must shift together
+    /// with the origin.
+    fn single_toast_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
         let stack = stack_br(vec![info_toast("t1", "Hello world")]);
         let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
 
@@ -213,9 +224,23 @@ mod tests {
     }
 
     #[test]
-    fn dismiss_glyph_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 60, 20);
-        let mut buf = Buffer::empty(area);
+    fn single_toast_paint_and_click_round_trip() {
+        single_toast_paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// painted at a shifted `area` origin.
+    #[test]
+    fn single_toast_paint_and_click_round_trip_at_nonzero_origin() {
+        single_toast_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `dismiss_glyph_paint_and_click_round_trip` —
+    /// see [`single_toast_paint_and_click_round_trip_at`] for the
+    /// quadraui#494 non-zero-origin rationale.
+    fn dismiss_glyph_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
         let stack = stack_br(vec![info_toast("t1", "Test")]);
         let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
 
@@ -230,9 +255,21 @@ mod tests {
     }
 
     #[test]
-    fn action_button_paint_and_click_round_trip() {
-        let area = Rect::new(0, 0, 60, 20);
-        let mut buf = Buffer::empty(area);
+    fn dismiss_glyph_paint_and_click_round_trip() {
+        dismiss_glyph_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn dismiss_glyph_paint_and_click_round_trip_at_nonzero_origin() {
+        dismiss_glyph_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Shared body for `action_button_paint_and_click_round_trip` —
+    /// see [`single_toast_paint_and_click_round_trip_at`] for the
+    /// quadraui#494 non-zero-origin rationale.
+    fn action_button_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
         let mut toast = info_toast("t1", "Error occurred");
         toast.action = Some(ToastAction {
             id: WidgetId::new("retry"),
@@ -249,6 +286,16 @@ mod tests {
 
         let hit = layout.hit_test(ax as f32 + 0.5, ay as f32 + 0.5);
         assert_eq!(hit, ToastHit::Action(WidgetId::new("retry")));
+    }
+
+    #[test]
+    fn action_button_paint_and_click_round_trip() {
+        action_button_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn action_button_paint_and_click_round_trip_at_nonzero_origin() {
+        action_button_paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]

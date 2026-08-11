@@ -181,11 +181,25 @@ mod tests {
     }
 
     fn layout_for(c: &Completions) -> CompletionsLayout {
+        layout_for_at(c, 0.0, 0.0)
+    }
+
+    /// Like [`layout_for`] but anchors the cursor + viewport at an
+    /// arbitrary `(origin_x, origin_y)` instead of always `(0, 0)`.
+    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"): `Completions::layout` already threads
+    /// `viewport.x`/`viewport.y` through to absolute placement math (it
+    /// was never the #494 gap), but this test module only ever
+    /// exercised a `(0, 0)`-origin viewport, so a placement regression
+    /// at a real (non-zero) editor/panel origin would have gone
+    /// undetected.
+    fn layout_for_at(c: &Completions, origin_x: f32, origin_y: f32) -> CompletionsLayout {
         c.layout(
-            20.0,
-            20.0,
+            origin_x + 20.0,
+            origin_y + 20.0,
             16.0,
-            QRect::new(0.0, 0.0, W as f32, H as f32),
+            QRect::new(origin_x, origin_y, W as f32 - origin_x, H as f32 - origin_y),
             120.0,
             80.0,
             |_| CompletionItemMeasure::new(16.0),
@@ -250,14 +264,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hit_test_resolves_visible_items() {
+    /// Shared body for `hit_test_resolves_visible_items` — see
+    /// [`layout_for_at`] for the quadraui#494 non-zero-origin rationale.
+    fn hit_test_resolves_visible_items_at(origin_x: f32, origin_y: f32) {
         let c = sample();
-        let l = layout_for(&c);
+        let l = layout_for_at(&c, origin_x, origin_y);
+        assert!(
+            !l.visible_items.is_empty(),
+            "sample popup should show items"
+        );
         for vis in &l.visible_items {
             let cx = vis.bounds.x + vis.bounds.width * 0.5;
             let cy = vis.bounds.y + vis.bounds.height * 0.5;
             assert_eq!(l.hit_test(cx, cy), CompletionsHit::Item(vis.item_idx));
         }
+    }
+
+    #[test]
+    fn hit_test_resolves_visible_items() {
+        hit_test_resolves_visible_items_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// with the popup's cursor + viewport anchored at a shifted origin.
+    #[test]
+    fn hit_test_resolves_visible_items_at_nonzero_origin() {
+        hit_test_resolves_visible_items_at(7.0, 13.0);
     }
 }
