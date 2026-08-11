@@ -18,9 +18,8 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
-    StatusBarAction, StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent,
-    WidgetId,
+    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarAction,
+    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;

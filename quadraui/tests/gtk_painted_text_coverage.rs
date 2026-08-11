@@ -37,7 +37,11 @@
 #![allow(dead_code)]
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
-use quadraui::AppLogic;
+use quadraui::{
+    compute_find_replace_hit_regions, AppLogic, Backend, CommandCenter, CompletionItem,
+    CompletionItemMeasure, CompletionKind, Completions, FindReplacePanel, Reaction, Rect,
+    ResolvedPlacement, StyledText, Tooltip, TooltipLayout, TooltipPlacement, UiEvent, WidgetId,
+};
 
 #[path = "../examples/common/ai_transcript.rs"]
 mod ai_transcript;
@@ -61,6 +65,8 @@ mod full_chrome_demo;
 mod indicators_app;
 #[path = "../examples/common/markdown_demo.rs"]
 mod markdown_demo;
+#[path = "../examples/common/menu_bar_app.rs"]
+mod menu_bar_app;
 #[path = "../examples/common/multi_tree.rs"]
 mod multi_tree;
 #[path = "../examples/common/palette_dual_mode_app.rs"]
@@ -71,6 +77,8 @@ mod panel_app;
 mod shell_app;
 #[path = "../examples/common/sidebar_panel_app.rs"]
 mod sidebar_panel_app;
+#[path = "../examples/common/tab_group_demo.rs"]
+mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 #[path = "../examples/common/toast_app.rs"]
@@ -299,14 +307,49 @@ fn ai_transcript_paints_locatable_message_rows_and_input() {
     );
 }
 
+// `MarkdownDemo::render` paints exclusively through
+// `backend.draw_rich_text_popup` (there is no `draw_message_list` call
+// anywhere in that file) — this doubles as the `draw_rich_text_popup`
+// coverage exemplar.
 #[test]
 fn markdown_demo_paints_locatable_rich_text_rows() {
     let driver = GtkDriver::new(markdown_demo::MarkdownDemo::new(), W, H);
     assert_locatable(
         &driver,
         &[
-            ("draw_message_list", "Headings scale up"),
-            ("draw_message_list", "no raw backticks here"),
+            ("draw_rich_text_popup", "Headings scale up"),
+            ("draw_rich_text_popup", "no raw backticks here"),
+        ],
+    );
+}
+
+#[test]
+fn tab_group_demo_paints_locatable_tab_labels() {
+    let driver = GtkDriver::new(tab_group_demo::TabGroupDemo::new(), W, H);
+    assert_locatable(
+        &driver,
+        &[
+            ("draw_tab_bar", "main.rs"),
+            ("draw_tab_bar", "lib.rs"),
+            ("draw_tab_bar", "Cargo.toml"),
+        ],
+    );
+}
+
+#[test]
+fn menu_bar_app_paints_locatable_context_menu_items() {
+    let mut driver = GtkDriver::new(menu_bar_app::MenuBarApp::new(), W, H);
+    let (fx, fy) = driver
+        .find("File")
+        .expect("File label should be painted by draw_menu_bar");
+    driver.click(fx, fy);
+    assert_locatable(
+        &driver,
+        &[
+            ("draw_context_menu", "New File"),
+            ("draw_context_menu", "Open File"),
+            ("draw_context_menu", "Save"),
+            ("draw_context_menu", "Quit"),
         ],
     );
 }
@@ -413,9 +456,188 @@ fn indicators_app_paints_locatable_spinner_and_progress_labels() {
     let driver = GtkDriver::new(indicators_app::IndicatorsApp::new(), W, H);
     assert_locatable(
         &driver,
+        &[("draw_spinner", "Loading..."), ("draw_progress", "30%")],
+    );
+}
+
+// ─── Overlays with no example-app call site (in-test fixtures) ─────────────
+//
+// `draw_tooltip` / `draw_command_center` / `draw_completions` /
+// `draw_find_replace` aren't reached by *any* example app's `AppLogic`
+// today — grepping `examples/common/*.rs` for `Tooltip`, `CommandCenter`,
+// `Completions`, and `FindReplacePanel` turns up zero constructions, so
+// there is no "through a real example app" fixture to route through yet.
+// These four mirror `gtk::testing::tests::StatusBarApp`'s pattern instead:
+// a minimal `AppLogic` that builds the primitive directly and hands it to
+// the backend, sourced from the equivalent fixtures already committed for
+// the macOS backend (`src/macos/{tooltip,command_center,completions,
+// find_replace}.rs`).
+
+struct TooltipFixtureApp;
+
+impl AppLogic for TooltipFixtureApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let tooltip = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hover hint".into(),
+            styled_lines: None,
+            placement: TooltipPlacement::Bottom,
+            fg: None,
+            bg: None,
+        };
+        let layout = TooltipLayout {
+            bounds: Rect::new(10.0, 10.0, 120.0, 24.0),
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        backend.draw_tooltip(&tooltip, &layout);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn tooltip_fixture_paints_locatable_hover_text() {
+    let driver = GtkDriver::new(TooltipFixtureApp, W, H);
+    assert_locatable(&driver, &[("draw_tooltip", "Hover hint")]);
+}
+
+struct CommandCenterFixtureApp;
+
+impl AppLogic for CommandCenterFixtureApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let cc = CommandCenter {
+            id: WidgetId::new("cc"),
+            back_enabled: true,
+            forward_enabled: false,
+            search_label: "my-project".into(),
+        };
+        backend.draw_command_center(Rect::new(0.0, 0.0, W as f32, 32.0), &cc);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn command_center_fixture_paints_locatable_search_label() {
+    let driver = GtkDriver::new(CommandCenterFixtureApp, W, H);
+    assert_locatable(&driver, &[("draw_command_center", "my-project")]);
+}
+
+struct CompletionsFixtureApp;
+
+impl AppLogic for CompletionsFixtureApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let completions = Completions {
+            id: WidgetId::new("comp"),
+            items: vec![
+                CompletionItem {
+                    label: StyledText::plain("len"),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Method,
+                    icon: None,
+                },
+                CompletionItem {
+                    label: StyledText::plain("clone"),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Method,
+                    icon: None,
+                },
+                CompletionItem {
+                    label: StyledText::plain("map"),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Method,
+                    icon: None,
+                },
+            ],
+            selected_idx: 1,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let layout = completions.layout(
+            20.0,
+            20.0,
+            16.0,
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            120.0,
+            80.0,
+            |_| CompletionItemMeasure::new(16.0),
+        );
+        backend.draw_completions(&completions, &layout);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn completions_fixture_paints_locatable_item_labels() {
+    let driver = GtkDriver::new(CompletionsFixtureApp, W, H);
+    assert_locatable(
+        &driver,
         &[
-            ("draw_spinner", "Loading..."),
-            ("draw_progress", "30%"),
+            ("draw_completions", "len"),
+            ("draw_completions", "clone"),
+            ("draw_completions", "map"),
+        ],
+    );
+}
+
+struct FindReplaceFixtureApp;
+
+impl AppLogic for FindReplaceFixtureApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let (hit_regions, _input_width) = compute_find_replace_hit_regions(50, false, "", 2, 2);
+        let panel = FindReplacePanel {
+            query: "needle".into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor: 6,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: Rect::new(0.0, 0.0, W as f32, H as f32),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        };
+        backend.draw_find_replace(Rect::new(0.0, 0.0, W as f32, H as f32), &panel);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn find_replace_fixture_paints_locatable_query_and_match_info() {
+    let driver = GtkDriver::new(FindReplaceFixtureApp, W, H);
+    assert_locatable(
+        &driver,
+        &[
+            ("draw_find_replace", "needle"),
+            ("draw_find_replace", "1 of 3"),
         ],
     );
 }
