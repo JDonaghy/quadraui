@@ -11,7 +11,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteMode};
@@ -139,7 +138,7 @@ pub fn draw_palette(
         layout.set_text(&title_text);
         let (_, text_h) = layout.pixel_size();
         cr.move_to(x + 8.0, ty + (th_px - text_h as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     }
 
     // ── Query row ─────────────────────────────────────────────────────
@@ -151,12 +150,12 @@ pub fn draw_palette(
         layout.set_text(prompt);
         let (prompt_w, qh) = layout.pixel_size();
         cr.move_to(x + 8.0, query_y + (qh_px - qh as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
 
         let query_text_x = x + 8.0 + prompt_w as f64;
         layout.set_text(&palette.query);
         cr.move_to(query_text_x, query_y + (qh_px - qh as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
 
         let cursor_prefix: &str = if palette.query_cursor >= palette.query.len() {
             palette.query.as_str()
@@ -182,7 +181,7 @@ pub fn draw_palette(
             cr.set_source_rgb(bg.0, bg.1, bg.2);
             cr.move_to(cursor_x, query_y + (qh_px - qh as f64) / 2.0);
             layout.set_text(&cursor_char);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
     }
 
@@ -267,7 +266,7 @@ pub fn draw_palette(
             layout.set_text(prefix);
             let (pw, ph) = layout.pixel_size();
             cr.move_to(cursor, row_y + (row_h - ph as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             cursor += pw as f64;
         }
 
@@ -282,7 +281,7 @@ pub fn draw_palette(
             layout.set_text(glyph);
             let (iw, ih) = layout.pixel_size();
             cr.move_to(cursor, row_y + (row_h - ih as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             cursor += iw as f64 + 6.0;
         }
 
@@ -298,7 +297,7 @@ pub fn draw_palette(
         layout.set_attributes(Some(&attr_list));
         let (_, lh) = layout.pixel_size();
         cr.move_to(cursor, row_y + (row_h - lh as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
 
         if let Some((detail_text, dw)) = detail_info {
             let dx = x + content_w - dw - 8.0;
@@ -307,7 +306,7 @@ pub fn draw_palette(
             layout.set_text(&detail_text);
             let (_, dh) = layout.pixel_size();
             cr.move_to(dx, row_y + (row_h - dh as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
     }
 
@@ -349,14 +348,14 @@ pub fn draw_palette(
         layout.set_text(prefix);
         let (pw, ph) = layout.pixel_size();
         cr.move_to(x + 8.0, create_y + (line_height - ph as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         layout.set_text(label);
         let (_, lh) = layout.pixel_size();
         cr.move_to(
             x + 8.0 + pw as f64,
             create_y + (line_height - lh as f64) / 2.0,
         );
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     }
 
     // ── Preview pane ───────────────────────────────────────────────────
@@ -387,7 +386,7 @@ pub fn draw_palette(
             layout.set_text(title_text);
             let (_, th) = layout.pixel_size();
             cr.move_to(content_x, cursor_y + (line_height - th as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             cursor_y += line_height;
         }
 
@@ -417,7 +416,7 @@ pub fn draw_palette(
                     layout.set_text(&span.text);
                     let (sw, sh) = layout.pixel_size();
                     cr.move_to(cx, row_y + (line_height - sh as f64) / 2.0);
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                     cx += sw as f64;
                     if cx > content_right {
                         break;

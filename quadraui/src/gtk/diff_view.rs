@@ -20,7 +20,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
 use crate::primitives::diff_view::{DiffMode, DiffRowKind, DiffView, DiffViewLayout};
@@ -111,7 +110,7 @@ fn draw_side_by_side(
             pango_layout.set_ellipsize(pango::EllipsizeMode::End);
             let (_, text_h) = pango_layout.pixel_size();
             cr.move_to(x + 4.0, y + (line_height - text_h as f64) / 2.0);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
         }
         if let Some(label) = &view.right_label {
             pango_layout.set_text(label);
@@ -122,7 +121,7 @@ fn draw_side_by_side(
                 divider_x + divider_px + 4.0,
                 y + (line_height - text_h as f64) / 2.0,
             );
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
         }
         // Reset ellipsize for content rows.
         pango_layout.set_ellipsize(pango::EllipsizeMode::None);
@@ -169,7 +168,7 @@ fn draw_side_by_side(
             cr.rectangle(x, row_y, left_w, line_height);
             cr.clip();
             cr.move_to(x + 4.0, row_y + (line_height - text_h as f64) / 2.0);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
             cr.restore().ok();
         }
 
@@ -185,7 +184,7 @@ fn draw_side_by_side(
                 divider_x + divider_px + 4.0,
                 row_y + (line_height - text_h as f64) / 2.0,
             );
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
             cr.restore().ok();
         }
     }
@@ -262,7 +261,7 @@ fn draw_unified(
                 cr.rectangle(x, row_y, w, line_height);
                 cr.clip();
                 cr.move_to(x + 2.0, row_y + (line_height - text_h as f64) / 2.0);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
                 cr.restore().ok();
             }
             UnifiedLine::Content(row) => {
@@ -294,7 +293,7 @@ fn draw_unified(
                 pango_layout.set_text(&prefix_str);
                 let (pw, text_h) = pango_layout.pixel_size();
                 cr.move_to(x + 2.0, row_y + (line_height - text_h as f64) / 2.0);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
 
                 // Content text.
                 let text = match row.kind {
@@ -308,7 +307,7 @@ fn draw_unified(
                 cr.rectangle(text_x, row_y, (w - (text_x - x)).max(0.0), line_height);
                 cr.clip();
                 cr.move_to(text_x, row_y + (line_height - text_h2 as f64) / 2.0);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
                 cr.restore().ok();
             }
         }

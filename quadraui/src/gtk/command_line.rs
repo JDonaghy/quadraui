@@ -2,7 +2,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::command_line::CommandLine;
@@ -40,7 +39,7 @@ pub fn draw_command_line(
     } else {
         cr.move_to(x, y);
     }
-    pcfn::show_layout(cr, layout);
+    super::painted_text::show_layout(cr, layout);
 
     if let Some(offset) = cmd.cursor_offset {
         let anchor = &cmd.text[..offset.min(cmd.text.len())];

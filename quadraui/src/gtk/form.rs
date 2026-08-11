@@ -11,7 +11,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::form::{FieldKind, Form, ValidationState};
@@ -90,7 +89,7 @@ pub fn draw_form(
         let (label_w, label_h) = layout.pixel_size();
         let label_x = x + 6.0;
         cr.move_to(label_x, (y_off + (row_h - label_h as f64) / 2.0).round());
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         let label_right = label_x + label_w as f64;
         let no_label = label_text.is_empty();
 
@@ -114,7 +113,7 @@ pub fn draw_form(
                 };
                 if no_label || ix > label_right + 8.0 {
                     cr.move_to(ix, (y_off + (row_h - ih as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                 }
             }
             FieldKind::TextInput {
@@ -149,7 +148,7 @@ pub fn draw_form(
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("[");
                     cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     let text_y = (y_off + (row_h - shown_h as f64) / 2.0).round();
                     let has_sel = matches!(
@@ -186,23 +185,23 @@ pub fn draw_form(
                         cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
                         layout.set_text(prefix);
                         cr.move_to(ix + 8.0, text_y);
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
 
                         cr.set_source_rgb(fg.0, fg.1, fg.2);
                         layout.set_text(sel_text);
                         cr.move_to(ix + 8.0 + prefix_w as f64, text_y);
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
 
                         // Suffix
                         cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
                         layout.set_text(suffix);
                         cr.move_to(ix + 8.0 + prefix_w as f64 + sel_w as f64, text_y);
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
                     } else {
                         cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
                         layout.set_text(shown);
                         cr.move_to(ix + 8.0, text_y);
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
                     }
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
@@ -211,7 +210,7 @@ pub fn draw_form(
                         bracket_right,
                         (y_off + (row_h - shown_h as f64) / 2.0).round(),
                     );
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
                         let prefix = &shown[..(*cur).min(shown.len())];
@@ -243,12 +242,12 @@ pub fn draw_form(
                     cr.set_source_rgb(brk.0, brk.1, brk.2);
                     layout.set_text("<");
                     cr.move_to(ix, (y_off + (row_h - cap_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     cr.set_source_rgb(field_fg.0, field_fg.1, field_fg.2);
                     layout.set_text(&cap_text);
                     cr.move_to(ix + 12.0, (y_off + (row_h - cap_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     cr.set_source_rgb(brk.0, brk.1, brk.2);
                     layout.set_text(">");
@@ -256,7 +255,7 @@ pub fn draw_form(
                         ix + 12.0 + cap_w as f64 + 4.0,
                         y_off + (row_h - cap_h as f64) / 2.0,
                     );
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                 }
             }
             FieldKind::ReadOnly { value } => {
@@ -271,7 +270,7 @@ pub fn draw_form(
                 if no_label || ix > label_right + 8.0 {
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     cr.move_to(ix, (y_off + (row_h - vh as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                 }
             }
             FieldKind::Slider { .. }
@@ -307,7 +306,7 @@ pub fn draw_form(
                     layout.set_text(&toggle.label);
                     let (tw, th) = layout.pixel_size();
                     cr.move_to(ix, (y_off + (row_h - th as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                     ix += tw as f64 + 8.0;
                 }
             }
@@ -328,7 +327,7 @@ pub fn draw_form(
                     layout.set_text("[");
                     let (bw, bh) = layout.pixel_size();
                     cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                     ix += bw as f64;
 
                     cr.set_source_rgb(btn_fg.0, btn_fg.1, btn_fg.2);
@@ -336,7 +335,7 @@ pub fn draw_form(
                         layout.set_text(icon.fallback.as_str());
                         let (iw, ih) = layout.pixel_size();
                         cr.move_to(ix, (y_off + (row_h - ih as f64) / 2.0).round());
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
                         ix += iw as f64;
                         if !button.label.is_empty() {
                             ix += 4.0;
@@ -345,14 +344,14 @@ pub fn draw_form(
                     layout.set_text(&button.label);
                     let (lw, lh) = layout.pixel_size();
                     cr.move_to(ix, (y_off + (row_h - lh as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                     ix += lw as f64;
 
                     cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
                     layout.set_text("]");
                     let (rw, _) = layout.pixel_size();
                     cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                     ix += rw as f64 + 8.0;
                 }
             }
@@ -389,12 +388,12 @@ pub fn draw_form(
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("[");
                     cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
                     layout.set_text(shown);
                     cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("]");
@@ -402,7 +401,7 @@ pub fn draw_form(
                         bracket_right,
                         (y_off + (row_h - shown_h as f64) / 2.0).round(),
                     );
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
                         // Cursor position: each original char maps to one
@@ -455,12 +454,12 @@ pub fn draw_form(
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("[");
                     cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
                     layout.set_text(shown);
                     cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     cr.set_source_rgb(dim.0, dim.1, dim.2);
                     layout.set_text("]");
@@ -468,7 +467,7 @@ pub fn draw_form(
                         bracket_right,
                         (y_off + (row_h - shown_h as f64) / 2.0).round(),
                     );
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
                         // Clamp cursor to first line length for display.
@@ -493,7 +492,7 @@ pub fn draw_form(
                 layout.set_text("[");
                 let (bw, bh) = layout.pixel_size();
                 cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 ix += bw as f64;
 
                 for (i, opt) in options.iter().enumerate() {
@@ -502,7 +501,7 @@ pub fn draw_form(
                         layout.set_text("|");
                         let (sw, sh) = layout.pixel_size();
                         cr.move_to(ix, (y_off + (row_h - sh as f64) / 2.0).round());
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
                         ix += sw as f64;
                     }
                     let opt_fg = if i == *selected_idx { accent } else { dim };
@@ -510,7 +509,7 @@ pub fn draw_form(
                     layout.set_text(opt);
                     let (ow, oh) = layout.pixel_size();
                     cr.move_to(ix, (y_off + (row_h - oh as f64) / 2.0).round());
-                    pcfn::show_layout(cr, layout);
+                    super::painted_text::show_layout(cr, layout);
                     ix += ow as f64;
                 }
 
@@ -519,7 +518,7 @@ pub fn draw_form(
                 layout.set_text("]");
                 let (_, rh) = layout.pixel_size();
                 cr.move_to(ix, (y_off + (row_h - rh as f64) / 2.0).round());
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
 
@@ -541,7 +540,7 @@ pub fn draw_form(
                 let msg_x = x + 8.0;
                 let msg_y = (y_off + (row_h + msg_h as f64) / 2.0 + 1.0).round();
                 cr.move_to(msg_x, msg_y);
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
 
@@ -604,7 +603,7 @@ pub fn draw_settings_chrome(
         x + 2.0,
         (y + (line_height - header_lh as f64) / 2.0).round(),
     );
-    pcfn::show_layout(cr, layout);
+    super::painted_text::show_layout(cr, layout);
 
     // Row 1: search input.
     let search_y = y + line_height;
@@ -621,7 +620,7 @@ pub fn draw_settings_chrome(
         x + 2.0,
         (search_y + (line_height - header_lh as f64) / 2.0).round(),
     );
-    pcfn::show_layout(cr, layout);
+    super::painted_text::show_layout(cr, layout);
 
     let q_x = x + 2.0 + prefix_w as f64;
     let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
@@ -639,7 +638,7 @@ pub fn draw_settings_chrome(
         q_x,
         (search_y + (line_height - header_lh as f64) / 2.0).round(),
     );
-    pcfn::show_layout(cr, layout);
+    super::painted_text::show_layout(cr, layout);
 
     if active {
         let cur_x = q_x + if query.is_empty() { 0.0 } else { q_w as f64 };

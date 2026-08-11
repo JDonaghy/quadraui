@@ -7,7 +7,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::text_display::{TextDisplay, TextDisplayLayout, TextDisplayLineMeasure};
@@ -58,7 +57,7 @@ pub fn draw_text_display(
             layout.set_text(&span.text);
             layout.set_attributes(None);
             cr.move_to(cursor_x, y);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             let (sw, _) = layout.pixel_size();
             cursor_x += sw as f64;
         }
@@ -102,7 +101,7 @@ pub fn draw_text_display(
             layout.set_text(ts);
             layout.set_attributes(None);
             cr.move_to(cursor_x, row_y);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             let (tw, _) = layout.pixel_size();
             cursor_x += tw as f64 + 6.0;
         }
@@ -122,7 +121,7 @@ pub fn draw_text_display(
             layout.set_text(&span.text);
             layout.set_attributes(None);
             cr.move_to(cursor_x, row_y);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             let (sw, _) = layout.pixel_size();
             cursor_x += sw as f64;
         }

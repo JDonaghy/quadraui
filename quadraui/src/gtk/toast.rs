@@ -6,7 +6,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::set_source;
 use crate::primitives::toast::{
@@ -128,7 +127,7 @@ fn paint_toast(
         vt.bounds.x as f64 + GTK_TOAST_PADDING_PX,
         vt.bounds.y as f64 + GTK_TOAST_PADDING_PX,
     );
-    pcfn::show_layout(cr, pango_layout);
+    super::painted_text::show_layout(cr, pango_layout);
 
     // Body text (second line).
     if !toast.body.is_empty() {
@@ -139,7 +138,7 @@ fn paint_toast(
             vt.bounds.x as f64 + GTK_TOAST_PADDING_PX,
             vt.bounds.y as f64 + GTK_TOAST_PADDING_PX + title_h,
         );
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Dismiss ×.
@@ -151,7 +150,7 @@ fn paint_toast(
             db.x as f64 + (db.width as f64 - text_w) / 2.0,
             vt.bounds.y as f64 + GTK_TOAST_PADDING_PX,
         );
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Action button label.
@@ -164,7 +163,7 @@ fn paint_toast(
                 ab.x as f64 + (ab.width as f64 - text_w) / 2.0,
                 vt.bounds.y as f64 + GTK_TOAST_PADDING_PX,
             );
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
         }
     }
 }

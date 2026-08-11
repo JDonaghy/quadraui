@@ -16,7 +16,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{rounded_rect_path, set_source};
 use crate::primitives::pipeline_view::{
@@ -142,7 +141,7 @@ pub fn draw_pipeline_view(
         let icon_h = bh / 3.0;
         let icon_cy = by + icon_h / 2.0 - ih as f64 / 2.0;
         cr.move_to(icon_cx, icon_cy);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
 
         // ── Label (middle third) ─────────────────────────────────────────
         if !stage.label.is_empty() {
@@ -154,7 +153,7 @@ pub fn draw_pipeline_view(
             let label_cx = bx + bw / 2.0 - lw as f64 / 2.0;
             let label_cy = by + bh / 2.0 - lh as f64 / 2.0;
             cr.move_to(label_cx, label_cy);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
             pango_layout.set_width(-1); // reset
         }
 
@@ -182,7 +181,7 @@ pub fn draw_pipeline_view(
             let btn_cx = bx + bw / 2.0 - bw2 as f64 / 2.0;
             let btn_cy = aby + abh / 2.0 - bh2 as f64 / 2.0;
             cr.move_to(btn_cx, btn_cy);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
         }
 
         // ── Arrow connector ───────────────────────────────────────────────

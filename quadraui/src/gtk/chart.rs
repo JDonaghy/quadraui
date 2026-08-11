@@ -6,7 +6,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::set_source;
 use crate::primitives::chart::{Chart, ChartKind, ChartLayout, ChartMeasure};
@@ -339,7 +338,7 @@ fn paint_legend_gtk(
             pango_layout.set_attributes(None);
             set_source(cr, theme.foreground);
             cr.move_to(cx, ly);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
             let text_w = pango_layout.pixel_size().0 as f64;
             cx += text_w + 12.0;
         }
@@ -363,7 +362,7 @@ fn paint_axis_labels_gtk(
         let text_w = pango_layout.pixel_size().0 as f64;
         set_source(cr, theme.muted_fg);
         cr.move_to(pa.x as f64 - text_w - 4.0, sy as f64 - 6.0);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
 
         if chart.show_grid && sy > pa.y && sy < pa.y + pa.height {
             let (r, g, b) = super::cairo_rgb(theme.muted_fg);
@@ -384,7 +383,7 @@ fn paint_axis_labels_gtk(
         let cx = pa.x as f64 + (pa.width as f64 - text_w) / 2.0;
         let cy = (pa.y + pa.height) as f64;
         cr.move_to(cx, cy);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     if let Some(label) = &chart.y_label {
@@ -393,7 +392,7 @@ fn paint_axis_labels_gtk(
         let lx = layout.bounds.x as f64;
         let ly = pa.y as f64;
         cr.move_to(lx, ly);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 }
 
@@ -446,7 +445,7 @@ fn paint_crosshair_gtk(
         };
         let sy = pa.y as f64 + pa.height as f64 - norm * pa.height as f64;
         cr.move_to(screen_x + 4.0, sy - 8.0);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     let _ = theme;

@@ -11,7 +11,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, rounded_rect_path};
 use crate::primitives::list::{ListItemMeasure, ListView};
@@ -127,7 +126,7 @@ pub fn draw_list(
             cr.fill().ok();
             cr.set_source_rgb(title_color.0, title_color.1, title_color.2);
             cr.move_to(title_x, title_y);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
     } else if let (Some(title_bounds), Some(title)) =
         (list_layout.title_bounds, list.title.as_ref())
@@ -143,7 +142,7 @@ pub fn draw_list(
         layout.set_text(&title_text);
         let (_, text_h) = layout.pixel_size();
         cr.move_to(x + 2.0, ty + (th_px - text_h as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     }
 
     let item_x_offset = x + border_inset;
@@ -192,7 +191,7 @@ pub fn draw_list(
         layout.set_text(prefix);
         let (pw, ph) = layout.pixel_size();
         cr.move_to(cursor_x, row_y + (row_h - ph as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         cursor_x += pw as f64;
 
         if let Some(ref icon) = item.icon {
@@ -205,7 +204,7 @@ pub fn draw_list(
             layout.set_text(glyph);
             let (iw, ih) = layout.pixel_size();
             cr.move_to(cursor_x, row_y + (row_h - ih as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             cursor_x += iw as f64 + 6.0;
         }
 
@@ -246,7 +245,7 @@ pub fn draw_list(
             layout.set_text(&span.text);
             let (sw, sh) = layout.pixel_size();
             cr.move_to(cursor_x, row_y + (row_h - sh as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             cursor_x += sw as f64;
         }
 
@@ -267,7 +266,7 @@ pub fn draw_list(
                 layout.set_text(&detail_text);
                 let (_, dh) = layout.pixel_size();
                 cr.move_to(dx, row_y + (row_h - dh as f64) / 2.0);
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
     }

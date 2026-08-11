@@ -62,7 +62,9 @@ use super::services::GtkPlatformServices;
 /// One piece of text painted this frame, with its on-surface bounds in
 /// backend (pixel) coordinates. Recorded via
 /// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`] —
-/// the map [`super::testing::GtkDriver::find`] scans (quadraui#447, GD-2).
+/// the map [`super::testing::GtkDriver::find`] scans (quadraui#447, GD-2)
+/// — either as a whole logical label by the trait method that painted it,
+/// or per painted glyph run by [`super::painted_text`] (quadraui#489).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PaintedText {
     pub(crate) text: String,
@@ -167,7 +169,23 @@ pub struct GtkBackend {
     /// mirrors `text_regions`' lifecycle. Coverage is incremental — only
     /// widgets whose trait method has been updated to call
     /// [`Self::record_painted_text`] appear here; see that method's docs.
+    ///
+    /// Since quadraui#489 this is *also* fed, per painted glyph run, by
+    /// [`super::painted_text::show_layout`] — the choke point every GTK
+    /// rasteriser routes its Pango painting through — so every
+    /// text-bearing primitive reports in, not just the three whose trait
+    /// methods hand-roll a `record_painted_text` call. Those hand-rolled
+    /// (logical, hit-test-aligned) records land here *first*, ahead of
+    /// the frame's glyph runs, so `find_bounds` keeps resolving them to
+    /// the label rect a click needs. Requires
+    /// [`Self::set_painted_text_recording`].
     pub(crate) painted_text: Vec<PaintedText>,
+    /// Whether the per-glyph-run recording described on
+    /// [`Self::painted_text`] is active. Off by default: a live app never
+    /// reads `painted_text`, and recording every run would allocate a
+    /// `String` per painted text run per frame.
+    /// [`super::testing::GtkDriver`] turns it on.
+    painted_text_recording: bool,
     /// Active text selection (persists after mouse-up until a new click
     /// clears it). Set by [`Self::set_active_text_selection`], cleared by
     /// [`Self::clear_text_selection`] or [`Self::clear_selection_display`].
@@ -287,6 +305,7 @@ impl GtkBackend {
             editor_font_size_pt: 11.0,
             text_regions: Vec::new(),
             painted_text: Vec::new(),
+            painted_text_recording: false,
             active_selection: None,
             last_text_region_id: None,
             focused_activity_bar: None,
@@ -583,10 +602,39 @@ impl GtkBackend {
         let layout_ptr = layout as *const pango::Layout as *const ();
         let prev_cr = self.current_cr_ptr.replace(cr_ptr);
         let prev_layout = self.current_layout_ptr.replace(layout_ptr);
+        // Paint-time text recording (quadraui#489) is scoped to exactly
+        // this paint pass: install the sink before the rasterisers run,
+        // drain it after. See `painted_text`'s docs for why the drain
+        // happens here (after the frame) rather than per `draw_*` call.
+        let prev_sink = if self.painted_text_recording {
+            Some(super::painted_text::install_sink())
+        } else {
+            None
+        };
         let result = f(self);
+        if let Some(prev_sink) = prev_sink {
+            for (text, bounds) in super::painted_text::take_sink(prev_sink) {
+                self.record_painted_text(&text, bounds);
+            }
+        }
         self.current_cr_ptr.set(prev_cr);
         self.current_layout_ptr.set(prev_layout);
         result
+    }
+
+    /// Enable/disable the per-glyph-run painted-text recording that backs
+    /// [`super::testing::GtkDriver::find`] (quadraui#489). Off by default
+    /// — see [`Self::painted_text`].
+    pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
+        self.painted_text_recording = enabled;
+    }
+
+    /// Read-only view of this frame's painted-text map, for in-crate
+    /// tests that hold a `GtkBackend` directly rather than a
+    /// [`super::testing::GtkDriver`].
+    #[cfg(test)]
+    pub(crate) fn painted_text_for_test(&self) -> &[PaintedText] {
+        &self.painted_text
     }
 
     /// Get the current cairo context + pango layout inside the
@@ -676,14 +724,24 @@ impl GtkBackend {
     /// `(text, bounds)` map [`super::testing::GtkDriver::find`] scans.
     ///
     /// `bounds` is in backend (pixel) coordinates, matching what
-    /// [`super::testing::GtkDriver::click`] expects. Called by trait
-    /// methods that already compute a label's rect for hit-testing (e.g.
-    /// [`Backend::draw_status_bar`]) — coverage grows as more `draw_*`
-    /// methods adopt it; see `painted_text`'s docs for the current state.
-    /// Skips empty `text` so blank/placeholder segments don't pollute
-    /// `find` matches.
+    /// [`super::testing::GtkDriver::click`] expects.
+    ///
+    /// Two kinds of caller:
+    /// 1. Trait methods that already compute a label's rect for
+    ///    hit-testing ([`Backend::draw_status_bar`],
+    ///    [`Backend::draw_data_table`], [`Backend::draw_pipeline_view`]).
+    ///    These record the *logical* label — whole segment, whole cell —
+    ///    at the rect the primitive's own `hit_test` uses, which is what
+    ///    a `find`-driven click wants.
+    /// 2. [`Self::enter_frame_scope`], draining the per-glyph-run sink
+    ///    [`super::painted_text`] fills for *every* text-bearing
+    ///    rasteriser (quadraui#489). This is the coverage path; the
+    ///    logical records above stay ahead of it in the map.
+    ///
+    /// Skips blank `text` so alignment pads and placeholder segments
+    /// don't pollute `find` matches.
     pub(crate) fn record_painted_text(&mut self, text: &str, bounds: QRect) {
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return;
         }
         self.painted_text.push(PaintedText {

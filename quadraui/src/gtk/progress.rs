@@ -5,7 +5,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::set_source;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
@@ -80,7 +79,7 @@ pub fn draw_progress(
         pango_layout.set_attributes(None);
         set_source(cr, theme.foreground);
         cr.move_to(x + 4.0, y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     // Cancel affordance.
@@ -89,7 +88,7 @@ pub fn draw_progress(
         set_source(cr, theme.foreground);
         let text_w = pango_layout.pixel_size().0 as f64;
         cr.move_to(cb.x as f64 + (cb.width as f64 - text_w) / 2.0, cb.y as f64);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
     }
 
     layout

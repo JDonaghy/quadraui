@@ -14,7 +14,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
 use crate::primitives::status_bar::{
@@ -135,7 +134,7 @@ pub fn draw_status_bar(
         // Segment foreground text.
         set_source(cr, seg.fg);
         cr.move_to(seg_x, y);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     }
 
     layout.set_attributes(None);

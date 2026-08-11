@@ -167,7 +167,7 @@ pub fn draw_editor(
                 let (br, bg_c, bb) = cairo_rgb(bp_color);
                 cr.set_source_rgb(br, bg_c, bb);
                 cr.move_to(rect.x as f64 + 3.0, y);
-                pangocairo::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 char_offset += 1;
             }
 
@@ -185,7 +185,7 @@ pub fn draw_editor(
                 let (gr, gg, gb) = cairo_rgb(git_color);
                 cr.set_source_rgb(gr, gg, gb);
                 cr.move_to(rect.x as f64 + char_offset as f64 * char_width + 3.0, y);
-                pangocairo::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 char_offset += 1;
 
                 // Fold + line numbers portion right-aligned.
@@ -212,7 +212,7 @@ pub fn draw_editor(
             let (nr, ng, nb) = cairo_rgb(num_color);
             cr.set_source_rgb(nr, ng, nb);
             cr.move_to(num_x, y);
-            pangocairo::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
 
             // Diagnostic gutter dot (overrides lightbulb when both apply).
             if let Some(severity) = editor.diagnostic_gutter.get(&rl.line_idx) {
@@ -238,7 +238,7 @@ pub fn draw_editor(
                 let bulb_layout = layout.clone();
                 bulb_layout.set_text(&editor.lightbulb_glyph.to_string());
                 cr.move_to(rect.x as f64 + 1.0, y);
-                pangocairo::show_layout(cr, &bulb_layout);
+                super::painted_text::show_layout(cr, &bulb_layout);
             }
         }
     }
@@ -264,7 +264,7 @@ pub fn draw_editor(
         let (fr, fg_g, fb) = cairo_rgb(theme.foreground);
         cr.set_source_rgb(fr, fg_g, fb);
         cr.move_to(text_x_offset, y);
-        pangocairo::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
 
         // Ghost continuation lines — full line in ghost colour.
         if rl.is_ghost_continuation {
@@ -274,7 +274,7 @@ pub fn draw_editor(
                 cr.move_to(text_x_offset, y);
                 layout.set_text(ghost);
                 layout.set_attributes(None);
-                pangocairo::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
 
@@ -287,7 +287,7 @@ pub fn draw_editor(
             cr.move_to(ann_x, y);
             layout.set_text(ann);
             layout.set_attributes(None);
-            pangocairo::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
         }
 
         // Indent guides: thin vertical lines at each guide column.
@@ -503,7 +503,7 @@ pub fn draw_editor(
                 cr.move_to(ghost_x, ghost_y);
                 layout.set_text(ghost);
                 layout.set_attributes(None);
-                pangocairo::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
             }
         }
     }

@@ -21,7 +21,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, draw_form, draw_list, draw_message_list, draw_tree};
 use crate::event::Rect as QRect;
@@ -234,7 +233,7 @@ fn paint_header(
         layout.set_text(chevron);
         let (cw, ch) = layout.pixel_size();
         cr.move_to(left_x, (by + (bh - ch as f64) * 0.4).round());
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         left_x += cw as f64 + 4.0;
     }
 
@@ -251,7 +250,7 @@ fn paint_header(
         }
         cr.set_source_rgb(action_fg.0, action_fg.1, action_fg.2);
         cr.move_to(right_x, (by + (bh - gh as f64) * 0.4).round());
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         right_x -= 8.0; // gap between actions
     }
 
@@ -266,7 +265,7 @@ fn paint_header(
             cr.move_to(left_x, (by + (bh - th as f64) * 0.4).round());
             // Pango clips automatically when we don't set width; sub-row
             // truncation is handled by the user-visible row width.
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
             let mut after_title_x = left_x + (tw as f64).min(max_w);
 
             // Badge after title.
@@ -279,7 +278,7 @@ fn paint_header(
                         layout.set_text(&badge_text);
                         let (_, bh_text) = layout.pixel_size();
                         cr.move_to(after_title_x, by + (bh - bh_text as f64) / 2.0);
-                        pcfn::show_layout(cr, layout);
+                        super::painted_text::show_layout(cr, layout);
                     }
                 }
             }
@@ -318,7 +317,7 @@ fn paint_aux(cr: &Context, layout: &pango::Layout, bounds: QRect, aux: &SectionA
             layout.set_text(display);
             let (_, th) = layout.pixel_size();
             cr.move_to(bx + 4.0, by + (bh - th as f64) / 2.0);
-            pcfn::show_layout(cr, layout);
+            super::painted_text::show_layout(cr, layout);
 
             // Caret as a 1-cell-wide vertical bar at the caret column.
             if input.has_focus {
@@ -340,7 +339,7 @@ fn paint_aux(cr: &Context, layout: &pango::Layout, bounds: QRect, aux: &SectionA
                 layout.set_text(glyph);
                 let (gw, gh) = layout.pixel_size();
                 cr.move_to(x, by + (bh - gh as f64) / 2.0);
-                pcfn::show_layout(cr, layout);
+                super::painted_text::show_layout(cr, layout);
                 x += gw as f64 + 8.0;
             }
         }
@@ -471,7 +470,7 @@ fn paint_text_lines(
         layout.set_text(&text);
         let (_, th) = layout.pixel_size();
         cr.move_to(x + 4.0, row_y + (line_height - th as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         row_y += line_height;
     }
 }
@@ -536,7 +535,7 @@ fn paint_empty_body(
         let block_x = x + (w - tw as f64).max(0.0) / 2.0;
         cr.set_source_rgb(color.0, color.1, color.2);
         cr.move_to(block_x, block_y + (line_height - th as f64) / 2.0);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
         block_y += line_height;
     }
 }

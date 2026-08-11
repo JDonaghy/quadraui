@@ -11,7 +11,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::cairo_rgb;
 use crate::primitives::find_replace::{FindReplaceClickTarget, FindReplacePanel};
@@ -70,7 +69,7 @@ pub fn draw_find_replace(
     let paint_label = |layout: &pango::Layout, text: &str, px: f64, py: f64| {
         layout.set_text(text);
         cr.move_to(px, py);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     };
 
     let paint_toggle = |col: u16, row: u16, width: u16, label: &str, active: bool| {
@@ -92,7 +91,7 @@ pub fn draw_find_replace(
         layout.set_text(label);
         let (tw, _) = layout.pixel_size();
         cr.move_to(bx + (bw - tw as f64) / 2.0, by);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     };
 
     let paint_glyph = |col: u16, row: u16, width: u16, label: &str, active: bool| {
@@ -110,7 +109,7 @@ pub fn draw_find_replace(
         layout.set_text(label);
         let (tw, _) = layout.pixel_size();
         cr.move_to(bx + (bw - tw as f64) / 2.0, by);
-        pcfn::show_layout(cr, layout);
+        super::painted_text::show_layout(cr, layout);
     };
 
     let paint_input = |col: u16,

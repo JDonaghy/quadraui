@@ -6,7 +6,6 @@
 
 use gtk4::cairo::Context;
 use gtk4::pango;
-use pangocairo::functions as pcfn;
 
 use super::{cairo_rgb, set_source};
 use crate::primitives::data_table::{
@@ -94,7 +93,7 @@ pub fn draw_data_table(
             ColumnAlign::Right => col_x + col_w - text_w as f64,
         };
         cr.move_to(text_x, y);
-        pcfn::show_layout(cr, pango_layout);
+        super::painted_text::show_layout(cr, pango_layout);
         cr.restore().ok();
     }
     pango_layout.set_attributes(None);
@@ -194,7 +193,7 @@ pub fn draw_data_table(
             }
             pango_layout.set_attributes(Some(&attrs));
             cr.move_to(text_x, row_y);
-            pcfn::show_layout(cr, pango_layout);
+            super::painted_text::show_layout(cr, pango_layout);
             pango_layout.set_attributes(None);
             cr.restore().ok();
         }
@@ -338,7 +337,7 @@ pub fn draw_data_table(
                 set_source(cr, theme.foreground);
                 pango_layout.set_attributes(Some(&attrs));
                 cr.move_to(text_x, footer_y);
-                pcfn::show_layout(cr, pango_layout);
+                super::painted_text::show_layout(cr, pango_layout);
                 pango_layout.set_attributes(None);
                 cr.restore().ok();
             }

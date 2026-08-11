@@ -45,6 +45,7 @@ mod menu_bar;
 pub mod menu_overlay;
 mod message_list;
 mod multi_section_view;
+mod painted_text;
 mod palette;
 mod panel;
 mod pipeline_view;
