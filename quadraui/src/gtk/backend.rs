@@ -1582,6 +1582,23 @@ impl Backend for GtkBackend {
         // from `bar` via the segment's side + index, since
         // `VisibleStatusSegment` carries the resolved bounds but not the
         // label itself.
+        //
+        // `seg.bounds` (from `StatusBar::layout`, shared with
+        // `TuiBackend`/`GtkBackend::status_bar_layout`) is bar-local:
+        // `x` relative to this bar's own left edge, `y` always `0`
+        // relative to its own top — never offset by the `rect` this
+        // particular bar was painted into (`bar.layout` never even
+        // receives `rect.x`/`rect.y`). `painted_text`'s contract is
+        // *absolute* surface coordinates (what `find`/`click_text`
+        // hand straight to `Self::click`), so translate by `rect`'s
+        // origin here, mirroring `Self::draw_data_table`'s
+        // `rect.x + rc.x` / absolute `row_y` (defined earlier in this
+        // impl). Without this, every
+        // status bar painted at a nonzero `rect.y` (e.g. one row among
+        // several, as `panel_app`'s per-line content rendering does)
+        // recorded its text at `y = 0` — the top of the surface — so a
+        // multi-row caller's `find()` could locate the right text but
+        // return the wrong row's y (quadraui#488).
         for seg in &bar_layout.visible_segments {
             let text = match seg.side {
                 crate::primitives::status_bar::StatusSegmentSide::Left => {
@@ -1592,7 +1609,13 @@ impl Backend for GtkBackend {
                 }
             };
             if let Some(text) = text {
-                self.record_painted_text(text, seg.bounds);
+                let bounds = QRect::new(
+                    rect.x + seg.bounds.x,
+                    rect.y + seg.bounds.y,
+                    seg.bounds.width,
+                    seg.bounds.height,
+                );
+                self.record_painted_text(text, bounds);
             }
         }
         bar_layout

@@ -87,6 +87,7 @@ pub mod diff;
 pub mod frame;
 pub mod primitives;
 pub mod shell;
+pub mod testing;
 pub mod text_util;
 pub mod theme;
 pub mod types;
