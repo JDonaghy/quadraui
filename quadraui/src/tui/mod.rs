@@ -221,3 +221,39 @@ fn set_cell_styled(
         cell.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
     }
 }
+
+/// [`set_cell_wide`] + [`set_cell_styled`] combined: a 2-cell-wide
+/// character carrying an explicit modifier + optional underline colour.
+/// Used by [`tab_bar::draw_tab_bar`] so a double-width glyph in the
+/// filename portion of an active tab's label still gets the accent
+/// underline / preview-italic modifier that [`set_cell_styled`] applies
+/// to narrow glyphs (#554).
+#[allow(clippy::too_many_arguments)]
+fn set_cell_wide_styled(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    ch: char,
+    fg: RatatuiColor,
+    bg: RatatuiColor,
+    modifier: Modifier,
+    underline_color: Option<RatatuiColor>,
+) {
+    let area = buf.area;
+    if x < area.x + area.width && y < area.y + area.height {
+        let mut s = String::with_capacity(4);
+        s.push(ch);
+        let cell = &mut buf[(x, y)];
+        cell.set_symbol(&s).set_fg(fg).set_bg(bg);
+        cell.modifier = modifier;
+        cell.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
+        if x + 1 < area.x + area.width {
+            // Wide-char continuation cell: empty symbol tells ratatui this
+            // half is the trailing column of a double-width glyph.
+            let cont = &mut buf[(x + 1, y)];
+            cont.set_symbol("").set_fg(fg).set_bg(bg);
+            cont.modifier = modifier;
+            cont.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
+        }
+    }
+}

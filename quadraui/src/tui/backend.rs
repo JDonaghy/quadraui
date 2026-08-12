@@ -63,6 +63,7 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 
 use super::services::TuiPlatformServices;
+use super::text::display_width;
 
 /// Minimum gap (in cells) between left and right status-bar halves
 /// before priority drop kicks in. Mirrors `crate::gtk::status_bar`'s
@@ -1016,6 +1017,9 @@ impl Backend for TuiBackend {
         } else {
             0
         };
+        // Measure in display columns, not `char`s (#554) — a CJK/emoji
+        // glyph occupies two columns, and `draw_tab_bar` paints with
+        // `char_cell_width` strides, so the budget must agree.
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
@@ -1025,7 +1029,7 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                t.label.chars().count() + tab_close
+                display_width(&t.label) + tab_close
             })
             .collect();
         let layout = bar.layout(
@@ -1082,6 +1086,8 @@ impl Backend for TuiBackend {
         };
         // Compute per-tab widths respecting `is_closable`: non-closable tabs
         // get no close-column reservation even when `show_tab_close` is set.
+        // Measured in display columns, not `char`s (#554) — see the twin
+        // computation in `draw_tab_bar` above for why.
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
@@ -1091,7 +1097,7 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                t.label.chars().count() + tab_close
+                display_width(&t.label) + tab_close
             })
             .collect();
         let layout = bar.layout(

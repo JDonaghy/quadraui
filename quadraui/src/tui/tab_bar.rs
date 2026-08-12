@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
 use super::text::char_cell_width;
-use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide};
+use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled};
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout};
 use crate::theme::Theme;
 
@@ -46,6 +46,19 @@ pub const TAB_CLOSE_COLS: u16 = 2;
 /// - **Right segments:** painted in `tab_inactive_fg` (or
 ///   `tab_active_fg` when `seg.is_active`). Double-width glyphs
 ///   (per `unicode-width`) use [`set_cell_wide`].
+/// - **Tab labels:** measured and painted in display columns, not
+///   `char`s (#554) — a double-width glyph (per `unicode-width`) uses
+///   [`set_cell_wide`]/[`set_cell_wide_styled`] and advances the cursor
+///   by 2, mirroring the right-segment loop above. The measure side
+///   (`TuiBackend::draw_tab_bar` / `tab_bar_layout` in `backend.rs`)
+///   must agree, or a tab is measured narrower than it paints.
+///
+///   Downstream: vimcode's `tab_hit_width` (`src/render.rs`) is
+///   deliberately pinned on the pre-#554 `.chars().count()` measure
+///   because it must agree with what this rasteriser paints; its own
+///   doc comment names this fix as the unblocker for switching to a
+///   `display_width` measure there. coord-tui consumes the same tab
+///   bar and should be checked for the equivalent assumption.
 pub fn draw_tab_bar(
     buf: &mut Buffer,
     area: Rect,
@@ -163,6 +176,11 @@ pub fn draw_tab_bar(
         // Filename (after the last ": ") carries the underline accent.
         let prefix_len = tab.label.rfind(": ").map(|p| p + 2).unwrap_or(0);
 
+        // Stride by display width, not by `char` (#554): a double-width
+        // glyph (CJK, many emoji) must land in two columns, mirroring the
+        // right-segment loop above. `TuiBackend::draw_tab_bar` /
+        // `tab_bar_layout` (backend.rs) measure `label_end`'s budget with
+        // the same `display_width` function, so the two sides agree.
         let mut x = tab_x;
         for (ci, ch) in tab.label.chars().enumerate() {
             if x >= label_end {
@@ -175,8 +193,20 @@ pub fn draw_tab_bar(
             } else {
                 None
             };
-            set_cell_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
-            x += 1;
+            let w = char_cell_width(ch);
+            if w == 2 {
+                if x + 1 < label_end + 1 {
+                    set_cell_wide_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
+                    x += 2;
+                } else {
+                    // Not enough budget left for the glyph's second column
+                    // — skip rather than paint half of a wide char.
+                    x += 1;
+                }
+            } else {
+                set_cell_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
+                x += 1;
+            }
         }
 
         // Close glyph: ● for dirty, × otherwise.
@@ -334,6 +364,75 @@ mod tests {
         assert_eq!(hits.right_segment_bounds.len(), 1);
         let (start, end) = hits.right_segment_bounds[0];
         assert_eq!((start, end), (27.0, 30.0));
+    }
+
+    /// Regression guard for #554: a CJK label must paint every glyph in
+    /// its own columns, not lose glyphs to a flat `x += 1` stride. This
+    /// reconstructs the painted row the way a real terminal (and
+    /// `TuiDriver::row_cells`) reads it — stepping by each cell's own
+    /// display width and skipping the blank continuation cell that
+    /// `set_cell_wide`/`set_cell_wide_styled` leave after a double-width
+    /// glyph — rather than concatenating every stored cell verbatim
+    /// (which would hide the bug; see contract.md §2 for the ms-11 slice
+    /// this mirrors at the acceptance layer).
+    #[test]
+    fn wide_glyph_label_paints_every_char_across_its_own_columns() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        let label = "日本語.rs";
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: label.into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: false,
+            }],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: false,
+            compact: false,
+        };
+        // Measure with the same `display_width` function the fixed
+        // `TuiBackend` measure side uses, so the label's budget covers
+        // every column it actually paints (9: 3 wide glyphs x2 + 3 narrow).
+        let width = crate::tui::display_width(label) as f32;
+        assert_eq!(width, 9.0);
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |_| TabMeasure::new(width, 0.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        draw_tab_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+        );
+
+        let mut rendered = String::new();
+        let mut x = 0u16;
+        while x < 40 {
+            let sym = buf[(x, 0)].symbol();
+            if sym.is_empty() {
+                // Blank continuation cell of a double-width glyph — the
+                // terminal doesn't read this as a separate character.
+                x += 1;
+                continue;
+            }
+            rendered.push_str(sym);
+            let w = sym.chars().next().map(char_cell_width).unwrap_or(1).max(1);
+            x += w;
+        }
+
+        assert!(
+            rendered.starts_with(label),
+            "expected {label:?} to paint intact (no dropped glyphs), got {rendered:?}"
+        );
     }
 
     #[test]
