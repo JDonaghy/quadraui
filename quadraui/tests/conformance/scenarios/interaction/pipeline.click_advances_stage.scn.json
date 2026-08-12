@@ -1,0 +1,16 @@
+{
+  "id": "pipeline.click_advances_stage",
+  "fixture": "pipeline_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Click routing round-trip: a click located by the button's own label must reach the stage the label belongs to, on every backend. Ported from tests/cross_backend_parity.rs (audit 6.5 example 1)." },
+    { "assert_screen_has": "Deploy" },
+    { "assert_absent": "stage 3" },
+    { "press": "Right" },
+    { "click_text": "Go" },
+    { "assert_screen_has": "stage 3" },
+    { "type_char": "q" },
+    { "assert_exited": true }
+  ]
+}

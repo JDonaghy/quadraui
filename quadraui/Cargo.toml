@@ -615,3 +615,13 @@ required-features = ["tui"]
 name = "gtk_file_dialog"
 path = "examples/gtk_file_dialog.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_modal_occlusion"
+path = "examples/tui_modal_occlusion.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_modal_occlusion"
+path = "examples/gtk_modal_occlusion.rs"
+required-features = ["gtk"]

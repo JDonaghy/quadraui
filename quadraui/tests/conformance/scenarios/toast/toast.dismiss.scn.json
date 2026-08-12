@@ -1,0 +1,16 @@
+{
+  "id": "toast.dismiss",
+  "fixture": "toast_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Toast dismiss: the close affordance in a toast's chrome must remove that toast and report it, without disturbing the rest of the stack." },
+    { "assert_screen_has": "Welcome" },
+    { "click_text": "×" },
+    { "assert_absent": "Welcome" },
+    { "assert_screen_has": "Dismissed" },
+    { "note": "A fresh toast can still be pushed after a dismissal." },
+    { "type_char": "2" },
+    { "assert_screen_has": "Success" }
+  ]
+}

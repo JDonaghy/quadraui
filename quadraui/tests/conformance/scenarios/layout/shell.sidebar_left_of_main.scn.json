@@ -1,0 +1,14 @@
+{
+  "id": "shell.sidebar_left_of_main",
+  "fixture": "shell_app",
+  "tier": 1,
+  "viewport": { "cols": 120, "rows": 40 },
+  "steps": [
+    { "note": "Relational geometry, unit-free (audit 6.5 example 4): every assertion names two painted things and asks how they relate, so it reads identically against TUI cells and GTK pixels." },
+    { "assert_left_of": { "a": "EXPLORER", "b": "Selected:" } },
+    { "assert_left_of": { "a": "EDITORS", "b": "Selected:" } },
+    { "assert_above": { "a": "EXPLORER", "b": "EDITORS" } },
+    { "assert_above": { "a": "EDITORS", "b": "PROJECT" } },
+    { "assert_above": { "a": "PROJECT", "b": "Tab=focus" } }
+  ]
+}

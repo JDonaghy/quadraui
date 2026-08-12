@@ -1,0 +1,16 @@
+{
+  "id": "tabgroup.close_tab",
+  "fixture": "tab_group_demo",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Tab close: the leftmost close affordance belongs to the leftmost tab, and closing it promotes the next tab in the same pane." },
+    { "assert_screen_has": "main.rs content" },
+    { "assert_screen_has": "lib.rs" },
+    { "click_text": "×" },
+    { "assert_absent": "main.rs" },
+    { "assert_screen_has": "lib.rs content" },
+    { "note": "The second pane is untouched by a close in the first." },
+    { "assert_screen_has": "Cargo.toml content" }
+  ]
+}

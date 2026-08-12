@@ -1,0 +1,15 @@
+{
+  "id": "panel.drag_select_copy",
+  "fixture": "panel_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "requires": ["text_selection"],
+  "steps": [
+    { "note": "Exercises register_text_region, the drag pipeline and TextCopied end to end (audit 6.5 example 3). Both drag endpoints are named by painted text, so the cell/pixel unit difference never surfaces." },
+    { "assert_screen_has": "The quick brown fox" },
+    { "drag_text": { "from": "quick brown fox", "to": "boxing wizards" } },
+    { "assert_screen_has": "Selecting rows" },
+    { "ctrl_char": "c" },
+    { "assert_screen_has": "Copied:" }
+  ]
+}

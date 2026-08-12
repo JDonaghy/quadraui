@@ -233,6 +233,14 @@ pub trait ConformanceDriver: Sized {
     /// Type a single character key (no modifiers).
     fn type_char(&mut self, c: char);
 
+    /// Press a character key with Ctrl held — the runner-level path that
+    /// turns `Ctrl-C` over an active selection into
+    /// [`crate::UiEvent::TextCopied`] rather than a raw key press. Needed
+    /// by any scenario that exercises copy (audit §6.5 example 3), which
+    /// is why it sits on the trait rather than only on each concrete
+    /// driver.
+    fn ctrl_char(&mut self, c: char);
+
     /// Type each character of `s` in turn (no modifiers).
     fn type_text(&mut self, s: &str) {
         for c in s.chars() {

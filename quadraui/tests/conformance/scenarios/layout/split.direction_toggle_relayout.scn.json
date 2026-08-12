@@ -1,0 +1,15 @@
+{
+  "id": "split.direction_toggle_relayout",
+  "fixture": "split_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Split relayout: a horizontal split puts the first pane left of the second; toggling to vertical puts it above. Expressed purely as a relation between the two panes' own labels, so it holds in cells and in pixels alike." },
+    { "assert_screen_has": "ratio: 50%" },
+    { "assert_left_of": { "a": "FIRST", "b": "SECOND" } },
+    { "type_char": "v" },
+    { "assert_above": { "a": "FIRST", "b": "SECOND" } },
+    { "type_char": "v" },
+    { "assert_left_of": { "a": "FIRST", "b": "SECOND" } }
+  ]
+}

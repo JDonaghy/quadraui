@@ -54,6 +54,21 @@ jobs:
         run: cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
       - name: Clippy (pty smoke, tui + terminal features)
         run: cargo clippy -p quadraui --features tui,terminal --test tui_pty_smoke -- -D warnings
+      # Conformance matrix (quadraui#491, epic #480). The suite runs as part
+      # of `cargo test --features tui` above; this step re-runs just that
+      # target with --nocapture so the scenario x backend table lands in the
+      # log, and uploads it as an artifact. For a backend that doesn't exist
+      # yet (Windows, macOS) that artifact IS the implementation checklist,
+      # so it must survive the run even when everything passed.
+      - name: Conformance matrix (tui)
+        run: cargo test -p quadraui --features tui --test conformance -- --nocapture
+      - name: Upload conformance matrix (tui)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-matrix-tui
+          path: target/conformance-matrix.txt
+          if-no-files-found: warn
 
   gtk:
     name: gtk (build, test, clippy)
@@ -88,3 +103,14 @@ jobs:
         run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast
       - name: Clippy (gtk + tui features)
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
+      # Both backends registered at once, so the artifact from this job is
+      # the full cross-backend matrix rather than a single column.
+      - name: Conformance matrix (gtk + tui)
+        run: cargo test -p quadraui --features gtk,tui --test conformance -- --nocapture
+      - name: Upload conformance matrix (gtk + tui)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-matrix-gtk-tui
+          path: target/conformance-matrix.txt
+          if-no-files-found: warn

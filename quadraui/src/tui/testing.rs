@@ -399,6 +399,10 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
         TuiDriver::type_char(self, c);
     }
 
+    fn ctrl_char(&mut self, c: char) {
+        TuiDriver::ctrl_char(self, c);
+    }
+
     fn click_text_at(&mut self, needle: &str, at: Anchor) {
         let bounds = self
             .find_bounds(needle)

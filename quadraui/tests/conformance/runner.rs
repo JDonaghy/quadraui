@@ -1,0 +1,476 @@
+//! Conformance scenario **runner** (quadraui#491, audit §6.4/§6.6).
+//!
+//! Replays a [`Scenario`]'s steps against one backend driver and reports a
+//! [`Outcome`]. The top-level `tests/conformance.rs` crosses every scenario
+//! file with every registered [`BackendReg`] and prints the resulting
+//! scenario × backend matrix.
+//!
+//! Three moving parts, kept small on purpose:
+//!
+//! - [`DynDriver`] — an object-safe view of
+//!   [`quadraui::testing::ConformanceDriver`] (which is `Sized`, so it can't
+//!   be a trait object itself). One blanket impl covers every present and
+//!   future backend driver; the runner only ever holds `Box<dyn DynDriver>`.
+//! - [`DriverFactory`] — the *one driver impl* a new backend writes. It
+//!   turns any `AppLogic` fixture plus a [`LogicalViewport`] into a boxed
+//!   driver, which is what lets the string-keyed fixture registry stay
+//!   backend-agnostic.
+//! - [`BackendReg`] — the *one registration line* a new backend adds,
+//!   pairing a display name and a declared capability set with
+//!   `fixtures::build::<TheirFactory>`.
+
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
+use quadraui::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport};
+use quadraui::{AppLogic, WidgetId};
+
+use super::schema::{parse_named_key, Scenario, Step};
+
+// ─── Object-safe driver view ────────────────────────────────────────────
+
+/// Object-safe mirror of [`ConformanceDriver`]'s act/observe surface.
+///
+/// `ConformanceDriver` is `Sized` (its `new_fixture` returns `Self`), so it
+/// cannot be used as `dyn ConformanceDriver`. The runner needs a trait
+/// object because a scenario's fixture — and therefore the driver's `App`
+/// type parameter — is chosen at runtime from a string. Construction stays
+/// on the concrete side ([`DriverFactory`]); everything after it goes
+/// through this trait.
+pub trait DynDriver {
+    fn press_named(&mut self, key: quadraui::NamedKey);
+    fn type_char(&mut self, c: char);
+    fn type_text(&mut self, s: &str);
+    fn ctrl_char(&mut self, c: char);
+    fn click_text_at(&mut self, needle: &str, at: Anchor);
+    fn drag_text(&mut self, from: &str, to: &str);
+    fn scroll_at(&mut self, needle: &str, lines: i32);
+    fn inventory(&self) -> FrameInventory;
+    fn screen_has(&self, needle: &str) -> bool;
+    fn exited(&self) -> bool;
+}
+
+impl<D: ConformanceDriver> DynDriver for D {
+    fn press_named(&mut self, key: quadraui::NamedKey) {
+        ConformanceDriver::press_named(self, key)
+    }
+    fn type_char(&mut self, c: char) {
+        ConformanceDriver::type_char(self, c)
+    }
+    fn type_text(&mut self, s: &str) {
+        ConformanceDriver::type_text(self, s)
+    }
+    fn ctrl_char(&mut self, c: char) {
+        ConformanceDriver::ctrl_char(self, c)
+    }
+    fn click_text_at(&mut self, needle: &str, at: Anchor) {
+        ConformanceDriver::click_text_at(self, needle, at)
+    }
+    fn drag_text(&mut self, from: &str, to: &str) {
+        ConformanceDriver::drag_text(self, from, to)
+    }
+    fn scroll_at(&mut self, needle: &str, lines: i32) {
+        ConformanceDriver::scroll_at(self, needle, lines)
+    }
+    fn inventory(&self) -> FrameInventory {
+        ConformanceDriver::inventory(self)
+    }
+    fn screen_has(&self, needle: &str) -> bool {
+        ConformanceDriver::screen_has(self, needle)
+    }
+    fn exited(&self) -> bool {
+        ConformanceDriver::exited(self)
+    }
+}
+
+/// The single per-backend adapter a new backend author writes.
+///
+/// Deliberately an *associated* function with no `self`: that makes
+/// `fixtures::build::<MyFactory>` a plain `fn` pointer, which is what
+/// [`BackendReg`] stores, so registering a backend is one line rather than
+/// one line per fixture.
+pub trait DriverFactory {
+    fn make<A: AppLogic + 'static>(app: A, viewport: LogicalViewport) -> Box<dyn DynDriver>;
+}
+
+/// Builds a driver for a named fixture, or `None` if this build has no such
+/// fixture. Always `fixtures::build::<F>` for some [`DriverFactory`] `F`.
+pub type BuildFn = fn(&str, LogicalViewport) -> Option<Box<dyn DynDriver>>;
+
+/// One registered backend: display name, declared capabilities, builder.
+pub struct BackendReg {
+    pub name: &'static str,
+    /// Capabilities this backend declares it supports. A scenario whose
+    /// `requires` list mentions anything absent here is **skipped with the
+    /// missing capability named** — never silently passed (audit §6.6).
+    pub caps: &'static [&'static str],
+    pub build: BuildFn,
+}
+
+impl BackendReg {
+    pub fn new(name: &'static str, caps: &'static [&'static str], build: BuildFn) -> Self {
+        Self { name, caps, build }
+    }
+
+    /// The first capability in `requires` this backend has not declared.
+    fn missing_cap(&self, requires: &[String]) -> Option<String> {
+        requires
+            .iter()
+            .find(|r| !self.caps.contains(&r.as_str()))
+            .cloned()
+    }
+}
+
+// ─── Outcomes ───────────────────────────────────────────────────────────
+
+/// Result of one (scenario, backend) cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Pass,
+    /// Skipped because the backend did not declare a required capability.
+    /// The reason is mandatory — an unexplained skip is not expressible.
+    Skip {
+        missing_cap: String,
+    },
+    Fail {
+        step: usize,
+        reason: String,
+    },
+}
+
+impl Outcome {
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Outcome::Pass => "pass",
+            Outcome::Skip { .. } => "skip",
+            Outcome::Fail { .. } => "FAIL",
+        }
+    }
+}
+
+/// One row of the matrix: a scenario and its outcome per backend.
+pub struct MatrixRow {
+    pub id: String,
+    pub tier: u8,
+    pub cells: Vec<(&'static str, Outcome)>,
+}
+
+// ─── Execution ──────────────────────────────────────────────────────────
+
+/// Build a driver for `scenario` on `backend` and replay every step.
+///
+/// Returns [`Outcome::Skip`] before constructing anything if the backend
+/// lacks a required capability, so a capability gate never pays for a
+/// fixture build.
+pub fn run_scenario(scenario: &Scenario, backend: &BackendReg) -> Outcome {
+    if let Some(missing_cap) = backend.missing_cap(&scenario.requires) {
+        return Outcome::Skip { missing_cap };
+    }
+    let Some(mut driver) = (backend.build)(&scenario.fixture, scenario.viewport.into()) else {
+        return Outcome::Fail {
+            step: 0,
+            reason: format!(
+                "unknown fixture {:?} — add it to tests/conformance/fixtures.rs",
+                scenario.fixture
+            ),
+        };
+    };
+    for (i, step) in scenario.steps.iter().enumerate() {
+        if let Err(reason) = run_step(driver.as_mut(), step) {
+            return Outcome::Fail { step: i, reason };
+        }
+    }
+    Outcome::Pass
+}
+
+/// Execute one step. `Err(reason)` is a scenario failure, not a panic —
+/// act steps pre-check that their target is painted so a missing needle
+/// reports "not painted" with the frame's runs rather than unwinding out
+/// of the driver.
+fn run_step(d: &mut dyn DynDriver, step: &Step) -> Result<(), String> {
+    match step {
+        Step::Note(_) => {}
+
+        Step::Press(name) => {
+            let key = parse_named_key(name)?;
+            d.press_named(key);
+        }
+        Step::TypeChar(c) => d.type_char(*c),
+        Step::TypeText(s) => d.type_text(s),
+        Step::CtrlChar(c) => d.ctrl_char(*c),
+
+        Step::ClickText(text) => {
+            require_painted(d, text)?;
+            d.click_text_at(text, Anchor::Center);
+        }
+        Step::ClickTextAt { text, anchor } => {
+            require_painted(d, text)?;
+            d.click_text_at(text, (*anchor).into());
+        }
+        Step::DragText { from, to } => {
+            require_painted(d, from)?;
+            require_painted(d, to)?;
+            d.drag_text(from, to);
+        }
+        Step::ScrollAt { target, lines } => {
+            require_painted(d, target)?;
+            d.scroll_at(target, *lines);
+        }
+
+        Step::AssertScreenHas(text) => {
+            if !d.screen_has(text) {
+                return Err(format!("expected {text:?} on screen; {}", painted(d)));
+            }
+        }
+        Step::AssertAbsent(text) => {
+            if d.screen_has(text) {
+                return Err(format!("expected {text:?} to be absent, but it is painted"));
+            }
+        }
+        Step::AssertCount { text, count } => {
+            let got = d.inventory().count(text);
+            if got != *count {
+                return Err(format!(
+                    "expected {count} painted run(s) containing {text:?}, found {got}"
+                ));
+            }
+        }
+        Step::AssertLeftOf { a, b } => {
+            let inv = d.inventory();
+            if !inv.left_of(a, b) {
+                return Err(format!(
+                    "expected {a:?} entirely left of {b:?} ({}); {}",
+                    relation_hint(&inv, a, b),
+                    painted(d)
+                ));
+            }
+        }
+        Step::AssertAbove { a, b } => {
+            let inv = d.inventory();
+            if !inv.above(a, b) {
+                return Err(format!(
+                    "expected {a:?} entirely above {b:?} ({}); {}",
+                    relation_hint(&inv, a, b),
+                    painted(d)
+                ));
+            }
+        }
+        Step::AssertInside { a, zone } => {
+            let inv = d.inventory();
+            if !inv.inside(a, &WidgetId::new(zone.clone())) {
+                let zones: Vec<&str> = inv.zones().iter().map(|z| z.id.as_str()).collect();
+                return Err(format!(
+                    "expected {a:?} inside zone {zone:?}; registered zones: {zones:?}"
+                ));
+            }
+        }
+        Step::AssertExited(want) => {
+            let got = d.exited();
+            if got != *want {
+                return Err(format!("expected exited={want}, got exited={got}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Guard for act steps: the driver's `click_text`/`drag_text`/`scroll_at`
+/// panic when a needle was never painted (that's the right behaviour for a
+/// hand-written Rust body). A declarative scenario wants a diagnosis
+/// instead, so check first and turn the miss into a `Fail` row.
+fn require_painted(d: &dyn DynDriver, needle: &str) -> Result<(), String> {
+    if d.screen_has(needle) {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot act on {needle:?}: not painted; {}",
+            painted(d)
+        ))
+    }
+}
+
+/// Which of the two needles a relational assertion actually found — the
+/// usual cause of a `left_of`/`above` failure is a typo'd needle, not a
+/// layout regression, and the vocabulary answers `false` for both.
+fn relation_hint(inv: &FrameInventory, a: &str, b: &str) -> String {
+    match (inv.screen_has(a), inv.screen_has(b)) {
+        (true, true) => "both painted, but the relation does not hold".into(),
+        (false, true) => format!("{a:?} was never painted"),
+        (true, false) => format!("{b:?} was never painted"),
+        (false, false) => "neither was painted".into(),
+    }
+}
+
+/// A compact, deduplicated dump of what *was* painted, for failure text.
+/// Sorted and capped so a 40-row frame doesn't drown the report.
+fn painted(d: &dyn DynDriver) -> String {
+    let runs: BTreeSet<String> = d
+        .inventory()
+        .text_runs()
+        .iter()
+        .map(|r| r.text.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let shown: Vec<&str> = runs.iter().map(|s| s.as_str()).take(40).collect();
+    let more = runs.len().saturating_sub(shown.len());
+    if more > 0 {
+        format!("painted runs (first 40 of {}): {shown:?}", runs.len())
+    } else {
+        format!("painted runs: {shown:?}")
+    }
+}
+
+// ─── Matrix report ──────────────────────────────────────────────────────
+
+/// Render the scenario × backend matrix the audit (§6.6) calls for: one
+/// row per scenario, one column per registered backend, `pass` / `skip` /
+/// `FAIL` per cell, followed by the detail for every non-pass cell.
+///
+/// CI uploads this as an artifact; for a new backend it *is* the
+/// implementation checklist.
+pub fn render_matrix(rows: &[MatrixRow], backends: &[&'static str]) -> String {
+    let id_w = rows
+        .iter()
+        .map(|r| r.id.len())
+        .chain(std::iter::once("scenario".len()))
+        .max()
+        .unwrap_or(8);
+    let col_w = |name: &str| name.len().max("FAIL".len());
+
+    let mut out = String::new();
+    out.push_str("\nConformance matrix (scenario × backend)\n");
+
+    let mut header = format!("{:<id_w$}  tier", "scenario", id_w = id_w);
+    for b in backends {
+        let _ = write!(header, "  {:<w$}", b, w = col_w(b));
+    }
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"-".repeat(header.len()));
+    out.push('\n');
+
+    for row in rows {
+        let mut line = format!("{:<id_w$}  {:>4}", row.id, row.tier, id_w = id_w);
+        for b in backends {
+            let cell = row
+                .cells
+                .iter()
+                .find(|(n, _)| n == b)
+                .map(|(_, o)| o.symbol())
+                .unwrap_or("-");
+            let _ = write!(line, "  {:<w$}", cell, w = col_w(b));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    let mut details = String::new();
+    for row in rows {
+        for (backend, outcome) in &row.cells {
+            match outcome {
+                Outcome::Pass => {}
+                Outcome::Skip { missing_cap } => {
+                    let _ = writeln!(
+                        details,
+                        "  skip {}/{}: backend does not declare capability {:?}",
+                        row.id, backend, missing_cap
+                    );
+                }
+                Outcome::Fail { step, reason } => {
+                    let _ = writeln!(
+                        details,
+                        "  FAIL {}/{} at step {}: {}",
+                        row.id, backend, step, reason
+                    );
+                }
+            }
+        }
+    }
+    if !details.is_empty() {
+        out.push_str("\nDetail:\n");
+        out.push_str(&details);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NO_CAPS: &[&str] = &[];
+    const SOME_CAPS: &[&str] = &["text_selection"];
+
+    fn never_builds(_: &str, _: LogicalViewport) -> Option<Box<dyn DynDriver>> {
+        None
+    }
+
+    fn scenario_requiring(caps: &[&str]) -> Scenario {
+        Scenario {
+            id: "x.y".into(),
+            fixture: "nope".into(),
+            tier: 1,
+            viewport: super::super::schema::ViewportSpec { cols: 10, rows: 10 },
+            requires: caps.iter().map(|s| s.to_string()).collect(),
+            steps: vec![],
+        }
+    }
+
+    /// A backend that hasn't declared a capability skips — and the skip
+    /// carries the missing capability's name. "Silence is impossible."
+    #[test]
+    fn missing_capability_skips_with_a_named_reason() {
+        let backend = BackendReg::new("stub", NO_CAPS, never_builds);
+        let outcome = run_scenario(&scenario_requiring(&["text_selection"]), &backend);
+        assert_eq!(
+            outcome,
+            Outcome::Skip {
+                missing_cap: "text_selection".into()
+            }
+        );
+    }
+
+    /// A declared capability does *not* skip — it goes on to build (and
+    /// here, fail on the deliberately-unknown fixture).
+    #[test]
+    fn declared_capability_runs_the_scenario() {
+        let backend = BackendReg::new("stub", SOME_CAPS, never_builds);
+        let outcome = run_scenario(&scenario_requiring(&["text_selection"]), &backend);
+        assert!(
+            matches!(&outcome, Outcome::Fail { reason, .. } if reason.contains("unknown fixture")),
+            "expected an unknown-fixture failure, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_renders_a_cell_per_backend_and_details_every_non_pass() {
+        let rows = vec![
+            MatrixRow {
+                id: "a.one".into(),
+                tier: 1,
+                cells: vec![("tui", Outcome::Pass), ("gtk", Outcome::Pass)],
+            },
+            MatrixRow {
+                id: "b.two".into(),
+                tier: 1,
+                cells: vec![
+                    ("tui", Outcome::Pass),
+                    (
+                        "gtk",
+                        Outcome::Skip {
+                            missing_cap: "text_selection".into(),
+                        },
+                    ),
+                ],
+            },
+        ];
+        let table = render_matrix(&rows, &["tui", "gtk"]);
+        assert!(table.contains("a.one"));
+        assert!(table.contains("b.two"));
+        assert!(table.contains("pass"));
+        assert!(table.contains("skip"));
+        assert!(
+            table.contains("text_selection"),
+            "a skip must name its missing capability in the detail block:\n{table}"
+        );
+    }
+}
