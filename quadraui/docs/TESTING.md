@@ -327,6 +327,165 @@ primitives you want zone-testable) but the field must exist on the wire
 from day one — declare it empty, never omit it, so callers never need a
 breaking change when a new zone source lands.
 
+## Conformance tiers (C0–C4) and the scenario suite (quadraui#491)
+
+The conformance suite is Tier-4 generalized: **declarative** scenarios,
+run against **every** registered backend, producing a scenario × backend
+matrix. It complements — does not replace — the tiers above:
+`docs/SMELL_AUDIT_2026-07.md` §6.7 spells out the relationship (Tiers 1–3
+unchanged; the pty smoke #302 unchanged; `GtkDriver`/GD-5 division of
+labour unchanged).
+
+### The tiers (a new backend's burn-down checklist)
+
+- **C0 — Boot (day one).** Construct the backend headless;
+  `begin_frame`/`end_frame`; sane viewport; draw *every* primitive once
+  with a canned descriptor — no panic **and** non-empty `text_runs()` for
+  text-bearing primitives. This turns the silent no-op `Backend` defaults
+  into visible red/green immediately. *(Auto-generated per primitive —
+  quadraui#492.)*
+- **C1 — Interaction core (mandatory for "complete").** The Tier-1
+  scenarios: click routing, keyboard focus, modal occlusion,
+  scroll-under-cursor, split relayout, text-selection drag + copy, tab
+  close, menu open/navigate/activate, palette type/pick, toast dismiss,
+  editor click-to-caret. **This is what ships today** — see the ten
+  scenario files under `tests/conformance/scenarios/`.
+- **C2 — Event parity.** For each required `UiEvent` variant, a
+  per-backend native-injection recipe proving it is emitted. Required:
+  Key/Char/MouseDown/Up/Moved/Scroll/DoubleClick/WindowResized/
+  Accelerator/ClipboardPaste/TextCopied. Optional (declare, don't fake):
+  FilesDropped, MouseEntered/Left, DpiChanged, native menu events.
+- **C3 — Platform services.** Clipboard round-trip (headless where
+  possible), capability-honest dialogs and notifications.
+- **C4 — Native residue (never shared).** Exact colours, font rendering,
+  wide-glyph pixels, live-window smoke. GD-5 stays exactly as it is.
+
+### Running it
+
+```sh
+cargo test -p quadraui --features tui      --test conformance -- --nocapture
+cargo test -p quadraui --features gtk,tui  --test conformance -- --nocapture
+```
+
+The matrix prints on every run and is also written to
+`$CARGO_TARGET_DIR/conformance-matrix.txt`; CI uploads it as an artifact
+from both the `tui` and `gtk` jobs. For a backend that doesn't exist yet
+(Windows, macOS) **that artifact is the implementation checklist**.
+
+```text
+Conformance matrix (scenario × backend)
+scenario                         tier  tui   gtk
+-------------------------------------------------
+pipeline.click_advances_stage       1  pass  pass
+dialog.blocks_click_through         1  pass  pass
+...
+```
+
+### Adding a scenario = one JSON file, no Rust
+
+Drop a `*.scn.json` under
+`quadraui/tests/conformance/scenarios/<area>/`. The runner discovers
+files from disk, so nothing registers it. The file stem must equal the
+scenario's `id` (the suite asserts this, so a matrix row is greppable
+back to its file).
+
+```json
+{
+  "id": "pipeline.click_advances_stage",
+  "fixture": "pipeline_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "requires": [],
+  "steps": [
+    { "assert_absent": "stage 3" },
+    { "press": "Right" },
+    { "click_text": "Go" },
+    { "assert_screen_has": "stage 3" },
+    { "type_char": "q" },
+    { "assert_exited": true }
+  ]
+}
+```
+
+Steps, one key each (`quadraui/tests/conformance/schema.rs`):
+
+| Act | Assert | Document |
+|---|---|---|
+| `press`, `type_char`, `type_text`, `ctrl_char` | `assert_screen_has`, `assert_absent`, `assert_count` | `note` |
+| `click_text`, `click_text_at` | `assert_left_of`, `assert_above`, `assert_inside` | |
+| `drag_text`, `scroll_at` | `assert_exited` | |
+
+**There is no numeric coordinate field anywhere in the schema**, and
+serde rejects unknown keys, so `{"click_at": {"x": 12, "y": 3}}` fails to
+deserialise. Hardcoded coordinates aren't discouraged — they're
+unrepresentable (`schema.rs::numeric_coordinate_steps_are_unrepresentable`
+is the executable form of that claim). The only numbers in the schema are
+unit-free counts: `tier`, `viewport.cols`/`rows`, `scroll_at.lines`,
+`assert_count.count`.
+
+Two gotchas when writing needles:
+
+- `assert_screen_has` / `assert_absent` match a whole painted **row** on
+  TUI, but the relational assertions (`assert_left_of`, `assert_above`,
+  `assert_inside`) match a single **text run**, which TUI splits at
+  spaces. So `assert_screen_has: "OPEN EDITORS"` works while
+  `assert_left_of: {a: "OPEN EDITORS", …}` does not — use a
+  single-token needle (`"EDITORS"`) for relational assertions.
+- How *many* rows fit is a backend detail (TUI counts cells, GTK divides
+  pixels by line height). Assertions should name items that are on-screen
+  on every backend, not rely on a specific row count.
+
+### Adding a backend = one driver impl + one registration line
+
+`tests/conformance.rs`:
+
+```rust
+struct MyFactory;
+impl runner::DriverFactory for MyFactory {
+    fn make<A: AppLogic + 'static>(app: A, vp: LogicalViewport) -> Box<dyn runner::DynDriver> {
+        Box::new(my::testing::MyDriver::new_fixture(app, vp))
+    }
+}
+const MY_CAPS: &[&str] = &["mouse", "scroll", "drag", "text_selection"];
+// … and, in `backends()`:
+regs.push(BackendReg::new("my", MY_CAPS, fixtures::build::<MyFactory>));
+```
+
+Everything else — the fixture registry, the step interpreter, the
+matrix — is backend-agnostic. `DynDriver` is the object-safe view of
+`ConformanceDriver` (which is `Sized`, so it can't be a trait object);
+one blanket impl covers every present and future driver.
+
+### Capabilities: a skip must name what's missing
+
+Each backend declares a capability list. A scenario whose `requires`
+mentions a capability the backend hasn't declared is **skipped, with the
+missing capability printed in the matrix detail block**. A backend
+therefore cannot quietly not-run a scenario: either it declares the gap
+up front, or the scenario runs and fails. Silence is impossible.
+
+### Known coordinate-free gaps
+
+Two Tier-1 behaviours from the audit's C1 list can't be expressed
+coordinate-free yet, and are *not* faked with a literal:
+
+- **Split-divider drag.** The divider has no text on GTK (it's a filled
+  rect) and contributes no `register_zone` entry on either backend, so
+  there is nothing for `drag_text` to name. `split.direction_toggle_relayout`
+  covers split *relayout* relationally instead. Unblocked by registering
+  divider zones and adding a zone-anchored drag step.
+- **Editor click-to-caret** (`editor_col_at_x`) — needs a caret position
+  read-back on `ConformanceDriver`.
+
+Two related paint/hit-test rounding warts surfaced while writing these
+scenarios and are worth knowing about when a scenario mysteriously
+"clicks nothing" on TUI: `tui/split.rs` paints the divider at
+`round(divider_bounds.x)` while `SplitLayout::hit_test` uses the
+unrounded rect (the fix `tui/split_tree.rs` already got for #452), and
+a dialog whose total height is an odd number of lines centres on a
+half-line in an even-height viewport, so its painted button row and its
+hit region land one cell apart.
+
 ## Backend testability requirement
 
 Every backend MUST support headless paint-to-memory so tests don't

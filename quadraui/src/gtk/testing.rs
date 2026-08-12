@@ -432,6 +432,10 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
         GtkDriver::type_char(self, c);
     }
 
+    fn ctrl_char(&mut self, c: char) {
+        GtkDriver::ctrl_char(self, c);
+    }
+
     fn click_text_at(&mut self, needle: &str, at: Anchor) {
         let bounds = self
             .find_bounds(needle)

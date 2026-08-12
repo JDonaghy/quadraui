@@ -1,0 +1,18 @@
+{
+  "id": "table.scroll_under_cursor",
+  "fixture": "data_table_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 16 },
+  "requires": ["scroll"],
+  "steps": [
+    { "note": "Scroll under cursor: the wheel must act on whatever the pointer is over, located by a row's own text rather than a coordinate. The viewport is deliberately short so the table overflows on every backend — note that how MANY rows fit is a backend detail, so the assertions only name rows that are on-screen either side of the scroll." },
+    { "assert_screen_has": "api-gateway-5f6c8d-9mn2q" },
+    { "assert_absent": "postgres-0" },
+    { "scroll_at": { "target": "etcd-controlplane", "lines": -4 } },
+    { "assert_absent": "api-gateway-5f6c8d-9mn2q" },
+    { "assert_screen_has": "kube-apiserver-cp" },
+    { "note": "Scrolling back the same distance restores the original view — the wheel is symmetric, not a one-way ratchet." },
+    { "scroll_at": { "target": "kube-apiserver-cp", "lines": 4 } },
+    { "assert_screen_has": "api-gateway-5f6c8d-9mn2q" }
+  ]
+}

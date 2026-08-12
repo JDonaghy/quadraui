@@ -1,0 +1,22 @@
+{
+  "id": "dialog.blocks_click_through",
+  "fixture": "modal_occlusion_demo",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "The #455 bug class, executable (audit 6.5 example 2). The fixture has no `if dialog_open` guard: modal-vs-base arbitration is entirely quadraui's ModalStack + dispatch_click, so a backend that forgets to route mouse-downs through it fails here." },
+    { "assert_screen_has": "selected: nothing" },
+    { "click_text": "pod-03" },
+    { "assert_screen_has": "selected: pod-03" },
+    { "click_text": "Open dialog" },
+    { "assert_screen_has": "Confirm delete" },
+    { "note": "The centred dialog covers rows in the middle of the list. Clicking the dialog's own body text lands inside the modal's bounds; that click must be tagged with the dialog's id and must NOT reach the row underneath." },
+    { "click_text": "Really delete?" },
+    { "assert_screen_has": "selected: pod-03" },
+    { "click_text": "Cancel" },
+    { "assert_absent": "Confirm delete" },
+    { "note": "With the modal closed the base layer is live again — proving the block above was the modal, not a dead row list." },
+    { "click_text": "pod-12" },
+    { "assert_screen_has": "selected: pod-12" }
+  ]
+}

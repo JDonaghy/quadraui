@@ -1,0 +1,20 @@
+{
+  "id": "menubar.open_navigate_activate",
+  "fixture": "menu_bar_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Menu open / navigate / activate: click opens the dropdown, arrow keys move the selection inside it, Enter fires the selected item's id back to the app." },
+    { "assert_screen_has": "menu closed" },
+    { "assert_absent": "Open File" },
+    { "click_text": "File" },
+    { "assert_screen_has": "menu open" },
+    { "assert_screen_has": "New File" },
+    { "assert_above": { "a": "Edit", "b": "New" } },
+    { "assert_above": { "a": "New", "b": "Save" } },
+    { "press": "Down" },
+    { "press": "Enter" },
+    { "assert_screen_has": "activated: open" },
+    { "assert_screen_has": "menu closed" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "palette.type_filters_and_picks",
+  "fixture": "palette_dual_mode_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Palette type / pick: typed characters must reach the palette's query (not the app behind it), refilter the list, and Enter must confirm the surviving item." },
+    { "assert_screen_has": "Switch Branch" },
+    { "assert_screen_has": "develop" },
+    { "assert_count": { "text": "feature/", "count": 2 } },
+    { "type_text": "gtk" },
+    { "assert_absent": "develop" },
+    { "assert_screen_has": "feature/gtk-rasteriser" },
+    { "assert_count": { "text": "feature/", "count": 1 } },
+    { "press": "Enter" },
+    { "assert_screen_has": "Switched to 'feature/gtk-rasteriser'" },
+    { "assert_absent": "Switch Branch" }
+  ]
+}
