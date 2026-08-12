@@ -87,16 +87,19 @@ pub struct ZoneRec {
     pub bounds: Rect,
 }
 
-/// Semantic paint inventory for one rendered frame.
+/// Semantic paint inventory for one rendered frame — the cross-backend
+/// observable contract `docs/SMELL_AUDIT_2026-07.md` §6.2/B3 describes,
+/// aligned with quadraweb#322's id→rect map (quadraui#490).
 ///
-/// This is the minimal slice needed to back [`ConformanceDriver::inventory`]
-/// today: `text_runs` is populated from each backend's existing text
-/// search (TUI's cell-grid scan, GTK's `painted_text` map). `zones` is
-/// reserved for the widget-zone contract `docs/SMELL_AUDIT_2026-07.md`
-/// §6.2/B3 describes (`FrameHitMap` / layout-return provenance) and is
-/// empty until that recording lands — declared here so the field exists
-/// on the wire and callers don't need a breaking change when it's filled
-/// in.
+/// `text_runs` is populated from each backend's existing text search
+/// (TUI's cell-grid scan, GTK's `painted_text` map) — this covers every
+/// text-bearing primitive with no per-widget opt-in required. `zones` is
+/// populated from [`crate::Backend::register_zone`] calls made during the
+/// frame; coverage is incremental — currently the shell chrome
+/// [`crate::compose::app_shell::AppShell::render`] records (activity-bar
+/// items by their own `WidgetId`, plus one `app-shell:`-prefixed zone per
+/// chrome region) — so a primitive that hasn't been wired to call
+/// `register_zone` yet simply contributes no zone, not a wrong one.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameInventory {
     pub text_runs: Vec<TextRun>,
@@ -110,6 +113,100 @@ impl FrameInventory {
 
     pub fn zones(&self) -> &[ZoneRec] {
         &self.zones
+    }
+
+    // ── Relational assertion vocabulary (quadraui#490) ──────────────────
+    //
+    // These are the "no hardcoded coordinates" assertions the issue calls
+    // for: every one of them is computed from `Rect`s this same
+    // `FrameInventory` already reports, in whichever unit the backend
+    // that produced it uses (cells for TUI, pixels for GTK) — a shared
+    // test body never writes a literal coordinate itself, it only ever
+    // names two painted things and asks how they relate.
+
+    /// True if any painted text run contains `needle`.
+    pub fn screen_has(&self, needle: &str) -> bool {
+        self.text_runs.iter().any(|r| r.text.contains(needle))
+    }
+
+    /// True if no painted text run contains `needle` — the negative
+    /// counterpart to [`Self::screen_has`], for asserting something was
+    /// *not* painted this frame (e.g. a closed panel's content).
+    pub fn absent(&self, needle: &str) -> bool {
+        !self.screen_has(needle)
+    }
+
+    /// Number of painted text runs containing `needle`. Useful for
+    /// asserting a repeated element's cardinality (e.g. "3 rows contain
+    /// this label") without caring where each instance landed.
+    pub fn count(&self, needle: &str) -> usize {
+        self.text_runs
+            .iter()
+            .filter(|r| r.text.contains(needle))
+            .count()
+    }
+
+    /// Bounds of the first text run containing `needle`, in this frame's
+    /// paint order. `None` if nothing painted matched.
+    fn locate(&self, needle: &str) -> Option<Rect> {
+        self.text_runs
+            .iter()
+            .find(|r| r.text.contains(needle))
+            .map(|r| r.bounds)
+    }
+
+    /// Bounds of the zone registered under `id` via
+    /// [`crate::Backend::register_zone`], if any.
+    fn zone_bounds(&self, id: &WidgetId) -> Option<Rect> {
+        self.zones.iter().find(|z| &z.id == id).map(|z| z.bounds)
+    }
+
+    /// True if `a`'s painted bounds lie entirely to the left of `b`'s —
+    /// `a`'s right edge at or before `b`'s left edge. Panics-free: if
+    /// either needle wasn't painted this frame, returns `false` (the
+    /// same "didn't happen" answer a missing needle gets everywhere else
+    /// in this vocabulary — callers that need to know *why* should pair
+    /// this with [`Self::screen_has`]).
+    pub fn left_of(&self, a: &str, b: &str) -> bool {
+        match (self.locate(a), self.locate(b)) {
+            (Some(ra), Some(rb)) => ra.x + ra.width <= rb.x,
+            _ => false,
+        }
+    }
+
+    /// True if `a`'s painted bounds lie entirely above `b`'s — `a`'s
+    /// bottom edge at or before `b`'s top edge.
+    pub fn above(&self, a: &str, b: &str) -> bool {
+        match (self.locate(a), self.locate(b)) {
+            (Some(ra), Some(rb)) => ra.y + ra.height <= rb.y,
+            _ => false,
+        }
+    }
+
+    /// True if `a` and `b`'s painted bounds vertically overlap — the
+    /// same logical text row, even across backends whose native units
+    /// (TUI cell rows vs GTK sub-pixel baselines) never line up on exact
+    /// equality.
+    pub fn same_row(&self, a: &str, b: &str) -> bool {
+        match (self.locate(a), self.locate(b)) {
+            (Some(ra), Some(rb)) => ra.y < rb.y + rb.height && rb.y < ra.y + ra.height,
+            _ => false,
+        }
+    }
+
+    /// True if `needle`'s painted bounds lie entirely within the zone
+    /// registered under `zone_id`. `false` if either the needle wasn't
+    /// painted or the zone wasn't registered this frame.
+    pub fn inside(&self, needle: &str, zone_id: &WidgetId) -> bool {
+        match (self.locate(needle), self.zone_bounds(zone_id)) {
+            (Some(r), Some(z)) => {
+                r.x >= z.x
+                    && r.y >= z.y
+                    && r.x + r.width <= z.x + z.width
+                    && r.y + r.height <= z.y + z.height
+            }
+            _ => false,
+        }
     }
 }
 
@@ -172,4 +269,118 @@ pub trait ConformanceDriver: Sized {
 
     /// Whether the app has returned [`crate::Reaction::Exit`].
     fn exited(&self) -> bool;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A small hand-built inventory: an activity-bar-style icon column
+    /// (`"E"`, `"S"`, `"G"` stacked at x=0..2) to the left of a sidebar
+    /// header/content pair (`"SOURCE CONTROL"` above `"content"` at
+    /// x=10..40), plus one registered zone around the sidebar content
+    /// run. Exercises the relational vocabulary with no backend at all —
+    /// the cross-backend agreement itself is proven separately in
+    /// `tests/cross_backend_parity.rs::frame_inventory_relations_agree_tui_and_gtk`.
+    fn fixture() -> FrameInventory {
+        FrameInventory {
+            text_runs: vec![
+                TextRun {
+                    text: "E".into(),
+                    bounds: Rect::new(0.0, 0.0, 1.0, 1.0),
+                },
+                TextRun {
+                    text: "S".into(),
+                    bounds: Rect::new(0.0, 1.0, 1.0, 1.0),
+                },
+                TextRun {
+                    text: "G".into(),
+                    bounds: Rect::new(0.0, 2.0, 1.0, 1.0),
+                },
+                TextRun {
+                    text: "SOURCE CONTROL".into(),
+                    bounds: Rect::new(10.0, 0.0, 14.0, 1.0),
+                },
+                TextRun {
+                    text: "content".into(),
+                    bounds: Rect::new(10.0, 1.0, 7.0, 1.0),
+                },
+            ],
+            zones: vec![ZoneRec {
+                id: WidgetId::new("sidebar-content"),
+                bounds: Rect::new(10.0, 1.0, 30.0, 1.0),
+            }],
+        }
+    }
+
+    #[test]
+    fn screen_has_and_absent() {
+        let inv = fixture();
+        assert!(inv.screen_has("SOURCE"));
+        assert!(inv.screen_has("CONTROL"));
+        assert!(inv.absent("git"));
+        assert!(!inv.screen_has("git"));
+    }
+
+    #[test]
+    fn count_matches_every_run_containing_needle() {
+        let inv = fixture();
+        // "S" appears in the "S" icon run and inside "SOURCE CONTROL".
+        assert_eq!(inv.count("S"), 2);
+        assert_eq!(inv.count("G"), 1);
+        assert_eq!(inv.count("nope"), 0);
+    }
+
+    #[test]
+    fn left_of_is_true_for_the_icon_column_vs_the_sidebar() {
+        let inv = fixture();
+        assert!(inv.left_of("G", "SOURCE CONTROL"));
+        assert!(inv.left_of("G", "content"));
+        assert!(!inv.left_of("SOURCE CONTROL", "G"), "reverse must not hold");
+    }
+
+    #[test]
+    fn above_is_true_for_header_vs_content() {
+        let inv = fixture();
+        assert!(inv.above("SOURCE CONTROL", "content"));
+        assert!(
+            !inv.above("content", "SOURCE CONTROL"),
+            "reverse must not hold"
+        );
+        // Same-column icons stack top to bottom too.
+        assert!(inv.above("E", "S"));
+        assert!(inv.above("S", "G"));
+    }
+
+    #[test]
+    fn same_row_true_for_overlapping_ranges_false_across_rows() {
+        let inv = fixture();
+        assert!(inv.same_row("E", "SOURCE CONTROL"));
+        assert!(inv.same_row("S", "content"));
+        assert!(!inv.same_row("E", "content"));
+    }
+
+    #[test]
+    fn inside_checks_containment_within_a_registered_zone() {
+        let inv = fixture();
+        let zone = WidgetId::new("sidebar-content");
+        assert!(inv.inside("content", &zone));
+        assert!(
+            !inv.inside("SOURCE CONTROL", &zone),
+            "the header run sits above the zone's y range, not inside it"
+        );
+        assert!(
+            !inv.inside("content", &WidgetId::new("no-such-zone")),
+            "an unregistered zone id must never report containment"
+        );
+    }
+
+    #[test]
+    fn relations_are_false_not_panicking_when_a_needle_never_painted() {
+        let inv = fixture();
+        assert!(!inv.left_of("nope", "G"));
+        assert!(!inv.above("G", "nope"));
+        assert!(!inv.same_row("nope", "G"));
+        assert!(!inv.inside("nope", &WidgetId::new("sidebar-content")));
+    }
 }

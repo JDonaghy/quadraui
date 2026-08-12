@@ -265,6 +265,68 @@ separate for now — only the cross-backend parity test currently uses
 the shared-body pattern; migrating the full per-example suites onto it
 is follow-up work, not required by #301.
 
+### `FrameInventory`: the portable paint-inventory contract (quadraui#490)
+
+Before #490, "what did you paint and where" was backend-specific and
+leaked platform types into test bodies: TUI drivers scanned the cell
+grid with `find`/`find_bounds`, GTK read a `(text, bounds)` map, macOS
+had nothing, and a test that wanted to relate two painted things
+("is X left of Y?", "is X inside the sidebar zone?") had no
+backend-neutral way to ask.
+
+[`quadraui::testing::FrameInventory`] (`quadraui/src/testing.rs`, no
+`tui`/`gtk`/`macos`/`win` feature gate) is that contract — the same
+shape `#322` proposes for quadraweb's id→rect map:
+
+```rust
+pub struct TextRun { pub text: String, pub bounds: Rect }
+pub struct ZoneRec { pub id: WidgetId, pub bounds: Rect }
+pub struct FrameInventory { pub text_runs: Vec<TextRun>, pub zones: Vec<ZoneRec> }
+```
+
+`ConformanceDriver::inventory()` returns one per frame. `text_runs` is
+recovered from each backend's existing paint output with no per-widget
+opt-in (TUI's wide-char-aware cell-grid scan; GTK's `painted_text` map,
+fed by every Pango draw via `gtk/painted_text.rs`'s choke point).
+`zones` is populated from [`Backend::register_zone`] calls made during
+render — currently `AppShell::render` registers one zone per
+activity-bar item (keyed by that panel's real `WidgetId`) plus one
+`app-shell:`-prefixed zone per shell-chrome region (`activity-bar`,
+`sidebar-header`, `sidebar-content`, `main-content`, `status-bar`,
+`command-line`, `divider`, `bottom-panel`, `title-bar`, `window`); other
+primitives haven't been wired to call `register_zone` yet and simply
+contribute no zone, never a wrong one.
+
+`FrameInventory` carries a small relational assertion vocabulary — the
+structural fix for CLAUDE.md's no-hardcoded-coordinates rule, since
+every one of these is computed on the `Rect`s the inventory already
+reports, in the backend's own units, so a shared test body never writes
+a coordinate itself:
+
+```rust
+let inv = driver.inventory();
+inv.screen_has("EXPLORER");             // any text run contains this substring
+inv.absent("SOURCE CONTROL");           // no text run does
+inv.count("Settings");                  // how many runs do
+inv.left_of("E", "EXPLORER");           // a's right edge <= b's left edge
+inv.above("EXPLORER", "content");       // a's bottom edge <= b's top edge
+inv.same_row("E", "S");                 // vertical ranges overlap
+inv.inside("content", &WidgetId::new("app-shell:sidebar-content"));
+```
+
+`left_of`/`above`/`inside` are proven to agree across `TuiDriver` and
+`GtkDriver` for the `AppShellDemo` shell_app fixture in
+`tests/cross_backend_parity.rs` — see
+`frame_inventory_relations_agree_tui_and_gtk`.
+
+**Backend checklist:** every backend driver that implements
+`ConformanceDriver` MUST implement `inventory()` and populate
+`text_runs` from its real paint output (not a stub). Populating `zones`
+is incremental (call `Backend::register_zone` from whichever composers/
+primitives you want zone-testable) but the field must exist on the wire
+from day one — declare it empty, never omit it, so callers never need a
+breaking change when a new zone source lands.
+
 ## Backend testability requirement
 
 Every backend MUST support headless paint-to-memory so tests don't
@@ -280,7 +342,10 @@ need a real display, terminal, window manager, or font server.
   same code paths as the live runner.
 - Windows (when implemented): `ID2D1Bitmap` as offscreen render target.
 
-New backends ship with their harness on day one.
+New backends ship with their harness on day one. Once a backend has a
+`ConformanceDriver` impl, it MUST also implement
+[`FrameInventory`](#frameinventory-the-portable-paint-inventory-contract-quadraui490) —
+see the backend checklist above.
 
 ## Live-app headless smoke (GD-5, quadraui#450)
 

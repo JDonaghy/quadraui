@@ -49,6 +49,7 @@ use gtk4::prelude::*;
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
 use crate::dispatch::TextRegion;
 use crate::event::Point;
+use crate::testing::ZoneRec;
 use crate::types::WidgetId;
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
@@ -161,6 +162,12 @@ pub struct GtkBackend {
     /// [`Backend::register_text_region`]. Cleared at the start of each
     /// frame by [`Self::begin_frame`]. Parallels `TuiBackend::text_regions`.
     pub(crate) text_regions: Vec<TextRegion>,
+    /// Widget zones registered during the current frame via
+    /// [`Backend::register_zone`]. Cleared at the start of each frame by
+    /// [`Self::begin_frame`]. Parallels `TuiBackend::zones`. Read by
+    /// [`super::testing::GtkDriver::inventory`] to populate
+    /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
+    pub(crate) zones: Vec<ZoneRec>,
     /// The `(text, bounds)` map painted this frame — recorded by trait
     /// methods that already compute a label's on-surface rect (e.g.
     /// [`Self::draw_status_bar`]) so [`super::testing::GtkDriver::find`]
@@ -304,6 +311,7 @@ impl GtkBackend {
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
             text_regions: Vec::new(),
+            zones: Vec::new(),
             painted_text: Vec::new(),
             painted_text_recording: false,
             active_selection: None,
@@ -1106,6 +1114,9 @@ impl Backend for GtkBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors TuiBackend::begin_frame.
         self.text_regions.clear();
+        // Clear per-frame widget zones for the same reason. Same
+        // lifecycle as text_regions.
+        self.zones.clear();
         // Clear last frame's painted-text map — see `painted_text`'s docs.
         self.painted_text.clear();
         // Clear the focused activity bar — re-set by draw_activity_bar
@@ -1116,6 +1127,10 @@ impl Backend for GtkBackend {
 
     fn register_text_region(&mut self, region: TextRegion) {
         self.text_regions.push(region);
+    }
+
+    fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
+        self.zones.push(ZoneRec { id, bounds });
     }
 
     fn end_frame(&mut self) {

@@ -163,6 +163,23 @@ pub trait Backend {
     /// override this to accumulate regions for the current frame.
     fn register_text_region(&mut self, _region: crate::dispatch::TextRegion) {}
 
+    /// Record one hit-testable widget zone painted during the current
+    /// frame — the `WidgetId`-keyed counterpart to
+    /// [`Self::register_text_region`], and the source
+    /// [`crate::testing::FrameInventory::zones`] reads from
+    /// (quadraui#490, `docs/SMELL_AUDIT_2026-07.md` §6.2/B3).
+    ///
+    /// Call once per zone during render (chrome composers like
+    /// [`crate::compose::app_shell::AppShell::render`] call this for
+    /// each `WidgetId`-bearing region they lay out — activity-bar items,
+    /// sidebar panels, the status bar, and so on). The registration is
+    /// cleared at the start of each frame by `begin_frame`, mirroring
+    /// `register_text_region`'s lifecycle.
+    ///
+    /// Default: no-op. `TuiBackend`/`GtkBackend` override this to
+    /// accumulate the current frame's zones for `ConformanceDriver::inventory`.
+    fn register_zone(&mut self, _id: WidgetId, _bounds: Rect) {}
+
     /// Cancel any in-progress text-selection drag without clearing the
     /// currently displayed selection highlight.
     ///

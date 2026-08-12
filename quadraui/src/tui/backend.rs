@@ -48,6 +48,7 @@ use std::time::Duration;
 use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
 use crate::dispatch::TextRegion;
+use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, CommandLine, DragState,
     DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
@@ -120,6 +121,12 @@ pub struct TuiBackend {
     /// [`crate::Backend::register_text_region`]. Cleared at the start
     /// of each frame by [`Self::begin_frame`].
     text_regions: Vec<TextRegion>,
+    /// Widget zones registered during the current frame via
+    /// [`crate::Backend::register_zone`]. Cleared at the start of each
+    /// frame by [`Self::begin_frame`], mirroring `text_regions`. Read by
+    /// [`crate::tui::testing::TuiDriver::inventory`] to populate
+    /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
+    zones: Vec<ZoneRec>,
     /// Finalised selection (may persist after mouse-up). `None` when
     /// no selection is active. Set by [`Self::set_active_text_selection`],
     /// cleared by [`Self::clear_text_selection`] or on a new
@@ -188,6 +195,7 @@ impl TuiBackend {
             nerd_fonts_enabled: true,
             double_click: super::events::DoubleClickDetector::new(),
             text_regions: Vec::new(),
+            zones: Vec::new(),
             active_selection: None,
             cached_selection_text: String::new(),
             last_text_region_id: None,
@@ -252,6 +260,14 @@ impl TuiBackend {
     /// `draw_*` invocations consume the stored theme.
     pub fn set_current_theme(&mut self, theme: crate::Theme) {
         self.current_theme = theme;
+    }
+
+    /// Widget zones registered via [`crate::Backend::register_zone`] during
+    /// the current frame. Read by
+    /// [`crate::tui::testing::TuiDriver::inventory`] to populate
+    /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
+    pub(crate) fn zones(&self) -> &[ZoneRec] {
+        &self.zones
     }
 
     // ── Text selection ─────────────────────────────────────────────────────
@@ -709,6 +725,9 @@ impl Backend for TuiBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger.
         self.text_regions.clear();
+        // Clear per-frame widget zones for the same reason. Same
+        // lifecycle as text_regions.
+        self.zones.clear();
         // Clear the focused activity bar — re-set by draw_activity_bar
         // during the render pass if still focused.
         self.focused_activity_bar = None;
@@ -721,6 +740,10 @@ impl Backend for TuiBackend {
 
     fn register_text_region(&mut self, region: TextRegion) {
         self.text_regions.push(region);
+    }
+
+    fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
+        self.zones.push(ZoneRec { id, bounds });
     }
 
     fn cancel_text_selection_drag(&mut self) {

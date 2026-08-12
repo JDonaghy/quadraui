@@ -565,6 +565,44 @@ impl AppShell {
 
     // ── Render ───────────────────────────────────────────────────────
 
+    /// Register a `WidgetId`-keyed [`crate::Backend::register_zone`] entry
+    /// for every chrome region `layout` reports, so a
+    /// [`crate::testing::ConformanceDriver::inventory`] caller can assert
+    /// `inside`/`left_of`/`above` against shell-level zones without
+    /// hardcoding a coordinate (quadraui#490). Ids are stable,
+    /// `app-shell:`-prefixed strings — not the panel/content `WidgetId`s
+    /// consumers pick — since a shell has exactly one of each of these
+    /// regions per frame.
+    ///
+    /// Per-item zones (one per activity-bar entry, keyed by that panel's
+    /// own `WidgetId`) are registered separately in [`Self::render`],
+    /// right after `draw_activity_bar` returns the hit list — this
+    /// function only covers the coarser, one-per-frame chrome regions.
+    fn register_chrome_zones(backend: &mut dyn Backend, layout: &AppShellLayout) {
+        backend.register_zone(WidgetId::new("app-shell:window"), layout.window_bounds);
+        backend.register_zone(
+            WidgetId::new("app-shell:activity-bar"),
+            layout.activity_bar_bounds,
+        );
+        backend.register_zone(
+            WidgetId::new("app-shell:main-content"),
+            layout.main_content_bounds,
+        );
+        for (id, bounds) in [
+            ("app-shell:title-bar", layout.title_bar_bounds),
+            ("app-shell:sidebar-header", layout.sidebar_header_bounds),
+            ("app-shell:sidebar-content", layout.sidebar_content_bounds),
+            ("app-shell:divider", layout.divider_bounds),
+            ("app-shell:bottom-panel", layout.bottom_panel_bounds),
+            ("app-shell:command-line", layout.command_line_bounds),
+            ("app-shell:status-bar", layout.status_bar_bounds),
+        ] {
+            if let Some(bounds) = bounds {
+                backend.register_zone(WidgetId::new(id), bounds);
+            }
+        }
+    }
+
     /// Render shell chrome and return layout bounds for consumer content.
     ///
     /// Draws: activity bar, sidebar header, resize divider.
@@ -572,10 +610,25 @@ impl AppShell {
     pub fn render(&self, backend: &mut dyn Backend, area: Rect) -> AppShellLayout {
         let lh = backend.line_height();
         let layout = self.compute_layout(area, lh);
+        Self::register_chrome_zones(backend, &layout);
 
         let bar = self.build_activity_bar();
         let hits =
             backend.draw_activity_bar(layout.activity_bar_bounds, &bar, self.hovered_activity_idx);
+        // Register each activity-bar item's own zone (its real `WidgetId`,
+        // e.g. `panel:git`) *before* `hits` moves into the hover-hit cache
+        // below — this is the per-item provenance
+        // `docs/SMELL_AUDIT_2026-07.md` §6.2/B3 calls for, not just the
+        // whole-bar zone `register_chrome_zones` already recorded.
+        for hit in &hits {
+            let item_bounds = Rect::new(
+                layout.activity_bar_bounds.x,
+                layout.activity_bar_bounds.y + hit.y_start as f32,
+                layout.activity_bar_bounds.width,
+                (hit.y_end - hit.y_start) as f32,
+            );
+            backend.register_zone(hit.id.clone(), item_bounds);
+        }
         *self.cached_activity_hits.borrow_mut() = hits;
         *self.cached_activity_bar_bounds.borrow_mut() = Some(layout.activity_bar_bounds);
 
