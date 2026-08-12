@@ -1,0 +1,19 @@
+ILLUSTRATIVE ONLY — NOT AN ASSERTION FIXTURE. See contract.md §8.
+This grid shows the INTENDED render of contract §3b's fixture: a CJK tab
+followed by an ASCII control tab, 80x6. It is deliberately NOT diffed as a
+golden grid, because a `.screen` diff cannot see #554's defect at all — the
+broken and fixed renders stringify identically through `TuiDriver::screen()`
+and differ only in cell striding (contract §2). Every load-bearing assertion
+for #554 goes through `find_bounds`, never `screen_contains` or a grid diff.
+Intended widths, once #554 is fixed:
+  " 1: 日本語.rs "  -> 14 columns   (日本語 = 3 glyphs x 2 columns)
+  "日本語.rs"       ->  9 columns   (find_bounds width, contract §3c)
+  " 2: main.rs "   -> 12 columns
+  "main.rs"        ->  7 columns   (find_bounds width, contract §3d)
+--- grid below this line ---
+ 1: 日本語.rs ×│ 2: main.rs ×
+    tab 0 active (wide label)
+    tab 1 inactive (ASCII control)
+
+    click "日本語.rs" -> activates tab 0  (contract §3g)
+
