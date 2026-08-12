@@ -11,15 +11,23 @@
 # so each issue's JIT-authored slice appends its own entries here.
 
 tests:
-  # Empty: no slice is authored yet. ms-11's first slice is #554's
-  # (contract §3), authorable as soon as Gate A is approved — its siblings
-  # #488/#489/#494/#556 have all merged, so it waits on nothing else.
-  #
+  # ── #554 — wide-glyph tab labels (contract §3) ─────────────────────────
+  # Slice: wide_tab_labels.rs, `include!`d from quadraui/tests/acceptance.rs.
+  # All assertions go through `find_bounds`/`click_text`, never
+  # `screen_contains` — for this issue that readback is INVERTED (contract
+  # §2), and the mock is illustrative only (contract §8).
+  ms11_554_wide_tab_labels::wide_label_paints_every_glyph_in_its_own_columns: 554  # §3c
+  ms11_554_wide_tab_labels::ascii_label_is_unchanged: 554                          # §3d
+  ms11_554_wide_tab_labels::measured_tab_budget_matches_the_painted_width: 554     # §3e
+  ms11_554_wide_tab_labels::click_on_wide_label_activates_the_painted_tab: 554     # §3g
+  ms11_554_wide_tab_labels::emoji_label_paints_every_glyph: 554                    # §3h
+
   # #542's slice must NOT be authored before #490 merges: it asserts on
   # `FrameInventory.zones()`, which is declared-but-always-empty until
   # #490's widget-zone recording lands, so an early slice would be red for
   # a reason that is not #542's implementation (contract §4c).
-  {}
+  #
+  # #492's slice (contract §5) is likewise unauthored so far.
 
 # Issue-level exemption from the #1138 dispatch gate: "this issue does not
 # consume the sealed suite." Per ORACLE_LOOP.md this does NOT bypass Gate A
