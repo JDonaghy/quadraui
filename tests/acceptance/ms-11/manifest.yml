@@ -1,0 +1,41 @@
+# Acceptance manifest for milestone ms-11 ("Backend conformance suite",
+# epic #480). See contract.md — this file is its machine-readable half.
+#
+# Test-ids are the libtest `name` emitted by
+#   cd quadraui && cargo test --test acceptance --features tui,gtk
+# (module-qualified fn path). Slice files live in this directory and are
+# `include!`d below the SEALED marker in `quadraui/tests/acceptance.rs`,
+# which is declared as this driver's `entrypoint:` in the fleet config.
+#
+# Merged (never clobbered) across issues by coord.acceptance.load_manifest,
+# so each issue's JIT-authored slice appends its own entries here.
+
+tests:
+  # Empty: no slice is authored yet. ms-11's first slice is #554's
+  # (contract §3), authorable as soon as Gate A is approved — its siblings
+  # #488/#489/#494/#556 have all merged, so it waits on nothing else.
+  #
+  # #542's slice must NOT be authored before #490 merges: it asserts on
+  # `FrameInventory.zones()`, which is declared-but-always-empty until
+  # #490's widget-zone recording lands, so an early slice would be red for
+  # a reason that is not #542's implementation (contract §4c).
+  {}
+
+# Issue-level exemption from the #1138 dispatch gate: "this issue does not
+# consume the sealed suite." Per ORACLE_LOOP.md this does NOT bypass Gate A
+# itself — the contract still needs a recorded human verdict, which is why
+# contract.md exists and carries no `gate_a: exempt` block.
+#
+# Reasons in full: contract.md §7.
+exempt:
+  - 490   # harness construction — builds FrameInventory, the surface §4/§5 assert THROUGH
+  - 491   # harness construction — builds the scenario schema + runner
+  - 493   # MacDriver: no macOS machine in the fleet (ms #39 / docs/MAC_MINI.md unbuilt).
+          # A slice could be authored but never executed, and an unrunnable suite reads
+          # as coverage. Revisit when a macOS runner joins the fleet.
+  - 555   # pty/vt100 observer is outside TestBackend by construction (the limit
+          # ORACLE_LOOP.md names; quadraui#302's tier is unbuilt). Revisit when it lands
+          # — quadraui already vendors a patched vt100, so this is not permanent.
+
+# NOTE: #554, #542 and #492 are deliberately absent from `exempt` — they are
+# the three issues this milestone's oracle actually binds (contract §1).
