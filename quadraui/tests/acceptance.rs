@@ -119,3 +119,7 @@ fn seam_gtk_driver_builds_and_runs_an_example_app_logic() {
 // `cargo test --test acceptance --features tui,gtk` exercises only the
 // seam tests above.
 // ============================================================================
+
+// ms-11 (epic #480) — issue #554: tab labels measured and painted in
+// display columns, not chars. Contract: tests/acceptance/ms-11/contract.md §3.
+include!("../../tests/acceptance/ms-11/wide_tab_labels.rs");
