@@ -21,7 +21,7 @@
 use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriver};
 use quadraui::testing::{ConformanceDriver, LogicalViewport};
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
-use quadraui::{AppLogic, DataTableLayout, NamedKey};
+use quadraui::{AppLogic, DataTableLayout, NamedKey, WidgetId};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -690,4 +690,60 @@ fn activity_hover_distinguishes_adjacent_rows_after_title_bar_reveal() {
         "three distinct rows must map to three distinct icons — got \
          {row0:?} {row1:?} {row2:?}"
     );
+}
+
+// ─── quadraui#490: FrameInventory relational vocabulary ────────────────────
+//
+// `left_of`/`above`/`inside` are the whole point of `FrameInventory` — a
+// shared test body asks how two painted things relate, in whichever units
+// the backend that produced them uses, and never writes a coordinate
+// itself. Proves the three hold identically for `AppShellDemo` (the
+// `shell_app` fixture) on both `TuiDriver` and `GtkDriver`, per #490's
+// acceptance bar.
+
+/// Switch to the Source Control panel (`p` is `AppShellDemo`'s
+/// jump-to-Source-Control binding — see its `handle` impl) and return the
+/// [`quadraui::testing::FrameInventory`] for the resulting frame.
+fn source_control_inventory<D: ConformanceDriver>(d: &mut D) -> quadraui::testing::FrameInventory {
+    d.type_char('p');
+    d.inventory()
+}
+
+#[test]
+fn frame_inventory_relations_agree_tui_and_gtk() {
+    let mut tui = tui_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 100, 30);
+    let mut gtk = gtk_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 800, 480);
+
+    let tui_inv = source_control_inventory(&mut tui);
+    let gtk_inv = source_control_inventory(&mut gtk);
+
+    let sidebar_content_zone = WidgetId::new("app-shell:sidebar-content");
+    let main_content_zone = WidgetId::new("app-shell:main-content");
+
+    for (name, inv) in [("TUI", &tui_inv), ("GTK", &gtk_inv)] {
+        assert!(
+            inv.screen_has("CONTROL"),
+            "{name}: sidebar header should read SOURCE CONTROL after 'p'"
+        );
+        assert!(
+            inv.left_of("G", "CONTROL"),
+            "{name}: the activity bar's Source Control icon ('G') must sit \
+             left of the sidebar header it activates"
+        );
+        assert!(
+            inv.above("CONTROL", "content"),
+            "{name}: the sidebar header must sit above the sidebar content \
+             row (' (sidebar content here) ')"
+        );
+        assert!(
+            inv.inside("content", &sidebar_content_zone),
+            "{name}: the sidebar content text must fall inside the \
+             registered app-shell:sidebar-content zone"
+        );
+        assert!(
+            !inv.inside("content", &main_content_zone),
+            "{name}: the sidebar content text must NOT fall inside the \
+             main-content zone — the two zones must not overlap"
+        );
+    }
 }

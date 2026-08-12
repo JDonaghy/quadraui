@@ -478,10 +478,12 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
                     bounds: p.bounds,
                 })
                 .collect(),
-            // Widget-zone recording (`ZoneRec`) is B3/`docs/SMELL_AUDIT_2026-07.md`
-            // §6.2 follow-up work — no `FrameHitMap`-sourced zone log exists
-            // yet on either backend.
-            zones: Vec::new(),
+            // Zones registered this frame via `Backend::register_zone` —
+            // currently the shell-chrome zones `AppShell::render` records
+            // (activity-bar items, sidebar header/content, status bar,
+            // ...). Primitives that don't yet call `register_zone`
+            // contribute no zone (quadraui#490).
+            zones: self.backend.zones.clone(),
         }
     }
 
