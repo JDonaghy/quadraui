@@ -23,7 +23,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use quadraui::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport};
-use quadraui::{AppLogic, WidgetId};
+use quadraui::{AppLogic, Backend, BackendCaps, Reaction, UiEvent, WidgetId};
 
 use super::schema::{parse_named_key, Scenario, Step};
 
@@ -46,6 +46,7 @@ pub trait DynDriver {
     fn drag_text(&mut self, from: &str, to: &str);
     fn scroll_at(&mut self, needle: &str, lines: i32);
     fn inventory(&self) -> FrameInventory;
+    fn backend_caps(&self) -> BackendCaps;
     fn screen_has(&self, needle: &str) -> bool;
     fn exited(&self) -> bool;
 }
@@ -75,6 +76,9 @@ impl<D: ConformanceDriver> DynDriver for D {
     fn inventory(&self) -> FrameInventory {
         ConformanceDriver::inventory(self)
     }
+    fn backend_caps(&self) -> BackendCaps {
+        ConformanceDriver::backend_caps(self)
+    }
     fn screen_has(&self, needle: &str) -> bool {
         ConformanceDriver::screen_has(self, needle)
     }
@@ -91,6 +95,36 @@ impl<D: ConformanceDriver> DynDriver for D {
 /// one line per fixture.
 pub trait DriverFactory {
     fn make<A: AppLogic + 'static>(app: A, viewport: LogicalViewport) -> Box<dyn DynDriver>;
+
+    /// What this backend declares it can do — read off a real instance of
+    /// the backend, via [`DynDriver::backend_caps`].
+    ///
+    /// **Do not override this.** The default body is the whole point
+    /// (quadraui#492 review): it builds a throwaway driver over a
+    /// paint-nothing [`AppLogic`] and asks the backend itself, so
+    /// registering a backend cannot restate — and therefore cannot
+    /// contradict — its own `Backend::backend_caps`. Overriding it would
+    /// reintroduce exactly the hand-maintained second list
+    /// (`TUI_CAPS`/`GTK_CAPS`) this replaced. Provided as a defaulted
+    /// trait method rather than a free function only so the "add a
+    /// backend = one `DriverFactory` impl + one `push`" contract holds
+    /// with no extra line at either site.
+    fn caps() -> BackendCaps {
+        /// Renders nothing and handles nothing: capabilities are a
+        /// property of the *backend*, not of whatever app is on top of
+        /// it, so the cheapest possible app is the honest probe.
+        struct CapsProbe;
+        impl AppLogic for CapsProbe {
+            type AreaId = ();
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+        // Small on purpose — nothing is painted, so the viewport only has
+        // to be large enough for the backend to construct a surface.
+        Self::make(CapsProbe, LogicalViewport::new(10, 5)).backend_caps()
+    }
 }
 
 /// Builds a driver for a named fixture, or `None` if this build has no such
@@ -103,21 +137,34 @@ pub struct BackendReg {
     /// Capabilities this backend declares it supports. A scenario whose
     /// `requires` list mentions anything absent here is **skipped with the
     /// missing capability named** — never silently passed (audit §6.6).
-    pub caps: &'static [&'static str],
+    ///
+    /// This is [`quadraui::Backend::backend_caps`]'s own return value,
+    /// obtained through [`DriverFactory::caps`] — *not* a list restated
+    /// beside the registration (quadraui#492 review). One vocabulary,
+    /// one source.
+    pub caps: BackendCaps,
     pub build: BuildFn,
 }
 
 impl BackendReg {
-    pub fn new(name: &'static str, caps: &'static [&'static str], build: BuildFn) -> Self {
-        Self { name, caps, build }
+    /// Register backend `name` from its [`DriverFactory`] alone.
+    ///
+    /// Generic over `F` rather than taking `caps` and `build` as separate
+    /// arguments so the three cannot disagree: the name is the only thing
+    /// the caller supplies, and both the capability set and the fixture
+    /// builder are derived from the same `F`. This is the whole of "add a
+    /// backend = one registration line".
+    pub fn register<F: DriverFactory>(name: &'static str) -> Self {
+        Self {
+            name,
+            caps: F::caps(),
+            build: super::fixtures::build::<F>,
+        }
     }
 
     /// The first capability in `requires` this backend has not declared.
     fn missing_cap(&self, requires: &[String]) -> Option<String> {
-        requires
-            .iter()
-            .find(|r| !self.caps.contains(&r.as_str()))
-            .cloned()
+        requires.iter().find(|r| !self.caps.has(r)).cloned()
     }
 }
 
@@ -462,11 +509,26 @@ mod tests {
     use super::*;
     use quadraui::Rect;
 
-    const NO_CAPS: &[&str] = &[];
-    const SOME_CAPS: &[&str] = &["text_selection"];
+    const NO_CAPS: BackendCaps = BackendCaps::empty();
+    const SOME_CAPS: BackendCaps = BackendCaps {
+        text_selection: true,
+        ..BackendCaps::empty()
+    };
 
     fn never_builds(_: &str, _: LogicalViewport) -> Option<Box<dyn DynDriver>> {
         None
+    }
+
+    /// A `BackendReg` built by hand rather than through
+    /// [`BackendReg::register`]: these tests are about `missing_cap`'s
+    /// gate, so they need to pin an arbitrary capability set without
+    /// standing up a backend to declare it.
+    fn stub(caps: BackendCaps) -> BackendReg {
+        BackendReg {
+            name: "stub",
+            caps,
+            build: never_builds,
+        }
     }
 
     fn scenario_requiring(caps: &[&str]) -> Scenario {
@@ -546,7 +608,7 @@ mod tests {
     /// carries the missing capability's name. "Silence is impossible."
     #[test]
     fn missing_capability_skips_with_a_named_reason() {
-        let backend = BackendReg::new("stub", NO_CAPS, never_builds);
+        let backend = stub(NO_CAPS);
         let outcome = run_scenario(&scenario_requiring(&["text_selection"]), &backend);
         assert_eq!(
             outcome,
@@ -560,11 +622,50 @@ mod tests {
     /// here, fail on the deliberately-unknown fixture).
     #[test]
     fn declared_capability_runs_the_scenario() {
-        let backend = BackendReg::new("stub", SOME_CAPS, never_builds);
+        let backend = stub(SOME_CAPS);
         let outcome = run_scenario(&scenario_requiring(&["text_selection"]), &backend);
         assert!(
             matches!(&outcome, Outcome::Fail { reason, .. } if reason.contains("unknown fixture")),
             "expected an unknown-fixture failure, got {outcome:?}"
+        );
+    }
+
+    /// The gate reads `BackendCaps::has`, so a `requires` entry that is
+    /// not in the vocabulary at all can never be satisfied — by any
+    /// backend, however capable. That is deliberate (a typo must not
+    /// silently pass), and it is why
+    /// `conformance::every_requires_names_a_known_capability` exists to
+    /// catch the typo by name rather than leaving it as a permanent skip.
+    #[test]
+    fn a_capability_outside_the_vocabulary_can_never_be_satisfied() {
+        // Written out exhaustively (no `..empty()`) so a new capability
+        // field is a compile error here rather than quietly weakening
+        // "maximally capable" to "capable of the fields that existed when
+        // this was written".
+        let every_cap = BackendCaps {
+            mouse: true,
+            scroll: true,
+            drag: true,
+            text_selection: true,
+            native_menu: true,
+            window_chrome: true,
+            pointer_cursor: true,
+            ime: true,
+            file_dialogs: true,
+            notifications: true,
+        };
+        assert_eq!(
+            every_cap.names(),
+            BackendCaps::vocabulary(),
+            "this value is supposed to declare the entire vocabulary"
+        );
+        let backend = stub(every_cap);
+        assert_eq!(
+            run_scenario(&scenario_requiring(&["teleportation"]), &backend),
+            Outcome::Skip {
+                missing_cap: "teleportation".into()
+            },
+            "a maximally-capable backend must still skip an unknown capability name"
         );
     }
 

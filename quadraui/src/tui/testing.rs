@@ -391,6 +391,12 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
         TuiDriver::new(app, viewport.cols as u16, viewport.rows as u16)
     }
 
+    fn backend_caps(&self) -> crate::BackendCaps {
+        // Straight off the real `TuiBackend` this driver wraps — never a
+        // re-statement (quadraui#492).
+        crate::Backend::backend_caps(&self.backend)
+    }
+
     fn press_named(&mut self, key: NamedKey) {
         TuiDriver::press_named(self, key);
     }

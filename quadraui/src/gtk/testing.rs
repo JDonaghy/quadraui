@@ -424,6 +424,12 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
         )
     }
 
+    fn backend_caps(&self) -> crate::BackendCaps {
+        // Straight off the real `GtkBackend` this driver wraps — never a
+        // re-statement (quadraui#492).
+        crate::Backend::backend_caps(&self.backend)
+    }
+
     fn press_named(&mut self, key: NamedKey) {
         GtkDriver::press_named(self, key);
     }

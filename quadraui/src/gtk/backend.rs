@@ -1268,7 +1268,13 @@ impl Backend for GtkBackend {
 
     /// quadraui#492: honest per-method, not aspirational.
     ///
-    /// - `text_selection`: `register_text_region` is overridden below.
+    /// - `mouse` / `scroll` / `drag`: `gtk::run` attaches a `GestureClick`,
+    ///   an `EventControllerScroll` (`BOTH_AXES`) and an
+    ///   `EventControllerMotion` to the drawing area, so presses,
+    ///   wheel/trackpad scroll and button-held motion all arrive as
+    ///   `UiEvent`s.
+    /// - `text_selection`: `register_text_region` and
+    ///   `cancel_text_selection_drag` are both overridden below.
     /// - `native_menu`: **not** declared — `install_menu_bar` /
     ///   `show_context_menu` are still the trait's no-op default; GTK apps
     ///   paint their own `ContextMenu` (see `Backend::show_context_menu`
@@ -1285,6 +1291,9 @@ impl Backend for GtkBackend {
     ///   an async-aware trait shape (`src/gtk/services.rs` module docs).
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
+            mouse: true,
+            scroll: true,
+            drag: true,
             text_selection: true,
             window_chrome: true,
             pointer_cursor: true,

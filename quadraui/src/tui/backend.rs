@@ -849,16 +849,27 @@ impl Backend for TuiBackend {
         &self.services
     }
 
-    /// quadraui#492: honest per-method, not aspirational. TUI overrides
-    /// `register_text_region`/`cancel_text_selection_drag` (mouse-drag
-    /// selection highlight is real), and nothing else optional — no
-    /// window to drag/resize/maximize, no native pointer glyph, no
-    /// native menu, no IME positioning, and both `PlatformServices`
-    /// dialog methods unconditionally return `None`
-    /// (`TuiPlatformServices::show_file_open_dialog` /
-    /// `show_file_save_dialog`) with notifications a no-op.
+    /// quadraui#492: honest per-method, not aspirational.
+    ///
+    /// - `mouse` / `scroll` / `drag`: `tui::run` sends crossterm's
+    ///   `EnableMouseCapture` on entry, and
+    ///   `tui::events::crossterm_mouse_to_uievent` maps
+    ///   `MouseEventKind::{Down,Up,Drag,ScrollUp,ScrollDown,…}` to the
+    ///   matching `UiEvent`, so all three input kinds are real.
+    /// - `text_selection`: `register_text_region` /
+    ///   `cancel_text_selection_drag` are both overridden below —
+    ///   mouse-drag selection highlight is real.
+    /// - everything else: **not** declared. No window to
+    ///   drag/resize/maximize, no native pointer glyph, no native menu,
+    ///   no IME positioning, and both `PlatformServices` dialog methods
+    ///   unconditionally return `None`
+    ///   (`TuiPlatformServices::show_file_open_dialog` /
+    ///   `show_file_save_dialog`) with notifications a no-op.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
+            mouse: true,
+            scroll: true,
+            drag: true,
             text_selection: true,
             ..crate::backend::BackendCaps::empty()
         }

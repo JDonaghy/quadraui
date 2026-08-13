@@ -285,6 +285,21 @@ pub trait ConformanceDriver: Sized {
     /// positive = scroll up, matching [`crate::ScrollDelta`]'s convention).
     fn scroll_at(&mut self, needle: &str, lines: i32);
 
+    /// The [`crate::BackendCaps`] the backend under this driver declares
+    /// — i.e. `Backend::backend_caps` on the *real* backend instance the
+    /// driver wraps, never a re-statement of it.
+    ///
+    /// quadraui#492 review: the conformance runner used to pair each
+    /// backend with a hand-maintained `&[&str]` of capability names,
+    /// disconnected from what the backend itself declares, so the two
+    /// could drift silently in both directions. This method is the wire
+    /// between them — `BackendReg::caps` is now literally this value, so
+    /// a scenario's `requires` gate can only ever match against what the
+    /// backend really said. Required (no default) on purpose: there is no
+    /// honest answer to guess, and inventing one is exactly the silence
+    /// `BackendCaps` exists to break.
+    fn backend_caps(&self) -> crate::BackendCaps;
+
     /// Semantic paint inventory for the last rendered frame.
     fn inventory(&self) -> FrameInventory;
 
