@@ -32,12 +32,32 @@
 //! missing capability printed** — the audit's "silence is impossible"
 //! rule. A skip is never a silent pass, and a backend cannot skip a
 //! scenario without having declared the gap up front.
+//!
+//! That list is not written here. It is
+//! [`quadraui::Backend::backend_caps`] on the real backend instance,
+//! reached through [`runner::DriverFactory::caps`] (quadraui#492): there
+//! used to be a hand-maintained `TUI_CAPS`/`GTK_CAPS` array beside each
+//! registration, and nothing tied it to what the backend actually
+//! implements, so the two vocabularies could drift in both directions.
+//! Three tests hold the single vocabulary together now:
+//!
+//! - [`every_requires_names_a_known_capability`] — a scenario cannot
+//!   `require` a name [`quadraui::BackendCaps`] has no field for.
+//! - [`every_capability_is_required_by_some_scenario_or_named_as_unused`]
+//!   — the reverse direction: a `BackendCaps` field no scenario can
+//!   reference is either a gap to fill or a fact to write down.
+//! - [`caps::backends_declare_only_what_they_override`] — the honesty
+//!   check: a declared capability whose `Backend` methods are still the
+//!   trait's no-op default is a lie, and so is an undeclared one whose
+//!   methods are overridden.
 
 #[path = "../examples/common/mod.rs"]
 mod common;
 
 #[path = "conformance/c0.rs"]
 mod c0;
+#[path = "conformance/caps.rs"]
+mod caps;
 #[path = "conformance/fixtures.rs"]
 mod fixtures;
 #[path = "conformance/runner.rs"]
@@ -72,13 +92,6 @@ impl runner::DriverFactory for TuiFactory {
     }
 }
 
-/// Capabilities the TUI backend declares. Honest, not aspirational: each
-/// is exercised by at least one Tier-1 scenario, and removing one here
-/// turns the scenarios that need it into visible `skip` rows rather than
-/// silently-green ones.
-#[cfg(feature = "tui")]
-const TUI_CAPS: &[&str] = &["mouse", "scroll", "drag", "text_selection"];
-
 #[cfg(feature = "gtk")]
 struct GtkFactory;
 
@@ -95,11 +108,13 @@ impl runner::DriverFactory for GtkFactory {
     }
 }
 
-#[cfg(feature = "gtk")]
-const GTK_CAPS: &[&str] = &["mouse", "scroll", "drag", "text_selection"];
-
 /// Every backend compiled into this build. **This is the registration
 /// point** — a new backend adds exactly one `push` here.
+///
+/// Note what is *not* here: a capability list. `BackendReg::register`
+/// reads it off the backend itself (quadraui#492), so a registration
+/// cannot claim a capability the backend doesn't declare, and a backend
+/// cannot declare one the runner ignores.
 // `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
 // `vec![…]` form clippy suggests would need the cfg attributes on macro
 // arguments — less legible than the one-push-per-backend shape this
@@ -109,17 +124,9 @@ fn backends() -> Vec<BackendReg> {
     #[allow(unused_mut)]
     let mut regs: Vec<BackendReg> = Vec::new();
     #[cfg(feature = "tui")]
-    regs.push(BackendReg::new(
-        "tui",
-        TUI_CAPS,
-        fixtures::build::<TuiFactory>,
-    ));
+    regs.push(BackendReg::register::<TuiFactory>("tui"));
     #[cfg(feature = "gtk")]
-    regs.push(BackendReg::new(
-        "gtk",
-        GTK_CAPS,
-        fixtures::build::<GtkFactory>,
-    ));
+    regs.push(BackendReg::register::<GtkFactory>("gtk"));
     regs
 }
 
@@ -246,6 +253,25 @@ fn conformance_matrix() {
 /// macOS) simply have no column, matching how `conformance_matrix`
 /// already treats an unregistered backend: the *absence* of a Win/macOS
 /// column in this artifact **is** the gap enumerated, not a hidden pass.
+///
+/// ## What this tier does *not* yet catch, stated plainly
+///
+/// quadraui#492's Problem section names the macOS `draw_diff_view` fake
+/// (`macos/backend.rs`) as the motivating bug. **This test would not have
+/// caught it**, and saying so is the point: there is no
+/// `ConformanceDriver` impl for `MacBackend` or `WinBackend` at all — not
+/// merely no column in *this* build — so `c0::run` has nothing to run
+/// them with on any host. The `draw_diff_view` row below is proven on TUI
+/// and GTK only.
+///
+/// That is a pre-existing limitation inherited from #491's tier-1 suite
+/// rather than something this tier introduced, and it is why the
+/// capability half of #492 was deliberately built to read *source*
+/// instead (`caps.rs`): `MacBackend`/`WinBackend` are checked there on
+/// every run, on every platform. Closing the paint half needs a macOS/Win
+/// `ConformanceDriver`, which is the follow-up — until it lands, C0's
+/// coverage claim is "every primitive, on every backend that has a
+/// driver", not "on every backend".
 // `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
 // `vec![…]` form clippy suggests would need the cfg attributes on macro
 // arguments — same trade-off `backends()` above already makes.
@@ -437,6 +463,162 @@ fn every_asserted_zone_is_registered_by_every_backend() {
          `Backend::register_zone` call produces, so it can never pass:\n{}",
         problems.len(),
         problems.join("\n")
+    );
+}
+
+/// `caps.rs` reads each backend's declaration out of its **source**,
+/// because "is this trait method overridden or defaulted?" is not a
+/// question a running program can ask. This is the guard that keeps that
+/// technique honest: for every backend this build actually compiles in,
+/// the source-parsed declaration must equal the one the *running*
+/// backend returns from `Backend::backend_caps()`.
+///
+/// Without it, a rustfmt change or an impl-header rename would degrade
+/// `caps.rs` to parsing nothing — and a parse of nothing clears every
+/// backend of every claim, i.e. the honesty check would go green exactly
+/// when it stopped working. Here that failure is loud, and it names the
+/// two lists that disagree.
+///
+/// Only asserts over compiled-in backends by construction (Win/macOS have
+/// no driver to run), which is precisely why `caps.rs` keeps checking
+/// those two from source on every platform.
+#[allow(clippy::vec_init_then_push)]
+#[test]
+fn source_parsed_caps_match_the_running_backend() {
+    #[allow(unused_mut)]
+    let mut live: Vec<(&'static str, quadraui::BackendCaps)> = Vec::new();
+    #[cfg(feature = "tui")]
+    live.push(("tui", <TuiFactory as runner::DriverFactory>::caps()));
+    #[cfg(feature = "gtk")]
+    live.push(("gtk", <GtkFactory as runner::DriverFactory>::caps()));
+
+    for (name, caps) in live {
+        let running: std::collections::BTreeSet<&str> = caps.names().into_iter().collect();
+        let parsed = caps::declared_in_source(name);
+        assert_eq!(
+            parsed, running,
+            "{name}: `caps.rs` parsed {parsed:?} out of the backend's source, but the running \
+             `Backend::backend_caps()` says {running:?}. The source parser is stale — fix it \
+             before trusting any other result in `caps.rs`, including the Win/macOS rows it is \
+             the only check for (quadraui#492)."
+        );
+    }
+}
+
+/// Every `requires` entry names a capability [`quadraui::BackendCaps`]
+/// actually has a field for.
+///
+/// quadraui#492 review: `requires` used to be matched against a
+/// hand-maintained `&[&str]` per backend, so a name outside *that* list
+/// was an unsatisfiable gate that silently skipped forever — and a
+/// `BackendCaps` field outside it was unreachable from any scenario. Now
+/// there is one vocabulary, and this is the direction that catches a
+/// typo: `BackendCaps::has` deliberately answers `false` for an unknown
+/// name rather than panicking (so a real capability gap reads as a skip),
+/// which means the typo has to be caught here, by name, or not at all.
+///
+/// Runs with no backend feature enabled too — the vocabulary is a
+/// property of the library, not of whichever backends this build links.
+#[test]
+fn every_requires_names_a_known_capability() {
+    let vocabulary = quadraui::BackendCaps::vocabulary();
+    let mut problems: Vec<String> = Vec::new();
+    for scenario in load_scenarios() {
+        for cap in &scenario.requires {
+            if !vocabulary.contains(&cap.as_str()) {
+                problems.push(format!("{}: requires {cap:?}", scenario.id));
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{} scenario `requires` entr(ies) name a capability `BackendCaps` has no field for, so \
+         no backend can ever declare them and the scenario would skip everywhere, forever. \
+         Either fix the typo or add the field (quadraui#492). Known capabilities: \
+         {vocabulary:?}\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
+}
+
+/// The reverse direction: every capability in the vocabulary is either
+/// exercised by a scenario or explicitly written down as not-yet-gated.
+///
+/// Without this, `BackendCaps` grows fields no `requires` list ever
+/// references — the exact half of the drift the review named
+/// ("`BackendCaps` has `native_menu`/`window_chrome`/… that no scenario
+/// `requires` list can reference today"). The point is not to force a
+/// scenario per capability, which would be busywork; it is that an
+/// ungated capability has to be an acknowledged fact in
+/// [`UNGATED_CAPS`] rather than an unnoticed one.
+#[test]
+fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
+    /// Capabilities no scenario gates on yet, each with the reason. Every
+    /// entry here is a checklist item, not an excuse: deleting one and
+    /// watching this test go red is how you find out a scenario now
+    /// covers it.
+    const UNGATED_CAPS: &[(&str, &str)] = &[
+        (
+            "native_menu",
+            "only macOS declares it, and macOS has no ConformanceDriver yet (#493) — a \
+             scenario gating on it would skip on every column this build has",
+        ),
+        (
+            "window_chrome",
+            "drag-to-move / double-click-maximize / edge-resize act on a real toplevel; \
+             GtkDriver renders to an offscreen ImageSurface with no window to drive",
+        ),
+        (
+            "pointer_cursor",
+            "`set_cursor` changes the OS pointer glyph, which no headless driver observes — \
+             `FrameInventory` has no notion of the cursor",
+        ),
+        (
+            "ime",
+            "no backend declares it (there is no backend-level IME method yet — see \
+             `BackendCaps::ime`), so a gate on it would skip everywhere",
+        ),
+        (
+            "file_dialogs",
+            "a modal native picker cannot run headless; the `file_dialog_demo` fixture \
+             exercises the app-side flow instead",
+        ),
+        (
+            "notifications",
+            "fire-and-forget to a system daemon — nothing paints, so no assertion in this \
+             suite's vocabulary can observe it",
+        ),
+    ];
+
+    let required: std::collections::BTreeSet<String> = load_scenarios()
+        .iter()
+        .flat_map(|s| s.requires.clone())
+        .collect();
+    let vocabulary = quadraui::BackendCaps::vocabulary();
+
+    let unexplained: Vec<&str> = vocabulary
+        .iter()
+        .copied()
+        .filter(|cap| !required.contains(*cap))
+        .filter(|cap| !UNGATED_CAPS.iter().any(|(name, _)| name == cap))
+        .collect();
+    assert!(
+        unexplained.is_empty(),
+        "{} capability(ies) that no scenario `requires` and that `UNGATED_CAPS` does not \
+         explain: {unexplained:?}. Add a scenario that gates on it, or add it to \
+         `UNGATED_CAPS` with the reason it cannot be gated here (quadraui#492).",
+        unexplained.len()
+    );
+
+    let stale: Vec<&str> = UNGATED_CAPS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| required.contains(*name) || !vocabulary.contains(name))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "`UNGATED_CAPS` still excuses {stale:?}, but each is now either gated by a scenario or \
+         no longer a `BackendCaps` field — delete the stale entr(ies)"
     );
 }
 

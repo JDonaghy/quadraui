@@ -151,7 +151,11 @@ impl Backend for WinBackend {
 
     /// quadraui#492: honest, not aspirational — every method on this
     /// backend is a `todo!()` stub (see module docs), so nothing optional
-    /// is implemented yet either.
+    /// is implemented yet either. That includes the three input
+    /// capabilities: `poll_events`/`wait_events` are `todo!("PeekMessage
+    /// loop → translate WM_* → UiEvent")`, so `mouse`/`scroll`/`drag` are
+    /// all `false` and every scenario requiring one enumerates as a named
+    /// `skip` rather than a silent pass (#19 wires them up).
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps::empty()
     }

@@ -99,11 +99,39 @@ pub enum PointerShape {
 /// reason instead of either silently passing or spuriously failing.
 ///
 /// Deliberately a plain bitflag-shaped struct — one `bool` field per
-/// capability — rather than pulling in the `bitflags` crate: seven
-/// fields is small enough that a dependency buys nothing but the `|`
-/// operator, and every field maps 1:1 to one or more `Backend` methods
-/// (documented below) that a `BackendCaps` field of `true` promises are
-/// overridden away from their no-op default.
+/// capability — rather than pulling in the `bitflags` crate: ten fields
+/// is small enough that a dependency buys nothing but the `|` operator,
+/// and every field maps to zero or more `Backend` /
+/// [`PlatformServices`] methods (documented per field below) that a
+/// `BackendCaps` field of `true` promises are overridden away from their
+/// no-op default.
+///
+/// ## This is the *only* capability vocabulary
+///
+/// quadraui#492 review: the conformance runner used to carry a second,
+/// hand-maintained `&[&str]` per backend (`TUI_CAPS` / `GTK_CAPS` in
+/// `tests/conformance.rs`) that a scenario's `requires` list matched
+/// against, with nothing tying it to what the backend actually declares.
+/// Two vocabularies means silent drift in both directions: a capability
+/// here that no scenario could ever name, and a `requires` string no
+/// backend could ever declare. So there is now exactly one list — this
+/// struct's fields — and `BackendReg::caps` is [`Backend::backend_caps`]
+/// itself. That is why the three *input* capabilities below
+/// (`mouse`/`scroll`/`drag`) live here alongside the seven optional
+/// surfaces quadraui#492 enumerates: they are what the existing Tier-1
+/// scenarios gate on, and folding them in is what makes the single
+/// vocabulary complete rather than merely smaller.
+///
+/// ## The honesty check
+///
+/// A `true` here is a claim about source, not a hope, and
+/// `tests/conformance/caps.rs` mechanically checks it for every backend
+/// in the tree (including Win/macOS, which have no conformance driver
+/// yet): a declared capability whose methods are still the trait's no-op
+/// default fails, and so does an *undeclared* capability whose methods
+/// are overridden. Each field's doc comment below names the methods that
+/// check reads; a capability that cannot be checked that way says so
+/// explicitly there and in `CAP_CONTRACTS`.
 ///
 /// Construct with [`BackendCaps::empty`] (or `..BackendCaps::empty()` in
 /// struct-update syntax) plus the fields a given backend actually
@@ -116,6 +144,25 @@ pub enum PointerShape {
 /// breaking change to this trait — intentional").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BackendCaps {
+    /// This backend delivers pointer press/release events
+    /// ([`crate::UiEvent::MouseDown`] / [`crate::UiEvent::MouseUp`]) from
+    /// its native event source, so click-driven scenarios mean something
+    /// on it.
+    ///
+    /// Not mechanically checkable: the methods that produce these
+    /// ([`Backend::poll_events`] / [`Backend::wait_events`]) are
+    /// *required*, so every backend "overrides" them — including the Win
+    /// stub, whose bodies are `todo!()`. See `CAP_CONTRACTS`.
+    pub mouse: bool,
+    /// This backend delivers [`crate::UiEvent::Scroll`] from its native
+    /// event source (wheel, trackpad, or terminal scroll reporting).
+    /// Same non-checkability as [`Self::mouse`].
+    pub scroll: bool,
+    /// This backend delivers [`crate::UiEvent::MouseMoved`] while a
+    /// button is held, so a press → move → release sequence is a real
+    /// drag rather than two unrelated clicks. Same non-checkability as
+    /// [`Self::mouse`].
+    pub drag: bool,
     /// [`Backend::register_text_region`] / [`Backend::cancel_text_selection_drag`]
     /// are overridden — mouse-drag text selection highlighting is real,
     /// not a silently-dropped registration.
@@ -147,9 +194,15 @@ pub struct BackendCaps {
     /// this flag distinguishes "returns `None` because the user
     /// cancelled" from "returns `None` because there is no dialog at
     /// all" — the same distinction §5a exists to make visible.
+    ///
+    /// Not mechanically checkable for the same reason: every backend
+    /// implements both methods, so their *presence* proves nothing and
+    /// only running a native dialog would tell the two apart. See
+    /// `CAP_CONTRACTS`.
     pub file_dialogs: bool,
     /// [`PlatformServices::send_notification`] dispatches a real system
-    /// notification rather than silently discarding it.
+    /// notification rather than silently discarding it. Not mechanically
+    /// checkable, same as [`Self::file_dialogs`].
     pub notifications: bool,
 }
 
@@ -163,6 +216,9 @@ impl BackendCaps {
     /// `Backend` methods they mirror default to a no-op.
     pub const fn empty() -> Self {
         Self {
+            mouse: false,
+            scroll: false,
+            drag: false,
             text_selection: false,
             native_menu: false,
             window_chrome: false,
@@ -186,20 +242,39 @@ impl BackendCaps {
             .collect()
     }
 
-    /// Whether this instance declares `cap` (one of [`Self::ALL_NAMES`]'s
+    /// Whether this instance declares `cap` (one of [`Self::vocabulary`]'s
     /// names). Unknown names answer `false` rather than panicking, so a
-    /// typo'd `requires` entry reads as "missing", not a crash.
+    /// typo'd `requires` entry reads as "missing", not a crash — the
+    /// typo itself is caught separately, and by name, by
+    /// `conformance::every_requires_names_a_known_capability`, which
+    /// checks each `requires` entry against [`Self::vocabulary`].
     pub fn has(&self, cap: &str) -> bool {
         Self::ALL_NAMES
             .iter()
             .any(|(name, get)| *name == cap && get(self))
     }
 
-    /// Every declared capability name paired with the accessor that reads
-    /// it off a `BackendCaps` value — the single source of truth
-    /// [`Self::names`] and [`Self::has`] both fold over, so the two can
-    /// never disagree about the vocabulary.
+    /// Every capability name that exists at all, declared or not, in
+    /// field-declaration order.
+    ///
+    /// This is the closed vocabulary a conformance scenario's `requires`
+    /// list may draw from (quadraui#492 review: there used to be a second
+    /// hand-maintained list, and the two could drift). [`Self::names`]
+    /// is the subset one backend answers `true` for; this is the whole
+    /// alphabet, so a `requires` entry outside it can be reported as a
+    /// typo rather than silently skipping every backend forever.
+    pub fn vocabulary() -> Vec<&'static str> {
+        Self::ALL_NAMES.iter().map(|(name, _)| *name).collect()
+    }
+
+    /// Every capability name paired with the accessor that reads it off a
+    /// `BackendCaps` value — the single source of truth [`Self::names`],
+    /// [`Self::has`] and [`Self::vocabulary`] all fold over, so the three
+    /// can never disagree about the vocabulary.
     const ALL_NAMES: &'static [NamedCap] = &[
+        ("mouse", |c| c.mouse),
+        ("scroll", |c| c.scroll),
+        ("drag", |c| c.drag),
         ("text_selection", |c| c.text_selection),
         ("native_menu", |c| c.native_menu),
         ("window_chrome", |c| c.window_chrome),
@@ -1376,21 +1451,82 @@ mod backend_caps_tests {
         assert!(!BackendCaps::empty().has("not_a_real_capability"));
     }
 
+    /// A capability name paired with a setter for the field it names —
+    /// the write-side mirror of [`super::NamedCap`]'s read-side accessor.
+    type NamedSetter = (&'static str, fn(&mut BackendCaps));
+
+    /// Every capability name paired with a setter for the field it is
+    /// supposed to read. Deliberately written out rather than derived
+    /// from `ALL_NAMES`: this table's whole job is to be an *independent*
+    /// statement of the field↔name mapping, so a copy-paste slip in
+    /// `ALL_NAMES` (two entries reading the same field — the classic way
+    /// a bitflag table goes wrong) has something to disagree with.
+    const SETTERS: &[NamedSetter] = &[
+        ("mouse", |c| c.mouse = true),
+        ("scroll", |c| c.scroll = true),
+        ("drag", |c| c.drag = true),
+        ("text_selection", |c| c.text_selection = true),
+        ("native_menu", |c| c.native_menu = true),
+        ("window_chrome", |c| c.window_chrome = true),
+        ("pointer_cursor", |c| c.pointer_cursor = true),
+        ("ime", |c| c.ime = true),
+        ("file_dialogs", |c| c.file_dialogs = true),
+        ("notifications", |c| c.notifications = true),
+    ];
+
     #[test]
     fn all_names_lists_every_field_exactly_once() {
-        // Guards `ALL_NAMES` against drifting from the struct's fields —
-        // a new `BackendCaps` field with no matching `ALL_NAMES` entry
-        // would silently never show up in `names()`/`has()`.
-        let want = [
-            "text_selection",
-            "native_menu",
-            "window_chrome",
-            "pointer_cursor",
-            "ime",
-            "file_dialogs",
-            "notifications",
-        ];
+        // Exhaustive destructure on purpose: adding a `BackendCaps` field
+        // without adding it to `SETTERS` (and therefore to the `want`
+        // list below, and therefore to `ALL_NAMES`) is a *compile* error
+        // here. A field missing from `ALL_NAMES` would otherwise be
+        // invisible to `names()`/`has()`/`vocabulary()` — and so to every
+        // scenario `requires` gate and to the C0 honesty check.
+        let BackendCaps {
+            mouse: _,
+            scroll: _,
+            drag: _,
+            text_selection: _,
+            native_menu: _,
+            window_chrome: _,
+            pointer_cursor: _,
+            ime: _,
+            file_dialogs: _,
+            notifications: _,
+        } = BackendCaps::empty();
+
+        let want: Vec<&str> = SETTERS.iter().map(|(n, _)| *n).collect();
         let got: Vec<&str> = BackendCaps::ALL_NAMES.iter().map(|(n, _)| *n).collect();
         assert_eq!(got, want);
+        assert_eq!(BackendCaps::vocabulary(), want);
+    }
+
+    #[test]
+    fn each_accessor_reads_its_own_field() {
+        for (name, set) in SETTERS {
+            let mut caps = BackendCaps::empty();
+            set(&mut caps);
+            assert_eq!(
+                caps.names(),
+                vec![*name],
+                "setting only `{name}` should make exactly `{name}` declared — an `ALL_NAMES` \
+                 accessor is reading the wrong field"
+            );
+            assert!(caps.has(name));
+        }
+    }
+
+    #[test]
+    fn vocabulary_is_the_superset_names_draws_from() {
+        let vocab = BackendCaps::vocabulary();
+        let mut all = BackendCaps::empty();
+        for (_, set) in SETTERS {
+            set(&mut all);
+        }
+        assert_eq!(
+            all.names(),
+            vocab,
+            "with every field true, `names()` must be the whole vocabulary"
+        );
     }
 }

@@ -333,6 +333,9 @@ impl Backend for MacBackend {
 
     /// quadraui#492: honest per-method, not aspirational.
     ///
+    /// - `mouse` / `scroll` / `drag`: `macos::run`'s view subclass forwards
+    ///   `mouseDown:`/`mouseUp:`/`scrollWheel:`/`mouseDragged:` through
+    ///   `macos::events`, so all three input kinds reach `poll_events`.
     /// - `native_menu`: `install_menu_bar` / `show_context_menu` are both
     ///   overridden below (`NSMenu`).
     /// - `file_dialogs` / `notifications`: `MacPlatformServices` uses real
@@ -346,6 +349,9 @@ impl Backend for MacBackend {
     ///   exercise them).
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
+            mouse: true,
+            scroll: true,
+            drag: true,
             native_menu: true,
             file_dialogs: true,
             notifications: true,

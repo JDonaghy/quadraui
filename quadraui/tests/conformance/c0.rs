@@ -34,22 +34,21 @@
 //! entry here, or a stale entry naming a method that no longer exists.
 
 use quadraui::{
-    compute_hunks, ActivityBar, ActivityItem, AppLogic, BadgeStatus, Backend, BoardCard,
-    BoardColumn, BoardModel, CardBadge, Chart, ChartKind, Color, Column,
-    ColumnAlign, ColumnWidth, CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure,
-    Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
-    DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability,
-    DiffMode, DiffPane, DiffView, DropOverlay, Editor, EditorCursor, EditorCursorPos,
-    EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind, FindReplacePanel,
-    Form, FormField, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, MsvAxis,
-    MultiSectionView, Palette, PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView,
-    PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
-    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode,
-    Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
-    StatusBarSegment, StyledSpan, StyledText, TabBar, TabItem, Terminal, TerminalCell,
-    TextDisplay, TextDisplayLine, TextInput, ToastCorner, ToastItem, ToastSeverity, ToastStack,
-    Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    compute_hunks, ActivityBar, ActivityItem, AppLogic, Backend, BadgeStatus, BoardCard,
+    BoardColumn, BoardModel, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
+    CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu,
+    ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, Decoration,
+    Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
+    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
+    EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, ListItem, ListView, MenuBar,
+    MenuBarItem, MessageList, MessageRow, MsvAxis, MultiSectionView, Palette, PaletteItem,
+    PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect,
+    RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
+    SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split,
+    SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
+    TabBar, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
+    ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
+    TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -78,7 +77,12 @@ pub struct Case {
 }
 
 /// One exemplar per primitive, built from public quadraui API only.
-/// Sampled, not exhaustive — extending coverage is one more entry.
+///
+/// **Exhaustive, and mechanically held so**: every `fn draw_*` on
+/// [`quadraui::Backend`] has exactly one entry here, and
+/// [`tests::cases_cover_every_draw_method_on_the_trait`] fails if that
+/// ever stops being true in either direction. Adding a primitive to the
+/// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
     Case {
         method: "draw_status_bar",
