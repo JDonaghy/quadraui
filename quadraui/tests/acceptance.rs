@@ -128,3 +128,8 @@ include!("../../tests/acceptance/ms-11/wide_tab_labels.rs");
 // silently drops chrome (borders, titles, scrollbars) fails instead of
 // passing on text presence alone. Contract: tests/acceptance/ms-11/contract.md §4.
 include!("../../tests/acceptance/ms-11/structural_parity.rs");
+
+// ms-11 (epic #480) — issue #492: tier C0 per-primitive paint smoke, so a
+// backend that compiles while rendering nothing is visible on day one.
+// Contract: tests/acceptance/ms-11/contract.md §5.
+include!("../../tests/acceptance/ms-11/c0_paint_smoke.rs");
