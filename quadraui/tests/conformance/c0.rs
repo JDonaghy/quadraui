@@ -22,14 +22,34 @@
 //! contract.md`): this is "the primitive draws *something* attributable
 //! to it", not a rendering assertion — C1/#491's scenario suite is where
 //! layout and interaction get checked.
+//!
+//! [`CASES`] covers every `draw_*` method [`quadraui::Backend`] declares
+//! (quadraui#492 review: a 15-of-38 sample let a backend with a
+//! completely broken `draw_editor` — arguably the single highest-stakes
+//! primitive in the library — pass this tier silently). That claim is not
+//! just asserted in prose: `tests::cases_cover_every_draw_method_on_the_trait`
+//! below parses `backend.rs`'s own source for every `fn draw_*` trait
+//! item and fails if `CASES` and the trait ever disagree, in either
+//! direction — a new primitive added to the trait without a matching
+//! entry here, or a stale entry naming a method that no longer exists.
 
 use quadraui::{
-    compute_hunks, AppLogic, Backend, Color, CommandLine, Decoration, DiffEditability, DiffMode,
-    DiffPane, DiffView, DropOverlay, ListItem, ListView, MessageList, MessageRow, PipelineStage,
-    PipelineView, ProgressBar, Reaction, Rect, ScrollAxis, Scrollbar, SelectionMode, Spinner,
-    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabItem, TextDisplay,
-    TextDisplayLine, Tooltip, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
-    UiEvent, WidgetId,
+    compute_hunks, ActivityBar, ActivityItem, AppLogic, BadgeStatus, Backend, BoardCard,
+    BoardColumn, BoardModel, CardBadge, Chart, ChartKind, Color, Column,
+    ColumnAlign, ColumnWidth, CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure,
+    Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
+    DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability,
+    DiffMode, DiffPane, DiffView, DropOverlay, Editor, EditorCursor, EditorCursorPos,
+    EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind, FindReplacePanel,
+    Form, FormField, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, MsvAxis,
+    MultiSectionView, Palette, PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView,
+    PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
+    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode,
+    Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
+    StatusBarSegment, StyledSpan, StyledText, TabBar, TabItem, Terminal, TerminalCell,
+    TextDisplay, TextDisplayLine, TextInput, ToastCorner, ToastItem, ToastSeverity, ToastStack,
+    Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip, TooltipMeasure, TooltipPlacement,
+    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -340,6 +360,628 @@ pub const CASES: &[Case] = &[
             let _ = area;
         },
     },
+    // ── The rest of the trait surface (quadraui#492 review) ───────────
+    //
+    // The 15 cases above were the original sample; everything below was
+    // added to close that gap. `tests::cases_cover_every_draw_method_on_
+    // the_trait` (bottom of this file) keeps the two in sync from here on.
+    Case {
+        method: "draw_data_table",
+        needle: Some("c0dtbl"),
+        paint: |b, area| {
+            let table = DataTable {
+                id: id("data-table"),
+                columns: vec![Column {
+                    title: "c0dtbl".to_string(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                }],
+                rows: vec![DataRow {
+                    cells: vec![StyledText::plain("row")],
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let _ = b.draw_data_table(area, &table, None);
+        },
+    },
+    Case {
+        method: "draw_form",
+        needle: Some("c0form"),
+        paint: |b, area| {
+            let form = Form {
+                id: id("form"),
+                fields: vec![FormField {
+                    id: id("form-field"),
+                    label: StyledText::plain("c0form"),
+                    kind: FieldKind::ReadOnly {
+                        value: StyledText::plain("value"),
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                }],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+            };
+            b.draw_form(area, &form);
+        },
+    },
+    Case {
+        method: "draw_palette",
+        needle: Some("c0palt"),
+        paint: |b, area| {
+            let palette = Palette {
+                id: id("palette"),
+                title: "Palette".to_string(),
+                query: String::new(),
+                query_cursor: 0,
+                items: vec![PaletteItem {
+                    text: StyledText::plain("c0palt"),
+                    detail: None,
+                    icon: None,
+                    match_positions: vec![],
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
+                }],
+                selected_idx: 0,
+                scroll_offset: 0,
+                total_count: 0,
+                has_focus: false,
+                show_query: true,
+                create_label: None,
+                preview: None,
+                mode: PaletteMode::List,
+            };
+            b.draw_palette(area, &palette);
+        },
+    },
+    Case {
+        method: "draw_settings_chrome",
+        needle: Some("c0sett"),
+        paint: |b, area| {
+            b.draw_settings_chrome(area, "c0sett", "", "search…", false);
+        },
+    },
+    Case {
+        method: "draw_activity_bar",
+        // TUI paints only the icon's *first* character
+        // (`item.icon.chars().next()`), while GTK paints the whole
+        // `icon` string — an inherent cross-backend asymmetry in this
+        // primitive's own design, not a #492 gap, so no single needle
+        // matches both verbatim. Observability still comes from the
+        // icon glyph itself: a backend that painted nothing would leave
+        // both `text_runs()` and `zones()` empty.
+        needle: None,
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = ActivityBar {
+                id: id("activity-bar"),
+                top_items: vec![ActivityItem {
+                    id: id("activity-item"),
+                    icon: "c0acty".to_string(),
+                    tooltip: String::new(),
+                    is_active: true,
+                    is_keyboard_selected: false,
+                }],
+                bottom_items: vec![],
+                active_accent: None,
+                selection_bg: None,
+                is_keyboard_focused: false,
+            };
+            let _ = b.draw_activity_bar(Rect::new(0.0, 0.0, lh * 3.0, area.height), &bar, None);
+        },
+    },
+    Case {
+        method: "draw_terminal",
+        // GTK's rasteriser paints cell glyphs via a raw
+        // `pangocairo::functions::show_layout` call, bypassing the
+        // `painted_text` tracking every other primitive's rasteriser
+        // routes through (see the `#492` comment on
+        // `GtkBackend::draw_terminal`) — so an exact-text needle can't
+        // be asserted across backends today. Observability instead
+        // comes from the zone `draw_terminal` now registers (TUI's
+        // buffer scan sees the glyphs directly either way).
+        needle: None,
+        paint: |b, area| {
+            let cell = |ch: char| TerminalCell {
+                ch,
+                fg: Color::rgb(220, 220, 220),
+                bg: Color::rgb(30, 30, 30),
+                bold: false,
+                italic: false,
+                underline: false,
+                selected: false,
+                is_cursor: false,
+                is_find_match: false,
+                is_find_active: false,
+            };
+            let row: Vec<TerminalCell> = "c0term".chars().map(cell).collect();
+            let term = Terminal {
+                id: id("terminal"),
+                cells: vec![row],
+                scrollbar: None,
+            };
+            b.draw_terminal(area, &term);
+        },
+    },
+    Case {
+        method: "draw_text_input",
+        needle: Some("c0tin"),
+        paint: |b, area| {
+            let ti = TextInput {
+                id: id("text-input"),
+                lines: vec!["c0tin".to_string()],
+                cursor_line: 0,
+                cursor_col: 0,
+                placeholder: None,
+                scroll_offset: 0,
+                scroll_col: 0,
+                has_focus: true,
+            };
+            let _ = b.draw_text_input(area, &ti);
+        },
+    },
+    Case {
+        method: "draw_context_menu",
+        needle: Some("c0ctxm"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let menu = ContextMenu {
+                id: id("context-menu"),
+                items: vec![ContextMenuItem {
+                    id: Some(id("context-menu-item")),
+                    label: StyledText::plain("c0ctxm"),
+                    detail: None,
+                    disabled: false,
+                    key_equivalent: None,
+                    checked: None,
+                    submenu: None,
+                }],
+                selected_idx: 0,
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+            };
+            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
+                ContextMenuItemMeasure::new(lh)
+            });
+            let _ = b.draw_context_menu(&menu, &layout);
+        },
+    },
+    Case {
+        method: "draw_dialog",
+        needle: Some("c0dlgb"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let dialog = Dialog {
+                id: id("dialog"),
+                title: StyledText::plain("Dialog"),
+                body: vec![StyledText::plain("c0dlgb")],
+                buttons: vec![DialogButton {
+                    id: id("dialog-ok"),
+                    label: "OK".to_string(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                }],
+                severity: None,
+                vertical_buttons: false,
+                table: None,
+                input: None,
+            };
+            let measure = DialogMeasure {
+                width: cw * 40.0,
+                title_height: lh,
+                body_height: lh * 3.0,
+                table_height: 0.0,
+                input_height: 0.0,
+                button_row_height: lh,
+                button_width: cw * 10.0,
+                button_gap: cw,
+                padding: cw,
+            };
+            let layout = dialog.layout(area, measure, |_| ToolbarItemMeasure::new(0.0));
+            let _ = b.draw_dialog(&dialog, &layout);
+        },
+    },
+    Case {
+        method: "draw_multi_section_view",
+        needle: Some("c0msv"),
+        paint: |b, area| {
+            let view = MultiSectionView {
+                id: id("msv"),
+                sections: vec![Section {
+                    id: "c0msv-section".to_string(),
+                    header: SectionHeader {
+                        title: StyledText::plain("c0msv"),
+                        ..Default::default()
+                    },
+                    body: SectionBody::Text(vec![StyledText::plain("body")]),
+                    aux: None,
+                    size: SectionSize::EqualShare,
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                }],
+                active_section: None,
+                axis: MsvAxis::Vertical,
+                allow_resize: false,
+                allow_collapse: true,
+                scroll_mode: ScrollMode::PerSection,
+                has_focus: false,
+                panel_scroll: 0.0,
+            };
+            b.draw_multi_section_view(area, &view);
+        },
+    },
+    Case {
+        method: "draw_editor",
+        needle: Some("c0edit"),
+        paint: |b, area| {
+            let fg = Color::rgb(220, 220, 220);
+            let text = "c0edit".to_string();
+            let len = text.len();
+            let line = EditorLine {
+                raw_text: text,
+                gutter_text: "   1".to_string(),
+                spans: vec![EditorStyledSpan {
+                    start_byte: 0,
+                    end_byte: len,
+                    style: EditorStyle {
+                        fg,
+                        bg: None,
+                        bold: false,
+                        italic: false,
+                        font_scale: 1.0,
+                    },
+                }],
+                line_idx: 0,
+                is_current_line: true,
+                is_fold_header: false,
+                folded_line_count: 0,
+                git_diff: None,
+                diff_status: None,
+                diagnostics: vec![],
+                spell_errors: vec![],
+                is_breakpoint: false,
+                is_conditional_bp: false,
+                is_dap_current: false,
+                is_wrap_continuation: false,
+                segment_col_offset: 0,
+                annotation: None,
+                ghost_suffix: None,
+                is_ghost_continuation: false,
+                indent_guides: vec![],
+                colorcolumns: vec![],
+            };
+            let editor = Editor {
+                id: id("editor"),
+                rect: area,
+                lines: vec![line],
+                cursor: Some(EditorCursor {
+                    pos: EditorCursorPos {
+                        view_line: 0,
+                        col: 0,
+                    },
+                    shape: EditorCursorShape::Block,
+                }),
+                extra_cursors: vec![],
+                selection: None,
+                extra_selections: vec![],
+                yank_highlight: None,
+                scroll_top: 0,
+                scroll_left: 0,
+                total_lines: 1,
+                max_col: 6,
+                gutter_char_width: 4,
+                is_active: true,
+                show_active_bg: false,
+                has_git_diff: false,
+                has_breakpoints: false,
+                diagnostic_gutter: Default::default(),
+                code_action_lines: Default::default(),
+                bracket_match_positions: vec![],
+                active_indent_col: None,
+                tabstop: 4,
+                cursorline: true,
+                lightbulb_glyph: '\0',
+            };
+            let _ = b.draw_editor(area, &editor);
+        },
+    },
+    Case {
+        method: "draw_rich_text_popup",
+        needle: Some("c0rtp"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let popup = RichTextPopup {
+                id: id("rich-text-popup"),
+                lines: vec![StyledText::plain("c0rtp")],
+                line_text: vec!["c0rtp".to_string()],
+                line_scales: vec![],
+                scroll_top: 0,
+                max_visible_rows: 10,
+                has_focus: true,
+                selection: None,
+                links: vec![],
+                focused_link: None,
+                placement: PopupPlacement::Below,
+                padding: 1.0,
+                fg: None,
+                bg: None,
+            };
+            let measure = RichTextPopupMeasure::new(cw * 20.0, lh);
+            let layout = popup.layout(0.0, 0.0, area, measure, |_, start, end| {
+                (end - start) as f32 * cw
+            });
+            b.draw_rich_text_popup(&popup, &layout);
+        },
+    },
+    Case {
+        method: "draw_find_replace",
+        needle: Some("c0find"),
+        paint: |b, area| {
+            // `hit_regions` isn't just click-dispatch metadata here — the
+            // rasteriser paints the query/replace field *text* by walking
+            // it (`paint_input` in `tui::find_replace`), so an empty list
+            // paints a border with nothing inside. Must be the real
+            // output of `compute_find_replace_hit_regions`, the same
+            // helper a real caller uses.
+            let (hit_regions, _input_width) =
+                quadraui::compute_find_replace_hit_regions(40, false, "", 2, 2);
+            let panel = FindReplacePanel {
+                query: "c0find".to_string(),
+                replacement: String::new(),
+                show_replace: false,
+                focus: 0,
+                cursor: 6,
+                sel_anchor: None,
+                match_info: String::new(),
+                case_sensitive: false,
+                whole_word: false,
+                use_regex: false,
+                preserve_case: false,
+                in_selection: false,
+                group_bounds: area,
+                panel_width: 40,
+                replace_one_glyph: "R1".to_string(),
+                replace_all_glyph: "R*".to_string(),
+                hit_regions,
+            };
+            b.draw_find_replace(area, &panel);
+        },
+    },
+    Case {
+        method: "draw_completions",
+        needle: Some("c0cmpl"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let cw = b.char_width();
+            let completions = Completions {
+                id: id("completions"),
+                items: vec![CompletionItem {
+                    label: StyledText::plain("c0cmpl"),
+                    detail: None,
+                    documentation: None,
+                    kind: Default::default(),
+                    icon: None,
+                }],
+                selected_idx: 0,
+                scroll_offset: 0,
+                has_focus: true,
+            };
+            let layout = completions.layout(0.0, 0.0, lh, area, cw * 20.0, lh * 6.0, |_| {
+                CompletionItemMeasure::new(lh)
+            });
+            b.draw_completions(&completions, &layout);
+        },
+    },
+    Case {
+        method: "draw_menu_bar",
+        needle: Some("c0menu"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = MenuBar {
+                id: id("menu-bar"),
+                items: vec![MenuBarItem {
+                    id: id("menu-bar-item"),
+                    label: "c0menu".to_string(),
+                    disabled: false,
+                    submenu: None,
+                }],
+                open_item: None,
+                focused_item: None,
+            };
+            let _ = b.draw_menu_bar(Rect::new(0.0, 0.0, area.width, lh), &bar);
+        },
+    },
+    // ── More chrome-only primitives ────────────────────────────────────
+    Case {
+        method: "draw_split",
+        needle: None,
+        paint: |b, area| {
+            let split = Split {
+                id: id("split"),
+                direction: SplitDirection::Horizontal,
+                ratio: 0.5,
+                first_min: 0.0,
+                second_min: 0.0,
+            };
+            let _ = b.draw_split(area, &split);
+        },
+    },
+    Case {
+        method: "draw_split_tree",
+        needle: None,
+        paint: |b, area| {
+            let tree = SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::leaf(id("split-tree-a")),
+                SplitTree::leaf(id("split-tree-b")),
+            );
+            let _ = b.draw_split_tree(area, &tree);
+        },
+    },
+    Case {
+        method: "draw_panel",
+        needle: Some("c0panl"),
+        paint: |b, area| {
+            let panel = Panel {
+                id: id("panel"),
+                title: Some(StyledText::plain("c0panl")),
+                actions: vec![],
+                accent: None,
+                collapsed: false,
+            };
+            let _ = b.draw_panel(area, &panel);
+        },
+    },
+    Case {
+        method: "draw_toast_stack",
+        needle: Some("c0tost"),
+        paint: |b, area| {
+            let stack = ToastStack {
+                id: id("toast-stack"),
+                corner: ToastCorner::BottomRight,
+                toasts: vec![ToastItem {
+                    id: id("toast"),
+                    title: "c0tost".to_string(),
+                    body: String::new(),
+                    severity: ToastSeverity::Info,
+                    action: None,
+                    accent: None,
+                }],
+            };
+            let _ = b.draw_toast_stack(area, &stack);
+        },
+    },
+    Case {
+        method: "draw_command_center",
+        needle: Some("c0ccnt"),
+        paint: |b, area| {
+            let cc = CommandCenter {
+                id: id("command-center"),
+                back_enabled: true,
+                forward_enabled: true,
+                search_label: "c0ccnt".to_string(),
+            };
+            let _ = b.draw_command_center(area, &cc);
+        },
+    },
+    Case {
+        method: "draw_toolbar",
+        needle: Some("c0tbar"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = Toolbar {
+                id: id("toolbar"),
+                buttons: vec![ToolbarButton::Action {
+                    id: id("toolbar-button"),
+                    label: "c0tbar".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            };
+            let _ = b.draw_toolbar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+        },
+    },
+    Case {
+        method: "draw_sidebar_panel",
+        needle: Some("c0sbpn"),
+        paint: |b, area| {
+            let toolbar = Toolbar {
+                id: id("sidebar-toolbar"),
+                buttons: vec![ToolbarButton::Action {
+                    id: id("sidebar-toolbar-button"),
+                    label: "c0sbpn".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            };
+            let panel = SidebarPanel {
+                id: id("sidebar-panel"),
+                toolbar: Some(toolbar),
+                toolbar_height: None,
+            };
+            let _ = b.draw_sidebar_panel(area, &panel, None, None);
+        },
+    },
+    Case {
+        method: "draw_chart",
+        needle: Some("c0chrt"),
+        paint: |b, area| {
+            let chart = Chart {
+                id: id("chart"),
+                kind: ChartKind::Line,
+                series: vec![Series {
+                    label: "c0chrt".to_string(),
+                    data: vec![1.0, 2.0, 3.0, 2.0, 4.0],
+                    color: None,
+                    fill: false,
+                }],
+                x_label: None,
+                y_label: None,
+                y_range: None,
+                x_range: None,
+                show_legend: true,
+                y_ticks: None,
+                x_ticks: None,
+                show_grid: false,
+            };
+            let _ = b.draw_chart(area, &chart, None, None);
+        },
+    },
+    Case {
+        method: "draw_board",
+        needle: Some("c0board"),
+        paint: |b, area| {
+            let model = BoardModel {
+                id: id("board"),
+                columns: vec![BoardColumn {
+                    id: id("board-column"),
+                    title: "c0board".to_string(),
+                    cards: vec![BoardCard {
+                        id: id("card-1"),
+                        title: "card".to_string(),
+                        labels: vec![],
+                        badges: vec![CardBadge {
+                            label: "P".to_string(),
+                            status: BadgeStatus::Passed,
+                        }],
+                        hint: None,
+                    }],
+                    scroll_offset: 0,
+                }],
+                selected_card_id: None,
+                col_scroll_offset: 0,
+            };
+            let _ = b.draw_board(area, &model);
+        },
+    },
 ];
 
 /// An `AppLogic` whose whole render pass is one primitive's canned
@@ -429,4 +1071,71 @@ pub fn run<F: DriverFactory>() -> Vec<CaseOutcome> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CASES;
+
+    /// quadraui#492 review, blocking finding 1: `CASES` must name *every*
+    /// `draw_*` method on `Backend`, not a hand-picked sample — a 15-of-38
+    /// table let a backend ship a completely broken `draw_editor` and
+    /// still get a fully green C0 row. Rather than trust that claim to
+    /// stay true by convention, parse `backend.rs`'s own source for every
+    /// `fn draw_*` trait item (skipping the doc-comment example inside the
+    /// "Implementations are thin wrappers" blurb, which is indented as
+    /// prose rather than a real trait item — `fn` there does not start
+    /// the trimmed line) and assert the two lists agree exactly. A new
+    /// primitive added to the trait without a matching `CASES` entry
+    /// fails here, at the source of the drift, instead of shipping an
+    /// untested `draw_*` method with a silently-passing C0 row.
+    #[test]
+    fn cases_cover_every_draw_method_on_the_trait() {
+        const BACKEND_SRC: &str = include_str!("../../src/backend.rs");
+        let trait_methods: Vec<&str> = BACKEND_SRC
+            .lines()
+            .filter(|line| line.trim_start().starts_with("fn draw_"))
+            .map(|line| {
+                line.trim_start()
+                    .trim_start_matches("fn ")
+                    .split(['(', '<'])
+                    .next()
+                    .unwrap()
+                    .trim()
+            })
+            .collect();
+        assert!(
+            trait_methods.len() >= 30,
+            "sanity check failed: expected dozens of `fn draw_*` trait methods in backend.rs, \
+             found only {} — the line-based parser above likely broke against a reformatted \
+             file rather than the trait actually shrinking: {trait_methods:?}",
+            trait_methods.len()
+        );
+
+        let case_methods: std::collections::BTreeSet<&str> =
+            CASES.iter().map(|c| c.method).collect();
+
+        let missing: Vec<&str> = trait_methods
+            .iter()
+            .copied()
+            .filter(|m| !case_methods.contains(m))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} `Backend::draw_*` method(s) have no `CASES` entry, so C0 says nothing about \
+             them (quadraui#492): {missing:?}",
+            missing.len()
+        );
+
+        let stale: Vec<&str> = case_methods
+            .iter()
+            .copied()
+            .filter(|m| !trait_methods.contains(m))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "CASES names method(s) not found on the `Backend` trait today — likely a typo, or \
+             a renamed/removed method CASES was not updated for: {stale:?}"
+        );
+    }
 }

@@ -1509,7 +1509,13 @@ impl Backend for TuiBackend {
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_split called outside enter_frame_scope");
-        crate::tui::draw_split(frame.buffer_mut(), area, split, &theme)
+        let layout = crate::tui::draw_split(frame.buffer_mut(), area, split, &theme);
+        // #492: `Split` paints a divider only — no text of its own — so a
+        // registered zone is the only way this frame is attributable to
+        // the primitive rather than indistinguishable from the trait's
+        // no-op default (C0 paint smoke, contract §5b).
+        self.register_zone(split.id.clone(), rect);
+        layout
     }
 
     fn split_layout(&self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
@@ -1527,7 +1533,12 @@ impl Backend for TuiBackend {
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_split_tree called outside enter_frame_scope");
-        crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme)
+        let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
+        // #492: dividers only, and `SplitTree` (unlike `Split`) carries no
+        // id of its own — register a fixed chrome id, same pattern as
+        // `draw_terminal_divider` / `draw_drop_overlay`.
+        self.register_zone(WidgetId::new("chrome:split-tree"), rect);
+        layout
     }
 
     fn split_tree_layout(
