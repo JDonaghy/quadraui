@@ -2030,6 +2030,11 @@ impl Backend for GtkBackend {
             self.current_char_width,
             &self.current_theme,
         );
+        // #542: register the tooltip's own surface — see the matching
+        // comment on `TuiBackend::draw_tooltip`. GTK already painted a
+        // full 4-sided box here before TUI did (#541); this just makes
+        // that box observable to a structural-parity assertion.
+        self.register_zone(tooltip.id.clone(), layout_arg.bounds);
     }
 
     fn draw_context_menu(

@@ -1242,6 +1242,12 @@ impl Backend for TuiBackend {
             .current_frame_mut()
             .expect("TuiBackend::draw_tooltip called outside enter_frame_scope");
         crate::tui::draw_tooltip(frame.buffer_mut(), tooltip, layout, &theme);
+        // #542: register the tooltip's own surface so a structural-parity
+        // observer (`ConformanceDriver::inventory().zones()`) can see the
+        // tooltip was drawn at all, not just infer it from text presence —
+        // `screen_has("Keybindings")` stayed true on both backends through
+        // #541 even though only one of them drew the chrome around it.
+        self.register_zone(tooltip.id.clone(), layout.bounds);
     }
 
     fn draw_context_menu(
