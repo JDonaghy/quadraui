@@ -17,10 +17,17 @@
 //! and diff peek). Otherwise `tooltip.text` is split on `\n` and each
 //! line is rendered plain (LSP hover popup path). Lines that exceed the
 //! box width or the available content rows are truncated.
+//!
+//! `layout.bounds.height` is the *total* box height, not a content-row
+//! count — see the contract note on [`crate::TooltipMeasure`]. Callers
+//! that want `N` content lines visible once a bordered box is drawn
+//! (`height >= 3`) must measure `N + 2`, or their last two lines are
+//! silently dropped by [`draw_tooltip`]'s `.take(content_rows)`.
 
 use ratatui::buffer::Buffer;
 
 use super::{ratatui_color, set_cell};
+use crate::event::Rect as QRect;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::theme::Theme;
 use crate::types::Color;
@@ -29,15 +36,36 @@ fn qc(c: Color) -> ratatui::style::Color {
     ratatui_color(c)
 }
 
+/// The whole-cell bounds [`draw_tooltip`] actually paints into —
+/// `layout.bounds` rounded to integer terminal columns/rows exactly the
+/// way `draw_tooltip` does internally.
+///
+/// Backends must register *this* (not the raw float `layout.bounds`) as
+/// the tooltip's zone via `Backend::register_zone`. Registering the
+/// unrounded bounds would let a structural-parity observer see a surface
+/// that doesn't match the cells actually painted — a latent precision
+/// mismatch (#542 review) that today's 0.35 ratio tolerance in the
+/// structural-parity acceptance slice happens to absorb, but which should
+/// stay aligned regardless.
+pub fn painted_bounds(layout: &TooltipLayout) -> QRect {
+    QRect::new(
+        layout.bounds.x.round(),
+        layout.bounds.y.round(),
+        layout.bounds.width.round(),
+        layout.bounds.height.round(),
+    )
+}
+
 /// Draw a [`Tooltip`] into `layout.bounds` on `buf`.
 ///
 /// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
 pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout, theme: &Theme) {
-    let x = layout.bounds.x.round() as u16;
-    let y = layout.bounds.y.round() as u16;
-    let w = layout.bounds.width.round() as u16;
-    let h = layout.bounds.height.round() as u16;
+    let painted = painted_bounds(layout);
+    let x = painted.x as u16;
+    let y = painted.y as u16;
+    let w = painted.width as u16;
+    let h = painted.height as u16;
     if w == 0 || h == 0 {
         return;
     }
@@ -55,7 +83,11 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
     // A full box costs one row for the top border and one for the
     // bottom, leaving `h - 2` for content; below that there's no room
     // for both border rows and any content, so keep the legacy
-    // side-bars-only chrome instead of rendering an empty box.
+    // side-bars-only chrome instead of rendering an empty box. `w >= 2`
+    // is a separate, narrower guard: `paint_border_row`'s `col == 0` and
+    // `col == w - 1` branches pick the left/right corner glyph, and at
+    // `w < 2` those two indices collide (`w - 1 == 0`), so the `col == 0`
+    // arm would win and every corner would render as a left corner.
     let has_horizontal_border = h >= 3 && w >= 2;
     let content_row0: u16 = if has_horizontal_border { 1 } else { 0 };
     let content_rows: u16 = if has_horizontal_border { h - 2 } else { h };
@@ -145,6 +177,17 @@ mod tests {
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    /// #542 review (non-blocking): the zone a backend registers for a
+    /// tooltip must match the cells `draw_tooltip` actually painted, not
+    /// the raw float layout bounds — otherwise a structural-parity
+    /// observer sees a surface offset from what's really on screen.
+    #[test]
+    fn painted_bounds_rounds_like_draw_tooltip_does() {
+        let layout = make_layout(0.4, 1.6, 9.6, 2.5);
+        let painted = painted_bounds(&layout);
+        assert_eq!(painted, QRect::new(0.0, 2.0, 10.0, 3.0));
     }
 
     #[test]

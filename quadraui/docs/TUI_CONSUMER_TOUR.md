@@ -50,6 +50,18 @@ Pick the **hover popup → Tooltip** pair. Smallest complete loop.
     — **the core contract**: given a world + a measurement, return
     fully-resolved coordinates. No backend code here, no painting.
 
+  > **#542 contract change:** `TooltipMeasure::new(width, height)`'s
+  > `height` is the tooltip's **total box height, border chrome
+  > included** — not a content-line count. On TUI, once
+  > `height >= 3`, [`crate::tui::draw_tooltip`](../src/tui/tooltip.rs)
+  > strokes a full 4-sided box (matching GTK, which has always stroked
+  > one) and only `height - 2` rows remain for content. A caller built
+  > against the pre-#542 contract that measures exactly its
+  > content-line count (as this tour's own §"How an engine state gets
+  > adapted" example historically did) needs `+ 2` added to `height`,
+  > or its last two content lines are silently dropped once it's 3+
+  > rows tall. See `TooltipMeasure`'s doc comment for the full contract.
+
 ### How an engine state gets adapted into it
 
 - [`src/render.rs::hover_popup_to_quadraui_tooltip`](../../src/render.rs) —

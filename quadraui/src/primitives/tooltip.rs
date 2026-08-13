@@ -72,7 +72,35 @@ pub enum TooltipEvent {
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 
-/// Measurement for a `Tooltip` — the content's natural size.
+/// Measurement for a `Tooltip` — the **total box size** the caller wants
+/// reserved on screen, in the active backend's own units (character cells
+/// on TUI, pixels on GTK).
+///
+/// # Contract (#542)
+///
+/// `height` is the whole tooltip box, border chrome included — not just
+/// the content. `Tooltip::layout` passes it straight through to
+/// [`TooltipLayout::bounds`], and that is what a backend's `draw_tooltip`
+/// paints into. Concretely, on TUI:
+///
+/// - When `height >= 3` (and `width >= 2`), [`crate::tui::draw_tooltip`]
+///   strokes a full 4-sided box — one row each for the top and bottom
+///   border — leaving only `height - 2` rows for content. GTK has always
+///   stroked a full box the same way, but pays for it in sub-cell pixels
+///   rather than whole rows, so it needs no equivalent padding.
+/// - Below that (`height < 3`), TUI falls back to side-bars-only chrome
+///   (`│` on the first/last column, no top/bottom rule) and all `height`
+///   rows are usable for content.
+///
+/// **Callers that want *N* content lines visible on TUI once a bordered
+/// box is drawn must pass `height >= N + 2`**, not `N`. This is a
+/// behaviour change from before #542, when TUI drew no vertical chrome at
+/// all and `height` meant exactly "content rows" on every backend; a
+/// caller written against that older contract that still passes a bare
+/// content-line count will silently lose its last two lines once its
+/// tooltip is 3+ rows tall. See the #542 review discussion for the
+/// concrete downstream call sites this bit (`vimcode`'s hover-popup and
+/// diff-peek tooltip builders) — those need a matching `+ 2` migration.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TooltipMeasure {
     pub width: f32,
@@ -80,6 +108,10 @@ pub struct TooltipMeasure {
 }
 
 impl TooltipMeasure {
+    /// `height` is the total box height (border rows included on
+    /// backends that reserve whole rows for chrome) — see the
+    /// contract note on [`TooltipMeasure`] itself before passing a bare
+    /// content-line count.
     pub fn new(width: f32, height: f32) -> Self {
         Self { width, height }
     }
@@ -133,7 +165,12 @@ impl Tooltip {
     /// - `anchor` — bounds of the element being described.
     /// - `viewport` — bounds of the parent surface; tooltip is clamped
     ///   to stay inside these.
-    /// - `measure` — content width/height.
+    /// - `measure` — total box width/height (border chrome included, not
+    ///   just content) — see the contract note on [`TooltipMeasure`].
+    ///   `measure.height` is copied verbatim into the returned
+    ///   [`TooltipLayout::bounds`], which is exactly what a backend's
+    ///   `draw_tooltip` uses to decide how many rows it has for both
+    ///   border and content.
     /// - `margin` — gap between the anchor and the tooltip along the
     ///   placement axis.
     ///
