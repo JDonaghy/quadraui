@@ -121,25 +121,23 @@ tests:
 # List ONLY ids observed failing in an actual run. A slice's control clauses
 # and its ratchet clauses are green by design and must stay that way; listing
 # them would tolerate exactly the regression they exist to catch.
-expected_red:
-  # #492 — tier C0 paint smoke (contract §5). The two red clauses only; the
-  # reasoning below is the test-author's own and is correct — verified
-  # against a real run, 2 red / 2 green, matching exactly.
-  #
-  # Deliberately absent:
-  #   - `..._every_primitive_survives_a_frame_on_every_backend` — the boot
-  #     clause. Green today and green after the fix; it distinguishes "this
-  #     primitive panics" from "this primitive is invisible", and listing it
-  #     would erase that distinction.
-  #   - `..._text_bearing_primitives_report_the_text_they_were_given` — the
-  #     ratchet half. Every text-bearing exemplar already round-trips on
-  #     both backends today, so this is a regression guard, not a pending
-  #     fix. It is the clause #492's mutation check ("temporarily blank
-  #     one") is required to turn red, which only works if it is green to
-  #     begin with.
-  492:
-    - ms11_492_c0_paint_smoke::c0_paint_smoke_every_primitive_is_observable_in_the_frame_inventory
-    - ms11_492_c0_paint_smoke::c0_paint_smoke_chrome_only_primitives_register_a_zone
+#
+# EMPTY RIGHT NOW, and that is the correct state: ms-11's three bound issues
+# (#554, #542, #492) have all landed their fixes and every clause is green.
+# #492's two entries were removed here by hand on 2026-08-13 for the same
+# reason #542's were — its fix merged (7b169c5 / ea0a912), both clauses went
+# green, and nothing cleared them:
+#
+#     coord acceptance run --repo quadraui --all --ci   # before the removal
+#     -> HARD FAILURE: 2 test(s) listed in `expected_red` now PASS
+#        ci_green: false
+#
+# The key is omitted rather than left as an empty mapping — `load_expected_red`
+# merges whatever each manifest declares, and "no block" is unambiguous where
+# an empty one invites a later reader to wonder whether it was emptied or
+# never filled.
+#
+# Re-add the block when the next slice is authored red.
 
 # Issue-level exemption from the #1138 dispatch gate: "this issue does not
 # consume the sealed suite." Per ORACLE_LOOP.md this does NOT bypass Gate A
