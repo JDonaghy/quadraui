@@ -756,6 +756,9 @@ mod tests {
         fn services(&self) -> &dyn crate::backend::PlatformServices {
             unimplemented!()
         }
+        fn backend_caps(&self) -> crate::backend::BackendCaps {
+            crate::backend::BackendCaps::empty()
+        }
         fn line_height(&self) -> f32 {
             1.0
         }
