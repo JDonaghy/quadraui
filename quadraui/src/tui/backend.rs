@@ -1247,7 +1247,15 @@ impl Backend for TuiBackend {
         // tooltip was drawn at all, not just infer it from text presence —
         // `screen_has("Keybindings")` stayed true on both backends through
         // #541 even though only one of them drew the chrome around it.
-        self.register_zone(tooltip.id.clone(), layout.bounds);
+        //
+        // Register `tooltip_painted_bounds`, not the raw float
+        // `layout.bounds` — `draw_tooltip` rounds to whole cells before
+        // painting, and registering the unrounded rect would report a
+        // surface that doesn't match what was actually drawn (#542 review).
+        self.register_zone(
+            tooltip.id.clone(),
+            crate::tui::tooltip_painted_bounds(layout),
+        );
     }
 
     fn draw_context_menu(
