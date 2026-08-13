@@ -147,6 +147,15 @@ impl Backend for WinBackend {
         &self.services
     }
 
+    // ─── Capability declaration ──────────────────────────────────────────
+
+    /// quadraui#492: honest, not aspirational — every method on this
+    /// backend is a `todo!()` stub (see module docs), so nothing optional
+    /// is implemented yet either.
+    fn backend_caps(&self) -> crate::backend::BackendCaps {
+        crate::backend::BackendCaps::empty()
+    }
+
     // ─── Measurement ──────────────────────────────────────────────────
 
     fn line_height(&self) -> f32 {

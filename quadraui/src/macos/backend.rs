@@ -331,6 +331,28 @@ impl Backend for MacBackend {
         &self.services
     }
 
+    /// quadraui#492: honest per-method, not aspirational.
+    ///
+    /// - `native_menu`: `install_menu_bar` / `show_context_menu` are both
+    ///   overridden below (`NSMenu`).
+    /// - `file_dialogs` / `notifications`: `MacPlatformServices` uses real
+    ///   `NSOpenPanel`/`NSSavePanel` and `osascript` notifications
+    ///   (`src/macos/services.rs`), not stubs.
+    /// - Everything else — `text_selection`, `window_chrome`,
+    ///   `pointer_cursor`, `ime` — is **not** declared: `register_text_region`,
+    ///   `begin_window_drag`/`toggle_window_maximize`/`begin_window_resize`,
+    ///   and `set_cursor` are all still the trait's no-op default on this
+    ///   backend today (see #493 — no macOS runner in the fleet yet to
+    ///   exercise them).
+    fn backend_caps(&self) -> crate::backend::BackendCaps {
+        crate::backend::BackendCaps {
+            native_menu: true,
+            file_dialogs: true,
+            notifications: true,
+            ..crate::backend::BackendCaps::empty()
+        }
+    }
+
     fn line_height(&self) -> f32 {
         self.current_line_height as f32
     }

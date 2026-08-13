@@ -36,6 +36,8 @@
 #[path = "../examples/common/mod.rs"]
 mod common;
 
+#[path = "conformance/c0.rs"]
+mod c0;
 #[path = "conformance/fixtures.rs"]
 mod fixtures;
 #[path = "conformance/runner.rs"]
@@ -229,6 +231,101 @@ fn conformance_matrix() {
         "{} conformance cell(s) failed:\n{}\n{table}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// Tier 0 — C0 paint smoke (quadraui#492, epic #480). Runs ahead of every
+/// scenario-based tier: `c0::CASES` is a canned, minimal descriptor per
+/// primitive, and this asserts `begin_frame` → draw → `end_frame` neither
+/// panics nor produces a frame the inventory can't see at all (contract
+/// §5b — "compiles must stop implying renders").
+///
+/// A registered backend with nothing to say for a given primitive prints
+/// as a row here, same as a tier-1 `FAIL` — never silence (#492's second
+/// acceptance bullet). Backends this build doesn't compile in (Win,
+/// macOS) simply have no column, matching how `conformance_matrix`
+/// already treats an unregistered backend: the *absence* of a Win/macOS
+/// column in this artifact **is** the gap enumerated, not a hidden pass.
+// `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
+// `vec![…]` form clippy suggests would need the cfg attributes on macro
+// arguments — same trade-off `backends()` above already makes.
+#[allow(clippy::vec_init_then_push)]
+#[test]
+fn c0_paint_smoke() {
+    struct Column {
+        name: &'static str,
+        outcomes: Vec<c0::CaseOutcome>,
+    }
+
+    let mut columns: Vec<Column> = Vec::new();
+    #[cfg(feature = "tui")]
+    columns.push(Column {
+        name: "tui",
+        outcomes: c0::run::<TuiFactory>(),
+    });
+    #[cfg(feature = "gtk")]
+    columns.push(Column {
+        name: "gtk",
+        outcomes: c0::run::<GtkFactory>(),
+    });
+
+    assert!(
+        !columns.is_empty(),
+        "c0_paint_smoke: no backend feature enabled — run with --features tui,gtk"
+    );
+    assert!(
+        !c0::CASES.is_empty(),
+        "c0_paint_smoke: the descriptor table is empty, so this tier would pass vacuously"
+    );
+
+    let method_w = c0::CASES.iter().map(|c| c.method.len()).max().unwrap_or(0);
+    let mut table = format!("{:<method_w$}", "primitive (tier 0)");
+    for col in &columns {
+        table.push_str(&format!("  {:<6}", col.name));
+    }
+    table.push('\n');
+
+    let mut gaps: Vec<String> = Vec::new();
+    for (i, case) in c0::CASES.iter().enumerate() {
+        table.push_str(&format!("{:<method_w$}", case.method));
+        for col in &columns {
+            let outcome = &col.outcomes[i];
+            let verdict = if !outcome.survived {
+                "PANIC"
+            } else if !outcome.text_ok || !outcome.observable {
+                "FAIL"
+            } else {
+                "pass"
+            };
+            table.push_str(&format!("  {verdict:<6}"));
+            if verdict != "pass" {
+                let why = if !outcome.survived {
+                    "panicked mid-paint".to_string()
+                } else if !outcome.text_ok {
+                    format!(
+                        "handed {:?} and the frame does not report it — {}",
+                        case.needle, outcome.reported
+                    )
+                } else {
+                    format!(
+                        "reported neither a text run nor a zone — {}",
+                        outcome.reported
+                    )
+                };
+                gaps.push(format!("{}/{}: {why}", col.name, case.method));
+            }
+        }
+        table.push('\n');
+    }
+    println!("{table}");
+
+    assert!(
+        gaps.is_empty(),
+        "{} C0 paint-smoke gap(s) — a primitive either panicked, dropped its text, or left the \
+         frame unobservable, which contract §5b (tests/acceptance/ms-11/contract.md) treats as \
+         indistinguishable from the trait's no-op default:\n{}\n{table}",
+        gaps.len(),
+        gaps.join("\n")
     );
 }
 

@@ -1243,6 +1243,33 @@ impl Backend for GtkBackend {
         &self.services
     }
 
+    /// quadraui#492: honest per-method, not aspirational.
+    ///
+    /// - `text_selection`: `register_text_region` is overridden below.
+    /// - `native_menu`: **not** declared — `install_menu_bar` /
+    ///   `show_context_menu` are still the trait's no-op default; GTK apps
+    ///   paint their own `ContextMenu` (see `Backend::show_context_menu`
+    ///   doc comment).
+    /// - `window_chrome`: `begin_window_drag` / `toggle_window_maximize` /
+    ///   `begin_window_resize` are all overridden.
+    /// - `pointer_cursor`: `set_cursor` is overridden.
+    /// - `ime`: not declared — no backend positions an IME composition
+    ///   window yet (see [`crate::backend::BackendCaps::ime`]).
+    /// - `file_dialogs`: `GtkPlatformServices` uses real `gtk4::FileDialog`
+    ///   pickers (`src/gtk/services.rs`), not a stub.
+    /// - `notifications`: **not** declared —
+    ///   `GtkPlatformServices::send_notification` is still stubbed pending
+    ///   an async-aware trait shape (`src/gtk/services.rs` module docs).
+    fn backend_caps(&self) -> crate::backend::BackendCaps {
+        crate::backend::BackendCaps {
+            text_selection: true,
+            window_chrome: true,
+            pointer_cursor: true,
+            file_dialogs: true,
+            ..crate::backend::BackendCaps::empty()
+        }
+    }
+
     fn begin_window_drag(&mut self) -> bool {
         // #400 double-click fix: this does NOT call `gdk4::Toplevel::begin_move`
         // synchronously. Doing so on the very first press — before it's known
@@ -1947,6 +1974,13 @@ impl Backend for GtkBackend {
             rect.height as f64,
             &theme,
         );
+        // #492: the primitive takes no `WidgetId` of its own (there is at
+        // most one divider on screen at a time), so register a fixed
+        // chrome id — on a pixel backend this paints strokes only, so
+        // without a zone the frame is indistinguishable from one where
+        // the no-op trait default silently dropped the call (C0 paint
+        // smoke, contract §5b).
+        self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
     }
 
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
@@ -2377,6 +2411,11 @@ impl Backend for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::draw_scrollbar called outside enter_frame_scope");
         crate::gtk::draw_scrollbar(cr, scrollbar, &theme);
+        // #492: a scrollbar strokes/fills only — no text — so on this
+        // pixel backend it would otherwise be indistinguishable from the
+        // no-op default. Register the primitive's own id at its own
+        // track bounds (not `_rect`, which the primitive ignores).
+        self.register_zone(scrollbar.id.clone(), scrollbar.track);
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
@@ -2385,6 +2424,14 @@ impl Backend for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::draw_drop_overlay called outside enter_frame_scope");
         crate::gtk::draw_drop_overlay(cr, overlay, &theme);
+        // #492: `DropOverlay` carries no `WidgetId` (there is at most one
+        // overlay active at a time), so register a fixed chrome id at
+        // whichever sub-rect it actually drew — otherwise this frame is
+        // indistinguishable from one where the no-op default silently
+        // dropped the call (C0 paint smoke, contract §5b).
+        if let Some(bounds) = overlay.highlight.or(overlay.insertion_bar) {
+            self.register_zone(WidgetId::new("chrome:drop-overlay"), bounds);
+        }
     }
 
     fn draw_menu_bar(

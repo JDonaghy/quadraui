@@ -849,6 +849,21 @@ impl Backend for TuiBackend {
         &self.services
     }
 
+    /// quadraui#492: honest per-method, not aspirational. TUI overrides
+    /// `register_text_region`/`cancel_text_selection_drag` (mouse-drag
+    /// selection highlight is real), and nothing else optional — no
+    /// window to drag/resize/maximize, no native pointer glyph, no
+    /// native menu, no IME positioning, and both `PlatformServices`
+    /// dialog methods unconditionally return `None`
+    /// (`TuiPlatformServices::show_file_open_dialog` /
+    /// `show_file_save_dialog`) with notifications a no-op.
+    fn backend_caps(&self) -> crate::backend::BackendCaps {
+        crate::backend::BackendCaps {
+            text_selection: true,
+            ..crate::backend::BackendCaps::empty()
+        }
+    }
+
     fn line_height(&self) -> f32 {
         1.0
     }
@@ -1185,6 +1200,12 @@ impl Backend for TuiBackend {
             .current_frame_mut()
             .expect("TuiBackend::draw_terminal_divider called outside enter_frame_scope");
         crate::tui::draw_terminal_divider(frame.buffer_mut(), area.x, area.y, area.height, &theme);
+        // #492: the primitive takes no `WidgetId` of its own (there is at
+        // most one divider on screen at a time), so register a fixed
+        // chrome id — otherwise this frame is indistinguishable from one
+        // where the no-op trait default silently dropped the call (C0
+        // paint smoke, contract §5b).
+        self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
     }
 
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
@@ -1437,6 +1458,11 @@ impl Backend for TuiBackend {
         // `track` bounds; `rect` is unused (the primitive owns layout).
         // Forward-compat parameter for backends that need a clip rect.
         crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
+        // #492: a scrollbar paints only glyphs (thumb/track), so on a
+        // pixel backend it would otherwise be indistinguishable from the
+        // no-op default. Register the primitive's own id at its own
+        // track bounds (not `_rect`, which the primitive ignores).
+        self.register_zone(scrollbar.id.clone(), scrollbar.track);
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
@@ -1445,6 +1471,14 @@ impl Backend for TuiBackend {
             .current_frame_mut()
             .expect("TuiBackend::draw_drop_overlay called outside enter_frame_scope");
         crate::tui::draw_drop_overlay(frame.buffer_mut(), overlay, &theme);
+        // #492: `DropOverlay` carries no `WidgetId` (there is at most one
+        // overlay active at a time), so register a fixed chrome id at
+        // whichever sub-rect it actually drew — otherwise this frame is
+        // indistinguishable from one where the no-op default silently
+        // dropped the call (C0 paint smoke, contract §5b).
+        if let Some(bounds) = overlay.highlight.or(overlay.insertion_bar) {
+            self.register_zone(WidgetId::new("chrome:drop-overlay"), bounds);
+        }
     }
 
     fn draw_menu_bar(
@@ -1868,6 +1902,10 @@ mod tests {
         }
         fn services(&self) -> &dyn PlatformServices {
             &self.services
+        }
+
+        fn backend_caps(&self) -> crate::backend::BackendCaps {
+            crate::backend::BackendCaps::empty()
         }
 
         fn draw_list(&mut self, rect: QRect, list: &ListView) {

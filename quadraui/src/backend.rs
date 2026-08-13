@@ -85,6 +85,131 @@ pub enum PointerShape {
     Resize(ResizeEdge),
 }
 
+/// What a backend actually implements, beyond the required trait surface.
+///
+/// quadraui#492: several `Backend` methods take a no-op (or `false`)
+/// default so a new backend compiles before every optional feature is
+/// wired up (see the "Default: no-op" doc comments throughout this
+/// trait). That silence is exactly the problem — a backend that never
+/// overrides [`Backend::install_menu_bar`] compiles identically to one
+/// that has a real native menu, and nothing tells the two apart. Each
+/// backend's [`Backend::backend_caps`] is the declared, honest answer:
+/// "these are the optional surfaces I actually implement", so the
+/// conformance runner can skip a scenario that needs one with a named
+/// reason instead of either silently passing or spuriously failing.
+///
+/// Deliberately a plain bitflag-shaped struct — one `bool` field per
+/// capability — rather than pulling in the `bitflags` crate: seven
+/// fields is small enough that a dependency buys nothing but the `|`
+/// operator, and every field maps 1:1 to one or more `Backend` methods
+/// (documented below) that a `BackendCaps` field of `true` promises are
+/// overridden away from their no-op default.
+///
+/// Construct with [`BackendCaps::empty`] (or `..BackendCaps::empty()` in
+/// struct-update syntax) plus the fields a given backend actually
+/// implements — see `TuiBackend::backend_caps` / `GtkBackend::backend_caps`
+/// for worked examples. `#[non_exhaustive]`-free on purpose: this is
+/// in-tree-only (no external `Backend` implementors, `BACKEND.md`), so a
+/// new field is a breaking change to every backend impl by design — the
+/// same trade-off the `Backend` trait itself already makes for a new
+/// `draw_*` method (`backend.rs` module docs, "Adding a primitive is a
+/// breaking change to this trait — intentional").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BackendCaps {
+    /// [`Backend::register_text_region`] / [`Backend::cancel_text_selection_drag`]
+    /// are overridden — mouse-drag text selection highlighting is real,
+    /// not a silently-dropped registration.
+    pub text_selection: bool,
+    /// [`Backend::install_menu_bar`] and/or [`Backend::show_context_menu`]
+    /// are overridden — this backend can paint a native OS menu.
+    pub native_menu: bool,
+    /// At least one of [`Backend::begin_window_drag`],
+    /// [`Backend::toggle_window_maximize`], [`Backend::begin_window_resize`]
+    /// is overridden — client-side-decoration window chrome (drag-to-move,
+    /// double-click-to-maximize, edge resize) is wired to a real window.
+    pub window_chrome: bool,
+    /// [`Backend::set_cursor`] is overridden — hinting the OS pointer
+    /// glyph actually changes what the user sees, rather than being a
+    /// `false`-returning no-op.
+    pub pointer_cursor: bool,
+    /// This backend positions a native IME composition window (preedit)
+    /// at the caret. `false` on every backend today — quadraui has no
+    /// backend-level IME method yet (see `crate::event::UiEvent::Text`'s
+    /// docs); composed text arrives pre-resolved from the OS either way,
+    /// so this tracks *positioning* the IME candidate window, not
+    /// whether typing composed characters works at all.
+    pub ime: bool,
+    /// [`PlatformServices::show_file_open_dialog`] /
+    /// [`PlatformServices::show_file_save_dialog`] show a real native
+    /// dialog rather than unconditionally returning `None`. Unlike the
+    /// fields above these two `PlatformServices` methods have no no-op
+    /// default (the trait requires every backend to implement them), so
+    /// this flag distinguishes "returns `None` because the user
+    /// cancelled" from "returns `None` because there is no dialog at
+    /// all" — the same distinction §5a exists to make visible.
+    pub file_dialogs: bool,
+    /// [`PlatformServices::send_notification`] dispatches a real system
+    /// notification rather than silently discarding it.
+    pub notifications: bool,
+}
+
+/// A capability name paired with the accessor that reads it off a
+/// `BackendCaps` value — see [`BackendCaps::ALL_NAMES`].
+type NamedCap = (&'static str, fn(&BackendCaps) -> bool);
+
+impl BackendCaps {
+    /// No optional capability implemented. The honest starting point for
+    /// a new backend — every field defaults to `false` the same way the
+    /// `Backend` methods they mirror default to a no-op.
+    pub const fn empty() -> Self {
+        Self {
+            text_selection: false,
+            native_menu: false,
+            window_chrome: false,
+            pointer_cursor: false,
+            ime: false,
+            file_dialogs: false,
+            notifications: false,
+        }
+    }
+
+    /// Every capability name this instance declares, in field-declaration
+    /// order — the vocabulary a conformance scenario's `requires` list
+    /// (quadraui#491) matches capability names against, and what a skip
+    /// row names as missing.
+    pub fn names(&self) -> Vec<&'static str> {
+        Self::ALL_NAMES
+            .iter()
+            .copied()
+            .filter(|(_, get)| get(self))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Whether this instance declares `cap` (one of [`Self::ALL_NAMES`]'s
+    /// names). Unknown names answer `false` rather than panicking, so a
+    /// typo'd `requires` entry reads as "missing", not a crash.
+    pub fn has(&self, cap: &str) -> bool {
+        Self::ALL_NAMES
+            .iter()
+            .any(|(name, get)| *name == cap && get(self))
+    }
+
+    /// Every declared capability name paired with the accessor that reads
+    /// it off a `BackendCaps` value — the single source of truth
+    /// [`Self::names`] and [`Self::has`] both fold over, so the two can
+    /// never disagree about the vocabulary.
+    const ALL_NAMES: &'static [NamedCap] = &[
+        ("text_selection", |c| c.text_selection),
+        ("native_menu", |c| c.native_menu),
+        ("window_chrome", |c| c.window_chrome),
+        ("pointer_cursor", |c| c.pointer_cursor),
+        ("ime", |c| c.ime),
+        ("file_dialogs", |c| c.file_dialogs),
+        ("notifications", |c| c.notifications),
+    ];
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 pub trait Backend {
     // ─── Frame + viewport ──────────────────────────────────────────────
@@ -389,6 +514,21 @@ pub trait Backend {
     // ─── Platform services ─────────────────────────────────────────────
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
     fn services(&self) -> &dyn PlatformServices;
+
+    // ─── Capability declaration ─────────────────────────────────────────
+    /// This backend's declared [`BackendCaps`] — which optional surfaces
+    /// (quadraui#492) it actually implements, versus which ones are still
+    /// sitting on the trait's no-op default.
+    ///
+    /// No default impl: every backend states its own caps explicitly
+    /// (`Backend` has no external implementors — `BACKEND.md` — so there
+    /// is no "safe" default to fall back to; `BackendCaps::empty()` would
+    /// silently under-report a backend that forgot to update this after
+    /// overriding a new optional method, exactly the honesty gap this
+    /// method exists to close). See `TuiBackend::backend_caps` /
+    /// `GtkBackend::backend_caps` for how a real backend derives this
+    /// from what it actually overrides.
+    fn backend_caps(&self) -> BackendCaps;
 
     // ─── Measurement ───────────────────────────────────────────────────
 
@@ -1199,4 +1339,58 @@ pub struct Notification {
     /// Whether the notification is high-priority (e.g. error). Backends
     /// may use this to pick a different icon or sound.
     pub urgent: bool,
+}
+
+#[cfg(test)]
+mod backend_caps_tests {
+    use super::BackendCaps;
+
+    #[test]
+    fn empty_declares_nothing() {
+        assert!(BackendCaps::empty().names().is_empty());
+        assert!(!BackendCaps::empty().has("text_selection"));
+    }
+
+    #[test]
+    fn names_round_trips_through_has() {
+        let caps = BackendCaps {
+            text_selection: true,
+            file_dialogs: true,
+            ..BackendCaps::empty()
+        };
+        let names = caps.names();
+        assert_eq!(names, vec!["text_selection", "file_dialogs"]);
+        for name in &names {
+            assert!(caps.has(name), "{name:?} in names() but has() disagrees");
+        }
+        // Every other capability name is honestly absent.
+        for (name, _) in BackendCaps::ALL_NAMES {
+            if !names.contains(name) {
+                assert!(!caps.has(name), "{name:?} not in names() but has() = true");
+            }
+        }
+    }
+
+    #[test]
+    fn has_is_false_not_a_panic_for_an_unknown_name() {
+        assert!(!BackendCaps::empty().has("not_a_real_capability"));
+    }
+
+    #[test]
+    fn all_names_lists_every_field_exactly_once() {
+        // Guards `ALL_NAMES` against drifting from the struct's fields —
+        // a new `BackendCaps` field with no matching `ALL_NAMES` entry
+        // would silently never show up in `names()`/`has()`.
+        let want = [
+            "text_selection",
+            "native_menu",
+            "window_chrome",
+            "pointer_cursor",
+            "ime",
+            "file_dialogs",
+            "notifications",
+        ];
+        let got: Vec<&str> = BackendCaps::ALL_NAMES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(got, want);
+    }
 }
