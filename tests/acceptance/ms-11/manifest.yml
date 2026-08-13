@@ -49,8 +49,47 @@ tests:
   # backends, so this is green today and guards it from regressing while
   # #542 reworks the surface-recording path (ask 3).
   ms11_542_structural_parity::structural_parity_shell_chrome_surface_set_agrees_across_backends: 542
+
+  # ── #492 — Tier C0 paint smoke + BackendCaps (contract §5) ────────────
+  # Slice: c0_paint_smoke.rs, `include!`d from quadraui/tests/acceptance.rs.
   #
-  # #492's slice (contract §5) is unauthored so far.
+  # Asserts contract §5b's PROPERTIES against its own hand-canned
+  # per-primitive descriptor table, never the generated test *list* —
+  # §5c: "a slice that asserted the generated test list would restate the
+  # implementation and break on every new primitive."
+  #
+  # CONTRACT §5a IS NOT COVERED BY THIS SLICE and owes a follow-up.
+  # Both of its Required clauses name `BackendCaps`, which does not exist
+  # in quadraui's public API yet, and the runner's capability list lives
+  # in the `conformance` test target — invisible from `acceptance`.
+  # Writing them today yields a COMPILE ERROR in the shared `--test
+  # acceptance` target (taking #554's and #542's slices down with it and
+  # reporting zero tests), not a red test. Contract §6 forbids exactly
+  # that, and §4c already set the precedent — author after the dependency
+  # lands. Full reasoning + the two clauses the follow-up owes are written
+  # out in the slice's header and closing TODO(test-author) blocks.
+  #
+  # green today, by design — the boot clause: a primitive that PANICS
+  # mid-paint is a different (worse) failure than one that renders
+  # nothing, and this is the one that tells them apart.
+  ms11_492_c0_paint_smoke::c0_paint_smoke_every_primitive_survives_a_frame_on_every_backend: 492
+  # green today, by design — the RATCHET half, and the clause #492's first
+  # acceptance bullet's mutation check fires on ("C0 red on a backend
+  # whose draw method paints nothing for a text-bearing primitive — prove
+  # by temporarily blanking one"). Verified non-vacuous at authoring time
+  # by blanking the status-bar descriptor's text: 2 rows went red
+  # (TuiDriver + GtkDriver draw_status_bar), then reverted.
+  ms11_492_c0_paint_smoke::c0_paint_smoke_text_bearing_primitives_report_the_text_they_were_given: 492
+  # red today — contract §5b verbatim. 4 rows: GTK's scrollbar, terminal
+  # divider and drop overlay, plus TUI's drop overlay, report NOTHING at
+  # all (no text run, no zone), so those frames are byte-identical to
+  # frames in which the method took its no-op default.
+  ms11_492_c0_paint_smoke::c0_paint_smoke_every_primitive_is_observable_in_the_frame_inventory: 492
+  # red today — the per-primitive half. TUI's `text_runs()` is a scan of
+  # the character grid, so a scrollbar's `█` reads as a "text run" and the
+  # clause above passes by accident even though nothing NAMED the
+  # scrollbar. 6 rows red across both backends.
+  ms11_492_c0_paint_smoke::c0_paint_smoke_chrome_only_primitives_register_a_zone: 492
 
 # ── Red by design, right now (#2164) ──────────────────────────────────────
 # Test-ids here are ALLOWED to fail: their fix does not exist yet. A listed
@@ -80,6 +119,20 @@ expected_red:
     - ms11_542_structural_parity::structural_parity_backends_emit_the_same_tooltip_surface_set
     - ms11_542_structural_parity::structural_parity_tooltip_surface_encloses_its_text_on_every_side
     - ms11_542_structural_parity::structural_parity_tooltip_surface_shape_agrees_across_unit_systems
+  # Only the two observability clauses are listed. Deliberately absent:
+  #   - `..._every_primitive_survives_a_frame_on_every_backend` — the boot
+  #     clause. Green today and green after the fix; it distinguishes "this
+  #     primitive panics" from "this primitive is invisible", and listing it
+  #     would erase that distinction.
+  #   - `..._text_bearing_primitives_report_the_text_they_were_given` — the
+  #     ratchet half. Every text-bearing exemplar already round-trips on
+  #     both backends today, so this is a regression guard, not a pending
+  #     fix. It is the clause #492's mutation check ("temporarily blank
+  #     one") is required to turn red, which only works if it is green to
+  #     begin with.
+  492:
+    - ms11_492_c0_paint_smoke::c0_paint_smoke_every_primitive_is_observable_in_the_frame_inventory
+    - ms11_492_c0_paint_smoke::c0_paint_smoke_chrome_only_primitives_register_a_zone
 
 # Issue-level exemption from the #1138 dispatch gate: "this issue does not
 # consume the sealed suite." Per ORACLE_LOOP.md this does NOT bypass Gate A
