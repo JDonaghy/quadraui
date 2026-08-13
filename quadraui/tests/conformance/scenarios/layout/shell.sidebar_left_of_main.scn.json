@@ -9,6 +9,10 @@
     { "assert_left_of": { "a": "EDITORS", "b": "Selected:" } },
     { "assert_above": { "a": "EXPLORER", "b": "EDITORS" } },
     { "assert_above": { "a": "EDITORS", "b": "PROJECT" } },
-    { "assert_above": { "a": "PROJECT", "b": "Tab=focus" } }
+    { "assert_above": { "a": "PROJECT", "b": "Tab=focus" } },
+    { "note": "Zone containment + anchored click (audit's worked-example vocabulary, quadraui#491): a project-tree row is inside the shell's registered sidebar-content zone, and clicking its right edge (not just its centre) still resolves to the row underneath." },
+    { "assert_inside": { "a": "backend.rs", "zone": "app-shell:sidebar-content" } },
+    { "click_text_at": { "text": "backend.rs", "anchor": "right_edge" } },
+    { "assert_screen_has": "Selected: section 1, row [0, 2]" }
   ]
 }

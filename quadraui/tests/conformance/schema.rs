@@ -99,7 +99,14 @@ pub enum Step {
     ClickText(String),
     /// Click a specific anchor within a painted run:
     /// `{"click_text_at": {"text": "Name", "anchor": "right_edge"}}`.
-    ClickTextAt { text: String, anchor: AnchorSpec },
+    /// `anchor` is optional and defaults to `center` (same as `click_text`)
+    /// when omitted — this is what makes `AnchorSpec`'s `#[default]`
+    /// meaningful rather than dead code.
+    ClickTextAt {
+        text: String,
+        #[serde(default)]
+        anchor: AnchorSpec,
+    },
     /// Drag from one painted run's centre to another's:
     /// `{"drag_text": {"from": "alpha", "to": "gamma"}}`.
     DragText { from: String, to: String },
@@ -271,6 +278,31 @@ mod tests {
             Step::ClickTextAt {
                 text: "Name".into(),
                 anchor: AnchorSpec::RightEdge
+            }
+        );
+    }
+
+    /// `click_text_at`'s `anchor` key is optional; omitting it falls back
+    /// to `AnchorSpec::Center` (`#[default]`) — the same target
+    /// `click_text` always hits. This is what makes the `Default` derive
+    /// on `AnchorSpec` load-bearing rather than dead code.
+    #[test]
+    fn click_text_at_anchor_defaults_to_center_when_omitted() {
+        let src = r#"{
+            "id": "x",
+            "fixture": "panel_app",
+            "tier": 1,
+            "viewport": { "cols": 100, "rows": 30 },
+            "steps": [
+                { "click_text_at": { "text": "Name" } }
+            ]
+        }"#;
+        let s = Scenario::from_json("inline", src).expect("anchor-less click_text_at must parse");
+        assert_eq!(
+            s.steps[0],
+            Step::ClickTextAt {
+                text: "Name".into(),
+                anchor: AnchorSpec::Center
             }
         );
     }
