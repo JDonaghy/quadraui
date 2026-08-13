@@ -93,13 +93,29 @@ pub struct ZoneRec {
 ///
 /// `text_runs` is populated from each backend's existing text search
 /// (TUI's cell-grid scan, GTK's `painted_text` map) — this covers every
-/// text-bearing primitive with no per-widget opt-in required. `zones` is
-/// populated from [`crate::Backend::register_zone`] calls made during the
-/// frame; coverage is incremental — currently the shell chrome
-/// [`crate::compose::app_shell::AppShell::render`] records (activity-bar
-/// items by their own `WidgetId`, plus one `app-shell:`-prefixed zone per
-/// chrome region) — so a primitive that hasn't been wired to call
-/// `register_zone` yet simply contributes no zone, not a wrong one.
+/// text-bearing primitive with no per-widget opt-in required.
+///
+/// `zones` is populated from [`crate::Backend::register_zone`] calls made
+/// during the frame, and **coverage is opt-in per paint site**. Exactly
+/// one composer registers zones today —
+/// [`crate::compose::app_shell::AppShell::render`], via its
+/// `register_chrome_zones` helper — and it contributes:
+///
+/// - one `app-shell:`-prefixed zone per chrome region it lays out:
+///   `window`, `activity-bar`, `main-content`, and (when that region
+///   exists this frame) `title-bar`, `sidebar-header`, `sidebar-content`,
+///   `divider`, `bottom-panel`, `command-line`, `status-bar`;
+/// - one zone per activity-bar item, keyed by that panel's own
+///   `WidgetId` (e.g. `panel:explorer`) rather than an `app-shell:` name.
+///
+/// Every other primitive contributes **no** zone until it is wired to
+/// call `register_zone` — no zone, rather than a wrong one. Because
+/// [`Self::inside`] answers `false` for an unregistered zone exactly as
+/// it does for a run that landed outside a registered one, a caller
+/// asserting against a zone id no paint site produces gets an
+/// unsatisfiable assertion, not a flaky one; the conformance suite's
+/// `every_asserted_zone_is_registered_by_every_backend` guard exists to
+/// catch precisely that and name it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameInventory {
     pub text_runs: Vec<TextRun>,

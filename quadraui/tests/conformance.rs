@@ -46,8 +46,8 @@ mod schema;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use runner::{render_matrix, run_scenario, BackendReg, MatrixRow, Outcome};
-use schema::Scenario;
+use runner::{render_matrix, run_scenario, zones_seen, BackendReg, MatrixRow, Outcome};
+use schema::{Scenario, Step};
 
 // ─── Backend registrations ──────────────────────────────────────────────
 //
@@ -280,6 +280,66 @@ fn every_advertised_fixture_builds() {
     assert!(
         fixtures::build::<TuiFactory>("no_such_fixture", LogicalViewport::new(80, 24)).is_none(),
         "an unregistered fixture name must be None, not a panic"
+    );
+}
+
+/// Every zone a scenario names in an `assert_inside` step is actually
+/// registered by every backend that runs that scenario.
+///
+/// `FrameInventory::inside` answers `false` for an unregistered zone
+/// exactly as it does for a needle that landed outside one, so without
+/// this guard a step naming a zone **no backend ever registers** — a typo,
+/// or an assertion written ahead of the `Backend::register_zone` call it
+/// depends on — is an *unsatisfiable* step that reads in the matrix like
+/// an ordinary layout failure. This test names the cause directly:
+/// "nothing registers this id", separately from "the geometry doesn't
+/// hold". Zone registration is per paint site (today: the shell chrome
+/// regions and activity-bar items `AppShell::render` records — see
+/// `docs/TESTING.md` → *Zone-backed assertions*), so a scenario reaching
+/// for a not-yet-wired primitive fails here, at the step that reached,
+/// rather than silently.
+#[test]
+fn every_asserted_zone_is_registered_by_every_backend() {
+    let backends = backends();
+    let mut problems: Vec<String> = Vec::new();
+
+    for scenario in load_scenarios() {
+        let wanted: Vec<&str> = scenario
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::AssertInside { zone, .. } => Some(zone.as_str()),
+                _ => None,
+            })
+            .collect();
+        if wanted.is_empty() {
+            continue;
+        }
+        for backend in &backends {
+            // `None` = this backend skips the scenario (declared capability
+            // gap, already visible in the matrix) — nothing to check.
+            let Some(seen) = zones_seen(&scenario, backend) else {
+                continue;
+            };
+            for zone in &wanted {
+                if !seen.contains(*zone) {
+                    let seen: Vec<&str> = seen.iter().map(|s| s.as_str()).collect();
+                    problems.push(format!(
+                        "{}/{}: asserts `inside` zone {:?}, which {} never registers during \
+                         the scenario (zones seen: {:?})",
+                        scenario.id, backend.name, zone, backend.name, seen
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "{} unsatisfiable `assert_inside` step(s) — each names a zone no \
+         `Backend::register_zone` call produces, so it can never pass:\n{}",
+        problems.len(),
+        problems.join("\n")
     );
 }
 

@@ -478,16 +478,50 @@ missing capability printed in the matrix detail block**. A backend
 therefore cannot quietly not-run a scenario: either it declares the gap
 up front, or the scenario runs and fails. Silence is impossible.
 
+### Zone-backed assertions: what is registered today
+
+`assert_inside` is the one step that does **not** work off painted text —
+it needs a `WidgetId`-keyed rect, which a paint site must volunteer by
+calling `Backend::register_zone` during the frame. That is opt-in per
+paint site, so the set of assertable zone ids is small and explicit.
+
+Registered today, by `AppShell::render` (via `register_chrome_zones`) and
+nothing else:
+
+| Zone id | Registered when |
+|---|---|
+| `app-shell:window`, `app-shell:activity-bar`, `app-shell:main-content` | always |
+| `app-shell:title-bar`, `app-shell:sidebar-header`, `app-shell:sidebar-content`, `app-shell:divider`, `app-shell:bottom-panel`, `app-shell:command-line`, `app-shell:status-bar` | when that region exists this frame |
+| the panel's own id, e.g. `panel:explorer` | one per activity-bar item |
+
+Both `TuiDriver::inventory` and `GtkDriver::inventory` forward whatever
+the frame registered, so a zone available on one backend is available on
+both; `tests/cross_backend_parity.rs` asserts that for
+`app-shell:sidebar-content` specifically.
+
+**Naming a zone no paint site registers makes the step unsatisfiable, not
+flaky.** `FrameInventory::inside` returns `false` for an unregistered
+zone exactly as it does for a run that landed outside a registered one,
+so the matrix alone can't tell the two apart. Two things close that gap:
+`every_asserted_zone_is_registered_by_every_backend` (in
+`tests/conformance.rs`) fails with "backend never registers this id" and
+a list of what *is* registered, and the `assert_inside` failure text
+itself distinguishes never-registered / never-painted / outside-the-rect.
+Before writing an `assert_inside` against a new primitive, wire its
+`register_zone` call first.
+
 ### Known coordinate-free gaps
 
 Two Tier-1 behaviours from the audit's C1 list can't be expressed
 coordinate-free yet, and are *not* faked with a literal:
 
-- **Split-divider drag.** The divider has no text on GTK (it's a filled
-  rect) and contributes no `register_zone` entry on either backend, so
-  there is nothing for `drag_text` to name. `split.direction_toggle_relayout`
-  covers split *relayout* relationally instead. Unblocked by registering
-  divider zones and adding a zone-anchored drag step.
+- **Split-divider drag.** The `SplitTree` divider (not the shell's
+  sidebar divider, which *is* registered as `app-shell:divider`) has no
+  text on GTK — it's a filled rect — and no `split.rs` paint site calls
+  `register_zone`, so there is nothing for `drag_text` to name.
+  `split.direction_toggle_relayout` covers split *relayout* relationally
+  instead. Unblocked by registering split-divider zones and adding a
+  zone-anchored drag step.
 - **Editor click-to-caret** (`editor_col_at_x`) — needs a caret position
   read-back on `ConformanceDriver`.
 
