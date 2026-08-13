@@ -715,6 +715,25 @@ impl GtkBackend {
         }
     }
 
+    /// End any in-progress `TextSelection` drag without clearing the
+    /// displayed `active_selection`. Mirrors [`Self::clear_text_selection`]
+    /// but preserves the highlight — called by the `Backend` trait impl of
+    /// [`crate::Backend::cancel_text_selection_drag`] so apps hosting an
+    /// embedded terminal can abort a speculative drag (started by
+    /// `apply_dispatch` before the app forwards the click to a PTY) while
+    /// keeping any previously finalised selection on screen. See
+    /// `TuiBackend::cancel_text_selection_drag_impl` for the TUI twin this
+    /// mirrors.
+    pub(crate) fn cancel_text_selection_drag_impl(&mut self) {
+        let mut drag = self.drag_state.borrow_mut();
+        if matches!(
+            drag.target(),
+            Some(crate::dispatch::DragTarget::TextSelection { .. })
+        ) {
+            drag.end();
+        }
+    }
+
     /// Record that `id` is the most-recently focused/clicked `TextRegion`.
     /// Called by the runner's `connect_pressed` callback after
     /// `dispatch_click` starts a `DragTarget::TextSelection` drag so that
@@ -1131,6 +1150,10 @@ impl Backend for GtkBackend {
 
     fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
         self.zones.push(ZoneRec { id, bounds });
+    }
+
+    fn cancel_text_selection_drag(&mut self) {
+        self.cancel_text_selection_drag_impl();
     }
 
     fn end_frame(&mut self) {
@@ -1960,6 +1983,17 @@ impl Backend for GtkBackend {
             );
             crate::gtk::draw_scrollbar(cr, &sb, &theme);
         }
+
+        // #492: `draw_terminal_cells` paints glyphs straight through
+        // `pangocairo::functions::show_layout`, bypassing the
+        // `painted_text` tracking every other primitive's rasteriser
+        // routes through — so on this backend a terminal's cell content
+        // never reaches `FrameInventory::text_runs()` (a real, narrower
+        // gap than the no-op-default case this tier mainly targets, but
+        // the same symptom: painted, yet unobservable). Register a zone
+        // so the frame is still attributable to this call until that
+        // tracking gap is closed.
+        self.register_zone(term.id.clone(), rect);
     }
 
     fn draw_terminal_divider(&mut self, rect: QRect) {
@@ -2485,18 +2519,25 @@ impl Backend for GtkBackend {
     }
 
     fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
+        let theme = self.current_theme;
         let (cr, _layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_split called outside enter_frame_scope");
-        crate::gtk::draw_split(
+        let layout = crate::gtk::draw_split(
             cr,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
             split,
-            &self.current_theme,
-        )
+            &theme,
+        );
+        // #492: `Split` paints a divider only — no text of its own — so a
+        // registered zone is the only way this frame is attributable to
+        // the primitive rather than indistinguishable from the trait's
+        // no-op default (C0 paint smoke, contract §5b).
+        self.register_zone(split.id.clone(), rect);
+        layout
     }
 
     fn split_layout(&self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
@@ -2514,18 +2555,24 @@ impl Backend for GtkBackend {
         rect: QRect,
         tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
+        let theme = self.current_theme;
         let (cr, _layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_split_tree called outside enter_frame_scope");
-        crate::gtk::draw_split_tree(
+        let layout = crate::gtk::draw_split_tree(
             cr,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
             tree,
-            &self.current_theme,
-        )
+            &theme,
+        );
+        // #492: dividers only, and `SplitTree` (unlike `Split`) carries no
+        // id of its own — register a fixed chrome id, same pattern as
+        // `draw_terminal_divider` / `draw_drop_overlay`.
+        self.register_zone(WidgetId::new("chrome:split-tree"), rect);
+        layout
     }
 
     fn split_tree_layout(
