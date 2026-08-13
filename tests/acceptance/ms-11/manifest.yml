@@ -52,6 +52,35 @@ tests:
   #
   # #492's slice (contract §5) is unauthored so far.
 
+# ── Red by design, right now (#2164) ──────────────────────────────────────
+# Test-ids here are ALLOWED to fail: their fix does not exist yet. A listed
+# id that PASSES is a hard, loud failure instead — the vacuous-assertion
+# case (#1965). Read by `coord acceptance run --all --ci`; cleared
+# automatically by the post-merge sweep when the issue's fix lands.
+#
+# Hand-written by the coordinator, 2026-08-13. The test-author that authored
+# this slice was never told this registry exists (coord/test_author.py has
+# no notion of `expected_red`), so nothing populated it — see the #2164
+# follow-on. Until that ships, every slice needs this block added by hand
+# before it can merge.
+#
+# ONLY the four tier-B clauses are listed. Deliberately absent:
+#   - both `behavioural_parity_*` — tier A, the CONTROL half. Green today and
+#     green after the fix; a backend that drops the tooltip border still
+#     passes them, which is precisely the gap #542 reports (contract §4b).
+#     Listing them would erase the distinction the two tiers exist to draw.
+#   - `structural_parity_shell_chrome_surface_set_agrees_across_backends` —
+#     the ratchet half. `AppShell` already registers this chrome on both
+#     backends, so it is green today and must STAY green while #542 reworks
+#     the surface-recording path (ask 3). It is a regression guard, not a
+#     pending fix.
+expected_red:
+  542:
+    - ms11_542_structural_parity::structural_parity_every_backend_reports_the_tooltip_surface
+    - ms11_542_structural_parity::structural_parity_backends_emit_the_same_tooltip_surface_set
+    - ms11_542_structural_parity::structural_parity_tooltip_surface_encloses_its_text_on_every_side
+    - ms11_542_structural_parity::structural_parity_tooltip_surface_shape_agrees_across_unit_systems
+
 # Issue-level exemption from the #1138 dispatch gate: "this issue does not
 # consume the sealed suite." Per ORACLE_LOOP.md this does NOT bypass Gate A
 # itself — the contract still needs a recorded human verdict, which is why
