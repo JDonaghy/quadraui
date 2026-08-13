@@ -123,3 +123,8 @@ fn seam_gtk_driver_builds_and_runs_an_example_app_logic() {
 // ms-11 (epic #480) — issue #554: tab labels measured and painted in
 // display columns, not chars. Contract: tests/acceptance/ms-11/contract.md §3.
 include!("../../tests/acceptance/ms-11/wide_tab_labels.rs");
+
+// ms-11 (epic #480) — issue #542: structural parity tier, so a backend that
+// silently drops chrome (borders, titles, scrollbars) fails instead of
+// passing on text presence alone. Contract: tests/acceptance/ms-11/contract.md §4.
+include!("../../tests/acceptance/ms-11/structural_parity.rs");

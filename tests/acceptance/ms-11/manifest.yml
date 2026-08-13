@@ -22,12 +22,35 @@ tests:
   ms11_554_wide_tab_labels::click_on_wide_label_activates_the_painted_tab: 554     # §3g
   ms11_554_wide_tab_labels::emoji_label_paints_every_glyph: 554                    # §3h
 
-  # #542's slice must NOT be authored before #490 merges: it asserts on
-  # `FrameInventory.zones()`, which is declared-but-always-empty until
-  # #490's widget-zone recording lands, so an early slice would be red for
-  # a reason that is not #542's implementation (contract §4c).
+  # ── #542 — structural parity tier (contract §4) ───────────────────────
+  # Slice: structural_parity.rs, `include!`d from quadraui/tests/acceptance.rs.
+  # Authored only now that #490 has merged (939bbb6), per contract §4c: the
+  # clauses assert on `FrameInventory.zones()`, which was
+  # declared-but-always-empty before that, so an earlier slice would have
+  # been red for a reason that is not #542's implementation.
   #
-  # #492's slice (contract §5) is likewise unauthored so far.
+  # TWO TIERS, deliberately separate test fns (#542 acceptance bullet 3 —
+  # "behavioural and structural failures are distinguishable from the test
+  # output alone"). Every message carries a `BEHAVIOURAL PARITY (tier A)` /
+  # `STRUCTURAL PARITY (tier B)` prefix.
+  #
+  # tier A — the CONTROL half, green today and expected to stay green: a
+  # backend that drops the tooltip's border still passes these, which is
+  # the gap #542 reports (contract §4b).
+  ms11_542_structural_parity::behavioural_parity_tooltip_text_reaches_every_backend: 542
+  ms11_542_structural_parity::behavioural_parity_status_bar_text_reaches_every_backend: 542
+  # tier B — red today: `draw_tooltip` registers no zone on either backend,
+  # so the frame reports no tooltip surface at all.
+  ms11_542_structural_parity::structural_parity_every_backend_reports_the_tooltip_surface: 542       # §4b
+  ms11_542_structural_parity::structural_parity_backends_emit_the_same_tooltip_surface_set: 542      # ask 1
+  ms11_542_structural_parity::structural_parity_tooltip_surface_encloses_its_text_on_every_side: 542 # #541
+  ms11_542_structural_parity::structural_parity_tooltip_surface_shape_agrees_across_unit_systems: 542 # ask 4
+  # tier B ratchet half — `AppShell` already registers this chrome on both
+  # backends, so this is green today and guards it from regressing while
+  # #542 reworks the surface-recording path (ask 3).
+  ms11_542_structural_parity::structural_parity_shell_chrome_surface_set_agrees_across_backends: 542
+  #
+  # #492's slice (contract §5) is unauthored so far.
 
 # Issue-level exemption from the #1138 dispatch gate: "this issue does not
 # consume the sealed suite." Per ORACLE_LOOP.md this does NOT bypass Gate A
