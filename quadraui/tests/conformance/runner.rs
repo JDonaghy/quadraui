@@ -183,6 +183,35 @@ pub fn run_scenario(scenario: &Scenario, backend: &BackendReg) -> Outcome {
     Outcome::Pass
 }
 
+/// Every zone id `backend` registers at any point while replaying
+/// `scenario` — the first frame plus one observation after each step.
+///
+/// `None` when the backend skips the scenario (missing capability) or has
+/// no such fixture; those cells have nothing to say about zones.
+///
+/// Step failures are deliberately ignored here: this exists to answer the
+/// single question "does this zone id ever get registered?", which is the
+/// difference between a step that is *failing* and a step that is
+/// *unsatisfiable*. `conformance_matrix` still reports the failure itself.
+pub fn zones_seen(scenario: &Scenario, backend: &BackendReg) -> Option<BTreeSet<String>> {
+    if backend.missing_cap(&scenario.requires).is_some() {
+        return None;
+    }
+    let mut driver = (backend.build)(&scenario.fixture, scenario.viewport.into())?;
+    let mut seen = BTreeSet::new();
+    fn observe(d: &dyn DynDriver, seen: &mut BTreeSet<String>) {
+        for z in d.inventory().zones() {
+            seen.insert(z.id.as_str().to_string());
+        }
+    }
+    observe(driver.as_ref(), &mut seen);
+    for step in &scenario.steps {
+        let _ = run_step(driver.as_mut(), step);
+        observe(driver.as_ref(), &mut seen);
+    }
+    Some(seen)
+}
+
 /// Execute one step. `Err(reason)` is a scenario failure, not a panic —
 /// act steps pre-check that their target is painted so a missing needle
 /// reports "not painted" with the frame's runs rather than unwinding out
@@ -258,10 +287,7 @@ fn run_step(d: &mut dyn DynDriver, step: &Step) -> Result<(), String> {
         Step::AssertInside { a, zone } => {
             let inv = d.inventory();
             if !inv.inside(a, &WidgetId::new(zone.clone())) {
-                let zones: Vec<&str> = inv.zones().iter().map(|z| z.id.as_str()).collect();
-                return Err(format!(
-                    "expected {a:?} inside zone {zone:?}; registered zones: {zones:?}"
-                ));
+                return Err(inside_failure(&inv, a, zone));
             }
         }
         Step::AssertExited(want) => {
@@ -301,11 +327,49 @@ fn relation_hint(inv: &FrameInventory, a: &str, b: &str) -> String {
     }
 }
 
+/// Why an `assert_inside` failed. The three causes need three different
+/// fixes, and conflating them is what makes a zone-backed step look like
+/// a layout bug when it is really a missing `Backend::register_zone` call
+/// (or vice versa), so each is reported in its own words.
+fn inside_failure(inv: &FrameInventory, needle: &str, zone: &str) -> String {
+    let mut ids: Vec<&str> = inv.zones().iter().map(|z| z.id.as_str()).collect();
+    ids.sort_unstable();
+    let run_bounds = inv
+        .text_runs()
+        .iter()
+        .find(|r| r.text.contains(needle))
+        .map(|r| r.bounds);
+    let zone_bounds = inv
+        .zones()
+        .iter()
+        .find(|z| z.id.as_str() == zone)
+        .map(|z| z.bounds);
+    match (run_bounds, zone_bounds) {
+        (_, None) => format!(
+            "zone {zone:?} was never registered this frame, so this step can never pass on \
+             this backend — nothing called `Backend::register_zone` for it. Either wire the \
+             registration at the paint site (see `AppShell::register_chrome_zones`) or drop \
+             the step and record the gap under `docs/TESTING.md` → *Known coordinate-free \
+             gaps*. Registered zones: {ids:?}"
+        ),
+        (None, Some(_)) => format!(
+            "zone {zone:?} is registered, but {needle:?} was never painted; {}",
+            painted_runs(inv)
+        ),
+        (Some(r), Some(z)) => format!(
+            "{needle:?} is painted at {r:?}, which is not contained by zone {zone:?} at {z:?}"
+        ),
+    }
+}
+
 /// A compact, deduplicated dump of what *was* painted, for failure text.
 /// Sorted and capped so a 40-row frame doesn't drown the report.
 fn painted(d: &dyn DynDriver) -> String {
-    let runs: BTreeSet<String> = d
-        .inventory()
+    painted_runs(&d.inventory())
+}
+
+fn painted_runs(inv: &FrameInventory) -> String {
+    let runs: BTreeSet<String> = inv
         .text_runs()
         .iter()
         .map(|r| r.text.trim().to_string())
@@ -396,6 +460,7 @@ pub fn render_matrix(rows: &[MatrixRow], backends: &[&'static str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quadraui::Rect;
 
     const NO_CAPS: &[&str] = &[];
     const SOME_CAPS: &[&str] = &["text_selection"];
@@ -413,6 +478,68 @@ mod tests {
             requires: caps.iter().map(|s| s.to_string()).collect(),
             steps: vec![],
         }
+    }
+
+    fn inv(runs: &[(&str, Rect)], zones: &[(&str, Rect)]) -> FrameInventory {
+        use quadraui::testing::{TextRun, ZoneRec};
+        FrameInventory {
+            text_runs: runs
+                .iter()
+                .map(|(text, bounds)| TextRun {
+                    text: (*text).into(),
+                    bounds: *bounds,
+                })
+                .collect(),
+            zones: zones
+                .iter()
+                .map(|(id, bounds)| ZoneRec {
+                    id: WidgetId::new(*id),
+                    bounds: *bounds,
+                })
+                .collect(),
+        }
+    }
+
+    /// An `assert_inside` failure must name *which* of the three causes
+    /// it hit. The unregistered-zone case is the one that matters most:
+    /// `FrameInventory::inside` returns `false` for it exactly as it does
+    /// for a genuine geometry miss, so without distinct wording an
+    /// unsatisfiable step reads as a layout regression and gets "fixed"
+    /// in the wrong place.
+    #[test]
+    fn inside_failure_distinguishes_its_three_causes() {
+        let zone = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let inside = Rect::new(1.0, 1.0, 3.0, 1.0);
+        let outside = Rect::new(50.0, 1.0, 3.0, 1.0);
+
+        // 1. Zone never registered — the step can never pass.
+        let msg = inside_failure(&inv(&[("row", inside)], &[]), "row", "sidebar");
+        assert!(
+            msg.contains("never registered") && msg.contains("register_zone"),
+            "unregistered-zone failure must say so and name the fix: {msg}"
+        );
+
+        // 2. Zone registered, needle never painted.
+        let msg = inside_failure(
+            &inv(&[("other", inside)], &[("sidebar", zone)]),
+            "row",
+            "sidebar",
+        );
+        assert!(
+            msg.contains("never painted") && !msg.contains("never registered"),
+            "missing-needle failure must blame the needle, not the zone: {msg}"
+        );
+
+        // 3. Both present, geometry does not hold.
+        let msg = inside_failure(
+            &inv(&[("row", outside)], &[("sidebar", zone)]),
+            "row",
+            "sidebar",
+        );
+        assert!(
+            msg.contains("not contained") && !msg.contains("never"),
+            "geometry failure must report both rects: {msg}"
+        );
     }
 
     /// A backend that hasn't declared a capability skips — and the skip
