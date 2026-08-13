@@ -40,6 +40,8 @@ mod help_layer_demo;
 mod hit_map_recover_demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
+#[path = "../examples/common/modal_occlusion_demo.rs"]
+mod modal_occlusion_demo;
 #[path = "../examples/common/palette_dual_mode_app.rs"]
 mod palette_dual_mode_app;
 #[path = "../examples/common/panel_app.rs"]
@@ -67,6 +69,7 @@ use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
 use mini_app::MiniApp;
+use modal_occlusion_demo::ModalOcclusionDemo;
 use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
@@ -2566,6 +2569,190 @@ fn split_tree_r_resets_ratios_after_drag() {
 #[test]
 fn split_tree_q_exits() {
     let mut driver = TuiDriver::new(SplitTreeApp::new(), 80, 24);
+    let reaction = driver.type_char('q');
+    assert_eq!(reaction, Reaction::Exit);
+    assert!(driver.exited());
+}
+
+// ─── ModalOcclusionDemo (issue #455 / #491): modal click-through guard ─────
+//
+// `ModalOcclusionDemo` is the fixture behind
+// `tests/conformance/scenarios/modal/dialog.blocks_click_through.scn.json`
+// (quadraui#491). It has no `if dialog_open` guard anywhere in its own
+// `handle` — occlusion is entirely quadraui's `ModalStack` + `dispatch_click`
+// tagging a `MouseDown` that lands inside the topmost modal's bounds with
+// that modal's `WidgetId`. These tests exercise the same behaviour the
+// conformance scenario asserts, but through the driver directly (CLAUDE.md's
+// per-example Tier-1 obligation, independent of the Tier-4 conformance
+// suite).
+
+/// Initial paint: rows, the "Open dialog" row, and the starting status bar
+/// text are all painted; no dialog is visible yet.
+#[test]
+fn modal_occlusion_initial_screen_paints_rows_and_open_button() {
+    let driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("pod-00"),
+        "first row should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Open dialog"),
+        "'Open dialog' row should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("selected: nothing"),
+        "status bar should start with no selection:\n{screen}"
+    );
+    assert!(
+        !driver.screen_contains("Confirm delete"),
+        "dialog should not be open initially:\n{screen}"
+    );
+}
+
+/// Clicking a row (no dialog open) selects it — the base-layer click path.
+#[test]
+fn modal_occlusion_row_click_selects_row() {
+    let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
+    let (x, y) = driver
+        .find("pod-03")
+        .unwrap_or_else(|| panic!("'pod-03' row should be painted:\n{}", driver.screen()));
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("selected: pod-03"),
+        "clicking a row should select it:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking "Open dialog" opens the centred confirm dialog.
+#[test]
+fn modal_occlusion_open_button_opens_dialog() {
+    let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
+    let (x, y) = driver
+        .find("Open dialog")
+        .unwrap_or_else(|| panic!("'Open dialog' row should be painted:\n{}", driver.screen()));
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Confirm delete"),
+        "clicking 'Open dialog' should open the dialog:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Really delete?"),
+        "dialog body text should be painted:\n{}",
+        driver.screen()
+    );
+}
+
+/// The #455 regression, made executable: clicking the dialog's own body
+/// text — which sits directly over a row in the middle of the list — must
+/// be tagged with the dialog's id and must NOT reach the row underneath. If
+/// a backend forgot to route `MouseDown` through `ModalStack` first, this
+/// click would arrive as `widget: None` and select the covered row instead.
+#[test]
+fn modal_occlusion_dialog_body_click_does_not_fall_through() {
+    let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
+
+    // Select a row first so a fall-through would be visible as a change.
+    let (rx, ry) = driver
+        .find("pod-03")
+        .unwrap_or_else(|| panic!("'pod-03' row should be painted:\n{}", driver.screen()));
+    driver.click(rx, ry);
+    assert!(driver.screen_contains("selected: pod-03"));
+
+    let (ox, oy) = driver
+        .find("Open dialog")
+        .unwrap_or_else(|| panic!("'Open dialog' row should be painted:\n{}", driver.screen()));
+    driver.click(ox, oy);
+    assert!(driver.screen_contains("Confirm delete"));
+
+    let (bx, by) = driver
+        .find("Really delete?")
+        .unwrap_or_else(|| panic!("dialog body text should be painted:\n{}", driver.screen()));
+    driver.click(bx, by);
+
+    assert!(
+        driver.screen_contains("selected: pod-03"),
+        "clicking the dialog's own body text must not change the selection \
+         underneath it:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Confirm delete"),
+        "clicking the dialog body (not a button) must not close it:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking "Cancel" closes the dialog; the base layer is live again
+/// afterwards (proves the earlier block was the modal, not a dead row
+/// list).
+#[test]
+fn modal_occlusion_cancel_closes_dialog_and_base_layer_recovers() {
+    let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
+
+    let (ox, oy) = driver
+        .find("Open dialog")
+        .unwrap_or_else(|| panic!("'Open dialog' row should be painted:\n{}", driver.screen()));
+    driver.click(ox, oy);
+    assert!(driver.screen_contains("Confirm delete"));
+
+    let (cx, cy) = driver
+        .find("Cancel")
+        .unwrap_or_else(|| panic!("'Cancel' button should be painted:\n{}", driver.screen()));
+    driver.click(cx, cy);
+    assert!(
+        !driver.screen_contains("Confirm delete"),
+        "clicking Cancel should close the dialog:\n{}",
+        driver.screen()
+    );
+
+    let (rx, ry) = driver
+        .find("pod-12")
+        .unwrap_or_else(|| panic!("'pod-12' row should be painted:\n{}", driver.screen()));
+    driver.click(rx, ry);
+    assert!(
+        driver.screen_contains("selected: pod-12"),
+        "with the dialog closed, row clicks should reach the base layer again:\n{}",
+        driver.screen()
+    );
+}
+
+/// Esc closes an open dialog without exiting the app; Esc again (no dialog
+/// open) exits.
+#[test]
+fn modal_occlusion_esc_closes_dialog_then_exits() {
+    let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
+
+    let (ox, oy) = driver
+        .find("Open dialog")
+        .unwrap_or_else(|| panic!("'Open dialog' row should be painted:\n{}", driver.screen()));
+    driver.click(ox, oy);
+    assert!(driver.screen_contains("Confirm delete"));
+
+    let reaction = driver.press_named(NamedKey::Escape);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Esc should close the dialog, not exit"
+    );
+    assert!(!driver.exited());
+    assert!(!driver.screen_contains("Confirm delete"));
+
+    let reaction = driver.press_named(NamedKey::Escape);
+    assert_eq!(
+        reaction,
+        Reaction::Exit,
+        "Esc with no dialog open should exit"
+    );
+    assert!(driver.exited());
+}
+
+/// `q` exits regardless of dialog state.
+#[test]
+fn modal_occlusion_q_exits() {
+    let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
     let reaction = driver.type_char('q');
     assert_eq!(reaction, Reaction::Exit);
     assert!(driver.exited());

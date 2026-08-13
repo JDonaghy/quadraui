@@ -3,7 +3,7 @@
   "fixture": "panel_app",
   "tier": 1,
   "viewport": { "cols": 100, "rows": 30 },
-  "requires": ["text_selection"],
+  "requires": ["text_selection", "drag"],
   "steps": [
     { "note": "Exercises register_text_region, the drag pipeline and TextCopied end to end (audit 6.5 example 3). Both drag endpoints are named by painted text, so the cell/pixel unit difference never surfaces." },
     { "assert_screen_has": "The quick brown fox" },

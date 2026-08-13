@@ -336,6 +336,20 @@ matrix. It complements — does not replace — the tiers above:
 unchanged; the pty smoke #302 unchanged; `GtkDriver`/GD-5 division of
 labour unchanged).
 
+**A new conformance fixture does not waive the per-example Tier-1
+obligation.** When a Tier-1 scenario's fixture is a brand-new `tui_*`
+example (CLAUDE.md's "Demos are mandatory for visual features" /
+"Every TUI example also ships an automated black-box test"), that example
+still needs its own `TuiDriver` cluster in `tests/tui_example_driver.rs` —
+same as any other new `tui_*` example, conformance scenario or not. The
+two mechanisms check different things: the Tier-1 driver test is a
+hand-written, backend-specific regression net over that one example's
+behaviour; the Tier-4 scenario is the same interaction expressed once and
+proven identical across every registered backend. Neither substitutes for
+the other. (`tui_modal_occlusion` / `ModalOcclusionDemo` — the fixture
+behind `dialog.blocks_click_through` — ships both: see the
+`modal_occlusion_*` tests in `tests/tui_example_driver.rs`.)
+
 ### The tiers (a new backend's burn-down checklist)
 
 - **C0 — Boot (day one).** Construct the backend headless;
