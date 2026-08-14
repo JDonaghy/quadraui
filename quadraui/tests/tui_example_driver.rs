@@ -58,6 +58,8 @@ mod selection_app;
 mod shell_menu_demo;
 #[path = "../examples/common/sidebar_panel_app.rs"]
 mod sidebar_panel_app;
+#[path = "../examples/common/split_app.rs"]
+mod split_app;
 #[path = "../examples/common/split_tree_app.rs"]
 mod split_tree_app;
 #[path = "../examples/common/tab_group_demo.rs"]
@@ -84,6 +86,7 @@ use pipeline_app::PipelineApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
 use sidebar_panel_app::SidebarPanelApp;
+use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
@@ -171,6 +174,35 @@ fn mini_q_exits() {
     let mut driver = TuiDriver::new(MiniApp::new(), 100, 40);
     driver.type_char('q');
     assert!(driver.exited());
+}
+
+/// #307: `tui_app`'s bare-bones AppLogic renders cleanly (title segment +
+/// quit hint painted, no panic) and exits on Ctrl-Q. `MiniApp::handle`
+/// matches `Key::Char('q')` alone — it destructures only the `key` field
+/// out of `UiEvent::KeyPressed { key, .. }`, so the `..` silently drops
+/// whatever `modifiers` the event carries. That makes plain `q` (already
+/// covered by `mini_q_exits` above) and Ctrl-Q take the exact same exit
+/// path today; this test pins that modifier-agnostic contract for Ctrl-Q
+/// specifically; a future change that started matching on `modifiers.ctrl`
+/// to require the combo (or that gated the char match some other way)
+/// would break it.
+#[test]
+fn mini_renders_cleanly_and_ctrl_q_exits() {
+    let mut driver = TuiDriver::new(MiniApp::new(), 100, 40);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("quadraui::run demo"),
+        "title segment should render cleanly on the first frame:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("press any key"),
+        "quit hint should render cleanly on the first frame:\n{screen}"
+    );
+    assert!(!driver.exited());
+
+    let reaction = driver.ctrl_char('q');
+    assert_eq!(reaction, Reaction::Exit, "Ctrl-Q should exit");
+    assert!(driver.exited(), "Ctrl-Q should make the app exit");
 }
 
 // ─── TextInputDemo: character typing + editing ──────────────────────────────
@@ -789,6 +821,68 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
         driver.screen_contains("Sidebar shown (Ctrl+B via ctx.shell_mut())"),
         "status line should confirm the second toggle:\n{}",
         driver.screen()
+    );
+}
+
+/// #307: the issue's suggested scenario for this demo was "open/close the
+/// bottom panel (#289)" — but #289's tabbed bottom panel
+/// (`BottomPanelConfig`/`BottomPanelController`) belongs to the separate
+/// `tui_bottom_panel` example (`BottomPanelDemo`), not `AppShellDemo`:
+/// `AppShellDemo::config()` never calls `.with_bottom_panel_config(..)` or
+/// even the plain `.with_bottom_panel(..)`, so there is no bottom panel to
+/// open or close here (`tui_bottom_panel` is out of scope for #307's named
+/// batch). `AppShellDemo` does have its own real, currently-untested
+/// open/close-a-chrome-region toggle though: `t` reveals/hides the title
+/// bar at runtime via `ctx.shell_mut().set_title_bar_visible(..)` (the
+/// #552 transition, see the module doc comment on `appshell_demo.rs`).
+/// Reserving that row shifts everything below it down by the title bar's
+/// height — `AppShell::compute_layout` re-derives `sidebar_content_bounds`
+/// (and `activity_bar_bounds`/`main_content_bounds`) from `band_y` on
+/// every call rather than caching an offset, so this is a real layout
+/// reflow, not just a repaint. Tracking the sidebar-content label's row
+/// (rather than asserting a hardcoded row number) is what makes this
+/// robust to the title bar's exact height changing later.
+#[test]
+fn appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 100, 30);
+
+    let before = driver
+        .find_bounds("(sidebar content")
+        .unwrap_or_else(|| panic!("sidebar content label not painted:\n{}", driver.screen()));
+
+    let reaction = driver.type_char('t');
+    assert_eq!(reaction, Reaction::Redraw, "'t' should redraw");
+    let shown_screen = driver.screen();
+    assert!(
+        shown_screen.contains("Title bar shown (t)"),
+        "status line should confirm the title bar was revealed:\n{shown_screen}"
+    );
+    let shown = driver
+        .find_bounds("(sidebar content")
+        .unwrap_or_else(|| panic!("sidebar content label not painted after 't':\n{shown_screen}"));
+    assert!(
+        shown.y > before.y,
+        "reserving the title bar row should push the sidebar content row down: \
+         before y={}, after y={}\n{shown_screen}",
+        before.y,
+        shown.y
+    );
+
+    let reaction = driver.type_char('t');
+    assert_eq!(reaction, Reaction::Redraw, "second 't' should redraw");
+    let hidden_screen = driver.screen();
+    assert!(
+        hidden_screen.contains("Title bar hidden (t)"),
+        "status line should confirm the title bar was hidden again:\n{hidden_screen}"
+    );
+    let restored = driver.find_bounds("(sidebar content").unwrap_or_else(|| {
+        panic!("sidebar content label not painted after second 't':\n{hidden_screen}")
+    });
+    assert_eq!(
+        restored.y, before.y,
+        "hiding the title bar again should restore the sidebar content row to its \
+         original position:\n{hidden_screen}"
     );
 }
 
@@ -1417,6 +1511,43 @@ fn shell_app_k_saturates_at_first_item() {
     );
 }
 
+/// #307: `Shift+Tab` is `ShellApp`'s *other* focus-region control (see the
+/// module doc comment's "`Shift+Tab` cycle sidebar sections"), distinct
+/// from the activity-bar `Tab` focus the tests above cover. Real
+/// terminals/backends report Shift+Tab as the dedicated
+/// `NamedKey::BackTab` keycode (not `Tab` plus a shift modifier) — this
+/// raw `KeyPressed` event isn't intercepted by the Tab-focuses-activity-bar
+/// special case (which matches only `NamedKey::Tab`) or by
+/// `AppShell::handle` (no `BackTab` arm at all), so it falls through to
+/// `SidebarSystem::handle`'s own `NamedKey::BackTab` arm, which calls
+/// `cycle_active(-1)`. `SidebarSystem::build_view` prefixes the active
+/// section's title with `"▶ "` — the focus indicator this test follows
+/// as it moves from one sidebar region to another.
+#[test]
+fn shell_app_shift_tab_moves_sidebar_focus_indicator_between_sections() {
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+    let before = driver.screen();
+    assert!(
+        driver.screen_contains("▶ PROJECT"),
+        "the explorer sidebar starts with PROJECT as the active section:\n{before}"
+    );
+    assert!(
+        !driver.screen_contains("▶ OPEN EDITORS"),
+        "OPEN EDITORS should not carry the focus indicator yet:\n{before}"
+    );
+
+    driver.press_named(NamedKey::BackTab);
+    let after = driver.screen();
+    assert!(
+        driver.screen_contains("▶ OPEN EDITORS"),
+        "Shift+Tab should move the focus indicator to OPEN EDITORS:\n{after}"
+    );
+    assert!(
+        !driver.screen_contains("▶ PROJECT"),
+        "the focus indicator should leave PROJECT once it moves elsewhere:\n{after}"
+    );
+}
+
 // ─── FullChromeDemo: CSD title-bar drag / maximize escape hatch (#400) ──────
 //
 // `FullChromeDemo` reserves a title-bar band via `ShellConfig::with_title_bar`
@@ -1785,6 +1916,50 @@ fn full_chrome_mouse_moved_over_edge_does_not_crash() {
         reaction,
         Reaction::Continue,
         "hovering plain main content (not an edge) should also just return Continue"
+    );
+}
+
+/// #307: the issue's suggested scenario for this demo was "menu bar,
+/// toolbar, status line interactions, asserting on each" — but
+/// `FullChromeDemo` has no real `MenuBar`/`Toolbar` widgets wired in (the
+/// "File  Edit  View  Help" text in its title bar is a decorative label,
+/// not an interactive menu — see `build_title_bar`), and its status-bar
+/// row's own `ctx.in_status_bar(..)` branch is unreachable via `MouseDown`:
+/// `status_bar_bounds` is exactly the window's last row, which
+/// `ShellAppTrait::handle`'s `ctx.window_edge(..)` check (checked first,
+/// same #406 mechanism the edge-resize tests above exercise) always claims
+/// as the South edge before `ctx.in_status_bar` ever gets a look. What
+/// *is* real, live, and untested here are the other two "chrome slot"
+/// `MouseDown` branches this demo's own module doc says it proves
+/// (bottom panel + command line) — each just updates `last_event`, which
+/// `render_content` always repaints into `main_content_bounds`, so a
+/// mis-routed hit-test (or a click silently swallowed by `window_edge`
+/// like status-bar's) would leave the wrong message on screen.
+#[test]
+fn full_chrome_bottom_panel_and_command_line_clicks_update_status_line() {
+    let config = FullChromeDemo::config();
+    let mut driver = driver_with_shell(FullChromeDemo::new(), config, 100, 30);
+
+    let (x, y) = driver
+        .find("drag top edge to resize")
+        .unwrap_or_else(|| panic!("bottom panel label not painted:\n{}", driver.screen()));
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Bottom panel click"),
+        "clicking inside the bottom panel body should route through \
+         ctx.in_bottom_panel and update the status line:\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver
+        .find(":command-line-slot")
+        .unwrap_or_else(|| panic!("command line slot not painted:\n{}", driver.screen()));
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Command line click"),
+        "clicking the command line row should route through \
+         ctx.in_command_line and update the status line:\n{}",
+        driver.screen()
     );
 }
 
@@ -2532,6 +2707,65 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
         reaction,
         Reaction::Exit,
         "q should quit normally once the overlay is closed"
+    );
+}
+
+// ─── SplitApp (issue #307): draggable single divider ───────────────────────
+
+/// Dragging `SplitApp`'s single divider must move it and shrink the pane
+/// it moves towards — `SplitApp::handle`'s `MouseMoved` arm recomputes
+/// `ratio` straight from the cursor's absolute x each move (clamped to
+/// [0.05, 0.95]), and the status bar's `ratio: {:.0}%` segment mirrors
+/// that field every frame. Tracking the divider glyph's own painted
+/// column (rather than reading `SplitApp.ratio` directly, which has no
+/// public accessor) is what makes this a real paint round-trip: a drag
+/// handler that updated `ratio` but never affected `backend.draw_split`'s
+/// layout — or vice versa — would fail this, not just a hand-inspected
+/// field.
+///
+/// Clicks land on `find_bounds("│")`'s left edge, not its center like
+/// most tests in this file: `Split::layout`'s divider hit-region for a
+/// 0.5 ratio here is `[39.5, 40.5)`, but `tui/split.rs::draw_split` paints
+/// the glyph at `div.x.round()` = cell 40 (`[40.0, 41.0)`) — the two
+/// spans only overlap in `[40.0, 40.5)`. `find`'s usual cell-center
+/// coordinate (`40.5`) sits exactly on that boundary and resolves to
+/// `SecondPane`, not `Divider` — so a click there would silently miss the
+/// divider it just found painted. The left edge (`40.0`) is inside both
+/// spans regardless of the exact half-cell rounding, so it's the robust
+/// choice here.
+#[test]
+fn split_dragging_divider_moves_it_and_updates_ratio() {
+    let mut driver = TuiDriver::new(SplitApp::new(), 80, 24);
+    assert!(
+        driver.screen_contains("ratio: 50% (H)"),
+        "starts centered 50/50:\n{}",
+        driver.screen()
+    );
+
+    let before = driver
+        .find_bounds("│")
+        .unwrap_or_else(|| panic!("divider not painted:\n{}", driver.screen()));
+    let (dx, dy) = (before.x, before.y + before.height / 2.0);
+
+    driver.drag(dx, dy, dx - 20.0, dy);
+
+    let after = driver.find_bounds("│").unwrap_or_else(|| {
+        panic!(
+            "divider should still be painted after drag:\n{}",
+            driver.screen()
+        )
+    });
+    assert!(
+        after.x < before.x - 15.0,
+        "dragging the divider 20 cols left should move it left by roughly that much \
+         (shrinking the first pane's width by the same amount): before={}, after={}",
+        before.x,
+        after.x
+    );
+    assert!(
+        !driver.screen_contains("ratio: 50% (H)"),
+        "status bar ratio should move away from 50% after the drag:\n{}",
+        driver.screen()
     );
 }
 
