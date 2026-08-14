@@ -53,20 +53,20 @@ If you're tempted to take a shortcut — bypass the runner, copy-paste an exampl
 
 ## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
 
-quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** Two external consumers depend on it by *relative path to a sibling checkout*, and both their CI jobs clone `develop`:
+quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** `vimcode` depends on it by *relative path to a sibling checkout*, and its CI clones `develop`. `coord-tui` used to as well, but since `claude-coordinator#1973` (2026-08-10) it pins `quadraui` to a fixed git rev instead — a *deliberate, reviewable* dependency bump on coord-tui's side, not automatic drift:
 
 | Consumer | Declaration | Its CI |
 |---|---|---|
-| `coord-tui` — `JDonaghy/claude-coordinator`, `tui/` | `quadraui = { path = "../../quadraui/quadraui", features = ["tui","terminal"] }` | `cargo-test.yml` clones this repo's **default branch** — which is `develop` |
-| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop` |
+| `coord-tui` — `JDonaghy/claude-coordinator`, `tui/` | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", features = ["tui","terminal"] }` | `cargo-test.yml` builds against the pinned rev, **not** `develop`'s tip |
+| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop`, hard-pinned further by `build.rs` against `quadraui-pin.txt` (vimcode#638) |
 
 Consequences, all of which have already bitten:
 
-- A breaking change is **live in both repos the instant it merges to `develop`**. Not at their next release — at their next `cargo build`.
-- It turns **every open PR in both repos red**, including PRs that touch nothing related, retroactively.
+- A breaking change is **live in vimcode's CI the instant it merges to `develop`** (coord-tui is insulated from this by its rev pin, but only until someone bumps that rev). Not at their next release — at their next `cargo build`.
+- It turns **every open vimcode PR red**, including PRs that touch nothing related, retroactively.
 - There is **no version bump to blame**, so a breaking merge can't be spotted by "which release did this."
 
-`ci.yml`'s `downstream` job (#528) now `cargo check`s both consumers against every PR, with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing," and it only runs the checks each consumer's own `Cargo.toml` already declares (`tui,terminal` for coord-tui, default features for vimcode). You are still the gate for everything the compiler can't see.
+`ci.yml`'s `downstream` job (#528) now `cargo check`s both consumers against every PR's quadraui — for coord-tui this means overriding its git-rev pin with a `.cargo/config.toml` `paths` override onto the PR's checkout (mirroring `tui/cargo-config-local-quadraui.toml.example`, the same mechanism coord-tui documents for local co-development), and for vimcode it means setting `VIMCODE_QUADRAUI_UNPINNED=1` so `build.rs`'s pin-mismatch check downgrades to a warning instead of aborting the build before any real compilation happens — with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing," and it only runs the checks each consumer's own `Cargo.toml` already declares (`tui,terminal` for coord-tui, default features for vimcode). You are still the gate for everything the compiler can't see.
 
 This is not hypothetical. #476 ("de-coord board.rs") replaced `Stage` with `CardBadge`, renamed `BadgeStatus::RequestChanges` → `Warning`, deleted two `BoardCard` fields and `BoardAction`'s domain verbs — all correct as *design*. Both consumers broke on 2026-08-05 and coord-tui needed a migration PR (`claude-coordinator#1864`). The change shipped believing it was safe partly because this file used to claim consumers "pin a published version externally." They never did.
 

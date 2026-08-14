@@ -117,13 +117,17 @@ jobs:
 
   downstream:
     # Compile truth for the two external consumers (#528). quadraui is
-    # `publish = false`, nothing pins a published version, and both
-    # consumers' own CI clones this repo's `develop` tip by relative path —
-    # so quadraui being green here has historically proven nothing about
-    # them (#476 broke both on 2026-08-05, silently, until their next CI
-    # run). This job clones both consumers as siblings of this checkout so
-    # their `path = "../../quadraui/quadraui"` / `path = "../quadraui/quadraui"`
-    # deps resolve straight onto the PR's quadraui, and `cargo check`s them.
+    # `publish = false`, nothing pins a published version, and vimcode's own
+    # CI clones this repo's `develop` tip by relative path — so quadraui
+    # being green here has historically proven nothing about the consumers
+    # (#476 broke both on 2026-08-05, silently, until their next CI run).
+    # This job clones both consumers as siblings of this checkout so
+    # vimcode's `path = "../quadraui/quadraui"` dep resolves straight onto
+    # the PR's quadraui. coord-tui no longer has a path dep at all — since
+    # claude-coordinator#1973 it pins `quadraui` to a fixed git rev — so for
+    # coord-tui specifically, the steps below also drop a `.cargo/config.toml`
+    # `paths` override into its checkout to redirect that pinned dep onto
+    # the sibling checkout too. Both consumers are then `cargo check`ed.
     name: downstream consumers (compile truth)
     runs-on: ubuntu-latest
     env:
@@ -145,7 +149,6 @@ jobs:
       # step resolves as "stable" — that's intentional, it's their toolchain
       # choice to make, not ours to impose via this gate.
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
       - name: Clone consumers as siblings of this checkout
         run: |
@@ -153,6 +156,38 @@ jobs:
           P="$(dirname "$GITHUB_WORKSPACE")"
           git clone --depth 1 https://github.com/JDonaghy/claude-coordinator "$P/claude-coordinator"
           git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$P/vimcode"
+
+      # coord-tui's Cargo.toml stopped being a path dependency in
+      # claude-coordinator#1973 (2026-08-10): it now pins
+      # `quadraui = { git = "...", rev = "<fixed sha>" }`. A git+rev source
+      # is resolved from GitHub, completely independent of the sibling
+      # checkout above — so without this step, `cargo check` on coord-tui
+      # would silently build against that fixed rev forever, never against
+      # this PR's quadraui, and this whole leg of the gate would be inert.
+      # The consumer side already ships the fix for exactly this case: a
+      # `.cargo/config.toml` `paths` override
+      # (`tui/cargo-config-local-quadraui.toml.example`) that redirects the
+      # `quadraui` package (matched by name+version, not by source) to a
+      # local checkout regardless of what's pinned in Cargo.toml. Copy it
+      # into place so the PR-side check actually exercises the PR.
+      - name: Point coord-tui at this PR's quadraui, not its pinned git rev
+        run: |
+          set -euo pipefail
+          D="$(dirname "$GITHUB_WORKSPACE")/claude-coordinator/tui"
+          mkdir -p "$D/.cargo"
+          cp "$D/cargo-config-local-quadraui.toml.example" "$D/.cargo/config.toml"
+
+      # Placed after the consumer clone (and the coord-tui .cargo override
+      # above) so the action's Cargo.lock hashing can actually see the
+      # consumer manifests it's told to cache below — caching this job at
+      # its default $GITHUB_WORKSPACE-only scope would miss both consumer
+      # builds entirely, since every real `cargo check` in this job targets
+      # a sibling directory outside the checkout.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ../claude-coordinator/tui -> target
+            ../vimcode -> target
 
       # cargo check, not build/test: the question this job answers is
       # "does this compile against the consumer's tree", not "is the
@@ -168,17 +203,38 @@ jobs:
         continue-on-error: true
         run: cargo check --manifest-path "$(dirname "$GITHUB_WORKSPACE")/claude-coordinator/tui/Cargo.toml"
 
+      # vimcode's build.rs (vimcode#638) panics before compiling any real
+      # source if the sibling quadraui checkout's HEAD doesn't exactly match
+      # the SHA pinned in `quadraui-pin.txt` — which the tip clone above
+      # never will, since this job floats both the PR's and develop's
+      # quadraui rather than the one specific SHA vimcode happens to have
+      # pinned. Left unset, that panic fires unconditionally on every run
+      # (PR side and control side alike), so pr_vimcode and control_vimcode
+      # would always fail identically and the "pre-existing breakage"
+      # classification below would swallow every real signal. vimcode ships
+      # an escape hatch for exactly this — building against a deliberately
+      # different quadraui rev — documented in `quadraui-pin.txt`:
+      # VIMCODE_QUADRAUI_UNPINNED=1 downgrades the mismatch to a warning and
+      # lets the build proceed to actually compile against the checked-out
+      # quadraui. Never set this for a normal vimcode dev build; it is
+      # correct here because floating both sides of the comparison against
+      # the pin is the entire point of this job.
       - name: cargo check — vimcode (this PR's quadraui)
         id: pr_vimcode
         continue-on-error: true
+        env:
+          VIMCODE_QUADRAUI_UNPINNED: "1"
         run: cargo check --manifest-path "$(dirname "$GITHUB_WORKSPACE")/vimcode/Cargo.toml"
 
       # A consumer can be red for reasons that have nothing to do with this
       # PR: its own bug, or mid-migration during PR 2 of a rule-8
       # deprecation. Don't hold quadraui hostage to that. Only run this
-      # control when at least one PR-quadraui check above failed, and only
-      # against the specific consumer(s) that failed — this is the
-      # expensive path and most PRs never touch it.
+      # control when at least one PR-quadraui check above failed. This clone
+      # step always clones *both* consumers when it runs at all (cheap: one
+      # shallow clone each) — the actual per-consumer scoping happens on the
+      # `cargo check — control` steps below via their own `if:`, which only
+      # build the consumer(s) whose PR-side check actually failed. This is
+      # still the expensive path and most PRs never touch it.
       - name: Clone develop's tip quadraui + consumers as control
         if: steps.pr_coord_tui.outcome == 'failure' || steps.pr_vimcode.outcome == 'failure'
         run: |
@@ -188,6 +244,16 @@ jobs:
           git clone --depth 1 --branch develop https://github.com/JDonaghy/quadraui "$C/quadraui"
           git clone --depth 1 https://github.com/JDonaghy/claude-coordinator "$C/claude-coordinator"
           git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$C/vimcode"
+
+      # Same git+rev-vs-path-override problem as the PR-side check above,
+      # applied to the control clone.
+      - name: Point coord-tui (control) at develop's tip quadraui
+        if: steps.pr_coord_tui.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/control/claude-coordinator/tui"
+          mkdir -p "$D/.cargo"
+          cp "$D/cargo-config-local-quadraui.toml.example" "$D/.cargo/config.toml"
 
       - name: cargo check — coord-tui (control, develop's tip quadraui)
         if: steps.pr_coord_tui.outcome == 'failure'
@@ -199,6 +265,8 @@ jobs:
         if: steps.pr_vimcode.outcome == 'failure'
         id: control_vimcode
         continue-on-error: true
+        env:
+          VIMCODE_QUADRAUI_UNPINNED: "1"
         run: cargo check --manifest-path "$RUNNER_TEMP/control/vimcode/Cargo.toml"
 
       # This PR broke a consumer only if the PR check failed AND the control
