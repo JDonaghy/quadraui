@@ -20,8 +20,18 @@ use shell_app_ex::ShellApp as ShellAppEx;
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
 
+#[path = "../examples/common/ai_transcript.rs"]
+mod ai_transcript;
 #[path = "../examples/common/appshell_demo.rs"]
 mod appshell_demo;
+// `ChartApp::last_chart_rect` is write-only in the shared example source
+// (see `examples/common/chart_app.rs`) — `examples/common/mod.rs` blankets
+// its whole tree with `#![allow(dead_code)]` when the example binaries
+// pull it in, but that attribute doesn't reach this file's own `#[path]`
+// include of the same source, so it needs a local opt-out here too.
+#[path = "../examples/common/chart_app.rs"]
+#[allow(dead_code)]
+mod chart_app;
 #[path = "../examples/common/chat_demo.rs"]
 mod chat_demo;
 #[path = "../examples/common/clipboard_demo.rs"]
@@ -42,6 +52,10 @@ mod full_chrome_demo;
 mod help_layer_demo;
 #[path = "../examples/common/hit_map_recover_demo.rs"]
 mod hit_map_recover_demo;
+#[path = "../examples/common/indicators_app.rs"]
+mod indicators_app;
+#[path = "../examples/common/markdown_demo.rs"]
+mod markdown_demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
 #[path = "../examples/common/modal_occlusion_demo.rs"]
@@ -66,8 +80,12 @@ mod split_tree_app;
 mod tab_group_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
+#[path = "../examples/common/toast_app.rs"]
+mod toast_app;
 
+use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
+use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
 use data_table_app::DataTableApp;
@@ -78,6 +96,8 @@ use form_groups::FormGroupsApp;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
+use indicators_app::IndicatorsApp;
+use markdown_demo::MarkdownDemo;
 use mini_app::MiniApp;
 use modal_occlusion_demo::ModalOcclusionDemo;
 use palette_dual_mode_app::PaletteDualModeApp;
@@ -90,6 +110,7 @@ use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
+use toast_app::ToastApp;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
 
@@ -3160,5 +3181,246 @@ fn form_groups_click_toggle_flips_rendered_value() {
         after.contains("last: case=false"),
         "clicking the case-sensitive toggle (starts true) should flip it and show \
          case=false in the status bar:\n{after}"
+    );
+}
+
+// ─── ChartApp (issue #308): state-derived axis labels + gridlines ─────────
+//
+// `ChartApp::new()` starts on the sparkline view, whose `Chart` has no
+// `x_label`/`y_label`/`show_grid` — so the axis-label/gridline codepath in
+// `tui::chart::paint_axis_labels` never runs on the first frame. Pressing
+// '2' switches to the line-chart view, whose `Chart` sets
+// `x_label: Some("Time (s)")`, `y_label: Some("Usage")`, `y_ticks:
+// Some(5)`, and `show_grid: true` — this is the real "switch to a chart
+// with known data, assert axis labels and gridlines render" scenario named
+// in the issue. A dropped `paint_axis_labels` call or a `show_grid` check
+// that never fires would leave the axis text and the '┄' gridline glyph
+// off the screen even though the chart itself repaints.
+
+#[test]
+fn chart_switching_to_line_view_paints_axis_labels_and_gridlines() {
+    let mut driver = TuiDriver::new(ChartApp::new(), 100, 30);
+    let before = driver.screen();
+    assert!(
+        !before.contains("Time (s)") && !before.contains("Usage"),
+        "sparkline view has no axis labels configured, so none should paint:\n{before}"
+    );
+
+    driver.type_char('2');
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Time (s)"),
+        "line chart's x_label should paint below the plot area:\n{after}"
+    );
+    // `paint_axis_labels` only paints the y_label up to `col < px` (the
+    // plot area's left edge, reserved for tick-value labels) — for this
+    // chart's y-axis gutter that clips "Usage" to its first 4 chars. That
+    // clip is real, deterministic layout behavior (see
+    // `tui/chart.rs::paint_axis_labels`), not a rendering bug this test
+    // should paper over.
+    assert!(
+        after.contains("Usag"),
+        "line chart's y_label should paint left of the plot area:\n{after}"
+    );
+    // State-derived gridline positions: y_range (0.0, 100.0) with
+    // y_ticks: Some(5) produces tick values at 20/40/60/80 (the interior
+    // ticks; 0 and 100 land on the plot area's edges and are excluded by
+    // the `row > pa.y && row < pa.y + pa.height` interior check).
+    for tick in ["80", "60", "40", "20"] {
+        assert!(
+            after.contains(tick),
+            "y-axis tick label {tick:?} should paint at its data-derived row:\n{after}"
+        );
+    }
+    assert!(
+        after.contains('┄'),
+        "line chart sets show_grid: true with y_ticks: Some(5), so horizontal \
+         gridline glyphs should paint across the plot area at each tick row:\n{after}"
+    );
+}
+
+// ─── IndicatorsApp (issue #308): toggling cancellable paints/clears '×' ────
+//
+// `IndicatorsApp::handle`'s `'c'` arm flips `self.cancellable`, which
+// `tui::progress::draw_progress` uses to decide whether to reserve a
+// 3-cell cancel affordance and paint the '×' glyph into it. This is the
+// "toggle indicator state, assert symbol change" scenario named in the
+// issue — a dropped `cancellable` flag (or a cancel-bounds calc that never
+// paints the glyph) would leave the bar looking identical before and after
+// the toggle.
+
+#[test]
+fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
+    let mut driver = TuiDriver::new(IndicatorsApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        !before.contains('×'),
+        "cancellable starts false, so no cancel glyph should paint yet:\n{before}"
+    );
+
+    driver.type_char('c');
+    let toggled_on = driver.screen();
+    assert!(
+        toggled_on.contains('×'),
+        "toggling 'c' should enable the cancel affordance and paint '×':\n{toggled_on}"
+    );
+    assert!(
+        toggled_on.contains("Cancel enabled"),
+        "status bar should report the new state:\n{toggled_on}"
+    );
+
+    driver.type_char('c');
+    let toggled_off = driver.screen();
+    assert!(
+        !toggled_off.contains('×'),
+        "toggling 'c' again should disable the cancel affordance and clear '×':\n{toggled_off}"
+    );
+}
+
+// ─── MarkdownDemo (issue #308): headings + fenced code render correctly ───
+//
+// `MarkdownDemo::render` pushes a fixed markdown document through
+// `render_markdown_to_styled` into a `RichTextPopup`. The adapter strips
+// heading `#` markers down to plain text, renders the fenced code block's
+// opening fence as a dim `lang` header (the ` ``` ` markers themselves are
+// never shown), and prefixes code content lines with the `┃` rail glyph
+// (see `compose::markdown`'s doc table). This test pins that contract at
+// the whole-example level: a regression in the adapter or a dropped
+// `render_markdown_to_styled` call in `MarkdownDemo::render` would surface
+// here even though the primitive-level adapter tests still pass.
+
+#[test]
+fn markdown_demo_renders_headings_and_fenced_code_block() {
+    let driver = TuiDriver::new(MarkdownDemo::new(), 100, 30);
+    let screen = driver.screen();
+
+    // Headings: '#' markers stripped, text kept.
+    assert!(
+        screen.contains("Markdown adapter demo"),
+        "H1 text should render:\n{screen}"
+    );
+    assert!(
+        screen.contains("Headings scale up"),
+        "H2 text should render:\n{screen}"
+    );
+    assert!(
+        screen.contains("And down again"),
+        "H3 text should render:\n{screen}"
+    );
+
+    // Fenced code block: language header + code-rail-prefixed content,
+    // fence markers themselves never shown.
+    assert!(
+        screen.contains("rust"),
+        "opening fence's language tag should render as a header:\n{screen}"
+    );
+    assert!(
+        screen.contains('┃'),
+        "code content lines should carry the code-rail glyph:\n{screen}"
+    );
+    assert!(
+        screen.contains("fn main"),
+        "code block content should render verbatim:\n{screen}"
+    );
+    assert!(
+        !screen.contains("```"),
+        "fence delimiters themselves must never appear in the rendered output:\n{screen}"
+    );
+}
+
+// ─── ToastApp (issue #308): triggering + dismissing a toast ────────────────
+//
+// The issue's suggested scenario is "trigger a toast, assert it appears;
+// advance time, assert it disappears" — but `ToastApp` (and the
+// `ToastStack` primitive it drives) has no time-based auto-dismiss wired
+// in; `primitives::toast`'s own doc comment says lifecycle/auto-dismiss is
+// an app concern this demo simply doesn't implement. Its real dismiss path
+// is a click on the toast's '×' affordance, routed through
+// `ToastHit::Dismiss` in `ToastApp::handle`'s `MouseDown` arm. This test
+// exercises that real appear/disappear round-trip instead: `ToastApp::new`
+// seeds exactly one toast ("Welcome"), so its '×' is the only dismiss
+// glyph on screen — unambiguous to `find`. Clicking it makes the toast
+// disappear; pressing '2' afterward triggers a fresh Success toast that
+// appears. A mis-routed `ToastHit` or a stale `self.toasts` retain would
+// leave the dismissed toast on screen; a dropped `Reaction::Redraw` or a
+// broken `add_toast` would leave the new one off it.
+
+#[test]
+fn toast_dismiss_click_removes_it_then_trigger_adds_a_new_one() {
+    let mut driver = TuiDriver::new(ToastApp::new(), 100, 24);
+    let before = driver.screen();
+    assert!(
+        before.contains("Welcome"),
+        "ToastApp::new seeds a Welcome toast:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("×")
+        .unwrap_or_else(|| panic!("no dismiss glyph painted for the seeded toast:\n{before}"));
+    driver.click(x, y);
+
+    let after_dismiss = driver.screen();
+    assert!(
+        !after_dismiss.contains("Welcome"),
+        "clicking the dismiss glyph should remove the toast from the stack:\n{after_dismiss}"
+    );
+
+    driver.type_char('2');
+    let after_add = driver.screen();
+    assert!(
+        after_add.contains("Success notification"),
+        "pressing '2' should trigger and paint a new Success toast:\n{after_add}"
+    );
+}
+
+// ─── AiTranscript (issue #308): appended turn renders below prior turns ────
+//
+// `AiTranscript::send_next` (invoked on `ChatControllerEvent::Submit`)
+// pushes a user turn followed by a markdown-rendered assistant turn onto
+// the `ChatController`'s transcript, on top of the seeded system greeting.
+// This is the "append a turn, assert it renders below prior turns"
+// scenario named in the issue: the seeded greeting must still be present
+// (prior turns aren't clobbered) and the new turns' text must appear after
+// submitting — a dropped `Reaction::Redraw` on `Submit` or a
+// `push_turn`/`push_turn_markdown` call that overwrote instead of
+// appended would leave this failing.
+//
+// `ChatController::handle_key`'s Ctrl+S arm is a no-op on an empty
+// `input_buf` (`ctrl_s_on_empty_input_ignored`, chat_controller.rs), even
+// though `AiTranscript::send_next` ignores the *typed* text and always
+// sends the next canned `EXCHANGES` entry — so a character has to be
+// typed first to make the real submit gesture fire, exactly as a live
+// user would.
+
+#[test]
+fn ai_transcript_submit_appends_turn_below_prior_turns() {
+    let mut driver = TuiDriver::new(AiTranscript::new(), 100, 30);
+    let before = driver.screen();
+    assert!(
+        before.contains("Connected."),
+        "seeded system greeting should paint on the first frame:\n{before}"
+    );
+
+    driver.type_char('x');
+    let reaction = driver.ctrl_char('s');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "submitting the canned prompt should redraw the transcript"
+    );
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Connected."),
+        "the prior system turn should still be present, not overwritten:\n{after}"
+    );
+    assert!(
+        after.contains("How do I convert markdown to styled text?"),
+        "the newly submitted user turn should render:\n{after}"
+    );
+    assert!(
+        after.contains("Markdown"),
+        "the assistant's markdown-rendered reply heading should render below it:\n{after}"
     );
 }
