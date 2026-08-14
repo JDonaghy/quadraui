@@ -22,7 +22,9 @@ Exit status (no flags — full-audit mode):
 
 Exit status (--fail-on-gap — CI delta-gate mode, #311):
     The matrix always prints in full, but the exit status only reflects
-    `tui_*.rs` examples ADDED relative to `--base` (default: `origin/main`) —
+    `tui_*.rs` examples ADDED relative to `--base` (default: `origin/develop`,
+    matching this repo's branching policy of merging feature PRs into
+    `develop`) —
     pre-existing gaps (most of GTK, and the TUI examples still mid the
     #B1-#B5 backfill) print but don't fail the run. GTK examples are never
     part of the delta gate, new or not — GTK-example coverage waits on
@@ -89,28 +91,46 @@ def is_covered(app_type: str, driver_source: str) -> bool:
     return re.search(rf"\b{re.escape(app_type)}\b", driver_source) is not None
 
 
-def new_tui_example_stems(base_ref: str) -> set[str]:
+def new_tui_example_stems(
+    base_ref: str,
+    repo_root: Path = REPO_ROOT,
+    examples_dir: Path = EXAMPLES_DIR,
+) -> set[str]:
     """Stems of `examples/tui_*.rs` files this branch adds relative to `base_ref`.
 
     Scoped to `tui_*.rs` on purpose: GTK-example coverage is out of scope for
     the #311 CI gate until #301 ships (CLAUDE.md's "TUI only for now"), so a
     newly-added `gtk_*.rs` example must never make this gate fail.
 
+    Uses `--no-renames`: git's rename detection is on by default (similarity
+    threshold 50%), and without this flag copying an existing, *uncovered*
+    example to a new filename with a trivial edit gets classified as a
+    rename (`R`) rather than an addition (`A`) and silently evades
+    `--diff-filter=A`. `--no-renames` forces every genuinely new path to
+    report as `A` regardless of how similar it is to a deleted file — which
+    is exactly the copy-an-existing-example-as-a-starting-point workflow
+    CLAUDE.md itself documents as the normal way to author a new example.
+
+    `repo_root` / `examples_dir` default to the real repo paths but are
+    overridable so tests can point this at a throwaway git repo.
+
     Raises `subprocess.CalledProcessError` / `FileNotFoundError` if the diff
     can't be computed — callers must not treat that as "no new examples"; see
     the module docstring's exit-status-2 note.
     """
+    examples_pathspec = examples_dir.relative_to(repo_root).as_posix()
     result = subprocess.run(
         [
             "git",
             "diff",
+            "--no-renames",
             "--name-only",
             "--diff-filter=A",
             f"{base_ref}...HEAD",
             "--",
-            "quadraui/examples",
+            examples_pathspec,
         ],
-        cwd=REPO_ROOT,
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=True,
@@ -142,9 +162,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--base",
-        default="origin/main",
+        default="origin/develop",
         metavar="REF",
-        help="git ref to diff against when finding new examples (default: %(default)s).",
+        help=(
+            "git ref to diff against when finding new examples (default: "
+            "%(default)s). This repo's branching policy merges feature PRs "
+            "into `develop` (main only moves via release merges from "
+            "develop), and CI always diffs against the PR's actual base "
+            "commit -- so `origin/develop` is the ref that matches CI for "
+            "the PRs this gate exists to catch."
+        ),
     )
     return parser.parse_args(argv)
 
