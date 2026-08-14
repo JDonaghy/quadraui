@@ -59,10 +59,10 @@ Tests must use the **high-level driver API** — `find("text")` to locate a pain
 tools/example_coverage.py
 ```
 
-**This is also a CI gate, not just a local check (#311):** the `Example-test coverage` job in `.github/workflows/ci.yml` runs the same tool with `--fail-on-gap` on every PR, which fails the check only when a `tui_*.rs` example *added by that PR* lacks coverage — pre-existing gaps (most of GTK, and the TUI examples still mid the #B1-#B5 backfill) print in the matrix but don't fail the run, and newly-added `gtk_*.rs` examples are excluded entirely pending `GtkDriver` (#301). Run it locally the same way CI does:
+**This is also a CI gate, not just a local check (#311):** the `Example-test coverage` job in `.github/workflows/ci.yml` runs the same tool with `--fail-on-gap` on every PR, which fails the check only when a `tui_*.rs` example *added by that PR* lacks coverage — pre-existing gaps (most of GTK, and the TUI examples still mid the #B1-#B5 backfill) print in the matrix but don't fail the run, and newly-added `gtk_*.rs` examples are excluded entirely pending `GtkDriver` (#301). CI diffs against the PR's actual base commit (`github.event.pull_request.base.sha`); to approximate that locally, diff against `origin/develop` — this repo's branching policy merges feature PRs into `develop` (`main` only moves via release merges from `develop`), and `--base` defaults to `origin/develop` for exactly this reason:
 
 ```bash
-tools/example_coverage.py --fail-on-gap --base origin/main
+tools/example_coverage.py --fail-on-gap --base origin/develop
 ```
 
 ## Example-driver tests (end-to-end, in-process)
