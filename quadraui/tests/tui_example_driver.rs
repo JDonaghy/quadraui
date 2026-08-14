@@ -10,7 +10,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{Backend, ButtonMask, NamedKey, Point, Reaction, UiEvent};
+use quadraui::{Backend, ButtonMask, Key, Modifiers, NamedKey, Point, Reaction, UiEvent};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -24,6 +24,8 @@ use toolbar_app::ToolbarApp;
 mod ai_transcript;
 #[path = "../examples/common/appshell_demo.rs"]
 mod appshell_demo;
+#[path = "../examples/common/bottom_panel_demo.rs"]
+mod bottom_panel_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
 // (see `examples/common/chart_app.rs`) — `examples/common/mod.rs` blankets
 // its whole tree with `#![allow(dead_code)]` when the example binaries
@@ -48,16 +50,22 @@ mod file_dialog_demo;
 mod folder_picker_app;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
+#[path = "../examples/common/frame_demo.rs"]
+mod frame_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
 mod full_chrome_demo;
 #[path = "../examples/common/help_layer_demo.rs"]
 mod help_layer_demo;
 #[path = "../examples/common/hit_map_recover_demo.rs"]
 mod hit_map_recover_demo;
+#[path = "../examples/common/hscroll_editor.rs"]
+mod hscroll_editor;
 #[path = "../examples/common/indicators_app.rs"]
 mod indicators_app;
 #[path = "../examples/common/markdown_demo.rs"]
 mod markdown_demo;
+#[path = "../examples/common/menu_bar_app.rs"]
+mod menu_bar_app;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
 #[path = "../examples/common/modal_occlusion_demo.rs"]
@@ -91,6 +99,7 @@ mod toast_app;
 
 use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
+use bottom_panel_demo::BottomPanelDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
@@ -100,11 +109,14 @@ use dialog_table_demo::DialogTableDemo;
 use file_dialog_demo::FileDialogDemo;
 use folder_picker_app::FolderPickerApp;
 use form_groups::FormGroupsApp;
+use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
+use hscroll_editor::HScrollEditor;
 use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
+use menu_bar_app::MenuBarApp;
 use mini_app::MiniApp;
 use modal_occlusion_demo::ModalOcclusionDemo;
 use multi_tree::DebugSidebar;
@@ -3620,5 +3632,363 @@ fn data_table_flipping_sort_direction_reorders_visible_rows() {
     assert!(
         !after.contains("api-gateway"),
         "api-gateway should have scrolled out of view after the reorder:\n{after}"
+    );
+}
+
+// ─── BottomPanelDemo: maximise layout + tab-close auto-hide (#309) ─────────
+//
+// `tui_bottom_panel`'s real ShellApp is `BottomPanelDemo`, driven through
+// `driver_with_shell` so the full `ShellApp -> ShellAdapter -> dispatch_event`
+// path (including `BottomPanelController::handle_click`) is exercised —
+// not a hand-built `BottomPanelController` in isolation, which is already
+// covered by `compose::bottom_panel`'s own unit tests.
+
+/// Locate a glyph within the (first) rendered row that contains `row_anchor`.
+///
+/// `TuiDriver::find` always returns the *first* (top-to-bottom) row
+/// matching a needle — but `BottomPanelDemo`'s own status hint text
+/// ("... | ^ to maximise | ...") also contains a bare `^`/`v`, on a row
+/// above the tab strip's real maximise segment. Scoping the search to the
+/// row that also contains `row_anchor` (e.g. `"TERMINAL"`, unique to the
+/// tab strip) disambiguates the two.
+fn find_glyph_in_row_containing(screen: &str, row_anchor: &str, glyph: char) -> (f32, f32) {
+    let row_idx = screen
+        .lines()
+        .position(|l| l.contains(row_anchor))
+        .unwrap_or_else(|| panic!("no row contains {row_anchor:?}:\n{screen}"));
+    let row = screen.lines().nth(row_idx).expect("row index in range");
+    let col = row
+        .chars()
+        .position(|c| c == glyph)
+        .unwrap_or_else(|| panic!("glyph {glyph:?} not found in row {row_idx} ({row:?})"));
+    (col as f32 + 0.5, row_idx as f32 + 0.5)
+}
+
+#[test]
+fn bottom_panel_maximise_toggle_hides_main_content_and_flips_glyph() {
+    let config = BottomPanelDemo::config();
+    let mut driver = driver_with_shell(BottomPanelDemo::new(), config, 100, 30);
+
+    let before = driver.screen();
+    assert!(before.contains("TERMINAL"), "terminal tab:\n{before}");
+    assert!(before.contains("PROBLEMS"), "problems tab:\n{before}");
+    assert!(
+        before.contains("click tabs | drag resize"),
+        "main content hint should be visible while docked:\n{before}"
+    );
+    assert!(
+        before.contains(" ^ "),
+        "maximise glyph starts as '^' (docked):\n{before}"
+    );
+
+    let (x, y) = find_glyph_in_row_containing(&before, "TERMINAL", '^');
+    let reaction = driver.click(x, y);
+    assert_eq!(reaction, Reaction::Redraw, "maximise click should redraw");
+
+    let after_max = driver.screen();
+    assert!(
+        !after_max.contains("click tabs | drag resize"),
+        "main content area is carved to zero height while maximised, so its hint \
+         text must disappear even though the app's `last_event` state still holds \
+         it:\n{after_max}"
+    );
+    assert!(
+        after_max.contains(" v "),
+        "maximise glyph should flip to 'v' once maximised:\n{after_max}"
+    );
+    assert!(
+        after_max.contains("TERMINAL") && after_max.contains("PROBLEMS"),
+        "the tab strip itself stays visible (only main content collapses):\n{after_max}"
+    );
+
+    // Toggle back — docked mode returns, and the main content row reflows
+    // back to a nonzero height so the app's `last_event` (now "Maximise
+    // toggled", set by the very click that maximised it) becomes visible.
+    let (x2, y2) = find_glyph_in_row_containing(&after_max, "TERMINAL", 'v');
+    let reaction2 = driver.click(x2, y2);
+    assert_eq!(
+        reaction2,
+        Reaction::Redraw,
+        "un-maximise click should redraw"
+    );
+
+    let after_docked = driver.screen();
+    assert!(
+        after_docked.contains(" ^ "),
+        "maximise glyph should flip back to '^' once docked again:\n{after_docked}"
+    );
+    assert!(
+        after_docked.contains("Maximise toggled"),
+        "main content is visible again and should show the last bottom-panel \
+         event:\n{after_docked}"
+    );
+}
+
+#[test]
+fn bottom_panel_closing_both_tabs_hides_the_panel() {
+    let config = BottomPanelDemo::config();
+    let mut driver = driver_with_shell(BottomPanelDemo::new(), config, 100, 30);
+
+    assert!(
+        driver.screen_contains("TERMINAL"),
+        "terminal tab:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("PROBLEMS"),
+        "problems tab:\n{}",
+        driver.screen()
+    );
+
+    // `find` always returns the *leftmost* match, and the × close glyph
+    // sits at each tab's right edge — closing the leftmost tab first and
+    // re-finding after each close naturally walks TERMINAL then PROBLEMS.
+    for _ in 0..2 {
+        let screen = driver.screen();
+        let (x, y) = driver
+            .find("×")
+            .unwrap_or_else(|| panic!("close glyph not painted:\n{screen}"));
+        let reaction = driver.click(x, y);
+        assert_eq!(reaction, Reaction::Redraw, "closing a tab should redraw");
+    }
+
+    let after = driver.screen();
+    assert!(
+        !after.contains("TERMINAL") && !after.contains("PROBLEMS"),
+        "closing both tabs should remove them from the strip:\n{after}"
+    );
+    assert!(
+        !after.contains('×'),
+        "no tabs remain, so no close glyph should remain either:\n{after}"
+    );
+    // The real "hide the panel" signal (#309): `ShellAdapter` auto-hides the
+    // whole bottom-panel region once its tab list is empty, so the main
+    // content column regains the full band height and the demo's
+    // last-event hint ("Tab closed: bp:problems", from closing the second
+    // tab) reflows back into view — it would stay hidden (as in the
+    // maximise test above) if the panel weren't actually gone.
+    assert!(
+        after.contains("Tab closed: bp:problems"),
+        "main content should be visible again (nonzero height) and show the \
+         last bottom-panel event once the panel itself is hidden:\n{after}"
+    );
+    // Distinguish "panel hidden" from "panel visible with an empty tab
+    // strip": `build_tab_bar` always emits the `^`/`v` maximise segment
+    // regardless of tab count, so it would still be painted if the panel
+    // stayed visible (`bottom_panel_bounds: Some(..)`) with zero tabs.
+    // Its absence here proves `ShellAdapter` actually hid the whole
+    // region (`bottom_panel_bounds: None`), not just emptied the strip.
+    assert!(
+        !after.contains(" ^ "),
+        "the maximise glyph must disappear too — the whole panel region is \
+         gone, not just its tabs:\n{after}"
+    );
+}
+
+// ─── FrameDemo: TabBar + ListView + StatusBar surfaces (#309) ──────────────
+
+#[test]
+fn frame_demo_initial_paint_renders_all_three_surfaces() {
+    let driver = TuiDriver::new(FrameDemo::new(), 120, 30);
+    let screen = driver.screen();
+
+    // TabBar surface.
+    assert!(screen.contains("Resources"), "tab bar:\n{screen}");
+    assert!(screen.contains("YAML"), "tab bar:\n{screen}");
+    assert!(screen.contains("Events"), "tab bar:\n{screen}");
+    // List surface.
+    assert!(screen.contains("Pods"), "list rows:\n{screen}");
+    // StatusBar surface.
+    assert!(screen.contains("tab:0"), "status bar:\n{screen}");
+    assert!(screen.contains("sel:0"), "status bar:\n{screen}");
+}
+
+#[test]
+fn frame_demo_tab_key_cycles_active_tab_through_all_three() {
+    let mut driver = TuiDriver::new(FrameDemo::new(), 120, 30);
+
+    let r1 = driver.press_named(NamedKey::Tab);
+    assert_eq!(r1, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("tab:1"),
+        "first Tab should move from Resources (0) to YAML (1):\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("tab:2"),
+        "second Tab should move to Events (2):\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("tab:0"),
+        "third Tab should wrap back to Resources (0):\n{}",
+        driver.screen()
+    );
+}
+
+// ─── HScrollEditor: horizontal scroll via key (#309) ───────────────────────
+
+#[test]
+fn hscroll_dollar_key_scrolls_visible_window_to_line_end() {
+    let mut driver = TuiDriver::new(HScrollEditor::new(), 100, 10);
+
+    let before = driver.screen();
+    let before_row = before.lines().next().expect("editor row painted");
+    // First 4 cells are the gutter ("   1"); content starts at column 4 and
+    // at scroll_left == 0 begins with the digit-cycle line's own start.
+    assert!(
+        before_row[4..].starts_with("0123456789"),
+        "initial view is unscrolled, starting at column 0:\n{before}"
+    );
+
+    let reaction = driver.type_char('$');
+    assert_eq!(reaction, Reaction::Redraw, "'$' should redraw");
+
+    let after = driver.screen();
+    let after_row = after.lines().next().expect("editor row painted");
+    assert!(
+        !after_row[4..].starts_with("0123456789"),
+        "'$' should scroll the visible window away from column 0 so the \
+         cursor at the line's end is visible:\n{after}"
+    );
+    // The line is 500 chars of a repeating 0-9 digit cycle, so column 499
+    // (0-indexed) — where the cursor now sits — is digit '9'. Once
+    // scrolled into view it must be the rightmost visible glyph.
+    assert_eq!(
+        after_row.chars().last(),
+        Some('9'),
+        "the line's last digit ('9', at column 499) should be the rightmost \
+         visible glyph once '$' scrolls it into view:\n{after}"
+    );
+    assert!(
+        after.contains("col 500 / 500"),
+        "status bar should report the cursor at column 500 of 500:\n{after}"
+    );
+}
+
+// ─── MenuBarApp: open / navigate / select via MenuSystem (#309) ────────────
+
+#[test]
+fn menu_bar_alt_f_opens_file_dropdown() {
+    let mut driver = TuiDriver::new(MenuBarApp::new(), 100, 15);
+
+    let before = driver.screen();
+    assert!(
+        !before.contains("New File"),
+        "dropdown starts closed:\n{before}"
+    );
+    assert!(
+        before.contains("menu closed"),
+        "status bar should report no menu open initially:\n{before}"
+    );
+
+    let reaction = driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('f'),
+        modifiers: Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Alt+F should open the File dropdown"
+    );
+
+    let after = driver.screen();
+    assert!(after.contains("New File"), "File dropdown items:\n{after}");
+    assert!(after.contains("Open File"), "File dropdown items:\n{after}");
+    assert!(after.contains("Quit"), "File dropdown items:\n{after}");
+    assert!(
+        after.contains("menu open"),
+        "status bar should report the menu is open:\n{after}"
+    );
+}
+
+#[test]
+fn menu_bar_down_then_enter_navigates_and_activates_open_file() {
+    let mut driver = TuiDriver::new(MenuBarApp::new(), 100, 15);
+
+    // Alt+F opens File with "New File" (index 0) initially selected.
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('f'),
+        modifiers: Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+    // Down navigates to "Open File" (index 1).
+    let r_down = driver.press_named(NamedKey::Down);
+    assert_eq!(r_down, Reaction::Redraw);
+    // Enter activates the highlighted item and closes the dropdown.
+    let r_enter = driver.press_named(NamedKey::Enter);
+    assert_eq!(r_enter, Reaction::Redraw);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("last: activated: open"),
+        "Down then Enter should select and activate 'Open File' (id \"open\"):\n{after}"
+    );
+    assert!(
+        after.contains("menu closed"),
+        "activating an item should close the dropdown:\n{after}"
+    );
+}
+
+// ─── ToolbarApp: full press+release toggles is_active state (#309) ─────────
+//
+// The existing `toolbar_click_fires_action_without_focus` test only ever
+// calls `driver.click` (a bare `MouseDown`), which sets `pressed_id` but
+// never reaches `ToolbarApp::dispatch` — that only fires on `MouseUp`
+// (see the click-vs-drag contract in `toolbar_app.rs::handle`). It leaves
+// a real gap: no driver test exercises a full press+release cycle and
+// checks that the toggled `is_active` state (`filter_active`) actually
+// flips. This closes it.
+
+#[test]
+fn toolbar_press_release_on_filter_toggles_is_active_state() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    let (x, y) = driver
+        .find("Filter")
+        .unwrap_or_else(|| panic!("Filter button not painted:\n{}", driver.screen()));
+
+    driver.mouse_down(x, y);
+    let up = driver.mouse_up(x, y);
+    assert_eq!(
+        up,
+        Reaction::Redraw,
+        "release on the same button that was pressed should fire the action"
+    );
+
+    let after_on = driver.screen();
+    assert!(
+        after_on.contains("Filter on"),
+        "a full press+release on Filter should flip filter_active to true:\n{after_on}"
+    );
+
+    // Second press+release, at the button's icon glyph rather than its
+    // label: a second click at the *exact* label position within
+    // `DOUBLE_CLICK_MS` would fall inside `DoubleClickDetector`'s merge
+    // radius (`tui/events.rs`) and get folded into a `UiEvent::DoubleClick`
+    // instead of a plain `MouseDown` — which `ToolbarApp::handle` doesn't
+    // match, silently dropping the toggle. Clicking a couple of cells over
+    // (still inside the same button) stays outside that radius while
+    // exercising the same toggle path.
+    let (x2, y2) = driver
+        .find("⚙")
+        .unwrap_or_else(|| panic!("Filter icon not painted:\n{after_on}"));
+    driver.mouse_down(x2, y2);
+    driver.mouse_up(x2, y2);
+    let after_off = driver.screen();
+    assert!(
+        after_off.contains("Filter off"),
+        "a second press+release should flip filter_active back to false:\n{after_off}"
     );
 }
