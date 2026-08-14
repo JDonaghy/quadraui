@@ -53,6 +53,12 @@ catch its bug class is theatre.
 
 Tests must use the **high-level driver API** — `find("text")` to locate a painted target, then `click(x, y)` with the coords it returns, plus `screen_contains()`, `press()`, `type_char()`. **Hardcoded coordinates are brittle and out of policy** — locate, don't guess. A coordinate that's correct today silently rots the first time padding, a label, or a layout metric changes.
 
+**Checking the rule is measurable, not just stated:** `tools/example_coverage.py` (repo root) prints a matrix of every `examples/tui_*.rs` / `examples/gtk_*.rs` against whether its `AppLogic` struct is wired into the matching example-driver test file, and exits non-zero if any example is missing coverage (#310).
+
+```bash
+tools/example_coverage.py
+```
+
 ## Example-driver tests (end-to-end, in-process)
 
 `quadraui::tui::testing::TuiDriver` drives a whole `AppLogic` impl — the
