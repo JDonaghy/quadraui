@@ -44,6 +44,8 @@ mod demo;
 mod dialog_table_demo;
 #[path = "../examples/common/file_dialog_demo.rs"]
 mod file_dialog_demo;
+#[path = "../examples/common/folder_picker_app.rs"]
+mod folder_picker_app;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
 #[path = "../examples/common/full_chrome_demo.rs"]
@@ -60,12 +62,16 @@ mod markdown_demo;
 mod mini_app;
 #[path = "../examples/common/modal_occlusion_demo.rs"]
 mod modal_occlusion_demo;
+#[path = "../examples/common/multi_tree.rs"]
+mod multi_tree;
 #[path = "../examples/common/palette_dual_mode_app.rs"]
 mod palette_dual_mode_app;
 #[path = "../examples/common/panel_app.rs"]
 mod panel_app;
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
+#[path = "../examples/common/search_panel.rs"]
+mod search_panel;
 #[path = "../examples/common/selection_app.rs"]
 mod selection_app;
 #[path = "../examples/common/shell_menu_demo.rs"]
@@ -92,6 +98,7 @@ use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use file_dialog_demo::FileDialogDemo;
+use folder_picker_app::FolderPickerApp;
 use form_groups::FormGroupsApp;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
@@ -100,9 +107,11 @@ use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
 use mini_app::MiniApp;
 use modal_occlusion_demo::ModalOcclusionDemo;
+use multi_tree::DebugSidebar;
 use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
+use search_panel::SearchPanelApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
 use sidebar_panel_app::SidebarPanelApp;
@@ -3422,5 +3431,194 @@ fn ai_transcript_submit_appends_turn_below_prior_turns() {
     assert!(
         after.contains("Markdown"),
         "the assistant's markdown-rendered reply heading should render below it:\n{after}"
+    );
+}
+
+// ─── #306: input/selection demo backfill ────────────────────────────────────
+//
+// text_input, folder_picker, search_panel, multi_tree (DebugSidebar), and
+// data_table — the input/typing/focus/selection-state batch from #306
+// (follow-up to #B1). `text_input` and `data_table` already had driver
+// coverage from earlier issues (see the `TextInputDemo`/`DataTableApp`
+// sections above); the tests below round each demo out to the acceptance
+// criteria's own scenario ("type, assert echoed; backspace, assert
+// deletion", "sort … assert row order … changes", etc.) rather than
+// duplicating what's already there.
+
+/// text_input: clearing the field all the way back (not just one char)
+/// restores the placeholder and resets the cursor to column 1 — a distinct
+/// deletion-boundary scenario from `text_input_backspace_deletes_a_char`
+/// above (which only removes one of two characters and never re-empties
+/// the field).
+#[test]
+fn text_input_backspacing_to_empty_restores_placeholder() {
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    // "zq" (not a substring of the placeholder text below) so the
+    // post-clear assertion can't false-positive against placeholder prose.
+    driver.type_char('z');
+    driver.type_char('q');
+    assert!(
+        driver.screen_contains("zq"),
+        "typed text should render before clearing:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Backspace);
+    driver.press_named(NamedKey::Backspace);
+
+    let screen = driver.screen();
+    assert!(
+        !screen.contains("zq"),
+        "backspacing both characters must remove the typed text:\n{screen}"
+    );
+    assert!(
+        screen.contains("Type something"),
+        "an empty field should show the placeholder again:\n{screen}"
+    );
+    assert!(
+        screen.contains("col 1"),
+        "cursor should be back at column 1 after clearing:\n{screen}"
+    );
+}
+
+/// folder_picker (issue #306): `FolderPickerApp` flattens the whole
+/// directory tree up front (see `FolderPickerController::new`'s
+/// `collect_dir_entries` walk) rather than descending one level at a
+/// time, so "navigate down a directory" here means selecting a real
+/// subdirectory entry (not `.` or `..`) and confirming it — the picker
+/// then closes and the status bar's visible path updates to that
+/// directory. `..` is always entry 0 when the root has a parent, `.` is
+/// always entry 1, so two `Down` presses lands on the first real
+/// subdirectory of the process's cwd (which always has at least one —
+/// `src` — since this runs inside the quadraui crate).
+#[test]
+fn folder_picker_navigating_into_a_subdirectory_updates_visible_path() {
+    let mut driver = TuiDriver::new(FolderPickerApp::new(), 100, 30);
+    let before = driver.screen();
+    assert!(
+        before.contains("Open Folder picker"),
+        "initial status should show the open-picker hint:\n{before}"
+    );
+
+    driver.press_named(NamedKey::Down); // off ".." onto "."
+    driver.press_named(NamedKey::Down); // onto the first real subdirectory
+    driver.press_named(NamedKey::Enter); // confirm the selected directory
+
+    let after = driver.screen();
+    assert_ne!(
+        before, after,
+        "confirming a directory should change the screen"
+    );
+    assert!(
+        after.contains("Confirmed:"),
+        "status bar should switch to the confirmed-path message:\n{after}"
+    );
+    assert!(
+        !after.contains("Open Folder picker"),
+        "the picker should be dismissed after confirming:\n{after}"
+    );
+}
+
+/// search_panel (issue #306): typing into the (mock) search input updates
+/// `SearchPanelApp::query` and the status bar echoes it as "Searching:
+/// <query>" — the module doc comment calls this a "mock" that "cycles
+/// fake results" rather than a real substring filter (`build_tree_rows`
+/// renders `self.results` unconditionally, ignoring `self.query`), so the
+/// closest real "filtered results" signal this demo exposes is that
+/// status-bar echo plus the still-visible fake result rows underneath it.
+#[test]
+fn search_panel_typing_updates_the_search_status() {
+    let mut driver = TuiDriver::new(SearchPanelApp::new(), 100, 30);
+    assert!(
+        driver.screen_contains("src/main.rs"),
+        "fake result rows should render before typing:\n{}",
+        driver.screen()
+    );
+
+    for c in "main".chars() {
+        driver.type_char(c);
+    }
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Searching: main"),
+        "typed query should echo in the status bar:\n{screen}"
+    );
+    assert!(
+        screen.contains("src/main.rs"),
+        "result rows should still be visible while searching:\n{screen}"
+    );
+}
+
+/// multi_tree / DebugSidebar (issue #306): `fake_rows()` builds every row
+/// with `is_expanded: None` (flat leaves, no branches), and all four
+/// sections are always rendered fully expanded side by side — there is no
+/// collapse/expand chevron to drive here (`allow_collapse` is never set,
+/// so header clicks don't hide rows either). The nearest real "drill into
+/// a node and see its children" interaction this demo supports is `Tab`
+/// (moves the active-section pointer, e.g. onto WATCH) followed by `Down`
+/// (selects that *now-active* section's own first child row, not the
+/// previously-active section's) — proving keyboard focus actually follows
+/// the active section rather than staying pinned to whichever rows were
+/// selected first.
+#[test]
+fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
+    let mut driver = TuiDriver::new(DebugSidebar::new(), 100, 40);
+    assert!(
+        driver.screen_contains("active: section 0"),
+        "VARIABLES (section 0) should be active initially:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Tab); // active section -> 1 (WATCH)
+    assert!(
+        driver.screen_contains("active: section 1"),
+        "Tab should move the active section to WATCH (section 1):\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Down);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("sel→1 [0]"),
+        "Down after Tab should select WATCH's own first row (w0), not \
+         VARIABLES' — proving focus followed the newly active section:\n{screen}"
+    );
+}
+
+/// data_table (issue #306): flipping sort direction with `d` must reorder
+/// the *rendered rows*, not just the header's `▲`/`▼` indicator (the
+/// existing `#550` tests only assert the indicator/column, never that row
+/// content actually moves). `DataTableApp` starts sorted by Name ascending
+/// (`api-gateway…` first, per the `#432` tests above); flipping to
+/// descending must move `worker-batch…` (alphabetically last) to the top
+/// and scroll `api-gateway…` out of the fixed 20-row viewport.
+#[test]
+fn data_table_flipping_sort_direction_reorders_visible_rows() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        before.contains("api-gateway"),
+        "ascending sort should show api-gateway first:\n{before}"
+    );
+    assert!(
+        !before.contains("worker-batch"),
+        "worker-batch (alphabetically last) should not be visible ascending:\n{before}"
+    );
+
+    driver.type_char('d'); // flip sort direction
+
+    let after = driver.screen();
+    assert!(
+        after.contains("sort: Name desc"),
+        "status bar should confirm the flipped sort direction:\n{after}"
+    );
+    assert!(
+        after.contains("worker-batch"),
+        "worker-batch should now be visible at the top after flipping to descending:\n{after}"
+    );
+    assert!(
+        !after.contains("api-gateway"),
+        "api-gateway should have scrolled out of view after the reorder:\n{after}"
     );
 }
