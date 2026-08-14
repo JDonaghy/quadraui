@@ -64,7 +64,9 @@ Consequences, all of which have already bitten:
 
 - A breaking change is **live in both repos the instant it merges to `develop`**. Not at their next release — at their next `cargo build`.
 - It turns **every open PR in both repos red**, including PRs that touch nothing related, retroactively.
-- There is **no version bump to blame and no downstream compile gate in this repo's CI**. `ci.yml` builds quadraui and its own examples only, so quadraui being green proves nothing about consumers. You are the gate.
+- There is **no version bump to blame**, so a breaking merge can't be spotted by "which release did this."
+
+`ci.yml`'s `downstream` job (#528) now `cargo check`s both consumers against every PR, with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing," and it only runs the checks each consumer's own `Cargo.toml` already declares (`tui,terminal` for coord-tui, default features for vimcode). You are still the gate for everything the compiler can't see.
 
 This is not hypothetical. #476 ("de-coord board.rs") replaced `Stage` with `CardBadge`, renamed `BadgeStatus::RequestChanges` → `Warning`, deleted two `BoardCard` fields and `BoardAction`'s domain verbs — all correct as *design*. Both consumers broke on 2026-08-05 and coord-tui needed a migration PR (`claude-coordinator#1864`). The change shipped believing it was safe partly because this file used to claim consumers "pin a published version externally." They never did.
 
