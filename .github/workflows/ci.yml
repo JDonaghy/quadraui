@@ -114,3 +114,116 @@ jobs:
           name: conformance-matrix-gtk-tui
           path: target/conformance-matrix.txt
           if-no-files-found: warn
+
+  downstream:
+    # Compile truth for the two external consumers (#528). quadraui is
+    # `publish = false`, nothing pins a published version, and both
+    # consumers' own CI clones this repo's `develop` tip by relative path —
+    # so quadraui being green here has historically proven nothing about
+    # them (#476 broke both on 2026-08-05, silently, until their next CI
+    # run). This job clones both consumers as siblings of this checkout so
+    # their `path = "../../quadraui/quadraui"` / `path = "../quadraui/quadraui"`
+    # deps resolve straight onto the PR's quadraui, and `cargo check`s them.
+    name: downstream consumers (compile truth)
+    runs-on: ubuntu-latest
+    env:
+      # The workflow-level `RUSTFLAGS: "-D warnings"` above applies to every
+      # job unless overridden. A `#[deprecated]` shim — the entire point of
+      # PRIMITIVE_RULES.md rule 8's deprecate-then-remove protocol — emits a
+      # *warning* in consumer code that references the deprecated item.
+      # Under `-D warnings` that warning becomes a hard compile error, so
+      # this gate would go red on exactly the changes authored correctly per
+      # rule 8, and stay green only for the reckless ones that skip it.
+      # Do NOT "tidy" this back to inheriting the workflow default.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      # Toolchain is pinned in rust-toolchain.toml (see its header comment
+      # for why); rustup's own override resolution honors that file
+      # regardless of what this action installs as its "default". Consumer
+      # checkouts below have no such pin, so they build with whatever this
+      # step resolves as "stable" — that's intentional, it's their toolchain
+      # choice to make, not ours to impose via this gate.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clone consumers as siblings of this checkout
+        run: |
+          set -euo pipefail
+          P="$(dirname "$GITHUB_WORKSPACE")"
+          git clone --depth 1 https://github.com/JDonaghy/claude-coordinator "$P/claude-coordinator"
+          git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$P/vimcode"
+
+      # cargo check, not build/test: the question this job answers is
+      # "does this compile against the consumer's tree", not "is the
+      # consumer correct" — each consumer runs its own tests in its own CI.
+      # Default features only for both: coord-tui's dep already pins
+      # `features = ["tui","terminal"]` in its own Cargo.toml, so this
+      # inherits that. vimcode is checked with default features (no
+      # `--features gui`) to avoid the GTK4 apt install the in-repo `gtk`
+      # job already pays for; add a `gui` check here only if a GTK-shaped
+      # break slips through this cheaper one.
+      - name: cargo check — coord-tui (this PR's quadraui)
+        id: pr_coord_tui
+        continue-on-error: true
+        run: cargo check --manifest-path "$(dirname "$GITHUB_WORKSPACE")/claude-coordinator/tui/Cargo.toml"
+
+      - name: cargo check — vimcode (this PR's quadraui)
+        id: pr_vimcode
+        continue-on-error: true
+        run: cargo check --manifest-path "$(dirname "$GITHUB_WORKSPACE")/vimcode/Cargo.toml"
+
+      # A consumer can be red for reasons that have nothing to do with this
+      # PR: its own bug, or mid-migration during PR 2 of a rule-8
+      # deprecation. Don't hold quadraui hostage to that. Only run this
+      # control when at least one PR-quadraui check above failed, and only
+      # against the specific consumer(s) that failed — this is the
+      # expensive path and most PRs never touch it.
+      - name: Clone develop's tip quadraui + consumers as control
+        if: steps.pr_coord_tui.outcome == 'failure' || steps.pr_vimcode.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          C="$RUNNER_TEMP/control"
+          mkdir -p "$C"
+          git clone --depth 1 --branch develop https://github.com/JDonaghy/quadraui "$C/quadraui"
+          git clone --depth 1 https://github.com/JDonaghy/claude-coordinator "$C/claude-coordinator"
+          git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$C/vimcode"
+
+      - name: cargo check — coord-tui (control, develop's tip quadraui)
+        if: steps.pr_coord_tui.outcome == 'failure'
+        id: control_coord_tui
+        continue-on-error: true
+        run: cargo check --manifest-path "$RUNNER_TEMP/control/claude-coordinator/tui/Cargo.toml"
+
+      - name: cargo check — vimcode (control, develop's tip quadraui)
+        if: steps.pr_vimcode.outcome == 'failure'
+        id: control_vimcode
+        continue-on-error: true
+        run: cargo check --manifest-path "$RUNNER_TEMP/control/vimcode/Cargo.toml"
+
+      # This PR broke a consumer only if the PR check failed AND the control
+      # (same consumer, develop's tip quadraui) succeeded. PR-red +
+      # control-red means the consumer was already broken independently of
+      # this PR — report it loudly, but pass, so quadraui isn't held hostage
+      # to a consumer bug this PR didn't cause and can't fix.
+      - name: Evaluate — did this PR break a consumer, or was it already broken?
+        if: always()
+        run: |
+          fail=0
+          if [ "${{ steps.pr_coord_tui.outcome }}" = "failure" ]; then
+            if [ "${{ steps.control_coord_tui.outcome }}" = "failure" ]; then
+              echo "::warning::coord-tui also fails to compile against develop's tip quadraui — pre-existing consumer breakage, not caused by this PR. Not failing this gate."
+            else
+              echo "::error::coord-tui fails to compile against this PR's quadraui but builds fine against develop's tip. This PR broke coord-tui."
+              fail=1
+            fi
+          fi
+          if [ "${{ steps.pr_vimcode.outcome }}" = "failure" ]; then
+            if [ "${{ steps.control_vimcode.outcome }}" = "failure" ]; then
+              echo "::warning::vimcode also fails to compile against develop's tip quadraui — pre-existing consumer breakage, not caused by this PR. Not failing this gate."
+            else
+              echo "::error::vimcode fails to compile against this PR's quadraui but builds fine against develop's tip. This PR broke vimcode."
+              fail=1
+            fi
+          fi
+          exit "$fail"
