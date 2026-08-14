@@ -127,7 +127,13 @@ jobs:
     # claude-coordinator#1973 it pins `quadraui` to a fixed git rev — so for
     # coord-tui specifically, the steps below also drop a `.cargo/config.toml`
     # `paths` override into its checkout to redirect that pinned dep onto
-    # the sibling checkout too. Both consumers are then `cargo check`ed.
+    # the sibling checkout too — and, because cargo discovers that config by
+    # walking up from the *process CWD* and not from `--manifest-path`, every
+    # cargo step below sets `working-directory:` into the consumer rather
+    # than passing `--manifest-path` from the workspace root. Getting that
+    # wrong makes the override a no-op and the coord-tui leg silently inert;
+    # a `cargo metadata` assertion below fails the job loudly if it ever
+    # regresses. Both consumers are then `cargo check --all-targets`ed.
     name: downstream consumers (compile truth)
     runs-on: ubuntu-latest
     env:
@@ -150,6 +156,21 @@ jobs:
       # choice to make, not ours to impose via this gate.
       - uses: dtolnay/rust-toolchain@stable
 
+      # vimcode's manifest declares `default = ["gui"]`, and `gui` pulls
+      # `gtk4`/`pangocairo` plus `quadraui/gtk` — so a *default-features*
+      # vimcode check needs the same GTK4 dev headers the `gtk` job above
+      # installs, or its gtk4 build script dies at pkg-config time. That
+      # failure would hit the PR leg and the control leg identically, so the
+      # "pre-existing breakage" branch below would swallow it and the vimcode
+      # leg would be permanently inert — the same silent-green failure mode
+      # #528 exists to prevent. Installing the headers instead of dropping to
+      # `--no-default-features` also means quadraui's GTK backend surface
+      # gets consumer compile-truth, which is the point of epic #479.
+      - name: Install GTK4 system libraries (vimcode's default features need them)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
+
       - name: Clone consumers as siblings of this checkout
         run: |
           set -euo pipefail
@@ -170,12 +191,23 @@ jobs:
       # `quadraui` package (matched by name+version, not by source) to a
       # local checkout regardless of what's pinned in Cargo.toml. Copy it
       # into place so the PR-side check actually exercises the PR.
+      #
+      # The override's `paths = ["../../quadraui/quadraui"]` is resolved
+      # relative to the directory holding the `.cargo` dir (i.e. `tui/`), so
+      # it lands on `<parent-of-checkout>/quadraui/quadraui` — exactly where
+      # the clone step above puts things. Verified empirically, not from
+      # memory, with cargo 1.97.1.
       - name: Point coord-tui at this PR's quadraui, not its pinned git rev
         run: |
           set -euo pipefail
           D="$(dirname "$GITHUB_WORKSPACE")/claude-coordinator/tui"
+          SRC="$D/cargo-config-local-quadraui.toml.example"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::$SRC is gone — coord-tui's local-quadraui override template was renamed or removed upstream. This gate cannot redirect coord-tui's pinned git dep onto this PR's quadraui without it, so it would silently test nothing. Fix the path here rather than deleting the step."
+            exit 1
+          fi
           mkdir -p "$D/.cargo"
-          cp "$D/cargo-config-local-quadraui.toml.example" "$D/.cargo/config.toml"
+          cp "$SRC" "$D/.cargo/config.toml"
 
       # Placed after the consumer clone (and the coord-tui .cargo override
       # above) so the action's Cargo.lock hashing can actually see the
@@ -192,16 +224,57 @@ jobs:
       # cargo check, not build/test: the question this job answers is
       # "does this compile against the consumer's tree", not "is the
       # consumer correct" — each consumer runs its own tests in its own CI.
-      # Default features only for both: coord-tui's dep already pins
+      #
+      # `--all-targets` is not optional here. A bare `cargo check` compiles
+      # only lib/bin targets, and quadraui's single most-consumed public
+      # surface — `quadraui::tui::testing::{TuiDriver, driver_with_shell}`,
+      # 242 call sites in coord-tui — is referenced *exclusively* from
+      # coord-tui's test targets. Measured: renaming `driver_with_shell` in
+      # this repo leaves a bare `cargo check` on coord-tui at exit 0 (green,
+      # gate blind) and takes `--all-targets` to exit 101 with the expected
+      # E0432. Dropping the flag re-opens a consumer-hit-shaped hole.
+      #
+      # Features: coord-tui's dep line already pins
       # `features = ["tui","terminal"]` in its own Cargo.toml, so this
-      # inherits that. vimcode is checked with default features (no
-      # `--features gui`) to avoid the GTK4 apt install the in-repo `gtk`
-      # job already pays for; add a `gui` check here only if a GTK-shaped
-      # break slips through this cheaper one.
+      # inherits that. vimcode is checked with its *default* features, which
+      # is `["gui"]` — hence the GTK4 apt step above; that also gets
+      # quadraui's GTK backend covered, not just the TUI one.
+      #
+      # ── `working-directory:` is load-bearing on every cargo step below ──
+      # Cargo discovers `.cargo/config.toml` by walking up from the invoking
+      # process's *current directory*, NOT from `--manifest-path`'s directory.
+      # So `cargo check --manifest-path .../tui/Cargo.toml` run from
+      # $GITHUB_WORKSPACE (the default CWD) never sees the `paths` override
+      # written above, and quietly resolves `quadraui` from the pinned git
+      # rev instead — the whole coord-tui leg silently decoupled from the PR.
+      # Verified with cargo 1.97.1 on this exact shape (git+rev dep, a
+      # same-name+version local copy, a `paths` override next to the
+      # manifest): invoked via `--manifest-path` from an unrelated CWD it
+      # linked the *git* source; invoked with CWD inside the manifest's
+      # directory it linked the *local override*. Do not "simplify" these
+      # back to a bare `--manifest-path` from the workspace root.
+      # vimcode has no `.cargo/config.toml` today (its build.rs resolves the
+      # sibling quadraui from CARGO_MANIFEST_DIR, so it is CWD-independent),
+      # but its steps below cd in too, so adding one upstream can't silently
+      # re-open this same hole.
+      - name: Assert coord-tui actually resolves quadraui to this PR's checkout
+        working-directory: ../claude-coordinator/tui
+        run: |
+          set -euo pipefail
+          want="$(cd ../../quadraui/quadraui && pwd -P)/Cargo.toml"
+          got="$(cargo metadata --format-version 1 \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::coord-tui resolved quadraui to '$got', expected this PR's checkout at '$want'. The .cargo/config.toml paths override did not take effect, so this gate would build coord-tui against its pinned git rev and prove nothing about this PR. Failing loudly rather than passing silently."
+            exit 1
+          fi
+
       - name: cargo check — coord-tui (this PR's quadraui)
         id: pr_coord_tui
         continue-on-error: true
-        run: cargo check --manifest-path "$(dirname "$GITHUB_WORKSPACE")/claude-coordinator/tui/Cargo.toml"
+        working-directory: ../claude-coordinator/tui
+        run: cargo check --all-targets
 
       # vimcode's build.rs (vimcode#638) panics before compiling any real
       # source if the sibling quadraui checkout's HEAD doesn't exactly match
@@ -222,9 +295,10 @@ jobs:
       - name: cargo check — vimcode (this PR's quadraui)
         id: pr_vimcode
         continue-on-error: true
+        working-directory: ../vimcode
         env:
           VIMCODE_QUADRAUI_UNPINNED: "1"
-        run: cargo check --manifest-path "$(dirname "$GITHUB_WORKSPACE")/vimcode/Cargo.toml"
+        run: cargo check --all-targets
 
       # A consumer can be red for reasons that have nothing to do with this
       # PR: its own bug, or mid-migration during PR 2 of a rule-8
@@ -246,28 +320,59 @@ jobs:
           git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$C/vimcode"
 
       # Same git+rev-vs-path-override problem as the PR-side check above,
-      # applied to the control clone.
+      # applied to the control clone. The control tree mirrors the sibling
+      # layout ($RUNNER_TEMP/control/{quadraui,claude-coordinator,vimcode}),
+      # so the template's `../../quadraui/quadraui` resolves onto the
+      # develop-tip quadraui cloned alongside it — same relative shape, just
+      # rooted at $RUNNER_TEMP/control instead of the workspace's parent.
       - name: Point coord-tui (control) at develop's tip quadraui
         if: steps.pr_coord_tui.outcome == 'failure'
         run: |
           set -euo pipefail
           D="$RUNNER_TEMP/control/claude-coordinator/tui"
+          SRC="$D/cargo-config-local-quadraui.toml.example"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::$SRC is gone — see the PR-side step's error for context."
+            exit 1
+          fi
           mkdir -p "$D/.cargo"
-          cp "$D/cargo-config-local-quadraui.toml.example" "$D/.cargo/config.toml"
+          cp "$SRC" "$D/.cargo/config.toml"
 
+      # Control-side twin of the PR-side assertion. Without it, a control run
+      # that silently fell back to the pinned git rev would look "green" and
+      # be read as proof the PR broke coord-tui — the opposite error, and
+      # just as misleading.
+      - name: Assert coord-tui (control) resolves quadraui to develop's tip
+        if: steps.pr_coord_tui.outcome == 'failure'
+        working-directory: ${{ runner.temp }}/control/claude-coordinator/tui
+        run: |
+          set -euo pipefail
+          want="$(cd ../../quadraui/quadraui && pwd -P)/Cargo.toml"
+          got="$(cargo metadata --format-version 1 \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::coord-tui (control) resolved quadraui to '$got', expected develop's tip at '$want'. The .cargo/config.toml paths override did not take effect, so the control leg is not a valid comparison against the PR leg."
+            exit 1
+          fi
+
+      # `working-directory:` here for the same load-bearing reason as the
+      # PR-side check — see the comment on that step.
       - name: cargo check — coord-tui (control, develop's tip quadraui)
         if: steps.pr_coord_tui.outcome == 'failure'
         id: control_coord_tui
         continue-on-error: true
-        run: cargo check --manifest-path "$RUNNER_TEMP/control/claude-coordinator/tui/Cargo.toml"
+        working-directory: ${{ runner.temp }}/control/claude-coordinator/tui
+        run: cargo check --all-targets
 
       - name: cargo check — vimcode (control, develop's tip quadraui)
         if: steps.pr_vimcode.outcome == 'failure'
         id: control_vimcode
         continue-on-error: true
+        working-directory: ${{ runner.temp }}/control/vimcode
         env:
           VIMCODE_QUADRAUI_UNPINNED: "1"
-        run: cargo check --manifest-path "$RUNNER_TEMP/control/vimcode/Cargo.toml"
+        run: cargo check --all-targets
 
       # This PR broke a consumer only if the PR check failed AND the control
       # (same consumer, develop's tip quadraui) succeeded. PR-red +
