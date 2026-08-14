@@ -22,6 +22,8 @@ use toolbar_app::ToolbarApp;
 
 #[path = "../examples/common/appshell_demo.rs"]
 mod appshell_demo;
+#[path = "../examples/common/chat_demo.rs"]
+mod chat_demo;
 #[path = "../examples/common/clipboard_demo.rs"]
 mod clipboard_demo;
 #[path = "../examples/common/data_table_app.rs"]
@@ -32,6 +34,8 @@ mod demo;
 mod dialog_table_demo;
 #[path = "../examples/common/file_dialog_demo.rs"]
 mod file_dialog_demo;
+#[path = "../examples/common/form_groups.rs"]
+mod form_groups;
 #[path = "../examples/common/full_chrome_demo.rs"]
 mod full_chrome_demo;
 #[path = "../examples/common/help_layer_demo.rs"]
@@ -52,6 +56,8 @@ mod pipeline_app;
 mod selection_app;
 #[path = "../examples/common/shell_menu_demo.rs"]
 mod shell_menu_demo;
+#[path = "../examples/common/sidebar_panel_app.rs"]
+mod sidebar_panel_app;
 #[path = "../examples/common/split_tree_app.rs"]
 mod split_tree_app;
 #[path = "../examples/common/tab_group_demo.rs"]
@@ -60,11 +66,13 @@ mod tab_group_demo;
 mod text_input_demo;
 
 use appshell_demo::AppShellDemo;
+use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
 use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use file_dialog_demo::FileDialogDemo;
+use form_groups::FormGroupsApp;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
@@ -75,6 +83,7 @@ use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
+use sidebar_panel_app::SidebarPanelApp;
 use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
@@ -445,6 +454,71 @@ fn panel_drag_selects_text_and_ctrl_c_copies_it() {
     assert!(
         screen.contains("quick"),
         "the copied preview should contain selected text:\n{screen}"
+    );
+}
+
+/// #305: pressing `c` toggles `PanelApp`'s collapsed state. Collapsing sets
+/// `layout.content_bounds` to a zero-size rect (see
+/// `src/tui/panel.rs::collapsed_panel_has_no_content_hit`), so
+/// `fill_content` — which bails out early when `bounds.width < 1.0` —
+/// stops painting the content lines entirely. Content reappearing (or
+/// not) is the observable proxy for the content rect actually
+/// shrinking/growing: a handler that forgot to flip `collapsed`, or a
+/// `render` that ignored it, would leave "quick" on screen throughout.
+#[test]
+fn panel_c_toggles_collapsed_and_hides_then_restores_content() {
+    let mut driver = TuiDriver::new(PanelApp::new(), 80, 24);
+    assert!(
+        driver.screen_contains("quick"),
+        "content should be painted before any collapse:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('c');
+    let collapsed_screen = driver.screen();
+    assert!(
+        collapsed_screen.contains("Collapsed"),
+        "status bar should confirm the collapse:\n{collapsed_screen}"
+    );
+    assert!(
+        !collapsed_screen.contains("quick"),
+        "a collapsed panel's zero-size content rect must stop painting content:\n{collapsed_screen}"
+    );
+
+    driver.type_char('c');
+    let expanded_screen = driver.screen();
+    assert!(
+        expanded_screen.contains("Expanded"),
+        "status bar should confirm re-expansion:\n{expanded_screen}"
+    );
+    assert!(
+        expanded_screen.contains("quick"),
+        "re-expanding must restore the content rect and repaint content:\n{expanded_screen}"
+    );
+}
+
+/// Clicking the maximize action button (rather than pressing `c`) drives the
+/// same collapse toggle through `PanelHit::Action("maximize")` in
+/// `PanelApp::handle`'s `MouseDown` arm — a distinct code path from the
+/// keyboard shortcut that a routing bug could break independently.
+#[test]
+fn panel_maximize_button_click_toggles_collapsed() {
+    let mut driver = TuiDriver::new(PanelApp::new(), 80, 24);
+    let before = driver.screen();
+
+    let (x, y) = driver
+        .find("□")
+        .unwrap_or_else(|| panic!("maximize action button not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Collapsed"),
+        "clicking maximize should collapse the panel:\n{after}"
+    );
+    assert!(
+        !after.contains("quick"),
+        "collapsed content rect must stop painting content:\n{after}"
     );
 }
 
@@ -2756,4 +2830,101 @@ fn modal_occlusion_q_exits() {
     let reaction = driver.type_char('q');
     assert_eq!(reaction, Reaction::Exit);
     assert!(driver.exited());
+}
+
+// ─── ChatDemo (issue #305): ChatController submit round-trip ────────────────
+//
+// `ChatDemo` wraps a `ChatController`; typing goes through
+// `ChatController::handle`'s `Key::Char(c) if !ctrl && !alt` arm (character
+// insertion), and submitting requires `Ctrl+S` (or Alt/Ctrl+Enter — plain
+// Enter only inserts a newline). A missed `ChatDemo::sync_controller()` call
+// or a dropped `Reaction::Redraw` on `ChatControllerEvent::Submit` would
+// leave the typed text stuck in the input box and never reach the
+// transcript — exactly what this test would catch.
+
+#[test]
+fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "hello world".chars() {
+        driver.type_char(c);
+    }
+    assert!(
+        driver.screen_contains("hello world"),
+        "typed text should render in the input box before submit:\n{}",
+        driver.screen()
+    );
+
+    let reaction = driver.ctrl_char('s');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Ctrl+S submit should redraw the transcript"
+    );
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("You"),
+        "a submitted user turn should paint the 'You' role header:\n{screen}"
+    );
+    assert!(
+        screen.contains("hello world"),
+        "the submitted message text should appear in the transcript:\n{screen}"
+    );
+}
+
+// ─── SidebarPanelApp (issue #305): sidebar item click updates main panel ────
+//
+// Clicking a task row is handled by `SidebarPanelApp::handle`'s `MouseDown`
+// arm via `SidebarPanelHit::Content` — a different hit-test branch than the
+// toolbar buttons above it. A handler that routed content clicks to the
+// toolbar dispatch (or vice versa) would silently no-op here.
+
+#[test]
+fn sidebar_panel_click_task_row_selects_it_and_updates_status() {
+    let mut driver = TuiDriver::new(SidebarPanelApp::new(), 100, 24);
+    let before = driver.screen();
+
+    let (x, y) = driver
+        .find("Write toolbar tests")
+        .unwrap_or_else(|| panic!("task row not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Selected: Write toolbar tests"),
+        "clicking a sidebar task row should select it and update the status bar:\n{after}"
+    );
+}
+
+// ─── FormGroupsApp (issue #305): ToggleGroup click flips a rendered field ───
+//
+// The issue's suggested scenario for this demo is "type into a field", but
+// `FormGroupsApp::handle` has no keyboard text-entry arm at all for its
+// `TextInput` fields (only `q`/Esc/Tab/Shift+Tab are bound — see the module
+// doc comment listing "Controls"); typing into "Find"/"Replace" is simply
+// not wired in this example. The demo's actual interactive surface for its
+// form fields is mouse clicks on `ToggleGroup` items and `ButtonRow`
+// buttons, routed through `FormGroupsApp::click` → `FormHit::Field`. This
+// test exercises that real path instead: clicking the "Aa" (case-sensitive)
+// toggle must flip `case_sensitive` and the status bar must reflect the new
+// rendered value — a mis-routed `FormHit` or a stale `build_form()` snapshot
+// would leave the status bar unchanged.
+
+#[test]
+fn form_groups_click_toggle_flips_rendered_value() {
+    let mut driver = TuiDriver::new(FormGroupsApp::new(), 100, 20);
+    let before = driver.screen();
+
+    let (x, y) = driver
+        .find("Aa")
+        .unwrap_or_else(|| panic!("case toggle not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("last: case=false"),
+        "clicking the case-sensitive toggle (starts true) should flip it and show \
+         case=false in the status bar:\n{after}"
+    );
 }
