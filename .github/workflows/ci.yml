@@ -24,6 +24,44 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  example-coverage:
+    # #311: block a PR that adds a new `examples/tui_*.rs` without the
+    # matching driver test in `quadraui/tests/tui_example_driver.rs`. #A1
+    # declares the rule, `tools/example_coverage.py` (#310) measures it, but
+    # nothing enforced it — a PR could add an uncovered example and merge
+    # anyway, relying on the adversarial reviewer (a human/model, not a
+    # gate) to catch it. This job is that gate.
+    #
+    # Delta-only, not full-audit: `tools/example_coverage.py` today reports
+    # 31/44 TUI examples covered (13 pre-existing gaps from before the
+    # #B1-#B5 backfill) and 6/41 GTK. Failing on ANY gap would make this job
+    # red on every PR regardless of what it touches. `--fail-on-gap` instead
+    # only fails when a `tui_*.rs` file ADDED by this PR (relative to
+    # `github.event.pull_request.base.sha`, not the merge-base branch name —
+    # see the tool's docstring) lacks coverage; pre-existing gaps still print
+    # in the matrix but don't fail the run. GTK examples are excluded from
+    # the delta check entirely — GTK-example coverage waits on `GtkDriver`
+    # (#301), same "TUI only for now" line CLAUDE.md draws.
+    #
+    # `pull_request`-only: the delta needs a base commit to diff against,
+    # which only exists for a PR event (`push` to main/develop has already
+    # merged, there's nothing left to gate).
+    name: Example-test coverage
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow depth-1: the diff below
+          # needs the PR's base commit in this checkout's object graph, and
+          # a shallow clone of just the merge ref wouldn't have it.
+          fetch-depth: 0
+      - name: Example-test coverage
+        run: |
+          python3 tools/example_coverage.py \
+            --fail-on-gap \
+            --base "${{ github.event.pull_request.base.sha }}"
+
   tui:
     name: tui (build, test, clippy)
     runs-on: ubuntu-latest

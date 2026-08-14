@@ -14,16 +14,34 @@ measurable. See issue #310.
 
 Usage:
     tools/example_coverage.py
+    tools/example_coverage.py --fail-on-gap [--base <git-ref>]
 
-Exit status:
+Exit status (no flags — full-audit mode):
     0 — every example has its required driver-suite coverage.
     1 — at least one example is missing coverage (see the printed matrix).
+
+Exit status (--fail-on-gap — CI delta-gate mode, #311):
+    The matrix always prints in full, but the exit status only reflects
+    `tui_*.rs` examples ADDED relative to `--base` (default: `origin/main`) —
+    pre-existing gaps (most of GTK, and the TUI examples still mid the
+    #B1-#B5 backfill) print but don't fail the run. GTK examples are never
+    part of the delta gate, new or not — GTK-example coverage waits on
+    `GtkDriver` (#301), same "TUI only for now" line CLAUDE.md draws.
+    0 — no newly-added `tui_*.rs` example is missing its driver test.
+    1 — a newly-added `tui_*.rs` example is missing its driver test.
+    2 — the git diff needed to find "newly-added" couldn't be computed
+        (unreachable --base, not a git repo, git not on PATH, ...). This is
+        a tooling failure, not "no new examples" — never silently treated
+        as a pass, since that would open exactly the hole #311 exists to
+        close.
 
 Run from anywhere; paths are resolved relative to this script's location.
 """
 from __future__ import annotations
 
+import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,7 +89,69 @@ def is_covered(app_type: str, driver_source: str) -> bool:
     return re.search(rf"\b{re.escape(app_type)}\b", driver_source) is not None
 
 
-def main() -> int:
+def new_tui_example_stems(base_ref: str) -> set[str]:
+    """Stems of `examples/tui_*.rs` files this branch adds relative to `base_ref`.
+
+    Scoped to `tui_*.rs` on purpose: GTK-example coverage is out of scope for
+    the #311 CI gate until #301 ships (CLAUDE.md's "TUI only for now"), so a
+    newly-added `gtk_*.rs` example must never make this gate fail.
+
+    Raises `subprocess.CalledProcessError` / `FileNotFoundError` if the diff
+    can't be computed — callers must not treat that as "no new examples"; see
+    the module docstring's exit-status-2 note.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-only",
+            "--diff-filter=A",
+            f"{base_ref}...HEAD",
+            "--",
+            "quadraui/examples",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stems = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        p = Path(line)
+        if p.parent.name == "examples" and p.name.startswith("tui_") and p.suffix == ".rs":
+            stems.add(p.stem)
+    return stems
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Driver-test coverage report for quadraui examples (#310)."
+    )
+    parser.add_argument(
+        "--fail-on-gap",
+        action="store_true",
+        help=(
+            "Only fail when a tui_*.rs example ADDED relative to --base is "
+            "missing driver-suite coverage (#311); pre-existing gaps and any "
+            "GTK gap still print but no longer fail the run. Without this "
+            "flag, fail on ANY gap (the tool's original full-audit mode)."
+        ),
+    )
+    parser.add_argument(
+        "--base",
+        default="origin/main",
+        metavar="REF",
+        help="git ref to diff against when finding new examples (default: %(default)s).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+
     driver_sources = {
         kind: (path.read_text() if path.exists() else "")
         for kind, path in DRIVER_FILES.items()
@@ -115,7 +195,40 @@ def main() -> int:
     )
 
     any_missing = any(not r[3] for r in rows)
-    return 1 if any_missing else 0
+
+    if not args.fail_on_gap:
+        return 1 if any_missing else 0
+
+    try:
+        new_stems = new_tui_example_stems(args.base)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(
+            f"\nerror: could not diff against '{args.base}' to find newly-added "
+            f"tui_*.rs examples: {exc}\n"
+            "This is the #311 CI gate — refusing to treat a failed diff as "
+            "'no new examples', since that would silently let a real gap "
+            "through. Make sure --base is a ref reachable from this checkout "
+            "(CI fetches it with fetch-depth: 0 before calling this tool).",
+            file=sys.stderr,
+        )
+        return 2
+
+    if new_stems:
+        print(f"\nNew tui_*.rs examples since {args.base}: {', '.join(sorted(new_stems))}")
+
+    new_gaps = [r for r in rows if r[0] in new_stems and not r[3]]
+    if new_gaps:
+        print("\nNewly-added examples missing required driver-suite coverage (#311):")
+        for row in new_gaps:
+            print(f"  {row[0]}")
+        return 1
+
+    if any_missing:
+        print(
+            "\nPre-existing gaps remain above (not introduced by this change) "
+            "— not failing. Tracked by the #B1-#B5 backfill."
+        )
+    return 0
 
 
 if __name__ == "__main__":
