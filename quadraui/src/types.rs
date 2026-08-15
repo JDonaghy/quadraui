@@ -316,7 +316,10 @@ mod tests {
 
     #[test]
     fn from_hex_parses_rgb() {
-        assert_eq!(Color::from_hex("#ff0080"), Some(Color::rgb(0xff, 0x00, 0x80)));
+        assert_eq!(
+            Color::from_hex("#ff0080"),
+            Some(Color::rgb(0xff, 0x00, 0x80))
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ use gtk4::pango;
 
 use super::cairo_rgb;
 use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteMode};
+use crate::text_util::safe_prefix;
 use crate::theme::Theme;
 
 /// Draw a [`Palette`] modal into `(x, y, w, h)` on `cr`.
@@ -157,7 +158,7 @@ pub fn draw_palette(
         cr.move_to(query_text_x, query_y + (qh_px - qh as f64) / 2.0);
         super::painted_text::show_layout(cr, layout);
 
-        let cursor_prefix: &str = crate::text_util::safe_prefix(&palette.query, palette.query_cursor);
+        let cursor_prefix: &str = safe_prefix(&palette.query, palette.query_cursor);
         layout.set_text(cursor_prefix);
         let (cursor_prefix_w, _) = layout.pixel_size();
         let cursor_x = query_text_x + cursor_prefix_w as f64;

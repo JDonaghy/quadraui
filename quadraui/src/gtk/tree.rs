@@ -13,6 +13,7 @@ use gtk4::pango;
 use super::cairo_rgb;
 use crate::event::Rect as QRect;
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::text_util::{safe_prefix, snap_to_char_boundary};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
@@ -305,8 +306,8 @@ fn paint_edit_input_gtk(
     // Selection highlight.
     if let Some(anchor) = edit.selection_anchor {
         if anchor != edit.cursor {
-            let lo = crate::text_util::snap_to_char_boundary(&edit.text, anchor.min(edit.cursor));
-            let hi = crate::text_util::snap_to_char_boundary(&edit.text, anchor.max(edit.cursor));
+            let lo = snap_to_char_boundary(&edit.text, anchor.min(edit.cursor));
+            let hi = snap_to_char_boundary(&edit.text, anchor.max(edit.cursor));
             let prefix = &edit.text[..lo];
             let sel_text = &edit.text[lo..hi];
             layout.set_text(prefix);
@@ -332,7 +333,7 @@ fn paint_edit_input_gtk(
     super::painted_text::show_layout(cr, layout);
 
     // Thin vertical caret bar.
-    let cursor_prefix = crate::text_util::safe_prefix(&edit.text, edit.cursor);
+    let cursor_prefix = safe_prefix(&edit.text, edit.cursor);
     layout.set_text(cursor_prefix);
     let (cx_off, _) = layout.pixel_size();
     let caret_x = text_x + cx_off as f64;

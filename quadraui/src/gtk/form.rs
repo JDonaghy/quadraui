@@ -14,6 +14,7 @@ use gtk4::pango;
 
 use super::cairo_rgb;
 use crate::primitives::form::{FieldKind, Form, ValidationState};
+use crate::text_util::{safe_prefix, snap_to_char_boundary};
 use crate::theme::Theme;
 
 /// Draw a [`Form`] into `(x, y, w, h)` on `cr` using `layout` for text
@@ -160,8 +161,8 @@ pub fn draw_form(
                         let cur = cursor.unwrap();
                         let anchor = selection_anchor.unwrap();
                         let (lo, hi) = (cur.min(anchor), cur.max(anchor));
-                        let lo = crate::text_util::snap_to_char_boundary(shown, lo);
-                        let hi = crate::text_util::snap_to_char_boundary(shown, hi);
+                        let lo = snap_to_char_boundary(shown, lo);
+                        let hi = snap_to_char_boundary(shown, hi);
 
                         let prefix = &shown[..lo];
                         let sel_text = &shown[lo..hi];
@@ -213,7 +214,7 @@ pub fn draw_form(
                     super::painted_text::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
-                        let prefix = crate::text_util::safe_prefix(shown, *cur);
+                        let prefix = safe_prefix(shown, *cur);
                         layout.set_text(prefix);
                         let (prefix_w, _) = layout.pixel_size();
                         let cx = ix + 8.0 + prefix_w as f64;
@@ -407,7 +408,7 @@ pub fn draw_form(
                         // Cursor position: each original char maps to one
                         // mask char, so measure the masked prefix up to
                         // the byte-offset translated cursor.
-                        let char_pos = crate::text_util::safe_prefix(value, *cur).chars().count();
+                        let char_pos = safe_prefix(value, *cur).chars().count();
                         let mask_prefix: String = masked.chars().take(char_pos).collect();
                         layout.set_text(&mask_prefix);
                         let (prefix_w, _) = layout.pixel_size();
@@ -472,7 +473,7 @@ pub fn draw_form(
                     if let Some(cur) = cursor {
                         // Clamp cursor to first line length for display.
                         let clamped = (*cur).min(first_line.len());
-                        let prefix = crate::text_util::safe_prefix(shown, clamped);
+                        let prefix = safe_prefix(shown, clamped);
                         layout.set_text(prefix);
                         let (prefix_w, _) = layout.pixel_size();
                         let cx = ix + 8.0 + prefix_w as f64;
@@ -660,7 +661,17 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
         let theme = Theme::default();
-        draw_form(&cr, &pango_layout, 0.0, 0.0, 320.0, 160.0, form, &theme, 14.0);
+        draw_form(
+            &cr,
+            &pango_layout,
+            0.0,
+            0.0,
+            320.0,
+            160.0,
+            form,
+            &theme,
+            14.0,
+        );
     }
 
     /// Regression for issue #503: `TextInput.cursor`/`selection_anchor`

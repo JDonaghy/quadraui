@@ -20,6 +20,7 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::primitives::palette::{Palette, PaletteItemMeasure};
+use crate::text_util::safe_prefix;
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -140,7 +141,7 @@ pub unsafe fn draw_palette(
             query_y + (qb.height as f64 - qh) / 2.0,
             color_to_cg(theme.query_fg),
         );
-        let cursor_prefix: &str = crate::text_util::safe_prefix(&palette.query, palette.query_cursor);
+        let cursor_prefix: &str = safe_prefix(&palette.query, palette.query_cursor);
         let (cpw, _) = measure_text(font, cursor_prefix);
         let cursor_x = query_text_x + cpw;
         let cursor_w = (line_height * 0.45).max(2.0);
