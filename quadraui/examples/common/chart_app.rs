@@ -1,12 +1,15 @@
 //! Backend-agnostic app code for the chart example
 //! ([`tui_chart`] / [`gtk_chart`]).
 //!
-//! Demonstrates all three chart kinds: sparkline, line, and bar.
+//! Demonstrates all four chart kinds: sparkline, line, stacked bar and
+//! grouped bar. The two bar views share one three-series dataset, so
+//! switching between them shows the same data composed (stacked) vs.
+//! compared (grouped) — see quadraui#584.
 //!
 //! Controls:
-//! - space       add a data point to the sparkline
-//! - 1 / 2 / 3  switch view to sparkline / line / bar
-//! - q / Esc     quit
+//! - space           add a data point to the sparkline
+//! - 1 / 2 / 3 / 4   switch view to sparkline / line / stacked bar / grouped bar
+//! - q / Esc         quit
 
 use quadraui::{
     AppLogic, Backend, Chart, ChartKind, Color, Key, NamedKey, Reaction, Rect, Series, StatusBar,
@@ -92,21 +95,42 @@ impl ChartApp {
         }
     }
 
-    fn bar_chart(&self) -> Chart {
+    /// Three-series bar chart. `kind` picks stacked ([`ChartKind::Bar`])
+    /// or side-by-side ([`ChartKind::BarGrouped`]) composition of the
+    /// same data.
+    fn bar_chart(&self, kind: ChartKind) -> Chart {
         Chart {
             id: WidgetId::new("bar"),
-            kind: ChartKind::Bar,
-            series: vec![Series {
-                label: "Requests".into(),
-                data: vec![120.0, 230.0, 180.0, 310.0, 95.0],
-                color: Some(Color::rgb(80, 220, 120)),
-                fill: false,
-            }],
+            kind,
+            series: vec![
+                Series {
+                    label: "OK".into(),
+                    data: vec![120.0, 230.0, 180.0, 310.0, 95.0],
+                    color: Some(Color::rgb(80, 220, 120)),
+                    fill: false,
+                },
+                Series {
+                    label: "Slow".into(),
+                    data: vec![40.0, 60.0, 25.0, 70.0, 15.0],
+                    color: Some(Color::rgb(220, 180, 60)),
+                    fill: false,
+                },
+                Series {
+                    label: "Failed".into(),
+                    data: vec![10.0, 0.0, 35.0, 20.0, 5.0],
+                    color: Some(Color::rgb(255, 100, 100)),
+                    fill: false,
+                },
+            ],
             x_label: Some("Endpoint".into()),
             y_label: None,
+            // Auto-derived: the ceiling is the largest column total in
+            // stacked mode and the largest single value when grouped.
+            // The `Failed` series' zero at index 1 keeps the floor at
+            // 0.0, so stacked segments are exactly proportional.
             y_range: None,
             x_range: None,
-            show_legend: false,
+            show_legend: true,
             y_ticks: None,
             x_ticks: None,
             show_grid: false,
@@ -114,10 +138,14 @@ impl ChartApp {
     }
 
     fn status_bar(&self) -> StatusBar {
+        // `ChartKind` is `#[non_exhaustive]`, so a consumer match needs
+        // a wildcard arm — future kinds stay additive (quadraui#584).
         let kind_label = match self.active_kind {
             ChartKind::Sparkline => "Sparkline",
             ChartKind::Line => "Line",
-            ChartKind::Bar => "Bar",
+            ChartKind::Bar => "Bar (stacked)",
+            ChartKind::BarGrouped => "Bar (grouped)",
+            _ => "Chart",
         };
         StatusBar {
             id: WidgetId::new("status"),
@@ -129,7 +157,7 @@ impl ChartApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " 1/2/3=kind space=add q=quit ".into(),
+                text: " 1/2/3/4=kind space=add q=quit ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -169,9 +197,10 @@ impl AppLogic for ChartApp {
             ChartKind::Line => {
                 let _ = backend.draw_chart(chart_rect, &self.line_chart(), hp, cx);
             }
-            ChartKind::Bar => {
-                let _ = backend.draw_chart(chart_rect, &self.bar_chart(), hp, cx);
+            kind @ (ChartKind::Bar | ChartKind::BarGrouped) => {
+                let _ = backend.draw_chart(chart_rect, &self.bar_chart(kind), hp, cx);
             }
+            _ => {}
         }
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -221,6 +250,13 @@ impl AppLogic for ChartApp {
                 self.active_kind = ChartKind::Bar;
                 Reaction::Redraw
             }
+            UiEvent::KeyPressed {
+                key: Key::Char('4'),
+                ..
+            } => {
+                self.active_kind = ChartKind::BarGrouped;
+                Reaction::Redraw
+            }
             UiEvent::MouseMoved { position, .. } => {
                 let viewport = backend.viewport();
                 let lh = backend.line_height();
@@ -231,7 +267,7 @@ impl AppLogic for ChartApp {
                 let chart = match self.active_kind {
                     ChartKind::Sparkline => self.sparkline(),
                     ChartKind::Line => self.line_chart(),
-                    ChartKind::Bar => self.bar_chart(),
+                    kind => self.bar_chart(kind),
                 };
                 let layout = backend.chart_layout(chart_rect, &chart);
                 let snap = backend.line_height() * 2.0;
