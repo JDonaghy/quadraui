@@ -4,7 +4,7 @@
 //! with optional area fill. Bar charts use Cairo rectangles — one per
 //! series segment, stacked ([`ChartKind::Bar`]) or side by side
 //! ([`ChartKind::BarGrouped`]) from the shared
-//! [`Chart::bar_column_spans`] geometry (#584). Axis labels and legends
+//! [`Chart::bar_column_spans_all`] geometry (#584). Axis labels and legends
 //! use Pango.
 
 use gtk4::cairo::Context;
@@ -280,9 +280,9 @@ fn paint_bar(
         let series_count = chart.series.len().max(1) as f64;
         let baseline = py + ph;
 
-        for i in 0..n {
+        for (i, column) in chart.bar_column_spans_all().into_iter().enumerate() {
             let slot_x = px + i as f64 * slot_w + gap / 2.0;
-            for (si, bottom, top) in chart.bar_column_spans(i) {
+            for (si, bottom, top) in column {
                 // Stacked segments span the slot; grouped series split it.
                 let (bx, seg_w) = if stacked {
                     (slot_x, bar_w)
