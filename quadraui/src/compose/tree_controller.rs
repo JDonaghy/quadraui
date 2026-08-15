@@ -467,14 +467,18 @@ impl TreeController {
     fn handle_edit_key(&mut self, key: &Key, modifiers: &Modifiers) -> TreeControllerEvent {
         match key {
             Key::Named(NamedKey::Enter) => {
-                let e = self.editing.take().unwrap();
+                let Some(e) = self.editing.take() else {
+                    return TreeControllerEvent::Ignored;
+                };
                 TreeControllerEvent::EditConfirmed {
                     path: e.path,
                     new_text: e.text,
                 }
             }
             Key::Named(NamedKey::Escape) => {
-                let e = self.editing.take().unwrap();
+                let Some(e) = self.editing.take() else {
+                    return TreeControllerEvent::Ignored;
+                };
                 TreeControllerEvent::EditCancelled { path: e.path }
             }
             Key::Named(NamedKey::Backspace) => self.edit_backspace(),
@@ -507,7 +511,9 @@ impl TreeController {
     // ── Text buffer manipulation helpers ─────────────────────────────
 
     fn edit_delete_selection(&mut self) -> bool {
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return false;
+        };
         if let Some(anchor) = e.selection_anchor {
             if anchor != e.cursor {
                 let lo = anchor.min(e.cursor);
@@ -525,7 +531,9 @@ impl TreeController {
 
     fn edit_insert_char(&mut self, c: char) -> TreeControllerEvent {
         self.edit_delete_selection();
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return TreeControllerEvent::Ignored;
+        };
         let cursor = snap_to_char_boundary(&e.text, e.cursor);
         e.text.insert(cursor, c);
         e.cursor = cursor + c.len_utf8();
@@ -535,7 +543,9 @@ impl TreeController {
 
     fn edit_insert_str(&mut self, s: &str) -> TreeControllerEvent {
         self.edit_delete_selection();
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return TreeControllerEvent::Ignored;
+        };
         let cursor = snap_to_char_boundary(&e.text, e.cursor);
         e.text.insert_str(cursor, s);
         e.cursor = cursor + s.len();
@@ -547,7 +557,9 @@ impl TreeController {
         if self.edit_delete_selection() {
             return self.emit_edit_changed();
         }
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return TreeControllerEvent::Ignored;
+        };
         if e.cursor == 0 {
             return TreeControllerEvent::Consumed;
         }
@@ -562,7 +574,9 @@ impl TreeController {
         if self.edit_delete_selection() {
             return self.emit_edit_changed();
         }
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return TreeControllerEvent::Ignored;
+        };
         if e.cursor >= e.text.len() {
             return TreeControllerEvent::Consumed;
         }
@@ -572,7 +586,9 @@ impl TreeController {
     }
 
     fn edit_move_cursor_left(&mut self, extend_selection: bool) {
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return;
+        };
         if e.cursor == 0 {
             if !extend_selection {
                 e.selection_anchor = None;
@@ -589,7 +605,9 @@ impl TreeController {
     }
 
     fn edit_move_cursor_right(&mut self, extend_selection: bool) {
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return;
+        };
         if e.cursor >= e.text.len() {
             if !extend_selection {
                 e.selection_anchor = None;
@@ -606,7 +624,9 @@ impl TreeController {
     }
 
     fn edit_move_home(&mut self, extend_selection: bool) {
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return;
+        };
         if extend_selection && e.selection_anchor.is_none() {
             e.selection_anchor = Some(e.cursor);
         }
@@ -617,7 +637,9 @@ impl TreeController {
     }
 
     fn edit_move_end(&mut self, extend_selection: bool) {
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return;
+        };
         if extend_selection && e.selection_anchor.is_none() {
             e.selection_anchor = Some(e.cursor);
         }
@@ -628,13 +650,17 @@ impl TreeController {
     }
 
     fn edit_select_all(&mut self) {
-        let e = self.editing.as_mut().unwrap();
+        let Some(e) = self.editing.as_mut() else {
+            return;
+        };
         e.selection_anchor = Some(0);
         e.cursor = e.text.len();
     }
 
     fn emit_edit_changed(&self) -> TreeControllerEvent {
-        let e = self.editing.as_ref().unwrap();
+        let Some(e) = self.editing.as_ref() else {
+            return TreeControllerEvent::Ignored;
+        };
         TreeControllerEvent::EditChanged {
             path: e.path.clone(),
             text: e.text.clone(),

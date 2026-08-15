@@ -385,11 +385,10 @@ impl Form {
         let mut visible_fields: Vec<VisibleFormField> = Vec::new();
         let mut hit_regions: Vec<(Rect, FormHit)> = Vec::new();
 
-        let resolved_scroll_offset = if self.fields.is_empty() {
-            0
-        } else {
-            self.scroll_offset.min(self.fields.len() - 1)
-        };
+        let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
+            self.scroll_offset,
+            self.fields.len(),
+        );
 
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.fields.len() {

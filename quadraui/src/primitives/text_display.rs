@@ -270,7 +270,7 @@ impl TextDisplay {
             }
             offset
         } else {
-            self.scroll_offset.min(self.lines.len() - 1)
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.lines.len())
         };
 
         let mut y = 0.0_f32;
