@@ -65,21 +65,26 @@ jobs:
   tui:
     name: tui (build, test, clippy) — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # The Windows leg starts NON-BLOCKING and that is the whole point of the
-    # rollout: `win = []` has no deps, so `cargo check --features win` already
-    # type-checks on Linux — what has never run anywhere is the *portable
-    # core* (ratatui / arboard / unicode-width / portable-pty→ConPTY) on a
-    # real Windows host. Turning that on as a hard gate would red this repo on
-    # its first run, and quadraui is the most-depended-on repo in the fleet
-    # (kubeui-gtk in-tree, coord-tui and vimcode downstream, both gated by the
-    # `downstream` job below) — so a Windows-only warning would block two
-    # consumers on something neither of them touched. Same argument
-    # rust-toolchain.toml makes for pinning the compiler, one platform over.
+    # BOTH legs are blocking (#590, W-7 of #580). The windows-latest leg
+    # landed in #581 with `continue-on-error` because the *portable core*
+    # (ratatui / arboard / unicode-width / portable-pty→ConPTY) had never been
+    # built or tested on a real Windows host, and a red first run would have
+    # blocked coord-tui and vimcode — both gated by the `downstream` job below
+    # — on something neither of them touched. That was a rollout device with a
+    # stated exit condition, not a permanent posture.
     #
-    # Flipping this to blocking IS the milestone. Do it in its own commit,
-    # once the leg has been green for a few runs — don't quietly widen the
-    # matrix and leave a permanently-yellow column nobody reads.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # The condition was met: the Windows *job* concluded `success` on every CI
+    # run on develop across #585/#587/#588/#589, covering real changes to
+    # tui/mod.rs, tui/backend.rs, shell_adapter.rs and this file. So the guard
+    # is gone and a Windows-only failure now blocks the PR — and, because
+    # coord's merge gate reads per-check conclusions rather than the workflow
+    # run's (claude-coordinator#581), blocks `coord merge` too. That is the
+    # intent: while `continue-on-error` was set, a Windows regression merged
+    # silently and this column looked like protection while providing none.
+    #
+    # If a Windows-specific flake ever wedges unrelated work, reverting is
+    # this comment plus one line — but prefer fixing the flake, because the
+    # non-blocking state is indistinguishable from having no Windows CI.
     strategy:
       # One platform failing must not cancel the other — seeing both columns
       # is the entire reason this is a matrix rather than two hardcoded jobs.
