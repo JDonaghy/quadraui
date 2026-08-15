@@ -31,6 +31,7 @@ use core_text::font::CTFont;
 use super::text::{draw_text, measure_text};
 use crate::backend::EditorPaintResult;
 use crate::primitives::editor::{CursorShape, Editor};
+use crate::text_util::snap_to_char_boundary;
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -122,8 +123,8 @@ pub unsafe fn draw_editor(
         // raw run. Crude but produces correct colour at character
         // boundaries given the monospace baseline.
         for span in &line.spans {
-            let start = crate::text_util::snap_to_char_boundary(&line.raw_text, span.start_byte);
-            let end = crate::text_util::snap_to_char_boundary(&line.raw_text, span.end_byte);
+            let start = snap_to_char_boundary(&line.raw_text, span.start_byte);
+            let end = snap_to_char_boundary(&line.raw_text, span.end_byte);
             if start >= end {
                 continue;
             }

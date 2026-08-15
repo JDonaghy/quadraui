@@ -29,6 +29,7 @@ use crate::event::Rect as QRect;
 use crate::primitives::form::{
     FieldKind, Form, FormFieldMeasure, FormItemMeasure, FormLayout, ValidationState,
 };
+use crate::text_util::safe_prefix;
 use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 
@@ -286,7 +287,7 @@ pub unsafe fn draw_form(
                     // Caret — thin 1.5pt bar at the cursor's byte offset.
                     if let Some(cur) = cursor {
                         if is_focused {
-                            let prefix = crate::text_util::safe_prefix(shown, *cur);
+                            let prefix = safe_prefix(shown, *cur);
                             let (prefix_w, _) = measure_text(font, prefix);
                             let caret_x = ix + 8.0 + prefix_w;
                             fill_rect(
@@ -446,7 +447,7 @@ pub unsafe fn draw_form(
                         if is_focused {
                             // Each plaintext char maps to one mask char, so
                             // measure the masked prefix up to the byte-cursor.
-                            let char_pos = crate::text_util::safe_prefix(value, *cur).chars().count();
+                            let char_pos = safe_prefix(value, *cur).chars().count();
                             let mask_prefix: String = masked.chars().take(char_pos).collect();
                             let (prefix_w, _) = measure_text(font, &mask_prefix);
                             let caret_x = ix + 8.0 + prefix_w;

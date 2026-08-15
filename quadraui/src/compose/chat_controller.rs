@@ -38,13 +38,15 @@
 //! scroll direction before emitting [`crate::UiEvent::Scroll`].
 
 use crate::compose::markdown::render_markdown_to_styled;
+use crate::text_util::{
+    next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary,
+};
 use crate::theme::Theme;
 use crate::types::StyledSpan;
 use crate::{
     Backend, ButtonMask, Color, Key, MessageList, MessageRow, Modifiers, MouseButton, NamedKey,
     Rect, Scrollbar, Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
 };
-use crate::text_util::{next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 

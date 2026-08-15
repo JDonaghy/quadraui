@@ -519,7 +519,9 @@ pub fn draw_editor(
 /// [`snap_to_char_boundary`]) so non-boundary inputs don't panic.
 /// Mirrors `vimcode::tui_main::byte_to_char_idx`.
 fn byte_to_char_idx(text: &str, byte_offset: usize) -> usize {
-    text[..snap_to_char_boundary(text, byte_offset)].chars().count()
+    text[..snap_to_char_boundary(text, byte_offset)]
+        .chars()
+        .count()
 }
 
 /// Convert a character-index column into a visual column, expanding

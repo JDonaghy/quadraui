@@ -54,6 +54,7 @@ pub fn snap_to_char_boundary(s: &str, byte_idx: usize) -> usize {
 /// Intended for "move cursor left one char" style operations, where the
 /// caller then slices or indexes at the returned offset.
 pub fn prev_char_boundary(s: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(s.len());
     if byte_idx == 0 {
         return 0;
     }
@@ -304,6 +305,14 @@ mod tests {
         let s = "héllo";
         // byte 2 is mid-'é'; prev boundary is the start of 'é' at byte 1.
         assert_eq!(prev_char_boundary(s, 2), 1);
+    }
+
+    #[test]
+    fn prev_char_boundary_clamps_past_end() {
+        let s = "héllo";
+        // Same clamp-then-walk-back behaviour as snap_to_char_boundary /
+        // next_char_boundary for an out-of-range byte_idx.
+        assert_eq!(prev_char_boundary(s, 999), prev_char_boundary(s, s.len()));
     }
 
     #[test]

@@ -872,7 +872,6 @@ impl TreeController {
     }
 }
 
-
 fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
