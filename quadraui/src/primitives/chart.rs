@@ -13,12 +13,17 @@
 //!
 //! Each [`Series`] carries a `Vec<f64>` of y-values evenly spaced along
 //! the x-axis. The y-range auto-derives from data when
-//! [`Chart::y_range`] is `None` — for stacked bars that ceiling is the
-//! largest *column total*, so a stack never clips (#584).
+//! [`Chart::y_range`] is `None` — for a multi-series stacked bar chart
+//! the range is anchored at `0.0` (widened to fit the tallest column
+//! total and any negative excursion), so segments stay proportional
+//! and a stack never clips (#584).
 //!
-//! Every backend paints bars from the shared geometry helpers
-//! [`Chart::bar_column_spans`] and [`Chart::column_totals`], so stacked
-//! and grouped layouts stay identical across TUI, GTK and macOS.
+//! Every backend paints bars from the shared geometry helper
+//! [`Chart::bar_column_spans`], which itself derives from
+//! [`Chart::effective_y_range`], so stacked and grouped layouts stay
+//! identical across TUI, GTK and macOS. [`Chart::column_totals`] is a
+//! separate, independently-useful helper (e.g. for labelling a stack's
+//! grand total) — it isn't on the geometry path itself.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -73,11 +78,13 @@ pub enum ChartKind {
     /// total height is the column sum. A single-series chart is exactly
     /// a plain bar chart — stacking is a no-op there.
     ///
-    /// Segment heights are proportional to the values only when the
-    /// y-axis floor is `0.0`. With an auto-derived range the floor is
-    /// `min(data)`, so the *bottom* segment absorbs that offset (the
-    /// same baseline behaviour a single-series bar chart has always
-    /// had). Set `y_range: Some((0.0, …))` for exact proportions.
+    /// With two or more series and an auto-derived range (no explicit
+    /// `y_range`), the floor is anchored at `0.0` specifically so
+    /// segment proportions are correct — see [`Chart::effective_y_range`].
+    /// An *explicit* `y_range` whose floor isn't `0.0` still skews every
+    /// segment's proportion relative to the others, since the geometry
+    /// has no way to know which value the caller intends as "empty";
+    /// pass `y_range: Some((0.0, …))` if you need one.
     Bar,
     /// Vertical bar chart whose series are drawn **side by side**
     /// within each x-position, for comparing magnitudes rather than
@@ -86,6 +93,10 @@ pub enum ChartKind {
     /// Each slot is split into `series.len()` sub-bars. When a slot is
     /// too narrow to give every series at least one device unit, the
     /// trailing series are clipped — widen the chart or drop a series.
+    /// (The TUI backend clips exactly this way; GTK and macOS instead
+    /// floor each sub-bar to 1px and let them overlap rather than
+    /// dropping data — both are acceptable outcomes for a pathologically
+    /// narrow chart, but they render differently from each other.)
     BarGrouped,
 }
 
@@ -225,13 +236,44 @@ impl ChartLayout {
 impl Chart {
     /// Resolve the effective y-range from explicit range or data min/max.
     ///
-    /// For a stacked bar chart ([`ChartKind::Bar`]) the ceiling is the
-    /// largest **column total**, not the largest single value, so a
-    /// stack can never clip. Column totals equal the data itself for a
-    /// single-series chart, so single-series output is unaffected.
+    /// For a stacked bar chart ([`ChartKind::Bar`]) with more than one
+    /// series, the range is anchored so that segment proportions are
+    /// correct: the floor is `min(0.0, ...)` and the ceiling is
+    /// `max(0.0, ...)` over every *partial sum* reached while
+    /// accumulating each column (not just each column's final total),
+    /// so a stack can never clip and — critically — never has its
+    /// segments' relative proportions skewed by a nonzero floor (#584
+    /// review). Using raw individual values as the floor here would
+    /// under-draw the first series in every column by a constant
+    /// offset whenever the smallest single value anywhere is `> 0`.
+    ///
+    /// A single-series `Bar` chart has nothing to compose against, so
+    /// it keeps the plain min/max-of-data behaviour every other chart
+    /// kind uses — single-series output is unaffected by stacking.
     pub fn effective_y_range(&self) -> (f64, f64) {
         if let Some(range) = self.y_range {
             return range;
+        }
+        if self.kind.is_stacked_bar() && self.series.len() > 1 {
+            let mut min = 0.0_f64;
+            let mut max = 0.0_f64;
+            for data_idx in 0..self.max_data_len() {
+                let mut cum = 0.0;
+                for s in &self.series {
+                    cum += s.data.get(data_idx).copied().unwrap_or(0.0);
+                    if cum < min {
+                        min = cum;
+                    }
+                    if cum > max {
+                        max = cum;
+                    }
+                }
+            }
+            return if (max - min).abs() < f64::EPSILON {
+                (min - 1.0, max + 1.0)
+            } else {
+                (min, max)
+            };
         }
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
@@ -242,19 +284,6 @@ impl Chart {
                 }
                 if v > max {
                     max = v;
-                }
-            }
-        }
-        if self.kind.is_stacked_bar() {
-            // Stacks are painted to the column total; widen the range so
-            // the tallest one still fits (negative values likewise pull
-            // the floor down rather than clipping below the axis).
-            for total in self.column_totals() {
-                if total < min {
-                    min = total;
-                }
-                if total > max {
-                    max = total;
                 }
             }
         }
@@ -318,7 +347,11 @@ impl Chart {
         let mut spans = Vec::with_capacity(self.series.len());
         if self.kind.is_stacked_bar() {
             let mut cum = 0.0;
-            let mut bottom = 0.0;
+            // `norm(0.0)` rather than a literal `0.0`: when the range
+            // floor isn't exactly `0.0` (e.g. an explicit non-zero
+            // `y_range`), the stack's true baseline is wherever zero
+            // maps to, not the bottom of the plot area.
+            let mut bottom = norm(0.0);
             for (si, s) in self.series.iter().enumerate() {
                 cum += s.data.get(data_idx).copied().unwrap_or(0.0);
                 // `max(bottom)` keeps spans monotonic if a negative
@@ -730,6 +763,47 @@ mod tests {
         // data itself, so nothing about the auto-range moves.
         let chart = bar_chart(ChartKind::Bar, vec![vec![2.0, 5.0, 3.0]]);
         assert_eq!(chart.effective_y_range(), (2.0, 5.0));
+    }
+
+    #[test]
+    fn stacked_bar_floor_anchors_at_zero_when_min_value_is_nonzero() {
+        // Regression for the review finding on #584: two series, one
+        // point each, neither containing a literal 0.0 anywhere. The
+        // auto-derived floor must still be 0.0 (not 5.0, the smallest
+        // raw value in the chart) or the segments below render
+        // out-of-proportion to their true values.
+        let chart = bar_chart(ChartKind::Bar, vec![vec![10.0], vec![5.0]]);
+        assert_eq!(chart.effective_y_range(), (0.0, 15.0));
+
+        let spans = chart.bar_column_spans(0);
+        // A = 10 of 15 total → 2/3 of the stack; B = 5 of 15 → 1/3.
+        // Pre-fix this rendered as an exact 50/50 split instead.
+        assert!((spans[0].1 - 0.0).abs() < 1e-9);
+        assert!((spans[0].2 - 2.0 / 3.0).abs() < 1e-9, "A span: {spans:?}");
+        assert!((spans[1].1 - 2.0 / 3.0).abs() < 1e-9);
+        assert!((spans[1].2 - 1.0).abs() < 1e-9, "B span: {spans:?}");
+    }
+
+    #[test]
+    fn stacked_bar_floor_tracks_negative_partial_sums_not_just_totals() {
+        // A column total alone can hide a dip below zero mid-stack:
+        // 10 + (-15) + 20 sums to 15, but the running sum touches -5
+        // partway through. The floor must cover that dip.
+        let chart = bar_chart(ChartKind::Bar, vec![vec![10.0], vec![-15.0], vec![20.0]]);
+        assert_eq!(chart.effective_y_range(), (-5.0, 15.0));
+    }
+
+    #[test]
+    fn bar_column_spans_baseline_tracks_a_nonzero_explicit_floor() {
+        // With an explicit y_range whose floor isn't 0.0, the stack's
+        // baseline (where the bottom segment starts) must track
+        // wherever zero maps to under that range, not the plot's
+        // literal bottom edge.
+        let mut chart = bar_chart(ChartKind::Bar, vec![vec![10.0], vec![10.0]]);
+        chart.y_range = Some((-10.0, 30.0));
+        let spans = chart.bar_column_spans(0);
+        // norm(0.0) = (0 - -10) / 40 = 0.25.
+        assert!((spans[0].1 - 0.25).abs() < 1e-9, "spans: {spans:?}");
     }
 
     #[test]

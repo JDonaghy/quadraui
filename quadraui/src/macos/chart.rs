@@ -614,4 +614,138 @@ mod tests {
         // Marker is the series colour, solid — blue should dominate.
         assert!(b > r);
     }
+
+    // ── Multi-series bars (#584 review — macOS had no bar coverage) ──────
+    //
+    // Mirrors `gtk::chart`'s headless bar tests, computed against this
+    // file's fixed W×H (200×120) surface and `paint_bar`'s own geometry
+    // (single column ⇒ `slot_w = pw`, `gap = slot_w * 0.15`).
+
+    fn bar_series(label: &str, data: Vec<f64>) -> Series {
+        Series {
+            label: label.into(),
+            data,
+            color: None,
+            fill: false,
+        }
+    }
+
+    fn sample_bar_chart(kind: ChartKind, series: Vec<Series>, y_range: (f64, f64)) -> Chart {
+        Chart {
+            id: WidgetId::new("ch"),
+            kind,
+            series,
+            x_label: None,
+            y_label: None,
+            y_range: Some(y_range),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(0),
+            show_grid: false,
+        }
+    }
+
+    #[test]
+    fn stacked_bar_paints_each_series_in_its_own_color() {
+        // Three equal-value series stacked in a single column: spans are
+        // (0, 1/3), (1/3, 2/3), (2/3, 1) bottom to top.
+        let chart = sample_bar_chart(
+            ChartKind::Bar,
+            vec![
+                bar_series("a", vec![1.0]),
+                bar_series("b", vec![1.0]),
+                bar_series("c", vec![1.0]),
+            ],
+            (0.0, 3.0),
+        );
+        let (surface, _layout) = paint_via_backend(&chart, None);
+
+        // slot_w = pw = 200, gap = 30, bar_w = 170, slot_x = 15 → mid-x = 100.
+        let mid_x = 100;
+        let (r0, g0, b0, _) = surface.pixel(mid_x, 100); // bottom third → series 0
+        assert_eq!(
+            (r0, g0, b0),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b)
+        );
+        let (r1, g1, b1, _) = surface.pixel(mid_x, 60); // middle third → series 1
+        assert_eq!(
+            (r1, g1, b1),
+            (SERIES_COLORS[1].r, SERIES_COLORS[1].g, SERIES_COLORS[1].b)
+        );
+        let (r2, g2, b2, _) = surface.pixel(mid_x, 20); // top third → series 2
+        assert_eq!(
+            (r2, g2, b2),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b)
+        );
+    }
+
+    #[test]
+    fn stacked_bar_all_zero_series_does_not_shift_the_others() {
+        // series[1] and series[3] are all-zero; series[0] and series[2]
+        // must still occupy exactly half the stack each, adjacent with no
+        // gap introduced by the zero-height segments between them.
+        let chart = sample_bar_chart(
+            ChartKind::Bar,
+            vec![
+                bar_series("a", vec![1.0]),
+                bar_series("zero1", vec![0.0]),
+                bar_series("b", vec![1.0]),
+                bar_series("zero2", vec![0.0]),
+            ],
+            (0.0, 2.0),
+        );
+        let (surface, _layout) = paint_via_backend(&chart, None);
+
+        let mid_x = 100;
+        let (r0, g0, b0, _) = surface.pixel(mid_x, 90); // bottom half → series 0
+        assert_eq!(
+            (r0, g0, b0),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b),
+            "bottom half should stay series 0's colour, unshifted by the zero series"
+        );
+        let (r2, g2, b2, _) = surface.pixel(mid_x, 30); // top half → series 2
+        assert_eq!(
+            (r2, g2, b2),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b),
+            "top half should be series 2's colour, immediately above series 0"
+        );
+    }
+
+    #[test]
+    fn grouped_bar_paints_series_side_by_side() {
+        let chart = sample_bar_chart(
+            ChartKind::BarGrouped,
+            vec![
+                bar_series("a", vec![1.0]),
+                bar_series("b", vec![2.0]),
+                bar_series("c", vec![3.0]),
+            ],
+            (0.0, 3.0),
+        );
+        let (surface, _layout) = paint_via_backend(&chart, None);
+
+        // All three sub-bars reach down to a shared row near the baseline
+        // (every grouped span starts at the floor), so one horizontal
+        // probe row distinguishes them purely by x position.
+        let probe_y = 100;
+        let (r0, g0, b0, _) = surface.pixel(43, probe_y);
+        assert_eq!(
+            (r0, g0, b0),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b),
+            "leftmost sub-bar should be series 0"
+        );
+        let (r1, g1, b1, _) = surface.pixel(100, probe_y);
+        assert_eq!(
+            (r1, g1, b1),
+            (SERIES_COLORS[1].r, SERIES_COLORS[1].g, SERIES_COLORS[1].b),
+            "middle sub-bar should be series 1"
+        );
+        let (r2, g2, b2, _) = surface.pixel(157, probe_y);
+        assert_eq!(
+            (r2, g2, b2),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b),
+            "rightmost sub-bar should be series 2"
+        );
+    }
 }
