@@ -334,6 +334,11 @@ pub enum ActivityBarEvent {
 /// This is `pub(crate)` because external consumers receive the already-normalised
 /// string from [`ActivityBarEvent::KeyPressed::key`] — they have no reason to call
 /// the conversion helper directly.
+///
+/// `cfg`-gated: only `crate::tui::backend` and `crate::gtk::run` call this
+/// today. Under `win` alone (no consumer yet) it goes dead-code under
+/// `-D warnings` (#540).
+#[cfg(any(feature = "tui", feature = "gtk"))]
 pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     use crate::event::{Key, NamedKey};
     match key {
