@@ -5,7 +5,9 @@
 //! - **Sparkline** — single-series polyline (1.5pt) inside the plot area.
 //! - **Line** — multi-series polyline with optional area fill at 20%
 //!   alpha.
-//! - **Bar** — vertical rectangles per data point.
+//! - **Bar** — vertical rectangles per series segment, stacked
+//!   ([`ChartKind::Bar`]) or side by side ([`ChartKind::BarGrouped`])
+//!   from the shared [`Chart::bar_column_spans`] geometry (#584).
 //!
 //! Hover marker and crosshair overlays are honoured. Axis labels,
 //! ticks, grid, and legend chrome use Core Text.
@@ -85,7 +87,7 @@ pub unsafe fn draw_chart(
     match chart.kind {
         ChartKind::Sparkline => paint_sparkline(ctx, &layout, chart, theme),
         ChartKind::Line => paint_line(ctx, font, &layout, chart, theme),
-        ChartKind::Bar => paint_bar(ctx, font, &layout, chart, theme),
+        ChartKind::Bar | ChartKind::BarGrouped => paint_bar(ctx, font, &layout, chart, theme),
     }
 
     if let Some(data_x) = crosshair_x {
@@ -236,37 +238,43 @@ unsafe fn paint_bar(
         theme.background,
     );
 
-    let Some(series) = chart.series.first() else {
-        return;
-    };
-    if series.data.is_empty() {
-        return;
-    }
-    let (y_min, y_max) = chart.effective_y_range();
-    let range = y_max - y_min;
-    let pw = pa.width as f64;
-    let ph = pa.height as f64;
-    let px = pa.x as f64;
-    let py = pa.y as f64;
-    let n = series.data.len() as f64;
-    // Slot-based positioning: each bar gets a full slot of width
-    // `pw / n`, with a 15% gap split between left/right edges.
-    let slot_w = pw / n;
-    let gap = (slot_w * 0.15).max(1.0);
-    let effective_bar_w = (slot_w - gap).max(1.0);
-    let baseline = py + ph;
-    let color = series_color(chart, 0);
-    for (i, &val) in series.data.iter().enumerate() {
-        let norm = if range > 0.0 {
-            ((val - y_min) / range).clamp(0.0, 1.0)
-        } else {
-            0.5
-        };
-        let bar_h = norm * ph;
-        let bx = px + i as f64 * slot_w + gap / 2.0;
-        let by = baseline - bar_h;
-        if bar_h > 0.0 {
-            fill_rect(ctx, bx, by, effective_bar_w, bar_h, color);
+    let n = chart.max_data_len();
+    if n > 0 {
+        let pw = pa.width as f64;
+        let ph = pa.height as f64;
+        let px = pa.x as f64;
+        let py = pa.y as f64;
+        // Slot-based positioning: each x-position gets a full slot of
+        // width `pw / n`, with a 15% gap split between left/right edges.
+        // Multi-series charts stack inside that slot (`ChartKind::Bar`)
+        // or split it side by side (`ChartKind::BarGrouped`) — #584.
+        let slot_w = pw / n as f64;
+        let gap = (slot_w * 0.15).max(1.0);
+        let effective_bar_w = (slot_w - gap).max(1.0);
+        let stacked = chart.kind.is_stacked_bar();
+        let series_count = chart.series.len().max(1) as f64;
+        let baseline = py + ph;
+        for i in 0..n {
+            let slot_x = px + i as f64 * slot_w + gap / 2.0;
+            for (si, bottom, top) in chart.bar_column_spans(i) {
+                let (bx, seg_w) = if stacked {
+                    (slot_x, effective_bar_w)
+                } else {
+                    let sub_w = (effective_bar_w / series_count).max(1.0);
+                    (slot_x + si as f64 * sub_w, sub_w)
+                };
+                let seg_h = (top - bottom) * ph;
+                if seg_h > 0.0 {
+                    fill_rect(
+                        ctx,
+                        bx,
+                        baseline - top * ph,
+                        seg_w,
+                        seg_h,
+                        series_color(chart, si),
+                    );
+                }
+            }
         }
     }
 

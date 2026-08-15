@@ -1,8 +1,11 @@
 //! GTK rasteriser for [`crate::Chart`].
 //!
 //! Sparklines render as Cairo polylines. Line charts use Cairo paths
-//! with optional area fill. Bar charts use Cairo rectangles. Axis
-//! labels and legends use Pango.
+//! with optional area fill. Bar charts use Cairo rectangles — one per
+//! series segment, stacked ([`ChartKind::Bar`]) or side by side
+//! ([`ChartKind::BarGrouped`]) from the shared
+//! [`Chart::bar_column_spans`] geometry (#584). Axis labels and legends
+//! use Pango.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -64,7 +67,9 @@ pub fn draw_chart(
     match chart.kind {
         ChartKind::Sparkline => paint_sparkline(cr, &layout, chart, theme),
         ChartKind::Line => paint_line(cr, pango_layout, &layout, chart, theme),
-        ChartKind::Bar => paint_bar(cr, pango_layout, &layout, chart, theme),
+        ChartKind::Bar | ChartKind::BarGrouped => {
+            paint_bar(cr, pango_layout, &layout, chart, theme)
+        }
     }
 
     if let Some(data_x) = crosshair_x {
@@ -266,38 +271,41 @@ fn paint_bar(
         return;
     }
 
-    if let Some(s) = chart.series.first() {
-        if s.data.is_empty() {
-            return;
-        }
-        let (y_min, y_max) = chart.effective_y_range();
-        let range = y_max - y_min;
-        let n = s.data.len();
-        let bar_w = pw / n as f64;
-        let gap = (bar_w * 0.15).max(1.0);
-        let effective_bar_w = (bar_w - gap).max(1.0);
-        let color = series_color(chart, 0);
+    let n = chart.max_data_len();
+    if n > 0 {
+        let slot_w = pw / n as f64;
+        let gap = (slot_w * 0.15).max(1.0);
+        let bar_w = (slot_w - gap).max(1.0);
+        let stacked = chart.kind.is_stacked_bar();
+        let series_count = chart.series.len().max(1) as f64;
+        let baseline = py + ph;
 
-        for (i, &val) in s.data.iter().enumerate() {
-            let norm = if range > 0.0 {
-                ((val - y_min) / range).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            let bar_h = norm * ph;
-            let bx = px + i as f64 * bar_w + gap / 2.0;
-            let by = py + ph - bar_h;
-
-            set_source(cr, color);
-            cr.rectangle(bx, by, effective_bar_w, bar_h);
-            cr.fill().ok();
+        for i in 0..n {
+            let slot_x = px + i as f64 * slot_w + gap / 2.0;
+            for (si, bottom, top) in chart.bar_column_spans(i) {
+                // Stacked segments span the slot; grouped series split it.
+                let (bx, seg_w) = if stacked {
+                    (slot_x, bar_w)
+                } else {
+                    let sub_w = (bar_w / series_count).max(1.0);
+                    (slot_x + si as f64 * sub_w, sub_w)
+                };
+                let seg_h = (top - bottom) * ph;
+                if seg_h <= 0.0 {
+                    continue;
+                }
+                let by = baseline - top * ph;
+                set_source(cr, series_color(chart, si));
+                cr.rectangle(bx, by, seg_w, seg_h);
+                cr.fill().ok();
+            }
         }
 
         // Bottom axis.
         set_source(cr, theme.muted_fg);
         cr.set_line_width(1.0);
-        cr.move_to(px, py + ph);
-        cr.line_to(px + pw, py + ph);
+        cr.move_to(px, baseline);
+        cr.line_to(px + pw, baseline);
         cr.stroke().ok();
     }
 

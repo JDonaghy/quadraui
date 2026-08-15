@@ -3261,6 +3261,142 @@ fn chart_switching_to_line_view_paints_axis_labels_and_gridlines() {
     );
 }
 
+// ─── ChartApp (issue #584): stacked vs grouped multi-series bars ──────────
+//
+// `ChartApp`'s bar views share one three-series dataset (`OK`, `Slow`,
+// `Failed`), so '3' and '4' paint the same numbers composed two different
+// ways. Before #584 the TUI bar painter rendered `series[0]` and silently
+// dropped the rest, which looked like a perfectly plausible chart — the
+// only way to catch that regression is to assert on the rendered grid,
+// not on "did a bar appear".
+//
+// `Failed` is `[10, 0, 35, 20, 5]`: its zero at index 1 is the
+// "one series is all zeros at this x" case, which must contribute no
+// rows and must not shift the segments below or above it.
+
+/// Height (in `█` rows) of every screen column, left to right.
+fn bar_column_heights(screen: &str) -> Vec<usize> {
+    let rows: Vec<&str> = screen.lines().collect();
+    let width = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    (0..width)
+        .map(|col| {
+            rows.iter()
+                .filter(|row| row.chars().nth(col) == Some('█'))
+                .count()
+        })
+        .collect()
+}
+
+/// Column heights collapsed to one entry per run of equal-height
+/// columns — i.e. one entry per painted bar (stacked slots are painted
+/// full-slot-width; grouped sub-bars are narrower).
+fn bar_runs(screen: &str) -> Vec<usize> {
+    let mut runs: Vec<usize> = Vec::new();
+    for h in bar_column_heights(screen) {
+        if runs.last() != Some(&h) {
+            runs.push(h);
+        }
+    }
+    // Drop the leading/trailing empty gutter columns.
+    while runs.first() == Some(&0) {
+        runs.remove(0);
+    }
+    while runs.last() == Some(&0) {
+        runs.pop();
+    }
+    runs
+}
+
+#[test]
+fn chart_stacked_bar_view_paints_every_series_scaled_to_column_totals() {
+    let mut driver = TuiDriver::new(ChartApp::new(), 100, 30);
+    driver.type_char('3');
+    let screen = driver.screen();
+
+    assert!(
+        screen.contains("Bar (stacked)"),
+        "status bar should name the stacked view:\n{screen}"
+    );
+    for label in ["OK", "Slow", "Failed"] {
+        assert!(
+            screen.contains(label),
+            "legend should name every bar series, missing {label:?}:\n{screen}"
+        );
+    }
+
+    // One run per x-position: a stack is painted across the whole slot,
+    // so all of a slot's columns share a height.
+    let runs = bar_runs(&screen);
+    assert_eq!(
+        runs.len(),
+        5,
+        "expected one full-width stack per x-position, got {runs:?}:\n{screen}"
+    );
+
+    // Heights track the *column totals* (170, 290, 240, 400, 115), not
+    // `series[0]` (120, 230, 180, 310, 95) and not the tallest single
+    // value — the pre-#584 painter would have scaled to series[0] alone.
+    let tallest = *runs.iter().max().unwrap() as f64;
+    assert!(tallest > 0.0, "no bars painted:\n{screen}");
+    let expected = [170.0, 290.0, 240.0, 400.0, 115.0];
+    for (i, &total) in expected.iter().enumerate() {
+        let want = total / 400.0 * tallest;
+        let got = runs[i] as f64;
+        assert!(
+            (got - want).abs() <= 1.0,
+            "stack {i} is {got} rows, expected ~{want:.1} for a column total of {total} \
+             (all runs: {runs:?}):\n{screen}"
+        );
+    }
+    // Index 1 is the zeroed `Failed` value: its stack is exactly
+    // OK+Slow, so a zero series neither adds rows nor shifts the rest.
+    assert!(runs[1] > runs[2], "290 should out-top 240: {runs:?}");
+}
+
+#[test]
+fn chart_grouped_bar_view_paints_series_side_by_side() {
+    let mut driver = TuiDriver::new(ChartApp::new(), 100, 30);
+    driver.type_char('3');
+    let stacked = driver.screen();
+    driver.type_char('4');
+    let grouped = driver.screen();
+
+    assert!(
+        grouped.contains("Bar (grouped)"),
+        "status bar should name the grouped view:\n{grouped}"
+    );
+    for label in ["OK", "Slow", "Failed"] {
+        assert!(
+            grouped.contains(label),
+            "legend should name every bar series, missing {label:?}:\n{grouped}"
+        );
+    }
+
+    // Each x-position is now three narrower bars of independent height,
+    // so the grid carries many more distinct-height runs than the five
+    // full-width stacks.
+    let grouped_runs = bar_runs(&grouped);
+    assert!(
+        grouped_runs.len() >= 10,
+        "expected side-by-side sub-bars, got {grouped_runs:?}:\n{grouped}"
+    );
+
+    // A zero-valued sub-bar paints nothing while its neighbours stay put.
+    assert!(
+        grouped_runs.iter().any(|&h| h == 0),
+        "the zeroed `Failed` sub-bar should be empty, not shifted: {grouped_runs:?}\n{grouped}"
+    );
+
+    // Grouped bars are thirds of a slot scaled to the tallest single
+    // value, so they cover far less of the plot than the stacks do.
+    let stacked_cells: usize = bar_column_heights(&stacked).iter().sum();
+    let grouped_cells: usize = bar_column_heights(&grouped).iter().sum();
+    assert!(
+        grouped_cells > 0 && grouped_cells < stacked_cells,
+        "grouped ({grouped_cells}) should fill less than stacked ({stacked_cells})"
+    );
+}
+
 // ─── IndicatorsApp (issue #308): toggling cancellable paints/clears '×' ────
 //
 // `IndicatorsApp::handle`'s `'c'` arm flips `self.cancellable`, which

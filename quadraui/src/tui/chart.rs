@@ -58,7 +58,7 @@ pub fn draw_chart(
     match chart.kind {
         ChartKind::Sparkline => paint_sparkline(buf, &layout, chart, theme),
         ChartKind::Line => paint_line(buf, &layout, chart, theme),
-        ChartKind::Bar => paint_bar(buf, &layout, chart, theme),
+        ChartKind::Bar | ChartKind::BarGrouped => paint_bar(buf, &layout, chart, theme),
     }
 
     if let Some(data_x) = crosshair_x {
@@ -279,41 +279,70 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
         }
     }
 
-    if let Some(s) = chart.series.first() {
-        if s.data.is_empty() {
-            return;
+    let n = chart.max_data_len();
+    if n == 0 {
+        // Nothing to plot: still paint the legend and axis labels so an
+        // empty bar chart reads as an empty chart, matching the GTK and
+        // macOS painters.
+        paint_legend(buf, layout, chart, theme);
+        paint_axis_labels(buf, layout, chart, theme);
+        return;
+    }
+
+    // Cell-quantised bar geometry. Slot width floors, exactly as the
+    // single-series painter always did, so single-series output is
+    // byte-identical to pre-#584.
+    let slot_w = ((pw as usize) / n).max(1);
+    let plot_h = ph.saturating_sub(1) as usize;
+    let stacked = chart.kind.is_stacked_bar();
+    let series_count = chart.series.len().max(1);
+    // Row 0 of a bar is the row directly above the axis row.
+    let base_row = (py + ph).saturating_sub(2);
+
+    for di in 0..n {
+        let slot_x = di * slot_w;
+        if slot_x >= pw as usize {
+            break;
         }
+        let slot_cells = slot_w.min(pw as usize - slot_x);
 
-        let (y_min, y_max) = chart.effective_y_range();
-        let range = y_max - y_min;
-        let n = s.data.len();
-        let bar_w = ((pw as usize) / n.max(1)).max(1);
-        let fg = ratatui_color(series_color(chart, 0));
-        let plot_h = ph.saturating_sub(1) as usize;
-
-        for (i, &val) in s.data.iter().enumerate() {
-            let norm = if range > 0.0 {
-                ((val - y_min) / range).clamp(0.0, 1.0)
+        for (si, bottom, top) in chart.bar_column_spans(di) {
+            // Stacked segments span the whole slot; grouped series each
+            // take a sub-slot beside the previous one.
+            let (cell_off, cell_w) = if stacked {
+                (0, slot_cells)
             } else {
-                0.5
+                let sub_w = (slot_cells / series_count).max(1);
+                let off = si * sub_w;
+                if off >= slot_cells {
+                    // Slot too narrow for the remaining series.
+                    break;
+                }
+                (off, sub_w.min(slot_cells - off))
             };
-            let fill_rows = (norm * plot_h as f64).round() as usize;
-            let bx = px + (i * bar_w) as u16;
 
-            for r in 0..fill_rows {
-                let by = py + ph - 2 - r as u16;
-                if by >= py {
-                    for c in 0..bar_w.min((pw as usize).saturating_sub(i * bar_w)) {
-                        set_cell(buf, bx + c as u16, by, '█', fg, bg);
-                    }
+            let row_bottom = (bottom * plot_h as f64).round() as usize;
+            let row_top = (top * plot_h as f64).round() as usize;
+            if row_top <= row_bottom || plot_h == 0 {
+                continue;
+            }
+
+            let fg = ratatui_color(series_color(chart, si));
+            for r in row_bottom..row_top.min(plot_h) {
+                let by = base_row.saturating_sub(r as u16);
+                if by < py {
+                    break;
+                }
+                for c in 0..cell_w {
+                    set_cell(buf, px + (slot_x + cell_off + c) as u16, by, '█', fg, bg);
                 }
             }
         }
+    }
 
-        // Bottom axis.
-        for col in px..px + pw {
-            set_cell(buf, col, py + ph - 1, '─', dim, bg);
-        }
+    // Bottom axis.
+    for col in px..px + pw {
+        set_cell(buf, col, py + ph - 1, '─', dim, bg);
     }
 
     paint_legend(buf, layout, chart, theme);
@@ -470,7 +499,26 @@ fn paint_hover_marker(
             };
             (px + (frac * (pw - 1) as f32).round() as u16, py)
         }
-        ChartKind::Line | ChartKind::Bar => {
+        ChartKind::Bar | ChartKind::BarGrouped => {
+            // Bars anchor on their own rectangle, so reuse the layout's
+            // per-segment positions rather than the line/braille math —
+            // the marker lands on the hovered stack segment (#584).
+            let pos = layout
+                .data_point_positions
+                .iter()
+                .find(|&&(s, d, _, _)| s == series_idx && d == data_idx);
+            let &(_, _, sx, sy) = match pos {
+                Some(p) => p,
+                None => return,
+            };
+            if pw == 0 || ph == 0 {
+                return;
+            }
+            let col = (sx.round() as u16).clamp(px, px + pw - 1);
+            let row = (sy.round() as u16).clamp(py, py + ph.saturating_sub(2));
+            (col, row)
+        }
+        ChartKind::Line => {
             let plot_cols = pw.saturating_sub(1) as usize;
             let plot_rows = ph.saturating_sub(1) as usize;
             if plot_cols == 0 || plot_rows == 0 {
@@ -725,6 +773,297 @@ mod tests {
     #[test]
     fn legend_paint_and_click_round_trip_at_nonzero_origin() {
         legend_paint_and_click_round_trip_at(7, 13);
+    }
+
+    // ── Multi-series bars (#584) ────────────────────────────────────────
+
+    fn series_of(label: &str, data: Vec<f64>, color: Color) -> Series {
+        Series {
+            label: label.into(),
+            data,
+            color: Some(color),
+            fill: false,
+        }
+    }
+
+    fn bar_chart_of(kind: ChartKind, series: Vec<Series>, y_range: Option<(f64, f64)>) -> Chart {
+        Chart {
+            id: WidgetId::new("c"),
+            kind,
+            series,
+            x_label: None,
+            y_label: None,
+            y_range,
+            x_range: None,
+            show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
+        }
+    }
+
+    /// The painted grid as one string per row, `.` for blank cells.
+    fn grid(buf: &Buffer, area: Rect) -> Vec<String> {
+        (area.y..area.y + area.height)
+            .map(|y| {
+                (area.x..area.x + area.width)
+                    .map(|x| match cell_char(buf, x, y) {
+                        ' ' => '.',
+                        c => c,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn fg_at(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)].fg
+    }
+
+    /// #584 is additive: a single-series `Bar` must paint exactly what
+    /// it painted before stacking existed. The grid below (y-tick
+    /// gutter on the left, bars floored at the auto-range minimum,
+    /// slot width `pw / n` floored) is the pre-#584 output, pinned.
+    #[test]
+    fn single_series_bar_grid_is_pinned() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![series_of("B", vec![1.0, 3.0, 2.0], Color::rgb(1, 2, 3))],
+            None,
+        );
+        let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(
+            grid(&buf, area),
+            vec![
+                "3...██....",
+                "2...██....",
+                "2...████..",
+                "1...████..",
+                "1.────────",
+            ]
+        );
+    }
+
+    #[test]
+    fn stacked_bar_paints_every_series_with_its_own_colour() {
+        // 3 series × 1.0 over an explicit 0..3 range ⇒ each owns two of
+        // the six plot rows, bottom-up in `series` order.
+        let (red, green, blue) = (
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 255, 0),
+            Color::rgb(0, 0, 255),
+        );
+        let area = Rect::new(0, 0, 12, 7);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("a", vec![1.0], red),
+                series_of("b", vec![1.0], green),
+                series_of("c", vec![1.0], blue),
+            ],
+            Some((0.0, 3.0)),
+        );
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let px = layout.plot_area.x.round() as u16;
+        let py = layout.plot_area.y.round() as u16;
+        let ph = layout.plot_area.height.round() as u16;
+
+        // Six stacked rows above the axis row, two per series.
+        let expected = [
+            (py + ph - 2, red),
+            (py + ph - 3, red),
+            (py + ph - 4, green),
+            (py + ph - 5, green),
+            (py + ph - 6, blue),
+            (py + ph - 7, blue),
+        ];
+        for (row, color) in expected {
+            assert_eq!(
+                cell_char(&buf, px, row),
+                '█',
+                "row {row} of the stack should be filled:\n{:?}",
+                grid(&buf, area)
+            );
+            assert_eq!(
+                fg_at(&buf, px, row),
+                ratatui_color(color),
+                "row {row} should carry its own series colour:\n{:?}",
+                grid(&buf, area)
+            );
+        }
+    }
+
+    #[test]
+    fn stacked_bar_ceiling_is_the_column_total() {
+        // Auto-range: totals are 3.0, so the tallest stack fills the
+        // plot and no segment is clipped off the top.
+        let area = Rect::new(0, 0, 12, 7);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("a", vec![1.0], Color::rgb(255, 0, 0)),
+                series_of("b", vec![1.0], Color::rgb(0, 255, 0)),
+                series_of("c", vec![1.0, 0.0], Color::rgb(0, 0, 255)),
+            ],
+            None,
+        );
+        assert_eq!(chart.effective_y_range(), (0.0, 3.0));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let px = layout.plot_area.x.round() as u16;
+        let py = layout.plot_area.y.round() as u16;
+        // Topmost plot row of the first column is painted by series 2.
+        assert_eq!(cell_char(&buf, px, py), '█');
+        assert_eq!(fg_at(&buf, px, py), ratatui_color(Color::rgb(0, 0, 255)));
+    }
+
+    #[test]
+    fn stacked_bar_all_zero_series_does_not_shift_the_others() {
+        let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+        let area = Rect::new(0, 0, 12, 7);
+        let render = |series: Vec<Series>| {
+            let mut buf = Buffer::empty(area);
+            let chart = bar_chart_of(ChartKind::Bar, series, Some((0.0, 3.0)));
+            let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+            grid(&buf, area)
+        };
+
+        let without_zeros = render(vec![
+            series_of("a", vec![2.0, 1.0], red),
+            series_of("c", vec![1.0, 2.0], blue),
+        ]);
+        let with_zeros = render(vec![
+            series_of("a", vec![2.0, 1.0], red),
+            series_of("zero", vec![0.0, 0.0], Color::rgb(9, 9, 9)),
+            series_of("c", vec![1.0, 2.0], blue),
+        ]);
+        assert_eq!(
+            with_zeros, without_zeros,
+            "an all-zero series must occupy no rows and move nothing"
+        );
+    }
+
+    #[test]
+    fn grouped_bar_paints_series_side_by_side() {
+        let (red, green, blue) = (
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 255, 0),
+            Color::rgb(0, 0, 255),
+        );
+        // Plot is 12 wide → one 12-cell slot split into three 4-cell
+        // sub-bars, each with its own height.
+        let area = Rect::new(0, 0, 14, 7);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::BarGrouped,
+            vec![
+                series_of("a", vec![1.0], red),
+                series_of("b", vec![2.0], green),
+                series_of("c", vec![3.0], blue),
+            ],
+            Some((0.0, 3.0)),
+        );
+        // Grouped mode keeps the single-value ceiling.
+        assert_eq!(chart.effective_y_range(), (0.0, 3.0));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let px = layout.plot_area.x.round() as u16;
+        let py = layout.plot_area.y.round() as u16;
+        let ph = layout.plot_area.height.round() as u16;
+        let pw = layout.plot_area.width.round() as u16;
+        let sub_w = pw / 3;
+
+        let bottom = py + ph - 2;
+        for (i, color) in [red, green, blue].into_iter().enumerate() {
+            let col = px + sub_w * i as u16;
+            assert_eq!(
+                fg_at(&buf, col, bottom),
+                ratatui_color(color),
+                "sub-bar {i} owns its own columns:\n{:?}",
+                grid(&buf, area)
+            );
+        }
+        // Heights rise 1 → 2 → 3 across the sub-bars: the shortest does
+        // not reach the row the tallest does.
+        let top = py;
+        assert_eq!(cell_char(&buf, px + sub_w * 2, top), '█');
+        assert_eq!(cell_char(&buf, px, top), ' ');
+    }
+
+    #[test]
+    fn bar_hover_marker_lands_on_the_hovered_stack_segment() {
+        let area = Rect::new(0, 0, 12, 7);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("a", vec![1.0], Color::rgb(255, 0, 0)),
+                series_of("b", vec![1.0], Color::rgb(0, 255, 0)),
+                series_of("c", vec![1.0], Color::rgb(0, 0, 255)),
+            ],
+            Some((0.0, 3.0)),
+        );
+        let marker_row = |hovered: (usize, usize)| {
+            let mut buf = Buffer::empty(area);
+            let layout = draw_chart(
+                &mut buf,
+                area,
+                &chart,
+                &Theme::default(),
+                Some(hovered),
+                None,
+            );
+            let px = layout.plot_area.x.round() as u16;
+            let pw = layout.plot_area.width.round() as u16;
+            let py = layout.plot_area.y.round() as u16;
+            let ph = layout.plot_area.height.round() as u16;
+            let row = (py..py + ph)
+                .find(|&row| (px..px + pw).any(|col| cell_char(&buf, col, row) == '●'))
+                .unwrap_or_else(|| panic!("no hover marker painted:\n{:?}", grid(&buf, area)));
+            (row, py, ph)
+        };
+
+        // Six plot rows, two per segment: hovering the bottom series
+        // marks the bottom band, the top series the top band — not the
+        // one spot the braille/line math used to pick for every series.
+        let (bottom_row, py, ph) = marker_row((0, 0));
+        assert!(
+            bottom_row >= py + ph - 3,
+            "bottom segment marker at {bottom_row}, plot rows {py}..{}",
+            py + ph
+        );
+        let (top_row, py, ph) = marker_row((2, 0));
+        assert!(
+            top_row <= py + 1,
+            "top segment marker at {top_row}, plot rows {py}..{}",
+            py + ph
+        );
+    }
+
+    #[test]
+    fn multi_series_bar_legend_labels_every_series() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        let mut chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("OK", vec![1.0], Color::rgb(255, 0, 0)),
+                series_of("Slow", vec![1.0], Color::rgb(0, 255, 0)),
+                series_of("Fail", vec![1.0], Color::rgb(0, 0, 255)),
+            ],
+            Some((0.0, 3.0)),
+        );
+        chart.show_legend = true;
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let lb = layout.legend_bounds.expect("bar charts get a legend row");
+        let row: String = (lb.x.round() as u16..(lb.x + lb.width).round() as u16)
+            .map(|x| cell_char(&buf, x, lb.y.round() as u16))
+            .collect();
+        assert!(
+            row.contains("OK") && row.contains("Slow") && row.contains("Fail"),
+            "every bar series should be named in the legend: {row:?}"
+        );
     }
 
     #[test]
