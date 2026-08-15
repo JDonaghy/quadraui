@@ -134,6 +134,13 @@ pub mod modal_stack;
 // runners (in `quadraui::tui::run`, `quadraui::gtk::run`) drive against.
 // See `docs/BACKEND_SETUP_AUDIT.md` (#260) for design rationale.
 pub mod runner;
+// `ShellAdapter` is constructed only by the TUI/GTK shell runners
+// (`crate::tui::shell_runner`, `crate::gtk::shell_runner`); under `win` alone
+// (no runner exists yet) nothing builds one, so the whole module — struct,
+// impls, and its private helpers — goes dead-code under `-D warnings` (#540).
+// Gate the module on the features that actually consume it rather than
+// `#[allow(dead_code)]`-ing the individual items.
+#[cfg(any(feature = "tui", feature = "gtk"))]
 pub mod shell_adapter;
 
 pub use diff::compute_hunks;

@@ -184,6 +184,11 @@ impl<'a> ShellContext<'a> {
     /// Construct a [`ShellContext`] for one `ShellApp::handle` dispatch.
     /// Only called by [`crate::shell_adapter::ShellAdapter`]; downstream
     /// consumers receive an already-built context, they don't build one.
+    ///
+    /// `cfg`-gated with `ShellAdapter` itself (#540): under `win` alone
+    /// there is no caller, so this and `take_activity_focus_requested`
+    /// below go dead-code under `-D warnings`.
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     pub(crate) fn new(
         active_panel_id: Option<&'a WidgetId>,
         sidebar_visible: bool,
@@ -254,6 +259,9 @@ impl<'a> ShellContext<'a> {
     /// Consume the pending focus request, if any. `pub(crate)` — only
     /// [`crate::shell_adapter::ShellAdapter::handle`] calls this, after
     /// `ShellApp::handle` returns.
+    ///
+    /// `cfg`-gated with `ShellAdapter` itself (#540); see [`Self::new`].
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     pub(crate) fn take_activity_focus_requested(&self) -> bool {
         self.activity_focus_requested.replace(false)
     }
