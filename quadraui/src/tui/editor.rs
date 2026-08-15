@@ -41,6 +41,7 @@ use crate::primitives::editor::{
     SelectionKind,
 };
 use crate::primitives::scrollbar::Scrollbar;
+use crate::text_util::snap_to_char_boundary;
 use crate::theme::Theme;
 use crate::types::Color;
 use ratatui::buffer::Buffer;
@@ -513,16 +514,12 @@ pub fn draw_editor(
 // ─── Private helpers ────────────────────────────────────────────────────
 
 /// Convert a UTF-8 byte offset into a character index. Returns the
-/// total char count if the offset is past the end. Walks back from
-/// `clamped` to find a char boundary so non-boundary inputs don't
-/// panic. Mirrors `vimcode::tui_main::byte_to_char_idx`.
+/// total char count if the offset is past the end. Snaps to the
+/// nearest char boundary at or before `byte_offset` (via
+/// [`snap_to_char_boundary`]) so non-boundary inputs don't panic.
+/// Mirrors `vimcode::tui_main::byte_to_char_idx`.
 fn byte_to_char_idx(text: &str, byte_offset: usize) -> usize {
-    let clamped = byte_offset.min(text.len());
-    let mut safe = clamped;
-    while safe > 0 && !text.is_char_boundary(safe) {
-        safe -= 1;
-    }
-    text[..safe].chars().count()
+    text[..snap_to_char_boundary(text, byte_offset)].chars().count()
 }
 
 /// Convert a character-index column into a visual column, expanding

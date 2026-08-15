@@ -305,8 +305,8 @@ fn paint_edit_input_gtk(
     // Selection highlight.
     if let Some(anchor) = edit.selection_anchor {
         if anchor != edit.cursor {
-            let lo = anchor.min(edit.cursor).min(edit.text.len());
-            let hi = anchor.max(edit.cursor).min(edit.text.len());
+            let lo = crate::text_util::snap_to_char_boundary(&edit.text, anchor.min(edit.cursor));
+            let hi = crate::text_util::snap_to_char_boundary(&edit.text, anchor.max(edit.cursor));
             let prefix = &edit.text[..lo];
             let sel_text = &edit.text[lo..hi];
             layout.set_text(prefix);
@@ -332,8 +332,7 @@ fn paint_edit_input_gtk(
     super::painted_text::show_layout(cr, layout);
 
     // Thin vertical caret bar.
-    let cursor_byte = edit.cursor.min(edit.text.len());
-    let cursor_prefix = &edit.text[..cursor_byte];
+    let cursor_prefix = crate::text_util::safe_prefix(&edit.text, edit.cursor);
     layout.set_text(cursor_prefix);
     let (cx_off, _) = layout.pixel_size();
     let caret_x = text_x + cx_off as f64;
@@ -690,6 +689,62 @@ mod tests {
         assert!(
             painted.is_some(),
             "editing row interior should contain painted pixels (caret + text)"
+        );
+    }
+
+    /// Regression for issue #503: an inline-rename cursor/selection byte
+    /// offset landing mid-multibyte-character used to panic
+    /// `&edit.text[..cursor]` (and the selection lo/hi slices) instead of
+    /// snapping to the nearest char boundary. Paints a row with a
+    /// multibyte name and a cursor position that sits inside a
+    /// multibyte character's byte range, plus an active selection whose
+    /// bounds also land mid-character.
+    #[test]
+    fn gtk_editing_row_with_multibyte_cursor_does_not_panic() {
+        // "café🎉中文" — cursor/selection offsets below are deliberately
+        // *not* char-boundary aligned; snap_to_char_boundary must rescue
+        // them before any `&text[..n]` slice happens.
+        let text = "café🎉中文";
+        // byte 4 is inside the 2-byte 'é' (starts at byte 3); byte 8 is
+        // inside the 4-byte emoji (starts at byte 6).
+        let mid_char_cursor = 4;
+        let mid_char_anchor = 8;
+        assert!(!text.is_char_boundary(mid_char_cursor));
+        assert!(!text.is_char_boundary(mid_char_anchor));
+
+        let tree = make_tree(vec![
+            leaf(0, "alpha"),
+            TreeRow {
+                path: vec![1],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("old-name".to_string()),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: Some(TreeRowEditState {
+                    text: text.to_string(),
+                    cursor: mid_char_cursor,
+                    selection_anchor: Some(mid_char_anchor),
+                    placeholder: None,
+                }),
+            },
+            leaf(2, "gamma"),
+        ]);
+
+        // Must not panic.
+        let (mut surface, layout) = paint_then_layout(&tree);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let vis = &layout.visible_rows[1];
+        let bounds = vis.bounds;
+        let y_top = (bounds.y + 1.0).floor() as i32;
+        let y_bot = (bounds.y + bounds.height - 1.0).floor() as i32;
+        let painted = first_painted_in(&data, stride, (1, W - 1), (y_top, y_bot.min(H)));
+        assert!(
+            painted.is_some(),
+            "editing row with multibyte text should still paint (selection + caret + text)"
         );
     }
 

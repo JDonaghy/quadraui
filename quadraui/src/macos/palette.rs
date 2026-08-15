@@ -140,11 +140,7 @@ pub unsafe fn draw_palette(
             query_y + (qb.height as f64 - qh) / 2.0,
             color_to_cg(theme.query_fg),
         );
-        let cursor_prefix: &str = if palette.query_cursor >= palette.query.len() {
-            palette.query.as_str()
-        } else {
-            &palette.query[..palette.query_cursor]
-        };
+        let cursor_prefix: &str = crate::text_util::safe_prefix(&palette.query, palette.query_cursor);
         let (cpw, _) = measure_text(font, cursor_prefix);
         let cursor_x = query_text_x + cpw;
         let cursor_w = (line_height * 0.45).max(2.0);
@@ -471,6 +467,22 @@ mod tests {
                 theme.selected_bg.b
             ),
         );
+    }
+
+    /// Regression for issue #503: `query_cursor` is a host-supplied byte
+    /// offset with no guarantee it lands on a char boundary —
+    /// `&palette.query[..query_cursor]` used to panic the moment a
+    /// multibyte character sat left of the cursor.
+    #[test]
+    fn draw_palette_with_multibyte_cursor_does_not_panic() {
+        let mut p = sample_palette();
+        // "café🎉" — byte 4 sits inside the 2-byte 'é' (starts at byte 3).
+        p.query = "café🎉".into();
+        assert!(!p.query.is_char_boundary(4));
+        p.query_cursor = 4;
+
+        // Must not panic.
+        let _surface = paint_via_backend(&p);
     }
 
     #[test]

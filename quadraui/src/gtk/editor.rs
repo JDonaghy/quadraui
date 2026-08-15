@@ -655,7 +655,12 @@ pub fn editor_col_at_x(
         + editor_layout.scroll_left as f64 * cell_width;
     let x_pango = (local_x.max(0.0) * pango::SCALE as f64).round() as i32;
     let (_inside, byte_index, _trailing) = pango_layout.xy_to_index(x_pango, 0);
-    let clamped = (byte_index.max(0) as usize).min(line.raw_text.len());
+    // Pango should only ever return a UTF-8 char-boundary-aligned index for
+    // valid input, but we don't fully control its internals across
+    // versions/locales — snap defensively rather than trust it blindly and
+    // risk a panic on a non-boundary `byte_index`.
+    let clamped =
+        crate::text_util::snap_to_char_boundary(&line.raw_text, byte_index.max(0) as usize);
     line.raw_text[..clamped].chars().count() + line.segment_col_offset
 }
 
@@ -1022,5 +1027,58 @@ mod tests {
             editor_layout.text_bounds.x,
         );
         assert_eq!(resolved, 12);
+    }
+
+    /// Regression for issue #503: `editor_col_at_x`'s `byte_index.min(len)`
+    /// clamp (fed by Pango's `xy_to_index`) wasn't snapped to a char
+    /// boundary, so a multibyte line (é / CJK / emoji) probed at an x
+    /// position landing mid-character used to panic
+    /// `line.raw_text[..clamped]`. Sweep the full width of a multibyte
+    /// line and confirm every probe resolves without panicking.
+    #[test]
+    fn editor_col_at_x_multibyte_line_does_not_panic() {
+        let pango_layout = headless_pango_layout();
+        let mut line = styled_line();
+        line.raw_text = "café 🎉 中文 done".into();
+        line.spans = Vec::new();
+
+        let editor = Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, 900.0, 60.0),
+            lines: vec![line.clone()],
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 1,
+            max_col: 30,
+            gutter_char_width: 4,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: true,
+            lightbulb_glyph: '!',
+        };
+
+        let cell_width = 9.0_f32;
+        let viewport = Rect::new(0.0, 0.0, 900.0, 60.0);
+        let editor_layout = editor.layout(viewport, cell_width, 18.0);
+
+        // Sweep x from before the line start to well past its end —
+        // every probe must resolve without panicking.
+        let mut x = editor_layout.text_bounds.x - 5.0;
+        while x < editor_layout.text_bounds.x + 300.0 {
+            let _ = editor_col_at_x(&pango_layout, &line, &editor_layout, x);
+            x += 1.0;
+        }
     }
 }

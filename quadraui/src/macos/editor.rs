@@ -122,8 +122,8 @@ pub unsafe fn draw_editor(
         // raw run. Crude but produces correct colour at character
         // boundaries given the monospace baseline.
         for span in &line.spans {
-            let start = span.start_byte.min(line.raw_text.len());
-            let end = span.end_byte.min(line.raw_text.len());
+            let start = crate::text_util::snap_to_char_boundary(&line.raw_text, span.start_byte);
+            let end = crate::text_util::snap_to_char_boundary(&line.raw_text, span.end_byte);
             if start >= end {
                 continue;
             }
@@ -399,6 +399,41 @@ mod tests {
         let (r, g, b, _) = surface.pixel(px, py);
         // Span bg painted over editor bg.
         assert_eq!((r, g, b), (50, 100, 150));
+    }
+
+    /// Regression for issue #503: syntax-highlighting `StyledSpan`
+    /// byte offsets were only `.min(len)`-clamped, not snapped to a
+    /// char boundary — a span landing mid-multibyte-character (é / CJK
+    /// / emoji) used to panic `&line.raw_text[..start]` /
+    /// `[start..end]`. Also exercises a multibyte cursor column via
+    /// `char_byte_offset`.
+    #[test]
+    fn multibyte_span_and_cursor_do_not_panic() {
+        // "café🎉 beta" — byte 4 sits inside the 2-byte 'é' (starts at
+        // byte 3); byte 8 sits inside the 4-byte emoji (starts at byte 6).
+        let text = "café🎉 beta";
+        assert!(!text.is_char_boundary(4));
+        assert!(!text.is_char_boundary(8));
+
+        let mut line = one_line(text);
+        line.spans = vec![ESpan {
+            start_byte: 4,
+            end_byte: 8,
+            style: Style {
+                fg: Color::rgb(255, 255, 255),
+                bg: Some(Color::rgb(50, 100, 150)),
+                bold: false,
+                italic: false,
+                font_scale: 1.0,
+            },
+        }];
+        // Cursor column 3 lands on 'é' (a char index, not a byte
+        // offset) — `char_byte_offset` must resolve it to a boundary.
+        let mut editor = editor_with_cursor(text, CursorShape::Block, 3);
+        editor.lines = vec![line];
+
+        // Must not panic.
+        let _surface = paint_via_backend(&editor);
     }
 
     #[test]

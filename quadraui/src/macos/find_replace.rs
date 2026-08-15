@@ -382,6 +382,19 @@ mod tests {
         );
     }
 
+    /// Regression for issue #503: `cursor` is a char offset into
+    /// `query`; a multibyte query with a boundary-adjacent or
+    /// out-of-range cursor must still paint without panicking.
+    #[test]
+    fn panel_with_multibyte_query_does_not_panic() {
+        let mut panel = sample_panel();
+        panel.query = "café🎉中文".into();
+        panel.cursor = 3;
+
+        // Must not panic.
+        let _surface = paint_via_backend(&panel);
+    }
+
     #[test]
     fn hit_regions_present_for_basic_panel() {
         let panel = sample_panel();

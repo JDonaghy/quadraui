@@ -15,6 +15,90 @@
 //! See issue #474 ("Text-util gaps") for the audit that found three
 //! independent fuzzy matchers (two of them weaker ad-hoc versions) and a
 //! hard-break wrap living app-side while quadraui had no shared version.
+//!
+//! The boundary-snap helpers below ([`snap_to_char_boundary`],
+//! [`prev_char_boundary`], [`next_char_boundary`], [`safe_prefix`],
+//! [`safe_slice`]) close a related gap tracked by issue #503: GUI
+//! rasterisers (gtk, macos) receive byte-offset cursor/selection
+//! positions from host apps and consumers of this crate (see
+//! `primitives/palette.rs`'s `query_cursor` field) with no guarantee
+//! those offsets land on a UTF-8 char boundary — slicing a `String`
+//! directly at such an offset panics the paint pass the moment a
+//! multibyte character (é, CJK, emoji) sits left of the cursor. Before
+//! this module these existed as seven byte-identical private copies
+//! (`tui/editor.rs`, `compose/chat_controller.rs`,
+//! `compose/tree_controller.rs`); they're unified here so every
+//! caller — in-crate and, eventually, downstream — gets the same
+//! panic-free behaviour.
+
+/// Snap `byte_idx` to the nearest UTF-8 char boundary in `s` at or
+/// before `byte_idx`, clamping `byte_idx` to `s.len()` first.
+///
+/// Use this to make an arbitrary (possibly host-supplied, possibly
+/// stale) byte offset safe to slice with: `&s[..snap_to_char_boundary(s,
+/// byte_idx)]` never panics, regardless of where `byte_idx` originally
+/// pointed.
+pub fn snap_to_char_boundary(s: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(s.len());
+    let mut i = byte_idx;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Return the byte offset of the char boundary immediately before
+/// `byte_idx` (i.e. the start of the previous character). Returns `0`
+/// if `byte_idx == 0`.
+///
+/// Intended for "move cursor left one char" style operations, where the
+/// caller then slices or indexes at the returned offset.
+pub fn prev_char_boundary(s: &str, byte_idx: usize) -> usize {
+    if byte_idx == 0 {
+        return 0;
+    }
+    let mut i = byte_idx - 1;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Return the byte offset of the char boundary immediately after
+/// `byte_idx` (i.e. the start of the next character), clamped to
+/// `s.len()`.
+///
+/// Intended for "move cursor right one char" style operations.
+pub fn next_char_boundary(s: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(s.len());
+    if byte_idx >= s.len() {
+        return s.len();
+    }
+    let mut i = byte_idx + 1;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Return `&s[..byte_idx]`, with `byte_idx` snapped to the nearest char
+/// boundary at or before it — a panic-free replacement for `&s[..byte_idx]`
+/// when `byte_idx` isn't known to be char-boundary-aligned (e.g. a
+/// host-supplied cursor position).
+pub fn safe_prefix(s: &str, byte_idx: usize) -> &str {
+    &s[..snap_to_char_boundary(s, byte_idx)]
+}
+
+/// Return `&s[lo..hi]`, with both bounds snapped to char boundaries and
+/// swapped if `lo > hi` — a panic-free replacement for `&s[lo..hi]` when
+/// the bounds aren't known to be char-boundary-aligned or correctly
+/// ordered.
+pub fn safe_slice(s: &str, lo: usize, hi: usize) -> &str {
+    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let lo = snap_to_char_boundary(s, lo);
+    let hi = snap_to_char_boundary(s, hi);
+    &s[lo..hi]
+}
 
 /// Case-sensitive subsequence fuzzy match with a relevance score and
 /// per-match byte positions.
@@ -166,6 +250,126 @@ pub fn word_wrap(text: &str, col_budget: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── snap_to_char_boundary / prev_char_boundary / next_char_boundary ──
+
+    #[test]
+    fn snap_to_char_boundary_already_on_boundary_is_noop() {
+        let s = "héllo";
+        assert_eq!(snap_to_char_boundary(s, 0), 0);
+        assert_eq!(snap_to_char_boundary(s, 1), 1);
+        // 'é' is 2 bytes starting at byte 1, boundary after it is byte 3.
+        assert_eq!(snap_to_char_boundary(s, 3), 3);
+    }
+
+    #[test]
+    fn snap_to_char_boundary_mid_char_walks_back() {
+        let s = "héllo";
+        // byte 2 is inside 'é' (bytes 1..3) — must walk back to 1.
+        assert_eq!(snap_to_char_boundary(s, 2), 1);
+    }
+
+    #[test]
+    fn snap_to_char_boundary_clamps_past_end() {
+        let s = "abc";
+        assert_eq!(snap_to_char_boundary(s, 100), 3);
+    }
+
+    #[test]
+    fn snap_to_char_boundary_cjk_and_emoji() {
+        let s = "中文🎉end";
+        // Every offset, however it lands mid-char, should snap to a valid
+        // boundary and never panic when used to slice.
+        for i in 0..=s.len() {
+            let snapped = snap_to_char_boundary(s, i);
+            assert!(s.is_char_boundary(snapped));
+            let _ = &s[..snapped]; // must not panic
+        }
+    }
+
+    #[test]
+    fn prev_char_boundary_at_zero_stays_zero() {
+        assert_eq!(prev_char_boundary("abc", 0), 0);
+    }
+
+    #[test]
+    fn prev_char_boundary_steps_back_one_multibyte_char() {
+        let s = "héllo";
+        // Cursor right after 'é' (byte 3) should move to right before it (byte 1).
+        assert_eq!(prev_char_boundary(s, 3), 1);
+    }
+
+    #[test]
+    fn prev_char_boundary_from_mid_char_lands_before_that_char() {
+        let s = "héllo";
+        // byte 2 is mid-'é'; prev boundary is the start of 'é' at byte 1.
+        assert_eq!(prev_char_boundary(s, 2), 1);
+    }
+
+    #[test]
+    fn next_char_boundary_at_end_stays_at_end() {
+        let s = "abc";
+        assert_eq!(next_char_boundary(s, 3), 3);
+        assert_eq!(next_char_boundary(s, 100), 3);
+    }
+
+    #[test]
+    fn next_char_boundary_steps_forward_one_multibyte_char() {
+        let s = "héllo";
+        // Cursor right before 'é' (byte 1) should move past it to byte 3.
+        assert_eq!(next_char_boundary(s, 1), 3);
+    }
+
+    #[test]
+    fn next_char_boundary_from_mid_char_lands_after_that_char() {
+        let s = "héllo";
+        assert_eq!(next_char_boundary(s, 2), 3);
+    }
+
+    // ── safe_prefix / safe_slice ───────────────────────────────────────
+
+    #[test]
+    fn safe_prefix_on_boundary_matches_manual_slice() {
+        let s = "héllo";
+        assert_eq!(safe_prefix(s, 3), &s[..3]);
+    }
+
+    #[test]
+    fn safe_prefix_mid_char_does_not_panic() {
+        let s = "héllo";
+        assert_eq!(safe_prefix(s, 2), "h");
+    }
+
+    #[test]
+    fn safe_prefix_past_end_returns_whole_string() {
+        let s = "héllo";
+        assert_eq!(safe_prefix(s, 999), s);
+    }
+
+    #[test]
+    fn safe_slice_mid_char_bounds_do_not_panic() {
+        let s = "中文🎉end";
+        // Arbitrary byte offsets landing inside multibyte chars must still
+        // produce a valid (possibly empty) slice, never panic.
+        for lo in 0..=s.len() {
+            for hi in 0..=s.len() {
+                let slice = safe_slice(s, lo, hi);
+                let _ = slice; // must not panic; content already validated by &str type
+            }
+        }
+    }
+
+    #[test]
+    fn safe_slice_swaps_reversed_bounds() {
+        let s = "abcdef";
+        assert_eq!(safe_slice(s, 4, 1), &s[1..4]);
+    }
+
+    #[test]
+    fn safe_slice_on_boundaries_matches_manual_slice() {
+        let s = "héllo world";
+        assert_eq!(safe_slice(s, 0, 3), &s[0..3]);
+    }
 
     // ── fuzzy_score ─────────────────────────────────────────────────────
 

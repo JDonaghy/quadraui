@@ -44,6 +44,7 @@ use crate::{
     Backend, ButtonMask, Color, Key, MessageList, MessageRow, Modifiers, MouseButton, NamedKey,
     Rect, Scrollbar, Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
 };
+use crate::text_util::{next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
@@ -1233,8 +1234,7 @@ fn wrap_spans(spans: &[StyledSpan], col_budget: usize) -> Vec<Vec<StyledSpan>> {
 
 /// Convert a byte offset in `text` to `(line, char_col)`.
 fn cursor_byte_to_line_col(text: &str, cursor: usize) -> (usize, usize) {
-    let cursor = cursor.min(text.len());
-    let before = &text[..cursor];
+    let before = safe_prefix(text, cursor);
     let line = before.bytes().filter(|&b| b == b'\n').count();
     let col_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let col = before[col_start..].chars().count();
@@ -1283,38 +1283,6 @@ fn line_col_to_byte(text: &str, target_line: usize, target_col: usize) -> usize 
 
     // Target line doesn't exist — clamp to end of text.
     text.len()
-}
-
-fn snap_to_char_boundary(s: &str, byte: usize) -> usize {
-    let byte = byte.min(s.len());
-    let mut i = byte;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn prev_char_boundary(s: &str, byte: usize) -> usize {
-    if byte == 0 {
-        return 0;
-    }
-    let mut i = byte - 1;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn next_char_boundary(s: &str, byte: usize) -> usize {
-    let byte = byte.min(s.len());
-    if byte >= s.len() {
-        return s.len();
-    }
-    let mut i = byte + 1;
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
 }
 
 fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
@@ -2562,6 +2530,18 @@ mod tests {
     #[test]
     fn byte_to_line_col_multiline() {
         assert_eq!(cursor_byte_to_line_col("ab\ncd", 4), (1, 1));
+    }
+
+    /// Regression for issue #503: `cursor_byte_to_line_col` used to
+    /// clamp `cursor` with only `.min(text.len())`, not a char-boundary
+    /// snap — a cursor byte offset landing mid-multibyte-character
+    /// (here, inside "é") panicked `&text[..cursor]`.
+    #[test]
+    fn byte_to_line_col_multibyte_mid_char_offset_does_not_panic() {
+        let text = "héllo";
+        assert!(!text.is_char_boundary(2)); // inside the 2-byte 'é'
+        let (line, col) = cursor_byte_to_line_col(text, 2);
+        assert_eq!((line, col), (0, 1));
     }
 
     #[test]

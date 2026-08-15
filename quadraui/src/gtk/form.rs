@@ -160,8 +160,8 @@ pub fn draw_form(
                         let cur = cursor.unwrap();
                         let anchor = selection_anchor.unwrap();
                         let (lo, hi) = (cur.min(anchor), cur.max(anchor));
-                        let lo = lo.min(shown.len());
-                        let hi = hi.min(shown.len());
+                        let lo = crate::text_util::snap_to_char_boundary(shown, lo);
+                        let hi = crate::text_util::snap_to_char_boundary(shown, hi);
 
                         let prefix = &shown[..lo];
                         let sel_text = &shown[lo..hi];
@@ -213,7 +213,7 @@ pub fn draw_form(
                     super::painted_text::show_layout(cr, layout);
 
                     if let Some(cur) = cursor {
-                        let prefix = &shown[..(*cur).min(shown.len())];
+                        let prefix = crate::text_util::safe_prefix(shown, *cur);
                         layout.set_text(prefix);
                         let (prefix_w, _) = layout.pixel_size();
                         let cx = ix + 8.0 + prefix_w as f64;
@@ -407,7 +407,7 @@ pub fn draw_form(
                         // Cursor position: each original char maps to one
                         // mask char, so measure the masked prefix up to
                         // the byte-offset translated cursor.
-                        let char_pos = value[..(*cur).min(value.len())].chars().count();
+                        let char_pos = crate::text_util::safe_prefix(value, *cur).chars().count();
                         let mask_prefix: String = masked.chars().take(char_pos).collect();
                         layout.set_text(&mask_prefix);
                         let (prefix_w, _) = layout.pixel_size();
@@ -472,7 +472,7 @@ pub fn draw_form(
                     if let Some(cur) = cursor {
                         // Clamp cursor to first line length for display.
                         let clamped = (*cur).min(first_line.len());
-                        let prefix = &shown[..clamped.min(shown.len())];
+                        let prefix = crate::text_util::safe_prefix(shown, clamped);
                         layout.set_text(prefix);
                         let (prefix_w, _) = layout.pixel_size();
                         let cx = ix + 8.0 + prefix_w as f64;
@@ -645,5 +645,118 @@ pub fn draw_settings_chrome(
         cr.set_source_rgb(accent.0, accent.1, accent.2);
         cr.rectangle(cur_x, search_y + 2.0, 1.5, line_height - 4.0);
         cr.fill().ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::form::{Form, FormField};
+    use crate::types::{StyledText, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    fn paint(form: &Form) {
+        let surface = ImageSurface::create(Format::ARgb32, 320, 160).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let theme = Theme::default();
+        draw_form(&cr, &pango_layout, 0.0, 0.0, 320.0, 160.0, form, &theme, 14.0);
+    }
+
+    /// Regression for issue #503: `TextInput.cursor`/`selection_anchor`
+    /// are host-supplied byte offsets with no guarantee they land on a
+    /// char boundary — `&shown[lo..hi]` / `&shown[..cur]` used to panic
+    /// the moment a multibyte character sat inside the range.
+    #[test]
+    fn text_input_with_multibyte_cursor_and_selection_does_not_panic() {
+        // "café🎉" — byte 4 sits inside 'é' (starts at byte 3); byte 7
+        // sits inside the emoji (starts at byte 6).
+        let value = "café🎉";
+        assert!(!value.is_char_boundary(4));
+        assert!(!value.is_char_boundary(7));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("name"),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::TextInput {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    selection_anchor: Some(7),
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: Some(WidgetId::new("name")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+
+        // Must not panic.
+        paint(&form);
+    }
+
+    /// Regression for issue #503: same class of bug in the
+    /// `PasswordInput` byte-cursor-to-mask-char-position conversion.
+    #[test]
+    fn password_input_with_multibyte_cursor_does_not_panic() {
+        let value = "café🎉";
+        assert!(!value.is_char_boundary(4));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("pw"),
+                label: StyledText::plain("Password"),
+                kind: FieldKind::PasswordInput {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    mask_char: '*',
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: Some(WidgetId::new("pw")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+
+        // Must not panic.
+        paint(&form);
+    }
+
+    /// Regression for issue #503: `TextArea` clamps `cursor` against
+    /// `first_line.len()` but the earlier code sliced `shown` (which may
+    /// be `first_line` or a differently-lengthed placeholder) without a
+    /// char-boundary snap.
+    #[test]
+    fn text_area_with_multibyte_cursor_does_not_panic() {
+        let value = "café🎉\nsecond line";
+        assert!(!value.is_char_boundary(4));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("notes"),
+                label: StyledText::plain("Notes"),
+                kind: FieldKind::TextArea {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    visible_rows: 3,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: Some(WidgetId::new("notes")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+
+        // Must not panic.
+        paint(&form);
     }
 }

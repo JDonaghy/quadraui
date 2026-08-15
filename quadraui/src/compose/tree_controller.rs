@@ -23,6 +23,7 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
+use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
     SelectionMode, TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
@@ -871,37 +872,6 @@ impl TreeController {
     }
 }
 
-fn snap_to_char_boundary(s: &str, byte: usize) -> usize {
-    let byte = byte.min(s.len());
-    let mut i = byte;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn prev_char_boundary(s: &str, byte: usize) -> usize {
-    if byte == 0 {
-        return 0;
-    }
-    let mut i = byte - 1;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn next_char_boundary(s: &str, byte: usize) -> usize {
-    let byte = byte.min(s.len());
-    if byte >= s.len() {
-        return s.len();
-    }
-    let mut i = byte + 1;
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
 
 fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height

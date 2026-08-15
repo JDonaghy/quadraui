@@ -286,8 +286,7 @@ pub unsafe fn draw_form(
                     // Caret — thin 1.5pt bar at the cursor's byte offset.
                     if let Some(cur) = cursor {
                         if is_focused {
-                            let prefix_byte = (*cur).min(shown.len());
-                            let prefix = &shown[..prefix_byte];
+                            let prefix = crate::text_util::safe_prefix(shown, *cur);
                             let (prefix_w, _) = measure_text(font, prefix);
                             let caret_x = ix + 8.0 + prefix_w;
                             fill_rect(
@@ -447,7 +446,7 @@ pub unsafe fn draw_form(
                         if is_focused {
                             // Each plaintext char maps to one mask char, so
                             // measure the masked prefix up to the byte-cursor.
-                            let char_pos = value[..(*cur).min(value.len())].chars().count();
+                            let char_pos = crate::text_util::safe_prefix(value, *cur).chars().count();
                             let mask_prefix: String = masked.chars().take(char_pos).collect();
                             let (prefix_w, _) = measure_text(font, &mask_prefix);
                             let caret_x = ix + 8.0 + prefix_w;
@@ -989,5 +988,68 @@ mod tests {
             saw_glyph,
             "PasswordInput row should paint masked glyphs (none found)",
         );
+    }
+
+    /// Regression for issue #503: `TextInput.cursor` is a host-supplied
+    /// byte offset with no guarantee it lands on a char boundary —
+    /// `&shown[..prefix_byte]` used to panic the moment a multibyte
+    /// character sat left of the cursor.
+    #[test]
+    fn text_input_with_multibyte_cursor_does_not_panic() {
+        // "café🎉" — byte 4 sits inside the 2-byte 'é' (starts at byte 3).
+        let value = "café🎉";
+        assert!(!value.is_char_boundary(4));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("name"),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::TextInput {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: Some(WidgetId::new("name")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+
+        // Must not panic.
+        let _ = paint_via_backend(&form);
+    }
+
+    /// Regression for issue #503: same class of bug in the
+    /// `PasswordInput` byte-cursor-to-mask-char-position conversion.
+    #[test]
+    fn password_input_with_multibyte_cursor_does_not_panic() {
+        let value = "café🎉";
+        assert!(!value.is_char_boundary(4));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("pw"),
+                label: StyledText::plain("Password"),
+                kind: FieldKind::PasswordInput {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    mask_char: '*',
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: Some(WidgetId::new("pw")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+
+        // Must not panic.
+        let _ = paint_via_backend(&form);
     }
 }
