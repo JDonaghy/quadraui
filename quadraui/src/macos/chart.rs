@@ -198,17 +198,19 @@ unsafe fn paint_line(
         // Area fill (under-line polygon) painted before the stroke so
         // the line reads on top.
         if s.fill && pts.len() > 1 {
-            let alpha_color = Color {
-                r: color.r,
-                g: color.g,
-                b: color.b,
-                a: 38, // ~15% alpha
-            };
-            let mut poly = pts.clone();
-            // Close the polygon down to the baseline.
-            poly.push((pts.last().unwrap().0, baseline));
-            poly.push((pts.first().unwrap().0, baseline));
-            fill_polygon(ctx, &poly, alpha_color);
+            if let (Some(&last), Some(&first)) = (pts.last(), pts.first()) {
+                let alpha_color = Color {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                    a: 38, // ~15% alpha
+                };
+                let mut poly = pts.clone();
+                // Close the polygon down to the baseline.
+                poly.push((last.0, baseline));
+                poly.push((first.0, baseline));
+                fill_polygon(ctx, &poly, alpha_color);
+            }
         }
         stroke_path(ctx, &pts, color, 1.5);
     }

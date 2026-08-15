@@ -591,18 +591,28 @@ impl TuiBackend {
                 // `UiEvent::ActivityBar(id, KeyPressed { … })` instead of
                 // `UiEvent::KeyPressed { … }`. This runs before the
                 // accelerator pass so the bar can intercept any key.
-                UiEvent::KeyPressed { key, modifiers, .. }
-                    if self.focused_activity_bar.is_some() =>
-                {
-                    let id = self.focused_activity_bar.clone().unwrap();
-                    let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(&key);
-                    out.push(UiEvent::ActivityBar(
-                        id,
-                        crate::ActivityBarEvent::KeyPressed {
-                            key: key_str,
+                UiEvent::KeyPressed {
+                    key,
+                    modifiers,
+                    repeat,
+                } => {
+                    if let Some(id) = self.focused_activity_bar.clone() {
+                        let key_str =
+                            crate::primitives::activity_bar::key_to_activity_bar_string(&key);
+                        out.push(UiEvent::ActivityBar(
+                            id,
+                            crate::ActivityBarEvent::KeyPressed {
+                                key: key_str,
+                                modifiers,
+                            },
+                        ));
+                    } else {
+                        out.push(UiEvent::KeyPressed {
+                            key,
                             modifiers,
-                        },
-                    ));
+                            repeat,
+                        });
+                    }
                 }
                 other => out.push(other),
             }

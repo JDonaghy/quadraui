@@ -324,11 +324,8 @@ impl Palette {
         };
         let items_bottom = viewport_height - create_row_h;
 
-        let resolved_scroll_offset = if self.items.is_empty() {
-            0
-        } else {
-            self.scroll_offset.min(self.items.len() - 1)
-        };
+        let resolved_scroll_offset =
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
 
         for i in resolved_scroll_offset..self.items.len() {
             if y >= items_bottom {

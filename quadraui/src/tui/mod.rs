@@ -119,7 +119,7 @@ pub fn ratatui_color(c: Color) -> RatatuiColor {
 /// `vimcode::tui_main::set_cell`.
 fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: RatatuiColor) {
     let area = buf.area;
-    if x < area.x + area.width && y < area.y + area.height {
+    if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
         // ratatui ≥ 0.30 debug_asserts when a single-byte ASCII control character is
         // stored in a cell symbol (they are not renderable glyphs). Replace with space.
         let ch = if ch.is_ascii_control() { ' ' } else { ch };
@@ -136,7 +136,7 @@ fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: Ra
 /// `vimcode::tui_main::set_cell_wide`.
 fn set_cell_wide(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: RatatuiColor, bg: RatatuiColor) {
     let area = buf.area;
-    if x < area.x + area.width && y < area.y + area.height {
+    if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
         let mut s = String::with_capacity(4);
         s.push(ch);
         let cell = &mut buf[(x, y)];
@@ -213,7 +213,7 @@ fn set_cell_styled(
     underline_color: Option<RatatuiColor>,
 ) {
     let area = buf.area;
-    if x < area.x + area.width && y < area.y + area.height {
+    if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
         let ch = if ch.is_ascii_control() { ' ' } else { ch };
         let cell = &mut buf[(x, y)];
         cell.set_char(ch).set_fg(fg).set_bg(bg);
@@ -240,7 +240,7 @@ fn set_cell_wide_styled(
     underline_color: Option<RatatuiColor>,
 ) {
     let area = buf.area;
-    if x < area.x + area.width && y < area.y + area.height {
+    if x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height {
         let mut s = String::with_capacity(4);
         s.push(ch);
         let cell = &mut buf[(x, y)];
@@ -255,5 +255,149 @@ fn set_cell_wide_styled(
             cont.modifier = modifier;
             cont.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression tests for #508: `set_cell` and its siblings guarded the
+    // right/bottom edge of `buf.area` but not the left/top edge. Every TUI
+    // primitive funnels through these helpers, so any painter that
+    // under-runs a sub-rect's origin (x < area.x or y < area.y — e.g. a
+    // nested panel painting one column before its own left edge) hit
+    // ratatui's `buf[(x, y)]` index panic. `Buffer::empty` with a
+    // non-zero-origin `Rect` reproduces a sub-rect the way a nested
+    // primitive would see it.
+
+    #[test]
+    fn set_cell_guards_left_and_top_edge() {
+        let mut buf = Buffer::empty(Rect::new(5, 5, 10, 10));
+        // Below-origin coordinates must not panic.
+        set_cell(
+            &mut buf,
+            0,
+            0,
+            'x',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        set_cell(
+            &mut buf,
+            2,
+            8,
+            'x',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        set_cell(
+            &mut buf,
+            8,
+            2,
+            'x',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        // A genuinely in-bounds cell is still painted.
+        set_cell(
+            &mut buf,
+            6,
+            6,
+            'y',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        assert_eq!(buf[(6, 6)].symbol(), "y");
+    }
+
+    #[test]
+    fn set_cell_wide_guards_left_and_top_edge() {
+        let mut buf = Buffer::empty(Rect::new(5, 5, 10, 10));
+        set_cell_wide(
+            &mut buf,
+            0,
+            0,
+            '中',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        set_cell_wide(
+            &mut buf,
+            2,
+            8,
+            '中',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        set_cell_wide(
+            &mut buf,
+            8,
+            2,
+            '中',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        set_cell_wide(
+            &mut buf,
+            6,
+            6,
+            '中',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+        );
+        assert_eq!(buf[(6, 6)].symbol(), "中");
+    }
+
+    #[test]
+    fn set_cell_styled_guards_left_and_top_edge() {
+        let mut buf = Buffer::empty(Rect::new(5, 5, 10, 10));
+        set_cell_styled(
+            &mut buf,
+            0,
+            0,
+            'x',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+            Modifier::empty(),
+            None,
+        );
+        set_cell_styled(
+            &mut buf,
+            6,
+            6,
+            'y',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+            Modifier::empty(),
+            None,
+        );
+        assert_eq!(buf[(6, 6)].symbol(), "y");
+    }
+
+    #[test]
+    fn set_cell_wide_styled_guards_left_and_top_edge() {
+        let mut buf = Buffer::empty(Rect::new(5, 5, 10, 10));
+        set_cell_wide_styled(
+            &mut buf,
+            0,
+            0,
+            '中',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+            Modifier::empty(),
+            None,
+        );
+        set_cell_wide_styled(
+            &mut buf,
+            6,
+            6,
+            '中',
+            RatatuiColor::White,
+            RatatuiColor::Black,
+            Modifier::empty(),
+            None,
+        );
+        assert_eq!(buf[(6, 6)].symbol(), "中");
     }
 }

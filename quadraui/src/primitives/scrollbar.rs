@@ -133,6 +133,49 @@ pub fn fit_thumb(
     (thumb_start, thumb_len)
 }
 
+/// Clamp a (possibly stale) `scroll_offset` into a valid starting index
+/// for `content_len` items.
+///
+/// Returns `0` when there is nothing to scroll to (`content_len == 0`),
+/// otherwise `scroll_offset.min(content_len - 1)` — pinning the start so
+/// the last item is always reachable instead of scrolling clean past the
+/// end into an empty view. This is the "resolved scroll offset" formula
+/// `TreeView`, `ListView`, `Palette`, `Completions`, `Form`, and
+/// `TextDisplay` layouts each re-derived independently before #508.
+///
+/// Callers that render a fixed number of rows per frame (rather than
+/// filling a variable-height viewport item-by-item) usually want
+/// [`visible_window`] instead, which layers the end-of-window clamp on
+/// top of this.
+pub fn clamp_scroll_offset(scroll_offset: usize, content_len: usize) -> usize {
+    if content_len == 0 {
+        0
+    } else {
+        scroll_offset.min(content_len - 1)
+    }
+}
+
+/// Visible window `[start, end)` into a `content_len`-item list, given a
+/// (possibly stale) `scroll_offset` and how many rows fit in the
+/// viewport (`viewport_rows` — typically `(body_len / row_step).floor()`,
+/// computed by the caller since the step size is surface- and
+/// primitive-specific).
+///
+/// `start` is [`clamp_scroll_offset`]; `end` is `start + viewport_rows`
+/// clamped to `content_len`. Returns `(0, 0)` when `content_len == 0`.
+pub fn visible_window(
+    scroll_offset: usize,
+    content_len: usize,
+    viewport_rows: usize,
+) -> (usize, usize) {
+    if content_len == 0 {
+        return (0, 0);
+    }
+    let start = clamp_scroll_offset(scroll_offset, content_len);
+    let end = (start + viewport_rows).min(content_len);
+    (start, end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +244,66 @@ mod tests {
         assert!(matches!(sb.axis, ScrollAxis::Horizontal));
         assert_eq!(sb.track.width, 100.0);
         assert!((sb.thumb_len - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn clamp_scroll_offset_empty_content_returns_zero() {
+        assert_eq!(clamp_scroll_offset(0, 0), 0);
+        assert_eq!(clamp_scroll_offset(50, 0), 0);
+    }
+
+    #[test]
+    fn clamp_scroll_offset_in_range_is_unchanged() {
+        assert_eq!(clamp_scroll_offset(0, 10), 0);
+        assert_eq!(clamp_scroll_offset(5, 10), 5);
+        assert_eq!(clamp_scroll_offset(9, 10), 9);
+    }
+
+    #[test]
+    fn clamp_scroll_offset_pins_to_last_item() {
+        // Scrolling past the end still resolves to the last valid index
+        // rather than an empty view.
+        assert_eq!(clamp_scroll_offset(10, 10), 9);
+        assert_eq!(clamp_scroll_offset(1000, 10), 9);
+    }
+
+    #[test]
+    fn clamp_scroll_offset_single_item() {
+        assert_eq!(clamp_scroll_offset(0, 1), 0);
+        assert_eq!(clamp_scroll_offset(50, 1), 0);
+    }
+
+    #[test]
+    fn visible_window_empty_content_is_zero_zero() {
+        assert_eq!(visible_window(0, 0, 5), (0, 0));
+        assert_eq!(visible_window(50, 0, 5), (0, 0));
+    }
+
+    #[test]
+    fn visible_window_fits_entirely_in_viewport() {
+        // 5 items, 10-row viewport — the whole list is visible from 0.
+        assert_eq!(visible_window(0, 5, 10), (0, 5));
+    }
+
+    #[test]
+    fn visible_window_slices_a_middle_page() {
+        assert_eq!(visible_window(3, 20, 5), (3, 8));
+    }
+
+    #[test]
+    fn visible_window_clamps_end_to_content_len() {
+        assert_eq!(visible_window(18, 20, 5), (18, 20));
+    }
+
+    #[test]
+    fn visible_window_overscroll_still_shows_last_item() {
+        // Scrolled well past the end: pins to the last item rather than
+        // returning an empty window.
+        assert_eq!(visible_window(1000, 20, 5), (19, 20));
+    }
+
+    #[test]
+    fn visible_window_zero_viewport_rows_is_empty() {
+        assert_eq!(visible_window(3, 20, 0), (3, 3));
     }
 }

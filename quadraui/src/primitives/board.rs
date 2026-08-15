@@ -473,7 +473,7 @@ pub fn board_layout(
     let col_w = natural.max(measure.col_min_width).max(1.0);
 
     // Count how many columns fit in the viewport from col_scroll_offset.
-    let start = model.col_scroll_offset.min(n_total.saturating_sub(1));
+    let start = crate::primitives::scrollbar::clamp_scroll_offset(model.col_scroll_offset, n_total);
     let n_fit = count_fitting_columns(n_total - start, col_w, measure.col_gap, total_width);
     let end = (start + n_fit).min(n_total);
 
@@ -497,8 +497,11 @@ pub fn board_layout(
         let header_bounds = Rect::new(cx, origin_y, col_w, measure.header_height);
         let body_bounds = Rect::new(cx, origin_y + measure.header_height, col_w, body_h);
 
-        let scroll_off = col.scroll_offset.min(col.cards.len());
-        let card_end = (scroll_off + visible_cards_per_col).min(col.cards.len());
+        let (scroll_off, card_end) = crate::primitives::scrollbar::visible_window(
+            col.scroll_offset,
+            col.cards.len(),
+            visible_cards_per_col,
+        );
 
         let mut card_layouts = Vec::with_capacity(card_end.saturating_sub(scroll_off));
         let mut cy = origin_y + measure.header_height;

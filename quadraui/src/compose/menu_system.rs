@@ -186,7 +186,10 @@ impl MenuSystem {
                     MenuEvent::StateChanged
                 } else if depth == 0 {
                     // At root with no submenu open → switch top-level menu.
-                    let next = self.next_enabled_menu(self.open_item.unwrap(), 1);
+                    let Some(cur) = self.open_item else {
+                        return MenuEvent::Ignored;
+                    };
+                    let next = self.next_enabled_menu(cur, 1);
                     self.close(backend);
                     self.open_menu(next, backend, bar_rect);
                     MenuEvent::StateChanged
@@ -206,7 +209,10 @@ impl MenuSystem {
                     self.close_deepest_submenu();
                     MenuEvent::StateChanged
                 } else {
-                    let prev = self.next_enabled_menu(self.open_item.unwrap(), -1);
+                    let Some(cur) = self.open_item else {
+                        return MenuEvent::Ignored;
+                    };
+                    let prev = self.next_enabled_menu(cur, -1);
                     self.close(backend);
                     self.open_menu(prev, backend, bar_rect);
                     MenuEvent::StateChanged

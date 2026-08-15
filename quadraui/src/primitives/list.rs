@@ -231,11 +231,8 @@ impl ListView {
         };
 
         // Clamp scroll_offset.
-        let resolved_scroll_offset = if self.items.is_empty() {
-            0
-        } else {
-            self.scroll_offset.min(self.items.len() - 1)
-        };
+        let resolved_scroll_offset =
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
 
         let items_y_end = if self.bordered {
             inset_y + items_h_max

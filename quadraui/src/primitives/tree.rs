@@ -230,15 +230,10 @@ impl TreeView {
         let mut visible_rows: Vec<VisibleTreeRow> = Vec::new();
         let mut hit_regions: Vec<(Rect, TreeViewHit)> = Vec::new();
 
-        // Clamp scroll_offset to a valid starting index. If scroll_offset
-        // >= rows.len(), the loop below yields nothing — which is fine,
-        // but we still report the clamped value so the app can write it
-        // back and self-correct.
-        let resolved_scroll_offset = if self.rows.is_empty() {
-            0
-        } else {
-            self.scroll_offset.min(self.rows.len() - 1)
-        };
+        // Clamp scroll_offset to a valid starting index; we still report
+        // the clamped value so the app can write it back and self-correct.
+        let resolved_scroll_offset =
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
 
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.rows.len() {
