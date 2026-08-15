@@ -1,0 +1,55 @@
+name: macOS
+
+# Deliberately its own workflow file, not a job bolted onto ci.yml (#483,
+# epic #479). `macos-latest` is a GitHub-hosted runner — this needs no
+# fleet hardware, unlike other macOS work that's been blocked on the fleet
+# being all-Linux (precision / elitebook / dellserver) — worth stating
+# plainly since that blocker doesn't apply here.
+#
+# NOT wired to push/pull_request. `lib.rs` gates `mod macos` on
+# `target_os = "macos"`, so this job would be red on arrival: #484 reports
+# `MacBackend` missing 7 trait methods plus degenerate rasterisers.
+# claude-coordinator#581 already tried `continue-on-error: true` on a
+# red-on-arrival platform leg (see ci.yml's windows-latest leg in the `tui`
+# job) and that only gets you halfway: it keeps the *workflow run* green,
+# but the *job's own check* still reports `failure`, and `coord`'s merge
+# gate reads per-check conclusions — so a permanently-red macOS check would
+# still block `coord merge` on every quadraui PR regardless of
+# continue-on-error. Manual/scheduled instead of blocking sidesteps that
+# entirely: no check is posted to PRs at all until #484 lands. At that
+# point this job (or its build/test steps, folded back into ci.yml's normal
+# triggers) should move onto `push`/`pull_request` — matching the
+# windows-latest rollout precedent: land non-blocking, flip to blocking
+# once green, in its own commit.
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Mondays 06:00 UTC. Arbitrary but deliberate: frequent enough that a
+    # regression in `src/macos` (193 tests, only ever run here) doesn't sit
+    # undiscovered for a long stretch, infrequent enough not to burn
+    # macos-latest minutes on a lane nobody's iterating on day-to-day.
+    - cron: "0 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  macos:
+    name: macos (build, test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Toolchain is pinned in rust-toolchain.toml (see its header comment
+      # for why); rustup's own override resolution honors that file
+      # regardless of what this action installs as its "default".
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (macos feature)
+        run: cargo build -p quadraui --features macos
+      # `src/macos`'s 193 tests only ever compile under
+      # `target_os = "macos"` (lib.rs's `#[cfg(all(feature = "macos",
+      # target_os = "macos"))]`) — this is the only place in the fleet
+      # they run at all.
+      - name: Test (macos feature)
+        run: cargo test -p quadraui --features macos

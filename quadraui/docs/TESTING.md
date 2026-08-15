@@ -24,6 +24,27 @@ cd kubeui && cargo build
 cd kubeui-gtk && cargo build  # if GTK is available
 ```
 
+## CI matrix (`.github/workflows/ci.yml`, `.github/workflows/macos.yml`)
+
+The commands above are the local minimum; CI runs a wider matrix on every
+push/PR to `main` or `develop`. This section is kept in sync with the
+workflow files as the matrix changes — if you touch either file, update
+this list in the same PR.
+
+| Job | Runner(s) | What it covers |
+|---|---|---|
+| `rustfmt` | ubuntu-latest | `cargo fmt --all --check` |
+| `Example-test coverage` | ubuntu-latest, PR events only | `tools/example_coverage.py --fail-on-gap` — a new `tui_*.rs` example added by the PR must have a matching `TuiDriver` test |
+| `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check (`cargo check -p quadraui --features win`, ubuntu leg only, #538); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg |
+| `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs`); a build of the `gtk_terminal` example (`--features gtk,terminal`, #483, same `required-features` gap as `tui_terminal` above); the gtk+tui conformance matrix, uploaded as an artifact |
+| `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout — see the job's comments for how (#528) |
+| `macos (build, test)` (separate workflow, `macos.yml`) | macos-latest, **`workflow_dispatch`/`schedule` only — not push/PR** | `cargo build`/`test -p quadraui --features macos` — the only place `src/macos`'s 193 tests run. Not on push/PR: #484 reports `MacBackend` missing 7 trait methods, so this job is red on arrival, and `continue-on-error` on a per-PR job still leaves the *check* itself reporting `failure` (claude-coordinator#581's finding) — which would block `coord merge`. Runs weekly (Mondays 06:00 UTC) or on manual dispatch instead, until #484 lands and this can move onto the normal push/PR triggers as a blocking leg |
+
+Not yet covered by CI at all: the `win` feature's *portable core* actually
+running on Windows (only a Linux compile-check exists, see the `tui` job
+row above) — that's the milestone the windows-latest leg's rollout
+comments describe.
+
 ## Coverage taxonomy
 
 Three bug classes, three test shapes. An agent picking up an issue

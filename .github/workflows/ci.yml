@@ -149,6 +149,33 @@ jobs:
         run: cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
       - name: Clippy (pty smoke, tui + terminal features)
         run: cargo clippy -p quadraui --features tui,terminal --test tui_pty_smoke -- -D warnings
+      # Terminal-feature coverage that the steps above don't reach (#483).
+      # `tui_terminal` declares `required-features = ["tui", "terminal"]` in
+      # Cargo.toml (see `[[example]]` block), so the plain
+      # `cargo build --features tui` step near the top of this job silently
+      # skips it — and the pty-smoke step above only spawns `tui_pipeline` /
+      # `tui_chat` (`cargo run --features tui`, no `terminal`), so
+      # `tui_terminal` itself has never actually been *compiled* by CI
+      # despite #397/#437/#439/#452 landing fixes there. `-p quadraui`
+      # rather than `--workspace`: examples aren't workspace-wide.
+      - name: Build (tui_terminal example, tui + terminal features)
+        run: cargo build -p quadraui --example tui_terminal --features tui,terminal
+      # `terminal_engine.rs` (the PTY + vt100 + scrollback engine) is gated
+      # on `feature = "terminal"` alone (lib.rs), so its 54 `#[cfg(test)]`
+      # unit tests are never compiled by the plain `--features tui` test
+      # step above, and the pty-smoke step's `--test tui_pty_smoke` scopes
+      # cargo to that one integration-test binary only — the lib's own unit
+      # tests still don't run. Bare `--features terminal` (no tui/gtk) can't
+      # fix this either: `ShellContext::new` (`src/shell.rs`) is
+      # `#[cfg(any(feature = "tui", feature = "gtk"))]` per #540, so
+      # `shell.rs`'s test module fails to compile under `terminal` alone.
+      # `tui,terminal` (already paid for by the pty-smoke step above, so
+      # this is incremental) plus a `--lib terminal_engine` filter keeps
+      # this scoped to the tests this step exists for, instead of
+      # re-running the ~1700 other `--lib` tests the plain `tui` step above
+      # already covers.
+      - name: Test (terminal_engine unit tests, tui + terminal features)
+        run: cargo test -p quadraui --features tui,terminal --lib terminal_engine
       # Conformance matrix (quadraui#491, epic #480). The suite runs as part
       # of `cargo test --features tui` above; this step re-runs just that
       # target with --nocapture so the scenario x backend table lands in the
@@ -213,6 +240,14 @@ jobs:
         run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast
       - name: Clippy (gtk + tui features)
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
+      # `gtk_terminal` declares `required-features = ["gtk", "terminal"]`
+      # in Cargo.toml, so the plain `--features gtk,tui` build/test/clippy
+      # steps above (no `terminal`) silently skip it — the same gap
+      # `tui_terminal` had in the `tui` job, fixed there for the same
+      # reason (#483). `-p quadraui` rather than `--workspace`: examples
+      # aren't workspace-wide.
+      - name: Build (gtk_terminal example, gtk + terminal features)
+        run: cargo build -p quadraui --example gtk_terminal --features gtk,terminal
       # Both backends registered at once, so the artifact from this job is
       # the full cross-backend matrix rather than a single column.
       - name: Conformance matrix (gtk + tui)
