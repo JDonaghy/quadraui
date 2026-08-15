@@ -290,3 +290,55 @@ pub fn draw_find_replace(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Rect as QRect;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    fn sample_panel(query: &str, cursor: usize, sel_anchor: Option<usize>) -> FindReplacePanel {
+        let (hit_regions, _input_width) =
+            crate::primitives::find_replace::compute_hit_regions(50, false, "", 2, 2);
+        FindReplacePanel {
+            query: query.into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor,
+            sel_anchor,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: QRect::new(0.0, 0.0, 600.0, 200.0),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        }
+    }
+
+    /// Regression for issue #503: `cursor`/`sel_anchor` are char
+    /// offsets into `query`, but a query containing multibyte
+    /// characters plus an out-of-range or boundary-adjacent offset must
+    /// still paint without panicking — the shared boundary-snap
+    /// helpers this issue introduces are also meant to make this class
+    /// of "byte-offset-shaped" field safe by construction elsewhere in
+    /// the crate.
+    #[test]
+    fn draw_find_replace_with_multibyte_query_does_not_panic() {
+        let surface = ImageSurface::create(Format::ARgb32, 600, 200).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let theme = Theme::default();
+
+        // "café🎉中文" with a selection spanning the emoji + CJK chars.
+        let panel = sample_panel("café🎉中文", 3, Some(6));
+
+        // Must not panic.
+        draw_find_replace(&cr, &pango_layout, &panel, &theme, 16.0, 8.0);
+    }
+}

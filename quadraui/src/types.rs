@@ -33,6 +33,15 @@ impl Color {
     /// Parse `"#rrggbb"` or `"#rrggbbaa"`. Returns `None` on malformed input.
     pub fn from_hex(s: &str) -> Option<Self> {
         let s = s.strip_prefix('#')?;
+        // Every byte must be an ASCII hex digit before we index into `s` by
+        // byte offset below — this also guarantees `s` is all-ASCII, so
+        // `s.len()` (bytes) matches char count and every `&s[i..j]` slice
+        // below lands on a char boundary. A non-ASCII (or otherwise
+        // non-hex) input like "#\u{20ac}abc" is rejected here instead of
+        // panicking on the slice.
+        if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let (r, g, b, a) = match s.len() {
             6 => (
                 u8::from_str_radix(&s[0..2], 16).ok()?,
@@ -298,5 +307,49 @@ impl Default for TreeStyle {
             chevron_expanded: "▾".into(),
             chevron_collapsed: "▸".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_hex_parses_rgb() {
+        assert_eq!(Color::from_hex("#ff0080"), Some(Color::rgb(0xff, 0x00, 0x80)));
+    }
+
+    #[test]
+    fn from_hex_parses_rgba() {
+        assert_eq!(
+            Color::from_hex("#ff008040"),
+            Some(Color::rgba(0xff, 0x00, 0x80, 0x40))
+        );
+    }
+
+    #[test]
+    fn from_hex_rejects_missing_prefix() {
+        assert_eq!(Color::from_hex("ff0080"), None);
+    }
+
+    #[test]
+    fn from_hex_rejects_wrong_length() {
+        assert_eq!(Color::from_hex("#ff008"), None);
+    }
+
+    #[test]
+    fn from_hex_rejects_non_hex_ascii() {
+        assert_eq!(Color::from_hex("#zzzzzz"), None);
+    }
+
+    /// Regression for issue #503: a multibyte char inside the hex digits
+    /// used to make `s.len()` (byte length) satisfy the `6`/`8` length
+    /// check while `&s[0..2]` etc. sliced mid-character, panicking
+    /// instead of returning `None` as the doc comment promises.
+    #[test]
+    fn from_hex_multibyte_char_returns_none_instead_of_panicking() {
+        // "\u{20ac}abc" ('€' + "abc") is 3 + 3 = 6 bytes, matching the RGB
+        // length branch by byte count alone.
+        assert_eq!(Color::from_hex("#\u{20ac}abc"), None);
     }
 }

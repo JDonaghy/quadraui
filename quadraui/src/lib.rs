@@ -272,7 +272,10 @@ pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
     VisibleTreeRow,
 };
-pub use text_util::{fuzzy_score, word_wrap};
+pub use text_util::{
+    fuzzy_score, next_char_boundary, prev_char_boundary, safe_prefix, safe_slice,
+    snap_to_char_boundary, word_wrap,
+};
 pub use theme::Theme;
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,

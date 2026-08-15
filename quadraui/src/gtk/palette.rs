@@ -157,11 +157,7 @@ pub fn draw_palette(
         cr.move_to(query_text_x, query_y + (qh_px - qh as f64) / 2.0);
         super::painted_text::show_layout(cr, layout);
 
-        let cursor_prefix: &str = if palette.query_cursor >= palette.query.len() {
-            palette.query.as_str()
-        } else {
-            &palette.query[..palette.query_cursor]
-        };
+        let cursor_prefix: &str = crate::text_util::safe_prefix(&palette.query, palette.query_cursor);
         layout.set_text(cursor_prefix);
         let (cursor_prefix_w, _) = layout.pixel_size();
         let cursor_x = query_text_x + cursor_prefix_w as f64;
@@ -429,4 +425,61 @@ pub fn draw_palette(
     }
 
     cr.restore().ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::palette::PaletteMode;
+    use crate::types::WidgetId;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    fn sample_palette(query: &str, query_cursor: usize) -> Palette {
+        Palette {
+            id: WidgetId::new("palette"),
+            title: "Commands".into(),
+            query: query.into(),
+            query_cursor,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: true,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: PaletteMode::List,
+        }
+    }
+
+    /// Regression for issue #503: `query_cursor` is a host-supplied byte
+    /// offset (per the field doc above) with no guarantee it lands on a
+    /// char boundary — `&palette.query[..query_cursor]` used to panic
+    /// the moment a multibyte character sat left of the cursor.
+    #[test]
+    fn draw_palette_with_multibyte_cursor_does_not_panic() {
+        let surface = ImageSurface::create(Format::ARgb32, 300, 200).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+
+        // "café🎉" — byte 4 sits inside the 2-byte 'é' (starts at byte 3).
+        let query = "café🎉";
+        assert!(!query.is_char_boundary(4));
+        let palette = sample_palette(query, 4);
+        let theme = Theme::default();
+
+        // Must not panic.
+        draw_palette(
+            &cr,
+            &pango_layout,
+            0.0,
+            0.0,
+            300.0,
+            200.0,
+            &palette,
+            &theme,
+            18.0,
+            false,
+        );
+    }
 }
