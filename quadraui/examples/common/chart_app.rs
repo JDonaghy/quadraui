@@ -117,7 +117,7 @@ impl ChartApp {
                 },
                 Series {
                     label: "Failed".into(),
-                    data: vec![10.0, 8.0, 35.0, 20.0, 5.0],
+                    data: vec![10.0, 0.0, 35.0, 20.0, 5.0],
                     color: Some(Color::rgb(255, 100, 100)),
                     fill: false,
                 },
@@ -126,12 +126,14 @@ impl ChartApp {
             y_label: None,
             // Auto-derived: the ceiling is the largest column total in
             // stacked mode and the largest single value when grouped.
-            // Deliberately no zero anywhere in this dataset — stacked
-            // composition is proportionally correct by default
-            // regardless (`Chart::effective_y_range` anchors a
-            // multi-series stack's floor at 0.0, not at the smallest
-            // raw value), so this no longer needs a lucky zero to look
-            // right (#584 review).
+            // The `Failed` series' zero at index 1 is here to exercise
+            // the "zero series doesn't shift/clip the rest" case (see
+            // `tests/tui_example_driver.rs`'s stacked-bar test) — it is
+            // no longer *required* for correct proportions the way it
+            // was pre-fix: `Chart::effective_y_range` now anchors a
+            // multi-series stack's floor at 0.0 regardless of whether
+            // any raw value in the chart happens to be exactly 0.0
+            // (#584 review).
             y_range: None,
             x_range: None,
             show_legend: true,
