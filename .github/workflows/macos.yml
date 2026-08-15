@@ -6,23 +6,45 @@ name: macOS
 # being all-Linux (precision / elitebook / dellserver) — worth stating
 # plainly since that blocker doesn't apply here.
 #
-# NOT wired to push/pull_request. `lib.rs` gates `mod macos` on
-# `target_os = "macos"`, so this job would be red on arrival: #484 reports
-# `MacBackend` missing 7 trait methods plus degenerate rasterisers.
-# claude-coordinator#581 already tried `continue-on-error: true` on a
-# red-on-arrival platform leg (see ci.yml's windows-latest leg in the `tui`
-# job) and that only gets you halfway: it keeps the *workflow run* green,
-# but the *job's own check* still reports `failure`, and `coord`'s merge
-# gate reads per-check conclusions — so a permanently-red macOS check would
-# still block `coord merge` on every quadraui PR regardless of
-# continue-on-error. Manual/scheduled instead of blocking sidesteps that
-# entirely: no check is posted to PRs at all until #484 lands. At that
-# point this job (or its build/test steps, folded back into ci.yml's normal
-# triggers) should move onto `push`/`pull_request` — matching the
-# windows-latest rollout precedent: land non-blocking, flip to blocking
-# once green, in its own commit.
+# Wired to `pull_request` ONLY through a path filter (#598). The original
+# #483 posture was schedule/manual-only, for a sound reason: `lib.rs` gates
+# `mod macos` on `target_os = "macos"`, so this job is red on arrival (#484
+# reports `MacBackend` missing 7 trait methods plus degenerate rasterisers),
+# and a permanently-red check would block `coord merge` on EVERY quadraui
+# PR. claude-coordinator#581 established that `continue-on-error: true`
+# does not rescue that: it keeps the *workflow run* green, but the *job's
+# own check* still reports `failure`, and coord's merge gate reads
+# per-check conclusions.
+#
+# What that posture could not do is let #484 ever be verified. The fleet
+# (precision / elitebook / dellserver) is all Linux and advertises no
+# `macos` capability, and because the gate above is on `target_os` rather
+# than the feature alone, `cargo check -p quadraui --features macos` on
+# Linux exits 0 having compiled NONE of `src/macos/` — measured, 22s, a
+# green result that proves nothing. Nor can the round-trip tests #484
+# mandates run: `macos/headless.rs::BitmapSurface` is inside the same gated
+# module. So every gate a worker passes through would report success while
+# proving nothing, and the old header's "move onto push/pull_request once
+# #484 lands" was circular — #484 cannot land without this signal.
+#
+# The path filter resolves both at once, and is load-bearing:
+#
+#   * A PR touching nothing under `quadraui/src/macos/**` gets NO macOS
+#     check — not a passing one, not a failing one, none at all. Unrelated
+#     work is untouched, exactly as #483 intended.
+#   * A PR touching macOS gets a real macos-latest build + test, where a
+#     red check is CORRECT: it is #484's progress bar and should hold the
+#     merge until the backend actually compiles.
+#
+# Do NOT add `continue-on-error` here, and do NOT "restore" the
+# schedule-only trigger — that re-creates the circularity above.
 on:
   workflow_dispatch: {}
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "quadraui/src/macos/**"
+      - ".github/workflows/macos.yml"
   schedule:
     # Mondays 06:00 UTC. Arbitrary but deliberate: frequent enough that a
     # regression in `src/macos` (193 tests, only ever run here) doesn't sit
