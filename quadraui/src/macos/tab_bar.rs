@@ -592,4 +592,53 @@ mod tests {
         assert!(hits.slot_positions.is_empty());
         assert!(hits.close_bounds.is_empty());
     }
+
+    /// `Backend::tab_bar_layout` must return exactly what
+    /// `draw_tab_bar` painted — both route through `mac_tab_bar_layout`,
+    /// and this pins that (quadraui#484). See that function's docs for
+    /// the known bar-relative-vs-absolute divergence (#552); what is
+    /// guaranteed here is that layout == paint.
+    #[test]
+    fn layout_twin_matches_the_painted_hits() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend(&bar, None);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let computed = backend.tab_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
+
+        assert_eq!(painted.slot_positions, computed.slot_positions);
+        assert_eq!(painted.close_bounds, computed.close_bounds);
+        assert_eq!(painted.right_segment_bounds, computed.right_segment_bounds);
+        assert_eq!(painted.available_cols, computed.available_cols);
+        assert_eq!(
+            painted.correct_scroll_offset,
+            computed.correct_scroll_offset
+        );
+    }
+
+    /// A click at the centre of a reported close box lands on the close
+    /// glyph the rasteriser actually drew — the paint↔click round trip
+    /// the shared `mac_tab_bar_layout` exists to guarantee.
+    #[test]
+    fn close_box_centre_is_where_the_glyph_was_painted() {
+        let bar = sample_bar();
+        let (surface, hits) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let (lo, hi) = hits.close_bounds[0].expect("tab 0 is closable");
+        let bg = theme.tab_active_bg;
+
+        // Somewhere in the close box's x-span, some row differs from the
+        // tab background: that is the glyph.
+        let inked = (lo.ceil() as u32..hi.floor() as u32).any(|x| {
+            (0..H).any(|y| {
+                let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
+                (r, g, b) != (bg.r, bg.g, bg.b)
+            })
+        });
+        assert!(
+            inked,
+            "close box [{lo}, {hi}] contains no painted glyph — hits and paint have drifted",
+        );
+    }
 }
