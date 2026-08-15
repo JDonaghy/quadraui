@@ -299,14 +299,14 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
     // Row 0 of a bar is the row directly above the axis row.
     let base_row = (py + ph).saturating_sub(2);
 
-    for di in 0..n {
+    for (di, column) in chart.bar_column_spans_all().into_iter().enumerate() {
         let slot_x = di * slot_w;
         if slot_x >= pw as usize {
             break;
         }
         let slot_cells = slot_w.min(pw as usize - slot_x);
 
-        for (si, bottom, top) in chart.bar_column_spans(di) {
+        for (si, bottom, top) in column {
             // Stacked segments span the whole slot; grouped series each
             // take a sub-slot beside the previous one.
             let (cell_off, cell_w) = if stacked {
@@ -842,6 +842,33 @@ mod tests {
                 "2...████..",
                 "1...████..",
                 "1.────────",
+            ]
+        );
+    }
+
+    /// Review round 2 on #584: a single-series `Bar` whose data is all
+    /// negative auto-derives the range (-5, -1), where `norm(0.0)`
+    /// clamps to the plot *ceiling*. The stacked baseline used to be
+    /// applied here too, collapsing every bar to zero height — an empty
+    /// plot area. Bars must still rise from the floor at 0% / 50% / 100%.
+    #[test]
+    fn single_series_bar_with_negative_data_still_paints() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![series_of("B", vec![-5.0, -3.0, -1.0], Color::rgb(1, 2, 3))],
+            None,
+        );
+        let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(
+            grid(&buf, area),
+            vec![
+                "-1.....██.",
+                "-1.....██.",
+                "-2...████.",
+                "-3...████.",
+                "-4.───────",
             ]
         );
     }

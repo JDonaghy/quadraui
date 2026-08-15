@@ -19,7 +19,8 @@
 //! and a stack never clips (#584).
 //!
 //! Every backend paints bars from the shared geometry helper
-//! [`Chart::bar_column_spans`], which itself derives from
+//! [`Chart::bar_column_spans_all`] (or [`Chart::bar_column_spans`] for
+//! a single column), which itself derives from
 //! [`Chart::effective_y_range`], so stacked and grouped layouts stay
 //! identical across TUI, GTK and macOS. [`Chart::column_totals`] is a
 //! separate, independently-useful helper (e.g. for labelling a stack's
@@ -84,7 +85,11 @@ pub enum ChartKind {
     /// An *explicit* `y_range` whose floor isn't `0.0` still skews every
     /// segment's proportion relative to the others, since the geometry
     /// has no way to know which value the caller intends as "empty";
-    /// pass `y_range: Some((0.0, …))` if you need one.
+    /// pass `y_range: Some((0.0, …))` if you need one. If the explicit
+    /// range excludes `0.0` altogether (e.g. `Some((-10.0, -2.0))`) the
+    /// stack's baseline lands on whichever plot edge is nearer zero and
+    /// segments are clipped to the range rather than vanishing, but the
+    /// proportions on screen are then the caller's to justify.
     Bar,
     /// Vertical bar chart whose series are drawn **side by side**
     /// within each x-position, for comparing magnitudes rather than
@@ -321,20 +326,58 @@ impl Chart {
     /// order. This is the one source of truth every backend's bar
     /// painter and [`Chart::layout`] share (#584).
     ///
-    /// - [`ChartKind::Bar`] — spans accumulate: each segment starts
-    ///   where the previous one ended, so an all-zero series occupies
-    ///   an empty span and does **not** shift the series above it.
-    /// - [`ChartKind::BarGrouped`] — every span starts at the floor;
-    ///   the caller lays the series out side by side horizontally.
+    /// - [`ChartKind::Bar`] with two or more series — spans accumulate:
+    ///   each segment covers the gap between the running total before
+    ///   and after that series, so an all-zero series occupies an empty
+    ///   span and does **not** shift the series above it. A negative
+    ///   value walks the stack back *down*, and its segment is returned
+    ///   bottom-first (`bottom <= top` always holds).
+    /// - [`ChartKind::Bar`] with a single series, and
+    ///   [`ChartKind::BarGrouped`] — every span starts at the plot
+    ///   floor. Grouped callers lay the series out side by side
+    ///   horizontally; a single-series stack has nothing to compose
+    ///   against, so it stays a plain bar chart (#584).
     ///
     /// Returns one entry per series (zero-height for missing data), so
     /// callers can index by series without re-checking lengths. Empty
     /// for non-bar kinds.
+    ///
+    /// This resolves [`Chart::effective_y_range`] on every call, which
+    /// for a stacked chart is itself an O(series × columns) scan. Paint
+    /// loops that walk every column should call
+    /// [`Chart::bar_column_spans_all`] instead, which resolves the range
+    /// once for the whole chart.
     pub fn bar_column_spans(&self, data_idx: usize) -> Vec<(usize, f64, f64)> {
         if !self.kind.is_bar() {
             return Vec::new();
         }
-        let (y_min, y_max) = self.effective_y_range();
+        self.bar_column_spans_in(data_idx, self.effective_y_range())
+    }
+
+    /// [`Chart::bar_column_spans`] for every column, outer index =
+    /// column, resolving the y-range once instead of once per column.
+    ///
+    /// Backends paint whole charts, so this is the form their paint
+    /// loops want: it turns the bar pass from O(columns² × series) into
+    /// O(columns × series). Empty for non-bar kinds.
+    pub fn bar_column_spans_all(&self) -> Vec<Vec<(usize, f64, f64)>> {
+        if !self.kind.is_bar() {
+            return Vec::new();
+        }
+        let y_range = self.effective_y_range();
+        (0..self.max_data_len())
+            .map(|di| self.bar_column_spans_in(di, y_range))
+            .collect()
+    }
+
+    /// Shared body of [`Chart::bar_column_spans`] and
+    /// [`Chart::bar_column_spans_all`], with the y-range already
+    /// resolved by the caller.
+    fn bar_column_spans_in(
+        &self,
+        data_idx: usize,
+        (y_min, y_max): (f64, f64),
+    ) -> Vec<(usize, f64, f64)> {
         let range = y_max - y_min;
         let norm = |v: f64| {
             if range > 0.0 {
@@ -345,20 +388,27 @@ impl Chart {
         };
 
         let mut spans = Vec::with_capacity(self.series.len());
-        if self.kind.is_stacked_bar() {
+        // Gated on `series.len() > 1` to match [`Chart::effective_y_range`]'s
+        // zero-anchoring exactly. A *single*-series `Bar` keeps the plain
+        // min/max-of-data range, so `norm(0.0)` there is not the plot floor —
+        // for all-negative data (`[-5, -3, -1]` → range `(-5, -1)`) it clamps
+        // to `1.0` and every bar would collapse to zero height. Single-series
+        // bars take the `else` branch and stay byte-identical to pre-#584.
+        if self.kind.is_stacked_bar() && self.series.len() > 1 {
+            // Each segment spans the gap between two consecutive cumulative
+            // levels, both mapped through `norm`. Deriving `bottom` from the
+            // *previous cumulative value* rather than carrying the previous
+            // `top` forward means a segment stays visible even when zero
+            // falls outside the range entirely (an explicit all-negative
+            // `y_range` used to collapse the whole stack to zero height), and
+            // `min`/`max` keeps `bottom <= top` when a negative value walks
+            // the stack back down.
             let mut cum = 0.0;
-            // `norm(0.0)` rather than a literal `0.0`: when the range
-            // floor isn't exactly `0.0` (e.g. an explicit non-zero
-            // `y_range`), the stack's true baseline is wherever zero
-            // maps to, not the bottom of the plot area.
-            let mut bottom = norm(0.0);
             for (si, s) in self.series.iter().enumerate() {
-                cum += s.data.get(data_idx).copied().unwrap_or(0.0);
-                // `max(bottom)` keeps spans monotonic if a negative
-                // value would otherwise invert the segment.
-                let top = norm(cum).max(bottom);
-                spans.push((si, bottom, top));
-                bottom = top;
+                let next = cum + s.data.get(data_idx).copied().unwrap_or(0.0);
+                let (a, b) = (norm(cum), norm(next));
+                spans.push((si, a.min(b), a.max(b)));
+                cum = next;
             }
         } else {
             for (si, s) in self.series.iter().enumerate() {
@@ -475,8 +525,8 @@ impl Chart {
                     let slot_w = if n == 0 { 0.0 } else { plot_w / n as f32 };
                     let series_count = self.series.len().max(1) as f32;
                     let stacked = self.kind.is_stacked_bar();
-                    for di in 0..n {
-                        for (si, bottom, top) in self.bar_column_spans(di) {
+                    for (di, column) in self.bar_column_spans_all().into_iter().enumerate() {
+                        for (si, bottom, top) in column {
                             let (sx, sy) = if stacked {
                                 let mid = (bottom + top) / 2.0;
                                 (
@@ -807,6 +857,71 @@ mod tests {
     }
 
     #[test]
+    fn single_series_bar_spans_rise_from_the_plot_floor_for_negative_data() {
+        // Regression for review round 2 on #584: `bar_column_spans`'
+        // stacked baseline used to be `norm(0.0)` for *any* `Bar` chart,
+        // but a single-series chart keeps the plain min/max auto-range,
+        // where 0.0 sits outside the data. Here the range is (-5, -1),
+        // so `norm(0.0)` clamped to 1.0 and every bar collapsed to zero
+        // height. Pre-#584 these rendered 0% / 50% / 100%.
+        let chart = bar_chart(ChartKind::Bar, vec![vec![-5.0, -3.0, -1.0]]);
+        assert_eq!(chart.effective_y_range(), (-5.0, -1.0));
+        for (di, expected_top) in [0.0, 0.5, 1.0].into_iter().enumerate() {
+            let spans = chart.bar_column_spans(di);
+            assert_eq!(spans.len(), 1);
+            assert!((spans[0].1 - 0.0).abs() < 1e-9, "col {di}: {spans:?}");
+            assert!(
+                (spans[0].2 - expected_top).abs() < 1e-9,
+                "col {di}: {spans:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_series_bar_spans_are_unshifted_for_mixed_sign_data() {
+        // Same root cause, milder symptom: with range (-2, 3) the old
+        // `norm(0.0)` baseline of 0.4 made the tallest bar span
+        // 40%–100% instead of the full plot height.
+        let chart = bar_chart(ChartKind::Bar, vec![vec![-2.0, 3.0]]);
+        assert_eq!(chart.effective_y_range(), (-2.0, 3.0));
+        assert_eq!(chart.bar_column_spans(0), vec![(0, 0.0, 0.0)]);
+        assert_eq!(chart.bar_column_spans(1), vec![(0, 0.0, 1.0)]);
+    }
+
+    #[test]
+    fn stacked_spans_stay_visible_when_an_explicit_range_excludes_zero() {
+        // Zero is above the whole range, so the stack's baseline clamps
+        // to the plot ceiling and the segments hang below it. Deriving
+        // each segment from consecutive cumulative levels keeps them
+        // visible; carrying `top` forward used to collapse every
+        // segment to zero height (review round 2, non-blocking note).
+        let mut chart = bar_chart(ChartKind::Bar, vec![vec![-3.0], vec![-4.0]]);
+        chart.y_range = Some((-10.0, -2.0));
+        let spans = chart.bar_column_spans(0);
+        // -3 maps to 0.875 and -7 to 0.375 over the 8-unit range.
+        assert!((spans[0].1 - 0.875).abs() < 1e-9, "spans: {spans:?}");
+        assert!((spans[0].2 - 1.0).abs() < 1e-9, "spans: {spans:?}");
+        assert!((spans[1].1 - 0.375).abs() < 1e-9, "spans: {spans:?}");
+        assert!((spans[1].2 - 0.875).abs() < 1e-9, "spans: {spans:?}");
+        assert!(spans.iter().all(|(_, b, t)| t > b), "spans: {spans:?}");
+    }
+
+    #[test]
+    fn stacked_span_of_a_negative_series_walks_the_stack_back_down() {
+        // 10 then -15 then +20 over the auto range (-5, 15): the middle
+        // series' segment spans downward from 10 to -5 and is still
+        // returned bottom-first.
+        let chart = bar_chart(ChartKind::Bar, vec![vec![10.0], vec![-15.0], vec![20.0]]);
+        assert_eq!(chart.effective_y_range(), (-5.0, 15.0));
+        let spans = chart.bar_column_spans(0);
+        assert_eq!(
+            spans,
+            vec![(0, 0.25, 0.75), (1, 0.0, 0.75), (2, 0.0, 1.0)],
+            "spans: {spans:?}"
+        );
+    }
+
+    #[test]
     fn stacked_spans_accumulate_bottom_up() {
         let mut chart = bar_chart(ChartKind::Bar, vec![vec![1.0], vec![1.0], vec![1.0]]);
         chart.y_range = Some((0.0, 3.0));
@@ -845,6 +960,22 @@ mod tests {
     fn bar_column_spans_empty_for_non_bar_kinds() {
         let chart = sparkline_chart(vec![1.0, 2.0]);
         assert!(chart.bar_column_spans(0).is_empty());
+        assert!(chart.bar_column_spans_all().is_empty());
+    }
+
+    #[test]
+    fn bar_column_spans_all_matches_the_per_column_helper() {
+        // The bulk form exists only to resolve the y-range once for the
+        // whole chart; it must agree with the single-column form column
+        // for column, for both bar kinds.
+        for kind in [ChartKind::Bar, ChartKind::BarGrouped] {
+            let chart = bar_chart(kind, vec![vec![1.0, 5.0, -2.0], vec![2.0, 0.0, 3.0]]);
+            let all = chart.bar_column_spans_all();
+            assert_eq!(all.len(), chart.max_data_len(), "{kind:?}");
+            for (di, column) in all.iter().enumerate() {
+                assert_eq!(*column, chart.bar_column_spans(di), "{kind:?} col {di}");
+            }
+        }
     }
 
     #[test]
