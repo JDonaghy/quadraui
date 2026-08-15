@@ -63,13 +63,51 @@ jobs:
             --base "${{ github.event.pull_request.base.sha }}"
 
   tui:
-    name: tui (build, test, clippy)
-    runs-on: ubuntu-latest
+    name: tui (build, test, clippy) — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # The Windows leg starts NON-BLOCKING and that is the whole point of the
+    # rollout: `win = []` has no deps, so `cargo check --features win` already
+    # type-checks on Linux — what has never run anywhere is the *portable
+    # core* (ratatui / arboard / unicode-width / portable-pty→ConPTY) on a
+    # real Windows host. Turning that on as a hard gate would red this repo on
+    # its first run, and quadraui is the most-depended-on repo in the fleet
+    # (kubeui-gtk in-tree, coord-tui and vimcode downstream, both gated by the
+    # `downstream` job below) — so a Windows-only warning would block two
+    # consumers on something neither of them touched. Same argument
+    # rust-toolchain.toml makes for pinning the compiler, one platform over.
+    #
+    # Flipping this to blocking IS the milestone. Do it in its own commit,
+    # once the leg has been green for a few runs — don't quietly widen the
+    # matrix and leave a permanently-yellow column nobody reads.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      # One platform failing must not cancel the other — seeing both columns
+      # is the entire reason this is a matrix rather than two hardcoded jobs.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
+      # MUST precede actions/checkout. GitHub's Windows image ships
+      # `core.autocrlf=true`, which rewrites every LF to CRLF as the working
+      # tree is written — that alone is enough to red `cargo fmt --check` and
+      # any test asserting on "\n", and nothing downstream can undo it once
+      # the files are on disk. `core.longpaths` is the same class of problem:
+      # cargo's hashed `target/` directories routinely exceed the legacy
+      # 260-char MAX_PATH, and the failure surfaces as an unrelated-looking
+      # I/O error deep in a build script.
+      - name: Configure git for Windows (line endings + long paths)
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --system core.longpaths true
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml (see its header comment
       # for why); rustup's own override resolution honors that file
-      # regardless of what this action installs as its "default".
+      # regardless of what this action installs as its "default". On Windows
+      # this resolves the `x86_64-pc-windows-msvc` host triple, which is the
+      # one the eventual `win` backend needs anyway — `windows-rs` + Direct2D
+      # are MSVC-ABI, not GNU.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -98,13 +136,28 @@ jobs:
       # log, and uploads it as an artifact. For a backend that doesn't exist
       # yet (Windows, macOS) that artifact IS the implementation checklist,
       # so it must survive the run even when everything passed.
+      #
+      # Under the OS matrix this now produces two artifacts of the same
+      # *scenario* corpus run on two different hosts. That is not redundant:
+      # `TuiBackend` renders to ratatui's TestBackend, but the scenarios
+      # exercise the portable core underneath it (layout, text measurement,
+      # unicode width, event translation), and that core is exactly where a
+      # Windows-only divergence would hide.
       - name: Conformance matrix (tui)
         run: cargo test -p quadraui --features tui --test conformance -- --nocapture
       - name: Upload conformance matrix (tui)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: conformance-matrix-tui
+          # Suffixed per matrix leg because upload-artifact@v4 ERRORS on a
+          # duplicate artifact name instead of merging into it (a deliberate
+          # v3→v4 behaviour change). A bare "conformance-matrix-tui" here
+          # would fail whichever leg finished second — and, because that
+          # failure lands in the *upload* step rather than the test step, it
+          # would read as a CI plumbing flake rather than the naming bug it
+          # is. The ubuntu leg's artifact is renamed too; keeping the old
+          # name on one leg and suffixing the other is worse than either.
+          name: conformance-matrix-tui-${{ matrix.os }}
           path: target/conformance-matrix.txt
           if-no-files-found: warn
 
