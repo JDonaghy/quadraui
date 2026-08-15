@@ -32,7 +32,41 @@ use crate::types::{Color, WidgetId};
 
 /// 16-point minimum gap between left and right segment groups. Matches
 /// the GTK rasteriser and the vimcode native-backend behaviour.
-const MIN_GAP_PX: f32 = 16.0;
+pub(crate) const MIN_GAP_PX: f32 = 16.0;
+
+/// Compute the layout [`draw_status_bar`] would produce for `bar` at
+/// `width` × `line_height`, without painting.
+///
+/// This is the no-paint twin backing [`crate::Backend::status_bar_layout`].
+/// Hit regions are in **bar-local coordinates** (relative to the bar's
+/// origin), which is why neither `x` nor `y` is a parameter — the
+/// primitive measures from `0.0` and nothing here folds the origin in.
+/// Audited under quadraui#552; see the trait doc for why the status bar
+/// (unlike the tab bar) needed no shift.
+pub fn mac_status_bar_layout(
+    font: &CTFont,
+    width: f64,
+    line_height: f64,
+    bar: &StatusBar,
+) -> StatusBarLayout {
+    // Degenerate rect: reproduce exactly what `draw_status_bar` returns
+    // so the paint and no-paint paths never disagree.
+    if width <= 0.0 || line_height <= 0.0 {
+        return bar.layout(
+            width.max(0.0) as f32,
+            line_height.max(0.0) as f32,
+            MIN_GAP_PX,
+            |_| StatusSegmentMeasure::new(0.0),
+        );
+    }
+    // Measure each visible segment via Core Text. `measure_text` returns
+    // (width, height) in points; the primitive only needs the width.
+    let measure = |seg: &StatusBarSegment| -> StatusSegmentMeasure {
+        let (w, _) = measure_text(font, &seg.text);
+        StatusSegmentMeasure::new(w as f32)
+    };
+    bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure)
+}
 
 /// Paint `bar` into the rect `(x, y, width, line_height)` on `ctx`
 /// using `font` for text measurement + glyph rendering. Returns the
@@ -60,12 +94,7 @@ pub unsafe fn draw_status_bar(
     // Empty rect — return the layout the primitive would have produced
     // for a zero-width bar so callers' hit dispatch behaves predictably.
     if width <= 0.0 || line_height <= 0.0 {
-        return bar.layout(
-            width.max(0.0) as f32,
-            line_height.max(0.0) as f32,
-            MIN_GAP_PX,
-            |_| StatusSegmentMeasure::new(0.0),
-        );
+        return mac_status_bar_layout(font, width, line_height, bar);
     }
 
     CGContextSaveGState(ctx);
@@ -83,13 +112,9 @@ pub unsafe fn draw_status_bar(
         .unwrap_or(theme.background);
     fill_rect(ctx, x, y, width, line_height, fill);
 
-    // Measure each visible segment via Core Text. `measure_text` returns
-    // (width, height) in points; the primitive only needs the width.
-    let measure = |seg: &StatusBarSegment| -> StatusSegmentMeasure {
-        let (w, _) = measure_text(font, &seg.text);
-        StatusSegmentMeasure::new(w as f32)
-    };
-    let bar_layout = bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure);
+    // Single source of truth for measurement: the same function
+    // `Backend::status_bar_layout` calls, so paint and no-paint agree.
+    let bar_layout = mac_status_bar_layout(font, width, line_height, bar);
 
     for vs in &bar_layout.visible_segments {
         let seg = match vs.side {

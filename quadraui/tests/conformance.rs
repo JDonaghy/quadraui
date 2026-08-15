@@ -51,6 +51,16 @@
 //!   trait's no-op default is a lie, and so is an undeclared one whose
 //!   methods are overridden.
 
+// Under a feature set with no C0 driver backend — `--features macos`
+// alone, which is exactly what `.github/workflows/macos.yml` runs, and it
+// sets `RUSTFLAGS: -D warnings` — the whole C0 harness (`Case`,
+// `DriverFactory`, `c0::run`, `fixtures::build`, …) has no caller and
+// every item in it reads as dead. It is not dead; it is unreachable *from
+// this feature set*, which is the same reason `backends()` is empty here.
+// Scoped to exactly that case so a genuinely-unused item still surfaces on
+// the tui / gtk builds that own this suite. (quadraui#484.)
+#![cfg_attr(not(any(feature = "tui", feature = "gtk")), allow(dead_code))]
+
 #[path = "../examples/common/mod.rs"]
 mod common;
 
@@ -283,6 +293,9 @@ fn c0_paint_smoke() {
         outcomes: Vec<c0::CaseOutcome>,
     }
 
+    // `mut` is unused when neither push below is compiled in — see the
+    // skip arm underneath.
+    #[allow(unused_mut)]
     let mut columns: Vec<Column> = Vec::new();
     #[cfg(feature = "tui")]
     columns.push(Column {
@@ -295,10 +308,31 @@ fn c0_paint_smoke() {
         outcomes: c0::run::<GtkFactory>(),
     });
 
+    // With a C0 driver compiled in, an empty column set means the
+    // registration above broke — still a hard failure, and still the
+    // guard against a vacuous pass.
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     assert!(
         !columns.is_empty(),
         "c0_paint_smoke: no backend feature enabled — run with --features tui,gtk"
     );
+
+    // Without one, there is no driver to smoke and nothing to prove
+    // vacuously. `--features macos` alone is that feature set:
+    // `MacBackend` has no `ConformanceDriver` (see `caps::ACCEPTED_DEFAULTS`
+    // → `macos/register_zone` for why), and `macos.yml` runs
+    // `cargo test -p quadraui --features macos`, where a hard failure here
+    // would be this tier reporting on a backend it does not cover.
+    // The gap itself is not silent: `caps::backends_declare_only_what_they
+    // _override` prints the macOS column on every run. (quadraui#484.)
+    if columns.is_empty() {
+        println!(
+            "c0_paint_smoke: SKIPPED — no C0 driver backend in this feature set. \
+             Build with --features tui and/or gtk to run tier 0."
+        );
+        return;
+    }
+
     assert!(
         !c0::CASES.is_empty(),
         "c0_paint_smoke: the descriptor table is empty, so this tier would pass vacuously"

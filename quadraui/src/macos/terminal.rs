@@ -28,14 +28,31 @@ use crate::types::Color;
 /// Draw `term`'s cell grid into the rectangular region starting at
 /// `(x, y)` on `ctx`. `cell_area_w` clips per-row painting — cells
 /// past the right edge stop being drawn rather than wrapping.
-/// `line_height` and `char_width` are the per-cell dimensions in
-/// points.
+/// `cell_area_h` clips per-column painting vertically — rows whose top
+/// falls at or below the pane bottom stop being drawn rather than
+/// bleeding into whatever sits below the terminal (the footer, an
+/// adjacent pane). `line_height` and `char_width` are the per-cell
+/// dimensions in points.
 ///
 /// Callers that render with a scrollbar pass `cell_area_w =
 /// rect.width - scrollbar_width` so the cell grid stops at the
 /// scrollbar gutter; the gutter itself is painted by
 /// [`super::scrollbar::draw_scrollbar`] from
 /// [`crate::macos::backend::MacBackend::draw_terminal`].
+///
+/// # Why `cell_area_h` exists (quadraui#437 / #484)
+///
+/// Painting is not debounced, so a frame during an interactive resize
+/// can render a grid that still has the pre-resize (taller) row count
+/// into an already-shrunk pixel pane. The GTK twin gained this clip
+/// under #437; the macOS caller was updated to pass `rect.height` at
+/// the same time but this signature was not, which is the E0061 arity
+/// mismatch quadraui#484 found the first time `macos-latest` compiled
+/// this backend. Fixed on the callee side — dropping the argument
+/// instead would have made the build green by silently deleting the
+/// vertical clip on macOS. This is *not* #440 (wide-char handling);
+/// `char_width` was already a parameter and still advances one column
+/// per cell.
 ///
 /// # Safety
 ///
@@ -50,15 +67,23 @@ pub unsafe fn draw_terminal_cells(
     x: f64,
     y: f64,
     cell_area_w: f64,
+    cell_area_h: f64,
     line_height: f64,
     char_width: f64,
     theme: &Theme,
 ) {
-    if cell_area_w <= 0.0 || line_height <= 0.0 || char_width <= 0.0 {
+    if cell_area_w <= 0.0 || cell_area_h <= 0.0 || line_height <= 0.0 || char_width <= 0.0 {
         return;
     }
     for (row_idx, row) in term.cells.iter().enumerate() {
         let row_y = y + row_idx as f64 * line_height;
+        // Stop once a row's top has reached the pane bottom — such a row
+        // belongs to a taller (pre-resize) grid and would bleed past the
+        // pane. A row that merely straddles the bottom edge is still
+        // drawn (and clipped by whatever the host paints over it).
+        if row_y >= y + cell_area_h {
+            break;
+        }
         let mut cell_x = x;
         for cell in row {
             if cell_x + char_width > x + cell_area_w {
@@ -274,6 +299,57 @@ mod tests {
         assert_eq!(
             (inside.0, inside.1, inside.2),
             (magenta.r, magenta.g, magenta.b)
+        );
+    }
+
+    /// Rows past the pane bottom are clipped (quadraui#437, ported to
+    /// macOS by #484's `cell_area_h` fix).
+    ///
+    /// A grid taller than the pane — exactly what an un-debounced
+    /// interactive-resize frame produces — must stop at the pane bottom
+    /// rather than bleed into whatever the host paints below.
+    #[test]
+    fn rows_past_the_pane_bottom_are_clipped() {
+        let magenta = Color::rgb(200, 30, 200);
+        // 60 rows at ~16pt line height is ~960pt of grid for a 60pt pane.
+        let cells: Vec<Vec<_>> = (0..60)
+            .map(|_| {
+                (0..20)
+                    .map(|_| cell(' ', Color::rgb(255, 255, 255), magenta))
+                    .collect()
+            })
+            .collect();
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells,
+            scrollbar: None,
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let pane_h = 60.0_f32;
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_terminal(QRect::new(0.0, 0.0, W as f32, pane_h), &term);
+        });
+        backend.end_frame();
+
+        // Inside the pane: painted.
+        let (r, g, b, _) = surface.pixel(4, 4);
+        assert_eq!(
+            (r, g, b),
+            (magenta.r, magenta.g, magenta.b),
+            "the pane's own rows should still paint",
+        );
+
+        // Well below the pane bottom: untouched (transparent black).
+        let below = surface.pixel(4, H - 4);
+        assert_eq!(
+            below,
+            (0, 0, 0, 0),
+            "rows below the pane bottom must be clipped, not bled",
         );
     }
 

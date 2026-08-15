@@ -353,6 +353,10 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
+            // Field added to `ListView` after this fixture was written;
+            // it never compiled until quadraui#484 first built the macOS
+            // test target. `false` preserves the fixture's behaviour.
+            show_v_scrollbar: false,
         }
     }
 

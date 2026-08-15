@@ -41,6 +41,57 @@ use crate::types::Color;
 /// (= the vimcode native-button height baked into the GTK CSS).
 pub const ACTIVITY_ROW_PX: f64 = 48.0;
 
+/// The rows this bar actually renders, in emission order, as
+/// `(y_top, item)` pairs.
+///
+/// Top items first (from `y = 0` downward), then bottom-pinned items
+/// from the bottom edge upward — the ordering divergence documented in
+/// the module header. Both [`draw_activity_bar`] and
+/// [`mac_activity_bar_layout`] walk this, so the painted rows and the
+/// returned hit spans cannot drift apart.
+fn row_plan(height: f64, bar: &ActivityBar) -> Vec<(f64, &ActivityItem)> {
+    let rows_total = ((height / ACTIVITY_ROW_PX).floor() as usize).max(1);
+    let bottom_count = bar.bottom_items.len().min(rows_total);
+    let top_capacity = rows_total.saturating_sub(bottom_count);
+
+    let mut plan: Vec<(f64, &ActivityItem)> = Vec::new();
+    for (row_idx, item) in bar.top_items.iter().take(top_capacity).enumerate() {
+        plan.push((row_idx as f64 * ACTIVITY_ROW_PX, item));
+    }
+    for (k, item) in bar.bottom_items.iter().rev().take(bottom_count).enumerate() {
+        let y = height - (k + 1) as f64 * ACTIVITY_ROW_PX;
+        if y < 0.0 {
+            break;
+        }
+        plan.push((y, item));
+    }
+    plan
+}
+
+/// Compute the per-row hit spans [`draw_activity_bar`] would produce for
+/// `bar` in a `width` × `height` strip, without painting.
+///
+/// No-paint twin backing [`crate::Backend::activity_bar_layout`]. Spans
+/// are **bar-relative** — `y_start` / `y_end` measured from the top edge
+/// of the bar, first row at `0.0` — exactly as the trait requires
+/// (quadraui#552). `width` is accepted for signature symmetry with the
+/// rasteriser; row geometry does not depend on it.
+pub fn mac_activity_bar_layout(
+    _width: f64,
+    height: f64,
+    bar: &ActivityBar,
+) -> Vec<ActivityBarRowHit> {
+    row_plan(height, bar)
+        .into_iter()
+        .map(|(y, item)| ActivityBarRowHit {
+            y_start: y,
+            y_end: y + ACTIVITY_ROW_PX,
+            id: item.id.clone(),
+            tooltip: item.tooltip.clone(),
+        })
+        .collect()
+}
+
 /// Paint `bar` into `(0, 0, width, height)` on `ctx`.
 ///
 /// # Safety
@@ -68,9 +119,6 @@ pub unsafe fn draw_activity_bar(
     let active_fg = theme.foreground;
     let hover_bg = theme.tab_bar_bg.lighten(0.10);
 
-    let rows_total = ((height / ACTIVITY_ROW_PX).floor() as usize).max(1);
-    let bottom_count = bar.bottom_items.len().min(rows_total);
-    let top_capacity = rows_total.saturating_sub(bottom_count);
     let mut regions: Vec<ActivityBarRowHit> = Vec::new();
 
     let draw_row = |y: f64, item: &ActivityItem, row_idx: usize, regions: &mut Vec<_>| {
@@ -106,21 +154,7 @@ pub unsafe fn draw_activity_bar(
         });
     };
 
-    for (row_idx, item) in bar.top_items.iter().take(top_capacity).enumerate() {
-        draw_row(
-            row_idx as f64 * ACTIVITY_ROW_PX,
-            item,
-            row_idx,
-            &mut regions,
-        );
-    }
-
-    for (k, item) in bar.bottom_items.iter().rev().take(bottom_count).enumerate() {
-        let y = height - (k + 1) as f64 * ACTIVITY_ROW_PX;
-        if y < 0.0 {
-            break;
-        }
-        let row_idx = regions.len();
+    for (row_idx, (y, item)) in row_plan(height, bar).into_iter().enumerate() {
         draw_row(y, item, row_idx, &mut regions);
     }
 

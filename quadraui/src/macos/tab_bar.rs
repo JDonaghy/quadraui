@@ -41,6 +41,134 @@ const ACCENT_HEIGHT: f64 = 2.0;
 /// Same string the GTK rasteriser uses, so app-level cell budgets
 /// remain comparable between backends.
 const CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
+/// Slack added either side of the close glyph when building its hit box.
+const CLOSE_PAD: f64 = 2.0;
+
+/// Compute the [`TabBarHits`] [`draw_tab_bar`] would produce for `bar` at
+/// `width`, without painting.
+///
+/// This is the single measurement path: [`draw_tab_bar`] calls it too and
+/// paints from its output, so the no-paint twin backing
+/// [`crate::Backend::tab_bar_layout`] cannot drift from what was painted.
+///
+/// # Coordinate space — bar-relative, not absolute (known divergence)
+///
+/// The [`crate::Backend::tab_bar_layout`] doc pins the *contract* at
+/// target-surface (absolute) coordinates, and the TUI / GTK backends shift
+/// by `rect.x` to honour it. The macOS rasteriser is not handed `rect.x`
+/// at all — [`crate::macos::MacBackend::draw_tab_bar`] passes only
+/// `rect.width` / `rect.y`, and paints tabs from `x = 0` — so both its
+/// paint and its hits are bar-relative. Making only the *hits* absolute
+/// here would put them out of step with the pixels, which is strictly
+/// worse than a documented offset. Closing the gap properly means teaching
+/// the rasteriser to paint at `rect.x`; that is a behaviour change to the
+/// live tab bar and is deliberately left to the #552 follow-up rather than
+/// smuggled into quadraui#484's compile fix. What this function guarantees
+/// is the invariant that is actually load-bearing: `tab_bar_layout` returns
+/// exactly what `draw_tab_bar` painted.
+pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
+    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
+    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+
+    // ── Right-segment widths (reserved before tabs get their budget) ──
+    let right_widths: Vec<f64> = bar
+        .right_segments
+        .iter()
+        .map(|seg| measure_text(font, &seg.text).0)
+        .collect();
+    let reserved_px: f64 = right_widths.iter().sum();
+    let effective_tab_area = (width - reserved_px).max(0.0);
+
+    // Close-glyph width measured once — individual tabs use it
+    // conditionally based on `bar.show_tab_close && tab.is_closable`. The
+    // `●` dirty variant is the same width in Menlo and most monospace
+    // fonts.
+    let close_w = if bar.show_tab_close {
+        measure_text(font, "×").0
+    } else {
+        0.0
+    };
+    let close_extra_for = |tab_idx: usize| -> f64 {
+        if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
+            tab_inner_gap + close_w
+        } else {
+            0.0
+        }
+    };
+
+    // Pre-measure every tab's full slot width — used for scroll-offset
+    // resolution.
+    let tab_slot_widths: Vec<f64> = bar
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| {
+            let (name_w, _) = measure_text(font, &tab.label);
+            tab_pad + name_w + close_extra_for(i) + tab_pad + tab_outer_gap
+        })
+        .collect();
+
+    let active_idx = bar.tabs.iter().position(|t| t.is_active);
+    let correct_scroll_offset = if let Some(active) = active_idx {
+        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
+            tab_slot_widths[i] as usize
+        })
+    } else {
+        bar.scroll_offset
+    };
+
+    // ── Slot geometry ────────────────────────────────────────────────
+    let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
+    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
+    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
+        slot_positions.push((0.0, 0.0));
+        close_bounds.push(None);
+    }
+
+    let mut x = 0.0_f64;
+    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
+        let (tab_name_w, _) = measure_text(font, &tab.label);
+        let tab_content_w = tab_pad + tab_name_w + close_extra_for(tab_idx) + tab_pad;
+        let slot_w = tab_content_w + tab_outer_gap;
+        if x + slot_w > effective_tab_area {
+            break;
+        }
+        slot_positions.push((x, x + slot_w));
+
+        if bar.show_tab_close && tab.is_closable {
+            let close_x = x + tab_pad + tab_name_w + tab_inner_gap;
+            close_bounds.push(Some((close_x - CLOSE_PAD, close_x + close_w + CLOSE_PAD)));
+        } else {
+            close_bounds.push(None);
+        }
+
+        x += slot_w;
+    }
+
+    // ── Right segments ───────────────────────────────────────────────
+    let mut right_segment_bounds: Vec<(f64, f64)> = Vec::with_capacity(right_widths.len());
+    let mut sx = width - reserved_px;
+    for seg_w in &right_widths {
+        right_segment_bounds.push((sx, sx + seg_w));
+        sx += seg_w;
+    }
+
+    // Cell-width estimation: 15-char sample width / 15 → average glyph
+    // advance. Matches the GTK convention so app-level char-col math
+    // doesn't diverge across backends.
+    let (sample_px, _) = measure_text(font, CELL_WIDTH_SAMPLE);
+    let char_w = (sample_px / CELL_WIDTH_SAMPLE.chars().count() as f64).max(1.0);
+    let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
+
+    TabBarHits {
+        slot_positions,
+        close_bounds,
+        right_segment_bounds,
+        available_cols,
+        correct_scroll_offset,
+    }
+}
 
 /// Paint `bar` into the rect `(0, y_offset, width, row_height)` on
 /// `ctx`. `line_height` is the *text* line height; `row_height` may be
@@ -66,90 +194,30 @@ pub unsafe fn draw_tab_bar(
 ) -> TabBarHits {
     let text_y_offset = y_offset + (row_height - line_height) / 2.0;
     let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
-    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+
+    // Single source of truth for geometry — `Backend::tab_bar_layout`
+    // calls the same function, so the no-paint twin can never drift from
+    // what this loop actually paints.
+    let hits = mac_tab_bar_layout(font, width, bar);
 
     CGContextSaveGState(ctx);
 
     // Tab-bar background.
     fill_rect(ctx, 0.0, y_offset, width, row_height, theme.tab_bar_bg);
 
-    // ── Right-segment widths (measure once; paint after tabs) ─────────
-    let mut right_widths: Vec<f64> = Vec::with_capacity(bar.right_segments.len());
-    for seg in &bar.right_segments {
-        let (w, _) = measure_text(font, &seg.text);
-        right_widths.push(w);
-    }
-    let reserved_px: f64 = right_widths.iter().sum();
-    let effective_tab_area = (width - reserved_px).max(0.0);
-
-    // Close-glyph width measured once — individual tabs use it conditionally
-    // based on `bar.show_tab_close && tab.is_closable`. The `●` dirty variant
-    // is the same width in Menlo and most monospace fonts.
-    let close_w = if bar.show_tab_close {
-        let (w, _) = measure_text(font, "×");
-        w
-    } else {
-        0.0
-    };
-    // Per-tab close extra: only reserve space for tabs where both the
-    // bar-level flag and the tab's own `is_closable` flag are set.
-    let close_extra_for = |tab_idx: usize| -> f64 {
-        if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
-            tab_inner_gap + close_w
-        } else {
-            0.0
-        }
-    };
-
-    // Pre-measure every tab's full slot width — used both for scroll
-    // offset resolution and the paint loop.
-    let tab_slot_widths: Vec<f64> = bar
+    // ── Tabs paint loop ──────────────────────────────────────────────
+    // `slot_positions` is padded with `(0.0, 0.0)` for the scrolled-past
+    // tabs, so start after them and stop where the layout stopped.
+    for (tab_idx, tab) in bar
         .tabs
         .iter()
         .enumerate()
-        .map(|(i, tab)| {
-            let (name_w, _) = measure_text(font, &tab.label);
-            tab_pad + name_w + close_extra_for(i) + tab_pad + tab_outer_gap
-        })
-        .collect();
-
-    let active_idx = bar.tabs.iter().position(|t| t.is_active);
-    let correct_scroll_offset = if let Some(active) = active_idx {
-        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
-            tab_slot_widths[i] as usize
-        })
-    } else {
-        bar.scroll_offset
-    };
-
-    // ── Tabs paint loop ──────────────────────────────────────────────
-    let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
-    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
-    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
-        slot_positions.push((0.0, 0.0));
-        close_bounds.push(None);
-    }
-
-    let mut x = 0.0_f64;
-    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
-        let has_close = bar.show_tab_close && tab.is_closable;
-        let (tab_name_w, _) = measure_text(font, &tab.label);
-        let close_extra = close_extra_for(tab_idx);
-        let tab_content_w = tab_pad + tab_name_w + close_extra + tab_pad;
-        let slot_w = tab_content_w + tab_outer_gap;
-        if x + slot_w > effective_tab_area {
-            break;
-        }
-        slot_positions.push((x, x + slot_w));
-
-        let close_x = x + tab_pad + tab_name_w + tab_inner_gap;
-        if has_close {
-            let close_pad = 2.0;
-            close_bounds.push(Some((close_x - close_pad, close_x + close_w + close_pad)));
-        } else {
-            close_bounds.push(None);
-        }
+        .skip(bar.scroll_offset)
+        .take(hits.slot_positions.len().saturating_sub(bar.scroll_offset))
+    {
+        let (slot_x, slot_end) = hits.slot_positions[tab_idx];
+        let tab_content_w = slot_end - slot_x - tab_outer_gap;
 
         // Tab background.
         let bg_col = if tab.is_active {
@@ -157,12 +225,12 @@ pub unsafe fn draw_tab_bar(
         } else {
             theme.tab_bar_bg
         };
-        fill_rect(ctx, x, y_offset, tab_content_w, row_height, bg_col);
+        fill_rect(ctx, slot_x, y_offset, tab_content_w, row_height, bg_col);
 
         // Top accent line for the active tab.
         if tab.is_active {
             if let Some(accent) = bar.active_accent {
-                fill_rect(ctx, x, y_offset, tab_content_w, ACCENT_HEIGHT, accent);
+                fill_rect(ctx, slot_x, y_offset, tab_content_w, ACCENT_HEIGHT, accent);
             }
         }
 
@@ -177,15 +245,16 @@ pub unsafe fn draw_tab_bar(
             ctx,
             font,
             &tab.label,
-            x + tab_pad,
+            slot_x + tab_pad,
             text_y_offset,
             color_to_cg(fg_col),
         );
 
-        // Close glyph (× or ● for dirty), tinted on hover. Only painted
-        // when both the bar-level flag and the tab's own `is_closable`
-        // flag are set, matching the measurement above.
-        if has_close {
+        // Close glyph (× or ● for dirty), tinted on hover. Painted at the
+        // exact x the hit box was built around, so a click that lands in
+        // `close_bounds` lands on the glyph the user saw.
+        if let Some((close_lo, _)) = hits.close_bounds[tab_idx] {
+            let close_x = close_lo + CLOSE_PAD;
             let is_close_hovered = hovered_close_tab == Some(tab_idx);
             let close_glyph = if tab.is_dirty && !is_close_hovered {
                 "●"
@@ -208,42 +277,22 @@ pub unsafe fn draw_tab_bar(
                 color_to_cg(close_fg),
             );
         }
-
-        x += slot_w;
     }
 
     // ── Right segments paint loop ────────────────────────────────────
-    let right_base = width - reserved_px;
-    let mut right_segment_bounds: Vec<(f64, f64)> = Vec::with_capacity(bar.right_segments.len());
-    let mut sx = right_base;
     for (i, seg) in bar.right_segments.iter().enumerate() {
-        let seg_w = right_widths[i];
+        let (sx, _) = hits.right_segment_bounds[i];
         let fg_col = if seg.is_active {
             theme.tab_active_fg
         } else {
             theme.tab_inactive_fg
         };
         draw_text(ctx, font, &seg.text, sx, text_y_offset, color_to_cg(fg_col));
-        right_segment_bounds.push((sx, sx + seg_w));
-        sx += seg_w;
     }
-
-    // Cell-width estimation: 15-char sample width / 15 → average glyph
-    // advance. Matches the GTK convention so app-level char-col math
-    // doesn't diverge across backends.
-    let (sample_px, _) = measure_text(font, CELL_WIDTH_SAMPLE);
-    let char_w = (sample_px / CELL_WIDTH_SAMPLE.chars().count() as f64).max(1.0);
-    let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
 
     CGContextRestoreGState(ctx);
 
-    TabBarHits {
-        slot_positions,
-        close_bounds,
-        right_segment_bounds,
-        available_cols,
-        correct_scroll_offset,
-    }
+    hits
 }
 
 fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
