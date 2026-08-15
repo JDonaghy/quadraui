@@ -118,6 +118,25 @@ jobs:
         run: cargo test --features tui --workspace --exclude kubeui-gtk
       - name: Clippy (tui feature)
         run: cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
+      # win compile gate (#538). `win = []` has zero dependencies and
+      # `WinBackend` is `todo!()` stubs, so this type-checks on Linux with no
+      # new runner — that is exactly what makes it free to add here. Its
+      # entire purpose is to keep the `Backend` trait's no-default-impl
+      # policy (BACKEND_TRAIT_PROPOSAL.md §4, PRIMITIVE_RULES.md rule 7)
+      # actually enforced for the win backend: before this step existed,
+      # #531 merged `draw_settings_chrome` with no `WinBackend` impl and
+      # nothing caught it (7 missing methods accumulated silently, fixed by
+      # #540/#537). A *compile* check is per-repo, not per-OS, so this runs
+      # once on the ubuntu leg rather than once per matrix leg — running it
+      # again on the windows-latest leg would check the exact same source
+      # against the exact same toolchain target and prove nothing new.
+      # Blocking (no continue-on-error): unlike the windows-latest leg above,
+      # which starts non-blocking because the *portable core* has never run
+      # on real Windows, this only needs to compile — #540 already made it
+      # green, so there's no red-on-arrival rollout problem to phase in.
+      - name: Compile check (win feature)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p quadraui --features win
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
       # drives them with real ANSI escape sequences (vt100). No display
