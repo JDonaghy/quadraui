@@ -188,7 +188,14 @@ impl<'a> ShellContext<'a> {
     /// `cfg`-gated with `ShellAdapter` itself (#540): under `win` alone
     /// there is no caller, so this and `take_activity_focus_requested`
     /// below go dead-code under `-D warnings`.
-    #[cfg(any(feature = "tui", feature = "gtk"))]
+    ///
+    /// `test` is in the gate too (#484): this module's own tests build a
+    /// `ShellContext` through it, and without `test` here
+    /// `cargo test -p quadraui --features macos` failed to compile — the
+    /// first feature set to exercise that combination. In a non-test
+    /// build the gate is unchanged, so the dead-code guard #540 added
+    /// still holds.
+    #[cfg(any(feature = "tui", feature = "gtk", test))]
     pub(crate) fn new(
         active_panel_id: Option<&'a WidgetId>,
         sidebar_visible: bool,

@@ -403,6 +403,11 @@ mod tests {
             width: 240.0,
             title_height: line_height,
             body_height: line_height,
+            // Fixture dialogs carry no `table`, so the table slot is
+            // zero-height. Field added to `DialogMeasure` after this
+            // fixture was written; it never compiled until quadraui#484
+            // first built the macOS test target.
+            table_height: 0.0,
             input_height: if dialog.input.is_some() {
                 line_height
             } else {

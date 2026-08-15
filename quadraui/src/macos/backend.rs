@@ -40,8 +40,10 @@ use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
+use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
@@ -60,6 +62,7 @@ use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
@@ -566,6 +569,43 @@ impl Backend for MacBackend {
         }
     }
 
+    fn draw_settings_chrome(
+        &mut self,
+        rect: Rect,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_settings_chrome called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_settings_chrome requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::form::draw_settings_chrome(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                line_height,
+                header_text,
+                query,
+                placeholder,
+                active,
+                &theme,
+            );
+        }
+    }
+
     fn draw_status_bar(
         &mut self,
         rect: Rect,
@@ -662,6 +702,59 @@ impl Backend for MacBackend {
             )
         }
     }
+
+    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
+        // No-paint twin of `draw_status_bar`: same `mac_status_bar_layout`
+        // call, so hit regions match the painted frame exactly. Hit
+        // regions are bar-local, so `rect.x` / `rect.y` are deliberately
+        // not folded in (quadraui#552 — audited, no change needed).
+        match self.current_font.as_ref() {
+            Some(font) => super::status_bar::mac_status_bar_layout(
+                font,
+                rect.width as f64,
+                self.current_line_height,
+                bar,
+            ),
+            // Called before `set_current_font` (e.g. a click handler
+            // firing before the first paint): fall back to the backend's
+            // seeded `char_width` rather than panicking, matching the
+            // `sidebar_panel_layout` precedent below.
+            None => {
+                let cw = self.current_char_width as f32;
+                bar.layout(
+                    rect.width,
+                    self.current_line_height as f32,
+                    super::status_bar::MIN_GAP_PX,
+                    |seg| crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cw),
+                )
+            }
+        }
+    }
+
+    fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
+        // No-paint twin of `draw_tab_bar`, routed through the same
+        // `mac_tab_bar_layout`. See that function's docs for why macOS
+        // returns bar-relative (not absolute) x, and why closing that
+        // #552 gap is a paint change left to a follow-up.
+        match self.current_font.as_ref() {
+            Some(font) => super::tab_bar::mac_tab_bar_layout(font, rect.width as f64, bar),
+            None => TabBarHits {
+                slot_positions: vec![(0.0, 0.0); bar.tabs.len()],
+                close_bounds: vec![None; bar.tabs.len()],
+                right_segment_bounds: vec![(0.0, 0.0); bar.right_segments.len()],
+                available_cols: 0,
+                correct_scroll_offset: bar.scroll_offset,
+            },
+        }
+    }
+
+    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
+        // No-paint twin of `draw_activity_bar`; both walk the same
+        // `row_plan`, so the returned bar-relative spans are exactly the
+        // rows that were painted (quadraui#552).
+        super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
+    }
+
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -757,6 +850,32 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 td,
                 &theme,
+                line_height,
+            );
+        }
+    }
+    fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_command_line called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_command_line requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::command_line::draw_command_line(
+                ctx,
+                font,
+                cmd,
+                &theme,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
                 line_height,
             );
         }
@@ -1002,18 +1121,15 @@ impl Backend for MacBackend {
         unsafe { super::scrollbar::draw_scrollbar(ctx, scrollbar, &theme) }
     }
 
-    fn draw_drop_overlay(&mut self, _overlay: &crate::primitives::drop_zone::DropOverlay) {
-        // TODO(macos-drop-overlay): rasterise `DropOverlay` on the active Core
-        // Graphics context. Explicitly deferred — the TUI and GTK backends both
-        // implement this (see `quadraui::tui::draw_drop_overlay` and
-        // `quadraui::gtk::draw_drop_overlay` for reference). The macOS impl
-        // should draw the three layers (highlight rect, insertion bar, ghost
-        // label) using `CGContextFillRect` + the existing label-drawing helpers
-        // in `quadraui::macos::tab_bar`. A follow-up issue tracks this work;
-        // until then `TabGroupController` drag-and-drop on macOS proceeds
-        // without visual feedback but otherwise functions correctly because the
-        // controller's hit-test and mutation logic do not depend on the
-        // overlay being drawn.
+    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_drop_overlay called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::drop_overlay::draw_drop_overlay(ctx, overlay, &theme) }
     }
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         let ctx = self.current_cg();
@@ -1077,6 +1193,35 @@ impl Backend for MacBackend {
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
         super::split::mac_split_layout(
             split,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
+    fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_split_tree called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::split_tree::draw_split_tree(
+                ctx,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                tree,
+                &theme,
+            )
+        }
+    }
+    fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
+        super::split_tree::mac_split_tree_layout(
+            tree,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
@@ -1467,12 +1612,33 @@ impl Backend for MacBackend {
 
     fn draw_diff_view(
         &mut self,
-        _rect: Rect,
+        rect: Rect,
         view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
-        crate::primitives::diff_view::DiffViewLayout {
-            visible_rows: 0,
-            total_rows: view.total_rows(),
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_diff_view called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_diff_view requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::diff_view::draw_diff_view(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                view,
+                &theme,
+                line_height,
+            )
         }
     }
 
@@ -1504,6 +1670,39 @@ impl Backend for MacBackend {
                     self.current_char_width as f32,
                 ),
                 |_btn| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
+            )
+        }
+    }
+
+    /// Override of the trait's no-op default (`Backend::draw_board`),
+    /// which returns an empty `BoardLayout` and paints nothing.
+    ///
+    /// The compiler cannot report the missing override — that default is
+    /// exactly why macOS silently painted an empty board — so this is
+    /// implemented ahead of quadraui#600 removing the default. When #600
+    /// lands, this method is already here and the lane does not regress.
+    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_board called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_board requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::board::draw_board(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                model,
+                &theme,
             )
         }
     }

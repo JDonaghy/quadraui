@@ -487,6 +487,106 @@ pub unsafe fn draw_form(
     layout
 }
 
+/// Cursor width in points for the settings-chrome search row. Matches
+/// the GTK twin's 1.5px caret.
+const SETTINGS_CURSOR_W: f64 = 1.5;
+/// Prefix rendered before the settings search query.
+const SETTINGS_SEARCH_PREFIX: &str = " /  ";
+
+/// Draw settings-panel chrome: a 2-row strip with a header row and a
+/// search input row, designed to sit immediately above a [`Form`] body.
+///
+/// Port of [`crate::gtk::form::draw_settings_chrome`] — same two-row
+/// layout, same `" /  "` prefix, same placeholder rule (shown only when
+/// the query is empty *and* the row is inactive), same accent caret when
+/// active.
+///
+/// Chrome only: the form body and any scrollbar layered below are painted
+/// separately by the caller.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
+/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
+/// Calling with a freed or null pointer is UB.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_settings_chrome(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    line_height: f64,
+    header_text: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+    theme: &Theme,
+) {
+    if w <= 0.0 || line_height <= 0.0 {
+        return;
+    }
+
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, line_height * 2.0));
+
+    // Row 0: header bar.
+    fill_rect(ctx, x, y, w, line_height, theme.header_bg);
+    draw_text(
+        ctx,
+        font,
+        header_text,
+        x + 2.0,
+        y,
+        color_to_cg(theme.header_fg),
+    );
+
+    // Row 1: search input.
+    let search_y = y + line_height;
+    let row_bg = if active {
+        theme.selected_bg
+    } else {
+        theme.tab_bar_bg
+    };
+    fill_rect(ctx, x, search_y, w, line_height, row_bg);
+
+    draw_text(
+        ctx,
+        font,
+        SETTINGS_SEARCH_PREFIX,
+        x + 2.0,
+        search_y,
+        color_to_cg(theme.muted_fg),
+    );
+    let (prefix_w, _) = measure_text(font, SETTINGS_SEARCH_PREFIX);
+    let q_x = x + 2.0 + prefix_w;
+
+    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+    let (text, color) = if show_placeholder {
+        (placeholder, theme.muted_fg)
+    } else if query.is_empty() {
+        (query, theme.muted_fg)
+    } else {
+        (query, theme.foreground)
+    };
+    draw_text(ctx, font, text, q_x, search_y, color_to_cg(color));
+
+    if active {
+        let (q_w, _) = measure_text(font, query);
+        let cur_x = q_x + if query.is_empty() { 0.0 } else { q_w };
+        fill_rect(
+            ctx,
+            cur_x,
+            search_y + 2.0,
+            SETTINGS_CURSOR_W,
+            line_height - 4.0,
+            theme.accent_fg,
+        );
+    }
+
+    CGContextRestoreGState(ctx);
+}
+
 fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
     (
         c.r as f64 / 255.0,

@@ -1,9 +1,9 @@
 # quadraui
 
 Cross-platform UI primitives with native rendering backends for **TUI**
-(via ratatui), **GTK4** (via gtk4-rs + Cairo + Pango), and — designed-
-for, not-yet-implemented — **Windows** (Direct2D + DirectWrite) and
-**macOS** (Core Graphics + Core Text).
+(via ratatui), **GTK4** (via gtk4-rs + Cairo + Pango), **macOS** (Core
+Graphics + Core Text), and — designed-for, not-yet-implemented —
+**Windows** (Direct2D + DirectWrite).
 
 The premise: declarative widget descriptions (`TreeView`, `MultiSectionView`,
 `TabBar`, etc.) are produced once by the host app, and each backend
@@ -18,13 +18,26 @@ This rules out the "paint and click drift" bug class structurally.
 are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
 The Windows backend is scaffolded but not implemented yet.
 
-**The macOS backend is feature-complete.** Every in-window rasteriser
-shipped — chrome (StatusBar, TabBar, ActivityBar, CommandCenter,
-MenuBar), content (Tree, List, Form, Editor, DataTable, Chart), MSV +
-Scrollbar, containers + indicators (Panel, Split, Toast, Progress,
-Spinner), overlays (Tooltip, ContextMenu, Dialog, Palette, Completions,
-FindReplace, RichTextPopup), and streaming/cell primitives (Terminal,
-TextDisplay, MessageList) — plus the native-feel integration layer:
+**The macOS backend implements the whole `Backend` trait, and
+`macos-latest` CI builds and tests it** (`.github/workflows/macos.yml`,
+triggered by any PR touching `quadraui/src/macos/**`). Until quadraui#484
+that claim was untested: the backend is gated on `target_os = "macos"`,
+so `cargo check --features macos` on a Linux host compiled none of it,
+and the first real macOS compile found seven missing trait methods, an
+arity mismatch, and three primitives with no rasteriser at all. Those are
+closed. Two documented divergences from the GTK twin remain, both in
+`src/macos`'s own module docs: `tab_bar` returns bar-relative rather than
+absolute hit x (quadraui#552 follow-up), and `terminal` does not yet do
+wide-char (CJK / emoji) advance handling (quadraui#440).
+
+Every in-window rasteriser shipped — chrome (StatusBar, TabBar,
+ActivityBar, CommandCenter, MenuBar, CommandLine, settings chrome),
+content (Tree, List, Form, Editor, DataTable, Chart, Board, DiffView),
+MSV + Scrollbar, containers + indicators (Panel, Split, SplitTree, Toast,
+Progress, Spinner), overlays (Tooltip, ContextMenu, Dialog, Palette,
+Completions, FindReplace, RichTextPopup, DropOverlay), and
+streaming/cell primitives (Terminal, TextDisplay, MessageList) — plus
+the native-feel integration layer:
 platform services (clipboard via `arboard`, `NSOpenPanel` /
 `NSSavePanel` file dialogs, `osascript` notifications, `open` URL
 handler), native `NSMenu` menu bar with auto-prepended app menu and
