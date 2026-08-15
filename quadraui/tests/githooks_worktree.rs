@@ -14,6 +14,28 @@
 //! checked out into the new worktree), in-worktree checkouts never run the
 //! hook, and "nothing happened" looks identical to "nothing happened because
 //! the condition was false". See #512.
+//!
+//! ── Unix-only, deliberately and visibly (#581) ─────────────────────────
+//!
+//! The whole file is `cfg(unix)`. `.githooks/post-checkout` is a POSIX shell
+//! script whose entire job is creating **symlinks**, and these tests assert on
+//! `fs::symlink_metadata(..).file_type().is_symlink()` and on mode `100755`.
+//! None of that has meaning on Windows, where the equivalent mechanism is an
+//! NTFS **junction** and symlink creation needs Developer Mode or elevation.
+//!
+//! This is a recorded gap, not a dismissal: Windows worktree junctions are
+//! called out in quadraui#580 (and in claude-coordinator's CP-7). When that
+//! lands, the right move is a junction-aware `symlink_target` plus a
+//! `cfg(windows)` sibling of this suite — NOT deleting this gate.
+//!
+//! Gating the *whole file* rather than only the five tests that failed on
+//! `windows-latest` is the point. `worktree_add_git_status_is_empty` PASSED
+//! there — because the hook never fired, so `git status` was trivially clean.
+//! That is exactly the false pass the paragraph above warns about, arriving
+//! by a route #512 didn't anticipate: not an uncommitted `.githooks/`, but a
+//! platform where the hook cannot do anything in the first place. A green
+//! result from it on Windows is misinformation, so it does not get to run.
+#![cfg(unix)]
 
 use std::collections::HashMap;
 use std::fs;
