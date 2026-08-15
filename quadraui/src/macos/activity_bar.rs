@@ -371,4 +371,49 @@ mod tests {
             "hovered row should paint the lightened bg",
         );
     }
+
+    /// `Backend::activity_bar_layout` must return exactly what
+    /// `draw_activity_bar` painted — both walk the same `row_plan`, and
+    /// this pins that (quadraui#484).
+    #[test]
+    fn layout_twin_matches_the_painted_rows() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend(&bar, None);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let computed = backend.activity_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
+
+        assert_eq!(painted.len(), computed.len());
+        for (p, c) in painted.iter().zip(computed.iter()) {
+            assert_eq!(p.id, c.id);
+            assert_eq!(p.tooltip, c.tooltip);
+            assert!((p.y_start - c.y_start).abs() < 0.001);
+            assert!((p.y_end - c.y_end).abs() < 0.001);
+        }
+    }
+
+    /// Spans are bar-relative: the first row starts at `0.0` regardless
+    /// of where the bar sits, and the no-paint twin agrees
+    /// (quadraui#552).
+    #[test]
+    fn layout_twin_spans_are_bar_relative_at_a_nonzero_origin() {
+        let bar = sample_bar();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let at_origin = backend.activity_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        let moved = backend.activity_bar_layout(QRect::new(23.0, 41.0, W as f32, H as f32), &bar);
+
+        assert_eq!(at_origin.len(), moved.len());
+        assert!((at_origin[0].y_start - 0.0).abs() < 0.001);
+        for (a, m) in at_origin.iter().zip(moved.iter()) {
+            assert!(
+                (a.y_start - m.y_start).abs() < 0.001,
+                "row {:?} moved with the bar origin: {} vs {}",
+                a.id,
+                a.y_start,
+                m.y_start,
+            );
+        }
+    }
 }

@@ -1153,4 +1153,160 @@ mod tests {
         // Must not panic.
         let _ = paint_via_backend(&form);
     }
+
+    // ── Settings chrome (quadraui#484) ──────────────────────────────────
+
+    /// Paint the settings chrome through the real
+    /// `Backend::draw_settings_chrome` path at an arbitrary origin.
+    fn paint_settings_chrome_at(
+        origin: QRect,
+        header: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) -> (BitmapSurface, f64) {
+        let surface = BitmapSurface::new(W, H);
+        // Known non-theme background so "did the chrome paint here?" is
+        // answerable per pixel.
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let lh = backend.line_height() as f64;
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_settings_chrome(origin, header, query, placeholder, active);
+        });
+        backend.end_frame();
+        (surface, lh)
+    }
+
+    #[test]
+    fn settings_chrome_paints_header_then_search_row() {
+        let (surface, lh) = paint_settings_chrome_at(
+            QRect::new(0.0, 0.0, W as f32, H as f32),
+            "Settings",
+            "",
+            "type to filter",
+            false,
+        );
+        let theme = Theme::default();
+
+        // Row 0 = header strip. Probe clear of the "Settings" glyphs.
+        let (r, g, b, _) = surface.pixel(W - 4, (lh * 0.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "row 0 should be the header strip",
+        );
+
+        // Row 1 = search input, inactive → `tab_bar_bg`.
+        let (r, g, b, _) = surface.pixel(W - 4, (lh * 1.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "row 1 inactive should be the panel background",
+        );
+
+        // Row 2 is the form body's job — chrome must not paint it.
+        let (r, g, b, _) = surface.pixel(W - 4, (lh * 2.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (255, 255, 255),
+            "settings chrome paints exactly two rows",
+        );
+    }
+
+    #[test]
+    fn settings_chrome_active_row_uses_selected_bg_and_paints_a_caret() {
+        let (surface, lh) = paint_settings_chrome_at(
+            QRect::new(0.0, 0.0, W as f32, H as f32),
+            "Settings",
+            "",
+            "type to filter",
+            true,
+        );
+        let theme = Theme::default();
+
+        let (r, g, b, _) = surface.pixel(W - 4, (lh * 1.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "an active search row uses `selected_bg`",
+        );
+
+        // With an empty query the caret sits right after the " /  "
+        // prefix. Scan that row for the accent stroke.
+        let (prefix_w, _) = measure_text(&font(), SETTINGS_SEARCH_PREFIX);
+        let caret_x = (2.0 + prefix_w) as u32;
+        let row = (lh * 1.5) as u32;
+        let accent = (theme.accent_fg.r, theme.accent_fg.g, theme.accent_fg.b);
+        let found = (caret_x.saturating_sub(1)..=caret_x + 2).any(|x| {
+            let (r, g, b, _) = surface.pixel(x.min(W - 1), row);
+            (r, g, b) == accent
+        });
+        assert!(
+            found,
+            "active chrome should paint an accent caret at x≈{caret_x}"
+        );
+    }
+
+    /// Non-zero-origin regression guard (LESSONS.md:159-181).
+    #[test]
+    fn settings_chrome_paints_at_a_nonzero_origin_only() {
+        let ox = 24.0_f32;
+        let oy = 30.0_f32;
+        let (surface, lh) = paint_settings_chrome_at(
+            QRect::new(ox, oy, W as f32 - ox, H as f32 - oy),
+            "Settings",
+            "",
+            "",
+            false,
+        );
+        let theme = Theme::default();
+
+        let (r, g, b, _) = surface.pixel(W - 4, oy as u32 + (lh * 0.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "header row should follow the requested origin",
+        );
+        assert_eq!(
+            {
+                let (r, g, b, _) = surface.pixel(4, oy as u32 + (lh * 0.5) as u32);
+                (r, g, b)
+            },
+            (255, 255, 255),
+            "nothing should paint left of the origin",
+        );
+        assert_eq!(
+            {
+                let (r, g, b, _) = surface.pixel(W - 4, oy as u32 - 4);
+                (r, g, b)
+            },
+            (255, 255, 255),
+            "nothing should paint above the origin",
+        );
+    }
+
+    #[test]
+    fn settings_chrome_zero_width_is_a_no_op() {
+        let (surface, _lh) = paint_settings_chrome_at(
+            QRect::new(0.0, 0.0, 0.0, H as f32),
+            "Settings",
+            "",
+            "",
+            true,
+        );
+        assert_eq!(
+            {
+                let (r, g, b, _) = surface.pixel(1, 1);
+                (r, g, b)
+            },
+            (255, 255, 255),
+        );
+    }
 }

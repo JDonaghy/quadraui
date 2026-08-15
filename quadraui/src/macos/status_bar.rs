@@ -481,4 +481,56 @@ mod tests {
             b,
         );
     }
+
+    /// `Backend::status_bar_layout` must return exactly what
+    /// `draw_status_bar` painted — both route through
+    /// `mac_status_bar_layout`, and this pins that (quadraui#484).
+    #[test]
+    fn layout_twin_matches_the_painted_layout() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend(&bar);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let computed = backend.status_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
+
+        assert_eq!(
+            painted.visible_segments.len(),
+            computed.visible_segments.len(),
+        );
+        for (p, c) in painted
+            .visible_segments
+            .iter()
+            .zip(computed.visible_segments.iter())
+        {
+            assert_eq!(p.segment_idx, c.segment_idx);
+            assert_eq!(p.side, c.side);
+            assert!((p.bounds.x - c.bounds.x).abs() < 0.001);
+            assert!((p.bounds.width - c.bounds.width).abs() < 0.001);
+        }
+    }
+
+    /// The no-paint twin is also origin-independent: hit regions are
+    /// bar-local, so painting at a non-zero origin does not move them
+    /// (quadraui#552 — audited and ruled out for the status bar).
+    #[test]
+    fn layout_twin_is_bar_local_at_a_nonzero_origin() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend_at(&bar, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let computed = backend.status_bar_layout(QRect::new(17.0, 3.0, W as f32, H as f32), &bar);
+        for (p, c) in painted
+            .visible_segments
+            .iter()
+            .zip(computed.visible_segments.iter())
+        {
+            assert!(
+                (p.bounds.x - c.bounds.x).abs() < 0.001,
+                "segment x moved with the origin: {} vs {}",
+                p.bounds.x,
+                c.bounds.x,
+            );
+        }
+    }
 }
