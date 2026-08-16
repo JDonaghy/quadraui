@@ -2131,6 +2131,45 @@ mod tests {
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
 
+    /// `Default` is the migration path #541 hands downstream consumers
+    /// (`Tooltip { id, text, ..Default::default() }`), so it has to agree
+    /// field-for-field with `Tooltip::new` — otherwise a consumer that
+    /// migrates by spreading silently gets different chrome than one that
+    /// migrates to the builder.
+    #[test]
+    fn tooltip_default_matches_new_on_every_optional_field() {
+        let d = Tooltip::default();
+        assert_eq!(d, Tooltip::new(WidgetId::new(""), ""));
+        assert_eq!(d.styled_lines, None);
+        assert_eq!(d.placement, TooltipPlacement::Bottom);
+        // `Full`, not `Sides`: the behaviour-preserving default for GTK and
+        // macOS, which have always stroked a closed box.
+        assert_eq!(d.border, TooltipBorder::Full);
+        assert_eq!(d.title, None);
+        assert_eq!(d.bg, None);
+        assert_eq!(d.fg, None);
+    }
+
+    /// The spread keeps the fields the consumer names and defaults the
+    /// rest — the property that makes the *next* added field a non-event
+    /// for anyone who migrated this way.
+    #[test]
+    fn tooltip_default_spread_preserves_named_fields() {
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hello".to_string(),
+            placement: TooltipPlacement::Top,
+            border: TooltipBorder::None,
+            ..Default::default()
+        };
+        assert_eq!(t.id, WidgetId::new("tip"));
+        assert_eq!(t.text, "Hello");
+        assert_eq!(t.placement, TooltipPlacement::Top);
+        assert_eq!(t.border, TooltipBorder::None);
+        assert_eq!(t.title, None);
+        assert_eq!(t.styled_lines, None);
+    }
+
     #[test]
     fn tooltip_layout_prefers_bottom_when_room() {
         let t = Tooltip {

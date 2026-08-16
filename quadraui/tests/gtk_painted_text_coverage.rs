@@ -480,16 +480,9 @@ impl AppLogic for TooltipFixtureApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let tooltip = Tooltip {
-            id: WidgetId::new("tip"),
-            text: "Hover hint".into(),
-            styled_lines: None,
-            placement: TooltipPlacement::Bottom,
-            border: TooltipBorder::default(),
-            title: None,
-            fg: None,
-            bg: None,
-        };
+        let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover hint")
+            .with_placement(TooltipPlacement::Bottom)
+            .with_border(TooltipBorder::default());
         let layout = TooltipLayout {
             bounds: Rect::new(10.0, 10.0, 120.0, 24.0),
             resolved_placement: ResolvedPlacement::Bottom,

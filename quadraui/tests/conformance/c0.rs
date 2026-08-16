@@ -272,16 +272,9 @@ pub const CASES: &[Case] = &[
             let cw = b.char_width();
             let lh = b.line_height();
             let anchor = Rect::new(0.0, 0.0, area.width, lh);
-            let tooltip = Tooltip {
-                id: id("tooltip"),
-                text: "c0tip".to_string(),
-                styled_lines: None,
-                placement: TooltipPlacement::Bottom,
-                border: TooltipBorder::default(),
-                title: None,
-                bg: None,
-                fg: None,
-            };
+            let tooltip = Tooltip::new(id("tooltip"), "c0tip")
+                .with_placement(TooltipPlacement::Bottom)
+                .with_border(TooltipBorder::default());
             // Room for a border on all sides plus the whole label — a box
             // measured to exactly `border + text + border` leaves no
             // padding and clips the last glyph.
