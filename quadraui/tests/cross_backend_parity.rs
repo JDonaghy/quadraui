@@ -760,6 +760,21 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
 // plus an optional title — and this section is its parity coverage: for
 // every setting a consumer can choose, not just the default, TUI and GTK
 // must agree on the resulting chrome shape.
+//
+// Known, documented exception (not covered below): TUI's `Full` falls
+// back to `Sides`-style chrome when the measured box is too short to fit
+// both border rows (`height < 3`, see `tui::tooltip`'s module doc and its
+// `full_border_drops_title_when_too_short_to_close` /
+// `sides_border_never_closes_even_when_height_allows_it` unit tests,
+// which pin that fallback in isolation). GTK and macOS always stroke a
+// full rectangle regardless of height — they have no equivalent
+// short-height degrade. Every `Full` fixture below therefore measures
+// `rows: 3.0` (room enough to close on every backend) specifically so
+// this divergence never fires here; it is TUI's own rendering detail
+// rather than something a consumer selects, and asserting parity at
+// `height < 3` would be asserting two backends *disagree* by design, not
+// a parity bug. Left as a documented exception per the #541 review
+// rather than force-added coverage here.
 
 const BORDER_TOOLTIP_ID: &str = "cbp:541:tooltip";
 const BORDER_TOOLTIP_TEXT: &str = "BorderProbe";

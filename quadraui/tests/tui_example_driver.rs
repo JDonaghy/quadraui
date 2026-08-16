@@ -96,6 +96,8 @@ mod tab_group_demo;
 mod text_input_demo;
 #[path = "../examples/common/toast_app.rs"]
 mod toast_app;
+#[path = "../examples/common/tooltip_demo.rs"]
+mod tooltip_demo;
 
 use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
@@ -132,6 +134,7 @@ use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
 use toast_app::ToastApp;
+use tooltip_demo::TooltipDemo;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
 
@@ -3528,6 +3531,108 @@ fn toast_dismiss_click_removes_it_then_trigger_adds_a_new_one() {
     assert!(
         after_add.contains("Success notification"),
         "pressing '2' should trigger and paint a new Success toast:\n{after_add}"
+    );
+}
+
+// ─── TooltipDemo (#541): border vocabulary + title round-trip ─────────────
+//
+// `TooltipDemo` starts at `TooltipBorder::Full` with a title, so the
+// initial screen should show a closed box (all four corner glyphs) with
+// the title text embedded in the top row. Pressing '1' switches to
+// `Sides`: the corners and top/bottom rule disappear but the left/right
+// `│` bars (and the title, which `Sides` never renders) stay gone.
+// Pressing '3' switches to `None`: no border chrome at all, not even the
+// side bars. Pressing 't' toggles the title independently of the border
+// choice. A regression in `Tooltip::border`/`Tooltip::title` plumbing, or
+// in the TUI rasteriser's per-variant chrome selection, shows up here as
+// the wrong glyphs (or the title) persisting after a mode switch.
+
+#[test]
+fn tooltip_demo_initial_screen_is_a_full_box_with_title() {
+    let driver = TuiDriver::new(TooltipDemo::new(), 60, 12);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Tooltip content"),
+        "tooltip text should paint:\n{screen}"
+    );
+    assert!(
+        screen.contains('┌')
+            && screen.contains('┐')
+            && screen.contains('└')
+            && screen.contains('┘'),
+        "TooltipDemo starts at TooltipBorder::Full — all four corners should paint:\n{screen}"
+    );
+    assert!(
+        screen.contains("Info"),
+        "TooltipDemo starts with the title shown — it should be embedded in the top border row:\n{screen}"
+    );
+}
+
+#[test]
+fn tooltip_demo_key_1_switches_to_sides_border_and_drops_the_title() {
+    let mut driver = TuiDriver::new(TooltipDemo::new(), 60, 12);
+    driver.type_char('1');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Tooltip content"),
+        "tooltip text should still paint under Sides:\n{screen}"
+    );
+    assert!(
+        !screen.contains('┌')
+            && !screen.contains('┐')
+            && !screen.contains('└')
+            && !screen.contains('┘'),
+        "Sides never draws top/bottom chrome or corners:\n{screen}"
+    );
+    assert!(
+        screen.contains('│'),
+        "Sides still draws the left/right bars:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Info"),
+        "Sides has no top rule to embed a title in — it must not render:\n{screen}"
+    );
+}
+
+#[test]
+fn tooltip_demo_key_3_switches_to_none_border_dropping_all_chrome() {
+    let mut driver = TuiDriver::new(TooltipDemo::new(), 60, 12);
+    driver.type_char('3');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Tooltip content"),
+        "tooltip text should still paint under None:\n{screen}"
+    );
+    assert!(
+        !screen.contains('┌') && !screen.contains('│'),
+        "None draws no border chrome at all — not even side bars:\n{screen}"
+    );
+}
+
+#[test]
+fn tooltip_demo_key_t_toggles_the_title_independently_of_the_border() {
+    let mut driver = TuiDriver::new(TooltipDemo::new(), 60, 12);
+    assert!(
+        driver.screen().contains("Info"),
+        "starts with the title shown"
+    );
+
+    driver.type_char('t');
+    let after_off = driver.screen();
+    assert!(
+        !after_off.contains("Info"),
+        "'t' should hide the title:\n{after_off}"
+    );
+    assert!(
+        after_off.contains('┌'),
+        "toggling the title must not affect the border, still Full:\n{after_off}"
+    );
+
+    driver.type_char('t');
+    let after_on = driver.screen();
+    assert!(
+        after_on.contains("Info"),
+        "'t' again should bring the title back:\n{after_on}"
     );
 }
 

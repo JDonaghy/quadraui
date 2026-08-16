@@ -14,6 +14,41 @@
 //! content. The primitive's `layout()` chooses x/y based on preferred
 //! placement, adjusting if it would overflow the viewport. Backends
 //! render a box with the content at the resolved position.
+//!
+//! ## Downstream impact (#541)
+//!
+//! `border: TooltipBorder` and `title: Option<String>` are **new required
+//! fields on a plain (all-`pub`, no `#[non_exhaustive]`) struct**, so any
+//! exhaustive `Tooltip { .. }` literal with no `..Default::default()`
+//! fails to compile the moment this lands on `develop` — there is no
+//! backwards-compatible way to add a field to that shape (see
+//! `CLAUDE.md`'s *Downstream consumers* section). `vimcode` constructs
+//! `Tooltip` this way at 7 call sites and needs a matching migration PR
+//! (adding `border: TooltipBorder::default(), title: None,` or switching
+//! to [`Tooltip::new`] + the `with_*` builder methods below):
+//!
+//! - `src/tui_main/panels.rs:810`
+//! - `src/render.rs:1151`, `src/render.rs:1490`, `src/render.rs:4285`
+//! - `src/gtk/draw.rs:1378`, `src/gtk/draw.rs:1667`, `src/gtk/draw.rs:1765`
+//!
+//! Per policy this needs a companion `vimcode` migration issue/PR opened
+//! and linked before or alongside merge — that is a `gh`/cross-repo action
+//! outside a Work dispatch's tool access and must be done by whoever lands
+//! this (see the PR discussion for #541).
+//!
+//! [`Tooltip::new`] plus the builder methods below are the *forward*
+//! mitigation: they give every future construction site (in-tree and
+//! downstream, once migrated) a path that survives additional optional
+//! fields without another exhaustive-literal break. [`TooltipBorder`] is
+//! `#[non_exhaustive]` for the same reason — it is brand new this PR, so
+//! marking it costs nothing today and buys the same protection for its
+//! own future variants. `Tooltip` itself is deliberately left exhaustive
+//! here rather than also marked `#[non_exhaustive]`: doing so would, on
+//! top of the break above, additionally force every in-tree sealed
+//! acceptance slice under `tests/acceptance/` (an external crate from the
+//! library's point of view, exactly like `vimcode`) onto the builder too —
+//! and workers may not edit those files (see `CLAUDE.md`). That
+//! migration is Gate A's to make independently, not this PR's.
 
 use crate::event::Rect;
 use crate::types::{Color, Modifiers, StyledText, WidgetId};
@@ -67,6 +102,13 @@ pub struct Tooltip {
 /// popup that migrated to `Backend::draw_tooltip` (JDonaghy/vimcode#635)
 /// silently lost its top/bottom border and title because there was no
 /// field to carry the request. This type is that field's vocabulary.
+///
+/// `#[non_exhaustive]`: brand new this PR, so marking it costs no
+/// consumer anything today, and it means a future fourth variant (e.g. a
+/// `Rounded` corner style) is additive instead of another breaking change
+/// like the one adding this whole type was (see the module doc's
+/// *Downstream impact* section).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TooltipBorder {
     /// Vertical bars on the left/right edge only — no top or bottom rule,
@@ -203,6 +245,70 @@ impl TooltipLayout {
 }
 
 impl Tooltip {
+    /// Construct a `Tooltip` with just the two fields every consumer must
+    /// supply — `id` and `text` — and every other field at its
+    /// behaviour-preserving default (`styled_lines: None`, `placement:
+    /// Bottom`, `border: Full`, `title: None`, `bg: None`, `fg: None`).
+    ///
+    /// Prefer this (plus the `with_*` builder methods below) over a raw
+    /// `Tooltip { .. }` struct literal for any *new* call site: `Tooltip`
+    /// is a plain, all-`pub`-field struct with no `#[non_exhaustive]`
+    /// (see the module doc's *Downstream impact* section for why it
+    /// stays that way for now), so a raw literal is re-broken by the
+    /// next added field exactly the way `border`/`title` broke every
+    /// existing exhaustive literal in #541. Building through `new` +
+    /// `with_*` survives that.
+    pub fn new(id: WidgetId, text: impl Into<String>) -> Self {
+        Self {
+            id,
+            text: text.into(),
+            styled_lines: None,
+            placement: TooltipPlacement::default(),
+            border: TooltipBorder::default(),
+            title: None,
+            bg: None,
+            fg: None,
+        }
+    }
+
+    /// Set `styled_lines` (per-span-coloured multi-line content, in place
+    /// of `text`).
+    pub fn with_styled_lines(mut self, styled_lines: Vec<StyledText>) -> Self {
+        self.styled_lines = Some(styled_lines);
+        self
+    }
+
+    /// Set the preferred placement relative to the anchor.
+    pub fn with_placement(mut self, placement: TooltipPlacement) -> Self {
+        self.placement = placement;
+        self
+    }
+
+    /// Set the border chrome (#541).
+    pub fn with_border(mut self, border: TooltipBorder) -> Self {
+        self.border = border;
+        self
+    }
+
+    /// Set a title, centred into the top border row when `border` is
+    /// [`TooltipBorder::Full`] (#541). Ignored by `Sides` and `None`.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Override the background colour (theme default otherwise).
+    pub fn with_bg(mut self, bg: Color) -> Self {
+        self.bg = Some(bg);
+        self
+    }
+
+    /// Override the foreground colour (theme default otherwise).
+    pub fn with_fg(mut self, fg: Color) -> Self {
+        self.fg = Some(fg);
+        self
+    }
+
     /// Compute tooltip placement.
     ///
     /// # Arguments

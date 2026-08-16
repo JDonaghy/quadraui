@@ -138,12 +138,6 @@ mod ms11_542_structural_parity {
                 text: TOOLTIP_TEXT.to_string(),
                 styled_lines: None,
                 placement: TooltipPlacement::Bottom,
-                // #541 added this field after this slice was sealed; left at
-                // its default (`Full`) so the enclosure assertions below
-                // keep observing exactly the behaviour they were written
-                // against — this is a compile-fix, not a test-logic change.
-                border: quadraui::TooltipBorder::default(),
-                title: None,
                 bg: None,
                 fg: None,
             };
