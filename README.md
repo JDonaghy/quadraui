@@ -132,6 +132,7 @@ Runnable from the workspace root with `cargo run --example <name> --features <ba
 | `tui_split_tree` / `gtk_split_tree` | `tui` / `gtk` | `SplitTree` 3-way nested split (`Split(H, Split(V, A, B), C)`); every divider draggable via `DragTarget::SplitDivider`. |
 | `tui_panel` / `gtk_panel` | `tui` / `gtk` | `Panel` with title bar, close/maximize actions, content area, collapse toggle. |
 | `tui_toast` / `gtk_toast` | `tui` / `gtk` | `ToastStack` with severity tints, dismiss, action buttons. |
+| `tui_tooltip` / `gtk_tooltip` | `tui` / `gtk` | `Tooltip` border vocabulary (#541): cycle `Sides` / `Full` / `None` chrome and toggle a title embedded in `Full`'s top border row. |
 | `tui_indicators` / `gtk_indicators` | `tui` / `gtk` | `ProgressBar` + `Spinner` demo — determinate/indeterminate, cancel. |
 | `tui_search_panel` / `gtk_search_panel` | `tui` / `gtk` | Search panel spike: `MultiSectionView` + `TreeView` composition for file-search results. |
 | `tui_form_groups` / `gtk_form_groups` | `tui` / `gtk` | `Form` with `ToggleGroup` + `ButtonRow` horizontal field kinds, plus `FocusRing` for Tab/Shift+Tab cycling. Mini search/replace panel shape. |
