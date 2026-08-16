@@ -46,6 +46,7 @@
 //! ```
 
 use ratatui::backend::TestBackend;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
 use crate::backend::Backend;
@@ -92,12 +93,33 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
     TuiDriver::new(adapter, width, height)
 }
 
+/// The style painted onto one rendered cell: foreground, background, and
+/// text modifiers (bold/italic/underline/…).
+///
+/// Mirrors `ratatui::buffer::Cell::style()`'s three fields but drops the
+/// `sub_modifier`/`underline_color` ratatui carries for *diffing* two
+/// styles against each other — a rendered cell has no "subtracted"
+/// modifiers, only the resolved `add_modifier` bits ratatui reports back as
+/// [`Modifier`], which is what a driver test wants to assert against
+/// (quadraui#593). `fg`/`bg` are ratatui's own [`Color`], re-exported here
+/// (see [`TuiDriver::style_at`]) rather than `quadraui::types::Color`
+/// because that's what the rasterisers actually paint into the buffer —
+/// comparing against a theme token means wrapping the token with
+/// [`crate::tui::ratatui_color`] first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellStyle {
+    pub fg: Color,
+    pub bg: Color,
+    pub modifiers: Modifier,
+}
+
 /// Drives an [`AppLogic`] impl headlessly for tests.
 ///
 /// Construct with [`Self::new`] (which runs `setup` + paints the first
 /// frame), poke it with [`Self::press`] / [`Self::type_char`] /
 /// [`Self::press_named`] / [`Self::click`], and read the rendered grid
-/// back with [`Self::screen`] / [`Self::screen_contains`] / [`Self::find`].
+/// back with [`Self::screen`] / [`Self::screen_contains`] / [`Self::find`],
+/// or its style with [`Self::style_at`] / [`Self::styled_row`].
 pub struct TuiDriver<A: AppLogic> {
     app: A,
     backend: TuiBackend,
@@ -342,6 +364,61 @@ impl<A: AppLogic> TuiDriver<A> {
     /// True if any rendered row contains `needle`.
     pub fn screen_contains(&self, needle: &str) -> bool {
         self.screen().contains(needle)
+    }
+
+    /// The style a rasteriser painted onto one cell: foreground, background,
+    /// and text modifiers (bold/italic/underline/…).
+    ///
+    /// [`Self::screen`] only surfaces glyphs, so a driver test can prove a
+    /// cell exists but not, e.g., that it's the *preview*-tab italic rather
+    /// than the permanent-tab plain style (quadraui#593) — both stringify
+    /// identically. `style_at` reads the same buffer cell `screen()` does,
+    /// just its [`ratatui::buffer::Cell::style`] instead of its symbol.
+    ///
+    /// Re-exports `ratatui`'s own [`Color`]/[`Modifier`] via [`CellStyle`]
+    /// so a downstream test crate can assert on them (`style.modifiers
+    /// .contains(Modifier::ITALIC)`) without adding its own `ratatui`
+    /// dependency — it already depends on `quadraui` to get `TuiDriver`.
+    pub fn style_at(&self, x: u16, y: u16) -> Option<CellStyle> {
+        let buf = self.terminal.backend().buffer();
+        let area = buf.area;
+        if x < area.left() || x >= area.right() || y < area.top() || y >= area.bottom() {
+            return None;
+        }
+        let cell = &buf[(x, y)];
+        Some(CellStyle {
+            fg: cell.fg,
+            bg: cell.bg,
+            modifiers: cell.modifier,
+        })
+    }
+
+    /// [`Self::style_at`] for every cell of row `y`, left to right — one
+    /// entry per cell, so a test can assert "every cell of the tab label is
+    /// italic" without indexing arithmetic. Empty if `y` is out of range.
+    ///
+    /// `styled_row(y).len()` equals the buffer width for any in-range `y`
+    /// (matching [`Self::screen`]'s row length before the trailing `\n`).
+    pub fn styled_row(&self, y: u16) -> Vec<(char, CellStyle)> {
+        let buf = self.terminal.backend().buffer();
+        let area = buf.area;
+        if y < area.top() || y >= area.bottom() {
+            return Vec::new();
+        }
+        (area.left()..area.right())
+            .map(|x| {
+                let cell = &buf[(x, y)];
+                let ch = cell.symbol().chars().next().unwrap_or(' ');
+                (
+                    ch,
+                    CellStyle {
+                        fg: cell.fg,
+                        bg: cell.bg,
+                        modifiers: cell.modifier,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Access the app state for test assertions.
@@ -925,6 +1002,164 @@ mod tests {
         assert_eq!(
             double_clicks, 1,
             "default folding should still fold two same-position clicks: {recorded:?}"
+        );
+    }
+
+    // ─── quadraui#593 ────────────────────────────────────────────────────
+
+    use crate::primitives::tab_bar::{TabBar, TabItem};
+    use crate::theme::Theme;
+    use crate::types::WidgetId as QWidgetId;
+
+    /// Paints a two-tab `TabBar` — one permanent, one preview — so a test
+    /// can assert `style_at`/`styled_row` distinguish them. Mirrors the
+    /// `OneLineApp` pattern above but drives `draw_tab_bar` instead of
+    /// `draw_status_bar`.
+    struct TabBarApp {
+        theme: Theme,
+    }
+
+    impl AppLogic for TabBarApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.set_theme(self.theme);
+            backend.draw_tab_bar(
+                Rect::new(0.0, 0.0, 20.0, 1.0),
+                &TabBar {
+                    id: QWidgetId::new("tabs"),
+                    tabs: vec![
+                        TabItem {
+                            label: "perm".to_string(),
+                            is_active: false,
+                            is_dirty: false,
+                            is_preview: false,
+                            is_closable: false,
+                        },
+                        TabItem {
+                            label: "prev".to_string(),
+                            is_active: false,
+                            is_dirty: false,
+                            is_preview: true,
+                            is_closable: false,
+                        },
+                    ],
+                    scroll_offset: 0,
+                    right_segments: vec![],
+                    active_accent: None,
+                    show_tab_close: false,
+                    compact: false,
+                },
+                None,
+            );
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// Acceptance criterion: `style_at` distinguishes a preview tab from a
+    /// permanent one by `Modifier::ITALIC` and by the theme's
+    /// `tab_preview_inactive_fg` vs `tab_inactive_fg` foreground — neither
+    /// of which `screen()` can see, since both tabs stringify identically
+    /// (quadraui#593).
+    #[test]
+    fn style_at_distinguishes_preview_tab_from_permanent_tab() {
+        let theme = Theme::default();
+        let driver = TuiDriver::new(TabBarApp { theme }, 20, 1);
+
+        // "perm" occupies cells 0..4, "prev" occupies cells 4..8 (no close
+        // buttons reserved — `is_closable: false` on both tabs); the rest
+        // of the 20-cell bar is blank fill.
+        assert!(driver.screen_contains("permprev"));
+
+        let perm_style = driver
+            .style_at(0, 0)
+            .expect("(0, 0) is inside the 20x1 buffer");
+        let preview_style = driver
+            .style_at(4, 0)
+            .expect("(4, 0) is inside the 20x1 buffer");
+
+        assert!(
+            !perm_style.modifiers.contains(Modifier::ITALIC),
+            "permanent tab must not be italic: {perm_style:?}"
+        );
+        assert!(
+            preview_style.modifiers.contains(Modifier::ITALIC),
+            "preview tab must be italic: {preview_style:?}"
+        );
+
+        assert_eq!(
+            perm_style.fg,
+            crate::tui::ratatui_color(theme.tab_inactive_fg),
+            "permanent tab's fg should be the theme's tab_inactive_fg token"
+        );
+        assert_eq!(
+            preview_style.fg,
+            crate::tui::ratatui_color(theme.tab_preview_inactive_fg),
+            "preview tab's fg should be the theme's tab_preview_inactive_fg token"
+        );
+    }
+
+    /// `style_at` outside the buffer returns `None` rather than panicking
+    /// (acceptance criterion) — both past the right/bottom edge and on the
+    /// exact boundary row/column, which is the first out-of-range value.
+    #[test]
+    fn style_at_out_of_bounds_returns_none() {
+        let driver = TuiDriver::new(
+            TabBarApp {
+                theme: Theme::default(),
+            },
+            20,
+            1,
+        );
+
+        assert!(
+            driver.style_at(20, 0).is_none(),
+            "x == width is out of range"
+        );
+        assert!(
+            driver.style_at(0, 1).is_none(),
+            "y == height is out of range"
+        );
+        assert!(
+            driver.style_at(100, 100).is_none(),
+            "far outside is out of range"
+        );
+        assert!(
+            driver.style_at(19, 0).is_some(),
+            "x == width - 1 is the last valid column"
+        );
+    }
+
+    /// `styled_row(y).len()` equals the buffer width for any in-range `y`
+    /// (acceptance criterion), and is empty for an out-of-range row rather
+    /// than panicking.
+    #[test]
+    fn styled_row_length_matches_buffer_width() {
+        let driver = TuiDriver::new(
+            TabBarApp {
+                theme: Theme::default(),
+            },
+            20,
+            1,
+        );
+
+        let row = driver.styled_row(0);
+        assert_eq!(row.len(), 20, "row length should equal buffer width");
+        assert_eq!(
+            row.iter().map(|(ch, _)| *ch).collect::<String>(),
+            "permprev            "[..20],
+            "styled_row's chars should match screen()'s glyphs left to right"
+        );
+        // Same per-cell distinction as style_at, reachable via styled_row.
+        assert!(!row[0].1.modifiers.contains(Modifier::ITALIC));
+        assert!(row[4].1.modifiers.contains(Modifier::ITALIC));
+
+        assert!(
+            driver.styled_row(1).is_empty(),
+            "out-of-range row should be empty, not panic"
         );
     }
 }
