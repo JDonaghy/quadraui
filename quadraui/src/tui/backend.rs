@@ -117,6 +117,17 @@ pub struct TuiBackend {
     /// settings via [`Self::set_nerd_fonts`]; defaults to `true`.
     nerd_fonts_enabled: bool,
     double_click: super::events::DoubleClickDetector,
+    /// Whether [`Self::translate_injected`] should run raw `MouseDown`
+    /// pairs through [`Self::double_click`]'s folding logic. Defaults to
+    /// `true` (matches production `poll_events`/`wait_events`, which
+    /// always fold). [`super::testing::TuiDriver::set_double_click_folding`]
+    /// flips this to `false` so a test that means two distinct clicks
+    /// (quadraui#592) isn't at the mercy of `Instant::now()` landing two
+    /// calls inside the 400ms window under load. Only `translate_injected`
+    /// (the driver's path) honours this — `poll_events`/`wait_events`
+    /// (the live terminal runner) always fold, since a real user's two
+    /// clicks should still coalesce.
+    double_click_folding: bool,
     /// Selectable text regions registered during the current frame via
     /// [`crate::Backend::register_text_region`]. Cleared at the start
     /// of each frame by [`Self::begin_frame`].
@@ -194,6 +205,7 @@ impl TuiBackend {
             current_theme: crate::Theme::default(),
             nerd_fonts_enabled: true,
             double_click: super::events::DoubleClickDetector::new(),
+            double_click_folding: true,
             text_regions: Vec::new(),
             zones: Vec::new(),
             active_selection: None,
@@ -630,8 +642,21 @@ impl TuiBackend {
     pub(crate) fn translate_injected(&mut self, raw: Vec<UiEvent>) -> Vec<UiEvent> {
         let mut out = self.apply_dispatch(raw);
         self.apply_accelerators(&mut out);
-        self.double_click.process(&mut out);
+        if self.double_click_folding {
+            self.double_click.process(&mut out);
+        }
         out
+    }
+
+    /// Toggle whether [`Self::translate_injected`] folds a `MouseDown`
+    /// into a `DoubleClick` when it lands within the detector's time/radius
+    /// window of the previous one. Driver-facing knob for
+    /// [`super::testing::TuiDriver::set_double_click_folding`] (quadraui#592)
+    /// — disable it so a test that dispatches two deliberate single clicks
+    /// in immediate succession gets two `MouseDown`s, not a coin-flip on
+    /// wall-clock timing.
+    pub(crate) fn set_double_click_folding(&mut self, enabled: bool) {
+        self.double_click_folding = enabled;
     }
 
     fn apply_accelerators(&self, events: &mut [UiEvent]) {
