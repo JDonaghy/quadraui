@@ -91,6 +91,7 @@ objc2-foundation = { version = "0.2", optional = true, features = [
     "NSArray",
     "NSDate",
     "NSGeometry",
+    "NSNotification",
     "NSObject",
     "NSProcessInfo",
     "NSString",

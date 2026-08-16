@@ -42,24 +42,29 @@ use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::mutability;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::sel;
 use objc2::ClassType;
 use objc2::DeclaredClass;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSEvent, NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
+    NSEvent, NSGraphicsContext, NSView, NSViewFrameDidChangeNotification, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString,
 };
 
 use super::backend::MacBackend;
-use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
+use super::events::{
+    ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_resize_to_uievent, ns_scroll,
+};
 use super::text::make_font;
 use crate::backend::Backend;
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
-use crate::{ButtonMask, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -317,6 +322,34 @@ declare_class!(
                 self.dispatch(ev);
             }
         }
+
+        // ── Window resize (#486) ─────────────────────────────────
+
+        /// Registered (in [`run`]) as the observer for
+        /// `NSViewFrameDidChangeNotification`, which fires whenever this
+        /// view's `frame` changes — live window resize, programmatic
+        /// resize, and the split-second the window first opens. Compares
+        /// against `last_viewport` (also updated here) so a notification
+        /// that doesn't actually change the size — AppKit can post one
+        /// on origin-only moves — doesn't spam `AppLogic::handle` with a
+        /// same-size `WindowResized`.
+        #[method(viewFrameDidChange:)]
+        fn view_frame_did_change(&self, _note: &NSNotification) {
+            let bounds = self.bounds();
+            let scale = self
+                .window()
+                .map(|w| w.backingScaleFactor())
+                .unwrap_or(1.0);
+            let ev = ns_resize_to_uievent(bounds.size.width, bounds.size.height, scale as f32);
+            let UiEvent::WindowResized { viewport } = ev else {
+                unreachable!("ns_resize_to_uievent always returns UiEvent::WindowResized");
+            };
+            if self.ivars().last_viewport.get() == viewport {
+                return;
+            }
+            self.ivars().last_viewport.set(viewport);
+            self.dispatch(ev);
+        }
     }
 );
 
@@ -495,7 +528,53 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
                 caret_visible.set(true);
                 caret_pause.set(std::time::Instant::now() + std::time::Duration::from_millis(500));
             }
+
             let mut backend_mut = backend.borrow_mut();
+
+            // Double-click folding (#486): a `MouseDown` landing within
+            // the detector's time/position window of the previous click
+            // becomes `DoubleClick` before `AppLogic` ever sees it —
+            // mirrors GTK's `GestureClick` `n_press == 2` branch
+            // (`gtk::run`) and TUI's `DoubleClickDetector`.
+            let ev = backend_mut.fold_double_click(ev);
+
+            // Global accelerator dispatch (#486): mirrors the
+            // "Global accelerator dispatch" step in
+            // `gtk::run::dispatch_event`.
+            let ev = if let UiEvent::KeyPressed { key, modifiers, .. } = &ev {
+                match backend_mut.match_keypress(key, *modifiers) {
+                    Some(id) => UiEvent::Accelerator(id, *modifiers),
+                    None => ev,
+                }
+            } else {
+                ev
+            };
+
+            // Cmd-V interception (paste, #486): AppKit has no native
+            // paste signal on a bespoke `NSView`, so — like GTK's Ctrl-V
+            // interception in `gtk::run::dispatch_event` — the runner
+            // reads the system clipboard directly and delivers
+            // `ClipboardPaste` instead of forwarding the raw key press.
+            // Cmd (not Ctrl) is the Mac paste modifier.
+            if let UiEvent::KeyPressed {
+                key: Key::Char('v') | Key::Char('V'),
+                modifiers:
+                    Modifiers {
+                        cmd: true,
+                        shift: false,
+                        alt: false,
+                        ctrl: false,
+                    },
+                ..
+            } = &ev
+            {
+                if let Some(text) = backend_mut.services().clipboard().read_text() {
+                    let mut app_mut = app.borrow_mut();
+                    return app_mut.handle(UiEvent::ClipboardPaste(text), &mut *backend_mut);
+                }
+                return Reaction::Continue;
+            }
+
             let mut app_mut = app.borrow_mut();
             app_mut.handle(ev, &mut *backend_mut)
         })
@@ -530,6 +609,27 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
     window.makeKeyAndOrderFront(None);
+
+    // WindowResized wiring (#486): opt the view into frame-change
+    // notifications and observe them on itself via `viewFrameDidChange:`.
+    // SAFETY: `view` is a valid, retained `QuadraView` (an `NSObject`
+    // subclass) for the lifetime of the app; the observer registration
+    // and the object being observed share that lifetime, and
+    // `NSNotificationCenter` doesn't retain the observer, matching the
+    // `target`-registration pattern `menu_bar_install` uses for menu
+    // actions. The cast to `&AnyObject` is a no-op upcast through the
+    // Obj-C class chain (`QuadraView` → `NSView` → `NSResponder` →
+    // `NSObject`).
+    view.setPostsFrameChangedNotifications(true);
+    let view_obj: &AnyObject = unsafe { &*(&*view as *const QuadraView as *const AnyObject) };
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            view_obj,
+            sel!(viewFrameDidChange:),
+            Some(NSViewFrameDidChangeNotification),
+            Some(view_obj),
+        );
+    }
 
     // Drive the InlineInput caret blink (#188). The pair is held as
     // locals for the lifetime of the app — when this function
