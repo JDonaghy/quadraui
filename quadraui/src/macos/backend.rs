@@ -75,6 +75,7 @@ use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
+use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Form, Key, ListView, Modifiers,
     Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, Terminal, TextDisplay, Theme,
@@ -152,6 +153,52 @@ pub struct MacBackend {
     caret_blink_pause_until: std::rc::Rc<std::cell::Cell<std::time::Instant>>,
 }
 
+/// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
+/// [`DoubleClickDetector`].
+///
+/// `ns_mouse_down` (`macos/events.rs`) passes raw `NSEvent` `x`/`y`
+/// straight through — unlike TUI's whole character cells, these are
+/// point-precision, so the detector's default radius
+/// (`crate::dispatch::DOUBLE_CLICK_RADIUS`, 1.5 — tuned for TUI's
+/// integral cell grid) is far tighter than two real mouse/trackpad
+/// clicks can reliably land within. `4.0` points is a rough approximation
+/// of AppKit's own double-click hit region; it's a heuristic, not a
+/// measured constant, since there's no public API exposing the system's
+/// actual tolerance the way `NSEvent.clickCount` would sidestep this
+/// entirely (see the #486 review's non-blocking note — reading
+/// `clickCount` natively remains the more robust fix and should be
+/// revisited, ideally verified on real hardware).
+const MAC_DOUBLE_CLICK_RADIUS: f32 = 4.0;
+
+/// Translate a parsed universal [`KeyBinding`] to macOS's native Cmd
+/// idiom.
+///
+/// [`crate::accelerator::parse_binding`] is shared with `TuiBackend`, so
+/// its universal arms (`KeyBinding::Save`, `Copy`, `Paste`, …) resolve to
+/// a **Ctrl**-modifier `ParsedBinding` regardless of platform — correct
+/// for TUI, wrong for macOS. `menu_bar_install::accelerator_to_ns` (the
+/// native menu path) and `crate::accelerator::render_binding` (the
+/// display/tooltip path) both already render these as **Cmd** on macOS,
+/// so a `MacBackend::match_keypress` that compared the raw Ctrl
+/// `ParsedBinding` against a real Cmd keypress would never fire (#486
+/// review). Swap Ctrl for Cmd here so registration, native-menu
+/// resolution, and rendering all agree.
+///
+/// `KeyBinding::Literal` bindings are left untouched — the app author
+/// already chose the exact modifier they want (e.g. `<C-s>` for a
+/// deliberate Ctrl+S that coexists with the native Cmd+S), and
+/// `accelerator_to_ns`/`render_binding` don't rewrite literals either.
+fn macos_universal_binding_modifiers(
+    binding: &KeyBinding,
+    mut parsed: ParsedBinding,
+) -> ParsedBinding {
+    if !matches!(binding, KeyBinding::Literal(_)) && parsed.modifiers.ctrl {
+        parsed.modifiers.ctrl = false;
+        parsed.modifiers.cmd = true;
+    }
+    parsed
+}
+
 impl MacBackend {
     /// Construct a fresh `MacBackend` with a default viewport, empty
     /// event queue, default theme, and no font. The runner overwrites
@@ -164,7 +211,7 @@ impl MacBackend {
             drag_state: DragState::new(),
             accelerators: HashMap::new(),
             parsed_accelerators: Vec::new(),
-            double_click: DoubleClickDetector::new(),
+            double_click: DoubleClickDetector::with_radius(MAC_DOUBLE_CLICK_RADIUS),
             events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
             services: MacPlatformServices::new(),
             current_cg_ptr: Cell::new(std::ptr::null()),
@@ -270,6 +317,14 @@ impl MacBackend {
     /// `GtkBackend::match_keypress` — non-Global entries are skipped
     /// because this backend doesn't own focus/mode context the way a
     /// scoped `KeyMap` resolver does.
+    ///
+    /// Native Cmd keypresses (`ns_modifier_flags_to_quadraui` maps a real
+    /// Cmd into `Modifiers { cmd: true, .. }`) compare directly against
+    /// `parsed_accelerators`, which already stores universal bindings
+    /// with Cmd instead of Ctrl — see
+    /// [`macos_universal_binding_modifiers`], applied once at
+    /// `register_accelerator` time so this lookup stays a plain
+    /// equality check.
     pub(crate) fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
         let key_name = key_to_binding_name(key);
         for (parsed, id) in &self.parsed_accelerators {
@@ -347,6 +402,7 @@ impl Backend for MacBackend {
         self.accelerators.insert(acc.id.clone(), acc.clone());
         self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
         if let Some(parsed) = parse_binding(&acc.binding) {
+            let parsed = macos_universal_binding_modifiers(&acc.binding, parsed);
             self.parsed_accelerators.push((parsed, acc.id.clone()));
         }
     }
@@ -1918,6 +1974,110 @@ mod tests {
                 }
             ),
             Some(AcceleratorId::new("save"))
+        );
+    }
+
+    /// Regression test for the blocking review finding on this PR:
+    /// `parse_binding` (shared with `TuiBackend`) resolves every
+    /// universal `KeyBinding` variant to a **Ctrl** `ParsedBinding`
+    /// regardless of platform. `accelerator_to_ns` (native menu path)
+    /// and `render_binding` (display path) both already render these
+    /// as **Cmd** on macOS, so a real Cmd+S keypress — the one the UI
+    /// tells the user to press — must match a `KeyBinding::Save`
+    /// registration.
+    #[test]
+    fn match_keypress_universal_binding_matches_native_cmd_not_ctrl() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&Accelerator {
+            id: AcceleratorId::new("save"),
+            binding: KeyBinding::Save,
+            scope: AcceleratorScope::Global,
+            label: None,
+        });
+
+        // The advertised shortcut (⌘S, matching `accelerator_to_ns` /
+        // `render_binding`) must fire.
+        assert_eq!(
+            b.match_keypress(
+                &crate::Key::Char('s'),
+                Modifiers {
+                    cmd: true,
+                    ..Default::default()
+                },
+            ),
+            Some(AcceleratorId::new("save")),
+        );
+
+        // The raw literal Ctrl+S that `parse_binding` alone would
+        // produce must NOT fire — that's not what's on screen and not
+        // the native macOS idiom.
+        assert_eq!(
+            b.match_keypress(
+                &crate::Key::Char('s'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            None,
+        );
+    }
+
+    /// `KeyBinding::Redo` parses to `<C-S-z>` (Ctrl+Shift+Z) — verifies
+    /// the Ctrl→Cmd translation preserves the co-occurring Shift
+    /// modifier instead of clobbering it, matching
+    /// `accelerator_to_ns`'s `cmd() | shift()` for the same variant.
+    #[test]
+    fn match_keypress_universal_binding_preserves_shift_modifier() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&Accelerator {
+            id: AcceleratorId::new("redo"),
+            binding: KeyBinding::Redo,
+            scope: AcceleratorScope::Global,
+            label: None,
+        });
+
+        assert_eq!(
+            b.match_keypress(
+                &crate::Key::Char('z'),
+                Modifiers {
+                    cmd: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            Some(AcceleratorId::new("redo")),
+        );
+    }
+
+    /// `KeyBinding::Literal` bindings are an app author's deliberate,
+    /// exact choice (e.g. a literal Ctrl+S that coexists with the
+    /// native Cmd+S) — `accelerator_to_ns`/`render_binding` don't
+    /// rewrite literals either, so `match_keypress` must not.
+    #[test]
+    fn match_keypress_literal_binding_ctrl_is_not_translated_to_cmd() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&acc("literal-ctrl-s", "<C-s>"));
+
+        assert_eq!(
+            b.match_keypress(
+                &crate::Key::Char('s'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            Some(AcceleratorId::new("literal-ctrl-s")),
+        );
+        assert_eq!(
+            b.match_keypress(
+                &crate::Key::Char('s'),
+                Modifiers {
+                    cmd: true,
+                    ..Default::default()
+                },
+            ),
+            None,
         );
     }
 

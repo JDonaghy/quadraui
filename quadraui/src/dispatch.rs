@@ -828,21 +828,59 @@ pub fn dispatch_click(
 use std::time::{Duration, Instant};
 
 const DOUBLE_CLICK_MS: u64 = 400;
+/// Tuned for TUI's **character-cell** coordinate grid, where adjacent
+/// cells are a whole unit apart — a 1.5-cell tolerance comfortably
+/// covers "same cell" while rejecting "next cell over". Backends whose
+/// `MouseDown` positions are in a different unit (e.g. macOS's
+/// point-precision `NSEvent` coordinates) must not inherit this value;
+/// see [`DoubleClickDetector::with_radius`] and
+/// `quadraui/docs/LESSONS.md`'s "No hardcoded px / cell / DIP
+/// constants" rule — constants belong on the backend, not shared code.
 const DOUBLE_CLICK_RADIUS: f32 = 1.5;
 
 /// Detects double-clicks from repeated `MouseDown` events within a
 /// time window at the same position. Stateful — lives on the backend
 /// (`TuiBackend::double_click`, `MacBackend::double_click`).
-#[derive(Default)]
 pub struct DoubleClickDetector {
     last_click_time: Option<Instant>,
     last_click_pos: Point,
     last_click_button: MouseButton,
+    /// Position tolerance, in whatever unit the caller's `MouseDown`
+    /// positions use. Defaults to [`DOUBLE_CLICK_RADIUS`] (TUI's
+    /// character-cell tolerance) via [`Self::new`] /
+    /// [`Self::default`]; callers in a different coordinate system
+    /// should use [`Self::with_radius`] instead.
+    radius: f32,
+}
+
+impl Default for DoubleClickDetector {
+    fn default() -> Self {
+        Self {
+            last_click_time: None,
+            last_click_pos: Point::default(),
+            last_click_button: MouseButton::default(),
+            radius: DOUBLE_CLICK_RADIUS,
+        }
+    }
 }
 
 impl DoubleClickDetector {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Same detector, but with a caller-supplied position-tolerance
+    /// `radius` instead of [`DOUBLE_CLICK_RADIUS`]. Use this whenever
+    /// the consumer's `MouseDown` positions aren't TUI's character-cell
+    /// grid — e.g. `MacBackend` wraps native `NSEvent` coordinates,
+    /// which are point-precision, so a 1.5-point tolerance (the raw
+    /// cell-tuned constant) is far tighter than two real clicks can
+    /// reliably land within.
+    pub fn with_radius(radius: f32) -> Self {
+        Self {
+            radius,
+            ..Self::default()
+        }
     }
 
     /// Process a batch of translated events. Replaces `MouseDown` with
@@ -860,8 +898,8 @@ impl DoubleClickDetector {
                     .map(|t| now.duration_since(t) < Duration::from_millis(DOUBLE_CLICK_MS))
                     .unwrap_or(false)
                     && *button == self.last_click_button
-                    && (position.x - self.last_click_pos.x).abs() <= DOUBLE_CLICK_RADIUS
-                    && (position.y - self.last_click_pos.y).abs() <= DOUBLE_CLICK_RADIUS;
+                    && (position.x - self.last_click_pos.x).abs() <= self.radius
+                    && (position.y - self.last_click_pos.y).abs() <= self.radius;
 
                 if is_double {
                     *ev = UiEvent::DoubleClick {
