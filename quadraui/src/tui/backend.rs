@@ -1347,11 +1347,20 @@ impl Backend for TuiBackend {
     }
 
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout: &crate::TooltipLayout) {
+        self.draw_tooltip_with_chrome(tooltip, layout, &crate::TooltipChrome::default());
+    }
+
+    fn draw_tooltip_with_chrome(
+        &mut self,
+        tooltip: &crate::Tooltip,
+        layout: &crate::TooltipLayout,
+        chrome: &crate::TooltipChrome,
+    ) {
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_tooltip called outside enter_frame_scope");
-        crate::tui::draw_tooltip(frame.buffer_mut(), tooltip, layout, &theme);
+        crate::tui::draw_tooltip_with_chrome(frame.buffer_mut(), tooltip, layout, chrome, &theme);
         // #542: register the tooltip's own surface so a structural-parity
         // observer (`ConformanceDriver::inventory().zones()`) can see the
         // tooltip was drawn at all, not just infer it from text presence —

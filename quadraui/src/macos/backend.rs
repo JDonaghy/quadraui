@@ -1029,6 +1029,15 @@ impl Backend for MacBackend {
         )
     }
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
+        self.draw_tooltip_with_chrome(tooltip, layout, &crate::TooltipChrome::default());
+    }
+
+    fn draw_tooltip_with_chrome(
+        &mut self,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &crate::TooltipChrome,
+    ) {
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -1043,11 +1052,12 @@ impl Backend for MacBackend {
         let char_width = self.current_char_width;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
-            super::tooltip::draw_tooltip(
+            super::tooltip::draw_tooltip_with_chrome(
                 ctx,
                 font,
                 tooltip,
                 layout,
+                chrome,
                 line_height,
                 char_width,
                 &theme,

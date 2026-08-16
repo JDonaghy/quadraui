@@ -47,7 +47,7 @@ use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout};
-use crate::primitives::tooltip::{Tooltip, TooltipLayout};
+use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
@@ -882,11 +882,41 @@ pub trait Backend {
     /// hosts to route clicks without re-rendering.
     fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
 
-    /// Draw a [`Tooltip`] popup at its caller-resolved layout. The
+    /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
+    /// default chrome ([`crate::TooltipBorder::Full`], no title). The
     /// caller computes anchor + viewport + content measurement and
     /// asks `tooltip.layout(...)` for the bounds. Tooltips are
     /// non-interactive — no hit data returned.
+    ///
+    /// To ask for a different border, or for a title in the top rule,
+    /// call [`Backend::draw_tooltip_with_chrome`].
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout);
+
+    /// Draw a [`Tooltip`] popup with an explicit [`TooltipChrome`]
+    /// request (#541): which border to stroke (`Sides` / `Full` /
+    /// `None`) and an optional title to embed in `Full`'s top rule.
+    ///
+    /// Added rather than folded into [`Backend::draw_tooltip`]'s
+    /// signature, and given a default body, so that #541 breaks no
+    /// existing `Backend` implementor and no existing call site — see
+    /// `primitives::tooltip`'s module doc.
+    ///
+    /// The default body **ignores `chrome`** and delegates to
+    /// `draw_tooltip`, i.e. renders `TooltipChrome::default()`. That is
+    /// the correct fallback for a backend that has no chrome vocabulary
+    /// of its own, but it does mean a `Sides`/`None`/title request is
+    /// silently dropped by any backend that hasn't overridden this.
+    /// The TUI, GTK and macOS backends all override it and honour the
+    /// request in full.
+    fn draw_tooltip_with_chrome(
+        &mut self,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+    ) {
+        let _ = chrome;
+        self.draw_tooltip(tooltip, layout);
+    }
 
     /// Draw a [`ContextMenu`] popup at its caller-resolved layout.
     /// Returns the per-clickable-item hit rectangles + their
