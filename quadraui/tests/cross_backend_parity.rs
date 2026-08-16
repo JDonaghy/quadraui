@@ -23,7 +23,7 @@ use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
 use quadraui::{
     AppLogic, Backend, DataTableLayout, NamedKey, Reaction, Rect, Tooltip, TooltipBorder,
-    TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+    TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/pipeline_app.rs"]
@@ -775,6 +775,18 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
 // `height < 3` would be asserting two backends *disagree* by design, not
 // a parity bug. Left as a documented exception per the #541 review
 // rather than force-added coverage here.
+//
+// Scope note — this file is a *two*-backend harness, not a three-backend
+// one. `ConformanceDriver` has `TuiDriver` and `GtkDriver` implementations
+// only; there is no `MacDriver`, so macOS cannot participate in any test
+// here (pre-existing infra gap, not something #541 introduced or could
+// close). macOS's side of the #541 vocabulary is covered instead by
+// direct pixel-probe unit tests in `src/macos/tooltip.rs`
+// (`sides_border_only_strokes_left_and_right`, `none_border_strokes_nothing`,
+// `full_border_title_punches_a_gap_...`, `title_is_ignored_when_border_is_
+// sides_or_none`), which mirror the GTK rasteriser's assertions one for one.
+// Anyone treating this file as the single source of truth across all three
+// backends should read those too.
 
 const BORDER_TOOLTIP_ID: &str = "cbp:541:tooltip";
 const BORDER_TOOLTIP_TEXT: &str = "BorderProbe";
@@ -803,10 +815,11 @@ impl AppLogic for TooltipBorderFixture {
         let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let anchor = Rect::new(0.0, 0.0, vp.width, lh);
 
-        // `border`/`title` (#541) are set on the *layout*, not the
-        // `Tooltip` itself — see `primitives::tooltip`'s module doc for
-        // why: it keeps every exhaustive `Tooltip { .. }` literal (in-tree
-        // and downstream) compiling untouched by this issue.
+        // `border`/`title` (#541) travel in a `TooltipChrome` sidecar
+        // passed alongside the tooltip and its layout — not as fields on
+        // either. See `primitives::tooltip`'s module doc for why: it keeps
+        // every exhaustive `Tooltip { .. }` *and* `TooltipLayout { .. }`
+        // literal (in-tree and downstream) compiling untouched.
         let tooltip = Tooltip::new(
             WidgetId::new(BORDER_TOOLTIP_ID),
             BORDER_TOOLTIP_TEXT.to_string(),
@@ -819,13 +832,12 @@ impl AppLogic for TooltipBorderFixture {
             cw * (BORDER_TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * self.rows,
         );
-        let mut layout = tooltip
-            .layout(anchor, viewport, measure, lh)
-            .with_border(self.border);
+        let layout = tooltip.layout(anchor, viewport, measure, lh);
+        let mut chrome = TooltipChrome::new(self.border);
         if let Some(title) = self.title.clone() {
-            layout = layout.with_title(title);
+            chrome = chrome.with_title(title);
         }
-        backend.draw_tooltip(&tooltip, &layout);
+        backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

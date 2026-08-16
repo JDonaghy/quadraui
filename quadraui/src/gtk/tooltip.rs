@@ -2,13 +2,16 @@
 //!
 //! Cairo + Pango equivalent of `quadraui::tui::draw_tooltip`. Paints a
 //! background rectangle at the resolved bounds, then border chrome per
-//! `layout.border` (#541 — [`crate::TooltipBorder`]; see
-//! `primitives::tooltip`'s module doc for why it lives on
-//! [`TooltipLayout`] rather than on [`Tooltip`]):
+//! the [`TooltipChrome`] argument (#541 — [`crate::TooltipBorder`]; see
+//! `primitives::tooltip`'s module doc for why the vocabulary is a
+//! sidecar value rather than a field on [`Tooltip`] or
+//! [`TooltipLayout`]). [`draw_tooltip`] keeps its pre-#541 signature and
+//! renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
+//! takes the request explicitly:
 //!
 //! - [`TooltipBorder::Full`] (the default) strokes a full 4-sided box —
 //!   GTK has always done this, unconditionally, before #541 gave it a
-//!   name. An optional `layout.title` is centred over the top edge,
+//!   name. An optional `chrome.title` is centred over the top edge,
 //!   punched through the stroke with a background-coloured backing
 //!   rectangle so it reads as embedded in the border rather than a
 //!   content row (matching the TUI rasteriser's top-row title).
@@ -23,26 +26,62 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipLayout};
+use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
 use crate::theme::Theme;
 
-/// Draw a [`Tooltip`] at its resolved layout position.
+/// Draw a [`Tooltip`] at its resolved layout position with the default
+/// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
+/// this rasteriser drew before #541 added a choice.
 ///
 /// `padding_x` is the horizontal padding (in pixels) from the left
 /// border to the start of text — consumers typically pass the same
 /// `char_width` they used when computing the tooltip's measured width.
-/// Halved when `layout.border` is [`TooltipBorder::None`], since there
-/// is no border column to clear first — mirrors the TUI rasteriser's
-/// `text_col_offset` dropping from 2 (border + pad) to 1 (pad only).
 ///
 /// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
+///
+/// To ask for different chrome, call [`draw_tooltip_with_chrome`].
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tooltip(
     cr: &Context,
     layout: &pango::Layout,
     tooltip: &Tooltip,
     tooltip_layout: &TooltipLayout,
+    line_height: f64,
+    padding_x: f64,
+    theme: &Theme,
+) {
+    draw_tooltip_with_chrome(
+        cr,
+        layout,
+        tooltip,
+        tooltip_layout,
+        &TooltipChrome::default(),
+        line_height,
+        padding_x,
+        theme,
+    );
+}
+
+/// Draw a [`Tooltip`] at its resolved layout position, with the border
+/// and optional title requested by `chrome` (#541).
+///
+/// `padding_x` is the horizontal padding (in pixels) from the left
+/// border to the start of text — consumers typically pass the same
+/// `char_width` they used when computing the tooltip's measured width.
+/// Halved when `chrome.border` is [`TooltipBorder::None`], since there
+/// is no border column to clear first — mirrors the TUI rasteriser's
+/// `text_col_offset` dropping from 2 (border + pad) to 1 (pad only).
+///
+/// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
+/// theme defaults. The frame border always uses [`Theme::hover_border`].
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tooltip_with_chrome(
+    cr: &Context,
+    layout: &pango::Layout,
+    tooltip: &Tooltip,
+    tooltip_layout: &TooltipLayout,
+    chrome: &TooltipChrome,
     line_height: f64,
     padding_x: f64,
     theme: &Theme,
@@ -79,14 +118,14 @@ pub fn draw_tooltip(
     // the TUI rasteriser's dedicated title row never overlaps content.
     let mut text_top = by + 2.0;
 
-    match tooltip_layout.border {
+    match chrome.border {
         TooltipBorder::Full => {
             cr.set_source_rgb(border.0, border.1, border.2);
             cr.set_line_width(1.0);
             cr.rectangle(bx, by, bw, bh);
             cr.stroke().ok();
 
-            if let Some(title) = tooltip_layout
+            if let Some(title) = chrome
                 .title
                 .as_deref()
                 .map(str::trim)
@@ -127,7 +166,7 @@ pub fn draw_tooltip(
         TooltipBorder::None => {}
     }
 
-    let text_padding_x = if matches!(tooltip_layout.border, TooltipBorder::None) {
+    let text_padding_x = if matches!(chrome.border, TooltipBorder::None) {
         padding_x / 2.0
     } else {
         padding_x
@@ -219,31 +258,35 @@ mod tests {
     /// "clear of any stroke" probe from straddling the same anti-aliased
     /// pixel row/column (same reasoning as
     /// `macos::tooltip::tests::tooltip_border_paints_at_edge`).
-    fn sample_layout(border: TooltipBorder, title: Option<&str>) -> TooltipLayout {
-        let mut layout = TooltipLayout {
+    fn sample_layout(border: TooltipBorder, title: Option<&str>) -> (TooltipLayout, TooltipChrome) {
+        let layout = TooltipLayout {
             bounds: QRect::new(20.0, 20.0, 120.0, 24.0),
             resolved_placement: ResolvedPlacement::Bottom,
-            border,
-            title: None,
         };
+        let mut chrome = TooltipChrome::new(border);
         if let Some(t) = title {
-            layout = layout.with_title(t);
+            chrome = chrome.with_title(t);
         }
-        layout
+        (layout, chrome)
     }
 
     /// Paint `tooltip` at `layout.bounds` on a fresh surface and return
     /// the raw pixel buffer alongside the stride.
-    fn paint(tooltip: &Tooltip, layout: &TooltipLayout) -> (Vec<u8>, usize) {
+    fn paint(
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+    ) -> (Vec<u8>, usize) {
         let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
         {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            draw_tooltip(
+            draw_tooltip_with_chrome(
                 &cr,
                 &pango_layout,
                 tooltip,
                 layout,
+                chrome,
                 LINE_H,
                 PAD_X,
                 &Theme::default(),
@@ -258,8 +301,8 @@ mod tests {
     #[test]
     fn full_border_strokes_all_four_edges() {
         let tooltip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::Full, None);
-        let (data, stride) = paint(&tooltip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::Full, None);
+        let (data, stride) = paint(&tooltip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as i32, b.y as i32, b.width as i32, b.height as i32);
 
@@ -281,8 +324,8 @@ mod tests {
     #[test]
     fn sides_border_only_strokes_left_and_right() {
         let tooltip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::Sides, None);
-        let (data, stride) = paint(&tooltip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::Sides, None);
+        let (data, stride) = paint(&tooltip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as i32, b.y as i32, b.width as i32, b.height as i32);
 
@@ -317,8 +360,8 @@ mod tests {
     #[test]
     fn none_border_strokes_nothing() {
         let tooltip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::None, None);
-        let (data, stride) = paint(&tooltip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::None, None);
+        let (data, stride) = paint(&tooltip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as i32, b.y as i32, b.width as i32, b.height as i32);
 
@@ -349,8 +392,8 @@ mod tests {
     #[test]
     fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
         let tooltip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::Full, Some("Hi"));
-        let (data, stride) = paint(&tooltip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::Full, Some("Hi"));
+        let (data, stride) = paint(&tooltip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw) = (b.x as i32, b.y as i32, b.width as i32);
 
@@ -385,10 +428,10 @@ mod tests {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
             let with_title = sample_tooltip();
             let without_title = sample_tooltip();
-            let with_layout = sample_layout(border, Some("Ignored"));
-            let without_layout = sample_layout(border, None);
-            let (with_data, stride) = paint(&with_title, &with_layout);
-            let (without_data, _) = paint(&without_title, &without_layout);
+            let (with_layout, with_chrome) = sample_layout(border, Some("Ignored"));
+            let (without_layout, without_chrome) = sample_layout(border, None);
+            let (with_data, stride) = paint(&with_title, &with_layout, &with_chrome);
+            let (without_data, _) = paint(&without_title, &without_layout, &without_chrome);
             let b = with_layout.bounds;
             let (bx, by, bw) = (b.x as i32, b.y as i32, b.width as i32);
             let top_with = pixel(&with_data, stride, bx + bw / 2, by);

@@ -272,8 +272,8 @@ pub use primitives::toolbar::{
     ToolbarLayout, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
-    ResolvedPlacement, Tooltip, TooltipBorder, TooltipEvent, TooltipHit, TooltipLayout,
-    TooltipMeasure, TooltipPlacement,
+    ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipEvent, TooltipHit,
+    TooltipLayout, TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
@@ -2131,23 +2131,39 @@ mod tests {
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
 
-    /// #541: `TooltipLayout::with_border` / `with_title` are additive on
-    /// the value `Tooltip::layout` returns, not fields on `Tooltip`
-    /// itself — see `primitives::tooltip`'s module doc for why. Defaults
-    /// match what every backend drew unconditionally before #541
-    /// introduced a choice.
+    /// #541: the border/title vocabulary is a separate [`TooltipChrome`]
+    /// value passed alongside the tooltip and its layout — *not* a field
+    /// on `Tooltip` or on `TooltipLayout`, both of which consumers
+    /// construct with exhaustive literals (see `primitives::tooltip`'s
+    /// module doc). `TooltipChrome::default()` matches what every backend
+    /// drew unconditionally before #541 introduced a choice.
     #[test]
-    fn tooltip_layout_border_and_title_default_then_builder_overrides() {
-        let t = Tooltip::new(WidgetId::new("tip"), "Hello");
-        let anchor = Rect::new(0.0, 0.0, 10.0, 1.0);
-        let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
-        let layout = t.layout(anchor, viewport, TooltipMeasure::new(20.0, 3.0), 0.0);
-        assert_eq!(layout.border, TooltipBorder::Full);
-        assert_eq!(layout.title, None);
+    fn tooltip_chrome_defaults_to_full_then_builders_override() {
+        let chrome = TooltipChrome::default();
+        assert_eq!(chrome.border, TooltipBorder::Full);
+        assert_eq!(chrome.title, None);
 
-        let layout = layout.with_border(TooltipBorder::None).with_title("Hi");
-        assert_eq!(layout.border, TooltipBorder::None);
-        assert_eq!(layout.title.as_deref(), Some("Hi"));
+        let chrome = TooltipChrome::new(TooltipBorder::None).with_title("Hi");
+        assert_eq!(chrome.border, TooltipBorder::None);
+        assert_eq!(chrome.title.as_deref(), Some("Hi"));
+
+        let chrome = chrome.with_border(TooltipBorder::Sides);
+        assert_eq!(chrome.border, TooltipBorder::Sides);
+    }
+
+    /// #541 rule-8 guard: `TooltipLayout` must stay constructible from a
+    /// bare exhaustive literal, because downstream consumers that
+    /// position a popup themselves (rather than anchoring it via
+    /// `Tooltip::layout`) build one by hand. If a future change adds a
+    /// required field here, this test stops compiling — which is the
+    /// point: that would be an `E0063` break for every such call site.
+    #[test]
+    fn tooltip_layout_stays_exhaustively_constructible() {
+        let layout = TooltipLayout {
+            bounds: Rect::new(1.0, 2.0, 30.0, 4.0),
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        assert_eq!(layout.bounds.width, 30.0);
     }
 
     #[test]

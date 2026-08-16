@@ -2095,14 +2095,24 @@ impl Backend for GtkBackend {
     }
 
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
+        self.draw_tooltip_with_chrome(tooltip, layout_arg, &crate::TooltipChrome::default());
+    }
+
+    fn draw_tooltip_with_chrome(
+        &mut self,
+        tooltip: &crate::Tooltip,
+        layout_arg: &crate::TooltipLayout,
+        chrome: &crate::TooltipChrome,
+    ) {
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tooltip called outside enter_frame_scope");
-        crate::gtk::draw_tooltip(
+        crate::gtk::draw_tooltip_with_chrome(
             cr,
             pango_layout,
             tooltip,
             layout_arg,
+            chrome,
             self.current_line_height,
             self.current_char_width,
             &self.current_theme,

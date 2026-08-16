@@ -2,16 +2,19 @@
 //!
 //! Mirrors [`crate::gtk::tooltip::draw_tooltip`]: a filled background
 //! rectangle at the tooltip's resolved bounds, then border chrome per
-//! `layout.border` (#541 — [`crate::TooltipBorder`]; see
-//! `primitives::tooltip`'s module doc for why it lives on
-//! [`TooltipLayout`] rather than on [`Tooltip`]):
+//! the [`TooltipChrome`] argument (#541 — [`crate::TooltipBorder`]; see
+//! `primitives::tooltip`'s module doc for why the vocabulary is a
+//! sidecar value rather than a field on [`Tooltip`] or
+//! [`TooltipLayout`]). [`draw_tooltip`] keeps its pre-#541 signature and
+//! renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
+//! takes the request explicitly:
 //!
 //! - [`TooltipBorder::Full`] (the default) strokes a full 4-sided box —
 //!   this backend has always done this, unconditionally, before #541
 //!   gave it a name (it was one of the three backends the original issue
 //!   flagged as "not verified in detail" beyond a `fill_rect` call —
 //!   confirmed here to be a `stroke_rect`, same as GTK). An optional
-//!   `layout.title` is centred over the top edge, punched through the
+//!   `chrome.title` is centred over the top edge, punched through the
 //!   stroke with a background-coloured backing rectangle so it reads as
 //!   embedded in the border, mirroring the TUI and GTK rasterisers.
 //! - [`TooltipBorder::Sides`] strokes two vertical lines at the left and
@@ -25,16 +28,18 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipLayout};
+use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
 use crate::theme::Theme;
 use crate::types::Color;
 
-/// Draw a [`Tooltip`] at its resolved layout position.
+/// Draw a [`Tooltip`] at its resolved layout position with the default
+/// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
+/// this rasteriser drew before #541 added a choice.
 ///
 /// `padding_x` is the horizontal padding from the left border to the
-/// start of text — consumers typically pass `char_width`. Halved when
-/// `layout.border` is [`TooltipBorder::None`], since there is no border
-/// column to clear first — mirrors the TUI/GTK rasterisers.
+/// start of text — consumers typically pass `char_width`.
+///
+/// To ask for different chrome, call [`draw_tooltip_with_chrome`].
 ///
 /// # Safety
 ///
@@ -46,6 +51,45 @@ pub unsafe fn draw_tooltip(
     font: &CTFont,
     tooltip: &Tooltip,
     tooltip_layout: &TooltipLayout,
+    line_height: f64,
+    padding_x: f64,
+    theme: &Theme,
+) {
+    // SAFETY: forwarded unchanged — `ctx` validity is the caller's
+    // contract, documented above and identical for both entry points.
+    unsafe {
+        draw_tooltip_with_chrome(
+            ctx,
+            font,
+            tooltip,
+            tooltip_layout,
+            &TooltipChrome::default(),
+            line_height,
+            padding_x,
+            theme,
+        );
+    }
+}
+
+/// Draw a [`Tooltip`] at its resolved layout position, with the border
+/// and optional title requested by `chrome` (#541).
+///
+/// `padding_x` is the horizontal padding from the left border to the
+/// start of text — consumers typically pass `char_width`. Halved when
+/// `chrome.border` is [`TooltipBorder::None`], since there is no border
+/// column to clear first — mirrors the TUI/GTK rasterisers.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_tooltip_with_chrome(
+    ctx: CGContextRef,
+    font: &CTFont,
+    tooltip: &Tooltip,
+    tooltip_layout: &TooltipLayout,
+    chrome: &TooltipChrome,
     line_height: f64,
     padding_x: f64,
     theme: &Theme,
@@ -74,11 +118,11 @@ pub unsafe fn draw_tooltip(
     // the TUI rasteriser's dedicated title row never overlaps content.
     let mut text_top = by + 2.0;
 
-    match tooltip_layout.border {
+    match chrome.border {
         TooltipBorder::Full => {
             stroke_rect(ctx, bx, by, bw, bh, border, 1.0);
 
-            if let Some(title) = tooltip_layout
+            if let Some(title) = chrome
                 .title
                 .as_deref()
                 .map(str::trim)
@@ -113,7 +157,7 @@ pub unsafe fn draw_tooltip(
         TooltipBorder::None => {}
     }
 
-    let text_padding_x = if matches!(tooltip_layout.border, TooltipBorder::None) {
+    let text_padding_x = if matches!(chrome.border, TooltipBorder::None) {
         padding_x / 2.0
     } else {
         padding_x
@@ -258,27 +302,26 @@ mod tests {
         }
     }
 
-    fn sample_layout(border: TooltipBorder, title: Option<&str>) -> TooltipLayout {
-        let mut layout = TooltipLayout {
+    fn sample_layout(border: TooltipBorder, title: Option<&str>) -> (TooltipLayout, TooltipChrome) {
+        let layout = TooltipLayout {
             bounds: QRect::new(10.0, 10.0, 120.0, 24.0),
             resolved_placement: ResolvedPlacement::Bottom,
-            border,
-            title: None,
         };
+        let mut chrome = TooltipChrome::new(border);
         if let Some(t) = title {
-            layout = layout.with_title(t);
+            chrome = chrome.with_title(t);
         }
-        layout
+        (layout, chrome)
     }
 
-    fn paint(tip: &Tooltip, layout: &TooltipLayout) -> BitmapSurface {
+    fn paint(tip: &Tooltip, layout: &TooltipLayout, chrome: &TooltipChrome) -> BitmapSurface {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_tooltip(tip, layout);
+            b.draw_tooltip_with_chrome(tip, layout, chrome);
         });
         backend.end_frame();
         surface
@@ -287,8 +330,8 @@ mod tests {
     #[test]
     fn tooltip_paints_hover_bg() {
         let tip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::default(), None);
-        let surface = paint(&tip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::default(), None);
+        let surface = paint(&tip, &layout, &chrome);
         let theme = Theme::default();
         // Probe near right edge of bounds — glyph-free zone.
         let bx = layout.bounds.x as u32;
@@ -305,8 +348,8 @@ mod tests {
     #[test]
     fn tooltip_border_paints_at_edge() {
         let tip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::default(), None);
-        let surface = paint(&tip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::default(), None);
+        let surface = paint(&tip, &layout, &chrome);
         let theme = Theme::default();
         // The 1pt border stroke centres on the rect's top edge, so
         // the edge pixel is anti-aliased ~50/50 between border ink
@@ -335,8 +378,8 @@ mod tests {
     fn tooltip_with_custom_bg_overrides_theme() {
         let mut tip = sample_tooltip();
         tip.bg = Some(crate::types::Color::rgb(50, 100, 150));
-        let layout = sample_layout(TooltipBorder::default(), None);
-        let surface = paint(&tip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::default(), None);
+        let surface = paint(&tip, &layout, &chrome);
         let bx = layout.bounds.x as u32;
         let by = layout.bounds.y as u32;
         let bw = layout.bounds.width as u32;
@@ -351,10 +394,8 @@ mod tests {
         let layout = TooltipLayout {
             bounds: QRect::new(10.0, 10.0, 0.0, 0.0),
             resolved_placement: ResolvedPlacement::Bottom,
-            border: TooltipBorder::default(),
-            title: None,
         };
-        let surface = paint(&tip, &layout);
+        let surface = paint(&tip, &layout, &TooltipChrome::default());
         // Surface stays all-zero.
         let (r, g, b, _) = surface.pixel(10, 10);
         assert_eq!((r, g, b), (0, 0, 0));
@@ -381,8 +422,8 @@ mod tests {
     #[test]
     fn sides_border_only_strokes_left_and_right() {
         let tip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::Sides, None);
-        let surface = paint(&tip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::Sides, None);
+        let surface = paint(&tip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as u32, b.y as u32, b.width as u32, b.height as u32);
 
@@ -418,8 +459,8 @@ mod tests {
     #[test]
     fn none_border_strokes_nothing() {
         let tip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::None, None);
-        let surface = paint(&tip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::None, None);
+        let surface = paint(&tip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as u32, b.y as u32, b.width as u32, b.height as u32);
 
@@ -447,8 +488,8 @@ mod tests {
     #[test]
     fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
         let tip = sample_tooltip();
-        let layout = sample_layout(TooltipBorder::Full, Some("Hi"));
-        let surface = paint(&tip, &layout);
+        let (layout, chrome) = sample_layout(TooltipBorder::Full, Some("Hi"));
+        let surface = paint(&tip, &layout, &chrome);
         let b = layout.bounds;
         let (bx, by, bw) = (b.x as u32, b.y as u32, b.width as u32);
 
@@ -481,10 +522,10 @@ mod tests {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
             let with_title = sample_tooltip();
             let without_title = sample_tooltip();
-            let with_layout = sample_layout(border, Some("Ignored"));
-            let without_layout = sample_layout(border, None);
-            let with_surface = paint(&with_title, &with_layout);
-            let without_surface = paint(&without_title, &without_layout);
+            let (with_layout, with_chrome) = sample_layout(border, Some("Ignored"));
+            let (without_layout, without_chrome) = sample_layout(border, None);
+            let with_surface = paint(&with_title, &with_layout, &with_chrome);
+            let without_surface = paint(&without_title, &without_layout, &without_chrome);
             let b = with_layout.bounds;
             let (bx, by, bw) = (b.x as u32, b.y as u32, b.width as u32);
             let top_with = with_surface.pixel(bx + bw / 2, by);

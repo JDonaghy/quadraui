@@ -1,9 +1,9 @@
 //! Backend-agnostic app code for the tooltip example
 //! ([`tui_tooltip`] / [`gtk_tooltip`]).
 //!
-//! Demonstrates `Tooltip`'s border/title vocabulary (#541): a consumer
-//! picks `border` (`Sides` bars-only, `Full` closed box, `None` no
-//! chrome) and an optional `title` embedded in `Full`'s top border row,
+//! Demonstrates the `TooltipChrome` border/title vocabulary (#541): a
+//! consumer picks `border` (`Sides` bars-only, `Full` closed box, `None`
+//! no chrome) and an optional `title` embedded in `Full`'s top border row,
 //! instead of each backend hardcoding its own answer — the gap
 //! JDonaghy/vimcode#635 hit when its migrated help popup lost its border
 //! and title with no way to ask for them back. `TooltipDemo` cycles
@@ -18,7 +18,7 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Tooltip,
-    TooltipBorder, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
 const ANCHOR_TEXT: &str = "hover target";
@@ -136,13 +136,12 @@ impl AppLogic for TooltipDemo {
             cw * (TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * self.rows(),
         );
-        let mut layout = tooltip
-            .layout(anchor, clamp, measure, lh)
-            .with_border(self.border);
+        let layout = tooltip.layout(anchor, clamp, measure, lh);
+        let mut chrome = TooltipChrome::new(self.border);
         if self.show_title && matches!(self.border, TooltipBorder::Full) {
-            layout = layout.with_title(TOOLTIP_TITLE);
+            chrome = chrome.with_title(TOOLTIP_TITLE);
         }
-        backend.draw_tooltip(&tooltip, &layout);
+        backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

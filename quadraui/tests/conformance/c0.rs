@@ -48,8 +48,8 @@ use quadraui::{
     SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
     TabBar, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
     ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
-    TooltipBorder, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent,
-    WidgetId,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
+    UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -278,10 +278,31 @@ pub const CASES: &[Case] = &[
             // measured to exactly `border + text + border` leaves no
             // padding and clips the last glyph.
             let measure = TooltipMeasure::new(cw * 9.0, lh * 3.0);
-            let layout = tooltip
-                .layout(anchor, area, measure, lh)
-                .with_border(TooltipBorder::default());
+            let layout = tooltip.layout(anchor, area, measure, lh);
             b.draw_tooltip(&tooltip, &layout);
+        },
+    },
+    Case {
+        // #541: the chrome-carrying entry point. Same content as
+        // `draw_tooltip` above (which renders `TooltipChrome::default()`),
+        // but asking explicitly for `Sides` chrome so C0 exercises a
+        // non-default request reaching the backend rather than only the
+        // delegating path.
+        method: "draw_tooltip_with_chrome",
+        needle: Some("c0chrome"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let anchor = Rect::new(0.0, 0.0, area.width, lh);
+            let tooltip = Tooltip::new(id("tooltip-chrome"), "c0chrome")
+                .with_placement(TooltipPlacement::Bottom);
+            let measure = TooltipMeasure::new(cw * 12.0, lh * 3.0);
+            let layout = tooltip.layout(anchor, area, measure, lh);
+            b.draw_tooltip_with_chrome(
+                &tooltip,
+                &layout,
+                &TooltipChrome::new(TooltipBorder::Sides),
+            );
         },
     },
     Case {

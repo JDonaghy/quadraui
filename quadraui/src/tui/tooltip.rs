@@ -1,9 +1,12 @@
 //! TUI rasteriser for [`crate::Tooltip`].
 //!
-//! Border chrome is chosen by `layout.border` (#541 —
+//! Border chrome is chosen by the [`TooltipChrome`] argument (#541 —
 //! [`crate::TooltipBorder`]), not hardcoded here — see
-//! `primitives::tooltip`'s module doc for why the vocabulary lives on
-//! [`TooltipLayout`] rather than on [`Tooltip`] itself:
+//! `primitives::tooltip`'s module doc for why the vocabulary is a
+//! sidecar value rather than a field on [`Tooltip`] or [`TooltipLayout`].
+//! [`draw_tooltip`] keeps its pre-#541 signature and renders
+//! `TooltipChrome::default()`; [`draw_tooltip_with_chrome`] takes the
+//! request explicitly:
 //!
 //! - [`TooltipBorder::Full`] (the default) renders a closed box —
 //!   `┌─┐`/`└─┘` top and bottom rows plus `│` sides — whenever the
@@ -13,7 +16,7 @@
 //!   rectangle. Below that room threshold, `Full` falls back to the
 //!   `Sides` rendering rather than an empty box — a rendering detail of
 //!   this variant, not a mode a consumer selects. An optional
-//!   `layout.title` is centred into the top row when the box closes.
+//!   `chrome.title` is centred into the top row when the box closes.
 //! - [`TooltipBorder::Sides`] always renders `│` on the first/last column
 //!   only, regardless of height — the pre-#542 TUI look, now available
 //!   by explicit request rather than as the only option. No title (no
@@ -44,7 +47,7 @@ use ratatui::buffer::Buffer;
 
 use super::{ratatui_color, set_cell};
 use crate::event::Rect as QRect;
-use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipLayout};
+use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -72,11 +75,30 @@ pub fn painted_bounds(layout: &TooltipLayout) -> QRect {
     )
 }
 
-/// Draw a [`Tooltip`] into `layout.bounds` on `buf`.
+/// Draw a [`Tooltip`] into `layout.bounds` on `buf` with the default
+/// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
+/// this rasteriser drew before #541 added a choice.
 ///
 /// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
+///
+/// To ask for different chrome, call [`draw_tooltip_with_chrome`].
 pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout, theme: &Theme) {
+    draw_tooltip_with_chrome(buf, tooltip, layout, &TooltipChrome::default(), theme);
+}
+
+/// Draw a [`Tooltip`] into `layout.bounds` on `buf`, with the border and
+/// optional title requested by `chrome` (#541).
+///
+/// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
+/// theme defaults. The frame border always uses [`Theme::hover_border`].
+pub fn draw_tooltip_with_chrome(
+    buf: &mut Buffer,
+    tooltip: &Tooltip,
+    layout: &TooltipLayout,
+    chrome: &TooltipChrome,
+    theme: &Theme,
+) {
     let painted = painted_bounds(layout);
     let x = painted.x as u16;
     let y = painted.y as u16;
@@ -106,10 +128,10 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
     // branches pick the left/right corner glyph, and at `w < 2` those two
     // indices collide (`w - 1 == 0`), so the `col == 0` arm would win and
     // every corner would render as a left corner.
-    let has_horizontal_border = matches!(layout.border, TooltipBorder::Full) && h >= 3 && w >= 2;
+    let has_horizontal_border = matches!(chrome.border, TooltipBorder::Full) && h >= 3 && w >= 2;
     // `None` draws no chrome at all — not even the side bars `Sides` and
     // (as a fallback) `Full` paint.
-    let draw_side_bars = !matches!(layout.border, TooltipBorder::None);
+    let draw_side_bars = !matches!(chrome.border, TooltipBorder::None);
     let content_row0: u16 = if has_horizontal_border { 1 } else { 0 };
     let content_rows: u16 = if has_horizontal_border { h - 2 } else { h };
     // Content starts one cell past the side border when one is drawn
@@ -133,6 +155,15 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
                 .map(|s| s.chars().collect())
                 .unwrap_or_default();
             let title_len = title_chars.len() as u16;
+            // Integer divide rounds down, so when `interior - title_len` is
+            // odd the title sits one column left of dead-centre (the extra
+            // column goes to the right). Deliberate and stable rather than
+            // arbitrary: cells are indivisible, so *some* side gets the odd
+            // column, and biasing left matches how the rest of this crate
+            // centres odd remainders (`tui::panel`'s title bar, `tui::
+            // dialog`'s buttons). Flagged as a cosmetic nit in the #541
+            // review; documented rather than "fixed", since rounding the
+            // other way is equally off-centre.
             let title_start = 1 + interior.saturating_sub(title_len) / 2;
 
             for col in 0..w {
@@ -165,7 +196,7 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
                 set_cell(buf, x + col, row, ch, border, bg);
             }
         };
-        paint_border_row(buf, y, true, layout.title.as_deref());
+        paint_border_row(buf, y, true, chrome.title.as_deref());
         paint_border_row(buf, y + h - 1, false, None);
     }
 
@@ -225,8 +256,6 @@ mod tests {
         TooltipLayout {
             bounds: QRect::new(x, y, w, h),
             resolved_placement: ResolvedPlacement::Bottom,
-            border: TooltipBorder::default(),
-            title: None,
         }
     }
 
@@ -367,15 +396,20 @@ mod tests {
         Tooltip::new(WidgetId::new("hover"), "hi")
     }
 
-    /// `make_layout` plus the border/title (#541) a test wants — the
-    /// in-crate equivalent of `tooltip.layout(...).with_border(..)
-    /// .with_title(..)`.
-    fn layout_with(w: f32, h: f32, border: TooltipBorder, title: Option<&str>) -> TooltipLayout {
-        let mut layout = make_layout(0.0, 0.0, w, h).with_border(border);
+    /// `make_layout` paired with the [`TooltipChrome`] (#541) a test
+    /// wants — the in-crate equivalent of `tooltip.layout(...)` plus a
+    /// `TooltipChrome::new(..).with_title(..)` sidecar.
+    fn layout_with(
+        w: f32,
+        h: f32,
+        border: TooltipBorder,
+        title: Option<&str>,
+    ) -> (TooltipLayout, TooltipChrome) {
+        let mut chrome = TooltipChrome::new(border);
         if let Some(t) = title {
-            layout = layout.with_title(t);
+            chrome = chrome.with_title(t);
         }
-        layout
+        (make_layout(0.0, 0.0, w, h), chrome)
     }
 
     /// `Sides` must never draw top/bottom rules, even at a height that
@@ -391,8 +425,8 @@ mod tests {
         // "no border here" look identical to a genuinely-suppressed one).
         let mut tt = tooltip_with();
         tt.text = "hi\nhi\nhi\nhi\nhi".into();
-        let layout = layout_with(10.0, 5.0, TooltipBorder::Sides, None);
-        draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+        let (layout, chrome) = layout_with(10.0, 5.0, TooltipBorder::Sides, None);
+        draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
 
         for row in 0..5u16 {
             assert_eq!(
@@ -425,8 +459,8 @@ mod tests {
     fn none_border_paints_no_chrome() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
         let tt = tooltip_with();
-        let layout = layout_with(10.0, 3.0, TooltipBorder::None, None);
-        draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+        let (layout, chrome) = layout_with(10.0, 3.0, TooltipBorder::None, None);
+        draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
 
         for row in 0..3u16 {
             for col in 0..10u16 {
@@ -449,8 +483,8 @@ mod tests {
     fn full_border_centers_title_in_top_row() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let tt = tooltip_with();
-        let layout = layout_with(12.0, 3.0, TooltipBorder::default(), Some("Hi"));
-        draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+        let (layout, chrome) = layout_with(12.0, 3.0, TooltipBorder::default(), Some("Hi"));
+        draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
 
         // Interior columns are 1..=10 (corners at 0 and 11); " Hi " (4
         // chars) centred among 10 interior columns starts at col 1 + 3 = 4.
@@ -467,13 +501,13 @@ mod tests {
     fn oversized_title_is_dropped_not_truncated() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let tt = tooltip_with();
-        let layout = layout_with(
+        let (layout, chrome) = layout_with(
             12.0,
             3.0,
             TooltipBorder::default(),
             Some("This title is far too long for the box"),
         );
-        draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+        draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
 
         let top_row: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
         assert_eq!(
@@ -489,8 +523,8 @@ mod tests {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = tooltip_with();
-            let layout = layout_with(12.0, 3.0, border, Some("Hi"));
-            draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+            let (layout, chrome) = layout_with(12.0, 3.0, border, Some("Hi"));
+            draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
 
             let screen: String = (0..3)
                 .flat_map(|row| (0..12).map(move |col| (col, row)))
@@ -511,8 +545,8 @@ mod tests {
     fn full_border_drops_title_when_too_short_to_close() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let tt = tooltip_with();
-        let layout = layout_with(12.0, 1.0, TooltipBorder::default(), Some("Hi"));
-        draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
+        let (layout, chrome) = layout_with(12.0, 1.0, TooltipBorder::default(), Some("Hi"));
+        draw_tooltip_with_chrome(&mut buf, &tt, &layout, &chrome, &Theme::default());
 
         assert_eq!(cell_char(&buf, 0, 0), '│');
         let row: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();

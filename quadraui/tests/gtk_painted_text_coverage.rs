@@ -40,8 +40,8 @@ use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
 use quadraui::{
     compute_find_replace_hit_regions, AppLogic, Backend, CommandCenter, CompletionItem,
     CompletionItemMeasure, CompletionKind, Completions, FindReplacePanel, Reaction, Rect,
-    ResolvedPlacement, StyledText, Tooltip, TooltipBorder, TooltipLayout, TooltipPlacement,
-    UiEvent, WidgetId,
+    ResolvedPlacement, StyledText, Tooltip, TooltipBorder, TooltipChrome, TooltipLayout,
+    TooltipPlacement, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/ai_transcript.rs"]
@@ -485,10 +485,12 @@ impl AppLogic for TooltipFixtureApp {
         let layout = TooltipLayout {
             bounds: Rect::new(10.0, 10.0, 120.0, 24.0),
             resolved_placement: ResolvedPlacement::Bottom,
-            border: TooltipBorder::default(),
-            title: None,
         };
-        backend.draw_tooltip(&tooltip, &layout);
+        backend.draw_tooltip_with_chrome(
+            &tooltip,
+            &layout,
+            &TooltipChrome::new(TooltipBorder::default()),
+        );
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -103,7 +103,9 @@ pub use text_display::{draw_text_display, tui_text_display_layout};
 pub use text_input::{draw_text_input, tui_text_input_layout};
 pub use toast::{draw_toast_stack, tui_toast_stack_layout};
 pub use toolbar::{draw_toolbar, tui_toolbar_layout};
-pub use tooltip::{draw_tooltip, painted_bounds as tooltip_painted_bounds};
+pub use tooltip::{
+    draw_tooltip, draw_tooltip_with_chrome, painted_bounds as tooltip_painted_bounds,
+};
 pub use tree::{draw_tree, tui_tree_layout};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by

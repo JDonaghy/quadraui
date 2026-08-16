@@ -113,7 +113,7 @@ pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use text_input::{draw_text_input, gtk_text_input_layout};
 pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
 pub use toolbar::{draw_toolbar, gtk_toolbar_layout};
-pub use tooltip::draw_tooltip;
+pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::{draw_tree, gtk_tree_layout};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
