@@ -166,6 +166,12 @@ fn qc(c: Color) -> RatatuiColor {
 /// caller's `decoration` as a final colour override (e.g. `Muted` dims
 /// every span that didn't already specify its own `fg`). Used by the
 /// list / form / palette rasterisers.
+///
+/// Strides by each character's [`char_cell_width`] (via [`set_cell_wide`]
+/// for double-width glyphs) rather than one buffer column per `char`, so
+/// the painted extent agrees with [`StyledText::visible_width`] — see
+/// #471, where the two fell out of sync after `visible_width` became
+/// display-width-aware but this loop stayed char-count-strided.
 #[allow(clippy::too_many_arguments)]
 fn draw_styled_text(
     buf: &mut Buffer,
@@ -192,8 +198,13 @@ fn draw_styled_text(
             if col >= area.width as usize {
                 return col;
             }
-            set_cell(buf, area.x + col as u16, y, ch, span_fg, span_bg);
-            col += 1;
+            let w = char_cell_width(ch) as usize;
+            if w == 2 && col + 1 < area.width as usize {
+                set_cell_wide(buf, area.x + col as u16, y, ch, span_fg, span_bg);
+            } else {
+                set_cell(buf, area.x + col as u16, y, ch, span_fg, span_bg);
+            }
+            col += w;
         }
     }
     col
@@ -399,5 +410,50 @@ mod tests {
             None,
         );
         assert_eq!(buf[(6, 6)].symbol(), "中");
+    }
+
+    // Regression test for #471 (fix iteration 1): `StyledText::visible_width`
+    // became display-width-aware (CJK/emoji count double), but
+    // `draw_styled_text` kept striding one buffer column per `char` — so a
+    // CJK label's *painted* extent (half its measured width) no longer
+    // matched what layout code reserved for it via `visible_width()`,
+    // producing a gap between painted labels and the controls positioned
+    // after them. `draw_styled_text` now strides by `char_cell_width`
+    // (mirroring `set_cell_wide`'s callers elsewhere in this file), so its
+    // return value — the column layout code implicitly relies on matching
+    // `visible_width()` — agrees with `visible_width()` end-to-end.
+    #[test]
+    fn draw_styled_text_strides_by_display_width_for_cjk() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        let area = Rect::new(0, 0, 20, 3);
+        let text = StyledText::plain("日本語");
+        assert_eq!(text.visible_width(), 6, "CJK: 3 chars, 2 cols each");
+
+        let end_col = draw_styled_text(
+            &mut buf,
+            area,
+            0,
+            1,
+            &text,
+            RatatuiColor::White,
+            RatatuiColor::Black,
+            Decoration::Normal,
+            RatatuiColor::Gray,
+        );
+
+        // The returned column matches `visible_width()`, not `chars().count()`
+        // (which would have returned 1 + 3 = 4).
+        assert_eq!(end_col, 1 + text.visible_width());
+
+        // Each wide glyph occupies two buffer cells: the glyph itself, then
+        // an empty continuation cell (mirrors `set_cell_wide`'s contract).
+        assert_eq!(buf[(1, 0)].symbol(), "日");
+        assert_eq!(buf[(2, 0)].symbol(), "");
+        assert_eq!(buf[(3, 0)].symbol(), "本");
+        assert_eq!(buf[(4, 0)].symbol(), "");
+        assert_eq!(buf[(5, 0)].symbol(), "語");
+        assert_eq!(buf[(6, 0)].symbol(), "");
+        // Nothing painted past the label's actual display width.
+        assert_eq!(buf[(7, 0)].symbol(), " ");
     }
 }
