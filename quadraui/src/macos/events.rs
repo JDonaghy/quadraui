@@ -246,8 +246,9 @@ pub fn ns_keycode_to_named_key(key_code: u16) -> Option<NamedKey> {
 
 /// Build a [`UiEvent::WindowResized`] from a resize notification.
 /// `width` / `height` are window content size in points; `scale` is the
-/// `backingScaleFactor`. The observer wiring lands in #35; today this
-/// is reachable only via tests + future direct callers.
+/// `backingScaleFactor`. Called from `macos::run`'s
+/// `viewFrameDidChange:` observer (#486), which dispatches the result
+/// synchronously alongside mouse/keyboard events.
 pub fn ns_resize_to_uievent(width: f64, height: f64, scale: f32) -> UiEvent {
     UiEvent::WindowResized {
         viewport: crate::Viewport::new(width as f32, height as f32, scale),

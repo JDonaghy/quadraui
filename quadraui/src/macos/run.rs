@@ -57,9 +57,7 @@ use objc2_foundation::{
 };
 
 use super::backend::MacBackend;
-use super::events::{
-    ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_resize_to_uievent, ns_scroll,
-};
+use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
 use super::text::make_font;
 use crate::backend::Backend;
 use crate::event::Viewport;
@@ -340,15 +338,16 @@ declare_class!(
                 .window()
                 .map(|w| w.backingScaleFactor())
                 .unwrap_or(1.0);
-            let ev = ns_resize_to_uievent(bounds.size.width, bounds.size.height, scale as f32);
-            let UiEvent::WindowResized { viewport } = ev else {
-                unreachable!("ns_resize_to_uievent always returns UiEvent::WindowResized");
-            };
+            let viewport = Viewport::new(
+                bounds.size.width as f32,
+                bounds.size.height as f32,
+                scale as f32,
+            );
             if self.ivars().last_viewport.get() == viewport {
                 return;
             }
             self.ivars().last_viewport.set(viewport);
-            self.dispatch(ev);
+            self.dispatch(UiEvent::WindowResized { viewport });
         }
     }
 );
