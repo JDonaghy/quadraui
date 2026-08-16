@@ -357,6 +357,45 @@ impl TabBarLayout {
         }
         TabBarHit::Empty
     }
+
+    /// Center point of tab `tab_idx`'s full bounds (label + close button),
+    /// in this layout's own bar-relative coordinate space — the same
+    /// space `visible_tabs[].bounds` uses (origin at the bar's top-left,
+    /// *not* the target surface). `None` if `tab_idx` isn't in
+    /// `visible_tabs`, i.e. it's scrolled out of view behind the bar's
+    /// `scroll_offset`.
+    ///
+    /// Backends that cache a `TabBarLayout` per `WidgetId` at paint time
+    /// add the cached bar rect's own `(x, y)` origin to this to get an
+    /// absolute screen point — see `TuiDriver::tab_center` /
+    /// `GtkDriver::tab_center` (quadraui#594), which every tab bar needs
+    /// since every tab paints the same label-independent chrome and
+    /// `find()` can't disambiguate tab 3's target from tab 0's the way it
+    /// can for uniquely-labeled text.
+    pub fn tab_center(&self, tab_idx: usize) -> Option<(f32, f32)> {
+        self.visible_tabs
+            .iter()
+            .find(|vt| vt.tab_idx == tab_idx)
+            .map(|vt| {
+                (
+                    vt.bounds.x + vt.bounds.width / 2.0,
+                    vt.bounds.y + vt.bounds.height / 2.0,
+                )
+            })
+    }
+
+    /// Center point of tab `tab_idx`'s close-button hit region, in the
+    /// same bar-relative space as [`Self::tab_center`]. `None` when the
+    /// tab is scrolled out of view (see [`Self::tab_center`]) *or* when
+    /// it drew no close button this frame — `is_closable: false` on the
+    /// tab, or `show_tab_close: false` on the bar.
+    pub fn tab_close_center(&self, tab_idx: usize) -> Option<(f32, f32)> {
+        self.visible_tabs
+            .iter()
+            .find(|vt| vt.tab_idx == tab_idx)
+            .and_then(|vt| vt.close_bounds)
+            .map(|cb| (cb.x + cb.width / 2.0, cb.y + cb.height / 2.0))
+    }
 }
 
 /// Per-frame interaction-state output from a tab-bar rasteriser. All

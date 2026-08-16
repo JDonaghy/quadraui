@@ -4399,6 +4399,80 @@ mod tests {
         assert!(layout.scroll_right.is_none());
     }
 
+    // ─── quadraui#594 ────────────────────────────────────────────────────
+
+    #[test]
+    fn tab_bar_layout_tab_center_and_tab_close_center() {
+        let bar = make_bar(vec![
+            make_tab("a", true),
+            make_tab("b", false),
+            make_tab("c", false),
+        ]);
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 2.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        // Tab 1 occupies x in [10, 20); center is (15, 0.5).
+        assert_eq!(layout.tab_center(1), Some((15.0, 0.5)));
+        // Its close button is the trailing 2 cells [18, 20); center (19, 0.5).
+        assert_eq!(layout.tab_close_center(1), Some((19.0, 0.5)));
+        // Out-of-range index — never a visible tab.
+        assert_eq!(layout.tab_center(99), None);
+        assert_eq!(layout.tab_close_center(99), None);
+    }
+
+    #[test]
+    fn tab_bar_layout_tab_center_none_when_scrolled_out_of_view() {
+        // Mirrors `tab_bar_layout_overflow_active_at_end`: tab 0 scrolls
+        // out of view once tab 9 (active) forces the window rightward.
+        let bar = make_bar(
+            (0..10)
+                .map(|i| make_tab(&format!("t{i}"), i == 9))
+                .collect(),
+        );
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(
+            !layout.visible_tabs.iter().any(|v| v.tab_idx == 0),
+            "tab 0 should have scrolled out of view"
+        );
+        assert_eq!(
+            layout.tab_center(0),
+            None,
+            "tab_center must be None for a tab hidden behind scroll_offset"
+        );
+        assert_eq!(layout.tab_close_center(0), None);
+    }
+
+    #[test]
+    fn tab_bar_layout_tab_close_center_none_when_not_closable() {
+        // close_width = 0.0 (mirrors `tab_bar_layout_no_close_button_when_close_width_zero`)
+        // models `is_closable: false` / `show_tab_close: false` — the tab
+        // itself is still visible, but drew no close button this frame.
+        let bar = make_bar(vec![make_tab("pinned.rs", true)]);
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 0.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(layout.tab_center(0).is_some());
+        assert_eq!(
+            layout.tab_close_center(0),
+            None,
+            "tab_close_center must be None when the tab drew no close button"
+        );
+    }
+
     #[test]
     fn tab_bar_event_roundtrip_serde() {
         let events = vec![

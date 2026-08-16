@@ -5,15 +5,18 @@
 //! `visible_segments`. Paint and hit-test consume one layout — no
 //! independent geometry derivation.
 //!
-//! Returns a [`TabBarHits`] (converted from the layout) so callers can
-//! resolve clicks using their own segment-id conventions.
+//! Returns a [`TabBarHits`] (converted from the layout, for callers that
+//! resolve clicks using their own segment-id conventions) alongside the
+//! [`TabBarLayout`] itself, whose bar-relative `visible_tabs` /
+//! `close_bounds` geometry is what `GtkBackend::draw_tab_bar` caches per
+//! `WidgetId` for `GtkDriver::tab_center`/`tab_close_center` (quadraui#594).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
 use crate::backend::tab_bar_layout_to_hits;
-use crate::primitives::tab_bar::{SegmentMeasure, TabBar, TabBarHits, TabMeasure};
+use crate::primitives::tab_bar::{SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabMeasure};
 use crate::theme::Theme;
 
 /// Per-tab padding (left + right) inside the tab background fill.
@@ -44,11 +47,17 @@ const TAB_OUTER_GAP: f64 = 1.0;
 /// `Some(i)` the `i`-th tab gets a rounded hover background behind
 /// its close glyph. The primitive itself carries no mouse state.
 ///
-/// Returns hit regions in **target-surface (absolute) coordinates** —
-/// the same coordinate space as raw click `x` values. `x_offset` is
-/// applied internally, so callers compare click positions directly
-/// against the returned `slot_positions`, `close_bounds`, and
-/// `right_segment_bounds` without any further adjustment.
+/// Returns `(hits, layout)`. `hits` reports its regions in
+/// **target-surface (absolute) coordinates** — the same coordinate space
+/// as raw click `x` values. `x_offset` is applied internally, so callers
+/// compare click positions directly against the returned
+/// `slot_positions`, `close_bounds`, and `right_segment_bounds` without
+/// any further adjustment. `layout` is the underlying [`TabBarLayout`]
+/// this function computed to paint and derive `hits` from — its own
+/// `visible_tabs`/`close_bounds` rects are **bar-relative** (origin at
+/// `(0, 0)`, *not* `x_offset`/`y_offset`); `GtkBackend::draw_tab_bar`
+/// caches it per `WidgetId` for `GtkDriver::tab_center`/`tab_close_center`
+/// (quadraui#594), which add the bar's own screen-space origin back in.
 ///
 /// # Visual contract
 ///
@@ -72,7 +81,7 @@ pub fn draw_tab_bar(
     bar: &TabBar,
     theme: &Theme,
     hovered_close_tab: Option<usize>,
-) -> TabBarHits {
+) -> (TabBarHits, TabBarLayout) {
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
@@ -342,7 +351,7 @@ pub fn draw_tab_bar(
     crate::backend::shift_tab_bar_hits(&mut hits, x_offset);
     hits.correct_scroll_offset = correct_scroll_offset;
     hits.available_cols = available_cols;
-    hits
+    (hits, layout)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
