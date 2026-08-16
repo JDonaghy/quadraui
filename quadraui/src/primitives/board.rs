@@ -32,11 +32,11 @@
 //!
 //! ## Portability
 //!
-//! Part of the `Backend` trait: `draw_board` has a default (no-op paint)
-//! impl so every backend satisfies the trait, and backends override it
-//! once they have a real rasteriser. Apps write
-//! `backend.draw_board(rect, &model)` once and pick up each backend's
-//! rasteriser as it lands.
+//! Part of the `Backend` trait: `draw_board` is required (no default
+//! impl — quadraui#600), so every backend implementer supplies a real
+//! rasteriser (or an explicit `todo!()` stub, per convention). Apps
+//! write `backend.draw_board(rect, &model)` once and pick up each
+//! backend's rasteriser as it lands.
 
 use crate::event::{Point, Rect};
 use crate::types::{Modifiers, WidgetId};
