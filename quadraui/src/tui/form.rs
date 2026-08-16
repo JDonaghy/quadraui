@@ -1654,9 +1654,7 @@ mod tests {
             fields: vec![FormField {
                 id: WidgetId::new("lang"),
                 label: label("日本語:"),
-                kind: FieldKind::ReadOnly {
-                    value: label("OK"),
-                },
+                kind: FieldKind::ReadOnly { value: label("OK") },
                 disabled: false,
                 validation: None,
                 hint: label(""),
