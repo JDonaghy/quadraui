@@ -52,8 +52,8 @@ use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, CommandLine, DragState,
     DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
-    Point, Rect as QRect, Split, StatusBar, TabBar, Terminal as TerminalPrim, TextDisplay,
-    TreeView, UiEvent, Viewport, WidgetId,
+    Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, Terminal as TerminalPrim,
+    TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding` is only referenced by `#[cfg(test)]` code below (the rest of
 // this file matches already-parsed `Accelerator`s) — gate the import the
@@ -184,6 +184,24 @@ pub struct TuiBackend {
     /// lifecycle as `text_regions`) so a frame that doesn't paint an editor
     /// doesn't inherit a stale cursor position from the previous one.
     last_cursor_position: Option<(u16, u16)>,
+    /// `(bar rect, resolved layout)` from the most recent `draw_tab_bar`
+    /// call, per tab-bar `WidgetId`. Cleared at the start of every frame
+    /// by [`Self::begin_frame`] (same lifecycle as `zones`) so a tab bar
+    /// that stops painting doesn't leave a stale entry that would resolve
+    /// a tab no longer on screen.
+    ///
+    /// `TabBarLayout`'s own `visible_tabs`/`close_bounds` rects are
+    /// bar-relative (origin at the bar's own top-left) — the same
+    /// convention `crate::tui::draw_tab_bar` paints with (it adds
+    /// `area.x`/`area.y` itself). [`Self::cached_tab_bar_layout`] hands
+    /// back the paired rect so callers can shift into absolute
+    /// screen-space coordinates. Read by
+    /// [`crate::tui::testing::TuiDriver::tab_center`] /
+    /// [`crate::tui::testing::TuiDriver::tab_close_center`] (quadraui#594)
+    /// — every tab paints the same close glyph, so `find` can't
+    /// disambiguate tab 3's target from tab 0's the way it can for
+    /// uniquely-labeled text.
+    tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
 }
 
 impl TuiBackend {
@@ -213,6 +231,7 @@ impl TuiBackend {
             last_text_region_id: None,
             focused_activity_bar: None,
             last_cursor_position: None,
+            tab_bar_layouts: HashMap::new(),
         }
     }
 
@@ -280,6 +299,18 @@ impl TuiBackend {
     /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
     pub(crate) fn zones(&self) -> &[ZoneRec] {
         &self.zones
+    }
+
+    /// The `(bar rect, resolved layout)` cached from the most recent
+    /// `draw_tab_bar` call for tab bar `id` this frame, or `None` if that
+    /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
+    /// for the coordinate-space contract. Read by
+    /// [`crate::tui::testing::TuiDriver::tab_center`] /
+    /// [`crate::tui::testing::TuiDriver::tab_close_center`] (quadraui#594).
+    pub(crate) fn cached_tab_bar_layout(&self, id: &WidgetId) -> Option<(QRect, &TabBarLayout)> {
+        self.tab_bar_layouts
+            .get(id)
+            .map(|(rect, layout)| (*rect, layout))
     }
 
     // ── Text selection ─────────────────────────────────────────────────────
@@ -771,6 +802,10 @@ impl Backend for TuiBackend {
         // this a frame that stops painting an editor (e.g. it's hidden)
         // would keep showing the terminal cursor at the last-known spot.
         self.last_cursor_position = None;
+        // Clear per-frame tab-bar layout cache for the same reason as
+        // `zones` — a bar that stops painting must stop resolving
+        // `tab_center`/`tab_close_center` too.
+        self.tab_bar_layouts.clear();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -1130,6 +1165,14 @@ impl Backend for TuiBackend {
             },
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
+        // Cache the resolved layout for this bar's WidgetId before it's
+        // consumed below — `TuiDriver::tab_center`/`tab_close_center`
+        // (quadraui#594) resolve against this, since a driver sitting
+        // outside the app has no other way to reach a specific tab's
+        // geometry (every tab paints the same close glyph, so `find`
+        // can't disambiguate tab N's target).
+        self.tab_bar_layouts
+            .insert(bar.id.clone(), (rect, layout.clone()));
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_tab_bar called outside enter_frame_scope");

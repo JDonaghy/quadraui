@@ -63,7 +63,9 @@ use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport,
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
 use crate::tui::text::char_cell_width;
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent};
+use crate::{
+    ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, WidgetId,
+};
 
 /// Build a [`TuiDriver`] that wraps `app` in the full
 /// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
@@ -545,6 +547,35 @@ impl<A: AppLogic> TuiDriver<A> {
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
         self.find_bounds(needle)
             .map(|b| (b.x + 0.5, b.y + b.height / 2.0))
+    }
+
+    /// Cell coordinates of tab `tab_idx`'s center in the tab bar `bar`, for
+    /// [`Self::click`] to land on that specific tab (quadraui#594).
+    ///
+    /// `find` can't do this job: every tab paints the same chrome (and a
+    /// closed/active tab's label may repeat elsewhere on screen), so there
+    /// is no needle that disambiguates "tab 3" from "tab 0". This instead
+    /// resolves against the [`crate::TabBarLayout`] `TuiBackend::draw_tab_bar`
+    /// cached the last time `bar` painted — `None` if `bar` didn't paint
+    /// this frame, or if `tab_idx` is scrolled out of view behind the
+    /// bar's `scroll_offset`.
+    pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
+        let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
+        let (cx, cy) = layout.tab_center(tab_idx)?;
+        Some((rect.x + cx, rect.y + cy))
+    }
+
+    /// Cell coordinates of tab `tab_idx`'s close-button center in the tab
+    /// bar `bar` — the `×`/`●` glyph every tab shares, so [`Self::find`]
+    /// can't target one tab's close button over another's (quadraui#594).
+    ///
+    /// `None` for the same reasons as [`Self::tab_center`], plus: the tab
+    /// drew no close button this frame (`is_closable: false` on the tab,
+    /// or `show_tab_close: false` on the bar).
+    pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
+        let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
+        let (cx, cy) = layout.tab_close_center(tab_idx)?;
+        Some((rect.x + cx, rect.y + cy))
     }
 }
 
@@ -1181,6 +1212,251 @@ mod tests {
         assert!(
             driver.styled_row(1).is_empty(),
             "out-of-range row should be empty, not panic"
+        );
+    }
+
+    // ─── quadraui#594 ────────────────────────────────────────────────────
+
+    /// Three closable tabs on a 20-cell bar. `handle()` hit-tests raw
+    /// `MouseDown` clicks against the *live*, non-painting
+    /// [`crate::Backend::tab_bar_layout`] query (mirrors the "cached
+    /// layout hit-test pattern" `gtk/testing.rs`'s `ToggleStatusBarApp`
+    /// uses) — close regions win over tab bodies, matching
+    /// `TabBarLayout::hit_regions`' close-before-body ordering. Exercises
+    /// `TuiDriver::tab_center`/`tab_close_center` end-to-end: the driver
+    /// locates a specific tab's click target with no hardcoded
+    /// coordinates, and the resulting click reaches the app through the
+    /// ordinary event path.
+    struct InteractiveTabBarApp {
+        active: usize,
+        closed_idx: Option<usize>,
+    }
+
+    impl InteractiveTabBarApp {
+        const RECT: Rect = Rect::new(0.0, 0.0, 20.0, 1.0);
+
+        fn bar(&self) -> TabBar {
+            TabBar {
+                id: QWidgetId::new("tabs"),
+                tabs: (0..3)
+                    .map(|i| TabItem {
+                        label: format!("tab{i}"),
+                        is_active: i == self.active,
+                        is_dirty: false,
+                        is_preview: false,
+                        is_closable: true,
+                    })
+                    .collect(),
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            }
+        }
+    }
+
+    impl AppLogic for InteractiveTabBarApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tab_bar(Self::RECT, &self.bar(), None);
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown { position, .. } = event else {
+                return Reaction::Continue;
+            };
+            let hits = backend.tab_bar_layout(Self::RECT, &self.bar());
+            let x = position.x as f64;
+            // Close regions before tab bodies — mirrors
+            // `TabBarLayout::hit_regions`' ordering (close-before-body).
+            for (i, close) in hits.close_bounds.iter().enumerate() {
+                if let Some((sx, ex)) = close {
+                    if x >= *sx && x < *ex {
+                        self.closed_idx = Some(i);
+                        return Reaction::Redraw;
+                    }
+                }
+            }
+            for (i, (sx, ex)) in hits.slot_positions.iter().enumerate() {
+                if x >= *sx && x < *ex {
+                    self.active = i;
+                    return Reaction::Redraw;
+                }
+            }
+            Reaction::Continue
+        }
+    }
+
+    /// Acceptance criterion: with a 3-tab bar rendered,
+    /// `driver.click(tab_center(&bar, 1))` activates tab 1.
+    #[test]
+    fn tab_center_click_activates_target_tab() {
+        let app = InteractiveTabBarApp {
+            active: 0,
+            closed_idx: None,
+        };
+        let mut driver = TuiDriver::new(app, 20, 1);
+        let bar_id = QWidgetId::new("tabs");
+
+        assert_eq!(driver.app().active, 0);
+        let (x, y) = driver
+            .tab_center(&bar_id, 1)
+            .expect("tab 1 should be visible on a 20-cell bar with 3 short tabs");
+        driver.click(x, y);
+
+        assert_eq!(
+            driver.app().active,
+            1,
+            "clicking tab 1's center should activate it"
+        );
+    }
+
+    /// Acceptance criterion: `driver.click(tab_close_center(&bar, 1))`
+    /// closes tab 1 and does **not** merely activate it.
+    #[test]
+    fn tab_close_center_click_closes_target_tab_not_just_activates() {
+        let app = InteractiveTabBarApp {
+            active: 0,
+            closed_idx: None,
+        };
+        let mut driver = TuiDriver::new(app, 20, 1);
+        let bar_id = QWidgetId::new("tabs");
+
+        let (x, y) = driver
+            .tab_close_center(&bar_id, 1)
+            .expect("tab 1 is closable and should have a close button");
+        driver.click(x, y);
+
+        assert_eq!(
+            driver.app().closed_idx,
+            Some(1),
+            "clicking tab 1's close button should close it"
+        );
+        assert_ne!(
+            driver.app().active,
+            1,
+            "closing tab 1 must not merely activate it — active should stay at its prior value"
+        );
+    }
+
+    /// Acceptance criterion: `tab_close_center` returns `None` for a tab
+    /// rendered with `is_closable: false`.
+    #[test]
+    fn tab_close_center_none_when_tab_not_closable() {
+        struct NonClosableTabBarApp;
+
+        impl AppLogic for NonClosableTabBarApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                backend.draw_tab_bar(
+                    Rect::new(0.0, 0.0, 20.0, 1.0),
+                    &TabBar {
+                        id: QWidgetId::new("tabs"),
+                        tabs: vec![TabItem {
+                            label: "a".to_string(),
+                            is_active: true,
+                            is_dirty: false,
+                            is_preview: false,
+                            is_closable: false,
+                        }],
+                        scroll_offset: 0,
+                        right_segments: vec![],
+                        active_accent: None,
+                        show_tab_close: true,
+                        compact: false,
+                    },
+                    None,
+                );
+            }
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let driver = TuiDriver::new(NonClosableTabBarApp, 20, 1);
+        let bar_id = QWidgetId::new("tabs");
+
+        assert!(
+            driver.tab_center(&bar_id, 0).is_some(),
+            "the tab itself is visible"
+        );
+        assert!(
+            driver.tab_close_center(&bar_id, 0).is_none(),
+            "a non-closable tab drew no close button, so its center must be None"
+        );
+    }
+
+    /// Acceptance criterion: `tab_center` returns `None` for a tab hidden
+    /// behind the bar's `scroll_offset`.
+    #[test]
+    fn tab_center_none_when_scrolled_out_of_view() {
+        struct ScrolledTabBarApp;
+
+        impl AppLogic for ScrolledTabBarApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                backend.draw_tab_bar(
+                    Rect::new(0.0, 0.0, 5.0, 1.0),
+                    &TabBar {
+                        id: QWidgetId::new("tabs"),
+                        tabs: vec![
+                            TabItem {
+                                label: "a".to_string(),
+                                is_active: false,
+                                is_dirty: false,
+                                is_preview: false,
+                                is_closable: true,
+                            },
+                            TabItem {
+                                label: "b".to_string(),
+                                is_active: true,
+                                is_dirty: false,
+                                is_preview: false,
+                                is_closable: true,
+                            },
+                            TabItem {
+                                label: "c".to_string(),
+                                is_active: false,
+                                is_dirty: false,
+                                is_preview: false,
+                                is_closable: true,
+                            },
+                        ],
+                        // Bar is far too narrow (5 cells) for all 3 tabs
+                        // (each ~3 cells with a close button); TUI honours
+                        // this caller-supplied offset directly rather than
+                        // computing its own (no scroll arrows in TUI).
+                        scroll_offset: 1,
+                        right_segments: vec![],
+                        active_accent: None,
+                        show_tab_close: true,
+                        compact: false,
+                    },
+                    None,
+                );
+            }
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let driver = TuiDriver::new(ScrolledTabBarApp, 5, 1);
+        let bar_id = QWidgetId::new("tabs");
+
+        assert!(
+            driver.tab_center(&bar_id, 0).is_none(),
+            "tab 0 is scrolled out of view behind scroll_offset=1"
+        );
+        assert!(driver.tab_close_center(&bar_id, 0).is_none());
+        assert!(
+            driver.tab_center(&bar_id, 1).is_some(),
+            "tab 1 (the scroll target) should still be visible"
         );
     }
 }

@@ -55,7 +55,7 @@ use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
     ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, StatusBar,
-    TabBar, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
+    TabBar, TabBarLayout, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -273,6 +273,20 @@ pub struct GtkBackend {
     /// paint used (refcounted clone — cheap, always reflects the
     /// current editor font) closes that gap.
     last_editor_pango_layout: Option<pango::Layout>,
+    /// `(bar rect, resolved layout)` from the most recent `draw_tab_bar`
+    /// call, per tab-bar `WidgetId`. Cleared at the start of every frame
+    /// by [`Self::begin_frame`] (same lifecycle as `zones`) so a tab bar
+    /// that stops painting doesn't leave a stale entry that would resolve
+    /// a tab no longer on screen. Parallels `TuiBackend::tab_bar_layouts`.
+    ///
+    /// `TabBarLayout`'s own `visible_tabs`/`close_bounds` rects are
+    /// bar-relative (origin at the bar's own top-left) — the same
+    /// convention `crate::gtk::draw_tab_bar`'s `x_offset`/`y_offset`
+    /// params paint against. [`Self::cached_tab_bar_layout`] hands back
+    /// the paired rect so callers can shift into absolute screen-space
+    /// coordinates. Read by [`super::testing::GtkDriver::tab_center`] /
+    /// [`super::testing::GtkDriver::tab_close_center`] (quadraui#594).
+    tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -322,6 +336,7 @@ impl GtkBackend {
             armed_window_drag: None,
             last_menu_bar_pango_layout: None,
             last_editor_pango_layout: None,
+            tab_bar_layouts: HashMap::new(),
         }
     }
 
@@ -643,6 +658,18 @@ impl GtkBackend {
     #[cfg(test)]
     pub(crate) fn painted_text_for_test(&self) -> &[PaintedText] {
         &self.painted_text
+    }
+
+    /// The `(bar rect, resolved layout)` cached from the most recent
+    /// `draw_tab_bar` call for tab bar `id` this frame, or `None` if that
+    /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
+    /// for the coordinate-space contract. Read by
+    /// [`super::testing::GtkDriver::tab_center`] /
+    /// [`super::testing::GtkDriver::tab_close_center`] (quadraui#594).
+    pub(crate) fn cached_tab_bar_layout(&self, id: &WidgetId) -> Option<(QRect, &TabBarLayout)> {
+        self.tab_bar_layouts
+            .get(id)
+            .map(|(rect, layout)| (*rect, layout))
     }
 
     /// Get the current cairo context + pango layout inside the
@@ -1142,6 +1169,10 @@ impl Backend for GtkBackend {
         // during the render pass if still focused. Same lifecycle as
         // text_regions.
         self.focused_activity_bar = None;
+        // Clear per-frame tab-bar layout cache for the same reason as
+        // `zones` — a bar that stops painting must stop resolving
+        // `tab_center`/`tab_close_center` too.
+        self.tab_bar_layouts.clear();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -1759,12 +1790,12 @@ impl Backend for GtkBackend {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> crate::TabBarHits {
-        let (cr, layout) = self
+        let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        crate::gtk::draw_tab_bar(
+        let (hits, resolved_layout) = crate::gtk::draw_tab_bar(
             cr,
-            layout,
+            pango_layout,
             rect.x as f64,
             rect.width as f64,
             self.current_line_height,
@@ -1773,7 +1804,16 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
             hovered_close_tab,
-        )
+        );
+        // Cache the resolved layout for this bar's WidgetId —
+        // `GtkDriver::tab_center`/`tab_close_center` (quadraui#594)
+        // resolve against this, since a driver sitting outside the app
+        // has no other way to reach a specific tab's geometry (every tab
+        // paints the same close glyph, so `find` can't disambiguate tab
+        // N's target).
+        self.tab_bar_layouts
+            .insert(bar.id.clone(), (rect, resolved_layout));
+        hits
     }
 
     fn draw_activity_bar(
