@@ -316,6 +316,38 @@ impl SidebarSystem {
         }
     }
 
+    /// Scroll `section`'s viewport so `path` is visible, without touching
+    /// the current selection.
+    ///
+    /// Interactive navigation (arrow keys, click) already keeps the
+    /// selected row on-screen — [`Self::move_selection_by`] and friends
+    /// call [`TreeController::scroll_to_visible`] after moving the
+    /// selection. A *programmatic* selection made via [`Self::set_selected_path`]
+    /// (e.g. restoring a saved path, jumping to a search hit) bypasses
+    /// that path and can leave the row scrolled off-screen. Call `reveal`
+    /// after such a change to bring it into view using the exact same
+    /// scroll-to-follow math as interactive nav.
+    ///
+    /// No-op if `section` is out of range, hosts a Form (not a Tree),
+    /// `path` isn't among the section's current rows, or
+    /// [`Self::set_backend_info`] hasn't been called yet (the viewport's
+    /// row capacity is unknown without it).
+    pub fn reveal(&mut self, section: usize, path: &TreePath, rect: Rect) {
+        let Some(ref info) = self.backend_info else {
+            return;
+        };
+        let lh = info.line_height;
+        let metrics = info.metrics;
+        let viewport_rows = self.section_viewport_rows(section, rect, lh, &metrics);
+        let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) else {
+            return;
+        };
+        let Some(row) = tc.rows().iter().position(|r| &r.path == path) else {
+            return;
+        };
+        tc.scroll_to_visible(row, viewport_rows);
+    }
+
     pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
         if section < self.collapsed.len() {
             self.collapsed[section] = collapsed;
@@ -3249,6 +3281,96 @@ mod tests {
         ss.set_selected_path(0, Some(vec![2])); // leaf
         let ev = ss.toggle_expand_selected();
         assert_eq!(ev, SidebarEvent::Ignored);
+    }
+
+    // ── Programmatic reveal (#reveal) ────────────────────────────────
+
+    /// `reveal` scrolls a section so a programmatically-selected row (one
+    /// set via `set_selected_path` without going through interactive
+    /// nav) ends up inside the visible window.
+    #[test]
+    fn reveal_scrolls_row_into_visible_window() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 50));
+        let lh = 1.0_f32;
+        let metrics = LayoutMetrics::default();
+        ss.set_backend_info(lh, metrics);
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+
+        // A caller sets the selection directly (e.g. restoring saved
+        // state) — no click, no arrow key, so nothing has scrolled yet.
+        ss.set_selected_path(0, Some(vec![40]));
+        assert_eq!(ss.scroll_offset(0), 0);
+
+        ss.reveal(0, &vec![40], rect);
+
+        let viewport_rows = ss.section_viewport_rows(0, rect, lh, &metrics);
+        let offset = ss.scroll_offset(0);
+        assert!(
+            offset <= 40 && 40 < offset + viewport_rows,
+            "row 40 not within visible window: offset={offset} viewport_rows={viewport_rows}"
+        );
+    }
+
+    /// `reveal` must reuse `TreeController::scroll_to_visible` — the same
+    /// scroll-to-follow math that interactive arrow-key navigation uses —
+    /// rather than re-deriving it. Drive selection down to row 40 via the
+    /// interactive path to capture the "correct" resulting offset, then
+    /// reset the scroll and confirm `reveal` lands on the identical value.
+    #[test]
+    fn reveal_matches_interactive_scroll_to_follow() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 50));
+        ss.set_active_section(Some(0));
+        let lh = 1.0_f32;
+        let metrics = LayoutMetrics::default();
+        ss.set_backend_info(lh, metrics);
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+
+        // First move (no prior selection) lands on row 0; 40 further
+        // moves advance to row 40.
+        for _ in 0..41 {
+            ss.move_selection(1, rect, lh, &metrics);
+        }
+        assert_eq!(ss.selected_path(0), Some(&vec![40]));
+        let expected_offset = ss.scroll_offset(0);
+        assert!(
+            expected_offset > 0,
+            "row 40 should have scrolled the viewport during interactive nav"
+        );
+
+        // Simulate an off-screen programmatic selection by resetting the
+        // scroll offset while leaving the selected path untouched.
+        if let SectionController::Tree(tc) = &mut ss.sections[0] {
+            tc.set_scroll_offset(0);
+        }
+        assert_eq!(ss.scroll_offset(0), 0);
+
+        ss.reveal(0, &vec![40], rect);
+
+        assert_eq!(
+            ss.scroll_offset(0),
+            expected_offset,
+            "reveal should reuse the same scroll-to-follow math as interactive nav"
+        );
+    }
+
+    /// `reveal` is a safe no-op when `set_backend_info` was never called
+    /// (viewport size unknown) or `path` doesn't match any current row.
+    #[test]
+    fn reveal_is_noop_without_backend_info_or_unknown_path() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 50));
+        ss.set_selected_path(0, Some(vec![40]));
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+
+        // No `set_backend_info` call yet.
+        ss.reveal(0, &vec![40], rect);
+        assert_eq!(ss.scroll_offset(0), 0);
+
+        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss.reveal(0, &vec![999], rect); // path not present among rows
+        assert_eq!(ss.scroll_offset(0), 0);
     }
 
     #[cfg(feature = "gtk")]
