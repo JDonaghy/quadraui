@@ -251,6 +251,75 @@ impl<A: AppLogic> TuiDriver<A> {
         self.mouse_up(x1, y1)
     }
 
+    /// Deliver a [`UiEvent::DoubleClick`] at `(x, y)` directly — the same
+    /// event `TuiBackend`'s `DoubleClickDetector` would eventually
+    /// synthesise from two close-together `MouseDown`s, but produced here
+    /// with no dependence on wall-clock timing (quadraui#592). A test that
+    /// fired two `click()`s and relied on the 400ms/1.5-cell detector
+    /// window was a race against real time — flaky under load, identical
+    /// on the 1st and 1000th call here since no clock is consulted.
+    ///
+    /// Still routed through [`Self::dispatch`] (backend translation +
+    /// `dispatch_event`), not straight to `app.handle`, so it sees the
+    /// same pre-processing (e.g. `clear_selection_display`) a real
+    /// detector-folded double click would — see the module doc's "No
+    /// drift from production" note. `apply_dispatch`/`DoubleClickDetector`
+    /// both pass a `DoubleClick` event through unchanged, so this doesn't
+    /// risk a second fold.
+    pub fn double_click(&mut self, x: f32, y: f32) -> Reaction {
+        self.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(x, y),
+        })
+    }
+
+    /// Press-and-release the middle mouse button at `(x, y)`, delivered as
+    /// a [`UiEvent::MouseDown`] with [`MouseButton::Middle`]. Shorthand for
+    /// [`Self::click_with`] with the default modifiers.
+    pub fn middle_click(&mut self, x: f32, y: f32) -> Reaction {
+        self.click_with(MouseButton::Middle, Modifiers::default(), x, y)
+    }
+
+    /// Press-and-release the right mouse button at `(x, y)`, delivered as
+    /// a [`UiEvent::MouseDown`] with [`MouseButton::Right`]. Shorthand for
+    /// [`Self::click_with`] with the default modifiers.
+    pub fn right_click(&mut self, x: f32, y: f32) -> Reaction {
+        self.click_with(MouseButton::Right, Modifiers::default(), x, y)
+    }
+
+    /// Click at `(x, y)` with an arbitrary [`MouseButton`] and
+    /// [`Modifiers`], delivered as a [`UiEvent::MouseDown`] — the general
+    /// form [`Self::click`]/[`Self::middle_click`]/[`Self::right_click`]
+    /// build on. Lets a test assert modifier-gated behaviour (e.g.
+    /// Ctrl-click) without hand-assembling the event.
+    pub fn click_with(
+        &mut self,
+        button: MouseButton,
+        modifiers: Modifiers,
+        x: f32,
+        y: f32,
+    ) -> Reaction {
+        self.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button,
+            position: Point::new(x, y),
+            modifiers,
+        })
+    }
+
+    /// Enable or disable double-click folding for subsequent
+    /// [`Self::click`]/[`Self::mouse_down`] calls (quadraui#592). Defaults
+    /// to `true` — today's behaviour, where two `click()`s landing inside
+    /// `TuiBackend`'s `DoubleClickDetector` window (400ms, 1.5 cells) fold
+    /// into a single `DoubleClick`. Pass `false` when a test means two
+    /// *separate* single clicks — e.g. exercising click-outside-to-dismiss
+    /// twice in a row — so it deterministically gets two `MouseDown`s
+    /// instead of a result that depends on how much wall-clock time
+    /// elapsed between the two `dispatch` calls.
+    pub fn set_double_click_folding(&mut self, enabled: bool) {
+        self.backend.set_double_click_folding(enabled);
+    }
+
     /// Whether the app has returned [`Reaction::Exit`].
     pub fn exited(&self) -> bool {
         self.exited
@@ -507,7 +576,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
 mod tests {
     use super::*;
     use crate::Viewport;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     /// Minimal app that records the viewport it observes in `setup()`.
@@ -667,5 +736,195 @@ mod tests {
         // find-then-dispatch plumbing works.
         let mut driver = driver;
         driver.scroll_at("world", 1);
+    }
+
+    // ─── quadraui#592 ────────────────────────────────────────────────────
+
+    /// Records every `UiEvent` the app's `handle()` receives, verbatim —
+    /// lets a test assert exactly what reached the app (button, modifiers,
+    /// `DoubleClick` vs `MouseDown`) without screen-scraping.
+    #[derive(Default)]
+    struct EventRecorder {
+        events: Rc<RefCell<Vec<UiEvent>>>,
+    }
+
+    impl AppLogic for EventRecorder {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.borrow_mut().push(event);
+            Reaction::Continue
+        }
+    }
+
+    /// `double_click` must deliver exactly one `UiEvent::DoubleClick` at
+    /// the given position, with no prior `MouseDown`, and do so
+    /// identically whether it's the 1st or 1000th call — the deterministic
+    /// alternative to two `click()`s racing `DoubleClickDetector`'s 400ms
+    /// wall-clock window (quadraui#592).
+    #[test]
+    fn double_click_is_deterministic_across_many_calls() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let app = EventRecorder {
+            events: events.clone(),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        for i in 0..1000 {
+            events.borrow_mut().clear();
+            driver.double_click(3.0, 2.0);
+            let recorded = events.borrow();
+            assert_eq!(
+                recorded.len(),
+                1,
+                "call {i}: double_click should deliver exactly one event, got {recorded:?}"
+            );
+            assert_eq!(
+                recorded[0],
+                UiEvent::DoubleClick {
+                    widget: None,
+                    position: Point::new(3.0, 2.0),
+                },
+                "call {i}: expected a single DoubleClick with no prior MouseDown"
+            );
+        }
+    }
+
+    /// `middle_click` delivers `MouseDown { button: MouseButton::Middle, .. }`.
+    #[test]
+    fn middle_click_delivers_middle_mouse_down() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let app = EventRecorder {
+            events: events.clone(),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        driver.middle_click(4.0, 1.0);
+
+        let recorded = events.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0],
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Middle,
+                position: Point::new(4.0, 1.0),
+                modifiers: Modifiers::default(),
+            }
+        );
+    }
+
+    /// `right_click` delivers `MouseDown { button: MouseButton::Right, .. }`.
+    #[test]
+    fn right_click_delivers_right_mouse_down() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let app = EventRecorder {
+            events: events.clone(),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        driver.right_click(4.0, 1.0);
+
+        let recorded = events.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0],
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Right,
+                position: Point::new(4.0, 1.0),
+                modifiers: Modifiers::default(),
+            }
+        );
+    }
+
+    /// `click_with` threads an arbitrary button + modifiers through to the
+    /// app, e.g. a Ctrl-held left click.
+    #[test]
+    fn click_with_delivers_button_and_modifiers() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let app = EventRecorder {
+            events: events.clone(),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        driver.click_with(MouseButton::Left, ctrl, 2.0, 3.0);
+
+        let recorded = events.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0],
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(2.0, 3.0),
+                modifiers: ctrl,
+            }
+        );
+    }
+
+    /// With folding disabled, two `click()` calls in immediate succession
+    /// (well inside `DoubleClickDetector`'s 400ms/1.5-cell window) must
+    /// deliver two `MouseDown` events and zero `DoubleClick` — proving the
+    /// toggle actually suppresses folding rather than just being ignored.
+    #[test]
+    fn folding_disabled_keeps_two_clicks_separate() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let app = EventRecorder {
+            events: events.clone(),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+        driver.set_double_click_folding(false);
+
+        driver.click(5.0, 5.0);
+        driver.click(5.0, 5.0);
+
+        let recorded = events.borrow();
+        let mouse_downs = recorded
+            .iter()
+            .filter(|e| matches!(e, UiEvent::MouseDown { .. }))
+            .count();
+        let double_clicks = recorded
+            .iter()
+            .filter(|e| matches!(e, UiEvent::DoubleClick { .. }))
+            .count();
+        assert_eq!(
+            (mouse_downs, double_clicks),
+            (2, 0),
+            "folding disabled should yield two MouseDowns and no DoubleClick, got {recorded:?}"
+        );
+    }
+
+    /// Sanity check for the *default* (folding enabled) behaviour this
+    /// issue must not regress: two `click()`s at the same position can
+    /// still fold into a `DoubleClick` via the real detector when a test
+    /// wants that (contrast the deterministic `double_click` helper above,
+    /// which needs no timing at all).
+    #[test]
+    fn folding_enabled_by_default_still_folds_two_clicks() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let app = EventRecorder {
+            events: events.clone(),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        driver.click(5.0, 5.0);
+        driver.click(5.0, 5.0);
+
+        let recorded = events.borrow();
+        let double_clicks = recorded
+            .iter()
+            .filter(|e| matches!(e, UiEvent::DoubleClick { .. }))
+            .count();
+        assert_eq!(
+            double_clicks, 1,
+            "default folding should still fold two same-position clicks: {recorded:?}"
+        );
     }
 }
