@@ -40,7 +40,8 @@ use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
 use quadraui::{
     compute_find_replace_hit_regions, AppLogic, Backend, CommandCenter, CompletionItem,
     CompletionItemMeasure, CompletionKind, Completions, FindReplacePanel, Reaction, Rect,
-    ResolvedPlacement, StyledText, Tooltip, TooltipLayout, TooltipPlacement, UiEvent, WidgetId,
+    ResolvedPlacement, StyledText, Tooltip, TooltipBorder, TooltipLayout, TooltipPlacement,
+    UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/ai_transcript.rs"]
@@ -484,6 +485,8 @@ impl AppLogic for TooltipFixtureApp {
             text: "Hover hint".into(),
             styled_lines: None,
             placement: TooltipPlacement::Bottom,
+            border: TooltipBorder::default(),
+            title: None,
             fg: None,
             bg: None,
         };

@@ -19,9 +19,12 @@
 #![cfg(all(feature = "tui", feature = "gtk"))]
 
 use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriver};
-use quadraui::testing::{ConformanceDriver, LogicalViewport};
+use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
-use quadraui::{AppLogic, DataTableLayout, NamedKey, WidgetId};
+use quadraui::{
+    AppLogic, Backend, DataTableLayout, NamedKey, Reaction, Rect, Tooltip, TooltipBorder,
+    TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -745,5 +748,274 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
             "{name}: the sidebar content text must NOT fall inside the \
              main-content zone — the two zones must not overlap"
         );
+    }
+}
+
+// ─── Issue #541: Tooltip border vocabulary agrees across backends ──────────
+//
+// #542 gave the tooltip a *structural-parity* tier (sealed in
+// `tests/acceptance/ms-11/structural_parity.rs`) pinning the *default*
+// border (`TooltipBorder::Full`) so both backends enclose their text on
+// every side. #541 adds the vocabulary itself — `Sides` / `Full` / `None`
+// plus an optional title — and this section is its parity coverage: for
+// every setting a consumer can choose, not just the default, TUI and GTK
+// must agree on the resulting chrome shape.
+
+const BORDER_TOOLTIP_ID: &str = "cbp:541:tooltip";
+const BORDER_TOOLTIP_TEXT: &str = "BorderProbe";
+const BORDER_TOOLTIP_TITLE: &str = "FrameTitle";
+
+/// Draws a single `Tooltip` with the given `border`/`title`. `rows` picks
+/// the measured box height in `line_height` multiples — callers pass
+/// exactly what the variant under test needs to close (1 row for `Sides`/
+/// `None`, which never reserve a border row; 3 for `Full`, matching
+/// `structural_parity.rs`'s fixture) so any gap between the registered
+/// zone and the painted text is attributable to border chrome, not
+/// leftover slack from a box taller than its content.
+struct TooltipBorderFixture {
+    border: TooltipBorder,
+    title: Option<String>,
+    rows: f32,
+}
+
+impl AppLogic for TooltipBorderFixture {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let vp = backend.viewport();
+        let cw = backend.char_width();
+        let lh = backend.line_height();
+        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
+        let anchor = Rect::new(0.0, 0.0, vp.width, lh);
+
+        let tooltip = Tooltip {
+            id: WidgetId::new(BORDER_TOOLTIP_ID),
+            text: BORDER_TOOLTIP_TEXT.to_string(),
+            styled_lines: None,
+            placement: TooltipPlacement::Bottom,
+            border: self.border,
+            title: self.title.clone(),
+            bg: None,
+            fg: None,
+        };
+        // Horizontal slack (+4 columns, same margin `structural_parity.rs`
+        // uses) so the tier-A control below can't fail for an unrelated
+        // reason (the last glyph clipped for lack of padding).
+        let measure = TooltipMeasure::new(
+            cw * (BORDER_TOOLTIP_TEXT.chars().count() as f32 + 4.0),
+            lh * self.rows,
+        );
+        let layout = tooltip.layout(anchor, viewport, measure, lh);
+        backend.draw_tooltip(&tooltip, &layout);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+fn border_frame<D, A>(app: A) -> FrameInventory
+where
+    A: AppLogic,
+    D: ConformanceDriver<App = A>,
+{
+    D::new_fixture(app, LogicalViewport::new(60, 12)).inventory()
+}
+
+/// Both backends' inventories for one `(border, title, rows)` combination,
+/// in a fixed order so every assertion below can name them the same way.
+/// `make` is called once per backend so each gets its own `AppLogic`
+/// instance.
+fn border_frames(make: impl Fn() -> TooltipBorderFixture) -> [(&'static str, FrameInventory); 2] {
+    [
+        ("TuiDriver", border_frame::<TuiDriver<_>, _>(make())),
+        ("GtkDriver", border_frame::<GtkDriver<_>, _>(make())),
+    ]
+}
+
+fn border_tooltip_zone(name: &str, inv: &FrameInventory) -> Rect {
+    inv.zones()
+        .iter()
+        .find(|z| z.id.as_str() == BORDER_TOOLTIP_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "{name}: no {BORDER_TOOLTIP_ID} zone registered — surfaces: {:?}",
+                inv.zones()
+                    .iter()
+                    .map(|z| z.id.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+        .bounds
+}
+
+fn border_tooltip_text(name: &str, inv: &FrameInventory) -> Rect {
+    inv.text_runs()
+        .iter()
+        .find(|r| r.text.contains(BORDER_TOOLTIP_TEXT))
+        .unwrap_or_else(|| {
+            panic!(
+                "{name}: no {BORDER_TOOLTIP_TEXT:?} text run painted — \
+             painted runs: {:?}",
+                inv.text_runs()
+                    .iter()
+                    .map(|r| r.text.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+        .bounds
+}
+
+/// `(has_top, has_bottom, has_left, has_right)` chrome — purely a
+/// comparison between the registered zone and the painted text's own
+/// bounds, so it's unit-free by construction (each backend's own cells or
+/// pixels) and comparable across backends without a conversion factor,
+/// the same technique
+/// `structural_parity_tooltip_surface_encloses_its_text_on_every_side`
+/// uses for the default (`Full`) setting.
+fn chrome_sides(name: &str, inv: &FrameInventory) -> (bool, bool, bool, bool) {
+    let zone = border_tooltip_zone(name, inv);
+    let text = border_tooltip_text(name, inv);
+    (
+        zone.y < text.y,
+        zone.y + zone.height > text.y + text.height,
+        zone.x < text.x,
+        zone.x + zone.width > text.x + text.width,
+    )
+}
+
+/// Total vertical gap (top + bottom) between the registered zone and the
+/// painted text, as a fraction of the text's own height — unit-free by
+/// construction, like `chrome_sides`, but a ratio rather than a boolean:
+/// GTK reserves a fixed ~2px top pad for content *regardless* of border
+/// (`text_top = by + 2.0` in `gtk::tooltip::draw_tooltip`), so a `Sides`/
+/// `None` tooltip's gap is never *exactly* zero there the way it is on
+/// TUI (whole-cell rows, no sub-cell padding) — an inherent unit
+/// difference, not a chrome difference. Comparing this ratio against the
+/// same backend's `Full` ratio (see the two tests below) routes around
+/// that: what should agree across backends isn't the raw gap, it's
+/// *how much smaller* a borderless variant's gap is than a boxed one's.
+fn vertical_gap_ratio(name: &str, inv: &FrameInventory) -> f32 {
+    let zone = border_tooltip_zone(name, inv);
+    let text = border_tooltip_text(name, inv);
+    let top_gap = (text.y - zone.y).max(0.0);
+    let bottom_gap = ((zone.y + zone.height) - (text.y + text.height)).max(0.0);
+    (top_gap + bottom_gap) / text.height.max(f32::EPSILON)
+}
+
+/// Both backends' `vertical_gap_ratio` for the default (`Full`) setting —
+/// the reference "this is what real border chrome costs" measurement the
+/// borderless-variant tests below compare against.
+fn full_border_vertical_gap_ratios() -> [(&'static str, f32); 2] {
+    let frames = border_frames(|| TooltipBorderFixture {
+        border: TooltipBorder::default(),
+        title: None,
+        rows: 3.0,
+    });
+    [
+        (frames[0].0, vertical_gap_ratio(frames[0].0, &frames[0].1)),
+        (frames[1].0, vertical_gap_ratio(frames[1].0, &frames[1].1)),
+    ]
+}
+
+#[test]
+fn sides_border_has_horizontal_chrome_and_far_less_vertical_gap_than_full_on_both_backends() {
+    let full_ratios = full_border_vertical_gap_ratios();
+    let frames = border_frames(|| TooltipBorderFixture {
+        border: TooltipBorder::Sides,
+        title: None,
+        rows: 1.4,
+    });
+
+    for (i, (name, inv)) in frames.iter().enumerate() {
+        let (_top, _bottom, left, right) = chrome_sides(name, inv);
+        assert!(
+            left && right,
+            "{name}: TooltipBorder::Sides must still enclose its text horizontally — the \
+             side bars are the whole point of this variant (left={left}, right={right})"
+        );
+
+        let sides_ratio = vertical_gap_ratio(name, inv);
+        let full_ratio = full_ratios[i].1;
+        assert!(
+            sides_ratio < full_ratio * 0.5,
+            "{name}: Sides' vertical gap ({sides_ratio}× its text height) should be far \
+             smaller than Full's ({full_ratio}× — real top/bottom border rows) — Sides never \
+             draws a top/bottom rule, regardless of box height"
+        );
+    }
+}
+
+#[test]
+fn none_border_has_far_less_vertical_gap_than_full_on_both_backends() {
+    let full_ratios = full_border_vertical_gap_ratios();
+    let frames = border_frames(|| TooltipBorderFixture {
+        border: TooltipBorder::None,
+        title: None,
+        rows: 1.4,
+    });
+
+    for (i, (name, inv)) in frames.iter().enumerate() {
+        let none_ratio = vertical_gap_ratio(name, inv);
+        let full_ratio = full_ratios[i].1;
+        assert!(
+            none_ratio < full_ratio * 0.5,
+            "{name}: None's vertical gap ({none_ratio}× its text height) should be far \
+             smaller than Full's ({full_ratio}× — real top/bottom border rows) — None draws \
+             no chrome at all"
+        );
+    }
+}
+
+#[test]
+fn full_border_title_reaches_every_backend_and_sits_above_the_content() {
+    let frames = border_frames(|| TooltipBorderFixture {
+        border: TooltipBorder::default(),
+        title: Some(BORDER_TOOLTIP_TITLE.to_string()),
+        rows: 3.0,
+    });
+
+    for (name, inv) in &frames {
+        assert!(
+            inv.screen_has(BORDER_TOOLTIP_TITLE),
+            "{name}: a Full-bordered tooltip's title must reach the screen — \
+             painted runs: {:?}",
+            inv.text_runs()
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            inv.screen_has(BORDER_TOOLTIP_TEXT),
+            "{name}: the body text must still reach the screen alongside the title"
+        );
+        assert!(
+            inv.above(BORDER_TOOLTIP_TITLE, BORDER_TOOLTIP_TEXT),
+            "{name}: the title (embedded in the top border row) must sit above the body \
+             text (the first content row) — title and content must not collide"
+        );
+    }
+}
+
+#[test]
+fn title_does_not_reach_the_screen_when_border_is_not_full() {
+    for border in [TooltipBorder::Sides, TooltipBorder::None] {
+        let frames = border_frames(|| TooltipBorderFixture {
+            border,
+            title: Some(BORDER_TOOLTIP_TITLE.to_string()),
+            rows: 1.4,
+        });
+
+        for (name, inv) in &frames {
+            assert!(
+                inv.absent(BORDER_TOOLTIP_TITLE),
+                "{name}: {border:?} has no top rule to embed a title in — it must not \
+                 leak into the content area either. painted runs: {:?}",
+                inv.text_runs()
+                    .iter()
+                    .map(|r| r.text.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 }
