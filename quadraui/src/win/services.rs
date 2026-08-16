@@ -8,10 +8,13 @@ pub struct WinClipboard;
 
 impl Clipboard for WinClipboard {
     fn read_text(&self) -> Option<String> {
-        todo!("Win32 clipboard: GetClipboardData(CF_UNICODETEXT)")
+        // TODO(#23): Win32 clipboard: GetClipboardData(CF_UNICODETEXT).
+        // Graceful no-op until then — no clipboard content available.
+        None
     }
     fn write_text(&self, _text: &str) {
-        todo!("Win32 clipboard: SetClipboardData(CF_UNICODETEXT)")
+        // TODO(#23): Win32 clipboard: SetClipboardData(CF_UNICODETEXT).
+        // Graceful no-op until then.
     }
 }
 
@@ -43,18 +46,24 @@ impl PlatformServices for WinPlatformServices {
     }
 
     fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        todo!("IFileOpenDialog / GetOpenFileName")
+        // TODO(#23): IFileOpenDialog / GetOpenFileName.
+        // Graceful no-op until then — behaves like a cancelled dialog.
+        None
     }
 
     fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        todo!("IFileSaveDialog / GetSaveFileName")
+        // TODO(#23): IFileSaveDialog / GetSaveFileName.
+        // Graceful no-op until then — behaves like a cancelled dialog.
+        None
     }
 
     fn send_notification(&self, _n: Notification) {
-        todo!("Win32 toast notification or balloon tip")
+        // TODO(#23): Win32 toast notification or balloon tip.
+        // Graceful no-op until then.
     }
 
     fn open_url(&self, _url: &str) {
-        todo!("ShellExecute(NULL, \"open\", url, ...)")
+        // TODO(#23): ShellExecute(NULL, "open", url, ...).
+        // Graceful no-op until then.
     }
 }
