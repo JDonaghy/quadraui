@@ -1630,4 +1630,129 @@ mod tests {
         let back: FormEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
     }
+
+    // ── CJK label paint↔measure agreement (#471 fix iteration 1) ──────────
+    //
+    // Before this fix, `tui_form_layout` reserved `label.visible_width()`
+    // (display-width-aware) columns for the label, but `draw_form` painted
+    // it via the char-count-strided `draw_styled_text` — so a CJK label
+    // measured wider than it was actually painted, leaving a stray gap
+    // before the right-aligned value/controls that scales with how much
+    // non-ASCII content the label has. These tests pin that the *painted*
+    // label span and the *measured* `visible_width()` now agree, for both
+    // a right-aligned value field (`ReadOnly`) and an items-after-label
+    // field (`ToggleGroup`).
+
+    #[test]
+    fn readonly_field_cjk_label_paints_full_display_width_no_gap() {
+        // "日本語:" — display width 7 (2+2+2+1), char count 4. Before the
+        // fix, `draw_styled_text` would stop painting after 4 columns while
+        // `tui_form_layout`/the ReadOnly branch reserved 7, leaving 3
+        // stray background columns between the label and the value.
+        let f = Form {
+            id: WidgetId::new("info"),
+            fields: vec![FormField {
+                id: WidgetId::new("lang"),
+                label: label("日本語:"),
+                kind: FieldKind::ReadOnly {
+                    value: label("OK"),
+                },
+                disabled: false,
+                validation: None,
+                hint: label(""),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let label_visible_width = f.fields[0].label.visible_width();
+        assert_eq!(label_visible_width, 7);
+
+        // Label starts at col 1 (label_col) and must span exactly its
+        // `visible_width()` in painted columns — cols 1..=6 hold the three
+        // wide CJK glyphs (each followed by an empty continuation cell),
+        // col 7 holds ':', and col 8 (label_col + visible_width) is
+        // unpainted background, not a stray copy of ':' or the value.
+        assert_eq!(cell_char(&buf, 1, 0), '日');
+        assert_eq!(buf[(2u16, 0u16)].symbol(), "");
+        assert_eq!(cell_char(&buf, 3, 0), '本');
+        assert_eq!(buf[(4u16, 0u16)].symbol(), "");
+        assert_eq!(cell_char(&buf, 5, 0), '語');
+        assert_eq!(buf[(6u16, 0u16)].symbol(), "");
+        assert_eq!(cell_char(&buf, 7, 0), ':');
+        assert_eq!(
+            cell_char(&buf, 1 + label_visible_width as u16, 0),
+            ' ',
+            "no leftover glyph past the label's measured display width"
+        );
+
+        // The ReadOnly value ("OK", visible_width 2) is right-aligned via
+        // `area.width - (w + 2)` = 30 - 4 = 26, independent of the label —
+        // confirm it painted where that formula (which now agrees with the
+        // label's actual painted extent) says it should.
+        assert_eq!(cell_char(&buf, 26, 0), 'O');
+        assert_eq!(cell_char(&buf, 27, 0), 'K');
+    }
+
+    #[test]
+    fn toggle_group_cjk_label_items_start_flush_with_painted_label() {
+        // Same desync, but for the "items packed after the label" shape
+        // (`ToggleGroup`/`ButtonRow`/`SegmentedControl`): `tui_form_layout`
+        // computes `start_x = label.visible_width() + 2` for where the
+        // toggles begin. Before the fix, the label painted narrower than
+        // that (char count, not display width), so toggles started further
+        // right than the label's actual painted end — a CJK-content-
+        // dependent gap. Pin that the gap is now exactly the intended 1
+        // blank column (the `+2` reserves 2 cells past the label's last
+        // glyph column, and the layout's `start_x` is 0-based while
+        // painting's `label_col` is 1-based, so 1 of those 2 reserved
+        // cells is absorbed by that frame offset).
+        let f = Form {
+            id: WidgetId::new("opts"),
+            fields: vec![FormField {
+                id: WidgetId::new("toggles"),
+                label: label("中文:"),
+                kind: FieldKind::ToggleGroup {
+                    toggles: vec![ToggleGroupItem {
+                        id: WidgetId::new("a"),
+                        label: "A".into(),
+                        value: true,
+                    }],
+                },
+                disabled: false,
+                validation: None,
+                hint: label(""),
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let label_visible_width = f.fields[0].label.visible_width();
+        assert_eq!(label_visible_width, 5); // 2 + 2 + 1
+
+        // Label painted at cols 1..=5 ("中", "文", ':').
+        assert_eq!(cell_char(&buf, 1, 0), '中');
+        assert_eq!(buf[(2u16, 0u16)].symbol(), "");
+        assert_eq!(cell_char(&buf, 3, 0), '文');
+        assert_eq!(buf[(4u16, 0u16)].symbol(), "");
+        assert_eq!(cell_char(&buf, 5, 0), ':');
+
+        // The toggle item ("A") starts exactly 1 column past the label's
+        // last painted glyph — not drifted further right by the old
+        // char-count/display-width mismatch (which for this label would
+        // have painted only 3 columns wide, leaving a 3-column gap instead
+        // of 1).
+        let a_col = (1..30)
+            .find(|&x| cell_char(&buf, x, 0) == 'A')
+            .expect("toggle item 'A' must be painted");
+        assert_eq!(a_col, 1 + label_visible_width as u16 + 1);
+    }
 }

@@ -14,12 +14,16 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as TuiRect;
 
-use super::{draw_form, draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell};
+use super::{
+    draw_form, draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell,
+    set_cell_wide,
+};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader, SectionMeasure,
 };
+use crate::text_util::char_cell_width;
 use crate::theme::Theme;
 use crate::types::StyledText;
 
@@ -387,8 +391,13 @@ fn paint_text_lines(buf: &mut Buffer, area: TuiRect, lines: &[StyledText], theme
                 if x >= area.x + area.width {
                     break;
                 }
-                set_cell(buf, x, y, ch, span_fg, span_bg);
-                x += 1;
+                let w = char_cell_width(ch);
+                if w == 2 && x + 1 < area.x + area.width {
+                    set_cell_wide(buf, x, y, ch, span_fg, span_bg);
+                } else {
+                    set_cell(buf, x, y, ch, span_fg, span_bg);
+                }
+                x += w;
             }
         }
     }
@@ -443,8 +452,13 @@ fn paint_empty_body(buf: &mut Buffer, area: TuiRect, empty: &EmptyBody, theme: &
                 if x >= area.x + area.width {
                     break;
                 }
-                set_cell(buf, x, y, ch, span_fg, bg);
-                x += 1;
+                let w = char_cell_width(ch);
+                if w == 2 && x + 1 < area.x + area.width {
+                    set_cell_wide(buf, x, y, ch, span_fg, bg);
+                } else {
+                    set_cell(buf, x, y, ch, span_fg, bg);
+                }
+                x += w;
             }
         }
     }
@@ -2470,5 +2484,52 @@ mod tests {
             row.contains("[x]"),
             "toggle value=true should paint [x], got row: {row:?}"
         );
+    }
+
+    // Regression test for #471 (fix iteration 1): `paint_empty_body` centers
+    // the empty-state message using `line.visible_width()` (display-width-
+    // aware), but before the fix painted it via a char-count-strided loop —
+    // so a CJK/emoji message rendered narrower than the centering math
+    // assumed, landing left-of-center instead of centered. Pin that the
+    // painted extent of a CJK message now agrees with `visible_width()`
+    // exactly, so it lands with equal left/right margins.
+    #[test]
+    fn empty_body_centers_cjk_message_by_display_width_not_char_count() {
+        let area = TuiRect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let empty = EmptyBody {
+            text: StyledText::plain("日本語"),
+            ..Default::default()
+        };
+        assert_eq!(empty.text.visible_width(), 6);
+
+        paint_empty_body(&mut buf, area, &empty, &Theme::default());
+
+        // total=1 line, start_y = 0 + (3 - 1) / 2 = 1.
+        let y = 1;
+        // x_start = 0 + (20 - 6) / 2 = 7.
+        assert_eq!(cell_char(&buf, 7, y), '日');
+        assert_eq!(buf[(8u16, y)].symbol(), "");
+        assert_eq!(cell_char(&buf, 9, y), '本');
+        assert_eq!(buf[(10u16, y)].symbol(), "");
+        assert_eq!(cell_char(&buf, 11, y), '語');
+        assert_eq!(buf[(12u16, y)].symbol(), "");
+
+        // Equal margins on both sides: nothing painted before col 7 or at/
+        // after col 13 (7 + visible_width) on the message row.
+        for x in 0..7 {
+            assert_eq!(
+                cell_char(&buf, x, y),
+                ' ',
+                "unexpected content left of center at col {x}"
+            );
+        }
+        for x in 13..20 {
+            assert_eq!(
+                cell_char(&buf, x, y),
+                ' ',
+                "unexpected content right of the CJK message's measured width at col {x}"
+            );
+        }
     }
 }

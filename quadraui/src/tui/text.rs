@@ -20,18 +20,9 @@
 //! [`crate::types::StyledText::visible_width`] could use real cell-width
 //! measurement too, without pulling in the `tui` feature. They stay
 //! re-exported here for API stability (existing `quadraui::tui::*`
-//! callers, and the `unicode-width` PUA doc details below).
-//!
-//! Uses the `unicode-width` crate's UAX#11 tables directly, with no
-//! codepoint-range overrides. Private-Use-Area codepoints — including
-//! both Nerd Font PUA blocks (BMP `U+E000`–`U+F8FF` and Supplementary-A
-//! `U+F0000`–`U+FFFFD`) — measure as width 1, matching `unicode-width`
-//! and `Nerd Font Mono` (the terminal-recommended, single-cell variant).
-//! Non-Mono Nerd Font variants are genuinely double-width, but that is a
-//! font/theme property, not something derivable from the codepoint
-//! alone; if double-width PUA glyphs ever need supporting, it must come
-//! in as an explicit input (theme/config/probe), not a range guess here.
-//! See issue #545.
+//! callers). See [`crate::text_util::char_cell_width`]'s doc comment for
+//! the PUA / Nerd-Font-width measurement rationale (kept in one place,
+//! at the implementation, rather than duplicated here).
 
 use std::borrow::Cow;
 
