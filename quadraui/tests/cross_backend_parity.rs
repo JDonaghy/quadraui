@@ -803,15 +803,17 @@ impl AppLogic for TooltipBorderFixture {
         let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let anchor = Rect::new(0.0, 0.0, vp.width, lh);
 
+        // Built through the `..Default::default()` spread on purpose: this
+        // is the migration shape #541's module doc hands downstream
+        // consumers, so exercising it here from an external crate keeps it
+        // compile-checked rather than merely documented.
         let tooltip = Tooltip {
             id: WidgetId::new(BORDER_TOOLTIP_ID),
             text: BORDER_TOOLTIP_TEXT.to_string(),
-            styled_lines: None,
             placement: TooltipPlacement::Bottom,
             border: self.border,
             title: self.title.clone(),
-            bg: None,
-            fg: None,
+            ..Default::default()
         };
         // Horizontal slack (+4 columns, same margin `structural_parity.rs`
         // uses) so the tier-A control below can't fail for an unrelated

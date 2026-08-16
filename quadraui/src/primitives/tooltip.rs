@@ -18,37 +18,58 @@
 //! ## Downstream impact (#541)
 //!
 //! `border: TooltipBorder` and `title: Option<String>` are **new required
-//! fields on a plain (all-`pub`, no `#[non_exhaustive]`) struct**, so any
-//! exhaustive `Tooltip { .. }` literal with no `..Default::default()`
-//! fails to compile the moment this lands on `develop` — there is no
-//! backwards-compatible way to add a field to that shape (see
-//! `CLAUDE.md`'s *Downstream consumers* section). `vimcode` constructs
-//! `Tooltip` this way at 7 call sites and needs a matching migration PR
-//! (adding `border: TooltipBorder::default(), title: None,` or switching
-//! to [`Tooltip::new`] + the `with_*` builder methods below):
+//! fields on a public struct consumers construct**, so per rule 8 of
+//! `quadraui/docs/PRIMITIVE_RULES.md` this is a breaking change: every
+//! *exhaustive* `Tooltip { .. }` literal in a consumer stops compiling the
+//! moment this lands on `develop`. There is no Rust shim that keeps an
+//! exhaustive literal compiling across an added field, so the break itself
+//! cannot be deprecated away — only made small and made final.
+//!
+//! **Made small.** [`Tooltip`] now implements [`Default`], so each affected
+//! site migrates by deleting the fields it was leaving at the default and
+//! adding one line:
+//!
+//! ```
+//! # use quadraui::{Tooltip, TooltipPlacement, WidgetId};
+//! let tip = Tooltip {
+//!     id: WidgetId::new("hover"),
+//!     text: "Hover hint".to_string(),
+//!     placement: TooltipPlacement::Top,
+//!     ..Default::default()
+//! };
+//! assert_eq!(tip.title, None);
+//! ```
+//!
+//! **Made final.** That same `..Default::default()` spread is what makes
+//! the *next* added field a non-event: a literal written this way keeps
+//! compiling when the struct grows. [`Tooltip::new`] plus the `with_*`
+//! builder methods are the equivalent path for sites that would rather not
+//! name fields at all. This is why `Tooltip` stays a plain struct rather
+//! than gaining `#[non_exhaustive]`: `#[non_exhaustive]` would forbid
+//! struct-literal *and* functional-update syntax outside this crate
+//! entirely, forcing every consumer through the builder forever and
+//! deleting the cheap one-line escape hatch above, for no protection that
+//! `Default` + the spread does not already buy. ([`TooltipBorder`] *is*
+//! `#[non_exhaustive]` — different calculus: it is brand new this PR, so
+//! nothing matches on it yet and marking it costs no consumer anything.)
+//!
+//! `vimcode` constructs `Tooltip` exhaustively at 7 call sites, all of
+//! which need that one-line migration:
 //!
 //! - `src/tui_main/panels.rs:810`
 //! - `src/render.rs:1151`, `src/render.rs:1490`, `src/render.rs:4285`
 //! - `src/gtk/draw.rs:1378`, `src/gtk/draw.rs:1667`, `src/gtk/draw.rs:1765`
 //!
-//! Per policy this needs a companion `vimcode` migration issue/PR opened
-//! and linked before or alongside merge — that is a `gh`/cross-repo action
-//! outside a Work dispatch's tool access and must be done by whoever lands
-//! this (see the PR discussion for #541).
+//! Per rule 8's two-PR protocol that needs a companion `vimcode` migration
+//! issue/PR opened and linked before or alongside merge — a cross-repo
+//! `gh` action outside a Work dispatch's tool access, so it is the job of
+//! whoever lands this (see the PR discussion for #541). `coord-tui` pins a
+//! fixed git rev and so is unaffected until someone bumps it.
 //!
-//! [`Tooltip::new`] plus the builder methods below are the *forward*
-//! mitigation: they give every future construction site (in-tree and
-//! downstream, once migrated) a path that survives additional optional
-//! fields without another exhaustive-literal break. [`TooltipBorder`] is
-//! `#[non_exhaustive]` for the same reason — it is brand new this PR, so
-//! marking it costs nothing today and buys the same protection for its
-//! own future variants. `Tooltip` itself is deliberately left exhaustive
-//! here rather than also marked `#[non_exhaustive]`: doing so would, on
-//! top of the break above, additionally force every in-tree sealed
-//! acceptance slice under `tests/acceptance/` (an external crate from the
-//! library's point of view, exactly like `vimcode`) onto the builder too —
-//! and workers may not edit those files (see `CLAUDE.md`). That
-//! migration is Gate A's to make independently, not this PR's.
+//! In-tree, every construction site is already migrated: the sealed
+//! acceptance slices under `tests/acceptance/` and the `quadraui/tests/`
+//! integration crates build through [`Tooltip::new`] or the spread above,
+//! so `cargo test --features tui` is green on this branch.
 
 use crate::event::Rect;
 use crate::types::{Color, Modifiers, StyledText, WidgetId};
@@ -244,20 +265,34 @@ impl TooltipLayout {
     }
 }
 
+/// Every field but `id`/`text` at its behaviour-preserving default
+/// (`styled_lines: None`, `placement: Bottom`, `border: Full`, `title:
+/// None`, `bg: None`, `fg: None`), with `id`/`text` empty.
+///
+/// This exists so consumers can write `Tooltip { id, text,
+/// ..Default::default() }` and keep compiling when the struct grows another
+/// field — see the module doc's *Downstream impact* section. An
+/// all-defaults `Tooltip` has an empty [`WidgetId`], which is only useful
+/// as the tail of such a spread; use [`Tooltip::new`] to get an identified
+/// one.
+impl Default for Tooltip {
+    fn default() -> Self {
+        Self::new(WidgetId::new(String::new()), String::new())
+    }
+}
+
 impl Tooltip {
     /// Construct a `Tooltip` with just the two fields every consumer must
     /// supply — `id` and `text` — and every other field at its
     /// behaviour-preserving default (`styled_lines: None`, `placement:
     /// Bottom`, `border: Full`, `title: None`, `bg: None`, `fg: None`).
     ///
-    /// Prefer this (plus the `with_*` builder methods below) over a raw
-    /// `Tooltip { .. }` struct literal for any *new* call site: `Tooltip`
-    /// is a plain, all-`pub`-field struct with no `#[non_exhaustive]`
-    /// (see the module doc's *Downstream impact* section for why it
-    /// stays that way for now), so a raw literal is re-broken by the
+    /// This plus the `with_*` builder methods below is one of the two
+    /// field-addition-proof ways to build a `Tooltip`; the other is
+    /// `Tooltip { id, text, ..Default::default() }`. Prefer either over an
+    /// *exhaustive* `Tooltip { .. }` literal, which is re-broken by the
     /// next added field exactly the way `border`/`title` broke every
-    /// existing exhaustive literal in #541. Building through `new` +
-    /// `with_*` survives that.
+    /// exhaustive literal in #541 (module doc, *Downstream impact*).
     pub fn new(id: WidgetId, text: impl Into<String>) -> Self {
         Self {
             id,
