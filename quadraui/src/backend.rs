@@ -1197,16 +1197,11 @@ pub trait Backend {
     /// (DataTable pattern: host reads `layout.columns[i].visible_cards`
     /// and adjusts `column.scroll_offset` accordingly).
     ///
-    /// Has a default impl that computes layout without painting anything
-    /// (an empty `BoardLayout` sized to `rect`), so backends that haven't
-    /// implemented a board rasteriser yet (macOS, Windows) still satisfy
-    /// the trait. Override once the backend has a real rasteriser.
-    fn draw_board(&mut self, rect: Rect, _model: &BoardModel) -> BoardLayout {
-        BoardLayout {
-            bounds: rect,
-            columns: vec![],
-        }
-    }
+    /// No default impl — every backend implementer sees this as a compile
+    /// error and fills in a real rasteriser (`PRIMITIVE_RULES.md` rule 7).
+    /// A no-op default here would let a backend silently paint an empty
+    /// board instead of failing to build (quadraui#600, PORT-01).
+    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
 }
 
 // ── Shared layout helpers ───────────────────────────────────────────────

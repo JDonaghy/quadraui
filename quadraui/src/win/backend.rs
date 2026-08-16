@@ -396,6 +396,10 @@ impl Backend for WinBackend {
         todo!("DirectWrite split-tree layout")
     }
 
+    fn draw_board(&mut self, _rect: Rect, _model: &crate::BoardModel) -> crate::BoardLayout {
+        todo!("Direct2D board rasteriser")
+    }
+
     fn draw_panel(&mut self, _rect: Rect, _panel: &Panel) -> PanelLayout {
         todo!("Direct2D panel rasteriser")
     }
