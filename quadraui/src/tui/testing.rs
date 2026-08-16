@@ -46,8 +46,15 @@
 //! ```
 
 use ratatui::backend::TestBackend;
-use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
+
+/// Re-exported so a downstream test crate can name `Color`/`Modifier` (e.g.
+/// `style.modifiers.contains(Modifier::ITALIC)`) without adding its own
+/// `ratatui` dependency — it already depends on `quadraui` to get
+/// [`TuiDriver`]. Scoped to `tui::testing` rather than the crate root to
+/// avoid colliding with [`crate::types::Color`], which is re-exported there
+/// already (quadraui#593).
+pub use ratatui::style::{Color, Modifier};
 
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
@@ -101,12 +108,19 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// styles against each other — a rendered cell has no "subtracted"
 /// modifiers, only the resolved `add_modifier` bits ratatui reports back as
 /// [`Modifier`], which is what a driver test wants to assert against
-/// (quadraui#593). `fg`/`bg` are ratatui's own [`Color`], re-exported here
-/// (see [`TuiDriver::style_at`]) rather than `quadraui::types::Color`
-/// because that's what the rasterisers actually paint into the buffer —
-/// comparing against a theme token means wrapping the token with
-/// [`crate::tui::ratatui_color`] first.
+/// (quadraui#593). `fg`/`bg` are ratatui's own [`Color`] (re-exported as
+/// [`self::Color`], see [`TuiDriver::style_at`]) rather than
+/// `quadraui::types::Color` because that's what the rasterisers actually
+/// paint into the buffer — comparing against a theme token means wrapping
+/// the token with [`crate::tui::ratatui_color`] first.
+///
+/// `#[non_exhaustive]`: fields may grow (e.g. `underline_color`, dropped
+/// from this first cut — see above) without that being a breaking change
+/// for callers. `CellStyle` is only ever returned, never constructed, by
+/// consumers, so this only forbids exhaustive destructuring, not field
+/// access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CellStyle {
     pub fg: Color,
     pub bg: Color,
@@ -375,8 +389,9 @@ impl<A: AppLogic> TuiDriver<A> {
     /// identically. `style_at` reads the same buffer cell `screen()` does,
     /// just its [`ratatui::buffer::Cell::style`] instead of its symbol.
     ///
-    /// Re-exports `ratatui`'s own [`Color`]/[`Modifier`] via [`CellStyle`]
-    /// so a downstream test crate can assert on them (`style.modifiers
+    /// `fg`/`bg`/`modifiers` are `ratatui`'s own [`Color`]/[`Modifier`],
+    /// re-exported from this module (`quadraui::tui::testing::Modifier`) so
+    /// a downstream test crate can assert on them (`style.modifiers
     /// .contains(Modifier::ITALIC)`) without adding its own `ratatui`
     /// dependency — it already depends on `quadraui` to get `TuiDriver`.
     pub fn style_at(&self, x: u16, y: u16) -> Option<CellStyle> {
@@ -397,8 +412,14 @@ impl<A: AppLogic> TuiDriver<A> {
     /// entry per cell, so a test can assert "every cell of the tab label is
     /// italic" without indexing arithmetic. Empty if `y` is out of range.
     ///
-    /// `styled_row(y).len()` equals the buffer width for any in-range `y`
-    /// (matching [`Self::screen`]'s row length before the trailing `\n`).
+    /// `styled_row(y).len()` equals the buffer width (`area.width`) for any
+    /// in-range `y` — always one entry per cell, unlike [`Self::screen`],
+    /// whose row length before the trailing `\n` is only the same count for
+    /// buffers with no wide characters: `screen()` concatenates each cell's
+    /// `symbol()`, so a double-width glyph's continuation cell contributes
+    /// zero chars there, while `styled_row` still emits an entry for it
+    /// (its char defaults to `' '`, since a continuation cell's `symbol()`
+    /// is empty).
     pub fn styled_row(&self, y: u16) -> Vec<(char, CellStyle)> {
         let buf = self.terminal.backend().buffer();
         let area = buf.area;
