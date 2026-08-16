@@ -1,7 +1,9 @@
 //! TUI rasteriser for [`crate::Tooltip`].
 //!
-//! Border chrome is chosen by `tooltip.border` (#541 —
-//! [`crate::TooltipBorder`]), not hardcoded here:
+//! Border chrome is chosen by `layout.border` (#541 —
+//! [`crate::TooltipBorder`]), not hardcoded here — see
+//! `primitives::tooltip`'s module doc for why the vocabulary lives on
+//! [`TooltipLayout`] rather than on [`Tooltip`] itself:
 //!
 //! - [`TooltipBorder::Full`] (the default) renders a closed box —
 //!   `┌─┐`/`└─┘` top and bottom rows plus `│` sides — whenever the
@@ -11,7 +13,7 @@
 //!   rectangle. Below that room threshold, `Full` falls back to the
 //!   `Sides` rendering rather than an empty box — a rendering detail of
 //!   this variant, not a mode a consumer selects. An optional
-//!   `tooltip.title` is centred into the top row when the box closes.
+//!   `layout.title` is centred into the top row when the box closes.
 //! - [`TooltipBorder::Sides`] always renders `│` on the first/last column
 //!   only, regardless of height — the pre-#542 TUI look, now available
 //!   by explicit request rather than as the only option. No title (no
@@ -104,10 +106,10 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
     // branches pick the left/right corner glyph, and at `w < 2` those two
     // indices collide (`w - 1 == 0`), so the `col == 0` arm would win and
     // every corner would render as a left corner.
-    let has_horizontal_border = matches!(tooltip.border, TooltipBorder::Full) && h >= 3 && w >= 2;
+    let has_horizontal_border = matches!(layout.border, TooltipBorder::Full) && h >= 3 && w >= 2;
     // `None` draws no chrome at all — not even the side bars `Sides` and
     // (as a fallback) `Full` paint.
-    let draw_side_bars = !matches!(tooltip.border, TooltipBorder::None);
+    let draw_side_bars = !matches!(layout.border, TooltipBorder::None);
     let content_row0: u16 = if has_horizontal_border { 1 } else { 0 };
     let content_rows: u16 = if has_horizontal_border { h - 2 } else { h };
     // Content starts one cell past the side border when one is drawn
@@ -163,7 +165,7 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
                 set_cell(buf, x + col, row, ch, border, bg);
             }
         };
-        paint_border_row(buf, y, true, tooltip.title.as_deref());
+        paint_border_row(buf, y, true, layout.title.as_deref());
         paint_border_row(buf, y + h - 1, false, None);
     }
 
@@ -223,6 +225,8 @@ mod tests {
         TooltipLayout {
             bounds: QRect::new(x, y, w, h),
             resolved_placement: ResolvedPlacement::Bottom,
+            border: TooltipBorder::default(),
+            title: None,
         }
     }
 
@@ -249,8 +253,6 @@ mod tests {
             text: "hello".into(),
             styled_lines: None,
             placement: crate::primitives::tooltip::TooltipPlacement::Bottom,
-            border: crate::primitives::tooltip::TooltipBorder::default(),
-            title: None,
             fg: None,
             bg: None,
         };
@@ -277,8 +279,6 @@ mod tests {
             text: "hello".into(),
             styled_lines: None,
             placement: crate::primitives::tooltip::TooltipPlacement::Bottom,
-            border: crate::primitives::tooltip::TooltipBorder::default(),
-            title: None,
             fg: None,
             bg: None,
         };
@@ -315,8 +315,6 @@ mod tests {
                 },
             ]),
             placement: crate::primitives::tooltip::TooltipPlacement::Bottom,
-            border: crate::primitives::tooltip::TooltipBorder::default(),
-            title: None,
             fg: None,
             bg: None,
         };
@@ -337,8 +335,6 @@ mod tests {
             text: "x".into(),
             styled_lines: None,
             placement: crate::primitives::tooltip::TooltipPlacement::Bottom,
-            border: crate::primitives::tooltip::TooltipBorder::default(),
-            title: None,
             fg: None,
             bg: Some(Color::rgb(100, 0, 0)),
         };
@@ -357,8 +353,6 @@ mod tests {
             text: "x".into(),
             styled_lines: None,
             placement: crate::primitives::tooltip::TooltipPlacement::Bottom,
-            border: crate::primitives::tooltip::TooltipBorder::default(),
-            title: None,
             fg: None,
             bg: None,
         };
@@ -369,17 +363,19 @@ mod tests {
 
     // ── #541: explicit border vocabulary ─────────────────────────────────
 
-    fn tooltip_with(border: TooltipBorder, title: Option<&str>) -> Tooltip {
-        Tooltip {
-            id: WidgetId::new("hover"),
-            text: "hi".into(),
-            styled_lines: None,
-            placement: crate::primitives::tooltip::TooltipPlacement::Bottom,
-            border,
-            title: title.map(str::to_string),
-            fg: None,
-            bg: None,
+    fn tooltip_with() -> Tooltip {
+        Tooltip::new(WidgetId::new("hover"), "hi")
+    }
+
+    /// `make_layout` plus the border/title (#541) a test wants — the
+    /// in-crate equivalent of `tooltip.layout(...).with_border(..)
+    /// .with_title(..)`.
+    fn layout_with(w: f32, h: f32, border: TooltipBorder, title: Option<&str>) -> TooltipLayout {
+        let mut layout = make_layout(0.0, 0.0, w, h).with_border(border);
+        if let Some(t) = title {
+            layout = layout.with_title(t);
         }
+        layout
     }
 
     /// `Sides` must never draw top/bottom rules, even at a height that
@@ -393,9 +389,9 @@ mod tests {
         // gets painted (a row with no corresponding text line is left
         // untouched by `draw_tooltip`, which would make an empty row's
         // "no border here" look identical to a genuinely-suppressed one).
-        let mut tt = tooltip_with(TooltipBorder::Sides, None);
+        let mut tt = tooltip_with();
         tt.text = "hi\nhi\nhi\nhi\nhi".into();
-        let layout = make_layout(0.0, 0.0, 10.0, 5.0);
+        let layout = layout_with(10.0, 5.0, TooltipBorder::Sides, None);
         draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
 
         for row in 0..5u16 {
@@ -428,8 +424,8 @@ mod tests {
     #[test]
     fn none_border_paints_no_chrome() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
-        let tt = tooltip_with(TooltipBorder::None, None);
-        let layout = make_layout(0.0, 0.0, 10.0, 3.0);
+        let tt = tooltip_with();
+        let layout = layout_with(10.0, 3.0, TooltipBorder::None, None);
         draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
 
         for row in 0..3u16 {
@@ -452,8 +448,8 @@ mod tests {
     #[test]
     fn full_border_centers_title_in_top_row() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
-        let tt = tooltip_with(TooltipBorder::default(), Some("Hi"));
-        let layout = make_layout(0.0, 0.0, 12.0, 3.0);
+        let tt = tooltip_with();
+        let layout = layout_with(12.0, 3.0, TooltipBorder::default(), Some("Hi"));
         draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
 
         // Interior columns are 1..=10 (corners at 0 and 11); " Hi " (4
@@ -470,11 +466,13 @@ mod tests {
     #[test]
     fn oversized_title_is_dropped_not_truncated() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
-        let tt = tooltip_with(
+        let tt = tooltip_with();
+        let layout = layout_with(
+            12.0,
+            3.0,
             TooltipBorder::default(),
             Some("This title is far too long for the box"),
         );
-        let layout = make_layout(0.0, 0.0, 12.0, 3.0);
         draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
 
         let top_row: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
@@ -490,8 +488,8 @@ mod tests {
     fn title_is_ignored_when_border_is_not_full() {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
-            let tt = tooltip_with(border, Some("Hi"));
-            let layout = make_layout(0.0, 0.0, 12.0, 3.0);
+            let tt = tooltip_with();
+            let layout = layout_with(12.0, 3.0, border, Some("Hi"));
             draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
 
             let screen: String = (0..3)
@@ -512,8 +510,8 @@ mod tests {
     #[test]
     fn full_border_drops_title_when_too_short_to_close() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
-        let tt = tooltip_with(TooltipBorder::default(), Some("Hi"));
-        let layout = make_layout(0.0, 0.0, 12.0, 1.0);
+        let tt = tooltip_with();
+        let layout = layout_with(12.0, 1.0, TooltipBorder::default(), Some("Hi"));
         draw_tooltip(&mut buf, &tt, &layout, &Theme::default());
 
         assert_eq!(cell_char(&buf, 0, 0), '│');

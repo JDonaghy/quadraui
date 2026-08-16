@@ -272,14 +272,15 @@ pub const CASES: &[Case] = &[
             let cw = b.char_width();
             let lh = b.line_height();
             let anchor = Rect::new(0.0, 0.0, area.width, lh);
-            let tooltip = Tooltip::new(id("tooltip"), "c0tip")
-                .with_placement(TooltipPlacement::Bottom)
-                .with_border(TooltipBorder::default());
+            let tooltip =
+                Tooltip::new(id("tooltip"), "c0tip").with_placement(TooltipPlacement::Bottom);
             // Room for a border on all sides plus the whole label — a box
             // measured to exactly `border + text + border` leaves no
             // padding and clips the last glyph.
             let measure = TooltipMeasure::new(cw * 9.0, lh * 3.0);
-            let layout = tooltip.layout(anchor, area, measure, lh);
+            let layout = tooltip
+                .layout(anchor, area, measure, lh)
+                .with_border(TooltipBorder::default());
             b.draw_tooltip(&tooltip, &layout);
         },
     },

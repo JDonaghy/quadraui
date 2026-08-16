@@ -39,13 +39,8 @@ impl TooltipDemo {
     }
 
     fn tooltip(&self) -> Tooltip {
-        let mut t = Tooltip::new(WidgetId::new("tooltip-demo:tip"), TOOLTIP_TEXT)
+        Tooltip::new(WidgetId::new("tooltip-demo:tip"), TOOLTIP_TEXT)
             .with_placement(TooltipPlacement::Bottom)
-            .with_border(self.border);
-        if self.show_title && matches!(self.border, TooltipBorder::Full) {
-            t = t.with_title(TOOLTIP_TITLE);
-        }
-        t
     }
 
     /// `Full` needs a top and bottom border row on top of the one content
@@ -141,7 +136,12 @@ impl AppLogic for TooltipDemo {
             cw * (TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * self.rows(),
         );
-        let layout = tooltip.layout(anchor, clamp, measure, lh);
+        let mut layout = tooltip
+            .layout(anchor, clamp, measure, lh)
+            .with_border(self.border);
+        if self.show_title && matches!(self.border, TooltipBorder::Full) {
+            layout = layout.with_title(TOOLTIP_TITLE);
+        }
         backend.draw_tooltip(&tooltip, &layout);
     }
 

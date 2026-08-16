@@ -68,7 +68,7 @@ mod ms11_542_structural_parity {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, AppShell, Backend, Color, PanelDefinition, Reaction, Rect, StatusBar,
-        StatusBarSegment, Tooltip, TooltipMeasure, UiEvent, WidgetId,
+        StatusBarSegment, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
     };
 
     /// #541's live case, kept verbatim so the clause names the bug it came
@@ -133,7 +133,14 @@ mod ms11_542_structural_parity {
             };
             let _ = backend.draw_status_bar(anchor, &bar, None, None);
 
-            let tooltip = Tooltip::new(WidgetId::new(TOOLTIP_ID), TOOLTIP_TEXT.to_string());
+            let tooltip = Tooltip {
+                id: WidgetId::new(TOOLTIP_ID),
+                text: TOOLTIP_TEXT.to_string(),
+                styled_lines: None,
+                placement: TooltipPlacement::Bottom,
+                bg: None,
+                fg: None,
+            };
             // One text line plus a row of chrome above and below it, and
             // room for chrome either side — i.e. a box big enough for a
             // border on all four sides *and* the whole label. Expressed in
