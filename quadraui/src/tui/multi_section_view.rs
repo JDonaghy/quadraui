@@ -15,8 +15,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as TuiRect;
 
 use super::{
-    draw_form, draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell,
-    set_cell_wide,
+    draw_form, draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell, set_cell_wide,
 };
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
