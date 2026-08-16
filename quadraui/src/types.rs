@@ -143,8 +143,21 @@ impl StyledText {
         }
     }
 
+    /// Terminal display width of the concatenated span text, in cells.
+    ///
+    /// Sums each span's [`crate::text_util::display_width`] — CJK and
+    /// wide-emoji glyphs count as 2, combining marks count as 0, so this
+    /// is not the same as `chars().count()`. Before #471, this counted
+    /// `chars()` directly: the #206 unicode-width fix landed only in the
+    /// `tui`-feature-gated rasteriser cell logic and never reached this
+    /// core type, so every layout site measuring a `StyledText` with
+    /// non-ASCII content (TUI `Form`, `MultiSectionView`, GTK
+    /// `sidebar_system`) mis-measured by up to 2x.
     pub fn visible_width(&self) -> usize {
-        self.spans.iter().map(|s| s.text.chars().count()).sum()
+        self.spans
+            .iter()
+            .map(|s| crate::text_util::display_width(&s.text))
+            .sum()
     }
 }
 
@@ -354,5 +367,42 @@ mod tests {
         // "\u{20ac}abc" ('€' + "abc") is 3 + 3 = 6 bytes, matching the RGB
         // length branch by byte count alone.
         assert_eq!(Color::from_hex("#\u{20ac}abc"), None);
+    }
+
+    #[test]
+    fn visible_width_ascii_matches_char_count() {
+        assert_eq!(StyledText::plain("hello").visible_width(), 5);
+        assert_eq!(StyledText::plain("").visible_width(), 0);
+    }
+
+    /// Regression for issue #471: CJK/emoji glyphs occupy two terminal
+    /// cells each, so `visible_width` must not equal `chars().count()`
+    /// for them.
+    #[test]
+    fn visible_width_cjk_counts_double_width() {
+        let text = StyledText::plain("日本語");
+        assert_eq!(text.visible_width(), 6);
+        assert_ne!(text.visible_width(), text.spans[0].text.chars().count());
+    }
+
+    #[test]
+    fn visible_width_sums_across_spans() {
+        let text = StyledText {
+            spans: vec![
+                StyledSpan::plain("中"),
+                StyledSpan::plain("a"),
+                StyledSpan::plain("文"),
+            ],
+        };
+        // "中" (2) + "a" (1) + "文" (2) = 5, vs. a char count of 3.
+        assert_eq!(text.visible_width(), 5);
+    }
+
+    #[test]
+    fn visible_width_combining_mark_counts_zero() {
+        // "e" + U+0301 COMBINING ACUTE ACCENT renders as one visual
+        // column even though it is two `char`s.
+        let text = StyledText::plain("e\u{0301}");
+        assert_eq!(text.visible_width(), 1);
     }
 }

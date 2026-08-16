@@ -12,33 +12,30 @@
 //! and [`truncate_to_width_ellipsis`] clip a string to a column budget
 //! without ever splitting a codepoint or a double-width glyph's two
 //! columns.
+//!
+//! [`char_cell_width`] and [`display_width`] are re-exports of
+//! [`crate::text_util::char_cell_width`] /
+//! [`crate::text_util::display_width`], not separate implementations —
+//! they moved to that core (feature-independent) module in #471 so
+//! [`crate::types::StyledText::visible_width`] could use real cell-width
+//! measurement too, without pulling in the `tui` feature. They stay
+//! re-exported here for API stability (existing `quadraui::tui::*`
+//! callers, and the `unicode-width` PUA doc details below).
+//!
+//! Uses the `unicode-width` crate's UAX#11 tables directly, with no
+//! codepoint-range overrides. Private-Use-Area codepoints — including
+//! both Nerd Font PUA blocks (BMP `U+E000`–`U+F8FF` and Supplementary-A
+//! `U+F0000`–`U+FFFFD`) — measure as width 1, matching `unicode-width`
+//! and `Nerd Font Mono` (the terminal-recommended, single-cell variant).
+//! Non-Mono Nerd Font variants are genuinely double-width, but that is a
+//! font/theme property, not something derivable from the codepoint
+//! alone; if double-width PUA glyphs ever need supporting, it must come
+//! in as an explicit input (theme/config/probe), not a range guess here.
+//! See issue #545.
 
 use std::borrow::Cow;
 
-/// Terminal cell width of a single character (0, 1, or 2).
-///
-/// Uses the `unicode-width` crate's UAX#11 tables directly, with no
-/// codepoint-range overrides. Private-Use-Area codepoints — including
-/// both Nerd Font PUA blocks (BMP `U+E000`–`U+F8FF` and Supplementary-A
-/// `U+F0000`–`U+FFFFD`) — measure as width 1, matching `unicode-width`
-/// and `Nerd Font Mono` (the terminal-recommended, single-cell variant).
-/// Non-Mono Nerd Font variants are genuinely double-width, but that is a
-/// font/theme property, not something derivable from the codepoint
-/// alone; if double-width PUA glyphs ever need supporting, it must come
-/// in as an explicit input (theme/config/probe), not a range guess here.
-/// See issue #545.
-pub fn char_cell_width(c: char) -> u16 {
-    unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u16
-}
-
-/// Terminal display width of `s` in cells: the sum of each character's
-/// [`char_cell_width`].
-///
-/// Not the same as `s.chars().count()` (CJK/emoji count double) or
-/// `s.len()` (UTF-8 byte length).
-pub fn display_width(s: &str) -> usize {
-    s.chars().map(|c| char_cell_width(c) as usize).sum()
-}
+pub use crate::text_util::{char_cell_width, display_width};
 
 /// Truncate `s` to at most `max_cols` display columns.
 ///

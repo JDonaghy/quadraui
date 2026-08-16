@@ -15,12 +15,10 @@ publish = false
 terminal = ["dep:portable-pty", "dep:vt100"]
 
 # Public TUI rasterisers in `quadraui::tui`. Pulls in ratatui.
-tui = ["dep:ratatui", "dep:arboard", "dep:unicode-width"]
+tui = ["dep:ratatui", "dep:arboard"]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
-# `unicode-width` is needed for wide-char (CJK/emoji) cell-width detection
-# in the terminal rasteriser (#439).
-gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard", "dep:unicode-width"]
+gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard"]
 
 # Public Win-GUI rasterisers in `quadraui::win`. No deps yet — the
 # feature gate exists so the module compiles and the Backend impl is
@@ -53,14 +51,15 @@ gtk4 = { version = "0.7", features = ["v4_10"], optional = true }
 pangocairo = { version = "0.18", optional = true }
 # Optional — pulled in by the `tui` feature.
 ratatui = { version = "0.30", optional = true }
-# Optional — pulled in by the `tui` and `gtk` features for wide-char
-# (CJK/emoji) cell-width detection. Kept at the loosest bound quadraui
-# itself actually needs ("0.2", i.e. >=0.2.0) rather than pinned to
-# whatever patch version happened to resolve at bump time — see
-# vendor/vt100-0.16.2-patched/README-PATCH.md (#452) for why a tighter
-# bound here would NOT have prevented that conflict anyway (vt100's own
-# manifest is the binding constraint, not this line).
-unicode-width = { version = "0.2", optional = true }
+# Unconditional (not feature-gated): `StyledText::visible_width` in the
+# core `types` module needs real cell-width measurement, not just
+# `tui`/`gtk`'s rasterisers — see #471. Kept at the loosest bound
+# quadraui itself actually needs ("0.2", i.e. >=0.2.0) rather than
+# pinned to whatever patch version happened to resolve at bump time —
+# see vendor/vt100-0.16.2-patched/README-PATCH.md (#452) for why a
+# tighter bound here would NOT have prevented that conflict anyway
+# (vt100's own manifest is the binding constraint, not this line).
+unicode-width = "0.2"
 # Optional — pulled in by `tui` and `gtk` for system clipboard access.
 arboard = { version = "3", optional = true }
 # Optional — pulled in by the `terminal` feature.

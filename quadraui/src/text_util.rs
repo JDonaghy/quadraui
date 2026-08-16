@@ -30,6 +30,16 @@
 //! `compose/tree_controller.rs`); they're unified here so every
 //! caller — in-crate and, eventually, downstream — gets the same
 //! panic-free behaviour.
+//!
+//! [`char_cell_width`] and [`display_width`] measure real terminal
+//! display width (CJK/emoji count double, combining marks count zero) —
+//! see issue #471, which found `StyledText::visible_width`
+//! (`crate::types`) still counting `chars()` years after #206 fixed the
+//! equivalent terminal-cell logic, because that fix landed only in the
+//! `tui`-feature-gated `tui::text` module while `types` is core and
+//! unconditionally compiled. These live here instead so core code can
+//! use them without depending on `tui`/`gtk`; `tui::text` re-exports the
+//! same two functions for API stability.
 
 /// Snap `byte_idx` to the nearest UTF-8 char boundary in `s` at or
 /// before `byte_idx`, clamping `byte_idx` to `s.len()` first.
@@ -99,6 +109,37 @@ pub fn safe_slice(s: &str, lo: usize, hi: usize) -> &str {
     let lo = snap_to_char_boundary(s, lo);
     let hi = snap_to_char_boundary(s, hi);
     &s[lo..hi]
+}
+
+/// Terminal cell width of a single character (0, 1, or 2).
+///
+/// Uses the `unicode-width` crate's UAX#11 tables directly, with no
+/// codepoint-range overrides. Private-Use-Area codepoints — including
+/// both Nerd Font PUA blocks (BMP `U+E000`–`U+F8FF` and Supplementary-A
+/// `U+F0000`–`U+FFFFD`) — measure as width 1, matching `unicode-width`
+/// and `Nerd Font Mono` (the terminal-recommended, single-cell variant).
+/// Non-Mono Nerd Font variants are genuinely double-width, but that is a
+/// font/theme property, not something derivable from the codepoint
+/// alone; if double-width PUA glyphs ever need supporting, it must come
+/// in as an explicit input (theme/config/probe), not a range guess here.
+/// See issue #545.
+///
+/// Lives here (rather than `tui::text`) so core types like
+/// [`crate::types::StyledText`] can measure real display width without
+/// depending on the `tui` or `gtk` features — see #471.
+/// [`crate::tui::char_cell_width`] re-exports this same function; it
+/// is not a separate implementation.
+pub fn char_cell_width(c: char) -> u16 {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u16
+}
+
+/// Terminal display width of `s` in cells: the sum of each character's
+/// [`char_cell_width`].
+///
+/// Not the same as `s.chars().count()` (CJK/emoji count double) or
+/// `s.len()` (UTF-8 byte length).
+pub fn display_width(s: &str) -> usize {
+    s.chars().map(|c| char_cell_width(c) as usize).sum()
 }
 
 /// Case-sensitive subsequence fuzzy match with a relevance score and
@@ -378,6 +419,33 @@ mod tests {
     fn safe_slice_on_boundaries_matches_manual_slice() {
         let s = "héllo world";
         assert_eq!(safe_slice(s, 0, 3), &s[0..3]);
+    }
+
+    // ── char_cell_width / display_width ────────────────────────────────
+
+    #[test]
+    fn char_cell_width_ascii_is_one() {
+        assert_eq!(char_cell_width('a'), 1);
+        assert_eq!(char_cell_width(' '), 1);
+    }
+
+    #[test]
+    fn char_cell_width_cjk_is_two() {
+        assert_eq!(char_cell_width('日'), 2);
+        assert_eq!(char_cell_width('中'), 2);
+    }
+
+    #[test]
+    fn char_cell_width_combining_mark_is_zero() {
+        // U+0301 COMBINING ACUTE ACCENT.
+        assert_eq!(char_cell_width('\u{0301}'), 0);
+    }
+
+    #[test]
+    fn display_width_sums_mixed_ascii_and_cjk() {
+        assert_eq!(display_width("ab日本"), 2 + 2 + 2);
+        assert_eq!(display_width(""), 0);
+        assert_eq!(display_width("hello"), 5);
     }
 
     // ── fuzzy_score ─────────────────────────────────────────────────────
