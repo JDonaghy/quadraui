@@ -21,11 +21,15 @@
 //!
 //! [`crate::macos::run`]'s responder methods translate `NSEvent` into
 //! [`UiEvent`] (via [`crate::macos::events`]) and dispatch the result
-//! through the app's [`crate::runner::AppLogic`] synchronously. The
-//! queue here exists for parity with [`Backend`] callers that prefer
-//! the poll API and for backend-side producers landing in later
-//! tickets (window resize notification observers, accelerator-match
-//! rewrites).
+//! through the app's [`crate::runner::AppLogic`] synchronously —
+//! including the accelerator-match / double-click-fold / paste-
+//! interception pre-processing `run`'s `handle` closure applies before
+//! `AppLogic::handle` sees the event (#486). The queue here exists for
+//! parity with [`Backend`] callers that prefer the poll API and for
+//! backend-side producers (native menu activations, context-menu
+//! results). `WindowResized` (from the `NSViewFrameDidChangeNotification`
+//! observer, #486) dispatches synchronously like mouse/keyboard events
+//! rather than going through the queue.
 
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
@@ -35,8 +39,9 @@ use std::time::Duration;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult};
-use crate::dispatch::DragState;
+use crate::dispatch::{DoubleClickDetector, DragState};
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -71,8 +76,9 @@ use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, PlatformServices, StatusBar,
-    TabBar, Terminal, TextDisplay, Theme, TreeView,
+    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Form, Key, ListView, Modifiers,
+    Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, Terminal, TextDisplay, Theme,
+    TreeView,
 };
 
 use super::services::MacPlatformServices;
@@ -83,11 +89,16 @@ use super::services::MacPlatformServices;
 /// - `viewport` — width × height in points, scale = `backingScaleFactor`.
 ///   Updated each frame from the active `QuadraView`'s bounds.
 /// - `modal_stack` — pushed by hosts on modal open, popped on close.
-/// - `accelerators` — registered keybindings. Match-and-dispatch wiring
-///   lands when first consumer needs it.
+/// - `accelerators` / `parsed_accelerators` — registered keybindings and
+///   their parsed form; [`Self::match_keypress`] resolves a native
+///   keypress against them (#486). [`run`][super::run]'s `handle`
+///   closure rewrites a matching `KeyPressed` into `Accelerator` before
+///   `AppLogic::handle` sees it.
+/// - `double_click` — folds a `MouseDown` into `DoubleClick` (#486); see
+///   [`Self::fold_double_click`].
 /// - `events` — adapter queue. [`run`][super::run]'s responder methods
-///   dispatch synchronously today; the queue is reserved for backend-
-///   side producers (window notifications, future timer ticks).
+///   dispatch synchronously today; the queue is used for backend-side
+///   producers (native menu activations, context-menu results).
 /// - `current_cg_ptr` — frame-scope pointer; non-null only inside
 ///   [`Self::enter_frame_scope`].
 /// - `current_font` / `current_line_height` / `current_char_width` —
@@ -98,6 +109,18 @@ pub struct MacBackend {
     modal_stack: ModalStack,
     drag_state: DragState,
     accelerators: HashMap<AcceleratorId, Accelerator>,
+    /// Parsed form of `accelerators`, kept in sync by
+    /// `register_accelerator` / `unregister_accelerator`. Mirrors
+    /// `TuiBackend::parsed_accelerators` / `GtkBackend::parsed_accelerators`
+    /// — a `Vec` rather than a map because match order matters (first
+    /// registered wins on an accidental duplicate binding).
+    parsed_accelerators: Vec<(ParsedBinding, AcceleratorId)>,
+    /// Folds a `MouseDown` `NSEvent` into `DoubleClick` when it lands
+    /// within the time/position window of the previous click (#486).
+    /// `macos::run` dispatches synchronously per `NSEvent`, so this
+    /// runs on one event at a time via `Self::fold_double_click`
+    /// rather than `TuiBackend`'s per-poll batch.
+    double_click: DoubleClickDetector,
     events: Rc<std::cell::RefCell<VecDeque<UiEvent>>>,
     services: MacPlatformServices,
     /// Type-erased `CGContextRef`; non-null only inside
@@ -140,6 +163,8 @@ impl MacBackend {
             modal_stack: ModalStack::new(),
             drag_state: DragState::new(),
             accelerators: HashMap::new(),
+            parsed_accelerators: Vec::new(),
+            double_click: DoubleClickDetector::new(),
             events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
             services: MacPlatformServices::new(),
             current_cg_ptr: Cell::new(std::ptr::null()),
@@ -237,6 +262,40 @@ impl MacBackend {
     pub(crate) fn current_cg(&self) -> CGContextRef {
         self.current_cg_ptr.get() as CGContextRef
     }
+
+    // ── Accelerator matching (#486) ──────────────────────────────────
+
+    /// Look up a registered `Global`-scope accelerator for a
+    /// `(key, modifiers)` pair. Mirrors `TuiBackend::match_keypress` /
+    /// `GtkBackend::match_keypress` — non-Global entries are skipped
+    /// because this backend doesn't own focus/mode context the way a
+    /// scoped `KeyMap` resolver does.
+    pub(crate) fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
+        let key_name = key_to_binding_name(key);
+        for (parsed, id) in &self.parsed_accelerators {
+            if parsed.modifiers == modifiers && parsed.key == key_name {
+                if let Some(acc) = self.accelerators.get(id) {
+                    if matches!(acc.scope, AcceleratorScope::Global) {
+                        return Some(id.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // ── Double-click folding (#486) ──────────────────────────────────
+
+    /// Fold a `MouseDown` into `DoubleClick` if it lands within the
+    /// detector's time/position window of the previous click. Every
+    /// other variant passes through unchanged. `macos::run` calls this
+    /// on each translated `NSEvent` before handing it to `AppLogic`.
+    pub(crate) fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
+        let mut events = [ev];
+        self.double_click.process(&mut events);
+        let [ev] = events;
+        ev
+    }
 }
 
 impl Default for MacBackend {
@@ -281,17 +340,20 @@ impl Backend for MacBackend {
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
+        // Re-registration replaces the prior entry — both in the map and
+        // the parsed list, otherwise a stale binding would shadow the
+        // new one in `match_keypress`. Mirrors
+        // `TuiBackend::register_accelerator` / `GtkBackend`'s equivalent.
         self.accelerators.insert(acc.id.clone(), acc.clone());
-        // Match-and-dispatch wiring lands when the first consumer
-        // needs accelerators routed through the backend — until then
-        // accelerators are stored but never re-emitted as
-        // `UiEvent::Accelerator`. Apps that need accelerator dispatch
-        // today match `UiEvent::KeyPressed` against
-        // `crate::parse_key_binding` themselves.
+        self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
+        if let Some(parsed) = parse_binding(&acc.binding) {
+            self.parsed_accelerators.push((parsed, acc.id.clone()));
+        }
     }
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
         self.accelerators.remove(id);
+        self.parsed_accelerators.retain(|(_, eid)| eid != id);
     }
 
     fn install_menu_bar(&mut self, bar: &crate::primitives::menu_bar::MenuBar) {
@@ -1765,6 +1827,137 @@ mod tests {
         assert!(b.accelerators.contains_key(&AcceleratorId::new("save")));
         b.unregister_accelerator(&AcceleratorId::new("save"));
         assert!(!b.accelerators.contains_key(&AcceleratorId::new("save")));
+    }
+
+    // ── Accelerator matching (#486) ──────────────────────────────────
+
+    #[test]
+    fn match_keypress_finds_registered_global_binding() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&acc("save", "<D-s>"));
+        let id = b.match_keypress(
+            &crate::Key::Char('s'),
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, Some(AcceleratorId::new("save")));
+    }
+
+    #[test]
+    fn match_keypress_modifier_mismatch_no_match() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&acc("save", "<D-s>"));
+        // Same key, wrong modifiers (Ctrl instead of Cmd).
+        let id = b.match_keypress(
+            &crate::Key::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, None);
+    }
+
+    #[test]
+    fn match_keypress_skips_non_global_scope() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&Accelerator {
+            id: AcceleratorId::new("find-in-tree"),
+            binding: KeyBinding::Literal("<D-f>".to_string()),
+            scope: AcceleratorScope::Mode("tree".into()),
+            label: None,
+        });
+        let id = b.match_keypress(
+            &crate::Key::Char('f'),
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, None, "non-Global scope must not match here");
+    }
+
+    #[test]
+    fn match_keypress_unregister_removes_match() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&acc("save", "<D-s>"));
+        b.unregister_accelerator(&AcceleratorId::new("save"));
+        let id = b.match_keypress(
+            &crate::Key::Char('s'),
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, None);
+    }
+
+    #[test]
+    fn match_keypress_re_register_replaces_binding() {
+        let mut b = MacBackend::new();
+        b.register_accelerator(&acc("save", "<D-s>"));
+        b.register_accelerator(&acc("save", "<D-S-s>")); // Cmd+Shift+S
+        assert!(b
+            .match_keypress(
+                &crate::Key::Char('s'),
+                Modifiers {
+                    cmd: true,
+                    ..Default::default()
+                }
+            )
+            .is_none());
+        assert_eq!(
+            b.match_keypress(
+                &crate::Key::Char('s'),
+                Modifiers {
+                    cmd: true,
+                    shift: true,
+                    ..Default::default()
+                }
+            ),
+            Some(AcceleratorId::new("save"))
+        );
+    }
+
+    // ── Double-click folding (#486) ──────────────────────────────────
+
+    fn mouse_down(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: crate::MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn fold_double_click_second_click_same_position_becomes_double_click() {
+        let mut b = MacBackend::new();
+        let first = b.fold_double_click(mouse_down(5.0, 3.0));
+        assert!(matches!(first, UiEvent::MouseDown { .. }));
+
+        let second = b.fold_double_click(mouse_down(5.0, 3.0));
+        assert!(
+            matches!(second, UiEvent::DoubleClick { .. }),
+            "second click at the same position should fold to DoubleClick"
+        );
+    }
+
+    #[test]
+    fn fold_double_click_different_position_stays_mouse_down() {
+        let mut b = MacBackend::new();
+        let _ = b.fold_double_click(mouse_down(5.0, 3.0));
+        let second = b.fold_double_click(mouse_down(50.0, 30.0));
+        assert!(matches!(second, UiEvent::MouseDown { .. }));
+    }
+
+    #[test]
+    fn fold_double_click_passes_non_mouse_down_events_through() {
+        let mut b = MacBackend::new();
+        let ev = b.fold_double_click(UiEvent::WindowFocused(true));
+        assert_eq!(ev, UiEvent::WindowFocused(true));
     }
 
     #[test]
