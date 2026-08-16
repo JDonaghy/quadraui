@@ -38,12 +38,57 @@ pub struct Tooltip {
     /// Preferred placement relative to the anchor.
     #[serde(default)]
     pub placement: TooltipPlacement,
+    /// Border chrome the consumer wants drawn around the box. `None` (the
+    /// Rust default, not [`TooltipBorder::None`]) is
+    /// [`TooltipBorder::Full`] — see that variant's docs for why that,
+    /// not [`TooltipBorder::Sides`], is the behaviour-preserving default
+    /// (#541).
+    #[serde(default)]
+    pub border: TooltipBorder,
+    /// Optional title rendered centred into the top border row. Only
+    /// meaningful when `border` is [`TooltipBorder::Full`] — `Sides` and
+    /// `None` have no top rule to embed it in, so backends ignore it in
+    /// those modes rather than falling back to a content row (#541 ask 2).
+    #[serde(default)]
+    pub title: Option<String>,
     /// Override background colour. `None` = theme default.
     #[serde(default)]
     pub bg: Option<Color>,
     /// Override foreground colour.
     #[serde(default)]
     pub fg: Option<Color>,
+}
+
+/// Border chrome vocabulary for [`Tooltip`] (#541).
+///
+/// Before this existed, each backend hardcoded its own answer — TUI drew
+/// `│` side bars only, GTK and macOS always stroked a full 4-sided box —
+/// so a consumer had no way to ask for one or the other; a raw-drawing
+/// popup that migrated to `Backend::draw_tooltip` (JDonaghy/vimcode#635)
+/// silently lost its top/bottom border and title because there was no
+/// field to carry the request. This type is that field's vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TooltipBorder {
+    /// Vertical bars on the left/right edge only — no top or bottom rule,
+    /// regardless of box height. The pre-#542 TUI look, now available on
+    /// every backend by explicit request. `title` is not rendered in this
+    /// mode (there is no top rule to embed it in).
+    Sides,
+    /// A closed box on all four sides. The default (see the note on
+    /// [`Tooltip::border`]): GTK and macOS have always stroked a full
+    /// rectangle here, and TUI has done the same since #542 whenever the
+    /// measured box leaves room for both border rows (`height >= 3` and
+    /// `width >= 2`); below that TUI falls back to `Sides` chrome for
+    /// this variant specifically, so a tooltip too short for a box still
+    /// shows *something* — that fallback is a rendering detail of `Full`,
+    /// not a separate mode a consumer selects.
+    ///
+    /// Carries `title`, centred into the top border row, when set.
+    #[default]
+    Full,
+    /// No border chrome at all — background fill (and text) only.
+    /// `title` is not rendered in this mode.
+    None,
 }
 
 /// Preferred placement of a `Tooltip` relative to its anchor.

@@ -272,8 +272,8 @@ pub use primitives::toolbar::{
     ToolbarLayout, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
-    ResolvedPlacement, Tooltip, TooltipEvent, TooltipHit, TooltipLayout, TooltipMeasure,
-    TooltipPlacement,
+    ResolvedPlacement, Tooltip, TooltipBorder, TooltipEvent, TooltipHit, TooltipLayout,
+    TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
@@ -2138,6 +2138,8 @@ mod tests {
             text: "Hello".to_string(),
             placement: TooltipPlacement::Bottom,
             styled_lines: None,
+            border: TooltipBorder::default(),
+            title: None,
             bg: None,
             fg: None,
         };
@@ -2159,6 +2161,8 @@ mod tests {
             text: "Hello".to_string(),
             placement: TooltipPlacement::Bottom,
             styled_lines: None,
+            border: TooltipBorder::default(),
+            title: None,
             bg: None,
             fg: None,
         };
@@ -2181,6 +2185,8 @@ mod tests {
             text: "…".to_string(),
             placement: TooltipPlacement::Bottom,
             styled_lines: None,
+            border: TooltipBorder::default(),
+            title: None,
             bg: None,
             fg: None,
         };
@@ -2204,6 +2210,8 @@ mod tests {
             text: "Very wide".to_string(),
             placement: TooltipPlacement::Top,
             styled_lines: None,
+            border: TooltipBorder::default(),
+            title: None,
             bg: None,
             fg: None,
         };
@@ -2225,6 +2233,8 @@ mod tests {
             text: "Very tall".to_string(),
             placement: TooltipPlacement::Left,
             styled_lines: None,
+            border: TooltipBorder::default(),
+            title: None,
             bg: None,
             fg: None,
         };
@@ -2242,6 +2252,8 @@ mod tests {
             text: "Hover".to_string(),
             placement: TooltipPlacement::Right,
             styled_lines: None,
+            border: TooltipBorder::default(),
+            title: None,
             bg: None,
             fg: None,
         };

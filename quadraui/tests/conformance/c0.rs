@@ -48,7 +48,8 @@ use quadraui::{
     SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
     TabBar, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
     ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
-    TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    TooltipBorder, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent,
+    WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -276,6 +277,8 @@ pub const CASES: &[Case] = &[
                 text: "c0tip".to_string(),
                 styled_lines: None,
                 placement: TooltipPlacement::Bottom,
+                border: TooltipBorder::default(),
+                title: None,
                 bg: None,
                 fg: None,
             };
