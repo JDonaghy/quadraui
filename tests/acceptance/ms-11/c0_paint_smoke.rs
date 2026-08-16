@@ -88,8 +88,8 @@ mod ms11_492_c0_paint_smoke {
         DiffMode, DiffPane, DiffView, DropOverlay, ListItem, ListView, MessageList, MessageRow,
         PipelineStage, PipelineView, ProgressBar, Reaction, Rect, ScrollAxis, Scrollbar,
         SelectionMode, Spinner, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-        TabBar, TabItem, TextDisplay, TextDisplayLine, Tooltip, TooltipMeasure, TooltipPlacement,
-        TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+        TabBar, TabItem, TextDisplay, TextDisplayLine, Tooltip, TooltipMeasure, TreeRow,
+        TreeStyle, TreeView, UiEvent, WidgetId,
     };
 
     /// Backend-neutral viewport. `LogicalViewport` is the unit-free
@@ -324,14 +324,7 @@ mod ms11_492_c0_paint_smoke {
                 let cw = b.char_width();
                 let lh = b.line_height();
                 let anchor = Rect::new(0.0, 0.0, area.width, lh);
-                let tooltip = Tooltip {
-                    id: id("tooltip"),
-                    text: "c0tip".to_string(),
-                    styled_lines: None,
-                    placement: TooltipPlacement::Bottom,
-                    bg: None,
-                    fg: None,
-                };
+                let tooltip = Tooltip::new(id("tooltip"), "c0tip".to_string());
                 // Room for a border on all four sides plus the whole label
                 // — a box measured to exactly `border + text + border`
                 // leaves a backend no padding and clips the last glyph.
