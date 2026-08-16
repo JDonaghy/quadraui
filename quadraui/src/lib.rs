@@ -2131,43 +2131,23 @@ mod tests {
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
 
-    /// `Default` is the migration path #541 hands downstream consumers
-    /// (`Tooltip { id, text, ..Default::default() }`), so it has to agree
-    /// field-for-field with `Tooltip::new` — otherwise a consumer that
-    /// migrates by spreading silently gets different chrome than one that
-    /// migrates to the builder.
+    /// #541: `TooltipLayout::with_border` / `with_title` are additive on
+    /// the value `Tooltip::layout` returns, not fields on `Tooltip`
+    /// itself — see `primitives::tooltip`'s module doc for why. Defaults
+    /// match what every backend drew unconditionally before #541
+    /// introduced a choice.
     #[test]
-    fn tooltip_default_matches_new_on_every_optional_field() {
-        let d = Tooltip::default();
-        assert_eq!(d, Tooltip::new(WidgetId::new(""), ""));
-        assert_eq!(d.styled_lines, None);
-        assert_eq!(d.placement, TooltipPlacement::Bottom);
-        // `Full`, not `Sides`: the behaviour-preserving default for GTK and
-        // macOS, which have always stroked a closed box.
-        assert_eq!(d.border, TooltipBorder::Full);
-        assert_eq!(d.title, None);
-        assert_eq!(d.bg, None);
-        assert_eq!(d.fg, None);
-    }
+    fn tooltip_layout_border_and_title_default_then_builder_overrides() {
+        let t = Tooltip::new(WidgetId::new("tip"), "Hello");
+        let anchor = Rect::new(0.0, 0.0, 10.0, 1.0);
+        let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(20.0, 3.0), 0.0);
+        assert_eq!(layout.border, TooltipBorder::Full);
+        assert_eq!(layout.title, None);
 
-    /// The spread keeps the fields the consumer names and defaults the
-    /// rest — the property that makes the *next* added field a non-event
-    /// for anyone who migrated this way.
-    #[test]
-    fn tooltip_default_spread_preserves_named_fields() {
-        let t = Tooltip {
-            id: WidgetId::new("tip"),
-            text: "Hello".to_string(),
-            placement: TooltipPlacement::Top,
-            border: TooltipBorder::None,
-            ..Default::default()
-        };
-        assert_eq!(t.id, WidgetId::new("tip"));
-        assert_eq!(t.text, "Hello");
-        assert_eq!(t.placement, TooltipPlacement::Top);
-        assert_eq!(t.border, TooltipBorder::None);
-        assert_eq!(t.title, None);
-        assert_eq!(t.styled_lines, None);
+        let layout = layout.with_border(TooltipBorder::None).with_title("Hi");
+        assert_eq!(layout.border, TooltipBorder::None);
+        assert_eq!(layout.title.as_deref(), Some("Hi"));
     }
 
     #[test]
@@ -2177,8 +2157,6 @@ mod tests {
             text: "Hello".to_string(),
             placement: TooltipPlacement::Bottom,
             styled_lines: None,
-            border: TooltipBorder::default(),
-            title: None,
             bg: None,
             fg: None,
         };
@@ -2200,8 +2178,6 @@ mod tests {
             text: "Hello".to_string(),
             placement: TooltipPlacement::Bottom,
             styled_lines: None,
-            border: TooltipBorder::default(),
-            title: None,
             bg: None,
             fg: None,
         };
@@ -2224,8 +2200,6 @@ mod tests {
             text: "…".to_string(),
             placement: TooltipPlacement::Bottom,
             styled_lines: None,
-            border: TooltipBorder::default(),
-            title: None,
             bg: None,
             fg: None,
         };
@@ -2249,8 +2223,6 @@ mod tests {
             text: "Very wide".to_string(),
             placement: TooltipPlacement::Top,
             styled_lines: None,
-            border: TooltipBorder::default(),
-            title: None,
             bg: None,
             fg: None,
         };
@@ -2272,8 +2244,6 @@ mod tests {
             text: "Very tall".to_string(),
             placement: TooltipPlacement::Left,
             styled_lines: None,
-            border: TooltipBorder::default(),
-            title: None,
             bg: None,
             fg: None,
         };
@@ -2291,8 +2261,6 @@ mod tests {
             text: "Hover".to_string(),
             placement: TooltipPlacement::Right,
             styled_lines: None,
-            border: TooltipBorder::default(),
-            title: None,
             bg: None,
             fg: None,
         };

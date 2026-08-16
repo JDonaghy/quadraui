@@ -2,14 +2,16 @@
 //!
 //! Mirrors [`crate::gtk::tooltip::draw_tooltip`]: a filled background
 //! rectangle at the tooltip's resolved bounds, then border chrome per
-//! `tooltip.border` (#541 — [`crate::TooltipBorder`]):
+//! `layout.border` (#541 — [`crate::TooltipBorder`]; see
+//! `primitives::tooltip`'s module doc for why it lives on
+//! [`TooltipLayout`] rather than on [`Tooltip`]):
 //!
 //! - [`TooltipBorder::Full`] (the default) strokes a full 4-sided box —
 //!   this backend has always done this, unconditionally, before #541
 //!   gave it a name (it was one of the three backends the original issue
 //!   flagged as "not verified in detail" beyond a `fill_rect` call —
 //!   confirmed here to be a `stroke_rect`, same as GTK). An optional
-//!   `tooltip.title` is centred over the top edge, punched through the
+//!   `layout.title` is centred over the top edge, punched through the
 //!   stroke with a background-coloured backing rectangle so it reads as
 //!   embedded in the border, mirroring the TUI and GTK rasterisers.
 //! - [`TooltipBorder::Sides`] strokes two vertical lines at the left and
@@ -31,7 +33,7 @@ use crate::types::Color;
 ///
 /// `padding_x` is the horizontal padding from the left border to the
 /// start of text — consumers typically pass `char_width`. Halved when
-/// `tooltip.border` is [`TooltipBorder::None`], since there is no border
+/// `layout.border` is [`TooltipBorder::None`], since there is no border
 /// column to clear first — mirrors the TUI/GTK rasterisers.
 ///
 /// # Safety
@@ -72,11 +74,11 @@ pub unsafe fn draw_tooltip(
     // the TUI rasteriser's dedicated title row never overlaps content.
     let mut text_top = by + 2.0;
 
-    match tooltip.border {
+    match tooltip_layout.border {
         TooltipBorder::Full => {
             stroke_rect(ctx, bx, by, bw, bh, border, 1.0);
 
-            if let Some(title) = tooltip
+            if let Some(title) = tooltip_layout
                 .title
                 .as_deref()
                 .map(str::trim)
@@ -111,7 +113,7 @@ pub unsafe fn draw_tooltip(
         TooltipBorder::None => {}
     }
 
-    let text_padding_x = if matches!(tooltip.border, TooltipBorder::None) {
+    let text_padding_x = if matches!(tooltip_layout.border, TooltipBorder::None) {
         padding_x / 2.0
     } else {
         padding_x
@@ -246,27 +248,27 @@ mod tests {
     }
 
     fn sample_tooltip() -> Tooltip {
-        sample_tooltip_with(TooltipBorder::default(), None)
-    }
-
-    fn sample_tooltip_with(border: TooltipBorder, title: Option<&str>) -> Tooltip {
         Tooltip {
             id: WidgetId::new("tip"),
             text: "Hover hint".into(),
             styled_lines: None,
             placement: TooltipPlacement::Bottom,
-            border,
-            title: title.map(str::to_string),
             fg: None,
             bg: None,
         }
     }
 
-    fn sample_layout() -> TooltipLayout {
-        TooltipLayout {
+    fn sample_layout(border: TooltipBorder, title: Option<&str>) -> TooltipLayout {
+        let mut layout = TooltipLayout {
             bounds: QRect::new(10.0, 10.0, 120.0, 24.0),
             resolved_placement: ResolvedPlacement::Bottom,
+            border,
+            title: None,
+        };
+        if let Some(t) = title {
+            layout = layout.with_title(t);
         }
+        layout
     }
 
     fn paint(tip: &Tooltip, layout: &TooltipLayout) -> BitmapSurface {
@@ -285,7 +287,7 @@ mod tests {
     #[test]
     fn tooltip_paints_hover_bg() {
         let tip = sample_tooltip();
-        let layout = sample_layout();
+        let layout = sample_layout(TooltipBorder::default(), None);
         let surface = paint(&tip, &layout);
         let theme = Theme::default();
         // Probe near right edge of bounds — glyph-free zone.
@@ -303,7 +305,7 @@ mod tests {
     #[test]
     fn tooltip_border_paints_at_edge() {
         let tip = sample_tooltip();
-        let layout = sample_layout();
+        let layout = sample_layout(TooltipBorder::default(), None);
         let surface = paint(&tip, &layout);
         let theme = Theme::default();
         // The 1pt border stroke centres on the rect's top edge, so
@@ -333,7 +335,7 @@ mod tests {
     fn tooltip_with_custom_bg_overrides_theme() {
         let mut tip = sample_tooltip();
         tip.bg = Some(crate::types::Color::rgb(50, 100, 150));
-        let layout = sample_layout();
+        let layout = sample_layout(TooltipBorder::default(), None);
         let surface = paint(&tip, &layout);
         let bx = layout.bounds.x as u32;
         let by = layout.bounds.y as u32;
@@ -349,6 +351,8 @@ mod tests {
         let layout = TooltipLayout {
             bounds: QRect::new(10.0, 10.0, 0.0, 0.0),
             resolved_placement: ResolvedPlacement::Bottom,
+            border: TooltipBorder::default(),
+            title: None,
         };
         let surface = paint(&tip, &layout);
         // Surface stays all-zero.
@@ -376,8 +380,8 @@ mod tests {
 
     #[test]
     fn sides_border_only_strokes_left_and_right() {
-        let tip = sample_tooltip_with(TooltipBorder::Sides, None);
-        let layout = sample_layout();
+        let tip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::Sides, None);
         let surface = paint(&tip, &layout);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as u32, b.y as u32, b.width as u32, b.height as u32);
@@ -413,8 +417,8 @@ mod tests {
 
     #[test]
     fn none_border_strokes_nothing() {
-        let tip = sample_tooltip_with(TooltipBorder::None, None);
-        let layout = sample_layout();
+        let tip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::None, None);
         let surface = paint(&tip, &layout);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as u32, b.y as u32, b.width as u32, b.height as u32);
@@ -442,8 +446,8 @@ mod tests {
     /// (same reasoning as the GTK rasteriser's equivalent test).
     #[test]
     fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
-        let tip = sample_tooltip_with(TooltipBorder::Full, Some("Hi"));
-        let layout = sample_layout();
+        let tip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::Full, Some("Hi"));
         let surface = paint(&tip, &layout);
         let b = layout.bounds;
         let (bx, by, bw) = (b.x as u32, b.y as u32, b.width as u32);
@@ -475,12 +479,13 @@ mod tests {
     #[test]
     fn title_is_ignored_when_border_is_sides_or_none() {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
-            let with_title = sample_tooltip_with(border, Some("Ignored"));
-            let without_title = sample_tooltip_with(border, None);
-            let layout = sample_layout();
-            let with_surface = paint(&with_title, &layout);
-            let without_surface = paint(&without_title, &layout);
-            let b = layout.bounds;
+            let with_title = sample_tooltip();
+            let without_title = sample_tooltip();
+            let with_layout = sample_layout(border, Some("Ignored"));
+            let without_layout = sample_layout(border, None);
+            let with_surface = paint(&with_title, &with_layout);
+            let without_surface = paint(&without_title, &without_layout);
+            let b = with_layout.bounds;
             let (bx, by, bw) = (b.x as u32, b.y as u32, b.width as u32);
             let top_with = with_surface.pixel(bx + bw / 2, by);
             let top_without = without_surface.pixel(bx + bw / 2, by);

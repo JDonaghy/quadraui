@@ -2,11 +2,13 @@
 //!
 //! Cairo + Pango equivalent of `quadraui::tui::draw_tooltip`. Paints a
 //! background rectangle at the resolved bounds, then border chrome per
-//! `tooltip.border` (#541 — [`crate::TooltipBorder`]):
+//! `layout.border` (#541 — [`crate::TooltipBorder`]; see
+//! `primitives::tooltip`'s module doc for why it lives on
+//! [`TooltipLayout`] rather than on [`Tooltip`]):
 //!
 //! - [`TooltipBorder::Full`] (the default) strokes a full 4-sided box —
 //!   GTK has always done this, unconditionally, before #541 gave it a
-//!   name. An optional `tooltip.title` is centred over the top edge,
+//!   name. An optional `layout.title` is centred over the top edge,
 //!   punched through the stroke with a background-coloured backing
 //!   rectangle so it reads as embedded in the border rather than a
 //!   content row (matching the TUI rasteriser's top-row title).
@@ -29,7 +31,7 @@ use crate::theme::Theme;
 /// `padding_x` is the horizontal padding (in pixels) from the left
 /// border to the start of text — consumers typically pass the same
 /// `char_width` they used when computing the tooltip's measured width.
-/// Halved when `tooltip.border` is [`TooltipBorder::None`], since there
+/// Halved when `layout.border` is [`TooltipBorder::None`], since there
 /// is no border column to clear first — mirrors the TUI rasteriser's
 /// `text_col_offset` dropping from 2 (border + pad) to 1 (pad only).
 ///
@@ -77,14 +79,14 @@ pub fn draw_tooltip(
     // the TUI rasteriser's dedicated title row never overlaps content.
     let mut text_top = by + 2.0;
 
-    match tooltip.border {
+    match tooltip_layout.border {
         TooltipBorder::Full => {
             cr.set_source_rgb(border.0, border.1, border.2);
             cr.set_line_width(1.0);
             cr.rectangle(bx, by, bw, bh);
             cr.stroke().ok();
 
-            if let Some(title) = tooltip
+            if let Some(title) = tooltip_layout
                 .title
                 .as_deref()
                 .map(str::trim)
@@ -125,7 +127,7 @@ pub fn draw_tooltip(
         TooltipBorder::None => {}
     }
 
-    let text_padding_x = if matches!(tooltip.border, TooltipBorder::None) {
+    let text_padding_x = if matches!(tooltip_layout.border, TooltipBorder::None) {
         padding_x / 2.0
     } else {
         padding_x
@@ -201,14 +203,12 @@ mod tests {
         )
     }
 
-    fn sample_tooltip(border: TooltipBorder, title: Option<&str>) -> Tooltip {
+    fn sample_tooltip() -> Tooltip {
         Tooltip {
             id: WidgetId::new("tip"),
             text: "Hover hint".into(),
             styled_lines: None,
             placement: TooltipPlacement::Bottom,
-            border,
-            title: title.map(str::to_string),
             fg: None,
             bg: None,
         }
@@ -219,11 +219,17 @@ mod tests {
     /// "clear of any stroke" probe from straddling the same anti-aliased
     /// pixel row/column (same reasoning as
     /// `macos::tooltip::tests::tooltip_border_paints_at_edge`).
-    fn sample_layout() -> TooltipLayout {
-        TooltipLayout {
+    fn sample_layout(border: TooltipBorder, title: Option<&str>) -> TooltipLayout {
+        let mut layout = TooltipLayout {
             bounds: QRect::new(20.0, 20.0, 120.0, 24.0),
             resolved_placement: ResolvedPlacement::Bottom,
+            border,
+            title: None,
+        };
+        if let Some(t) = title {
+            layout = layout.with_title(t);
         }
+        layout
     }
 
     /// Paint `tooltip` at `layout.bounds` on a fresh surface and return
@@ -251,8 +257,8 @@ mod tests {
 
     #[test]
     fn full_border_strokes_all_four_edges() {
-        let tooltip = sample_tooltip(TooltipBorder::Full, None);
-        let layout = sample_layout();
+        let tooltip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::Full, None);
         let (data, stride) = paint(&tooltip, &layout);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as i32, b.y as i32, b.width as i32, b.height as i32);
@@ -274,8 +280,8 @@ mod tests {
 
     #[test]
     fn sides_border_only_strokes_left_and_right() {
-        let tooltip = sample_tooltip(TooltipBorder::Sides, None);
-        let layout = sample_layout();
+        let tooltip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::Sides, None);
         let (data, stride) = paint(&tooltip, &layout);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as i32, b.y as i32, b.width as i32, b.height as i32);
@@ -310,8 +316,8 @@ mod tests {
 
     #[test]
     fn none_border_strokes_nothing() {
-        let tooltip = sample_tooltip(TooltipBorder::None, None);
-        let layout = sample_layout();
+        let tooltip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::None, None);
         let (data, stride) = paint(&tooltip, &layout);
         let b = layout.bounds;
         let (bx, by, bw, bh) = (b.x as i32, b.y as i32, b.width as i32, b.height as i32);
@@ -342,8 +348,8 @@ mod tests {
     /// whole edge).
     #[test]
     fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
-        let tooltip = sample_tooltip(TooltipBorder::Full, Some("Hi"));
-        let layout = sample_layout();
+        let tooltip = sample_tooltip();
+        let layout = sample_layout(TooltipBorder::Full, Some("Hi"));
         let (data, stride) = paint(&tooltip, &layout);
         let b = layout.bounds;
         let (bx, by, bw) = (b.x as i32, b.y as i32, b.width as i32);
@@ -377,12 +383,13 @@ mod tests {
         // no-title counterparts (no stray top-edge ink from an attempted
         // title punch/paint).
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
-            let with_title = sample_tooltip(border, Some("Ignored"));
-            let without_title = sample_tooltip(border, None);
-            let layout = sample_layout();
-            let (with_data, stride) = paint(&with_title, &layout);
-            let (without_data, _) = paint(&without_title, &layout);
-            let b = layout.bounds;
+            let with_title = sample_tooltip();
+            let without_title = sample_tooltip();
+            let with_layout = sample_layout(border, Some("Ignored"));
+            let without_layout = sample_layout(border, None);
+            let (with_data, stride) = paint(&with_title, &with_layout);
+            let (without_data, _) = paint(&without_title, &without_layout);
+            let b = with_layout.bounds;
             let (bx, by, bw) = (b.x as i32, b.y as i32, b.width as i32);
             let top_with = pixel(&with_data, stride, bx + bw / 2, by);
             let top_without = pixel(&without_data, stride, bx + bw / 2, by);

@@ -803,18 +803,15 @@ impl AppLogic for TooltipBorderFixture {
         let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let anchor = Rect::new(0.0, 0.0, vp.width, lh);
 
-        // Built through the `..Default::default()` spread on purpose: this
-        // is the migration shape #541's module doc hands downstream
-        // consumers, so exercising it here from an external crate keeps it
-        // compile-checked rather than merely documented.
-        let tooltip = Tooltip {
-            id: WidgetId::new(BORDER_TOOLTIP_ID),
-            text: BORDER_TOOLTIP_TEXT.to_string(),
-            placement: TooltipPlacement::Bottom,
-            border: self.border,
-            title: self.title.clone(),
-            ..Default::default()
-        };
+        // `border`/`title` (#541) are set on the *layout*, not the
+        // `Tooltip` itself — see `primitives::tooltip`'s module doc for
+        // why: it keeps every exhaustive `Tooltip { .. }` literal (in-tree
+        // and downstream) compiling untouched by this issue.
+        let tooltip = Tooltip::new(
+            WidgetId::new(BORDER_TOOLTIP_ID),
+            BORDER_TOOLTIP_TEXT.to_string(),
+        )
+        .with_placement(TooltipPlacement::Bottom);
         // Horizontal slack (+4 columns, same margin `structural_parity.rs`
         // uses) so the tier-A control below can't fail for an unrelated
         // reason (the last glyph clipped for lack of padding).
@@ -822,7 +819,12 @@ impl AppLogic for TooltipBorderFixture {
             cw * (BORDER_TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * self.rows,
         );
-        let layout = tooltip.layout(anchor, viewport, measure, lh);
+        let mut layout = tooltip
+            .layout(anchor, viewport, measure, lh)
+            .with_border(self.border);
+        if let Some(title) = self.title.clone() {
+            layout = layout.with_title(title);
+        }
         backend.draw_tooltip(&tooltip, &layout);
     }
 
