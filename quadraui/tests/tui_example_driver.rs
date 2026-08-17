@@ -98,6 +98,8 @@ mod text_input_demo;
 mod toast_app;
 #[path = "../examples/common/tooltip_demo.rs"]
 mod tooltip_demo;
+#[path = "../examples/common/wide_tab_bar_demo.rs"]
+mod wide_tab_bar_demo;
 
 use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
@@ -135,6 +137,7 @@ use tab_group_demo::TabGroupDemo;
 use text_input_demo::TextInputDemo;
 use toast_app::ToastApp;
 use tooltip_demo::TooltipDemo;
+use wide_tab_bar_demo::WideTabBarDemo;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
 
@@ -4232,4 +4235,36 @@ fn toolbar_press_release_on_filter_toggles_is_active_state() {
         after_off.contains("Filter off"),
         "a second press+release should flip filter_active back to false:\n{after_off}"
     );
+}
+
+// ─── WideTabBarDemo: CJK tab label paints intact, q exits ──────────────────
+//
+// The quadraui#555 conformance-matrix fixture: a `TabBar` whose active tab
+// label contains a double-width (CJK) glyph. `TuiDriver` renders through
+// ratatui's in-memory `TestBackend`, so — per quadraui#555's own writeup —
+// this only ever sees the draw-time paint inventory, not the emitted
+// byte stream a real terminal flush would produce. It cannot by itself
+// catch quadraui#554-shaped bugs (see `tui_pty_smoke.rs` / the vt100
+// observer in `src/tui/vt_testing.rs` for that); it exists to prove the
+// example itself renders and behaves as intended under `TestBackend`.
+
+#[test]
+fn wide_tab_bar_demo_initial_screen_paints_both_tab_labels() {
+    let driver = TuiDriver::new(WideTabBarDemo::new(), 100, 10);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("日本語.rs"),
+        "CJK tab label must render intact under TestBackend:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("main.rs"),
+        "ASCII tab label must be visible:\n{screen}"
+    );
+}
+
+#[test]
+fn wide_tab_bar_demo_q_exits() {
+    let mut driver = TuiDriver::new(WideTabBarDemo::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the wide tab bar demo");
 }
