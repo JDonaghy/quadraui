@@ -159,3 +159,68 @@ fn data_table_pressing_j_moves_selection() {
         driver.painted_texts()
     );
 }
+
+/// #516 defect 3: the same divider-drag script the TUI and GTK driver
+/// tests run (`tests/tui_example_driver.rs`'s
+/// `data_table_divider_before_last_column_resizes_in_drag_direction`,
+/// `tests/gtk_example_driver.rs`'s
+/// `data_table_divider_before_last_column_widens_on_right_drag`), run
+/// against macOS — dragging the divider immediately before the last
+/// column (Age | Restarts) must move Age's width in the *drag's*
+/// direction, never inverted.
+///
+/// The point of running it here too is that the fix lives in the shared
+/// `primitives::data_table::resolve_columns`, so every rasteriser must
+/// agree; `DataTableApp::resolved_column_widths` reads the width back
+/// through the very same `DataTable::layout` the macOS backend paints
+/// through, so nothing per-backend is hardcoded.
+#[test]
+fn data_table_divider_before_last_column_resizes_in_drag_direction() {
+    // Widen: drag the Age|Restarts divider right. `Restarts` is
+    // `Fixed(10.0)` and `DataTableApp` pair-resizes with a 4.0 floor, so
+    // the achievable widening is small — the assertion is on direction,
+    // not magnitude, exactly as on TUI/GTK.
+    let mut driver = MacDriver::new(DataTableApp::new(), DT_W, DT_H);
+    let before = driver.app().resolved_column_widths(driver.backend())[2];
+
+    let layout = driver.app().table_layout(driver.backend());
+    let age = layout.columns[2];
+    let divider_x = age.x + age.width;
+    let divider_y = layout.header_height / 2.0;
+    driver.drag(divider_x, divider_y, divider_x + 80.0, divider_y);
+
+    let widened = driver.app().resolved_column_widths(driver.backend())[2];
+    assert!(
+        widened > before,
+        "dragging the divider before the last column right should widen it: \
+         before={before}, after={widened}"
+    );
+
+    // Narrow: a *fresh* driver rather than a second drag on this one —
+    // a second `mouse_down` near the same point would fold into a
+    // synthetic `DoubleClick` (`DoubleClickDetector`, radius 1.5) in
+    // `macos::run::dispatch_event` instead of starting a fresh resize
+    // drag. Age's natural width here is ~1/10 of the 900pt viewport, so
+    // a 40pt leftward drag lands well clear of the 4.0 floor and the
+    // direction assertion is a real one rather than a clamp artifact.
+    let mut driver = MacDriver::new(DataTableApp::new(), DT_W, DT_H);
+    let natural = driver.app().resolved_column_widths(driver.backend())[2];
+    assert!(
+        natural > 44.0,
+        "test precondition: Age's natural width ({natural}) must leave room \
+         to narrow by 40pt without hitting the 4.0 pair-resize floor"
+    );
+
+    let layout = driver.app().table_layout(driver.backend());
+    let age = layout.columns[2];
+    let divider_x = age.x + age.width;
+    let divider_y = layout.header_height / 2.0;
+    driver.drag(divider_x, divider_y, divider_x - 40.0, divider_y);
+
+    let narrowed = driver.app().resolved_column_widths(driver.backend())[2];
+    assert!(
+        narrowed < natural,
+        "dragging the divider before the last column left should narrow it: \
+         before={natural}, after={narrowed}"
+    );
+}
