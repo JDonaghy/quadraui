@@ -134,8 +134,19 @@ impl From<Reaction> for EventOutcome {
 /// - Caret-blink bump: any `KeyPressed`/`CharTyped` makes the caret solid
 ///   for ~500ms (`caret_visible`/`caret_pause`), matching AppKit's
 ///   text-field typing convention.
+/// - Modal click dispatch (#493): `MouseDown` routes through
+///   [`crate::dispatch::dispatch_click`] so the backend's `ModalStack`
+///   arbitrates first — a click inside an open modal is tagged with the
+///   modal's `WidgetId`, and a click outside every modal dismisses the
+///   topmost instead of falling through to the widget underneath.
+///   Scroll surfaces and text regions are not tracked by `MacBackend`
+///   yet (see its `capabilities` doc), hence the empty slices. Mirrors
+///   `TuiBackend::apply_dispatch` and `gtk::run`'s `connect_pressed`
+///   closure.
 /// - Double-click folding (#486): `MouseDown` → `DoubleClick` within the
-///   detector's time/position window.
+///   detector's time/position window. Runs on the *dispatched* events,
+///   after modal arbitration — same relative order as
+///   `TuiBackend::translate_events`.
 /// - Global accelerator dispatch (#486): a `KeyPressed` matching a
 ///   registered `Global`-scope accelerator becomes `UiEvent::Accelerator`.
 /// - Cmd-V paste interception (#486): AppKit has no native paste signal
@@ -156,7 +167,50 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         caret_pause.set(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
-    let event = backend.fold_double_click(event);
+    // Modal click dispatch (#493): every mouse-down consults the
+    // `ModalStack` via the shared dispatch layer before the app sees it,
+    // so a click inside an open dialog stays inside the dialog and a
+    // click outside dismisses it — instead of falling straight through
+    // to whatever widget is underneath. `dispatch_click` may return 0..n
+    // events (e.g. dismiss emits `MouseDown` + `Palette(Closed)`); each
+    // is double-click-folded, handed to the app, and the outcomes are
+    // folded the way `gtk::run`'s click loop folds them: `Exit` wins
+    // immediately, else `Redraw` wins over `Continue`.
+    if let UiEvent::MouseDown {
+        button,
+        position,
+        modifiers,
+        ..
+    } = &event
+    {
+        let (button, position, modifiers) = (*button, *position, *modifiers);
+        let dispatched = {
+            let (drag_state, modal_stack) = backend.drag_and_modal_mut();
+            crate::dispatch::dispatch_click(
+                modal_stack,
+                &[], // scroll surfaces not tracked by MacBackend yet
+                &[], // text regions not tracked by MacBackend yet
+                drag_state,
+                position,
+                button,
+                modifiers,
+            )
+        };
+        let mut outcome = EventOutcome::Continue;
+        for ev in dispatched {
+            let ev = backend.fold_double_click(ev);
+            match app.handle(ev, backend).into() {
+                EventOutcome::Exit => return EventOutcome::Exit,
+                EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+                EventOutcome::Continue => {}
+            }
+        }
+        return outcome;
+    }
+
+    // `MouseDown` is the only variant `fold_double_click` acts on, and
+    // every `MouseDown` returned above — so the remaining pipeline
+    // (accelerators, Cmd-V paste, plain forward) skips the fold.
 
     let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
         match backend.match_keypress(key, *modifiers) {
