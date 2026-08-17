@@ -128,6 +128,38 @@ fn pipeline_parity_tui_and_gtk_agree_on_logical_state() {
     );
 }
 
+/// macOS twin of the test above (quadraui#493): `MacDriver` now
+/// implements `ConformanceDriver`, so `run_pipeline_script` — written
+/// once, against the trait, with no per-backend branch — runs unmodified
+/// a third time. Kept as its own test (rather than folded into
+/// `pipeline_parity_tui_and_gtk_agree_on_logical_state` above) so a build
+/// without `macos` — every build except a Mac's — never has to skip
+/// anything here; this test simply doesn't exist in that build.
+#[cfg(all(feature = "macos", target_os = "macos"))]
+#[test]
+fn pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state() {
+    use quadraui::macos::testing::MacDriver;
+
+    let mut tui = TuiDriver::new(PipelineApp::new(), 100, 30);
+    let mut mac = MacDriver::new(PipelineApp::new(), 800, 480);
+
+    let tui_observations = run_pipeline_script(&mut tui);
+    let mac_observations = run_pipeline_script(&mut mac);
+
+    assert_eq!(
+        tui_observations, mac_observations,
+        "macOS should reach the same logical state as TUI/GTK \
+         (mentions-stage-3 before click, after click, exited-on-q) \
+         for the identical PipelineApp event script"
+    );
+    assert_eq!(
+        mac_observations,
+        vec![false, true, true],
+        "expected: no stage-3 mention before the click, a mention after \
+         clicking Go, and exited after 'q'"
+    );
+}
+
 // ─── Shell-level parity (quadraui#518): a ShellApp, not just an AppLogic ───
 //
 // `pipeline_parity_*` above proves parity for the `AppLogic`-level harness
@@ -776,12 +808,18 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
 // a parity bug. Left as a documented exception per the #541 review
 // rather than force-added coverage here.
 //
-// Scope note — this file is a *two*-backend harness, not a three-backend
-// one. `ConformanceDriver` has `TuiDriver` and `GtkDriver` implementations
-// only; there is no `MacDriver`, so macOS cannot participate in any test
-// here (pre-existing infra gap, not something #541 introduced or could
-// close). macOS's side of the #541 vocabulary is covered instead by
-// direct pixel-probe unit tests in `src/macos/tooltip.rs`
+// Scope note — the tooltip-border harness below is still *two*-backend
+// only, not three. `ConformanceDriver` now has a `MacDriver` impl
+// (quadraui#493 — see `pipeline_parity_macos_agrees_with_tui_and_gtk_on_
+// logical_state` above for where it *does* participate), but
+// `TooltipBorderFixture` below asserts on a registered zone
+// (`border_tooltip_zone`), and `macos::backend::MacBackend::
+// draw_tooltip_with_chrome` doesn't call `Backend::register_zone` the way
+// `TuiBackend`'s and `GtkBackend`'s do — so macOS still can't participate
+// in *this specific* harness (a real gap, not something #541 introduced
+// or could close on its own). macOS's side of the #541 vocabulary is
+// covered instead by direct pixel-probe unit tests in
+// `src/macos/tooltip.rs`
 // (`sides_border_only_strokes_left_and_right`, `none_border_strokes_nothing`,
 // `full_border_title_punches_a_gap_...`, `title_is_ignored_when_border_is_
 // sides_or_none`), which mirror the GTK rasteriser's assertions one for one.

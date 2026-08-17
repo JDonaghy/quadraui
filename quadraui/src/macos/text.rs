@@ -24,6 +24,8 @@
 //! construction and drop to `extern "C"` for `CTLineDraw` +
 //! `CGContextSetTextPosition` + matrix manipulation.
 
+use std::cell::RefCell;
+
 use core_foundation::attributed_string::{CFAttributedString, CFAttributedStringRef};
 use core_foundation::base::{CFAllocatorRef, TCFType};
 use core_foundation::boolean::CFBoolean;
@@ -37,6 +39,9 @@ use core_text::line::CTLine;
 use core_text::string_attributes::{
     kCTFontAttributeName, kCTForegroundColorFromContextAttributeName,
 };
+
+use crate::testing::TextRun;
+use crate::Rect;
 
 /// Aggregate font measurements in points.
 ///
@@ -119,6 +124,8 @@ pub unsafe fn draw_text(
         return;
     }
 
+    record_if_active(font, text, x, y);
+
     CGContextSaveGState(ctx);
 
     // Set the *fill* colour rather than embedding a foreground-colour
@@ -151,6 +158,58 @@ pub unsafe fn draw_text(
     CTLineDraw(line.as_concrete_TypeRef(), ctx);
 
     CGContextRestoreGState(ctx);
+}
+
+// ── Text-run recording (quadraui#493) ───────────────────────────────────
+//
+// `draw_text` is the single choke point every rasteriser in `super`
+// paints text through — ~100 call sites spread across `activity_bar.rs`,
+// `data_table.rs`, `form.rs`, `dialog.rs`, … — so recording *here*, rather
+// than threading a recorder through every one of them, is what lets
+// `MacDriver`'s `FrameInventory::text_runs` (quadraui#488/#490/#493) exist
+// without touching any of those call sites. Thread-local rather than a
+// parameter: `draw_text` only ever has a borrowed `CGContextRef` in scope
+// (see this module's "Why direct CoreGraphics FFI" note above), no
+// `&mut MacBackend` to stash a `Vec` on, and per-test-thread isolation is
+// exactly what `cargo test`'s one-OS-thread-per-test model already gives
+// every `thread_local!`.
+
+thread_local! {
+    static TEXT_RECORDING: RefCell<Option<Vec<TextRun>>> = RefCell::new(None);
+}
+
+/// Start recording every subsequent [`draw_text`] call as a [`TextRun`]
+/// until [`stop_recording_text`] is called.
+/// [`super::backend::MacBackend::enter_frame_scope`] wraps its closure in
+/// this pair when
+/// [`super::backend::MacBackend::set_painted_text_recording`] is on.
+pub(crate) fn start_recording_text() {
+    TEXT_RECORDING.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop recording and return everything captured since the matching
+/// [`start_recording_text`]. Returns an empty `Vec` if recording was
+/// never started — defensive; callers only invoke this when they know
+/// they started it.
+pub(crate) fn stop_recording_text() -> Vec<TextRun> {
+    TEXT_RECORDING.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+}
+
+/// Push a [`TextRun`] for `text` at `(x, y)` — view-local points,
+/// top-left origin, matching [`draw_text`]'s own coordinate convention —
+/// if recording is active. A no-op (and no [`measure_text`] call, so no
+/// extra `CTLine` layout cost) when it isn't.
+fn record_if_active(font: &CTFont, text: &str, x: f64, y: f64) {
+    TEXT_RECORDING.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if let Some(runs) = guard.as_mut() {
+            let (w, h) = measure_text(font, text);
+            runs.push(TextRun {
+                text: text.to_string(),
+                bounds: Rect::new(x as f32, y as f32, w as f32, h as f32),
+            });
+        }
+    });
 }
 
 /// Build a `CTLine` carrying just the font attribute. Foreground
@@ -325,5 +384,80 @@ mod tests {
             "10× width ratio was {}, expected ~10 for monospace",
             ratio,
         );
+    }
+
+    // ── Text-run recording (quadraui#493) ────────────────────────────
+
+    #[test]
+    fn draw_text_records_nothing_when_not_recording() {
+        let surface = super::super::headless::BitmapSurface::new(64, 32);
+        // SAFETY: `surface`'s context is valid for the call's duration.
+        unsafe {
+            draw_text(
+                surface.context_ptr(),
+                &font(),
+                "hello",
+                2.0,
+                3.0,
+                (1.0, 1.0, 1.0, 1.0),
+            );
+        }
+        // No matching `start_recording_text()` — proves `draw_text`
+        // doesn't record unconditionally, only when a `MacDriver` (via
+        // `MacBackend::enter_frame_scope`) has turned it on.
+        assert!(stop_recording_text().is_empty());
+    }
+
+    #[test]
+    fn draw_text_records_bounds_while_recording() {
+        let surface = super::super::headless::BitmapSurface::new(64, 32);
+        start_recording_text();
+        // SAFETY: `surface`'s context is valid for the call's duration.
+        unsafe {
+            draw_text(
+                surface.context_ptr(),
+                &font(),
+                "hi",
+                2.0,
+                3.0,
+                (1.0, 1.0, 1.0, 1.0),
+            );
+        }
+        let runs = stop_recording_text();
+        assert_eq!(runs.len(), 1, "exactly one draw_text call should record");
+        assert_eq!(runs[0].text, "hi");
+        assert_eq!(runs[0].bounds.x, 2.0);
+        assert_eq!(runs[0].bounds.y, 3.0);
+        let (w, h) = measure_text(&font(), "hi");
+        assert_eq!(runs[0].bounds.width, w as f32);
+        assert_eq!(runs[0].bounds.height, h as f32);
+    }
+
+    #[test]
+    fn draw_text_empty_string_records_nothing() {
+        let surface = super::super::headless::BitmapSurface::new(4, 4);
+        start_recording_text();
+        // SAFETY: `surface`'s context is valid for the call's duration.
+        // `draw_text` returns before touching `ctx` at all for an empty
+        // string, so this also proves the early-return happens before
+        // (not after) the recording hook.
+        unsafe {
+            draw_text(
+                surface.context_ptr(),
+                &font(),
+                "",
+                0.0,
+                0.0,
+                (1.0, 1.0, 1.0, 1.0),
+            );
+        }
+        assert!(stop_recording_text().is_empty());
+    }
+
+    #[test]
+    fn stop_recording_text_without_start_is_empty_not_panicking() {
+        // Defensive default — a caller that forgets the matching
+        // `start_recording_text()` gets an empty `Vec`, not a panic.
+        assert!(stop_recording_text().is_empty());
     }
 }

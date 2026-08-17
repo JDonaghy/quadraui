@@ -102,6 +102,113 @@ extern "C" {
 type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
 type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 
+/// What the caller should do after [`dispatch_event`] handles one event.
+/// Mirrors [`crate::gtk::run::EventOutcome`] / [`crate::tui::run::EventOutcome`].
+pub(crate) enum EventOutcome {
+    /// No redraw needed; keep going.
+    Continue,
+    /// State changed; schedule a redraw.
+    Redraw,
+    /// The app requested exit.
+    Exit,
+}
+
+impl From<Reaction> for EventOutcome {
+    fn from(r: Reaction) -> Self {
+        match r {
+            Reaction::Continue => EventOutcome::Continue,
+            Reaction::Redraw => EventOutcome::Redraw,
+            Reaction::Exit => EventOutcome::Exit,
+        }
+    }
+}
+
+/// Dispatch one already-translated [`UiEvent`] through the app, applying
+/// the runner's built-in pre-processing first — same funnel both the live
+/// `QuadraView` responder methods (via [`run`]'s `handle` closure) and
+/// [`super::testing::MacDriver`] (quadraui#493) route through, so a test
+/// exercises the exact pre-processing a real keypress/click gets. Mirrors
+/// [`crate::gtk::run::dispatch_event`].
+///
+/// Pre-processing handled here, in order:
+/// - Caret-blink bump: any `KeyPressed`/`CharTyped` makes the caret solid
+///   for ~500ms (`caret_visible`/`caret_pause`), matching AppKit's
+///   text-field typing convention.
+/// - Double-click folding (#486): `MouseDown` → `DoubleClick` within the
+///   detector's time/position window.
+/// - Global accelerator dispatch (#486): a `KeyPressed` matching a
+///   registered `Global`-scope accelerator becomes `UiEvent::Accelerator`.
+/// - Cmd-V paste interception (#486): AppKit has no native paste signal
+///   on a bespoke `NSView`, so a plain Cmd-V reads the system clipboard
+///   directly and delivers `ClipboardPaste` instead of forwarding the raw
+///   key press.
+///
+/// Anything not matched above falls through to `app.handle` unchanged.
+pub(crate) fn dispatch_event<A: AppLogic>(
+    event: UiEvent,
+    backend: &mut MacBackend,
+    app: &mut A,
+    caret_visible: &Rc<Cell<bool>>,
+    caret_pause: &Rc<Cell<std::time::Instant>>,
+) -> EventOutcome {
+    if matches!(event, UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_)) {
+        caret_visible.set(true);
+        caret_pause.set(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
+    let event = backend.fold_double_click(event);
+
+    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        match backend.match_keypress(key, *modifiers) {
+            Some(id) => UiEvent::Accelerator(id, *modifiers),
+            None => event,
+        }
+    } else {
+        event
+    };
+
+    // Cmd (not Ctrl) is the Mac paste modifier.
+    if let UiEvent::KeyPressed {
+        key: Key::Char('v') | Key::Char('V'),
+        modifiers:
+            Modifiers {
+                cmd: true,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+        ..
+    } = &event
+    {
+        return if let Some(text) = backend.services().clipboard().read_text() {
+            app.handle(UiEvent::ClipboardPaste(text), backend).into()
+        } else {
+            EventOutcome::Continue
+        };
+    }
+
+    app.handle(event, backend).into()
+}
+
+/// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
+/// `end_frame` — the exact body `run`'s `paint` closure used to run
+/// inline, extracted so it never depends on a live `NSView`, only a
+/// [`Viewport`] + a borrowed `CGContextRef`. Shared by the live runner and
+/// [`super::testing::MacDriver`] (quadraui#493) — mirrors
+/// [`crate::gtk::run::render_frame`].
+pub(crate) fn render_frame<A: AppLogic>(
+    backend: &mut MacBackend,
+    app: &A,
+    viewport: Viewport,
+    ctx: CGContextRef,
+) {
+    backend.begin_frame(viewport);
+    backend.enter_frame_scope(ctx, |b| {
+        app.render(b, <A as AppLogic>::AreaId::default());
+    });
+    backend.end_frame();
+}
+
 /// `QuadraView`'s per-instance state. `last_viewport` is retained for
 /// diagnostics + future paint↔click harness work; `paint` / `handle`
 /// are the AppLogic bridge.
@@ -500,12 +607,8 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
             }
 
             let mut backend_mut = backend.borrow_mut();
-            backend_mut.begin_frame(viewport);
-            backend_mut.enter_frame_scope(cg_ref, |b| {
-                let app_ref = app.borrow();
-                app_ref.render(b, <A as AppLogic>::AreaId::default());
-            });
-            backend_mut.end_frame();
+            let app_ref = app.borrow();
+            render_frame(&mut *backend_mut, &*app_ref, viewport, cg_ref);
         })
     };
     // Caret-blink state is shared between the backend (read each
@@ -520,62 +623,19 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
         let caret_visible = caret_visible.clone();
         let caret_pause = caret_pause.clone();
         Box::new(move |ev: UiEvent| -> Reaction {
-            // Pause the caret-blink for ~500 ms after every keypress
-            // so typing leaves the caret solid, matching AppKit's
-            // text-field convention.
-            if matches!(ev, UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_)) {
-                caret_visible.set(true);
-                caret_pause.set(std::time::Instant::now() + std::time::Duration::from_millis(500));
-            }
-
             let mut backend_mut = backend.borrow_mut();
-
-            // Double-click folding (#486): a `MouseDown` landing within
-            // the detector's time/position window of the previous click
-            // becomes `DoubleClick` before `AppLogic` ever sees it —
-            // mirrors GTK's `GestureClick` `n_press == 2` branch
-            // (`gtk::run`) and TUI's `DoubleClickDetector`.
-            let ev = backend_mut.fold_double_click(ev);
-
-            // Global accelerator dispatch (#486): mirrors the
-            // "Global accelerator dispatch" step in
-            // `gtk::run::dispatch_event`.
-            let ev = if let UiEvent::KeyPressed { key, modifiers, .. } = &ev {
-                match backend_mut.match_keypress(key, *modifiers) {
-                    Some(id) => UiEvent::Accelerator(id, *modifiers),
-                    None => ev,
-                }
-            } else {
-                ev
-            };
-
-            // Cmd-V interception (paste, #486): AppKit has no native
-            // paste signal on a bespoke `NSView`, so — like GTK's Ctrl-V
-            // interception in `gtk::run::dispatch_event` — the runner
-            // reads the system clipboard directly and delivers
-            // `ClipboardPaste` instead of forwarding the raw key press.
-            // Cmd (not Ctrl) is the Mac paste modifier.
-            if let UiEvent::KeyPressed {
-                key: Key::Char('v') | Key::Char('V'),
-                modifiers:
-                    Modifiers {
-                        cmd: true,
-                        shift: false,
-                        alt: false,
-                        ctrl: false,
-                    },
-                ..
-            } = &ev
-            {
-                if let Some(text) = backend_mut.services().clipboard().read_text() {
-                    let mut app_mut = app.borrow_mut();
-                    return app_mut.handle(UiEvent::ClipboardPaste(text), &mut *backend_mut);
-                }
-                return Reaction::Continue;
-            }
-
             let mut app_mut = app.borrow_mut();
-            app_mut.handle(ev, &mut *backend_mut)
+            match dispatch_event(
+                ev,
+                &mut *backend_mut,
+                &mut *app_mut,
+                &caret_visible,
+                &caret_pause,
+            ) {
+                EventOutcome::Continue => Reaction::Continue,
+                EventOutcome::Redraw => Reaction::Redraw,
+                EventOutcome::Exit => Reaction::Exit,
+            }
         })
     };
 
