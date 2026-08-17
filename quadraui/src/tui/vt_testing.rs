@@ -369,7 +369,7 @@ impl<A: AppLogic> ConformanceDriver for TuiVtDriver<A> {
         // like `TuiDriver` — the two observers watch the same backend paint,
         // just through different pipes, so their capability claim is
         // identical by construction.
-        crate::Backend::backend_caps(&self.backend)
+        Backend::backend_caps(&self.backend)
     }
 
     fn press_named(&mut self, key: NamedKey) {

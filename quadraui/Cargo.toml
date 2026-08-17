@@ -635,3 +635,8 @@ required-features = ["tui"]
 name = "gtk_modal_occlusion"
 path = "examples/gtk_modal_occlusion.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_wide_tab_bar_demo"
+path = "examples/tui_wide_tab_bar_demo.rs"
+required-features = ["tui"]
