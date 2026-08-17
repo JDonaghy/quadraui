@@ -51,27 +51,23 @@
 //!   trait's no-op default is a lie, and so is an undeclared one whose
 //!   methods are overridden.
 
-// Under a feature set with no C0 driver backend — `--features macos` alone
-// on a non-macOS host (`quadraui::macos` itself needs `target_os = "macos"`
-// too, so the feature is a no-op there), which is exactly what
-// `.github/workflows/macos.yml`'s Linux legs would see, and it sets
+// Under a feature set with no C0 driver backend — e.g. `--features macos`
+// alone (`quadraui::macos` itself needs `target_os = "macos"` too, so the
+// feature is a no-op on other hosts), which is what
+// `.github/workflows/macos.yml`'s legs see, and it sets
 // `RUSTFLAGS: -D warnings` — the whole C0 harness (`Case`, `DriverFactory`,
 // `c0::run`, `fixtures::build`, …) has no caller and every item in it reads
 // as dead. It is not dead; it is unreachable *from this feature set*, which
 // is the same reason `backends()` is empty here. Scoped to exactly that
-// case so a genuinely-unused item still surfaces on the tui / gtk / (real)
-// macos builds that own this suite. `MacFactory` (quadraui#493) is a live
-// caller once `--features macos` actually runs on `target_os = "macos"`, so
-// it's added to the "this set isn't empty" side alongside tui/gtk.
+// case so a genuinely-unused item still surfaces on the tui / gtk builds
+// that own this suite. `MacFactory` (quadraui#493) registers for the
+// Tier-1 scenario suite only — it never touches the Tier-0 harness in
+// `c0.rs` (see `c0_paint_smoke`'s doc below: `MacBackend` is deliberately
+// not in that tier's columns yet) — so a real `--features macos` build on
+// `target_os = "macos"` still has no Tier-0 caller and stays on the
+// dead-code-allowed side until the Tier-0 macOS follow-up lands.
 // (quadraui#484.)
-#![cfg_attr(
-    not(any(
-        feature = "tui",
-        feature = "gtk",
-        all(feature = "macos", target_os = "macos")
-    )),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(feature = "tui", feature = "gtk")), allow(dead_code))]
 
 #[path = "../examples/common/mod.rs"]
 mod common;
