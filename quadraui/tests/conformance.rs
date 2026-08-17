@@ -51,15 +51,27 @@
 //!   trait's no-op default is a lie, and so is an undeclared one whose
 //!   methods are overridden.
 
-// Under a feature set with no C0 driver backend — `--features macos`
-// alone, which is exactly what `.github/workflows/macos.yml` runs, and it
-// sets `RUSTFLAGS: -D warnings` — the whole C0 harness (`Case`,
-// `DriverFactory`, `c0::run`, `fixtures::build`, …) has no caller and
-// every item in it reads as dead. It is not dead; it is unreachable *from
-// this feature set*, which is the same reason `backends()` is empty here.
-// Scoped to exactly that case so a genuinely-unused item still surfaces on
-// the tui / gtk builds that own this suite. (quadraui#484.)
-#![cfg_attr(not(any(feature = "tui", feature = "gtk")), allow(dead_code))]
+// Under a feature set with no C0 driver backend — `--features macos` alone
+// on a non-macOS host (`quadraui::macos` itself needs `target_os = "macos"`
+// too, so the feature is a no-op there), which is exactly what
+// `.github/workflows/macos.yml`'s Linux legs would see, and it sets
+// `RUSTFLAGS: -D warnings` — the whole C0 harness (`Case`, `DriverFactory`,
+// `c0::run`, `fixtures::build`, …) has no caller and every item in it reads
+// as dead. It is not dead; it is unreachable *from this feature set*, which
+// is the same reason `backends()` is empty here. Scoped to exactly that
+// case so a genuinely-unused item still surfaces on the tui / gtk / (real)
+// macos builds that own this suite. `MacFactory` (quadraui#493) is a live
+// caller once `--features macos` actually runs on `target_os = "macos"`, so
+// it's added to the "this set isn't empty" side alongside tui/gtk.
+// (quadraui#484.)
+#![cfg_attr(
+    not(any(
+        feature = "tui",
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos")
+    )),
+    allow(dead_code)
+)]
 
 #[path = "../examples/common/mod.rs"]
 mod common;
@@ -118,6 +130,26 @@ impl runner::DriverFactory for GtkFactory {
     }
 }
 
+// `target_os = "macos"` as well as the feature: `macos` is a no-op flag on
+// non-macOS hosts (see `Cargo.toml`'s comment on the feature), so
+// `quadraui::macos` itself only compiles under both — this mirrors that
+// gate rather than fighting it.
+#[cfg(all(feature = "macos", target_os = "macos"))]
+struct MacFactory;
+
+#[cfg(all(feature = "macos", target_os = "macos"))]
+impl runner::DriverFactory for MacFactory {
+    fn make<A: quadraui::AppLogic + 'static>(
+        app: A,
+        viewport: quadraui::testing::LogicalViewport,
+    ) -> Box<dyn runner::DynDriver> {
+        use quadraui::testing::ConformanceDriver;
+        Box::new(quadraui::macos::testing::MacDriver::new_fixture(
+            app, viewport,
+        ))
+    }
+}
+
 /// Every backend compiled into this build. **This is the registration
 /// point** — a new backend adds exactly one `push` here.
 ///
@@ -137,6 +169,8 @@ fn backends() -> Vec<BackendReg> {
     regs.push(BackendReg::register::<TuiFactory>("tui"));
     #[cfg(feature = "gtk")]
     regs.push(BackendReg::register::<GtkFactory>("gtk"));
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    regs.push(BackendReg::register::<MacFactory>("macos"));
     regs
 }
 
@@ -268,11 +302,15 @@ fn conformance_matrix() {
 ///
 /// quadraui#492's Problem section names the macOS `draw_diff_view` fake
 /// (`macos/backend.rs`) as the motivating bug. **This test would not have
-/// caught it**, and saying so is the point: there is no
-/// `ConformanceDriver` impl for `MacBackend` or `WinBackend` at all — not
-/// merely no column in *this* build — so `c0::run` has nothing to run
-/// them with on any host. The `draw_diff_view` row below is proven on TUI
-/// and GTK only.
+/// caught it.** `MacBackend` gained a `ConformanceDriver` (`MacDriver`,
+/// quadraui#493) and a `backends()` row for the Tier-1 scenario suite
+/// above, but is deliberately *not* added to this tier's `columns` below:
+/// `draw_diff_view`'s known fake would turn straight into a hard
+/// `c0_paint_smoke` failure the moment a real macOS host ran it, which is
+/// its own follow-up rather than something to paper over here by, say,
+/// special-casing that one row. `WinBackend` still has no
+/// `ConformanceDriver` at all, so it has nothing to run on any host either
+/// way. The `draw_diff_view` row below is proven on TUI and GTK only.
 ///
 /// That is a pre-existing limitation inherited from #491's tier-1 suite
 /// rather than something this tier introduced, and it is why the

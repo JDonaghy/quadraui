@@ -37,7 +37,6 @@ pub mod editor;
 pub mod events;
 pub mod find_replace;
 pub mod form;
-#[cfg(test)]
 pub mod headless;
 pub mod list;
 pub mod menu_bar;
@@ -59,6 +58,7 @@ pub mod split_tree;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod terminal;
+pub mod testing;
 pub mod text;
 pub mod text_display;
 pub mod toast;

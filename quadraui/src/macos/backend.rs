@@ -74,6 +74,7 @@ use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
+use crate::testing::{TextRun, ZoneRec};
 use crate::types::WidgetId;
 use crate::KeyBinding;
 use crate::{
@@ -151,6 +152,23 @@ pub struct MacBackend {
     /// toggling — used to keep the caret solid while the user types.
     /// Reset on every `KeyPressed` event in `macos::run`.
     caret_blink_pause_until: std::rc::Rc<std::cell::Cell<std::time::Instant>>,
+    /// Widget zones registered during the current frame via
+    /// [`Backend::register_zone`]. Cleared at the start of each frame by
+    /// [`Backend::begin_frame`]. Mirrors `GtkBackend::zones` /
+    /// `TuiBackend::zones`. Read by
+    /// [`crate::testing::FrameInventory::zones`] via
+    /// [`super::testing::MacDriver::inventory`] (quadraui#493).
+    zones: Vec<ZoneRec>,
+    /// Whether [`Self::enter_frame_scope`] should wrap its closure in
+    /// [`super::text::start_recording_text`] / `stop_recording_text` and
+    /// stash the result into `text_runs`. Off by default — the live
+    /// runner never reads it — [`super::testing::MacDriver::new`] turns
+    /// it on. Mirrors `GtkBackend::painted_text_recording`.
+    painted_text_recording: bool,
+    /// Every [`super::text::draw_text`] call recorded during the last
+    /// [`Self::enter_frame_scope`] with `painted_text_recording` on —
+    /// see [`Self::set_painted_text_recording`].
+    text_runs: Vec<TextRun>,
 }
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -224,6 +242,9 @@ impl MacBackend {
             caret_blink_pause_until: std::rc::Rc::new(std::cell::Cell::new(
                 std::time::Instant::now(),
             )),
+            zones: Vec::new(),
+            painted_text_recording: false,
+            text_runs: Vec::new(),
         }
     }
 
@@ -298,9 +319,36 @@ impl MacBackend {
     /// `enter_frame_scope` contract.
     pub fn enter_frame_scope<R>(&mut self, ctx: CGContextRef, f: impl FnOnce(&mut Self) -> R) -> R {
         let prev = self.current_cg_ptr.replace(ctx as *const ());
+        if self.painted_text_recording {
+            super::text::start_recording_text();
+        }
         let result = f(self);
+        if self.painted_text_recording {
+            self.text_runs = super::text::stop_recording_text();
+        }
         self.current_cg_ptr.set(prev);
         result
+    }
+
+    /// Toggle whether [`Self::enter_frame_scope`] records every
+    /// [`super::text::draw_text`] call into `text_runs`. Off by default;
+    /// [`super::testing::MacDriver::new`] turns it on so
+    /// [`crate::testing::FrameInventory::text_runs`] has something to
+    /// report — mirrors `GtkBackend::set_painted_text_recording`.
+    pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
+        self.painted_text_recording = enabled;
+    }
+
+    /// Text runs recorded during the last [`Self::enter_frame_scope`]
+    /// call, when [`Self::set_painted_text_recording`] is on.
+    pub(crate) fn text_runs(&self) -> &[TextRun] {
+        &self.text_runs
+    }
+
+    /// Zones registered during the last frame via
+    /// [`Backend::register_zone`].
+    pub(crate) fn zones(&self) -> &[ZoneRec] {
+        &self.zones
     }
 
     /// The currently-stashed `CGContextRef`, or null outside a frame
@@ -366,6 +414,12 @@ impl Backend for MacBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        // Cleared here (frame start) rather than at `end_frame`, matching
+        // `GtkBackend`/`TuiBackend`: zones must survive from the moment
+        // `register_zone` is called (during `app.render`, inside
+        // `enter_frame_scope`) until whatever reads them after the frame
+        // (e.g. `MacDriver::inventory`).
+        self.zones.clear();
     }
 
     fn end_frame(&mut self) {
@@ -450,6 +504,10 @@ impl Backend for MacBackend {
 
     fn services(&self) -> &dyn PlatformServices {
         &self.services
+    }
+
+    fn register_zone(&mut self, id: WidgetId, bounds: Rect) {
+        self.zones.push(ZoneRec { id, bounds });
     }
 
     /// quadraui#492: honest per-method, not aspirational.

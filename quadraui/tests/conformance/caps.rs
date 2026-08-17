@@ -357,8 +357,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "the default *is* uniform-monospace division (`EditorLayout::col_at_x`), which is exact \
          for a cell grid — GTK overrides it only because Pango advance widths vary",
     ),
-    // ── macOS: real backend, genuinely unfinished (no runner in the
-    // fleet yet — same gap that leaves it without a C0 column).
+    // ── macOS: real backend, genuinely unfinished. `MacDriver`
+    // (quadraui#493) gives it a `ConformanceDriver` and a Tier-1
+    // (`backends()`) row, but it's deliberately still absent from
+    // `c0_paint_smoke`'s columns — `draw_diff_view`'s known fake (see this
+    // module's doc comment) would turn straight into a hard C0 failure,
+    // which is its own follow-up, not this list's job.
     (
         "macos",
         "set_nerd_fonts",
@@ -378,12 +382,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "macos",
         "editor_col_at_x",
         "no CoreText hit-test resolution yet; the uniform-division default is used",
-    ),
-    (
-        "macos",
-        "register_zone",
-        "no zone accumulation, which is also why `MacBackend` has no `ConformanceDriver` and \
-         therefore no C0 column",
     ),
     // ── Win: every method is a `todo!()` stub (#19). Listed one by one
     // anyway — "the whole backend is a stub" is exactly the kind of
