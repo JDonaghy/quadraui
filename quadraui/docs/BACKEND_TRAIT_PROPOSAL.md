@@ -90,7 +90,9 @@ pub enum UiEvent {
     /// every keystroke, not just accelerators).
     KeyPressed { key: Key, modifiers: Modifiers, repeat: bool },
 
-    /// A character was typed (already IME-composed, ready for insertion).
+    /// A character was typed, ready for insertion. No backend runs an
+    /// IME composition pipeline yet (epic #481) — this is a direct
+    /// keystroke-to-char translation, not IME output.
     CharTyped(char),
 
     // ── Mouse ───────────────────────────────────────────────────

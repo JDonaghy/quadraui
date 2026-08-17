@@ -238,8 +238,10 @@ pub enum UiEvent {
         repeat: bool,
     },
 
-    /// A character was typed (IME-composed, ready for insertion). Routes
-    /// to the focused text-input widget.
+    /// A character was typed, ready for insertion. Routes to the focused
+    /// text-input widget. No backend runs an IME composition pipeline yet
+    /// (tracked under epic #481) — this is a direct keystroke-to-char
+    /// translation, not the result of IME composition.
     CharTyped(char),
 
     // ── Mouse ──────────────────────────────────────────────────────────
