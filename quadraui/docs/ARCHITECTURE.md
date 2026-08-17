@@ -36,10 +36,15 @@ multi-primitive compositions so consumers don't reimplement them:
   and draw/click/motion wiring. Apps that use the single-DA runner
   don't need this — the dropdown paints on the same surface.
 
-**Backend trait** in `quadraui/src/backend.rs` plumbs frame state and
-the `set_current_theme` / `set_nerd_fonts` setters that hosts call once
-per frame. Per-primitive `draw_*` functions are free functions in the
-backend modules; the trait is for cross-cutting state.
+**Backend trait** in `quadraui/src/backend.rs` plumbs frame state, the
+`set_theme` / `set_nerd_fonts` setters hosts call once per frame, *and*
+one `draw_*` method per primitive (`BACKEND_TRAIT_PROPOSAL.md` §4,
+Decision 2 = B) — adding a primitive is a breaking change to the trait,
+intentionally. Each backend's `draw_*` method is a thin wrapper around
+that backend module's own internal `pub fn draw_*` free function (e.g.
+`impl Backend for WinBackend { fn draw_tree(...) {
+quadraui_win::draw_tree(...) } }`); the trait itself has no free-standing
+"cross-cutting state" carve-out.
 
 **`set_cell` / `cairo_rgb` / `ratatui_color` / etc.** are private
 backend helpers — never call them from primitives.

@@ -32,8 +32,14 @@ win = []
 gtk-example = ["gtk"]
 
 # Public macOS rasterisers in `quadraui::macos` (AppKit + Core Graphics + Core Text).
-# The objc2-family deps are platform-gated below so this flag is a no-op on
-# non-macOS hosts — `cargo check --features macos` still type-checks on Linux/CI.
+# The objc2-family deps are platform-gated below, but that's not the only
+# gate: `lib.rs` also cfg's `mod macos` on `target_os = "macos"`, so on a
+# non-macOS host `cargo check --features macos` compiles NONE of
+# `src/macos/` — it exits 0 having proven nothing, not "type-checked".
+# The real gate is `.github/workflows/macos.yml`: a `macos-latest` runner
+# that builds and tests this feature for real, triggered by any PR
+# touching `quadraui/src/macos/**` (see that workflow's header for why
+# it isn't wired to run on Linux/CI at all).
 macos = [
     "dep:objc2",
     "dep:objc2-app-kit",

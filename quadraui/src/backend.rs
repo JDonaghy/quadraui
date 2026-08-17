@@ -1389,8 +1389,9 @@ pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
-    /// user cancelled. TUI backends return `None` and write a hint to
-    /// stderr; apps should provide an in-TUI picker instead.
+    /// user cancelled. TUI backends have no native dialog to show and
+    /// unconditionally return `None` (no stderr hint is written); apps
+    /// should provide an in-TUI picker instead.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
     /// Show a native file-save dialog.
