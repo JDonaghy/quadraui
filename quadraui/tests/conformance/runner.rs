@@ -168,6 +168,23 @@ impl BackendReg {
     }
 }
 
+/// Whether `backend_name` should even attempt `scenario` at all.
+///
+/// True for every backend except the vt100/ANSI-byte-stream TUI observer
+/// (`"tui-vt100"`, quadraui#555), which only runs scenarios that opt in via
+/// [`Scenario::text_fidelity`] — rendering through a real byte stream and a
+/// `vt100` parser costs more than a `TestBackend` buffer read, so the bulk
+/// of the suite stays `TestBackend`-only and this keeps that cost opt-in
+/// rather than paid by every scenario. Distinct from a capability
+/// [`Outcome::Skip`]: a scenario that doesn't opt in has no `tui-vt100`
+/// *cell* in its matrix row at all (renders as `-`), rather than a `skip`
+/// naming a missing capability — the two backends aren't disagreeing about
+/// what's supported, this scenario simply never asked the vt100 observer
+/// to look.
+pub fn backend_applies_to(backend_name: &str, scenario: &Scenario) -> bool {
+    backend_name != "tui-vt100" || scenario.text_fidelity
+}
+
 // ─── Outcomes ───────────────────────────────────────────────────────────
 
 /// Result of one (scenario, backend) cell.
@@ -538,6 +555,7 @@ mod tests {
             tier: 1,
             viewport: super::super::schema::ViewportSpec { cols: 10, rows: 10 },
             requires: caps.iter().map(|s| s.to_string()).collect(),
+            text_fidelity: false,
             steps: vec![],
         }
     }
@@ -602,6 +620,25 @@ mod tests {
             msg.contains("not contained") && !msg.contains("never"),
             "geometry failure must report both rects: {msg}"
         );
+    }
+
+    /// `backend_applies_to` (quadraui#555): the vt100 observer only runs a
+    /// scenario that opts in via `text_fidelity`; every other backend name
+    /// runs everything, opted in or not.
+    #[test]
+    fn backend_applies_to_gates_only_the_vt100_observer_on_opt_in() {
+        let opted_out = scenario_requiring(&[]);
+        let mut opted_in = scenario_requiring(&[]);
+        opted_in.text_fidelity = true;
+
+        assert!(backend_applies_to("tui-vt100", &opted_in));
+        assert!(!backend_applies_to("tui-vt100", &opted_out));
+        // Every other backend name is unconditional, regardless of the
+        // scenario's opt-in — the opt-in exists purely to control the
+        // extra render cost of the vt100 observer.
+        assert!(backend_applies_to("tui", &opted_in));
+        assert!(backend_applies_to("tui", &opted_out));
+        assert!(backend_applies_to("gtk", &opted_out));
     }
 
     /// A backend that hasn't declared a capability skips — and the skip

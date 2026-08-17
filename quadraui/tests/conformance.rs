@@ -9,11 +9,28 @@
 //! cargo test --features tui  --test conformance -- --nocapture
 //! cargo test --features gtk  --test conformance -- --nocapture
 //! cargo test --features tui,gtk --test conformance -- --nocapture
+//! cargo test --features tui,terminal --test conformance -- --nocapture
 //! ```
 //!
 //! The matrix is also written to `target/conformance-matrix.txt` so CI can
 //! upload it as an artifact. For a backend that doesn't exist yet
 //! (Windows, macOS) that artifact **is** the implementation checklist.
+//!
+//! ## Two TUI observers, one row each (quadraui#555)
+//!
+//! `--features tui,terminal` additionally registers `"tui-vt100"`
+//! alongside `"tui"`: the same `AppLogic` fixtures and the same scenario
+//! files, but painted through `ratatui::backend::CrosstermBackend` into a
+//! real ANSI byte stream and read back with `vt100` — see
+//! `quadraui::tui::vt_testing` — instead of `TestBackend`'s in-memory
+//! buffer. A draw-time paint inventory (what `"tui"` reads) can only
+//! answer "what did the rasteriser ask for"; it cannot answer "what would
+//! a real terminal actually show", and those can diverge (double-width
+//! glyphs, malformed buffers, ANSI-encoding bugs). Not every scenario pays
+//! for the extra observer: it only runs a scenario that opts in via
+//! `Scenario::text_fidelity` (`schema.rs`) — see
+//! `runner::backend_applies_to`. `docs/TESTING.md` → *TUI: two observers*
+//! has the full writeup.
 //!
 //! ## The two costs this file fixes
 //!
@@ -78,7 +95,9 @@ mod schema;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use runner::{render_matrix, run_scenario, zones_seen, BackendReg, MatrixRow, Outcome};
+use runner::{
+    backend_applies_to, render_matrix, run_scenario, zones_seen, BackendReg, MatrixRow, Outcome,
+};
 use schema::{Scenario, Step};
 
 // ─── Backend registrations ──────────────────────────────────────────────
@@ -97,6 +116,34 @@ impl runner::DriverFactory for TuiFactory {
     ) -> Box<dyn runner::DynDriver> {
         use quadraui::testing::ConformanceDriver;
         Box::new(quadraui::tui::testing::TuiDriver::new_fixture(
+            app, viewport,
+        ))
+    }
+}
+
+/// The vt100/ANSI-byte-stream TUI observer (quadraui#555) — same
+/// `AppLogic` fixtures and scenario files as `TuiFactory`, but painted
+/// through `CrosstermBackend` into a real ANSI byte stream and read back
+/// with `vt100` instead of `TestBackend`'s in-memory buffer. Needs `vt100`
+/// itself, which only the `terminal` feature pulls in, so this is gated on
+/// both features — same as `tests/tui_pty_smoke.rs`.
+///
+/// Registered under a *different* name (`"tui-vt100"`, not `"tui"`) so the
+/// matrix reports the two TUI observers as distinct rows/columns rather
+/// than silently overwriting one another — see
+/// `runner::backend_applies_to` for why not every scenario runs against
+/// this column.
+#[cfg(all(feature = "tui", feature = "terminal"))]
+struct TuiVtFactory;
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+impl runner::DriverFactory for TuiVtFactory {
+    fn make<A: quadraui::AppLogic + 'static>(
+        app: A,
+        viewport: quadraui::testing::LogicalViewport,
+    ) -> Box<dyn runner::DynDriver> {
+        use quadraui::testing::ConformanceDriver;
+        Box::new(quadraui::tui::vt_testing::TuiVtDriver::new_fixture(
             app, viewport,
         ))
     }
@@ -135,6 +182,8 @@ fn backends() -> Vec<BackendReg> {
     let mut regs: Vec<BackendReg> = Vec::new();
     #[cfg(feature = "tui")]
     regs.push(BackendReg::register::<TuiFactory>("tui"));
+    #[cfg(all(feature = "tui", feature = "terminal"))]
+    regs.push(BackendReg::register::<TuiVtFactory>("tui-vt100"));
     #[cfg(feature = "gtk")]
     regs.push(BackendReg::register::<GtkFactory>("gtk"));
     regs
@@ -220,6 +269,11 @@ fn conformance_matrix() {
             tier: s.tier,
             cells: backends
                 .iter()
+                // A scenario that hasn't opted into the vt100 observer
+                // (quadraui#555) has no cell for it at all — renders as
+                // `-`, not `skip` — rather than paying to build and replay
+                // a driver it was never asked to run against.
+                .filter(|b| backend_applies_to(b.name, s))
                 .map(|b| (b.name, run_scenario(s, b)))
                 .collect(),
         })
@@ -473,6 +527,12 @@ fn every_asserted_zone_is_registered_by_every_backend() {
             continue;
         }
         for backend in &backends {
+            // Same opt-in filter `conformance_matrix` applies — a scenario
+            // that never runs against `tui-vt100` has nothing to check
+            // there either (quadraui#555).
+            if !backend_applies_to(backend.name, &scenario) {
+                continue;
+            }
             // `None` = this backend skips the scenario (declared capability
             // gap, already visible in the matrix) — nothing to check.
             let Some(seen) = zones_seen(&scenario, backend) else {

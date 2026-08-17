@@ -217,26 +217,37 @@ fn run_inner<A: AppLogic>(
     }
 }
 
-/// Render one frame.
+/// Render one frame into a `size`-sized surface.
 ///
-/// Syncs the viewport from the terminal size, runs `app.render` inside
-/// the backend's frame scope, overlays the active text-selection
-/// highlight, applies any editor cursor position painted this frame, and
-/// finalises the frame. Generic over the ratatui backend `B` so the live
-/// runner (`CrosstermBackend`) and the headless test driver
-/// (`TestBackend`) share one paint path.
-pub(crate) fn render_frame<A, B>(
+/// Seeds the viewport from the given `size` (rather than querying the
+/// backend), runs `app.render` inside the backend's frame scope, overlays
+/// the active text-selection highlight, applies any editor cursor position
+/// painted this frame, and finalises the frame. Generic over the ratatui
+/// backend `B` so every caller — the live runner (`CrosstermBackend`
+/// wrapping real stdout), the headless `TestBackend` driver, and the
+/// headless *vt100* driver (`CrosstermBackend` wrapping an in-memory ANSI
+/// sink, quadraui#555) — share one paint path.
+///
+/// Split out of [`render_frame`] (which still queries `terminal.size()` for
+/// the live runner and `TestBackend`) because `CrosstermBackend::size()`
+/// queries the process's real controlling terminal (`/dev/tty` on Unix) via
+/// `crossterm::terminal::size()` — a query that has nothing to do with
+/// whatever `Write` sink the backend was constructed with, and fails (or
+/// silently returns the wrong dimensions) under `cargo test`, which has no
+/// controlling terminal wired to the vt100 driver's sink. A caller that
+/// already knows its own fixed size (every `ConformanceDriver` does — it's
+/// exactly the `LogicalViewport` it was built with) calls this directly and
+/// never triggers that query at all.
+pub(crate) fn paint_frame<A, B>(
     terminal: &mut Terminal<B>,
     backend: &mut TuiBackend,
     app: &A,
+    size: ratatui::layout::Size,
 ) -> io::Result<()>
 where
     A: AppLogic,
     B: ratatui::backend::Backend,
 {
-    let size = terminal
-        .size()
-        .map_err(|e| io::Error::other(e.to_string()))?;
     backend.begin_frame(crate::Viewport::new(
         size.width as f32,
         size.height as f32,
@@ -268,6 +279,28 @@ where
         .map_err(|e| io::Error::other(e.to_string()))?;
     backend.end_frame();
     Ok(())
+}
+
+/// Render one frame, syncing the viewport from the *backend's* real size.
+///
+/// Thin wrapper over [`paint_frame`] for callers whose backend can actually
+/// answer `terminal.size()` honestly — the live runner (real stdout) and
+/// the headless `TestBackend` driver (told its size at construction, so
+/// `size()` is just a getter). See [`paint_frame`]'s doc for why a
+/// `CrosstermBackend` wrapping anything else needs to skip this query.
+pub(crate) fn render_frame<A, B>(
+    terminal: &mut Terminal<B>,
+    backend: &mut TuiBackend,
+    app: &A,
+) -> io::Result<()>
+where
+    A: AppLogic,
+    B: ratatui::backend::Backend,
+{
+    let size = terminal
+        .size()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    paint_frame(terminal, backend, app, size)
 }
 
 /// What the frame loop should do after [`dispatch_event`] handles one

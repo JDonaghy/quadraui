@@ -38,6 +38,7 @@ pub const FIXTURES: &[&str] = &[
     "split_app",
     "tab_group_demo",
     "toast_app",
+    "wide_tab_bar_demo",
 ];
 
 /// Construct the driver for `fixture` using backend factory `F`.
@@ -70,6 +71,7 @@ pub fn build<F: DriverFactory>(
         "split_app" => F::make(common::split_app::SplitApp::new(), viewport),
         "tab_group_demo" => F::make(common::tab_group_demo::TabGroupDemo::new(), viewport),
         "toast_app" => F::make(common::toast_app::ToastApp::new(), viewport),
+        "wide_tab_bar_demo" => F::make(common::wide_tab_bar_demo::WideTabBarDemo::new(), viewport),
         _ => return None,
     })
 }

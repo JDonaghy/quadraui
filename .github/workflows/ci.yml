@@ -194,8 +194,14 @@ jobs:
       # exercise the portable core underneath it (layout, text measurement,
       # unicode width, event translation), and that core is exactly where a
       # Windows-only divergence would hide.
+      #
+      # `tui,terminal` (not just `tui`) so the `"tui-vt100"` observer column
+      # (quadraui#555, `quadraui::tui::vt_testing::TuiVtDriver`) actually
+      # runs here rather than only under a worker's manually-added feature —
+      # `terminal` is already paid for by the pty-smoke/terminal_engine
+      # steps above in this same job, so this is incremental, same as those.
       - name: Conformance matrix (tui)
-        run: cargo test -p quadraui --features tui --test conformance -- --nocapture
+        run: cargo test -p quadraui --features tui,terminal --test conformance -- --nocapture
       - name: Upload conformance matrix (tui)
         if: always()
         uses: actions/upload-artifact@v4
