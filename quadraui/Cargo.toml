@@ -112,6 +112,16 @@ crossterm = "0.29"
 tempfile = "3"
 
 [[example]]
+name = "tui_tooltip"
+path = "examples/tui_tooltip.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_tooltip"
+path = "examples/gtk_tooltip.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_demo"
 path = "examples/tui_demo.rs"
 required-features = ["tui"]
