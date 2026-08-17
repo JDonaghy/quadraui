@@ -81,6 +81,7 @@ pub mod text_input_demo;
 pub mod toast_app;
 pub mod toolbar_app;
 pub mod tooltip_demo;
+pub mod wide_tab_bar_demo;
 
 pub use activity_nav::ActivityNavApp;
 pub use ai_transcript::AiTranscript;
@@ -126,3 +127,4 @@ pub use tab_group_demo::TabGroupDemo;
 pub use toast_app::ToastApp;
 pub use toolbar_app::ToolbarApp;
 pub use tooltip_demo::TooltipDemo;
+pub use wide_tab_bar_demo::WideTabBarDemo;

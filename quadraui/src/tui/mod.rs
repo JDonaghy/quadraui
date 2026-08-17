@@ -58,12 +58,18 @@ mod tab_bar;
 mod terminal;
 pub mod testing;
 pub mod text;
+// vt100/ANSI-byte-stream conformance observer (quadraui#555) — needs
+// `vt100` itself, which only `terminal` pulls in (`terminal = ["dep:vt100",
+// ...]` in Cargo.toml), so this is gated on both features, same as
+// `tests/tui_pty_smoke.rs`.
 mod text_display;
 mod text_input;
 mod toast;
 mod toolbar;
 mod tooltip;
 mod tree;
+#[cfg(feature = "terminal")]
+pub mod vt_testing;
 
 pub use activity_bar::draw_activity_bar;
 pub use backend::TuiBackend;

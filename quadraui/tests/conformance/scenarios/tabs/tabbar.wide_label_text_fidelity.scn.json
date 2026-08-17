@@ -1,0 +1,15 @@
+{
+  "id": "tabbar.wide_label_text_fidelity",
+  "fixture": "wide_tab_bar_demo",
+  "tier": 1,
+  "viewport": { "cols": 80, "rows": 6 },
+  "text_fidelity": true,
+  "steps": [
+    { "note": "quadraui#555's worked example: a tab label containing double-width (CJK) glyphs. Opted into the vt100 observer via text_fidelity — the whole point of this scenario is to be observed both ways, not just painted." },
+    { "assert_screen_has": "日本語.rs" },
+    { "assert_screen_has": "main.rs" },
+    { "assert_left_of": { "a": "日本語.rs", "b": "main.rs" } },
+    { "type_char": "q" },
+    { "assert_exited": true }
+  ]
+}

@@ -155,6 +155,20 @@ pub struct Scenario {
     /// capability named in the matrix — silence is impossible.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Opt-in for the TUI vt100/ANSI-byte-stream observer (quadraui#555):
+    /// when `true`, the conformance matrix also runs this scenario against
+    /// the `tui-vt100` backend, in addition to the default `TestBackend`
+    /// `tui` column.
+    ///
+    /// Defaults to `false` — rendering through a real ANSI byte stream and
+    /// a `vt100` parser costs more than a `TestBackend` buffer read, so
+    /// only scenarios that actually exercise text fidelity, wide
+    /// (double-width) characters, or cursor placement should opt in; the
+    /// bulk of the suite stays `TestBackend`-only. A scenario that does
+    /// *not* opt in simply has no `tui-vt100` cell in the matrix row (`-`,
+    /// not `skip`) — see `runner::backend_applies_to`.
+    #[serde(default)]
+    pub text_fidelity: bool,
     pub steps: Vec<Step>,
 }
 

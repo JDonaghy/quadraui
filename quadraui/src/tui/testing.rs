@@ -364,13 +364,37 @@ impl<A: AppLogic> TuiDriver<A> {
     }
 
     /// The current rendered screen as newline-joined rows.
+    ///
+    /// Wide-char aware (quadraui#555): strides by each glyph's
+    /// [`char_cell_width`], the same way [`Self::row_cells`] does, rather
+    /// than one buffer column per iteration. A double-width glyph's
+    /// reserved continuation cell is always blank by construction (see
+    /// `tui::set_cell_wide`) and never reaches `next` in `Buffer::diff`'s
+    /// output, so `TestBackend` never actually writes it — it just
+    /// retains whatever was in that column *before* this frame, which for
+    /// a freshly-painted glyph is `Cell::default()`'s `symbol()`, `" "`.
+    /// Reading column-by-column therefore inserted a phantom space after
+    /// every wide glyph that was never really there (a real terminal
+    /// shows the glyph occupying both columns with nothing "under" it),
+    /// which made `screen_contains`/`screen_has` — the direct backer of
+    /// the conformance suite's `assert_screen_has` step — report a needle
+    /// spanning a wide glyph as absent even though [`Self::find_bounds`]
+    /// (already wide-char aware, quadraui#488) found it painted as one
+    /// contiguous run. Striding here brings `screen()` in line with what
+    /// `row_cells`/`find_bounds`/`inventory` already saw, and with what
+    /// [`crate::tui::vt_testing::TuiVtDriver::screen`]'s vt100-observed
+    /// twin reports for the identical content.
     pub fn screen(&self) -> String {
         let buf = self.terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                out.push_str(buf[(x, y)].symbol());
+            let mut x = area.left();
+            while x < area.right() {
+                let symbol = buf[(x, y)].symbol();
+                let ch = symbol.chars().next().unwrap_or(' ');
+                out.push_str(symbol);
+                x += char_cell_width(ch).max(1);
             }
             out.push('\n');
         }
@@ -829,6 +853,42 @@ mod tests {
             .find_bounds("world")
             .expect("world should be found after the CJK run");
         assert_eq!(world.x, cjk.x + cjk.width + 1.0);
+    }
+
+    /// Regression guard for quadraui#555's `screen()` fix: adjacent
+    /// double-width glyphs must read back as a contiguous substring, with
+    /// no phantom space inserted for the wide glyph's (always-blank)
+    /// continuation cell — the same needle `find_bounds` above already
+    /// located as one 4-cell span. Before this fix `screen()` walked one
+    /// buffer column per iteration, so `screen_contains`/`screen_has` (the
+    /// direct backer of the conformance suite's `assert_screen_has` step)
+    /// disagreed with `find_bounds`/`inventory` on the exact same frame —
+    /// discovered via `tests/conformance/scenarios/tabs/
+    /// tabbar.wide_label_text_fidelity.scn.json`, which runs this same
+    /// class of content against both the `TestBackend` and the vt100
+    /// observer (`quadraui::tui::vt_testing::TuiVtDriver`) and caught the
+    /// two disagreeing on a needle both had, in fact, painted.
+    #[test]
+    fn screen_is_wide_char_aware_for_adjacent_cjk_glyphs() {
+        let driver = TuiDriver::new(
+            OneLineApp {
+                text: "你好 world"
+            },
+            30,
+            3,
+        );
+
+        assert!(
+            driver.screen_contains("你好"),
+            "screen() must not insert a phantom space inside a contiguous \
+             double-width run:\n{}",
+            driver.screen()
+        );
+        assert!(
+            driver.screen_contains("你好 world"),
+            "the whole line must read back exactly as painted:\n{}",
+            driver.screen()
+        );
     }
 
     /// `ConformanceDriver` smoke test for the TUI impl: `new_fixture` (the

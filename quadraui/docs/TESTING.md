@@ -428,6 +428,81 @@ dialog.blocks_click_through         1  pass  pass
 ...
 ```
 
+### TUI: two observers, one row each (quadraui#555)
+
+Every tier above — including the conformance suite's own `"tui"`
+column — observes the TUI backend at **draw time**: `TuiDriver` reads
+`TestBackend`'s retained `ratatui::buffer::Buffer` straight back after
+`app.render` returns. That answers "what did the rasteriser ask for?" It
+cannot answer "what would a real terminal actually show?", and for a
+cell-grid backend those can diverge — a double-width (CJK/emoji) glyph's
+reserved continuation cell, a malformed buffer, or an ANSI-encoding bug
+can each cause the two to disagree, and #302's own module doc names the
+general form: `TestBackend` "never touches a real TTY, so
+terminal-protocol bugs are invisible to it."
+
+```sh
+cargo test -p quadraui --features tui,terminal --test conformance -- --nocapture
+```
+
+adds a **second** TUI column, `"tui-vt100"`
+(`quadraui::tui::vt_testing::TuiVtDriver`): the exact same `AppLogic`
+fixture, replayed through the exact same production render path
+(`tui::run::paint_frame`), but painted through
+`ratatui::backend::CrosstermBackend` into a real ANSI byte stream and
+read back with [`vt100`](https://docs.rs/vt100) — the same crate
+Tier-3's `tui_pty_smoke.rs` uses, minus the OS pty: `TuiVtDriver` drives
+its fixture with scripted `UiEvent`s exactly like `TuiDriver`, never real
+keystrokes, so there is no terminal *input* to decode and therefore
+nothing that needs a live pty to answer a real terminal's queries (see
+`quadraui::tui::vt_testing`'s module doc for exactly which query that
+would be and how `TuiVtDriver` avoids it — `CrosstermBackend::size()`
+reads `/dev/tty`, unrelated to whatever `Write` sink the backend wraps).
+The result is deterministic and needs no subprocess, matching what makes
+`TestBackend`-based `TuiDriver` fast, just with a real ANSI byte stream —
+not a same-process buffer read — in the loop. `tui_pty_smoke.rs`'s real
+pty remains the tier that also covers terminal-*input* protocol (raw-mode
+setup, SGR mouse decoding); `TuiVtDriver` is scoped to output fidelity.
+
+**Not every scenario pays for it.** A `.scn.json` file only runs against
+`"tui-vt100"` if it declares `"text_fidelity": true` (`schema.rs`) — the
+matrix has no cell at all (`-`, not `skip`) for a scenario that didn't
+opt in, so the bulk of the suite stays `TestBackend`-only. Reach for the
+opt-in when a scenario's assertions are actually about text fidelity,
+wide (double-width) characters, or cursor placement — most scenarios
+aren't and shouldn't pay the extra render.
+
+```text
+scenario                         tier  tui   tui-vt100
+--------------------------------------------------------
+tabbar.wide_label_text_fidelity     1  pass  pass
+tabgroup.close_tab                  1  pass  -
+```
+
+`tests/conformance/scenarios/tabs/tabbar.wide_label_text_fidelity.scn.json`
+is that worked example — a `TabBar` whose active tab's label contains a
+CJK filename mid-string (`" 1: 日本語.rs "`, quadraui#554's original
+report), asserted with the ordinary `assert_screen_has`/`assert_left_of`
+vocabulary against both observers unmodified. Building it against
+`"tui-vt100"` is what caught quadraui#555's own finding: `TuiDriver`'s
+own `screen()`/`screen_has` — the direct backer of `assert_screen_has` —
+walked the buffer one column at a time and so inserted a phantom space
+after every double-width glyph (the glyph's reserved continuation cell,
+which is always blank by construction and never actually reaches
+`TestBackend`'s retained buffer, since `Buffer::diff` skips emitting it).
+That made the exact same painted content read as *absent* through
+`screen_has` while `find_bounds`/`inventory` — already wide-char aware
+since quadraui#488 — found it painted as one contiguous run. `TuiDriver`
+now strides `screen()` the same way, so both observers agree; see
+`tui::testing::screen_is_wide_char_aware_for_adjacent_cjk_glyphs` for the
+regression guard. The tab-bar *measurement* bug quadraui#554 itself was
+filed against was already fixed at the source (`display_width`-based tab
+budgeting in `tui/backend.rs`) before this tier landed, so both observers
+already agreed there — this file's value ended up being the `screen()`
+gap it caught along the way, which is the general principle #555 argues
+for: a second, more-realistic observer earns its keep exactly by
+occasionally disagreeing with the first.
+
 ### Adding a scenario = one JSON file, no Rust
 
 Drop a `*.scn.json` under
