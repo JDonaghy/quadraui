@@ -32,6 +32,10 @@ pub struct FolderPickerApp {
     picker: Option<FolderPickerController>,
     confirmed_path: Option<PathBuf>,
     status: String,
+    /// Directory the picker is (re)opened at — captured once so `o`
+    /// reopens where the app started rather than re-reading the
+    /// process's working directory.
+    root: PathBuf,
 }
 
 impl FolderPickerApp {
@@ -41,11 +45,24 @@ impl FolderPickerApp {
         // platform-neutral. The picker will still walk something sensible
         // from the process's working directory.
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let picker = FolderPickerController::new(cwd, vec![], false);
+        Self::with_root(cwd)
+    }
+
+    /// Open the picker at an explicit `root` instead of the process's
+    /// working directory.
+    ///
+    /// The runnable examples use [`Self::new`]; this exists so tests can
+    /// drive the demo against a directory they control (path length,
+    /// entry names) rather than inheriting whatever the checkout
+    /// happens to sit under.
+    pub fn with_root(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let picker = FolderPickerController::new(root.clone(), vec![], false);
         Self {
             picker: Some(picker),
             confirmed_path: None,
             status: "Open Folder picker — navigate and press Enter to confirm".into(),
+            root,
         }
     }
 
@@ -75,8 +92,21 @@ impl FolderPickerApp {
                 action_id: None,
             }],
             right_segments: if let Some(ref p) = self.confirmed_path {
+                // Only the final component — the full path is already in
+                // the left segment. A right segment wider than the bar is
+                // laid out at column 0 (see `StatusBar::layout`: the
+                // highest-priority right segment is kept even when it
+                // alone overflows) and painted *after* the left segments,
+                // so an absolute path longer than the terminal is wide
+                // would blank the "Confirmed: …" message entirely — which
+                // is exactly what happens when the checkout lives under a
+                // long directory.
+                let leaf = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.display().to_string());
                 vec![StatusBarSegment {
-                    text: format!(" ✓ {} ", p.display()),
+                    text: format!(" ✓ {leaf} "),
                     fg: Color::rgb(150, 240, 150),
                     bg: Color::rgb(30, 80, 30),
                     bold: false,
@@ -153,12 +183,13 @@ impl AppLogic for FolderPickerApp {
                         return Reaction::Exit;
                     }
                     Key::Char('o') => {
-                        // Fallback to "." (current dir relative) if `current_dir()` fails.
-                        // `PathBuf::from("/")` would be invalid on Windows, so we keep this
-                        // platform-neutral. The picker will still walk something sensible
-                        // from the process's working directory.
-                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                        self.picker = Some(FolderPickerController::new(cwd, vec![], false));
+                        // Reopen at the root this app was constructed with
+                        // (the process's working directory for `new()`).
+                        self.picker = Some(FolderPickerController::new(
+                            self.root.clone(),
+                            vec![],
+                            false,
+                        ));
                         self.status =
                             "Open Folder picker — navigate and press Enter to confirm".into();
                         return Reaction::Redraw;

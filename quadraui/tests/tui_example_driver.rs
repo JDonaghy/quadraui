@@ -3778,6 +3778,55 @@ fn folder_picker_navigating_into_a_subdirectory_updates_visible_path() {
     );
 }
 
+/// folder_picker: the confirmed-path status must survive a root whose
+/// absolute path is longer than the terminal is wide.
+///
+/// `StatusBar::layout` keeps the highest-priority right segment even when
+/// it alone overflows the bar (it lands at column 0), and right segments
+/// paint *after* left ones — so a right segment carrying the full
+/// confirmed path used to blank the whole "Confirmed: …" message once the
+/// checkout lived under a long enough directory. That is not hypothetical:
+/// `folder_picker_navigating_into_a_subdirectory_updates_visible_path`
+/// above passes or fails purely on how deep the checkout sits, because it
+/// picks up `env::current_dir()`. This test pins the behaviour to a root
+/// it controls instead of the checkout's, so the regression can't hide
+/// again on a short path.
+#[test]
+fn folder_picker_confirmed_status_survives_a_path_longer_than_the_screen() {
+    // 140-char directory name ⇒ an absolute path comfortably wider than
+    // the 100-column screen below, whatever tempdir's base is.
+    let long_name = "q".repeat(140);
+    let tmp = tempfile::Builder::new()
+        .prefix(&long_name)
+        .tempdir()
+        .expect("create temp dir");
+    std::fs::create_dir(tmp.path().join("childdir")).expect("create child dir");
+    assert!(
+        tmp.path().join("childdir").display().to_string().len() > 100,
+        "the temp root must be wider than the screen for this test to mean anything"
+    );
+
+    let mut driver = TuiDriver::new(FolderPickerApp::with_root(tmp.path()), 100, 30);
+    driver.press_named(NamedKey::Down); // off ".." onto "."
+    driver.press_named(NamedKey::Down); // onto "childdir"
+    driver.press_named(NamedKey::Enter); // confirm it
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Confirmed:"),
+        "the confirmed-path message must stay visible even when the path \
+         is longer than the bar is wide:\n{after}"
+    );
+    assert!(
+        after.contains("✓ childdir"),
+        "the right segment should show the confirmed directory's leaf name:\n{after}"
+    );
+    assert!(
+        !after.contains("Open Folder picker"),
+        "the picker should be dismissed after confirming:\n{after}"
+    );
+}
+
 /// search_panel (issue #306): typing into the (mock) search input updates
 /// `SearchPanelApp::query` and the status bar echoes it as "Searching:
 /// <query>" — the module doc comment calls this a "mock" that "cycles
