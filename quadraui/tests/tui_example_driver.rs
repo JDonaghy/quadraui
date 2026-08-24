@@ -86,6 +86,8 @@ mod selection_app;
 mod shell_menu_demo;
 #[path = "../examples/common/sidebar_panel_app.rs"]
 mod sidebar_panel_app;
+#[path = "../examples/common/sidebar_reveal_demo.rs"]
+mod sidebar_reveal_demo;
 #[path = "../examples/common/split_app.rs"]
 mod split_app;
 #[path = "../examples/common/split_tree_app.rs"]
@@ -131,6 +133,7 @@ use search_panel::SearchPanelApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
 use sidebar_panel_app::SidebarPanelApp;
+use sidebar_reveal_demo::SidebarRevealDemo;
 use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
@@ -3839,6 +3842,110 @@ fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
         screen.contains("sel→1 [0]"),
         "Down after Tab should select WATCH's own first row (w0), not \
          VARIABLES' — proving focus followed the newly active section:\n{screen}"
+    );
+}
+
+// ─── SidebarRevealDemo: SidebarSystem::reveal (#595) ───────────────────────
+//
+// `DebugSidebar` above uses `ScrollMode::WholePanel`, where the rendered
+// viewport is driven by a single panel-level scroll offset, not each
+// section's own `TreeController::scroll_offset` — under that mode, even
+// *interactive* arrow-key nav never moves the screen, so it can't prove
+// anything about `reveal`. `SidebarRevealDemo` (`examples/common/
+// sidebar_reveal_demo.rs`) stays on `SidebarSystem`'s default
+// `PerSection` scroll mode instead, so `reveal`'s call to
+// `TreeController::scroll_to_visible` has a real, on-screen effect these
+// tests can read back off the rendered grid — not by inspecting
+// `scroll_offset` (see the `compose::sidebar_system::tests` module note
+// by the same name for the unit-level state-transition coverage).
+
+/// `reveal` scrolls a programmatically-selected, currently off-screen row
+/// into view. The demo's 30-row ITEMS section only shows ~8 rows at a
+/// time, so `item29` (the section's last row) starts off-screen; `g`
+/// reveals it with no click and no arrow key.
+#[test]
+fn sidebar_reveal_scrolls_offscreen_row_into_view() {
+    let mut driver = TuiDriver::new(SidebarRevealDemo::new(), 60, 10);
+    let before = driver.screen();
+    assert!(
+        !before.contains("item29"),
+        "item29 should start off-screen (only ~8 of 30 rows fit):\n{before}"
+    );
+
+    driver.type_char('g'); // reveal(0, [29], ...) — programmatic, not interactive nav
+
+    let after = driver.screen();
+    assert!(
+        after.contains("item29"),
+        "reveal should scroll item29 into view:\n{after}"
+    );
+    assert!(
+        after.contains("reveal→0 [29]"),
+        "status bar should confirm reveal ran:\n{after}"
+    );
+}
+
+/// `reveal` selects the target row, not just scrolls to it (the bug
+/// #595 was filed against: a scroll-only `reveal` left every caller
+/// needing a separate `set_selected_path` call with no guarantee both
+/// were made together). Proven behaviorally: `TreeController::
+/// move_selection_by` treats "no selection yet" specially — pressing Up
+/// with nothing selected jumps to the *last* row (item29), not up by
+/// one. So if `reveal` had only scrolled and left selection untouched,
+/// Up afterward would land back on item29. It instead lands on item28,
+/// which is only possible if `reveal` already selected item29.
+#[test]
+fn sidebar_reveal_selects_the_row_so_interactive_nav_continues_from_it() {
+    let mut driver = TuiDriver::new(SidebarRevealDemo::new(), 60, 10);
+    driver.type_char('g'); // reveal(0, [29], ...)
+    assert!(
+        driver.screen_contains("reveal→0 [29]"),
+        "reveal should have run:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Up);
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("sel→0 [28]"),
+        "Up after reveal should move selection down from item29 to item28 — \
+         landing on item29 again would mean reveal never selected it:\n{screen}"
+    );
+}
+
+/// `reveal` on a collapsed section expands it first, then scrolls
+/// (acceptance criterion 3, #595) — a collapsed section's body renders
+/// zero rows, so a version that scrolled without expanding would be a
+/// silent no-op here. `z` collapses the section (the header stays, but
+/// every row disappears), `g` then reveals item29, which must first
+/// show the section's body again.
+#[test]
+fn sidebar_reveal_expands_a_collapsed_section_then_scrolls() {
+    let mut driver = TuiDriver::new(SidebarRevealDemo::new(), 60, 10);
+    assert!(
+        driver.screen_contains("item0"),
+        "item0 should be visible before collapsing:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('z'); // collapse the ITEMS section
+    let collapsed = driver.screen();
+    assert!(
+        collapsed.contains("ITEMS"),
+        "the section header should remain after collapsing:\n{collapsed}"
+    );
+    assert!(
+        !collapsed.contains("item0"),
+        "collapsing must hide the section's rows:\n{collapsed}"
+    );
+
+    driver.type_char('g'); // reveal(0, [29], ...) on the collapsed section
+
+    let after = driver.screen();
+    assert!(
+        after.contains("item29"),
+        "reveal must expand the collapsed section before scrolling item29 into view:\n{after}"
     );
 }
 

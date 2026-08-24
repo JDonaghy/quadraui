@@ -23,6 +23,9 @@
 //! - [`ChatDemo`] (in [`chat_demo`]) — `ChatController` overlay with
 //!   scrollable transcript, multi-line input, history, and spinner,
 //!   used by `tui_chat` / `gtk_chat`.
+//! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree
+//!   section exercising `SidebarSystem::reveal` (#595), used by
+//!   `tui_sidebar_reveal` / `gtk_sidebar_reveal`.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -72,6 +75,7 @@ pub mod selection_app;
 pub mod shell_app;
 pub mod shell_menu_demo;
 pub mod sidebar_panel_app;
+pub mod sidebar_reveal_demo;
 pub mod sidebar_search;
 pub mod split_app;
 pub mod split_tree_app;
@@ -119,6 +123,7 @@ pub use selection_app::SelectionDemo;
 pub use shell_app::ShellApp;
 pub use shell_menu_demo::ShellMenuDemo;
 pub use sidebar_panel_app::SidebarPanelApp;
+pub use sidebar_reveal_demo::SidebarRevealDemo;
 pub use sidebar_search::SidebarSearchApp;
 pub use split_app::SplitApp;
 pub use split_tree_app::SplitTreeApp;
