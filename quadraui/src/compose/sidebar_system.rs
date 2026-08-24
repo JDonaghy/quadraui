@@ -316,32 +316,52 @@ impl SidebarSystem {
         }
     }
 
-    /// Scroll `section`'s viewport so `path` is visible, without touching
-    /// the current selection.
+    /// Select `path` within `section`, expand the section if it's
+    /// currently collapsed, and scroll its viewport so `path` ends up
+    /// visible.
     ///
     /// Interactive navigation (arrow keys, click) already keeps the
     /// selected row on-screen — [`Self::move_selection_by`] and friends
     /// call [`TreeController::scroll_to_visible`] after moving the
-    /// selection. A *programmatic* selection made via [`Self::set_selected_path`]
-    /// (e.g. restoring a saved path, jumping to a search hit) bypasses
-    /// that path and can leave the row scrolled off-screen. Call `reveal`
-    /// after such a change to bring it into view using the exact same
-    /// scroll-to-follow math as interactive nav.
+    /// selection. A *programmatic* selection (e.g. restoring a saved
+    /// path, jumping to a search hit) bypasses that path: nothing
+    /// selects the row, un-collapses its section, or scrolls it into
+    /// view on its own. `reveal` does all three in one call, reusing
+    /// [`TreeController::scroll_to_visible`] — the exact same
+    /// scroll-to-follow math interactive nav uses — rather than
+    /// re-deriving it.
     ///
     /// No-op if `section` is out of range, hosts a Form (not a Tree),
     /// `path` isn't among the section's current rows, or
     /// [`Self::set_backend_info`] hasn't been called yet (the viewport's
-    /// row capacity is unknown without it).
+    /// row capacity is unknown without it). A collapsed section is
+    /// expanded *before* the viewport is measured, so the row-capacity
+    /// computation reflects the now-visible body rather than the
+    /// collapsed (zero-height) one.
     pub fn reveal(&mut self, section: usize, path: &TreePath, rect: Rect) {
-        let Some(ref info) = self.backend_info else {
+        let Some(info) = self.backend_info.as_ref() else {
             return;
         };
         let lh = info.line_height;
         let metrics = info.metrics;
+
+        let Some(SectionController::Tree(tc)) = self.sections.get(section) else {
+            return;
+        };
+        if !tc.rows().iter().any(|r| &r.path == path) {
+            return;
+        }
+
+        if let Some(collapsed) = self.collapsed.get_mut(section) {
+            *collapsed = false;
+        }
+
         let viewport_rows = self.section_viewport_rows(section, rect, lh, &metrics);
+
         let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) else {
             return;
         };
+        tc.set_selected_path(Some(path.clone()));
         let Some(row) = tc.rows().iter().position(|r| &r.path == path) else {
             return;
         };
@@ -3284,32 +3304,63 @@ mod tests {
     }
 
     // ── Programmatic reveal (#reveal) ────────────────────────────────
+    //
+    // The "row actually ends up on screen" claim is proven end-to-end by
+    // the `TuiDriver` tests in `tests/tui_example_driver.rs`
+    // (`sidebar_reveal_*`), which render the real `SidebarRevealDemo`
+    // example (`examples/common/sidebar_reveal_demo.rs`) and read row
+    // text back off the rendered grid — not by inspecting
+    // `scroll_offset`. (`DebugSidebar`/`multi_tree.rs` can't host that
+    // proof: it uses `ScrollMode::WholePanel`, which ignores each
+    // section's own `TreeController::scroll_offset` entirely, so even
+    // interactive arrow-key nav never moves its screen.) The unit tests
+    // below cover the state transitions `reveal` is responsible for
+    // (selection, un-collapse, no-op guards) and the one
+    // internal-consistency check that isn't observable from rendered
+    // text: that `reveal` reuses `TreeController::scroll_to_visible`
+    // rather than re-deriving its own scroll math.
 
-    /// `reveal` scrolls a section so a programmatically-selected row (one
-    /// set via `set_selected_path` without going through interactive
-    /// nav) ends up inside the visible window.
+    /// `reveal` selects `path` in the target section — the bug #595 was
+    /// filed against was that the old scroll-only version left selection
+    /// untouched, so every caller had to remember to also call
+    /// `set_selected_path` themselves.
     #[test]
-    fn reveal_scrolls_row_into_visible_window() {
+    fn reveal_selects_the_target_row() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 50));
-        let lh = 1.0_f32;
-        let metrics = LayoutMetrics::default();
-        ss.set_backend_info(lh, metrics);
+        ss.set_backend_info(1.0, LayoutMetrics::default());
         let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
 
-        // A caller sets the selection directly (e.g. restoring saved
-        // state) — no click, no arrow key, so nothing has scrolled yet.
-        ss.set_selected_path(0, Some(vec![40]));
-        assert_eq!(ss.scroll_offset(0), 0);
+        assert_eq!(ss.selected_path(0), None);
+        ss.reveal(0, &vec![40], rect);
+        assert_eq!(
+            ss.selected_path(0),
+            Some(&vec![40]),
+            "reveal must select the row, not just scroll to it"
+        );
+    }
+
+    /// `reveal` expands a collapsed section before scrolling — the old
+    /// version left `self.collapsed[section]` untouched, and since a
+    /// collapsed section's body has zero rows, `scroll_to_visible` was
+    /// guaranteed to no-op (acceptance criterion 3: "reveal on a
+    /// collapsed section expands it first, then scrolls").
+    #[test]
+    fn reveal_expands_a_collapsed_section() {
+        let mut ss = SidebarSystem::new(sample_defs());
+        ss.set_rows(0, fake_rows("v", 50));
+        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss.set_collapsed(0, true);
+        assert!(ss.is_collapsed(0));
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
 
         ss.reveal(0, &vec![40], rect);
 
-        let viewport_rows = ss.section_viewport_rows(0, rect, lh, &metrics);
-        let offset = ss.scroll_offset(0);
         assert!(
-            offset <= 40 && 40 < offset + viewport_rows,
-            "row 40 not within visible window: offset={offset} viewport_rows={viewport_rows}"
+            !ss.is_collapsed(0),
+            "reveal must expand a collapsed section before scrolling"
         );
+        assert_eq!(ss.selected_path(0), Some(&vec![40]));
     }
 
     /// `reveal` must reuse `TreeController::scroll_to_visible` — the same
@@ -3317,8 +3368,10 @@ mod tests {
     /// rather than re-deriving it. Drive selection down to row 40 via the
     /// interactive path to capture the "correct" resulting offset, then
     /// reset the scroll and confirm `reveal` lands on the identical value.
+    /// (This checks the *implementation* shares one code path, not the
+    /// user-visible "is it on screen" claim — see the module note above.)
     #[test]
-    fn reveal_matches_interactive_scroll_to_follow() {
+    fn reveal_reuses_interactive_scroll_to_follow_math() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 50));
         ss.set_active_section(Some(0));
@@ -3356,21 +3409,30 @@ mod tests {
     }
 
     /// `reveal` is a safe no-op when `set_backend_info` was never called
-    /// (viewport size unknown) or `path` doesn't match any current row.
+    /// (viewport size unknown) or `path` doesn't match any current row —
+    /// selection must stay exactly as it was before the call.
     #[test]
     fn reveal_is_noop_without_backend_info_or_unknown_path() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 50));
-        ss.set_selected_path(0, Some(vec![40]));
+        ss.set_selected_path(0, Some(vec![3]));
         let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
 
         // No `set_backend_info` call yet.
         ss.reveal(0, &vec![40], rect);
-        assert_eq!(ss.scroll_offset(0), 0);
+        assert_eq!(
+            ss.selected_path(0),
+            Some(&vec![3]),
+            "reveal without backend info must not change selection"
+        );
 
         ss.set_backend_info(1.0, LayoutMetrics::default());
         ss.reveal(0, &vec![999], rect); // path not present among rows
-        assert_eq!(ss.scroll_offset(0), 0);
+        assert_eq!(
+            ss.selected_path(0),
+            Some(&vec![3]),
+            "reveal for an unknown path must not change selection"
+        );
     }
 
     #[cfg(feature = "gtk")]
