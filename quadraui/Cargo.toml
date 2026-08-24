@@ -646,3 +646,18 @@ required-features = ["gtk"]
 name = "tui_wide_tab_bar_demo"
 path = "examples/tui_wide_tab_bar_demo.rs"
 required-features = ["tui"]
+
+# #595 — `SidebarSystem::reveal`. Both entries are mandatory, not
+# cosmetic: without an explicit `[[example]]`, cargo's autodiscovery
+# picks the file up with NO `required-features`, so
+# `gtk_sidebar_reveal.rs` gets compiled by `cargo test --features tui`
+# and fails on `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_sidebar_reveal"
+path = "examples/tui_sidebar_reveal.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_sidebar_reveal"
+path = "examples/gtk_sidebar_reveal.rs"
+required-features = ["gtk"]
