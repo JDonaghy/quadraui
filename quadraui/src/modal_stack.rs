@@ -33,6 +33,31 @@
 //!   arbitration only. Once a hit lands inside a modal, the app still
 //!   asks the primitive itself (e.g. [`crate::PaletteLayout::hit_test`])
 //!   for the semantic hit inside it.
+//!
+//! # Paint-consistency detection (#455)
+//!
+//! Registering a modal in this stack makes it hit-testable, but nothing
+//! *forces* a backend to also paint it — those are two independent code
+//! paths (`modal_stack_mut().push(...)` vs. `backend.draw_dialog(...)`),
+//! and a backend that pushes without ever painting (or paints without
+//! ever pushing) produces a defect that reads correctly at every other
+//! layer: input is healthy, state is right, hit-testing works — the
+//! feature is simply invisible (vimcode#587: a command palette
+//! captured clicks and had 78 items for weeks before anyone noticed it
+//! never painted).
+//!
+//! This module can't force a paint (that's the "full paint-ownership"
+//! redesign #455 sketches as future work), but it *can* make the drift
+//! detectable for free: [`Self::mark_painted`] records that a modal's
+//! surface was actually drawn during the current frame, backends call
+//! [`Self::reset_frame_paint`] from `Backend::begin_frame` and
+//! [`Self::unpainted_ids`] from `Backend::end_frame` to warn (in debug
+//! builds) about any entry that's registered but was never marked
+//! painted that frame. See `TuiBackend::draw_dialog` /
+//! `GtkBackend::draw_dialog` / `MacBackend::draw_dialog` (and the
+//! `draw_palette` / `draw_context_menu` siblings) for where the mark
+//! happens, and the same backends' `begin_frame` / `end_frame` for
+//! where the reset/check happens.
 
 use crate::event::{Point, Rect};
 use crate::types::WidgetId;
@@ -49,6 +74,13 @@ use crate::types::WidgetId;
 pub struct ModalEntry {
     pub id: WidgetId,
     pub bounds: Rect,
+    /// #455: set by [`ModalStack::mark_painted`] when a backend's
+    /// `draw_*` call for this modal actually runs during the current
+    /// frame. Reset to `false` by [`ModalStack::reset_frame_paint`] at
+    /// the start of every frame. Not `pub` — entries are only ever
+    /// constructed by [`ModalStack::push`], which always starts this
+    /// `false` for a freshly (re-)opened modal.
+    painted_this_frame: bool,
 }
 
 /// Top-of-stack-is-topmost ordered list of open modal overlays.
@@ -78,7 +110,11 @@ impl ModalStack {
     /// the stack never contains duplicates.
     pub fn push(&mut self, id: WidgetId, bounds: Rect) {
         self.entries.retain(|e| e.id != id);
-        self.entries.push(ModalEntry { id, bounds });
+        self.entries.push(ModalEntry {
+            id,
+            bounds,
+            painted_this_frame: false,
+        });
     }
 
     /// Remove the modal with this id, if present. Returns true on
@@ -126,6 +162,49 @@ impl ModalStack {
             }
         }
         None
+    }
+
+    // ─── Paint-consistency detection (#455) ─────────────────────────
+
+    /// Record that `id`'s surface was actually drawn this frame. A no-op
+    /// if `id` isn't currently registered — some backends draw preview
+    /// or ghost content by id outside the modal stack, and that isn't
+    /// the "registered but invisible" defect this exists to catch.
+    ///
+    /// Call from a backend's `draw_dialog` / `draw_palette` /
+    /// `draw_context_menu` (and any future modal-capable rasteriser)
+    /// with the primitive's own `id` field, right where it already
+    /// paints — see `TuiBackend::draw_dialog` for the pattern.
+    pub fn mark_painted(&mut self, id: &WidgetId) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| &e.id == id) {
+            entry.painted_this_frame = true;
+        }
+    }
+
+    /// Clear every entry's per-frame painted flag. Call once per frame,
+    /// before painting starts — backends do this from `Backend::begin_frame`,
+    /// alongside their other "per-frame cache" resets (text regions,
+    /// zones, tab-bar layouts, …).
+    pub fn reset_frame_paint(&mut self) {
+        for entry in &mut self.entries {
+            entry.painted_this_frame = false;
+        }
+    }
+
+    /// Ids of modals that are registered (and therefore hit-testable)
+    /// but were not [`Self::mark_painted`] this frame — the #455
+    /// "registered but invisible" defect made detectable. Call from
+    /// `Backend::end_frame`, after `AppLogic::render` has had its
+    /// chance to paint every open modal.
+    ///
+    /// Empty whenever every open modal was painted (the healthy case)
+    /// or no modals are open at all.
+    pub fn unpainted_ids(&self) -> Vec<WidgetId> {
+        self.entries
+            .iter()
+            .filter(|e| !e.painted_this_frame)
+            .map(|e| e.id.clone())
+            .collect()
     }
 }
 
@@ -241,5 +320,69 @@ mod tests {
         assert_eq!(s.hit_test(pt(0.0, 0.0)), Some(&id("m"))); // inclusive
         assert!(s.hit_test(pt(10.0, 5.0)).is_none()); // exclusive right edge
         assert!(s.hit_test(pt(5.0, 10.0)).is_none()); // exclusive bottom edge
+    }
+
+    // ─── Paint-consistency detection (#455) ─────────────────────────
+
+    #[test]
+    fn freshly_pushed_modal_is_unpainted_until_marked() {
+        // The exact vimcode#587 shape: registered (hit-testable) but no
+        // corresponding draw call happened yet.
+        let mut s = ModalStack::new();
+        s.push(id("palette"), rect(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(s.unpainted_ids(), vec![id("palette")]);
+
+        s.mark_painted(&id("palette"));
+        assert!(s.unpainted_ids().is_empty());
+    }
+
+    #[test]
+    fn reset_frame_paint_clears_marks_for_the_next_frame() {
+        // A modal painted last frame must be painted *again* this frame
+        // to count — otherwise a backend that paints once and then stops
+        // (e.g. a redraw path that silently drops the modal) would never
+        // be flagged.
+        let mut s = ModalStack::new();
+        s.push(id("dialog"), rect(0.0, 0.0, 10.0, 10.0));
+        s.mark_painted(&id("dialog"));
+        assert!(s.unpainted_ids().is_empty());
+
+        s.reset_frame_paint();
+        assert_eq!(s.unpainted_ids(), vec![id("dialog")]);
+    }
+
+    #[test]
+    fn mark_painted_on_unregistered_id_is_a_no_op() {
+        // Backends may draw preview/ghost content by id outside the
+        // modal stack; marking an id that was never pushed must not
+        // panic or fabricate an entry.
+        let mut s = ModalStack::new();
+        s.mark_painted(&id("nothing-registered"));
+        assert!(s.is_empty());
+        assert!(s.unpainted_ids().is_empty());
+    }
+
+    #[test]
+    fn only_the_unpainted_entry_is_reported_among_several() {
+        let mut s = ModalStack::new();
+        s.push(id("palette"), rect(0.0, 0.0, 10.0, 10.0));
+        s.push(id("dialog"), rect(0.0, 0.0, 10.0, 10.0));
+        s.mark_painted(&id("palette"));
+        // "dialog" is registered (topmost, wins hit-testing) but never
+        // painted — exactly the bug this exists to surface.
+        assert_eq!(s.unpainted_ids(), vec![id("dialog")]);
+        assert_eq!(s.hit_test(pt(5.0, 5.0)), Some(&id("dialog")));
+    }
+
+    #[test]
+    fn re_pushing_an_existing_id_clears_its_painted_mark() {
+        // Re-push (bump-to-top) is treated as a fresh open — an entry
+        // that was painted before the bump shouldn't be considered
+        // painted this frame just because its old self was.
+        let mut s = ModalStack::new();
+        s.push(id("a"), rect(0.0, 0.0, 10.0, 10.0));
+        s.mark_painted(&id("a"));
+        s.push(id("a"), rect(1.0, 1.0, 5.0, 5.0));
+        assert_eq!(s.unpainted_ids(), vec![id("a")]);
     }
 }

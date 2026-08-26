@@ -1173,6 +1173,9 @@ impl Backend for GtkBackend {
         // `zones` — a bar that stops painting must stop resolving
         // `tab_center`/`tab_close_center` too.
         self.tab_bar_layouts.clear();
+        // #455: clear last frame's modal paint marks so this frame has
+        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        self.modal_stack.borrow_mut().reset_frame_paint();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -1188,9 +1191,23 @@ impl Backend for GtkBackend {
     }
 
     fn end_frame(&mut self) {
-        // No-op. GTK's `set_draw_func` closure flushes when it returns;
-        // this method exists for parity with backends that need an
-        // explicit flush.
+        // No-op flush-wise. GTK's `set_draw_func` closure flushes when it
+        // returns; this method exists for parity with backends that need
+        // an explicit flush.
+        //
+        // #455: in debug builds, warn about any modal that's registered
+        // in the ModalStack (and therefore hit-testable) but that this
+        // frame's `AppLogic::render` never painted — the "registered but
+        // invisible" defect class (vimcode#587) made detectable instead
+        // of silently shipping.
+        #[cfg(debug_assertions)]
+        for id in self.modal_stack.borrow().unpainted_ids() {
+            eprintln!(
+                "quadraui: modal {id:?} is registered in ModalStack (and therefore \
+                 hit-testable) but was not painted this frame — see quadraui#455 \
+                 (\"ModalStack drives hit-testing but not paint\")"
+            );
+        }
     }
 
     fn set_theme(&mut self, theme: crate::Theme) {
@@ -1655,6 +1672,9 @@ impl Backend for GtkBackend {
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
+        // #455: see `modal_stack.rs`'s "Paint-consistency detection" docs —
+        // records that this palette's surface was actually painted this frame.
+        self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_palette called outside enter_frame_scope");
@@ -2169,6 +2189,8 @@ impl Backend for GtkBackend {
         menu: &crate::ContextMenu,
         layout_arg: &crate::ContextMenuLayout,
     ) -> Vec<(QRect, crate::WidgetId)> {
+        // #455: see draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_context_menu called outside enter_frame_scope");
@@ -2192,6 +2214,8 @@ impl Backend for GtkBackend {
         dialog: &crate::Dialog,
         dialog_layout: &crate::DialogLayout,
     ) -> Vec<QRect> {
+        // #455: see draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
         let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);

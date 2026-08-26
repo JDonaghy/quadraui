@@ -806,6 +806,9 @@ impl Backend for TuiBackend {
         // `zones` — a bar that stops painting must stop resolving
         // `tab_center`/`tab_close_center` too.
         self.tab_bar_layouts.clear();
+        // #455: clear last frame's modal paint marks so this frame has
+        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        self.modal_stack.reset_frame_paint();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -824,6 +827,20 @@ impl Backend for TuiBackend {
         // No-op. The frame's actual flush happens when ratatui's
         // `terminal.draw(|frame| …)` closure returns; this method
         // exists for parity with backends that need explicit flush.
+        //
+        // #455: in debug builds, warn about any modal that's registered
+        // in the ModalStack (and therefore hit-testable) but that this
+        // frame's `AppLogic::render` never painted — the "registered but
+        // invisible" defect class (vimcode#587) made detectable instead
+        // of silently shipping.
+        #[cfg(debug_assertions)]
+        for id in self.modal_stack.unpainted_ids() {
+            eprintln!(
+                "quadraui: modal {id:?} is registered in ModalStack (and therefore \
+                 hit-testable) but was not painted this frame — see quadraui#455 \
+                 (\"ModalStack drives hit-testing but not paint\")"
+            );
+        }
     }
 
     fn set_theme(&mut self, theme: crate::Theme) {
@@ -1046,6 +1063,9 @@ impl Backend for TuiBackend {
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
+        // #455: mark before borrowing the frame — a modal-stack entry
+        // whose id matches this palette is now known-painted this frame.
+        self.modal_stack.mark_painted(&palette.id);
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
@@ -1382,6 +1402,8 @@ impl Backend for TuiBackend {
         menu: &crate::ContextMenu,
         layout: &crate::ContextMenuLayout,
     ) -> Vec<(QRect, crate::WidgetId)> {
+        // #455: see draw_palette for why this happens before the frame borrow.
+        self.modal_stack.mark_painted(&menu.id);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
@@ -1408,6 +1430,8 @@ impl Backend for TuiBackend {
         dialog: &crate::primitives::dialog::Dialog,
         layout: &crate::primitives::dialog::DialogLayout,
     ) -> Vec<QRect> {
+        // #455: see draw_palette for why this happens before the frame borrow.
+        self.modal_stack.mark_painted(&dialog.id);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
@@ -2703,6 +2727,84 @@ mod tests {
         mock.modal_stack_mut()
             .push(WidgetId::new("test:popup"), QRect::new(0.0, 0.0, 10.0, 5.0));
         assert_eq!(mock.modal_stack_mut().len(), 1);
+    }
+
+    /// #455 regression: `TuiBackend::draw_dialog` must mark the modal
+    /// stack entry it paints, so `ModalStack::unpainted_ids` can catch a
+    /// backend that registers a modal for hit-testing but never actually
+    /// paints it — vimcode#587's exact failure shape ("registered but
+    /// invisible"), reproduced here at the backend-wiring level rather
+    /// than `ModalStack` in isolation (already covered in
+    /// `crate::modal_stack::tests`).
+    #[test]
+    fn draw_dialog_marks_its_modal_stack_entry_painted() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dialog_id = WidgetId::new("confirm");
+        let dialog = crate::Dialog {
+            id: dialog_id.clone(),
+            title: crate::StyledText::plain("Confirm"),
+            body: vec![crate::StyledText::plain("Really?")],
+            table: None,
+            buttons: vec![crate::DialogButton {
+                id: WidgetId::new("ok"),
+                label: "OK".into(),
+                is_default: true,
+                is_cancel: false,
+                tint: None,
+            }],
+            severity: None,
+            vertical_buttons: false,
+            input: None,
+        };
+        let measure = crate::DialogMeasure {
+            width: 40.0,
+            title_height: 1.0,
+            body_height: 1.0,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 1.0,
+            button_width: 10.0,
+            button_gap: 2.0,
+            padding: 1.0,
+        };
+        let viewport_rect = QRect::new(0.0, 0.0, 80.0, 24.0);
+        let layout = dialog.layout(viewport_rect, measure, |_| {
+            crate::ToolbarItemMeasure::new(0.0)
+        });
+
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        backend
+            .modal_stack_mut()
+            .push(dialog_id.clone(), layout.bounds);
+
+        // Registered but not yet drawn this frame — exactly the drift
+        // #455 wants surfaced.
+        assert_eq!(
+            backend.modal_stack_mut().unpainted_ids(),
+            vec![dialog_id.clone()]
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    b.draw_dialog(&dialog, &layout);
+                });
+            })
+            .expect("draw");
+
+        // draw_dialog ran through the real trait method and marked its
+        // own id painted — the drift is gone for this frame.
+        assert!(backend.modal_stack_mut().unpainted_ids().is_empty());
+
+        // The next frame must reset the mark: a backend that stops
+        // calling draw_dialog (even though the modal stays registered)
+        // has to be caught again, not remembered as painted forever.
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        assert_eq!(backend.modal_stack_mut().unpainted_ids(), vec![dialog_id]);
     }
 
     // ─── Stage 6: accelerator matching ──────────────────────────────────────
