@@ -420,12 +420,29 @@ impl Backend for MacBackend {
         // `enter_frame_scope`) until whatever reads them after the frame
         // (e.g. `MacDriver::inventory`).
         self.zones.clear();
+        // #455: clear last frame's modal paint marks so this frame has
+        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        self.modal_stack.reset_frame_paint();
     }
 
     fn end_frame(&mut self) {
-        // No-op. AppKit's `drawRect:` flushes when it returns; this
-        // method exists for parity with backends that need an explicit
-        // flush.
+        // No-op flush-wise. AppKit's `drawRect:` flushes when it returns;
+        // this method exists for parity with backends that need an
+        // explicit flush.
+        //
+        // #455: in debug builds, warn about any modal that's registered
+        // in the ModalStack (and therefore hit-testable) but that this
+        // frame's `AppLogic::render` never painted — the "registered but
+        // invisible" defect class (vimcode#587) made detectable instead
+        // of silently shipping.
+        #[cfg(debug_assertions)]
+        for id in self.modal_stack.unpainted_ids() {
+            eprintln!(
+                "quadraui: modal {id:?} is registered in ModalStack (and therefore \
+                 hit-testable) but was not painted this frame — see quadraui#455 \
+                 (\"ModalStack drives hit-testing but not paint\")"
+            );
+        }
     }
 
     fn set_theme(&mut self, theme: Theme) {
@@ -718,6 +735,9 @@ impl Backend for MacBackend {
         }
     }
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
+        // #455: see `modal_stack.rs`'s "Paint-consistency detection" docs —
+        // records that this palette's surface was actually painted this frame.
+        self.modal_stack.mark_painted(&palette.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -1127,6 +1147,8 @@ impl Backend for MacBackend {
         menu: &ContextMenu,
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)> {
+        // #455: see draw_palette for why this happens before the CG borrow.
+        self.modal_stack.mark_painted(&menu.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -1141,6 +1163,8 @@ impl Backend for MacBackend {
         unsafe { super::context_menu::draw_context_menu(ctx, font, menu, layout, &theme) }
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
+        // #455: see draw_palette for why this happens before the CG borrow.
+        self.modal_stack.mark_painted(&dialog.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
