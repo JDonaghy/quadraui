@@ -1960,25 +1960,6 @@ impl Backend for GtkBackend {
             bar.scroll_offset
         };
 
-        // Apply `rect.x` offset so hit positions are in target-surface
-        // (absolute) coordinates — the same space as `draw_tab_bar` returns,
-        // as required by the Backend trait contract.
-        let x_off = rect.x as f64;
-        for sp in &mut hits.slot_positions {
-            if *sp != (0.0, 0.0) {
-                sp.0 += x_off;
-                sp.1 += x_off;
-            }
-        }
-        for cb in hits.close_bounds.iter_mut().flatten() {
-            cb.0 += x_off;
-            cb.1 += x_off;
-        }
-        for rb in &mut hits.right_segment_bounds {
-            rb.0 += x_off;
-            rb.1 += x_off;
-        }
-
         hits
     }
 
@@ -4015,5 +3996,129 @@ mod tests {
         Backend::set_editor_font(&mut backend, "Fira Code", 13.0);
         assert_eq!(backend.ui_font, "Cantarell 12");
         assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
+    }
+
+    // --- #615: `tab_bar_layout` must shift by `rect.x` exactly once ---
+    //
+    // Ported from `tui_main::backend::TuiBackend`'s
+    // `tab_bar_layout_returns_absolute_x_not_bar_relative` and
+    // `tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space`
+    // (introduced for #552's audit). `GtkBackend::tab_bar_layout` had no
+    // equivalent coverage, which is how #552's shared `shift_tab_bar_hits`
+    // helper landed *alongside* a leftover hand-rolled `x_off` loop that
+    // shifted every hit range a second time — every `TabBarHits` this
+    // backend returned was one `rect.x` too far right whenever the bar
+    // wasn't flush with the surface origin (i.e. whenever the sidebar was
+    // open), silently breaking pixel-accurate close-button clicks.
+
+    fn audit_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                crate::primitives::tab_bar::TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                crate::primitives::tab_bar::TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    #[test]
+    fn gtk_backend_tab_bar_layout_returns_absolute_x_not_bar_relative() {
+        let backend = GtkBackend::new();
+        let bar = audit_bar();
+
+        let at_origin = backend.tab_bar_layout(QRect::new(0.0, 0.0, 400.0, 30.0), &bar);
+        let shifted = backend.tab_bar_layout(QRect::new(418.0, 0.0, 400.0, 30.0), &bar);
+
+        assert!(
+            !at_origin.slot_positions.is_empty(),
+            "sanity: some tabs should be laid out"
+        );
+        for (i, (base, moved)) in at_origin
+            .slot_positions
+            .iter()
+            .zip(shifted.slot_positions.iter())
+            .enumerate()
+        {
+            if *base == (0.0, 0.0) {
+                // Scrolled-out sentinel — must stay recognisable, not
+                // become (418.0, 418.0).
+                assert_eq!(
+                    *moved,
+                    (0.0, 0.0),
+                    "tab {i}: the scrolled-out sentinel must not be shifted"
+                );
+                continue;
+            }
+            assert_eq!(
+                (moved.0, moved.1),
+                (base.0 + 418.0, base.1 + 418.0),
+                "tab {i}: `tab_bar_layout` is documented to return \
+                 target-surface coordinates, so moving the bar right by \
+                 418 must move its hit spans right by 418 exactly once \
+                 (issue #615 — previously this backend applied the shift \
+                 twice, via `shift_tab_bar_hits` and a leftover hand-rolled \
+                 loop)"
+            );
+        }
+    }
+
+    /// The no-paint path must agree with the painting path, since callers
+    /// use them interchangeably to route the same clicks. Both calls run
+    /// inside the same `enter_frame_scope` so they measure text with the
+    /// identical Pango layout — isolating the coordinate-shift bug from
+    /// the separate frame-layout-vs-`pango_ctx` fallback behaviour
+    /// already covered by the `menu_bar_layout` tests above.
+    #[test]
+    fn gtk_backend_tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        let bar = audit_bar();
+        // Nonzero x: the whole point. At x = 0 the two paths agreed even
+        // before the fix, which is exactly how the defect stayed hidden.
+        let rect = QRect::new(418.0, 0.0, 400.0, 30.0);
+
+        let (from_paint, from_layout) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let painted = b.draw_tab_bar(rect, &bar, None);
+            let layout = b.tab_bar_layout(rect, &bar);
+            (painted, layout)
+        });
+
+        assert!(
+            from_paint.slot_positions.iter().any(|s| *s != (0.0, 0.0)),
+            "sanity: the rasteriser should have placed at least one tab"
+        );
+        assert_eq!(
+            from_layout.slot_positions, from_paint.slot_positions,
+            "`tab_bar_layout` and `draw_tab_bar` must report tab slots in \
+             the same coordinate space (issue #615)"
+        );
+        assert_eq!(
+            from_layout.close_bounds, from_paint.close_bounds,
+            "close-button spans must match between the paint and no-paint \
+             paths too"
+        );
     }
 }
