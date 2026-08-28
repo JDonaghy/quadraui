@@ -75,7 +75,7 @@ impl<A: ShellApp> ShellAdapter<A> {
     /// Apply a pending [`ShellApp::take_requested_panel`] switch, if any.
     /// Updates the underlying `AppShell`'s active panel (ActivityBar
     /// highlight + sidebar header), mirrors it into `active_panel_id`, and
-    /// re-notifies the app via `on_shell_event` — the same notification a
+    /// re-notifies the app via `on_shell_event_ctx` — the same notification a
     /// mouse-driven switch produces. Returns `true` iff a switch was
     /// applied (the caller should redraw).
     fn apply_requested_panel(&mut self, backend: &mut dyn Backend, area: Rect) -> bool {
@@ -89,9 +89,9 @@ impl<A: ShellApp> ShellAdapter<A> {
     }
 
     /// Build a [`ShellContext`] for the current dispatch and notify
-    /// [`ShellApp::on_shell_event`] with it, then return `Reaction::Redraw`
-    /// — the shape every `AppShellEvent` arm in [`Self::handle`] needs
-    /// (#617).
+    /// [`ShellApp::on_shell_event_ctx`] with it, then return
+    /// `Reaction::Redraw` — the shape every `AppShellEvent` arm in
+    /// [`Self::handle`] needs (#617).
     ///
     /// Built fresh per call (rather than once before the caller's match)
     /// so it picks up any state the caller already applied to
@@ -113,7 +113,7 @@ impl<A: ShellApp> ShellAdapter<A> {
             &layout,
             &mut self.shell,
         );
-        self.app.on_shell_event(ev, &ctx);
+        self.app.on_shell_event_ctx(ev, &ctx);
         Reaction::Redraw
     }
 }
@@ -272,7 +272,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // event type — there is nothing for a consumer to opt into or
         // conflict with) and drive `AppShell` directly. Resulting
         // `AppShellEvent`s are reported through the existing
-        // `on_shell_event` notification, exactly like a mouse-driven panel
+        // `on_shell_event_ctx` notification, exactly like a mouse-driven panel
         // switch.
         if let UiEvent::ActivityBar(_, ActivityBarEvent::KeyPressed { ref key, .. }) = event {
             return match key.as_str() {

@@ -278,7 +278,7 @@ impl ShellApp for HelpLayerDemo {
         }
     }
 
-    fn on_shell_event(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
         if let AppShellEvent::PanelChanged { panel_id } = event {
             self.active_panel = panel_id.clone();
             self.last_message = format!("Panel: {}", panel_id.as_str());

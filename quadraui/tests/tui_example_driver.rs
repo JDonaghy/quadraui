@@ -682,7 +682,7 @@ fn shell_runner_path_drag_and_ctrl_c_copies_text() {
 /// `Tab` focuses the activity bar, `j` `j` moves the keyboard cursor down
 /// two items (explorer → search → git), and `Enter` activates the
 /// selection — switching to the Source Control panel and notifying
-/// `AppShellDemo::on_shell_event`, which is what paints "Panel: panel:git".
+/// `AppShellDemo::on_shell_event_ctx`, which is what paints "Panel: panel:git".
 #[test]
 fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     let config = AppShellDemo::config();
@@ -726,7 +726,7 @@ fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     );
     assert!(
         driver.screen_contains("Panel: panel:git"),
-        "activating the cursor item should switch to the git panel and notify on_shell_event:\n{}",
+        "activating the cursor item should switch to the git panel and notify on_shell_event_ctx:\n{}",
         driver.screen()
     );
 }
@@ -773,7 +773,7 @@ fn appshell_demo_escape_cancels_focus_without_switching_panel() {
 /// `ShellApp::take_requested_panel` (coord-tui #1029 bug A): an app can
 /// queue a panel switch from inside its own `handle()` — no ActivityBar
 /// click, no keyboard-cursor mode — and `ShellAdapter` must apply it to the
-/// *real* `AppShell` state (sidebar header) and re-notify `on_shell_event`,
+/// *real* `AppShell` state (sidebar header) and re-notify `on_shell_event_ctx`,
 /// not just let the app's own internal view state drift out of sync with
 /// the chrome. Before this hook, the sidebar header would stay on
 /// "EXPLORER" here even though the app had "moved on" internally — the
@@ -809,7 +809,7 @@ fn appshell_demo_programmatic_panel_switch_updates_chrome() {
     );
     assert!(
         driver.screen_contains("Panel: panel:git"),
-        "on_shell_event(PanelChanged) must fire for a programmatic switch \
+        "on_shell_event_ctx(PanelChanged) must fire for a programmatic switch \
          exactly as it does for a mouse-driven one:\n{}",
         driver.screen()
     );
@@ -937,18 +937,19 @@ fn appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row() {
     );
 }
 
-/// #617 acceptance: `ShellApp::on_shell_event` now receives a
+/// #617 acceptance: `ShellApp::on_shell_event_ctx` receives a
 /// `&ShellContext`, so an app can push state back into the real `AppShell`
 /// on the *same* frame the shell event fires — no intervening
-/// `ShellApp::handle` dispatch required. `AppShellDemo::on_shell_event`
+/// `ShellApp::handle` dispatch required. `AppShellDemo::on_shell_event_ctx`
 /// reveals the title bar via `ctx.shell_mut().set_title_bar_visible(true)`
 /// the moment `PanelChanged { panel_id: "panel:git" }` fires (see its
-/// module doc / `on_shell_event` body).
+/// module doc / `on_shell_event_ctx` body).
 ///
 /// Before #617, `ShellAdapter::handle` returned immediately after calling
-/// `on_shell_event(&shell_ev)` — with no `ShellContext` parameter for the
-/// app to mutate the shell through in the first place — so a title-bar
-/// reveal triggered from inside `on_shell_event` had no way to land before
+/// the (now-deprecated) one-argument `on_shell_event(&shell_ev)` — with no
+/// `ShellContext` parameter for the app to mutate the shell through in the
+/// first place — so a title-bar reveal triggered from inside that hook had
+/// no way to land before
 /// that `Reaction::Redraw` painted the frame; it would only appear once
 /// some unrelated *later* event happened to reach `handle`. Driving the
 /// programmatic switch (`p`, `take_requested_panel`) with a *single*
@@ -971,7 +972,7 @@ fn appshell_demo_on_shell_event_pushes_title_bar_state_same_frame() {
     // A single event dispatch: `p` queues a programmatic switch to
     // panel:git, which `ShellAdapter::handle` applies (via
     // `apply_requested_panel` → `notify_shell_event`) *within this same
-    // call* — including the `on_shell_event` notification that reveals
+    // call* — including the `on_shell_event_ctx` notification that reveals
     // the title bar. No second `type_char`/event is involved.
     let reaction = driver.type_char('p');
     assert_eq!(
@@ -994,7 +995,7 @@ fn appshell_demo_on_shell_event_pushes_title_bar_state_same_frame() {
         .unwrap_or_else(|| panic!("sidebar content label not painted after 'p':\n{screen}"));
     assert!(
         after.y > before.y,
-        "on_shell_event's ctx.shell_mut().set_title_bar_visible(true) must reserve the \
+        "on_shell_event_ctx's ctx.shell_mut().set_title_bar_visible(true) must reserve the \
          title bar row on the same frame PanelChanged fires — before y={}, after y={}:\n{screen}",
         before.y,
         after.y
