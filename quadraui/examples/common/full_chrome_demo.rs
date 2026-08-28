@@ -440,7 +440,7 @@ impl ShellAppTrait for FullChromeDemo {
         }
     }
 
-    fn on_shell_event(&mut self, event: &AppShellEvent) {
+    fn on_shell_event(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
         self.last_event = match event {
             AppShellEvent::PanelChanged { panel_id } => {
                 format!("Panel: {}", panel_id.as_str())

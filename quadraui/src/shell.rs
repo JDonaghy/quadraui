@@ -434,7 +434,23 @@ pub trait ShellApp {
 
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
-    fn on_shell_event(&mut self, _event: &AppShellEvent) {}
+    ///
+    /// The [`ShellContext`] lends the same scoped `&mut AppShell` borrow
+    /// [`Self::handle`] receives (#617) — call `ctx.shell_mut()` mutators
+    /// here (e.g. `set_title_bar_visible`, `set_sidebar_width`,
+    /// `show_panel`, `toggle_sidebar`) to push state back into the shell
+    /// on the *same frame* this event fires.
+    ///
+    /// Before this parameter existed, [`crate::shell_adapter::ShellAdapter::handle`]
+    /// returned immediately after calling this hook — it never fell
+    /// through to [`Self::handle`] — so any shell-state mutation an app
+    /// wanted to make in response to a shell event had no way to land
+    /// before the very next `Reaction::Redraw` painted the frame. An app
+    /// that flipped its own view state here (e.g. "show the menu bar")
+    /// and needed the shell to reserve a row for it (`set_title_bar_visible`)
+    /// simply couldn't, and the chrome silently disagreed with the app's
+    /// state until some unrelated later event happened to reach `handle`.
+    fn on_shell_event(&mut self, _event: &AppShellEvent, _ctx: &ShellContext) {}
 
     /// Poll for a pending **app-initiated** panel switch — e.g. an action
     /// handler that jumps straight to a different panel (a "launch
