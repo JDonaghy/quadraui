@@ -1131,9 +1131,9 @@ impl TerminalSession {
                     }))
                     .is_err()
                     {
-                        eprintln!(
+                        crate::diagnostics::emit(
                             "quadraui: vt100 parser panic in process_with_capture; \
-                             dropping chunk, session kept alive"
+                             dropping chunk, session kept alive",
                         );
                     }
                     self.capture_scrolled_rows(nl_count);
@@ -1150,9 +1150,9 @@ impl TerminalSession {
             }))
             .is_err()
             {
-                eprintln!(
+                crate::diagnostics::emit(
                     "quadraui: vt100 parser panic in process_with_capture; \
-                     dropping chunk, session kept alive"
+                     dropping chunk, session kept alive",
                 );
             }
             if remaining_nl > 0 {
