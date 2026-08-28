@@ -83,6 +83,25 @@
 //!
 //! Verify all six when adding a new primitive or extending an existing one.
 
+// #619: library code must never write to stdout/stderr — a host embedding
+// a quadraui backend (vimcode's TUI, in raw mode on the alternate screen)
+// owns the terminal, and a stray `eprintln!`/`println!` lands as raw bytes
+// in its live cell grid, bypassing ratatui entirely. Denied here, not just
+// asked for at review, so the next print macro added anywhere under `src/`
+// fails the build instead of reaching a user's screen. Diagnostics route
+// through `diagnostics::emit` instead (see that module).
+//
+// The handful of genuinely CLI-shaped call sites this deny would otherwise
+// break (the GTK headless-smoke harness in `gtk/run.rs`, the macOS
+// visual-confirmation dev tool in `macos/headless.rs`, a test-skip notice
+// in `gtk/services.rs`) carry their own justified
+// `#[allow(clippy::print_stderr)]` — they print to a human running a tool
+// directly, not into a host's live UI. `examples/*` and any `bin/` are
+// compiled as separate crates and are unaffected by this inner attribute;
+// they're expected to print freely.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
+pub mod diagnostics;
 pub mod diff;
 pub mod frame;
 pub mod primitives;

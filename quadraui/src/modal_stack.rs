@@ -206,6 +206,19 @@ impl ModalStack {
             .map(|e| e.id.clone())
             .collect()
     }
+
+    /// The #455 unpainted-modal diagnostic text for `id`, shared by every
+    /// backend's `end_frame` so the message exists in exactly one place
+    /// (#619) instead of three near-identical `eprintln!` bodies. Callers
+    /// route this through [`crate::diagnostics::emit`] rather than
+    /// printing it directly — see that module for why.
+    pub(crate) fn unpainted_modal_message(id: &WidgetId) -> String {
+        format!(
+            "quadraui: modal {id:?} is registered in ModalStack (and therefore \
+             hit-testable) but was not painted this frame — see quadraui#455 \
+             (\"ModalStack drives hit-testing but not paint\")"
+        )
+    }
 }
 
 fn rect_contains(rect: &Rect, point: Point) -> bool {

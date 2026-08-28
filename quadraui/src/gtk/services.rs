@@ -306,6 +306,12 @@ mod tests {
     /// Rust test harness run them on different OS threads, which
     /// deterministically panics every thread except whichever one wins
     /// the `require_gtk()` / `gtk4::init()` race.
+    // #619: exempt from the crate-wide `print_stderr` deny. `cargo test`
+    // output, not code that runs inside a host's live UI session — this
+    // line only ever executes on a headless dev box with no display,
+    // where it's the reason the test reports "ok" without covering
+    // anything.
+    #[allow(clippy::print_stderr)]
     #[test]
     fn build_file_dialog_behaviors() {
         if !require_gtk() {

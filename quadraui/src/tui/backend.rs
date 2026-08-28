@@ -835,11 +835,7 @@ impl Backend for TuiBackend {
         // of silently shipping.
         #[cfg(debug_assertions)]
         for id in self.modal_stack.unpainted_ids() {
-            eprintln!(
-                "quadraui: modal {id:?} is registered in ModalStack (and therefore \
-                 hit-testable) but was not painted this frame — see quadraui#455 \
-                 (\"ModalStack drives hit-testing but not paint\")"
-            );
+            crate::diagnostics::emit(crate::modal_stack::ModalStack::unpainted_modal_message(&id));
         }
     }
 

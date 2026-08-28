@@ -818,6 +818,14 @@ fn activate<A: AppLogic + 'static>(
 /// and replays it as a synthetic Ctrl-V through [`dispatch_event`], then
 /// always closes the window so an unattended `xvfb-run` invocation exits
 /// deterministically instead of hanging.
+///
+/// #619: exempt from the crate-wide `print_stderr` deny. This is the
+/// headless smoke harness itself — opt-in via `QUADRAUI_GTK_SMOKE_MS`,
+/// invoked directly by `xvfb-run`/CI, never by a host embedding a live
+/// quadraui backend — so its failure output *is* the tool's normal
+/// output, the same way a CLI's own diagnostics aren't routed through
+/// `diagnostics::emit`.
+#[allow(clippy::print_stderr)]
 fn schedule_smoke_check<A: AppLogic + 'static>(
     cfg: SmokeConfig,
     da: DrawingArea,

@@ -181,6 +181,13 @@ impl BitmapSurface {
     /// across the chrome rasterisers — the shared visual-confirmation
     /// path. Failures from `open` (no Preview, sandboxed env) are
     /// non-fatal; the PPM file is still on disk.
+    ///
+    /// #619: exempt from the crate-wide `print_stderr` deny. This is a
+    /// manual, `#[ignore]`d-test-only visual-confirmation tool run
+    /// directly by a developer at a terminal, not code a host embeds
+    /// into a live UI session — the printed path *is* the output the
+    /// human runs this for.
+    #[allow(clippy::print_stderr)]
     pub fn write_ppm_and_open(&self, path: &str) {
         use std::fs::File;
         use std::io::Write;
