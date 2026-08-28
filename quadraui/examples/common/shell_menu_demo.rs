@@ -159,7 +159,7 @@ impl ShellAppTrait for ShellMenuDemo {
         }
     }
 
-    fn on_shell_event(&mut self, event: &AppShellEvent) {
+    fn on_shell_event(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
         match event {
             AppShellEvent::PanelChanged { panel_id } => {
                 self.last_action = format!("Panel: {}", panel_id.as_str());

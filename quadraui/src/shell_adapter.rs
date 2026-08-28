@@ -78,15 +78,43 @@ impl<A: ShellApp> ShellAdapter<A> {
     /// re-notifies the app via `on_shell_event` — the same notification a
     /// mouse-driven switch produces. Returns `true` iff a switch was
     /// applied (the caller should redraw).
-    fn apply_requested_panel(&mut self) -> bool {
+    fn apply_requested_panel(&mut self, backend: &mut dyn Backend, area: Rect) -> bool {
         let Some(panel_id) = self.app.take_requested_panel() else {
             return false;
         };
         self.shell.show_panel(&panel_id);
         self.active_panel_id = Some(panel_id.clone());
-        self.app
-            .on_shell_event(&AppShellEvent::PanelChanged { panel_id });
+        self.notify_shell_event(backend, area, &AppShellEvent::PanelChanged { panel_id });
         true
+    }
+
+    /// Build a [`ShellContext`] for the current dispatch and notify
+    /// [`ShellApp::on_shell_event`] with it, then return `Reaction::Redraw`
+    /// — the shape every `AppShellEvent` arm in [`Self::handle`] needs
+    /// (#617).
+    ///
+    /// Built fresh per call (rather than once before the caller's match)
+    /// so it picks up any state the caller already applied to
+    /// `self.active_panel_id` / `self.shell` for this event — the
+    /// `PanelChanged` arm, for instance, sets `active_panel_id` before
+    /// calling this, and the context must reflect that, not the
+    /// pre-update value.
+    fn notify_shell_event(
+        &mut self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        ev: &AppShellEvent,
+    ) -> Reaction {
+        let layout = self.shell.layout(area, backend.line_height());
+        let sidebar_visible = self.shell.sidebar_visible();
+        let ctx = ShellContext::new(
+            self.active_panel_id.as_ref(),
+            sidebar_visible,
+            &layout,
+            &mut self.shell,
+        );
+        self.app.on_shell_event(ev, &ctx);
+        Reaction::Redraw
     }
 }
 
@@ -198,16 +226,13 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         match &shell_ev {
             AppShellEvent::PanelChanged { panel_id } => {
                 self.active_panel_id = Some(panel_id.clone());
-                self.app.on_shell_event(&shell_ev);
-                return Reaction::Redraw;
+                return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::SidebarHidden => {
-                self.app.on_shell_event(&shell_ev);
-                return Reaction::Redraw;
+                return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::SidebarResized { .. } => {
-                self.app.on_shell_event(&shell_ev);
-                return Reaction::Redraw;
+                return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::BottomPanelResized { new_height } => {
                 // Forward as BottomPanelEvent::Resized to app when a controller is present.
@@ -219,16 +244,13 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                     let ev = BottomPanelEvent::Resized(*new_height);
                     self.app.on_bottom_panel_event(&ev);
                 }
-                self.app.on_shell_event(&shell_ev);
-                return Reaction::Redraw;
+                return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::BottomPanelHidden => {
-                self.app.on_shell_event(&shell_ev);
-                return Reaction::Redraw;
+                return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::BottomItemClicked { .. } => {
-                self.app.on_shell_event(&shell_ev);
-                return Reaction::Redraw;
+                return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::Consumed => return Reaction::Redraw,
             AppShellEvent::Ignored => {}
@@ -268,7 +290,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                         if let AppShellEvent::PanelChanged { ref panel_id } = ev {
                             self.active_panel_id = Some(panel_id.clone());
                         }
-                        self.app.on_shell_event(&ev);
+                        self.notify_shell_event(backend, area, &ev);
                     }
                     Reaction::Redraw
                 }
@@ -323,7 +345,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
         }
 
-        if self.apply_requested_panel() {
+        if self.apply_requested_panel(backend, area) {
             reaction = Reaction::Redraw;
         }
 
@@ -336,7 +358,9 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // finishing) can also want to land the app on a different panel —
         // poll the same hook `handle()` does so tick-driven switches aren't
         // a second, forgotten code path.
-        if self.apply_requested_panel() && reaction == Reaction::Continue {
+        let viewport = backend.viewport();
+        let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        if self.apply_requested_panel(backend, area) && reaction == Reaction::Continue {
             reaction = Reaction::Redraw;
         }
         reaction

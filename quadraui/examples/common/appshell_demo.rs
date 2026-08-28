@@ -291,9 +291,23 @@ impl ShellApp for AppShellDemo {
         }
     }
 
-    fn on_shell_event(&mut self, event: &AppShellEvent) {
+    fn on_shell_event(&mut self, event: &AppShellEvent, ctx: &ShellContext) {
         self.last_event = match event {
             AppShellEvent::PanelChanged { panel_id } => {
+                // #617: `on_shell_event` now receives a `ShellContext`, so
+                // an app can push shell state back on the *same* frame
+                // this notification fires — no intervening `handle`
+                // dispatch required. Reveal the title bar the moment
+                // Source Control becomes active, the same shape vimcode's
+                // menu-bar-reveal path needed (issue #617's downstream
+                // motivation): before this, `ShellAdapter::handle`
+                // returned immediately after this call, so a
+                // `set_title_bar_visible` here would have been skipped
+                // for the frame and only taken effect once some unrelated
+                // later event happened to reach `handle`.
+                if panel_id.as_str() == "panel:git" {
+                    ctx.shell_mut().set_title_bar_visible(true);
+                }
                 format!("Panel: {}", panel_id.as_str())
             }
             AppShellEvent::SidebarHidden => "Sidebar hidden".into(),

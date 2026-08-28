@@ -937,6 +937,70 @@ fn appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row() {
     );
 }
 
+/// #617 acceptance: `ShellApp::on_shell_event` now receives a
+/// `&ShellContext`, so an app can push state back into the real `AppShell`
+/// on the *same* frame the shell event fires — no intervening
+/// `ShellApp::handle` dispatch required. `AppShellDemo::on_shell_event`
+/// reveals the title bar via `ctx.shell_mut().set_title_bar_visible(true)`
+/// the moment `PanelChanged { panel_id: "panel:git" }` fires (see its
+/// module doc / `on_shell_event` body).
+///
+/// Before #617, `ShellAdapter::handle` returned immediately after calling
+/// `on_shell_event(&shell_ev)` — with no `ShellContext` parameter for the
+/// app to mutate the shell through in the first place — so a title-bar
+/// reveal triggered from inside `on_shell_event` had no way to land before
+/// that `Reaction::Redraw` painted the frame; it would only appear once
+/// some unrelated *later* event happened to reach `handle`. Driving the
+/// programmatic switch (`p`, `take_requested_panel`) with a *single*
+/// `type_char` call and asserting the reserved title-bar row is already
+/// visible in the very next rendered frame proves the fix lands
+/// synchronously within that one dispatch, exactly as
+/// `appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row`
+/// proves it for the (already-working) `ctx.shell_mut()` call from inside
+/// `handle` itself.
+#[test]
+fn appshell_demo_on_shell_event_pushes_title_bar_state_same_frame() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 100, 30);
+
+    // Title bar starts hidden: no `.with_title_bar(..)` in `config()`.
+    let before = driver
+        .find_bounds("(sidebar content")
+        .unwrap_or_else(|| panic!("sidebar content label not painted:\n{}", driver.screen()));
+
+    // A single event dispatch: `p` queues a programmatic switch to
+    // panel:git, which `ShellAdapter::handle` applies (via
+    // `apply_requested_panel` → `notify_shell_event`) *within this same
+    // call* — including the `on_shell_event` notification that reveals
+    // the title bar. No second `type_char`/event is involved.
+    let reaction = driver.type_char('p');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "queuing + applying the programmatic switch must redraw"
+    );
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("SOURCE CONTROL"),
+        "the programmatic switch itself must still take effect:\n{screen}"
+    );
+
+    // The title bar row must already be reserved in this very frame —
+    // proven the same way the `t`-key test proves it: the sidebar content
+    // label's row shifted down from its title-bar-hidden position.
+    let after = driver
+        .find_bounds("(sidebar content")
+        .unwrap_or_else(|| panic!("sidebar content label not painted after 'p':\n{screen}"));
+    assert!(
+        after.y > before.y,
+        "on_shell_event's ctx.shell_mut().set_title_bar_visible(true) must reserve the \
+         title bar row on the same frame PanelChanged fires — before y={}, after y={}:\n{screen}",
+        before.y,
+        after.y
+    );
+}
+
 // ─── DialogTableDemo (issue #225): table layout in dialog ───────────────────
 
 /// Initial screen renders dialog title and table headers.
