@@ -213,7 +213,7 @@ fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     );
     assert!(
         driver.screen_contains("Panel: panel:git"),
-        "on_shell_event(PanelChanged) must fire for a keyboard-driven switch, \
+        "on_shell_event_ctx(PanelChanged) must fire for a keyboard-driven switch, \
          mirroring the TUI path: {:?}",
         driver.painted_texts()
     );

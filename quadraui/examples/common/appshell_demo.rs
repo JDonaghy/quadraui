@@ -291,10 +291,10 @@ impl ShellApp for AppShellDemo {
         }
     }
 
-    fn on_shell_event(&mut self, event: &AppShellEvent, ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, ctx: &ShellContext) {
         self.last_event = match event {
             AppShellEvent::PanelChanged { panel_id } => {
-                // #617: `on_shell_event` now receives a `ShellContext`, so
+                // #617: `on_shell_event_ctx` receives a `ShellContext`, so
                 // an app can push shell state back on the *same* frame
                 // this notification fires — no intervening `handle`
                 // dispatch required. Reveal the title bar the moment

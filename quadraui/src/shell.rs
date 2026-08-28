@@ -435,22 +435,54 @@ pub trait ShellApp {
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     ///
+    /// # Deprecated
+    ///
+    /// Implement [`Self::on_shell_event_ctx`] instead — it receives the
+    /// same notification plus a [`ShellContext`] so an app can push
+    /// shell-state mutations (`set_title_bar_visible`, `set_sidebar_width`,
+    /// `show_panel`, `toggle_sidebar`) back into the shell on the *same
+    /// frame* the event fires (#617). This one-argument hook predates
+    /// that context and is kept, unchanged, purely so pre-#617 overrides
+    /// (e.g. `vimcode`, which path-deps this crate with no version pin —
+    /// see `CLAUDE.md`'s *Downstream consumers* section) keep compiling.
+    /// [`crate::shell_adapter::ShellAdapter`] never calls this method
+    /// directly; [`Self::on_shell_event_ctx`]'s default implementation
+    /// forwards to it, so an override here still fires — just without a
+    /// `ShellContext`.
+    #[deprecated(
+        since = "0.0.1",
+        note = "implement `on_shell_event_ctx` instead — it receives a `&ShellContext` so shell-state pushed back in response to the event lands on the same frame (#617)"
+    )]
+    fn on_shell_event(&mut self, _event: &AppShellEvent) {}
+
+    /// Notified when a panel switch occurs (activity bar click or
+    /// programmatic). Optional.
+    ///
     /// The [`ShellContext`] lends the same scoped `&mut AppShell` borrow
     /// [`Self::handle`] receives (#617) — call `ctx.shell_mut()` mutators
     /// here (e.g. `set_title_bar_visible`, `set_sidebar_width`,
     /// `show_panel`, `toggle_sidebar`) to push state back into the shell
     /// on the *same frame* this event fires.
     ///
-    /// Before this parameter existed, [`crate::shell_adapter::ShellAdapter::handle`]
-    /// returned immediately after calling this hook — it never fell
-    /// through to [`Self::handle`] — so any shell-state mutation an app
-    /// wanted to make in response to a shell event had no way to land
-    /// before the very next `Reaction::Redraw` painted the frame. An app
-    /// that flipped its own view state here (e.g. "show the menu bar")
-    /// and needed the shell to reserve a row for it (`set_title_bar_visible`)
-    /// simply couldn't, and the chrome silently disagreed with the app's
-    /// state until some unrelated later event happened to reach `handle`.
-    fn on_shell_event(&mut self, _event: &AppShellEvent, _ctx: &ShellContext) {}
+    /// Before this method existed, [`crate::shell_adapter::ShellAdapter::handle`]
+    /// returned immediately after calling the (then one-argument)
+    /// `on_shell_event` — it never fell through to [`Self::handle`] — so
+    /// any shell-state mutation an app wanted to make in response to a
+    /// shell event had no way to land before the very next
+    /// `Reaction::Redraw` painted the frame. An app that flipped its own
+    /// view state here (e.g. "show the menu bar") and needed the shell to
+    /// reserve a row for it (`set_title_bar_visible`) simply couldn't, and
+    /// the chrome silently disagreed with the app's state until some
+    /// unrelated later event happened to reach `handle`.
+    ///
+    /// Default implementation forwards to the deprecated
+    /// [`Self::on_shell_event`] (ignoring `ctx`) so implementors of the
+    /// old one-argument hook keep working unchanged. Override this method
+    /// directly — not `on_shell_event` — to use `ctx`.
+    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+        #[allow(deprecated)]
+        self.on_shell_event(event);
+    }
 
     /// Poll for a pending **app-initiated** panel switch — e.g. an action
     /// handler that jumps straight to a different panel (a "launch
@@ -463,9 +495,9 @@ pub trait ShellApp {
     /// (updating the ActivityBar highlight and sidebar panel header, which
     /// are otherwise owned entirely by `AppShell` and invisible to
     /// `ShellApp` implementors) and re-notifies via
-    /// [`Self::on_shell_event`] with [`AppShellEvent::PanelChanged`], the
+    /// [`Self::on_shell_event_ctx`] with [`AppShellEvent::PanelChanged`], the
     /// same notification a mouse click produces — so app code that already
-    /// syncs its own view state from `on_shell_event` doesn't need a
+    /// syncs its own view state from `on_shell_event_ctx` doesn't need a
     /// second code path.
     ///
     /// Before this hook existed, consumers had no way to keep the chrome in
