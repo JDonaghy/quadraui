@@ -1806,10 +1806,22 @@ impl Backend for GtkBackend {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> crate::TabBarHits {
+        // Icon-less bars are the empty-sidecar case of the icon path, so
+        // there is exactly one measurer + one paint loop to keep in sync.
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    fn draw_tab_bar_icons(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> crate::TabBarHits {
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        let (hits, resolved_layout) = crate::gtk::draw_tab_bar(
+        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons(
             cr,
             pango_layout,
             rect.x as f64,
@@ -1818,6 +1830,7 @@ impl Backend for GtkBackend {
             rect.y as f64,
             rect.height as f64,
             bar,
+            icons,
             &self.current_theme,
             hovered_close_tab,
         );
@@ -1873,9 +1886,48 @@ impl Backend for GtkBackend {
     }
 
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
+        self.tab_bar_layout_icons(rect, bar, &[])
+    }
+
+    fn tab_bar_layout_icons(
+        &self,
+        rect: QRect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+    ) -> crate::TabBarHits {
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+
+        // Icon reservation (#620), measured with the same Nerd-Font swap
+        // `gtk::draw_tab_bar_icons` paints with — the no-paint twin has to
+        // reserve exactly what the paint does, or every click lands left
+        // of the glyph the user sees. Measuring leaves the shared pango
+        // layout on the icon font, so restore the caller's font before
+        // the label / right-segment measurements below.
+        let icon_extras: Vec<f32> = match &pango_layout {
+            Some(pl) => {
+                let base = pl.font_description().unwrap_or_default();
+                let icon_font = crate::gtk::tab_bar::tab_icon_font(&base);
+                let extras =
+                    crate::gtk::tab_bar::tab_icon_extras(pl, &icon_font, bar.tabs.len(), icons);
+                pl.set_font_description(Some(&base));
+                extras.into_iter().map(|w| w as f32).collect()
+            }
+            // No pango handle (headless / pre-realise): mirror
+            // `pango_str_width`'s own char-cell fallback so the two
+            // estimates stay in the same units.
+            None => (0..bar.tabs.len())
+                .map(|i| match crate::tab_icon_at(icons, i) {
+                    Some(icon) => {
+                        (icon.glyph.chars().count() as f32 * char_w).ceil()
+                            + 2.0
+                            + crate::gtk::tab_bar::TAB_ICON_GAP as f32
+                    }
+                    None => 0.0,
+                })
+                .collect(),
+        };
 
         let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
@@ -1906,8 +1958,12 @@ impl Backend for GtkBackend {
                 } else {
                     0.0
                 };
-                let total =
-                    tab_pad + tab_name_widths[i] + tab_close_extra + tab_pad + tab_outer_gap;
+                let total = tab_pad
+                    + icon_extras[i]
+                    + tab_name_widths[i]
+                    + tab_close_extra
+                    + tab_pad
+                    + tab_outer_gap;
                 let close_w = if has_close {
                     tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap
                 } else {
@@ -1948,7 +2004,12 @@ impl Backend for GtkBackend {
                     } else {
                         0.0
                     };
-                    (tab_pad + tab_name_widths[i] + tab_close_extra + tab_pad + tab_outer_gap)
+                    (tab_pad
+                        + icon_extras[i]
+                        + tab_name_widths[i]
+                        + tab_close_extra
+                        + tab_pad
+                        + tab_outer_gap)
                         .ceil() as usize
                 },
             )
@@ -4017,7 +4078,6 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
                 crate::primitives::tab_bar::TabItem {
                     label: "lib.rs".into(),
@@ -4025,7 +4085,6 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
             ],
             right_segments: vec![],
@@ -4117,6 +4176,66 @@ mod tests {
             from_layout.close_bounds, from_paint.close_bounds,
             "close-button spans must match between the paint and no-paint \
              paths too"
+        );
+    }
+
+    /// #620: the icon-aware pair must agree the same way — and must
+    /// actually differ from the icon-less pair, or the "reservation" is
+    /// a no-op nobody would notice until a user clicked a decorated tab.
+    #[test]
+    fn gtk_backend_tab_bar_layout_icons_agrees_with_draw_tab_bar_icons() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        let bar = audit_bar();
+        let icons = vec![
+            Some(crate::TabIcon {
+                glyph: "R".to_string(),
+                color: crate::Color::rgb(222, 165, 132),
+            }),
+            None,
+        ];
+        let rect = QRect::new(418.0, 0.0, 400.0, 30.0);
+
+        let (from_paint, from_layout, plain_layout) =
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let painted = b.draw_tab_bar_icons(rect, &bar, &icons, None);
+                let layout = b.tab_bar_layout_icons(rect, &bar, &icons);
+                let plain = b.tab_bar_layout(rect, &bar);
+                (painted, layout, plain)
+            });
+
+        assert_eq!(
+            from_layout.slot_positions, from_paint.slot_positions,
+            "`tab_bar_layout_icons` must report the same tab slots \
+             `draw_tab_bar_icons` painted — a caller routing clicks \
+             through the no-paint twin otherwise lands left of every \
+             glyph on a decorated bar"
+        );
+        assert_eq!(
+            from_layout.close_bounds, from_paint.close_bounds,
+            "close-button spans must match between the icon-aware paint \
+             and no-paint paths too"
+        );
+        assert_ne!(
+            from_layout.slot_positions, plain_layout.slot_positions,
+            "an icon on tab 0 must widen its slot, so the icon-aware \
+             layout cannot equal the icon-less one"
+        );
+        // Tab 1 carries no icon, so only the *upstream* reservation moves
+        // it: its width must be unchanged.
+        let width = |s: &(f64, f64)| s.1 - s.0;
+        assert!(
+            (width(&from_layout.slot_positions[1]) - width(&plain_layout.slot_positions[1])).abs()
+                < 0.001,
+            "an undecorated tab must keep byte-identical width: {:?} vs {:?}",
+            from_layout.slot_positions[1],
+            plain_layout.slot_positions[1]
         );
     }
 }

@@ -239,6 +239,16 @@ impl Backend for WinBackend {
         todo!("Direct2D tab bar rasteriser")
     }
 
+    fn draw_tab_bar_icons(
+        &mut self,
+        _rect: Rect,
+        _bar: &TabBar,
+        _icons: &[Option<crate::TabIcon>],
+        _hovered_close_tab: Option<usize>,
+    ) -> TabBarHits {
+        todo!("Direct2D tab bar rasteriser (with per-tab icons)")
+    }
+
     fn draw_activity_bar(
         &mut self,
         _rect: Rect,
@@ -254,6 +264,15 @@ impl Backend for WinBackend {
 
     fn tab_bar_layout(&self, _rect: Rect, _bar: &TabBar) -> TabBarHits {
         todo!("DirectWrite tab bar layout")
+    }
+
+    fn tab_bar_layout_icons(
+        &self,
+        _rect: Rect,
+        _bar: &TabBar,
+        _icons: &[Option<crate::TabIcon>],
+    ) -> TabBarHits {
+        todo!("DirectWrite tab bar layout (with per-tab icons)")
     }
 
     fn activity_bar_layout(&self, _rect: Rect, _bar: &ActivityBar) -> Vec<ActivityBarRowHit> {

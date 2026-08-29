@@ -865,6 +865,27 @@ impl Backend for MacBackend {
             )
         }
     }
+    /// Per-tab icon glyphs (#620) are **not implemented on macOS yet** —
+    /// `mac_tab_bar_layout` has no CoreText icon-width pass, and shipping
+    /// a paint-only version would put every close-button hit box left of
+    /// the glyph it draws. This forwards to the icon-less rasteriser so
+    /// a macOS app that passes icons still paints correct (if
+    /// undecorated) tabs, and fires a `debug_assert!` so the gap is loud
+    /// in development rather than a silently-missing glyph.
+    fn draw_tab_bar_icons(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarHits {
+        debug_assert!(
+            icons.iter().all(Option::is_none),
+            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
+             tabs will paint without their icons",
+        );
+        self.draw_tab_bar(rect, bar, hovered_close_tab)
+    }
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -938,6 +959,25 @@ impl Backend for MacBackend {
                 correct_scroll_offset: bar.scroll_offset,
             },
         }
+    }
+
+    /// No-paint twin of [`Self::draw_tab_bar_icons`] — and, like it, an
+    /// icon-less forward until macOS grows a CoreText icon-width pass
+    /// (#620 follow-up). Keeping both halves icon-blind is what preserves
+    /// the load-bearing macOS invariant that `tab_bar_layout` returns
+    /// exactly what `draw_tab_bar` painted.
+    fn tab_bar_layout_icons(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+    ) -> TabBarHits {
+        debug_assert!(
+            icons.iter().all(Option::is_none),
+            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
+             layout reserves no icon width",
+        );
+        self.tab_bar_layout(rect, bar)
     }
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {

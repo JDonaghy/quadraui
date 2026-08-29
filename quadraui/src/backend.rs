@@ -42,7 +42,7 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
+use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
@@ -743,6 +743,41 @@ pub trait Backend {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
+    /// Draw a tab bar with per-tab icon glyphs (#620) — VS Code's
+    /// coloured language/file-type badge on each tab.
+    ///
+    /// `icons` is a **sidecar slice parallel to `bar.tabs`**: entry `i`
+    /// decorates tab `i`, `None` (or an index past the slice's end)
+    /// means "no icon", and `&[]` is exactly equivalent to
+    /// [`Self::draw_tab_bar`]. Resolve entries with
+    /// [`crate::tab_icon_at`] / [`crate::tab_icon_cols`] rather than
+    /// indexing, so every backend shares one short-slice convention.
+    ///
+    /// The icons ride *beside* the primitive instead of inside
+    /// [`crate::TabItem`] because a new field on that struct is a hard
+    /// break for both downstream consumers and the sealed acceptance
+    /// slices, which build it with exhaustive literals — whereas a new
+    /// `Backend` method with no default breaks nobody
+    /// (`PRIMITIVE_RULES.md` rule 8's blast-radius table). See
+    /// [`crate::TabIcon`] for the full rationale.
+    ///
+    /// Implementors: put the real rasteriser **here** and let
+    /// [`Self::draw_tab_bar`] forward with `&[]`, so an icon-less bar
+    /// and an icon bar can never drift apart. An icon must widen its
+    /// tab by exactly what the paint reserves, so close-button and
+    /// tab-slot hit geometry stay on the glyphs the user sees; icon-less
+    /// tabs must keep byte-identical geometry to `draw_tab_bar`.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser
+    /// (`BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    fn draw_tab_bar_icons(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarHits;
     /// Draw an activity bar. `hovered_idx` carries per-frame hover
     /// state so the rasteriser can paint a tint on the hovered row.
     /// Returns per-row hit regions for click + tooltip dispatch.
@@ -829,6 +864,27 @@ pub trait Backend {
     /// vimcode should verify with its own GTK tab-bar click tests before
     /// relying on the corrected geometry.
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
+
+    /// Compute the tab bar layout without painting, for a bar painted
+    /// with per-tab icons (#620). The no-paint twin of
+    /// [`Self::draw_tab_bar_icons`], exactly as [`Self::tab_bar_layout`]
+    /// is the twin of [`Self::draw_tab_bar`] — same absolute-coordinate
+    /// contract, same `icons` sidecar convention.
+    ///
+    /// A caller that paints with icons **must** route its no-paint click
+    /// geometry through this method rather than [`Self::tab_bar_layout`]:
+    /// the icon reservation widens every decorated tab, so the icon-less
+    /// twin would report slot and close-button bounds shifted left of
+    /// the painted glyphs. `&[]` makes the two identical.
+    ///
+    /// No default impl — same rule-7 reasoning as
+    /// [`Self::draw_tab_bar_icons`].
+    fn tab_bar_layout_icons(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<TabIcon>],
+    ) -> TabBarHits;
 
     /// Compute activity bar row hit regions without painting. Returns
     /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —

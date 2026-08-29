@@ -647,6 +647,19 @@ name = "tui_wide_tab_bar_demo"
 path = "examples/tui_wide_tab_bar_demo.rs"
 required-features = ["tui"]
 
+# #620 — per-tab `TabIcon` glyphs through the `draw_tab_bar_icons`
+# sidecar. Paired runners over one shared `AppLogic`, per CLAUDE.md's
+# examples-are-paired-by-shape rule.
+[[example]]
+name = "tui_tab_icons"
+path = "examples/tui_tab_icons.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_tab_icons"
+path = "examples/gtk_tab_icons.rs"
+required-features = ["gtk"]
+
 # #595 — `SidebarSystem::reveal`. Both entries are mandatory, not
 # cosmetic: without an explicit `[[example]]`, cargo's autodiscovery
 # picks the file up with NO `required-features`, so

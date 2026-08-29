@@ -116,12 +116,64 @@ fn default_true() -> bool {
 /// (typically a single Nerd Font codepoint); `color` tints just the
 /// glyph and is independent of the tab's active/inactive foreground, so
 /// the icon keeps its identity colour even on an inactive tab.
+///
+/// # Why icons ride *beside* the bar, not inside [`TabItem`] (#620)
+///
+/// Icons are supplied as a **sidecar slice** parallel to [`TabBar::tabs`]
+/// — see [`Backend::draw_tab_bar_icons`] — rather than as a
+/// `TabItem::icon` field. `TabItem` is a plain (non-`#[non_exhaustive]`)
+/// struct that both downstream consumers and this repo's sealed
+/// acceptance slices build with **exhaustive literals**, so a new field
+/// is a hard break for every one of them (CLAUDE.md rule 8 / the
+/// `PRIMITIVE_RULES.md` rule-8 blast-radius table: *"new field on a
+/// public struct a consumer constructs"* ⇒ breaking; *"new `Backend`
+/// method, no default"* ⇒ not breaking, keep doing this). The sidecar
+/// buys the same capability at zero migration cost: callers that want
+/// icons pass a slice, callers that don't keep calling
+/// [`Backend::draw_tab_bar`] unchanged.
+///
+/// [`Backend::draw_tab_bar_icons`]: crate::Backend::draw_tab_bar_icons
+/// [`Backend::draw_tab_bar`]: crate::Backend::draw_tab_bar
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabIcon {
     /// Icon glyph — usually a single Nerd Font character.
     pub glyph: String,
     /// Glyph colour, drawn regardless of the tab's active state.
     pub color: Color,
+}
+
+impl TabIcon {
+    /// TUI column width this icon reserves: the glyph's display width
+    /// (via [`crate::text_util::display_width`] — Nerd Font PUA icon
+    /// glyphs measure 1 column, per `char_cell_width`'s convention) plus
+    /// a 1-column gap before the label.
+    ///
+    /// GTK / macOS measure their own icon width in pixels (glyph metrics
+    /// differ from the TUI cell-width model), so this helper is
+    /// TUI-specific; see `gtk::tab_bar::draw_tab_bar_icons`'s own Pango
+    /// measurement instead.
+    pub fn cols(&self) -> u16 {
+        crate::text_util::display_width(&self.glyph) as u16 + 1
+    }
+}
+
+/// The icon for tab `idx` in an icon sidecar slice, or `None` when the
+/// slot is empty **or the slice is shorter than the tab list**.
+///
+/// Every backend resolves icons through this one helper so the
+/// "shorter-than-`tabs` slice means no icon" convention can't drift
+/// between rasterisers: `&[]` is always a legal "no icons at all"
+/// argument, and a caller that only decorates the first few tabs never
+/// has to pad the slice with `None`s.
+pub fn tab_icon_at(icons: &[Option<TabIcon>], idx: usize) -> Option<&TabIcon> {
+    icons.get(idx).and_then(|slot| slot.as_ref())
+}
+
+/// TUI columns reserved for tab `idx`'s icon (glyph width + 1-column
+/// gap), or `0` when that tab has no icon. Shared by the TUI
+/// rasteriser's paint and measurement paths so the two can't disagree.
+pub fn tab_icon_cols(icons: &[Option<TabIcon>], idx: usize) -> u16 {
+    tab_icon_at(icons, idx).map_or(0, TabIcon::cols)
 }
 
 /// One tab in a `TabBar`.
@@ -144,25 +196,16 @@ pub struct TabItem {
     /// glyph is rendered. Defaults to `true` for backward compatibility.
     #[serde(default = "default_true")]
     pub is_closable: bool,
-    /// Optional icon drawn before the label (see [`TabIcon`]). `None` =
-    /// no icon column reserved — existing tabs keep their exact prior
-    /// width and hit-test geometry. Defaults to `None` for backward
-    /// compatibility.
-    #[serde(default)]
-    pub icon: Option<TabIcon>,
 }
 
 impl Default for TabItem {
     /// Matches the per-field `#[serde(default...)]` values above —
     /// notably `is_closable: true`, not derived-`Default`'s `false`.
     ///
-    /// Added alongside [`TabItem::icon`] (#620) so downstream consumers
-    /// migrating an existing `TabItem { .. }` literal to this field can
-    /// append `..Default::default()` instead of listing every field —
-    /// see CLAUDE.md's public-API-lifecycle rule 8 (a new field on a
-    /// plain, non-`#[non_exhaustive]` struct is unavoidably breaking for
-    /// consumers that build it via a full literal; a `Default` impl is
-    /// the cheapest mitigation available after the fact).
+    /// Added under #620 so a caller can write
+    /// `TabItem { label, ..Default::default() }` instead of listing
+    /// every field; that also means any *future* field addition here
+    /// costs `..Default::default()` callers nothing.
     fn default() -> Self {
         Self {
             label: String::new(),
@@ -170,25 +213,6 @@ impl Default for TabItem {
             is_dirty: false,
             is_preview: false,
             is_closable: true,
-            icon: None,
-        }
-    }
-}
-
-impl TabItem {
-    /// TUI column width reserved for [`Self::icon`]: the glyph's display
-    /// width (via [`crate::text_util::display_width`] — Nerd Font PUA
-    /// icon glyphs measure 1 column, per `char_cell_width`'s convention)
-    /// plus a 1-column gap before the label. `0` when [`Self::icon`] is
-    /// `None`.
-    ///
-    /// GTK measures its own icon width via Pango (glyph metrics differ
-    /// from the TUI cell-width model), so this helper is TUI-specific;
-    /// see `gtk::tab_bar::draw_tab_bar`'s own Pango measurement instead.
-    pub fn icon_cols(&self) -> u16 {
-        match &self.icon {
-            Some(icon) => crate::text_util::display_width(&icon.glyph) as u16 + 1,
-            None => 0,
         }
     }
 }
@@ -748,7 +772,6 @@ mod hit_test_diff_tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
                 TabItem {
                     label: "lib.rs".into(),
@@ -756,7 +779,6 @@ mod hit_test_diff_tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
             ],
             right_segments: vec![

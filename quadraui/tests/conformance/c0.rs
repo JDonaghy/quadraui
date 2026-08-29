@@ -46,10 +46,10 @@ use quadraui::{
     RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
     SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split,
     SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-    TabBar, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
-    ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
-    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
-    UiEvent, WidgetId,
+    TabBar, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput,
+    ToastCorner, ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure,
+    Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle,
+    TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -117,7 +117,6 @@ pub const CASES: &[Case] = &[
                     is_dirty: false,
                     is_preview: false,
                     is_closable: false,
-                    icon: None,
                 }],
                 scroll_offset: 0,
                 right_segments: vec![],
@@ -126,6 +125,36 @@ pub const CASES: &[Case] = &[
                 compact: false,
             };
             let _ = b.draw_tab_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
+        },
+    },
+    Case {
+        method: "draw_tab_bar_icons",
+        needle: Some("c0icontabs"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-icons"),
+                tabs: vec![TabItem {
+                    label: " c0icontabs ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            // ASCII glyph on purpose: C0 asserts the *label* text reaches
+            // the frame inventory, and a Nerd Font PUA codepoint would
+            // paint as a blank box on a stock CI runner.
+            let icons = [Some(TabIcon {
+                glyph: "R".to_string(),
+                color: Color::rgb(222, 165, 132),
+            })];
+            let _ = b.draw_tab_bar_icons(Rect::new(0.0, 0.0, area.width, lh), &bar, &icons, None);
         },
     },
     Case {

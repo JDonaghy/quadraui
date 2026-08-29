@@ -1138,6 +1138,18 @@ impl Backend for TuiBackend {
         &mut self,
         rect: QRect,
         bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+    ) -> crate::TabBarHits {
+        // Icon-less bars are the empty-sidecar case of the icon path, so
+        // there is exactly one measurer + one paint loop to keep in sync.
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    fn draw_tab_bar_icons(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
         _hovered_close_tab: Option<usize>,
     ) -> crate::TabBarHits {
         // TUI doesn't render close-button hover bg; the parameter is
@@ -1153,21 +1165,22 @@ impl Backend for TuiBackend {
             0
         };
         // Measure in display columns, not `char`s (#554) — a CJK/emoji
-        // glyph occupies two columns, and `draw_tab_bar` paints with
-        // `char_cell_width` strides, so the budget must agree. Also add
-        // `icon_cols()` (#620) so a tab's optional icon glyph + gap is
-        // reserved the same way the GTK rasteriser reserves its own
+        // glyph occupies two columns, and `draw_tab_bar_icons` paints
+        // with `char_cell_width` strides, so the budget must agree. Also
+        // add `tab_icon_cols` (#620) so a tab's optional icon glyph + gap
+        // is reserved the same way the GTK rasteriser reserves its own
         // Pango-measured icon width.
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(i, t)| {
                 let tab_close = if bar.show_tab_close && t.is_closable {
                     close_cols
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close + t.icon_cols() as usize
+                display_width(&t.label) + tab_close + crate::tab_icon_cols(icons, i) as usize
             })
             .collect();
         let layout = bar.layout(
@@ -1195,7 +1208,7 @@ impl Backend for TuiBackend {
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_tab_bar called outside enter_frame_scope");
-        crate::tui::draw_tab_bar(frame.buffer_mut(), area, bar, &layout, &theme)
+        crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
     }
 
     fn draw_activity_bar(
@@ -1225,6 +1238,15 @@ impl Backend for TuiBackend {
     }
 
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
+        self.tab_bar_layout_icons(rect, bar, &[])
+    }
+
+    fn tab_bar_layout_icons(
+        &self,
+        rect: QRect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+    ) -> crate::TabBarHits {
         let close_cols = if bar.show_tab_close {
             crate::tui::TAB_CLOSE_COLS as usize
         } else {
@@ -1233,17 +1255,21 @@ impl Backend for TuiBackend {
         // Compute per-tab widths respecting `is_closable`: non-closable tabs
         // get no close-column reservation even when `show_tab_close` is set.
         // Measured in display columns, not `char`s (#554) — see the twin
-        // computation in `draw_tab_bar` above for why.
+        // computation in `draw_tab_bar_icons` above for why. The
+        // `tab_icon_cols` term is that twin's too (#620): the no-paint
+        // path must reserve the icon exactly as the paint does, or click
+        // routing lands left of the glyphs the user sees.
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(i, t)| {
                 let tab_close = if bar.show_tab_close && t.is_closable {
                     close_cols
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close + t.icon_cols() as usize
+                display_width(&t.label) + tab_close + crate::tab_icon_cols(icons, i) as usize
             })
             .collect();
         let layout = bar.layout(
@@ -2135,6 +2161,15 @@ mod tests {
         ) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
+        fn draw_tab_bar_icons(
+            &mut self,
+            _r: QRect,
+            _b: &TabBar,
+            _icons: &[Option<crate::TabIcon>],
+            _hovered_close_tab: Option<usize>,
+        ) -> crate::TabBarHits {
+            crate::TabBarHits::default()
+        }
         fn draw_activity_bar(
             &mut self,
             _r: QRect,
@@ -2157,6 +2192,14 @@ mod tests {
             }
         }
         fn tab_bar_layout(&self, _r: QRect, _b: &TabBar) -> crate::TabBarHits {
+            crate::TabBarHits::default()
+        }
+        fn tab_bar_layout_icons(
+            &self,
+            _r: QRect,
+            _b: &TabBar,
+            _icons: &[Option<crate::TabIcon>],
+        ) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
         fn activity_bar_layout(
@@ -3489,7 +3532,6 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
                 crate::primitives::tab_bar::TabItem {
                     label: "lib.rs".into(),
@@ -3497,7 +3539,6 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
             ],
             right_segments: vec![],

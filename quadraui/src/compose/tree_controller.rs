@@ -1563,6 +1563,15 @@ mod tests {
         ) -> crate::TabBarHits {
             unimplemented!()
         }
+        fn draw_tab_bar_icons(
+            &mut self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _icons: &[Option<crate::TabIcon>],
+            _h: Option<usize>,
+        ) -> crate::TabBarHits {
+            unimplemented!()
+        }
         fn draw_activity_bar(
             &mut self,
             _r: Rect,
@@ -1585,6 +1594,14 @@ mod tests {
             }
         }
         fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
+            crate::TabBarHits::default()
+        }
+        fn tab_bar_layout_icons(
+            &self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _icons: &[Option<crate::TabIcon>],
+        ) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
         fn activity_bar_layout(

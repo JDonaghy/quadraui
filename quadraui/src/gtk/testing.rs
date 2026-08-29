@@ -962,7 +962,6 @@ mod tests {
                         is_dirty: false,
                         is_preview: false,
                         is_closable: true,
-                        icon: None,
                     })
                     .collect(),
                 scroll_offset: 0,
@@ -1079,7 +1078,6 @@ mod tests {
                             is_dirty: false,
                             is_preview: false,
                             is_closable: false,
-                            icon: None,
                         }],
                         scroll_offset: 0,
                         right_segments: vec![],
@@ -1138,7 +1136,6 @@ mod tests {
                                 is_dirty: false,
                                 is_preview: false,
                                 is_closable: true,
-                                icon: None,
                             },
                             TabItem {
                                 label: "b".to_string(),
@@ -1146,7 +1143,6 @@ mod tests {
                                 is_dirty: false,
                                 is_preview: false,
                                 is_closable: true,
-                                icon: None,
                             },
                             TabItem {
                                 label: "c".to_string(),
@@ -1154,7 +1150,6 @@ mod tests {
                                 is_dirty: false,
                                 is_preview: false,
                                 is_closable: true,
-                                icon: None,
                             },
                         ],
                         // GTK, like TUI, honours this caller-supplied
