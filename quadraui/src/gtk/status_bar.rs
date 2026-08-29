@@ -37,6 +37,13 @@ pub const MIN_GAP_PX: f32 = 16.0;
 /// the previous text. (Caller doesn't typically depend on the layout's
 /// text after a draw call returns.)
 ///
+/// Status segments are chrome, not editor content — per #624, the
+/// caller is responsible for setting `layout`'s font description to the
+/// desired UI font (`GtkBackend::ui_font`) before calling and restoring
+/// whatever it was afterward (`GtkBackend::draw_status_bar` does this).
+/// This rasteriser has no separate "editor font" concept of its own; it
+/// measures and paints with whatever font is current on `layout`.
+///
 /// Returns hit regions in **bar-local coordinates** (relative to `x`).
 /// Caller pushes them into its per-window segment map for click
 /// resolution. Widths are clamped to `u16::MAX` to match the existing

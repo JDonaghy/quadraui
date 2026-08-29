@@ -43,6 +43,14 @@ pub fn gtk_menu_bar_layout(
 /// centred. Pass `line_height` for a tight single-row bar, or a
 /// larger value (e.g. the titlebar DA height) when the bar shares a
 /// row with taller widgets like a command centre.
+///
+/// Menu item labels are chrome, not editor content — per #624, the
+/// caller is responsible for setting `pango_layout`'s font description
+/// to the desired UI font (`GtkBackend::ui_font`) before calling and
+/// restoring whatever it was afterward (`GtkBackend::draw_menu_bar`
+/// does this). This rasteriser has no separate "editor font" concept of
+/// its own; it measures and paints with whatever font is current on
+/// `pango_layout`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_menu_bar(
     cr: &Context,

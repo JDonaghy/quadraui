@@ -954,7 +954,12 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.begin_frame(crate::Viewport::new(width as f32, height as f32, 1.0));
     backend.set_current_line_height(line_h);
     backend.set_current_char_width(char_w);
-    backend.set_ui_font("Sans 11");
+    // Deliberately *not* re-seeding `ui_font` here every frame the way
+    // `current_line_height`/`current_char_width` are: those are metrics
+    // re-derived from the editor font each repaint, but `ui_font` is a
+    // static app-level chrome-font preference (`Backend::set_ui_font`,
+    // #624) that `setup()` sets once. Stomping it back to the struct's
+    // default here would silently undo that call on the very next frame.
 
     // Clear the whole surface with the backend's current theme bg before
     // the app's `render` runs. Without this, GTK's default light-theme
