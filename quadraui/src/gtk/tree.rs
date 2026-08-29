@@ -60,6 +60,14 @@ pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`
 /// controls which icon variant the consumer's icon registry exposes.
 ///
+/// Row labels/badges/chevrons are chrome, not editor content — per
+/// #624, the caller is responsible for setting `layout`'s font
+/// description to the desired UI font (`GtkBackend::ui_font`) before
+/// calling and restoring whatever it was afterward
+/// (`GtkBackend::draw_tree` does this). This rasteriser has no separate
+/// "editor font" concept of its own; it measures and paints with
+/// whatever font is current on `layout`.
+///
 /// # Visual contract
 ///
 /// - **Background:** [`Theme::tab_bar_bg`].
