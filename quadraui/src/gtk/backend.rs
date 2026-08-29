@@ -449,6 +449,12 @@ impl GtkBackend {
 
     /// Update the cached UI font description string (Pango format,
     /// e.g. `"Cantarell 11"`). Call from the app's settings sync.
+    ///
+    /// Ergonomic concrete-type sibling of [`Backend::set_ui_font`]
+    /// (`impl Into<String>` vs. `&str`) — kept so existing direct
+    /// `GtkBackend` call sites (`gtk/run.rs`, tests) don't need a
+    /// `.to_string()`. Callers holding only `&mut dyn Backend` use the
+    /// trait method instead; both write the same field (#624).
     pub fn set_ui_font(&mut self, ui_font: impl Into<String>) {
         self.ui_font = ui_font.into();
     }
@@ -1219,6 +1225,10 @@ impl Backend for GtkBackend {
         self.editor_font_size_pt = size_pt;
     }
 
+    fn set_ui_font(&mut self, font_desc: &str) {
+        self.ui_font = font_desc.to_string();
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain the queue without blocking. Stage 4 wires up the
         // signal-callback producers; until then this is always empty.
@@ -1446,9 +1456,18 @@ impl Backend for GtkBackend {
     }
 
     fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tree called outside enter_frame_scope");
+        // #624: row labels, badges and chevrons are chrome, not editor
+        // content — save the editor font on the shared layout, paint the
+        // tree in `ui_font`, then restore so later draws in this frame
+        // aren't left painting chrome-sized text. `gtk::draw_tree` itself
+        // does all its own text measurement inline against `layout`, so
+        // swapping the font here covers paint and measurement alike.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_tree(
             cr,
             layout,
@@ -1461,6 +1480,7 @@ impl Backend for GtkBackend {
             self.current_line_height,
             self.nerd_fonts_enabled,
         );
+        layout.set_font_description(saved_font.as_ref());
     }
 
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
@@ -1741,9 +1761,18 @@ impl Backend for GtkBackend {
         hovered_id: Option<&crate::types::WidgetId>,
         pressed_id: Option<&crate::types::WidgetId>,
     ) -> crate::StatusBarLayout {
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
+        // #624: status bar segments are chrome, painted in `ui_font` —
+        // save the editor font that's on the shared layout, swap in
+        // `ui_font` for the paint (and `gtk::draw_status_bar`'s own
+        // internal width measurement, which shares this same layout), then
+        // restore the editor font so later draws in this frame aren't
+        // left painting chrome-sized text.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
         let bar_layout = crate::gtk::draw_status_bar(
             cr,
             layout,
@@ -1756,6 +1785,7 @@ impl Backend for GtkBackend {
             hovered_id,
             pressed_id,
         );
+        layout.set_font_description(saved_font.as_ref());
         // Record each visible segment's label into the painted-text map
         // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
         // from `bar` via the segment's side + index, since
@@ -1818,9 +1848,17 @@ impl Backend for GtkBackend {
         icons: &[Option<crate::TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> crate::TabBarHits {
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
+        // #624: tab labels/segments are chrome, not editor content —
+        // `gtk::draw_tab_bar_icons`'s own doc contract is "caller sets the
+        // desired UI font on `layout` before calling", so set `ui_font`
+        // here and restore the editor font afterward so later draws in
+        // this same frame aren't left painting chrome-sized text.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
         let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons(
             cr,
             pango_layout,
@@ -1834,6 +1872,7 @@ impl Backend for GtkBackend {
             &self.current_theme,
             hovered_close_tab,
         );
+        pango_layout.set_font_description(saved_font.as_ref());
         // Cache the resolved layout for this bar's WidgetId —
         // `GtkDriver::tab_center`/`tab_close_center` (quadraui#594)
         // resolve against this, since a driver sitting outside the app
@@ -1879,10 +1918,22 @@ impl Backend for GtkBackend {
         let lh = self.current_line_height as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        bar.layout(rect.width, lh, crate::gtk::MIN_GAP_PX, |seg| {
+        // #624: measure with `ui_font`, matching `draw_status_bar`'s paint
+        // font — a no-paint caller (hit-testing without repainting) must
+        // resolve the same segment widths the paint path produced.
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
+        let result = bar.layout(rect.width, lh, crate::gtk::MIN_GAP_PX, |seg| {
             let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
             crate::StatusSegmentMeasure::new(text_w)
-        })
+        });
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
+        result
     }
 
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
@@ -1898,6 +1949,19 @@ impl Backend for GtkBackend {
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+
+        // #624: tab labels/segments are chrome, painted with `ui_font` by
+        // `gtk::draw_tab_bar_icons` (via `GtkBackend::draw_tab_bar_icons`,
+        // which sets `ui_font` on the shared layout before calling in).
+        // This no-paint twin must measure with the same font the paint
+        // path uses, or its reported widths (and the icon-font it derives
+        // from `base` below) drift from what's actually on screen —
+        // restored to whatever was set before returning.
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
 
         // Icon reservation (#620), measured with the same Nerd-Font swap
         // `gtk::draw_tab_bar_icons` paints with — the no-paint twin has to
@@ -2016,6 +2080,10 @@ impl Backend for GtkBackend {
         } else {
             bar.scroll_offset
         };
+
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
 
         hits
     }
@@ -2594,9 +2662,19 @@ impl Backend for GtkBackend {
         rect: QRect,
         bar: &MenuBar,
     ) -> crate::primitives::menu_bar::MenuBarLayout {
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_menu_bar called outside enter_frame_scope");
+        // #624: menu bar item labels are chrome — save the editor font on
+        // the shared layout, paint in `ui_font`, then restore. Note this
+        // means the `layout.clone()` stashed below (a GObject alias, not a
+        // snapshot) no longer carries `ui_font` by the time it's read back
+        // out — `menu_bar_layout` below re-applies `ui_font` itself for
+        // that reason rather than trusting the cached layout's current
+        // font state.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
         let result = crate::gtk::draw_menu_bar(
             cr,
             layout,
@@ -2607,6 +2685,7 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
         );
+        layout.set_font_description(saved_font.as_ref());
         // Stash the exact layout just painted with — see the field doc
         // on `last_menu_bar_pango_layout` for why this is necessary
         // rather than relying on `current_frame_refs()` alone.
@@ -2632,11 +2711,28 @@ impl Backend for GtkBackend {
         let pango_layout = frame_layout
             .or_else(|| self.last_menu_bar_pango_layout.clone())
             .or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        bar.layout(bounds, |i| {
+        // #624: menu items are chrome, measured in `ui_font` to match
+        // `draw_menu_bar`'s paint font. Forced explicitly rather than
+        // trusted from whichever layout object was resolved above —
+        // `last_menu_bar_pango_layout` is a GObject alias of the shared
+        // frame layout, so by the time this runs (possibly a later frame,
+        // click-time-only) its *current* font state, not a snapshot from
+        // when it was cached, is whatever the most recent draw call left
+        // it as.
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
+        let result = bar.layout(bounds, |i| {
             let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
             let text_w = self.pango_str_width(&pango_layout, &text, char_w);
             crate::primitives::menu_bar::MenuBarItemMeasure::new(text_w + 16.0)
-        })
+        });
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
+        result
     }
 
     fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
@@ -3886,17 +3982,22 @@ mod tests {
         );
     }
 
-    /// #407: `menu_bar_layout` must prefer the frame-scoped Pango layout
-    /// (the one `draw_menu_bar` actually painted with) over the stable
-    /// widget-realized `pango_ctx`, mirroring `status_bar_layout` /
-    /// `tab_bar_layout`. Regression test: measure the same item with two
-    /// very differently-sized fonts — one stashed as the "stable"
-    /// `pango_ctx` (small), one live in an `enter_frame_scope` call
-    /// (large) — and assert the frame-scoped measurement wins. Before
-    /// the fix, `menu_bar_layout` always used `pango_ctx` and the two
-    /// widths would be identical (using the small font in both cases).
+    /// #407 established that `menu_bar_layout` must prefer the
+    /// frame-scoped Pango layout (the one `draw_menu_bar` actually
+    /// painted with) over the stable widget-realized `pango_ctx`, back
+    /// when menu items painted in whatever font that resolved layout
+    /// happened to carry — i.e. the editor font, which was exactly the
+    /// #624 bug (chrome tracking editor font size). #624 fixes that by
+    /// having `menu_bar_layout` force `ui_font` onto whichever layout it
+    /// resolves, so the *resolved object's own* font no longer reaches
+    /// the measurement at all. This updates #407's regression test to the
+    /// new invariant: outside vs. inside a frame scope with a
+    /// wildly-different editor font (`"Sans 8"` vs. `"Sans 40"`) must
+    /// measure *identically*, because both paths measure `ui_font`
+    /// (`"Sans 11"` by default), not whatever the resolved layout's own
+    /// font description says.
     #[test]
-    fn gtk_backend_menu_bar_layout_prefers_frame_layout_over_pango_ctx() {
+    fn gtk_backend_menu_bar_layout_ignores_resolved_layouts_own_font() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
@@ -3925,42 +4026,38 @@ mod tests {
         };
         let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
 
-        // Outside any frame scope: falls back to the small `pango_ctx` font.
-        let small_layout_result = backend.menu_bar_layout(rect, &bar);
-        let small_width = small_layout_result.visible_items[0].bounds.width;
+        // Outside any frame scope: resolves to the small `pango_ctx`
+        // object, but its font must be ignored in favour of `ui_font`.
+        let small_ctx_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
+            .bounds
+            .width;
 
-        // Inside a frame scope with a much larger live layout: must use it.
-        let large_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
+        // Inside a frame scope with a much larger live layout: its own
+        // "Sans 40" font must likewise be ignored in favour of `ui_font`.
+        let large_layout_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
             b.menu_bar_layout(rect, &bar).visible_items[0].bounds.width
         });
 
         assert!(
-            large_width > small_width * 2.0,
-            "frame-scoped layout (Sans 40) should measure much wider than \
-             the fallback pango_ctx (Sans 8): small={small_width}, large={large_width}"
+            (large_layout_width - small_ctx_width).abs() < 0.5,
+            "menu_bar_layout must measure with `ui_font` regardless of \
+             which layout object it resolves to: small_ctx_width={small_ctx_width}, \
+             large_layout_width={large_layout_width}"
         );
     }
 
     /// #407 (manual smoke-test failure on iteration 1): the real bug is
     /// that click-time hit-testing calls `menu_bar_layout` from
     /// `MenuSystem::handle` — **outside** any `enter_frame_scope` — so
-    /// `current_frame_refs()` is always `None` at click time, and the
-    /// previous fix's `.or_else()` fell straight through to `pango_ctx`,
-    /// unchanged from before #407. This only mattered in practice
-    /// because `pango_ctx` (set once at widget-init, e.g. `"Sans 11"`)
-    /// carries a *different font* than the layout `draw_menu_bar` last
-    /// painted with (e.g. `"Monospace 11"`, rebuilt every frame) —
-    /// mismatched glyph widths drift the hit regions off the painted
-    /// labels, compounding item-over-item until a click on one label
-    /// resolves to a neighbour.
-    ///
-    /// Regression test: paint with `draw_menu_bar` inside a frame scope
-    /// using a large font, then call `menu_bar_layout` for the *same
-    /// bar* completely outside any frame scope (mirroring real
-    /// click-time dispatch) and assert it measures using the
-    /// large font that was actually painted with — not the small
-    /// `pango_ctx` font. Before this fix this assertion fails because
-    /// `menu_bar_layout` has no memory of the last paint.
+    /// `current_frame_refs()` is always `None` at click time. #624
+    /// changes *what* both paint and click-time measurement track (from
+    /// the editor font to the stable `ui_font`), but the underlying
+    /// paint↔click agreement #407 guarded is exactly as load-bearing:
+    /// whatever `draw_menu_bar` actually painted with, `menu_bar_layout`
+    /// must measure identically at click time, even with a wildly
+    /// different *editor* font live in between (proving click-time
+    /// measurement tracks `ui_font`, not whatever the editor font
+    /// happens to be at click time).
     #[test]
     fn gtk_backend_menu_bar_layout_matches_last_paint_outside_frame_scope() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -3968,15 +4065,12 @@ mod tests {
         let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
 
-        let small_ctx = pangocairo::functions::create_context(&cr);
-        small_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 8")));
-
         let large_ctx = pangocairo::functions::create_context(&cr);
         large_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 40")));
         let large_layout = pango::Layout::new(&large_ctx);
 
         let mut backend = GtkBackend::new();
-        backend.set_pango_context(small_ctx);
+        backend.set_pango_context(pangocairo::functions::create_context(&cr));
 
         let bar = MenuBar {
             id: WidgetId::new("test:menu-bar"),
@@ -3991,35 +4085,40 @@ mod tests {
         };
         let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
 
-        // Paint (inside a frame scope) with the large font, exactly like
-        // `gtk::run::activate`'s draw callback does.
-        backend.enter_frame_scope(&cr, &large_layout, |b| {
-            b.draw_menu_bar(rect, &bar);
+        // Paint (inside a frame scope) with a huge *editor* font, exactly
+        // like `gtk::run::activate`'s draw callback does — `ui_font`
+        // stays at the "Sans 11" default throughout.
+        let painted_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
+            b.draw_menu_bar(rect, &bar).visible_items[0].bounds.width
         });
 
-        // Click-time dispatch happens from `AppLogic::handle`, which
-        // runs outside any frame scope (real event handlers never wrap
-        // their body in `enter_frame_scope` — only the draw callback
-        // does). Simulate that here: no frame scope is active.
+        // Click-time dispatch happens from `AppLogic::handle`, which runs
+        // outside any frame scope (real event handlers never wrap their
+        // body in `enter_frame_scope` — only the draw callback does).
+        // Simulate that here: no frame scope is active, and the live
+        // editor font (had one been resolvable here) would still be the
+        // huge one above — `ui_font` must be what's measured regardless.
         let click_time_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
             .bounds
             .width;
 
-        // What painting with the small `pango_ctx` font alone would
-        // have produced, for comparison.
-        let small_only_width = {
-            let mut b2 = GtkBackend::new();
-            b2.set_pango_context(pangocairo::functions::create_context(&cr));
-            b2.menu_bar_layout(rect, &bar).visible_items[0].bounds.width
-        };
-
         assert!(
-            click_time_width > small_only_width * 2.0,
-            "menu_bar_layout called outside any frame scope, right after a \
-             paint with a large font, should still measure using that \
-             large font (cached from paint) rather than falling back to \
-             pango_ctx's small font: click_time={click_time_width}, \
-             small_only={small_only_width}"
+            (click_time_width - painted_width).abs() < 0.5,
+            "menu_bar_layout at click time must match what draw_menu_bar \
+             actually painted: painted={painted_width}, click_time={click_time_width}"
+        );
+
+        // Positive control (#624 acceptance): `ui_font` is not inert —
+        // changing it alone must visibly change the measured width, even
+        // though the giant editor font above did not.
+        Backend::set_ui_font(&mut backend, "Sans 40");
+        let ui_font_changed_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
+            .bounds
+            .width;
+        assert!(
+            ui_font_changed_width > painted_width * 1.5,
+            "changing `ui_font` alone must visibly widen the measured menu \
+             item: default_ui_font={painted_width}, ui_font_Sans_40={ui_font_changed_width}"
         );
     }
 
@@ -4053,6 +4152,231 @@ mod tests {
         Backend::set_editor_font(&mut backend, "Fira Code", 13.0);
         assert_eq!(backend.ui_font, "Cantarell 12");
         assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
+    }
+
+    // --- #624: chrome primitives must paint/measure with `ui_font`, not
+    // whatever font the frame's editor-content layout happens to carry.
+    // Each test below paints the same bar/tree twice, inside frame scopes
+    // whose live layout carries wildly different "editor" font sizes
+    // (mirroring two different `set_editor_font` sizes) with `ui_font` left
+    // at its default — the painted glyph extent must be identical across
+    // both. A third measurement then changes `ui_font` alone as a positive
+    // control: the extent must visibly change, proving `ui_font` is
+    // actually read, not just insulated from the editor font by accident.
+
+    fn ui_font_test_surface_and_contexts() -> (
+        pangocairo::cairo::ImageSurface,
+        pango::FontDescription,
+        pango::FontDescription,
+    ) {
+        (
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, 400, 40)
+                .expect("create ImageSurface"),
+            pango::FontDescription::from_string("Sans 8"),
+            pango::FontDescription::from_string("Sans 40"),
+        )
+    }
+
+    #[test]
+    fn gtk_backend_draw_status_bar_uses_ui_font_not_editor_font() {
+        let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+
+        let bar = StatusBar {
+            id: WidgetId::new("test:status-bar"),
+            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                text: "READY".to_string(),
+                fg: crate::types::Color::rgb(255, 255, 255),
+                bg: crate::types::Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
+
+        let width_at = |editor_font: &pango::FontDescription| {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(Some(editor_font));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_status_bar(rect, &bar, None, None).visible_segments[0]
+                    .bounds
+                    .width
+            })
+        };
+
+        let small_editor_width = width_at(&small_editor_font);
+        let large_editor_width = width_at(&large_editor_font);
+        assert!(
+            (small_editor_width - large_editor_width).abs() < 0.5,
+            "status bar segment width must be editor-font-size independent: \
+             small_editor={small_editor_width}, large_editor={large_editor_width}"
+        );
+
+        let ui_font_width = {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(Some(&small_editor_font));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            Backend::set_ui_font(&mut backend, "Sans 40");
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_status_bar(rect, &bar, None, None).visible_segments[0]
+                    .bounds
+                    .width
+            })
+        };
+        assert!(
+            ui_font_width > small_editor_width * 1.5,
+            "changing ui_font alone must visibly widen the painted segment: \
+             default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
+        );
+    }
+
+    #[test]
+    fn gtk_backend_draw_tab_bar_uses_ui_font_not_editor_font() {
+        let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+
+        let bar = TabBar {
+            id: WidgetId::new("test:tabs"),
+            tabs: vec![crate::primitives::tab_bar::TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: false,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
+
+        let width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(Some(editor_font));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            if let Some(f) = ui_font {
+                Backend::set_ui_font(&mut backend, f);
+            }
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_tab_bar(rect, &bar, None);
+                b.cached_tab_bar_layout(&bar.id)
+                    .expect("draw_tab_bar caches its layout")
+                    .1
+                    .visible_tabs[0]
+                    .bounds
+                    .width
+            })
+        };
+
+        let small_editor_width = width_at(&small_editor_font, None);
+        let large_editor_width = width_at(&large_editor_font, None);
+        assert!(
+            (small_editor_width - large_editor_width).abs() < 0.5,
+            "tab width must be editor-font-size independent: \
+             small_editor={small_editor_width}, large_editor={large_editor_width}"
+        );
+
+        let ui_font_width = width_at(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_width > small_editor_width * 1.5,
+            "changing ui_font alone must visibly widen the painted tab: \
+             default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
+        );
+    }
+
+    #[test]
+    fn gtk_backend_draw_tree_uses_ui_font_not_editor_font() {
+        let small_editor_font = pango::FontDescription::from_string("Sans 8");
+        let large_editor_font = pango::FontDescription::from_string("Sans 40");
+        const W: i32 = 1600;
+        const H: i32 = 60;
+
+        let row_text_extent = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            let tree = TreeView {
+                id: WidgetId::new("test:tree"),
+                rows: vec![crate::primitives::tree::TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: crate::types::StyledText::plain("m".to_string()),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: crate::types::Decoration::Normal,
+                    edit: None,
+                }],
+                selection_mode: crate::types::SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: crate::types::TreeStyle::default(),
+                has_focus: false,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(Some(editor_font));
+                let layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                // White `tab_bar_bg` so the row's own background fill
+                // doesn't itself read as "non-white" and saturate the
+                // rightmost-painted-pixel scan below.
+                backend.set_current_theme(crate::Theme {
+                    tab_bar_bg: crate::types::Color::rgb(255, 255, 255),
+                    background: crate::types::Color::rgb(255, 255, 255),
+                    foreground: crate::types::Color::rgb(0, 0, 0),
+                    ..crate::Theme::default()
+                });
+                if let Some(f) = ui_font {
+                    Backend::set_ui_font(&mut backend, f);
+                }
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    b.draw_tree(rect, &tree);
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            // Rightmost non-white pixel within the first (only) row's
+            // vertical span — proxy for the painted label's glyph extent.
+            // `gtk_tree_layout`'s row 0 spans `[0, line_height * 1.4)`;
+            // `current_line_height` defaults to 16px, so y=10 is always
+            // inside it regardless of which font is under test.
+            let y = 10usize;
+            (0..W as usize)
+                .rev()
+                .find(|&x| {
+                    let off = y * stride + x * 4;
+                    !(data[off] == 255 && data[off + 1] == 255 && data[off + 2] == 255)
+                })
+                .unwrap_or(0)
+        };
+
+        let small_editor_extent = row_text_extent(&small_editor_font, None);
+        let large_editor_extent = row_text_extent(&large_editor_font, None);
+        assert!(
+            small_editor_extent.abs_diff(large_editor_extent) <= 1,
+            "tree row glyph extent must be editor-font-size independent: \
+             small_editor={small_editor_extent}, large_editor={large_editor_extent}"
+        );
+
+        let ui_font_extent = row_text_extent(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_extent > small_editor_extent + 20,
+            "changing ui_font alone must visibly widen the painted row label: \
+             default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
     }
 
     // --- #615: `tab_bar_layout` must shift by `rect.x` exactly once ---

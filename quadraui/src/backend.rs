@@ -342,6 +342,23 @@ pub trait Backend {
     /// every glyph already occupies exactly one terminal cell.
     fn set_editor_font(&mut self, _family: &str, _size_pt: f32) {}
 
+    /// Override the font used to paint **chrome** — status bar, tab bar,
+    /// tree, menu bar, dialogs, rich-text popups — as opposed to
+    /// [`Self::set_editor_font`], which only affects editor content.
+    /// `font_desc` is a Pango-style font description string (e.g.
+    /// `"Sans 11"`, `"Cantarell 12"`); unlike the editor font it need not
+    /// be monospace, since chrome primitives don't do column math against
+    /// it.
+    ///
+    /// Call once from `setup()` for a static UI font, or again any time
+    /// the app's chrome-font preference changes at runtime — the change
+    /// takes effect on the next repaint.
+    ///
+    /// Default: no-op. Fixed-cell backends (TUI) have no font concept —
+    /// every glyph already occupies exactly one terminal cell. GTK is
+    /// currently the only backend that overrides this (#624).
+    fn set_ui_font(&mut self, _font_desc: &str) {}
+
     // ─── Text selection ────────────────────────────────────────────────
     /// Register a selectable text region for the current frame.
     ///
