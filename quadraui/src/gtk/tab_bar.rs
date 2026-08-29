@@ -289,7 +289,7 @@ pub fn draw_tab_bar_icons(
         // ("`None` = no underline accent (typical for inactive groups)",
         // `primitives/tab_bar.rs`). Callers that want VS Code's focused-tab
         // top border opt in explicitly with
-        // `active_accent: Some(theme.tab_active_border_top)`; a bar with no
+        // `active_accent: Some(theme.tab_active_border_top())`; a bar with no
         // notion of focus (bottom-panel tab strip, terminal toolbar,
         // unfocused splits) passes `None` and gets no strip, same as every
         // other backend.
@@ -789,13 +789,13 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
-        let border_top = theme.tab_active_border_top;
+        let border_top = theme.tab_active_border_top();
         let active_bg = theme.tab_active_bg;
         let top = pixel(&data, stride, 5, 0);
         assert_ne!(
             top,
             (border_top.r, border_top.g, border_top.b),
-            "with active_accent: None, the top row must NOT be theme.tab_active_border_top"
+            "with active_accent: None, the top row must NOT be theme.tab_active_border_top()"
         );
         assert_eq!(
             top,
