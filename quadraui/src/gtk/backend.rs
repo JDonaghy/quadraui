@@ -4017,6 +4017,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 crate::primitives::tab_bar::TabItem {
                     label: "lib.rs".into(),
@@ -4024,6 +4025,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
             ],
             right_segments: vec![],

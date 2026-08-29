@@ -109,6 +109,21 @@ fn default_true() -> bool {
     true
 }
 
+/// Optional per-tab icon drawn before the label — the coloured
+/// language/file-type glyph VS Code shows on every tab (e.g. an orange
+/// gear for `.toml`, a blue badge for `.ts`). Glyph-sourcing follows the
+/// same convention as [`crate::primitives::activity_bar::ActivityItem::icon`]
+/// (typically a single Nerd Font codepoint); `color` tints just the
+/// glyph and is independent of the tab's active/inactive foreground, so
+/// the icon keeps its identity colour even on an inactive tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabIcon {
+    /// Icon glyph — usually a single Nerd Font character.
+    pub glyph: String,
+    /// Glyph colour, drawn regardless of the tab's active state.
+    pub color: Color,
+}
+
 /// One tab in a `TabBar`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabItem {
@@ -129,6 +144,53 @@ pub struct TabItem {
     /// glyph is rendered. Defaults to `true` for backward compatibility.
     #[serde(default = "default_true")]
     pub is_closable: bool,
+    /// Optional icon drawn before the label (see [`TabIcon`]). `None` =
+    /// no icon column reserved — existing tabs keep their exact prior
+    /// width and hit-test geometry. Defaults to `None` for backward
+    /// compatibility.
+    #[serde(default)]
+    pub icon: Option<TabIcon>,
+}
+
+impl Default for TabItem {
+    /// Matches the per-field `#[serde(default...)]` values above —
+    /// notably `is_closable: true`, not derived-`Default`'s `false`.
+    ///
+    /// Added alongside [`TabItem::icon`] (#620) so downstream consumers
+    /// migrating an existing `TabItem { .. }` literal to this field can
+    /// append `..Default::default()` instead of listing every field —
+    /// see CLAUDE.md's public-API-lifecycle rule 8 (a new field on a
+    /// plain, non-`#[non_exhaustive]` struct is unavoidably breaking for
+    /// consumers that build it via a full literal; a `Default` impl is
+    /// the cheapest mitigation available after the fact).
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            is_active: false,
+            is_dirty: false,
+            is_preview: false,
+            is_closable: true,
+            icon: None,
+        }
+    }
+}
+
+impl TabItem {
+    /// TUI column width reserved for [`Self::icon`]: the glyph's display
+    /// width (via [`crate::text_util::display_width`] — Nerd Font PUA
+    /// icon glyphs measure 1 column, per `char_cell_width`'s convention)
+    /// plus a 1-column gap before the label. `0` when [`Self::icon`] is
+    /// `None`.
+    ///
+    /// GTK measures its own icon width via Pango (glyph metrics differ
+    /// from the TUI cell-width model), so this helper is TUI-specific;
+    /// see `gtk::tab_bar::draw_tab_bar`'s own Pango measurement instead.
+    pub fn icon_cols(&self) -> u16 {
+        match &self.icon {
+            Some(icon) => crate::text_util::display_width(&icon.glyph) as u16 + 1,
+            None => 0,
+        }
+    }
 }
 
 /// One right-aligned segment in a `TabBar`. Either a clickable button
@@ -686,6 +748,7 @@ mod hit_test_diff_tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 TabItem {
                     label: "lib.rs".into(),
@@ -693,6 +756,7 @@ mod hit_test_diff_tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
             ],
             right_segments: vec![

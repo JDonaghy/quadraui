@@ -21,6 +21,12 @@ use crate::theme::Theme;
 /// native-button `set_height_request: 48` baked into vimcode's GTK CSS.
 pub const ACTIVITY_ROW_PX: f64 = 48.0;
 
+/// Pango font description for activity-bar icon glyphs. 18pt renders at
+/// ≈ 24px at the standard 96 dpi (`18 * 96 / 72 = 24`), matching VS
+/// Code's 24px codicons — the pre-#620 "… 20" size rendered ≈ 26.7px,
+/// visibly oversized against the unchanged 48px row (`ACTIVITY_ROW_PX`).
+pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
+
 /// Draw an [`ActivityBar`] into `(0, 0, width, height)` on `cr`.
 ///
 /// Computes the layout via [`ActivityBar::layout`] with
@@ -36,9 +42,12 @@ pub const ACTIVITY_ROW_PX: f64 = 48.0;
 ///   `theme.accent_fg` (or `bar.active_accent` if the bar overrides).
 /// - **Hovered row:** subtle background tint
 ///   (`theme.tab_bar_bg.lighten(0.10)`).
-/// - **Icon glyph:** centred in each row using "Symbols Nerd Font,
-///   monospace 20" Pango font; foreground is `theme.foreground` for
-///   active/hovered rows, `theme.inactive_fg` otherwise.
+/// - **Icon glyph:** centred in each row using [`ICON_FONT_DESC`]
+///   ("Symbols Nerd Font, monospace 18" — 18pt ≈ 24px at 96 dpi,
+///   matching VS Code's 24px codicons; #620); foreground is
+///   `theme.foreground` for active/hovered rows, `theme.inactive_fg`
+///   otherwise. `ACTIVITY_ROW_PX` (the 48px row) is unrelated and
+///   unchanged — only the glyph shrank.
 pub fn draw_activity_bar(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -69,7 +78,7 @@ pub fn draw_activity_bar(
     cr.fill().ok();
 
     let saved_font = pango_layout.font_description().unwrap_or_default();
-    let icon_font = FontDescription::from_string("Symbols Nerd Font, monospace 20");
+    let icon_font = FontDescription::from_string(ICON_FONT_DESC);
     pango_layout.set_font_description(Some(&icon_font));
     pango_layout.set_attributes(None);
 
@@ -167,4 +176,59 @@ pub fn draw_activity_bar(
     pango_layout.set_font_description(Some(&saved_font));
 
     regions
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+//
+// Headless (no display required) pixel-metric test using a Cairo
+// `ImageSurface`, mirroring `gtk::tab_bar`'s test style. Gated on the
+// `gtk` feature so it only runs under `cargo test --features gtk`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    /// #620: the activity-bar icon glyph must render distinctly smaller
+    /// than the pre-fix 20pt size (≈ 26.7px @ 96 dpi) while
+    /// `ACTIVITY_ROW_PX` — the 48px row itself — stays untouched. The
+    /// glyph used for measurement doesn't need the real Nerd Font
+    /// installed: point-size scaling is monotonic for any font Pango
+    /// falls back to, so the relative shrink still holds headless.
+    #[test]
+    fn icon_glyph_shrinks_while_row_height_is_unchanged() {
+        assert_eq!(
+            ACTIVITY_ROW_PX, 48.0,
+            "the 48px row metric must not move — only the glyph size (#620)"
+        );
+        assert!(
+            ICON_FONT_DESC.ends_with(" 18"),
+            "icon font point size should be 18 (≈ 24px @ 96dpi), got {ICON_FONT_DESC:?}"
+        );
+
+        let surface = ImageSurface::create(Format::ARgb32, 64, 64).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+
+        let measure = |desc: &str| -> (i32, i32) {
+            let font = FontDescription::from_string(desc);
+            pango_layout.set_font_description(Some(&font));
+            pango_layout.set_text("\u{f07b}");
+            pango_layout.pixel_size()
+        };
+
+        let (old_w, old_h) = measure("Symbols Nerd Font, monospace 20");
+        let (new_w, new_h) = measure(ICON_FONT_DESC);
+
+        assert!(
+            new_h < old_h,
+            "new icon glyph height ({new_h}) should be smaller than the pre-#620 \
+             20pt height ({old_h})"
+        );
+        assert!(
+            new_w <= old_w,
+            "new icon glyph width ({new_w}) should not exceed the pre-#620 20pt \
+             width ({old_w})"
+        );
+    }
 }
