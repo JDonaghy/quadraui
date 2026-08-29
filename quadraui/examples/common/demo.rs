@@ -119,7 +119,6 @@ pub fn build_tab_bar(state: &AppState) -> TabBar {
             is_dirty: false,
             is_preview: false,
             is_closable: true,
-            icon: None,
         })
         .collect();
     TabBar {

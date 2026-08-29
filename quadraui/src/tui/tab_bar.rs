@@ -43,10 +43,9 @@ pub const TAB_CLOSE_COLS: u16 = 2;
 ///   instead of `×`.
 /// - **Preview tab:** `*_preview_*_fg` and [`Modifier::ITALIC`]; combines
 ///   with the underline accent when active.
-/// - **Icon:** when [`crate::TabItem::icon`] is `Some`, its glyph paints
-///   at the tab's leading edge in [`crate::TabIcon::color`] — independent
-///   of the tab's active/inactive foreground — followed by a 1-column
-///   gap before the label (see [`crate::TabItem::icon_cols`]).
+/// - **Icon:** never painted by this entry point — it passes an empty
+///   icon sidecar. Call [`draw_tab_bar_icons`] to decorate tabs with
+///   [`crate::TabIcon`] glyphs.
 /// - **Right segments:** painted in `tab_inactive_fg` (or
 ///   `tab_active_fg` when `seg.is_active`). Double-width glyphs
 ///   (per `unicode-width`) use [`set_cell_wide`].
@@ -67,6 +66,33 @@ pub fn draw_tab_bar(
     buf: &mut Buffer,
     area: Rect,
     bar: &TabBar,
+    layout: &TabBarLayout,
+    theme: &Theme,
+) -> TabBarHits {
+    draw_tab_bar_icons(buf, area, bar, &[], layout, theme)
+}
+
+/// [`draw_tab_bar`] plus per-tab icon glyphs (#620).
+///
+/// `icons` is a sidecar slice parallel to `bar.tabs` (see
+/// [`crate::Backend::draw_tab_bar_icons`]); resolve entries with
+/// [`crate::tab_icon_at`] / [`crate::tab_icon_cols`] so a short slice
+/// means "no icon" rather than a panic. Passing `&[]` reproduces
+/// [`draw_tab_bar`] cell for cell.
+///
+/// Each decorated tab paints its glyph at the tab's leading edge in
+/// [`crate::TabIcon::color`] — independent of the tab's
+/// active/inactive foreground, so the icon keeps its identity colour on
+/// an inactive tab — followed by a 1-column gap before the label. That
+/// reservation is [`crate::tab_icon_cols`], exactly what
+/// `TuiBackend::draw_tab_bar_icons` / `tab_bar_layout_icons`
+/// (`backend.rs`) add to the tab's measured width, so paint and
+/// measurement cannot drift.
+pub fn draw_tab_bar_icons(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &TabBar,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     layout: &TabBarLayout,
     theme: &Theme,
 ) -> TabBarHits {
@@ -155,12 +181,13 @@ pub fn draw_tab_bar(
 
         // Icon glyph, if this tab has one — painted before the label in
         // its own colour, independent of the tab's active/inactive fg.
-        // `TabItem::icon_cols` (glyph width + 1-column gap) is exactly
-        // what `TuiBackend::draw_tab_bar`/`tab_bar_layout` (backend.rs)
-        // added to this tab's measured width, so the label loop below
-        // can start right after it without re-deriving the reservation.
-        let icon_cols = tab.icon_cols();
-        if let Some(icon) = &tab.icon {
+        // `tab_icon_cols` (glyph width + 1-column gap) is exactly what
+        // `TuiBackend::draw_tab_bar_icons`/`tab_bar_layout_icons`
+        // (backend.rs) added to this tab's measured width, so the label
+        // loop below can start right after it without re-deriving the
+        // reservation.
+        let icon_cols = crate::primitives::tab_bar::tab_icon_cols(icons, vt.tab_idx);
+        if let Some(icon) = crate::primitives::tab_bar::tab_icon_at(icons, vt.tab_idx) {
             let icon_fg = ratatui_color(icon.color);
             let icon_end = tab_x + icon_cols;
             let mut cx = tab_x;
@@ -283,7 +310,6 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
                 TabItem {
                     label: "lib.rs".into(),
@@ -291,7 +317,6 @@ mod tests {
                     is_dirty: true,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 },
             ],
             right_segments: vec![],
@@ -365,7 +390,6 @@ mod tests {
                 is_dirty: false,
                 is_preview: false,
                 is_closable: true,
-                icon: None,
             }],
             right_segments: vec![TabBarSegment {
                 id: Some(WidgetId::new("seg:0")),
@@ -420,7 +444,6 @@ mod tests {
                 is_dirty: false,
                 is_preview: false,
                 is_closable: false,
-                icon: None,
             }],
             right_segments: vec![],
             active_accent: None,
@@ -488,9 +511,9 @@ mod tests {
 
     /// #620: an icon glyph paints at the tab's leading edge in its own
     /// [`crate::TabIcon::color`], and the label starts right after it +
-    /// the 1-column gap [`crate::TabItem::icon_cols`] reserves — matching
-    /// what `TuiBackend::draw_tab_bar`/`tab_bar_layout` (backend.rs) add
-    /// to the tab's measured width.
+    /// the 1-column gap [`crate::tab_icon_cols`] reserves — matching what
+    /// `TuiBackend::draw_tab_bar_icons`/`tab_bar_layout_icons`
+    /// (backend.rs) add to the tab's measured width.
     #[test]
     fn icon_glyph_paints_before_label_and_widens_measured_tab() {
         use crate::primitives::tab_bar::TabIcon;
@@ -500,15 +523,14 @@ mod tests {
             glyph: "\u{f09b}".into(), // single-column PUA glyph
             color: Color::rgb(240, 150, 60),
         };
+        let icons = vec![Some(icon.clone())];
         let bar = TabBar {
             id: WidgetId::new("tabs"),
             tabs: vec![TabItem {
                 label: "main.rs".into(),
                 is_active: true,
-                is_dirty: false,
-                is_preview: false,
                 is_closable: false,
-                icon: Some(icon.clone()),
+                ..Default::default()
             }],
             right_segments: vec![],
             active_accent: None,
@@ -517,7 +539,7 @@ mod tests {
             compact: false,
         };
 
-        let icon_cols = bar.tabs[0].icon_cols();
+        let icon_cols = crate::tab_icon_cols(&icons, 0);
         assert_eq!(
             icon_cols, 2,
             "1-column glyph + 1-column gap before the label"
@@ -533,10 +555,11 @@ mod tests {
             |_| TabMeasure::new(icon_cols as f32 + label_w, 0.0),
             |_| SegmentMeasure::new(0.0),
         );
-        draw_tab_bar(
+        draw_tab_bar_icons(
             &mut buf,
             Rect::new(0, 0, 40, 1),
             &bar,
+            &icons,
             &layout,
             &Theme::default(),
         );
@@ -555,6 +578,34 @@ mod tests {
             cell_char(&buf, icon_cols, 0),
             'm',
             "label should start right after icon_cols (glyph + 1-column gap)"
+        );
+    }
+
+    /// #620: an empty icon sidecar must paint exactly what the icon-less
+    /// [`draw_tab_bar`] entry point paints — that equivalence is what
+    /// lets every backend route both entry points through one rasteriser
+    /// without changing a single existing pixel.
+    #[test]
+    fn empty_icon_sidecar_paints_identically_to_draw_tab_bar() {
+        let bar = make_bar(0);
+        let area = Rect::new(0, 0, 40, 1);
+        let layout = bar.layout(40.0, 1.0, 0.0, measure_tab, |_| SegmentMeasure::new(0.0));
+
+        let mut plain = Buffer::empty(area);
+        let plain_hits = draw_tab_bar(&mut plain, area, &bar, &layout, &Theme::default());
+
+        let mut sidecar = Buffer::empty(area);
+        let sidecar_hits =
+            draw_tab_bar_icons(&mut sidecar, area, &bar, &[], &layout, &Theme::default());
+
+        assert_eq!(plain, sidecar, "empty sidecar must not change any cell");
+        assert_eq!(
+            plain_hits.slot_positions, sidecar_hits.slot_positions,
+            "empty sidecar must not move any tab slot"
+        );
+        assert_eq!(
+            plain_hits.close_bounds, sidecar_hits.close_bounds,
+            "empty sidecar must not move any close button"
         );
     }
 }

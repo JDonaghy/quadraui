@@ -1147,7 +1147,6 @@ mod tests {
                             is_dirty: false,
                             is_preview: false,
                             is_closable: false,
-                            icon: None,
                         },
                         TabItem {
                             label: "prev".to_string(),
@@ -1155,7 +1154,6 @@ mod tests {
                             is_dirty: false,
                             is_preview: true,
                             is_closable: false,
-                            icon: None,
                         },
                     ],
                     scroll_offset: 0,
@@ -1307,7 +1305,6 @@ mod tests {
                         is_dirty: false,
                         is_preview: false,
                         is_closable: true,
-                        icon: None,
                     })
                     .collect(),
                 scroll_offset: 0,
@@ -1424,7 +1421,6 @@ mod tests {
                             is_dirty: false,
                             is_preview: false,
                             is_closable: false,
-                            icon: None,
                         }],
                         scroll_offset: 0,
                         right_segments: vec![],
@@ -1475,7 +1471,6 @@ mod tests {
                                 is_dirty: false,
                                 is_preview: false,
                                 is_closable: true,
-                                icon: None,
                             },
                             TabItem {
                                 label: "b".to_string(),
@@ -1483,7 +1478,6 @@ mod tests {
                                 is_dirty: false,
                                 is_preview: false,
                                 is_closable: true,
-                                icon: None,
                             },
                             TabItem {
                                 label: "c".to_string(),
@@ -1491,7 +1485,6 @@ mod tests {
                                 is_dirty: false,
                                 is_preview: false,
                                 is_closable: true,
-                                icon: None,
                             },
                         ],
                         // Bar is far too narrow (5 cells) for all 3 tabs

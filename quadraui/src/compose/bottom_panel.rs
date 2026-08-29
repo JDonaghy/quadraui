@@ -375,7 +375,6 @@ impl BottomPanelController {
                     // the × glyph and close-button hit region for non-closable
                     // tabs even when `show_tab_close` is set on the bar.
                     is_closable: t.closable,
-                    icon: None,
                 }
             })
             .collect();

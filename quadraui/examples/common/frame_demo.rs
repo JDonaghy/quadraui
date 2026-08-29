@@ -99,7 +99,6 @@ impl FrameDemo {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
-                    icon: None,
                 })
                 .collect(),
             scroll_offset: 0,

@@ -26,10 +26,52 @@ const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
 const TAB_OUTER_GAP: f64 = 1.0;
 /// Gap between a tab's icon glyph (see [`crate::TabIcon`]) and its label.
-const TAB_ICON_GAP: f64 = 6.0;
+pub(crate) const TAB_ICON_GAP: f64 = 6.0;
 /// Height of the active-tab top-edge accent line — VS Code Dark Modern's
 /// `tab.activeBorderTop` (#620).
 const TAB_ACTIVE_BORDER_TOP_PX: f64 = 1.0;
+
+/// The Nerd-Font-swapped variant of the tab bar's label font, used to
+/// measure and paint [`crate::TabIcon`] glyphs (#620). Icon glyphs share
+/// the label's size/weight/style but swap in an icon family, matching the
+/// activity bar's glyph-sourcing convention — the UI font itself typically
+/// isn't patched with icon codepoints.
+///
+/// Shared by [`draw_tab_bar_icons`] and `GtkBackend::tab_bar_layout_icons`
+/// so the no-paint measurement can't drift from the painted glyph.
+pub(crate) fn tab_icon_font(base: &pango::FontDescription) -> pango::FontDescription {
+    let mut f = base.clone();
+    f.set_family("Symbols Nerd Font, monospace");
+    f
+}
+
+/// Per-tab extra width (px) reserved for an icon glyph + [`TAB_ICON_GAP`],
+/// indexed like `bar.tabs`. `0.0` for every tab without an icon, so
+/// icon-less tabs keep byte-identical width and hit-test geometry to the
+/// pre-#620 rasteriser.
+///
+/// Mutates `pango_layout`'s font description + text as it measures; the
+/// caller re-sets both before its next use (both call sites do).
+pub(crate) fn tab_icon_extras(
+    pango_layout: &pango::Layout,
+    icon_font: &pango::FontDescription,
+    tab_count: usize,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+) -> Vec<f64> {
+    (0..tab_count)
+        .map(
+            |i| match crate::primitives::tab_bar::tab_icon_at(icons, i) {
+                Some(icon) => {
+                    pango_layout.set_font_description(Some(icon_font));
+                    pango_layout.set_text(&icon.glyph);
+                    let (icon_w, _) = pango_layout.pixel_size();
+                    icon_w as f64 + TAB_ICON_GAP
+                }
+                None => 0.0,
+            },
+        )
+        .collect()
+}
 
 /// Draw a [`TabBar`] into `(x_offset, y_offset, width, row_height)` on `cr`.
 /// Caller is responsible for setting the desired UI font on `layout`
@@ -87,6 +129,52 @@ pub fn draw_tab_bar(
     theme: &Theme,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
+    draw_tab_bar_icons(
+        cr,
+        pango_layout,
+        x_offset,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        &[],
+        theme,
+        hovered_close_tab,
+    )
+}
+
+/// [`draw_tab_bar`] plus per-tab icon glyphs (#620).
+///
+/// `icons` is a sidecar slice parallel to `bar.tabs` (see
+/// [`crate::Backend::draw_tab_bar_icons`]) — entry `i` decorates tab
+/// `i`, a `None` or missing entry means "no icon", and `&[]` reproduces
+/// [`draw_tab_bar`] pixel for pixel.
+///
+/// Each decorated tab reserves `pango(glyph) + TAB_ICON_GAP` extra
+/// pixels ahead of its label and paints the glyph in
+/// [`crate::TabIcon::color`], independent of the tab's active/inactive
+/// foreground. The reservation feeds the same [`crate::TabMeasure`] the
+/// layout is built from, so close-button bounds and slot positions stay
+/// on the glyphs the user sees.
+///
+/// Icon glyphs share the label's size/weight/style but swap in a Nerd
+/// Font family, matching the activity bar's glyph-sourcing convention —
+/// the UI font itself typically isn't patched with icon codepoints.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tab_bar_icons(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x_offset: f64,
+    width: f64,
+    line_height: f64,
+    y_offset: f64,
+    row_height: f64,
+    bar: &TabBar,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+    theme: &Theme,
+    hovered_close_tab: Option<usize>,
+) -> (TabBarHits, TabBarLayout) {
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
@@ -133,31 +221,8 @@ pub fn draw_tab_bar(
         })
         .collect();
 
-    // Icon glyphs share the label's size/weight/style but swap in a Nerd
-    // Font family, matching the activity bar's glyph-sourcing convention —
-    // the UI font itself typically isn't patched with icon codepoints.
-    let icon_font = {
-        let mut f = normal_font.clone();
-        f.set_family("Symbols Nerd Font, monospace");
-        f
-    };
-
-    // Per-tab extra width reserved for an icon glyph + trailing gap.
-    // `0.0` when the tab has no icon, so icon-less tabs keep their exact
-    // pre-#620 width and hit-test geometry.
-    let tab_icon_extras: Vec<f64> = bar
-        .tabs
-        .iter()
-        .map(|tab| match &tab.icon {
-            Some(icon) => {
-                pango_layout.set_font_description(Some(&icon_font));
-                pango_layout.set_text(&icon.glyph);
-                let (icon_w, _) = pango_layout.pixel_size();
-                icon_w as f64 + TAB_ICON_GAP
-            }
-            None => 0.0,
-        })
-        .collect();
+    let icon_font = tab_icon_font(&normal_font);
+    let tab_icon_extras = tab_icon_extras(pango_layout, &icon_font, bar.tabs.len(), icons);
 
     let measure_tab = |i: usize| -> TabMeasure {
         let name_w = tab_name_widths[i] as f32;
@@ -236,7 +301,7 @@ pub fn draw_tab_bar(
         // Icon glyph, if this tab has one — painted before the label in
         // its own colour, independent of the tab's active/inactive fg.
         let icon_extra = tab_icon_extras[vt.tab_idx];
-        if let Some(icon) = &tab.icon {
+        if let Some(icon) = crate::primitives::tab_bar::tab_icon_at(icons, vt.tab_idx) {
             set_source(cr, icon.color);
             pango_layout.set_font_description(Some(&icon_font));
             pango_layout.set_text(&icon.glyph);
@@ -453,7 +518,6 @@ mod tests {
                 is_dirty: false,
                 is_preview: false,
                 is_closable: true,
-                icon: None,
             }],
             scroll_offset: 0,
             right_segments: vec![TabBarSegment {
@@ -556,15 +620,12 @@ mod tests {
     fn icon_reserves_extra_width_and_close_still_hit_tests() {
         use crate::primitives::tab_bar::{TabBarHit, TabIcon};
 
-        let make = |icon: Option<TabIcon>| TabBar {
+        let bar = TabBar {
             id: WidgetId::new("tabs"),
             tabs: vec![TabItem {
                 label: "main.rs".to_string(),
                 is_active: true,
-                is_dirty: false,
-                is_preview: false,
-                is_closable: true,
-                icon,
+                ..Default::default()
             }],
             scroll_offset: 0,
             right_segments: vec![],
@@ -578,7 +639,8 @@ mod tests {
         let pango_layout = pangocairo::functions::create_layout(&cr);
         let theme = make_theme();
 
-        let no_icon_bar = make(None);
+        // Same bar painted twice — only the icon sidecar differs, so any
+        // geometry delta below is attributable to the icon reservation.
         let (_, no_icon_layout) = draw_tab_bar(
             &cr,
             &pango_layout,
@@ -587,16 +649,16 @@ mod tests {
             LINE_H,
             0.0,
             ROW_H as f64,
-            &no_icon_bar,
+            &bar,
             &theme,
             None,
         );
 
-        let icon_bar = make(Some(TabIcon {
+        let icons = vec![Some(TabIcon {
             glyph: "\u{f09b}".to_string(),
             color: Color::rgb(240, 150, 60),
-        }));
-        let (icon_hits, icon_layout) = draw_tab_bar(
+        })];
+        let (icon_hits, icon_layout) = draw_tab_bar_icons(
             &cr,
             &pango_layout,
             0.0,
@@ -604,7 +666,8 @@ mod tests {
             LINE_H,
             0.0,
             ROW_H as f64,
-            &icon_bar,
+            &bar,
+            &icons,
             &theme,
             None,
         );

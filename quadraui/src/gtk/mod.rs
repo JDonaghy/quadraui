@@ -107,7 +107,7 @@ pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::{draw_split, gtk_split_layout};
 pub use split_tree::{draw_split_tree, gtk_split_tree_layout};
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
-pub use tab_bar::draw_tab_bar;
+pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons};
 pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use text_input::{draw_text_input, gtk_text_input_layout};

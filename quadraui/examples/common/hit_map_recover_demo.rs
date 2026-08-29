@@ -73,7 +73,6 @@ impl HitMapRecoverDemo {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: false,
-                    icon: None,
                 })
                 .collect(),
             scroll_offset: 0,

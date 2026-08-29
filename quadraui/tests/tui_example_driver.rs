@@ -94,6 +94,9 @@ mod split_app;
 mod split_tree_app;
 #[path = "../examples/common/tab_group_demo.rs"]
 mod tab_group_demo;
+#[path = "../examples/common/tab_icons_demo.rs"]
+#[allow(dead_code)]
+mod tab_icons_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 #[path = "../examples/common/toast_app.rs"]
@@ -137,6 +140,7 @@ use sidebar_reveal_demo::SidebarRevealDemo;
 use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
 use tab_group_demo::TabGroupDemo;
+use tab_icons_demo::TabIconsDemo;
 use text_input_demo::TextInputDemo;
 use toast_app::ToastApp;
 use tooltip_demo::TooltipDemo;
@@ -4488,4 +4492,148 @@ fn wide_tab_bar_demo_q_exits() {
     let mut driver = TuiDriver::new(WideTabBarDemo::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the wide tab bar demo");
+}
+
+// ─── TabIconsDemo: per-tab icon glyphs through the sidecar (#620) ──────────
+//
+// The icon sidecar's whole contract is geometric: a decorated tab must
+// reserve exactly the columns it paints, on both the paint path
+// (`draw_tab_bar_icons`) and its no-paint twin (`tab_bar_layout_icons`).
+// These drive the shipping `tui_tab_icons` example through both.
+
+/// The demo's own tab bar id — `tab_center` needs it to resolve a
+/// specific tab's painted geometry (labels alone can't disambiguate).
+fn tab_icons_bar_id() -> quadraui::WidgetId {
+    quadraui::WidgetId::new("tab-icons-demo:tabs")
+}
+
+#[test]
+fn tab_icons_demo_paints_each_glyph_before_its_label() {
+    let driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    let screen = driver.screen();
+    // Icon glyph + the 1-column gap `tab_icon_cols` reserves, then the
+    // label (whose own leading space is part of `TabItem::label`).
+    for pair in ["R  main.rs ", "T  Cargo.toml ", "M  README.md "] {
+        assert!(
+            driver.screen_contains(pair),
+            "expected {pair:?} — glyph, gap, then label:\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn tab_icons_demo_glyph_keeps_its_own_colour_on_an_inactive_tab() {
+    let driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    // Tab 2 ("README.md") is inactive on the initial frame; its glyph
+    // must still paint in the TabIcon colour, not the tab foreground.
+    let label = driver
+        .find_bounds("README.md")
+        .expect("inactive tab label should be painted");
+    let glyph_x = label.x as u16 - 2; // glyph, then the 1-column gap
+    let glyph_style = driver
+        .style_at(glyph_x, label.y as u16)
+        .expect("glyph cell should be inside the screen");
+    let label_style = driver
+        .style_at(label.x as u16, label.y as u16)
+        .expect("label cell should be inside the screen");
+    assert_ne!(
+        glyph_style.fg,
+        label_style.fg,
+        "TabIcon::color must survive on an inactive tab, independent of \
+         the tab's foreground:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_icons_demo_toggling_the_sidecar_shifts_labels_by_the_reservation() {
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    let with_icons = driver
+        .find_bounds("main.rs")
+        .expect("label should paint with icons on");
+    assert!(driver.screen_contains("icons: on"));
+
+    driver.type_char('i');
+
+    let without_icons = driver
+        .find_bounds("main.rs")
+        .expect("label should still paint with icons off");
+    assert!(
+        driver.screen_contains("icons: off"),
+        "toggle should be reflected in the hint bar:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        with_icons.x - without_icons.x,
+        2.0,
+        "an empty sidecar must give back exactly the icon reservation \
+         (1-column glyph + 1-column gap):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_icons_demo_click_on_a_decorated_tab_activates_that_tab() {
+    // Round-trips paint → `tab_bar_layout_icons` → handle → re-render.
+    // With the icon-less twin the third tab's slot would sit ~6 columns
+    // left of where it painted, so this click would land on tab 1.
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    let readme = driver
+        .find_bounds("README.md")
+        .expect("tab 2's label should be painted");
+    let main = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let readme_before = driver
+        .style_at(readme.x as u16, readme.y as u16)
+        .expect("README cell")
+        .bg;
+    let main_before = driver
+        .style_at(main.x as u16, main.y as u16)
+        .expect("main.rs cell")
+        .bg;
+    assert_ne!(
+        readme_before, main_before,
+        "tab 0 starts active and tab 2 inactive, so their backgrounds differ"
+    );
+
+    // Deliberately the *trailing* end of tab 2 (its close glyph), not the
+    // center: three icon reservations upstream have pushed this column
+    // past where an icon-blind `tab_bar_layout` would put tab 2's slot,
+    // so a demo that routed clicks through the icon-less twin would find
+    // no slot here and leave tab 0 active. A center click would still
+    // land inside the shifted slot and pass either way.
+    let (x, y) = driver
+        .tab_close_center(&tab_icons_bar_id(), 2)
+        .expect("tab 2 should have painted close-glyph geometry");
+    driver.click(x, y);
+
+    let readme_after = driver
+        .style_at(readme.x as u16, readme.y as u16)
+        .expect("README cell")
+        .bg;
+    let main_after = driver
+        .style_at(main.x as u16, main.y as u16)
+        .expect("main.rs cell")
+        .bg;
+    assert_eq!(
+        readme_after,
+        main_before,
+        "clicking tab 2 should make it active (it should now paint the \
+         background tab 0 had):\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        main_after,
+        readme_before,
+        "and tab 0 should go inactive:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_icons_demo_q_exits() {
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the tab icons demo");
 }
