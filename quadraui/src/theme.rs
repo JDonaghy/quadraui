@@ -30,6 +30,36 @@ use serde::{Deserialize, Serialize};
 /// fields it needs. The `Default` impl keeps a coherent dark palette
 /// so apps can spread `..Default::default()` after specifying the
 /// fields they care about.
+///
+/// # Adding a field here is a BREAKING change — prefer a method
+///
+/// The paragraph above describes how in-tree callers *should* build a
+/// `Theme`; it is not what the downstream consumers actually do.
+/// `Theme` is a plain struct (not `#[non_exhaustive]`, and it must stay
+/// that way — `#[non_exhaustive]` would forbid struct-literal syntax
+/// downstream outright, breaking both consumers harder than any field
+/// ever could), and `coord-tui` builds three of its four palettes —
+/// `light_palette`, `high_contrast_palette`, `solarized_palette` in
+/// `tui/src/settings.rs` — with **exhaustive literals and no
+/// `..Default::default()` spread**. A new field therefore lands as
+/// `error[E0063]: missing field` in their next build, and unlike a
+/// rename there is no `#[deprecated]` shim that can soften a field
+/// *addition* (CLAUDE.md's *Downstream consumers* section,
+/// `docs/PRIMITIVE_RULES.md` rule 8). #620 learned this the expensive
+/// way: `tab_active_border_top` shipped as a field, reddened the
+/// `downstream consumers (compile truth)` gate, and came back as
+/// [`Theme::tab_active_border_top`] — a method.
+///
+/// So, before adding a `pub` field here:
+///
+/// 1. Can the value be **derived from an existing field**? Then add an
+///    inherent method (`fn tab_active_border_top(&self) -> Color`),
+///    which is purely additive and still themeable, since the field it
+///    derives from is one the app already sets.
+/// 2. If it genuinely needs independent storage, it is a real breaking
+///    change: one field per PR, with a `## Downstream impact` section
+///    naming each consumer literal that must gain the field, and the
+///    consumer migration issues opened in the same session.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
     // ── StatusBar pilot (#223 slice 1) ─────────────────────────────────
@@ -58,16 +88,6 @@ pub struct Theme {
     /// Window / panel separator colour. Used by `TabBar` for the
     /// close-button `×` on inactive tabs.
     pub separator: Color,
-    /// 1 px accent line painted along the top edge of the active tab —
-    /// VS Code Dark Modern's `tab.activeBorderTop` (#620). Not applied by
-    /// default: a caller opts in by passing
-    /// `active_accent: Some(theme.tab_active_border_top)`, mirroring VS
-    /// Code's own split between `tab.activeBorderTop` (focused group) and
-    /// `tab.unfocusedActiveBorderTop` (typically unset). Leaving
-    /// [`crate::TabBar::active_accent`] as `None` paints no accent at all
-    /// on every backend (TUI, GTK, macOS) — e.g. for a bottom-panel tab
-    /// strip, a terminal toolbar, or an unfocused split's tab bar.
-    pub tab_active_border_top: Color,
 
     // ── ListView pilot (#223 slice 3) ──────────────────────────────────
     /// Background fill for surfaces drawn with a border (e.g. a
@@ -284,6 +304,30 @@ pub struct Theme {
     pub card_hint_fg: Color,
 }
 
+impl Theme {
+    /// Colour of the 1 px accent line along the top edge of the active
+    /// tab — VS Code Dark Modern's `tab.activeBorderTop` (#620).
+    ///
+    /// Never applied automatically. A caller opts in per bar by passing
+    /// `active_accent: Some(theme.tab_active_border_top())`, mirroring VS
+    /// Code's own split between `tab.activeBorderTop` (focused group) and
+    /// `tab.unfocusedActiveBorderTop` (typically unset). Leaving
+    /// [`crate::TabBar::active_accent`] as `None` paints no accent at all
+    /// on every backend (TUI, GTK, macOS) — e.g. for a bottom-panel tab
+    /// strip, a terminal toolbar, or an unfocused split's tab bar.
+    ///
+    /// **This is a method, not a `Theme` field, on purpose** — see the
+    /// "adding a field here is a breaking change" note on [`Theme`]
+    /// itself. Deriving it from [`Self::accent_fg`] loses nothing: a
+    /// palette that already sets its accent colour gets a matching tab
+    /// accent for free, and the built-in dark default is unchanged
+    /// (`accent_fg` defaults to the same `rgb(140, 200, 240)` this
+    /// originally shipped as a field).
+    pub fn tab_active_border_top(&self) -> Color {
+        self.accent_fg
+    }
+}
+
 impl Default for Theme {
     /// Neutral dark palette so the rasterisers produce something visible
     /// when an app forgets to populate the theme. Apps almost always
@@ -302,7 +346,6 @@ impl Default for Theme {
             tab_preview_active_fg: Color::rgb(180, 180, 200),
             tab_preview_inactive_fg: Color::rgb(110, 110, 125),
             separator: Color::rgb(60, 62, 72),
-            tab_active_border_top: Color::rgb(140, 200, 240),
             surface_bg: Color::rgb(28, 32, 44),
             surface_fg: fg,
             selected_bg: Color::rgb(50, 60, 90),
@@ -375,5 +418,146 @@ impl Default for Theme {
             card_hint_bg: Color::rgb(35, 40, 55),
             card_hint_fg: Color::rgb(180, 190, 210),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #620: the active-tab top accent is exposed as a *method* derived
+    /// from `accent_fg`, not as its own `Theme` field — a field addition
+    /// is `error[E0063]` in coord-tui's three exhaustive palette literals
+    /// (`tui/src/settings.rs`), which is exactly what reddened the
+    /// `downstream consumers (compile truth)` gate. The default value is
+    /// unchanged from the field version it replaced.
+    #[test]
+    fn tab_active_border_top_defaults_to_the_accent_colour() {
+        let theme = Theme::default();
+        assert_eq!(
+            theme.tab_active_border_top(),
+            theme.accent_fg,
+            "the tab accent line must track the palette's accent colour"
+        );
+        assert_eq!(
+            theme.tab_active_border_top(),
+            Color::rgb(140, 200, 240),
+            "default accent must match the value #620 originally shipped as a field"
+        );
+    }
+
+    /// The accent stays *themeable* despite not having its own field: an
+    /// app that recolours `accent_fg` recolours the tab accent with it,
+    /// which is what makes the method a lossless replacement rather than
+    /// a hardcoded constant.
+    #[test]
+    fn tab_active_border_top_follows_a_custom_accent() {
+        let theme = Theme {
+            accent_fg: Color::rgb(255, 100, 0),
+            ..Theme::default()
+        };
+        assert_eq!(theme.tab_active_border_top(), Color::rgb(255, 100, 0));
+    }
+
+    /// The regression this whole change is about: a `Theme` built with an
+    /// **exhaustive literal and no `..Default::default()` spread** — the
+    /// shape coord-tui's `light_palette` / `high_contrast_palette` /
+    /// `solarized_palette` (`tui/src/settings.rs`) use — must keep
+    /// compiling. This test is that consumer shape in miniature, and it
+    /// is deliberately verbose: the `..` spread is the one thing it must
+    /// NOT have, because the spread is exactly what would let a new
+    /// `pub` field slip through here and surface as `error[E0063]` in a
+    /// consumer's CI instead.
+    ///
+    /// **If you added a field to `Theme` and this stopped compiling,
+    /// that is the test working.** Re-read [`Theme`]'s "adding a field
+    /// here is a BREAKING change" section before adding the field below:
+    /// a value derivable from an existing field belongs in a method (see
+    /// [`Theme::tab_active_border_top`]), and a field that genuinely
+    /// needs its own storage needs consumer migrations landed alongside.
+    #[test]
+    fn exhaustive_theme_literal_still_compiles() {
+        // Values come from `Default` so this asserts the struct's
+        // *shape*, not ~80 hardcoded colours.
+        let d = Theme::default();
+        let exhaustive = Theme {
+            background: d.background,
+            foreground: d.foreground,
+            tab_bar_bg: d.tab_bar_bg,
+            tab_active_bg: d.tab_active_bg,
+            tab_active_fg: d.tab_active_fg,
+            tab_inactive_fg: d.tab_inactive_fg,
+            tab_preview_active_fg: d.tab_preview_active_fg,
+            tab_preview_inactive_fg: d.tab_preview_inactive_fg,
+            separator: d.separator,
+            surface_bg: d.surface_bg,
+            surface_fg: d.surface_fg,
+            selected_bg: d.selected_bg,
+            inactive_selected_bg: d.inactive_selected_bg,
+            border_fg: d.border_fg,
+            title_fg: d.title_fg,
+            header_bg: d.header_bg,
+            header_fg: d.header_fg,
+            muted_fg: d.muted_fg,
+            error_fg: d.error_fg,
+            warning_fg: d.warning_fg,
+            query_fg: d.query_fg,
+            match_fg: d.match_fg,
+            accent_fg: d.accent_fg,
+            hover_bg: d.hover_bg,
+            hover_fg: d.hover_fg,
+            hover_border: d.hover_border,
+            input_bg: d.input_bg,
+            inactive_fg: d.inactive_fg,
+            selection_bg: d.selection_bg,
+            link_fg: d.link_fg,
+            completion_bg: d.completion_bg,
+            completion_fg: d.completion_fg,
+            completion_border: d.completion_border,
+            completion_selected_bg: d.completion_selected_bg,
+            accent_bg: d.accent_bg,
+            scrollbar_track: d.scrollbar_track,
+            scrollbar_thumb: d.scrollbar_thumb,
+            editor_active_background: d.editor_active_background,
+            cursorline_bg: d.cursorline_bg,
+            dap_stopped_bg: d.dap_stopped_bg,
+            colorcolumn_bg: d.colorcolumn_bg,
+            diff_added_bg: d.diff_added_bg,
+            diff_removed_bg: d.diff_removed_bg,
+            diff_padding_bg: d.diff_padding_bg,
+            line_number_fg: d.line_number_fg,
+            line_number_active_fg: d.line_number_active_fg,
+            diagnostic_error: d.diagnostic_error,
+            diagnostic_warning: d.diagnostic_warning,
+            diagnostic_info: d.diagnostic_info,
+            diagnostic_hint: d.diagnostic_hint,
+            git_added: d.git_added,
+            git_modified: d.git_modified,
+            git_deleted: d.git_deleted,
+            lightbulb: d.lightbulb,
+            spell_error: d.spell_error,
+            cursor: d.cursor,
+            cursor_normal_alpha: d.cursor_normal_alpha,
+            selection: d.selection,
+            selection_alpha: d.selection_alpha,
+            yank_highlight_bg: d.yank_highlight_bg,
+            yank_highlight_alpha: d.yank_highlight_alpha,
+            bracket_match_bg: d.bracket_match_bg,
+            indent_guide_fg: d.indent_guide_fg,
+            indent_guide_active_fg: d.indent_guide_active_fg,
+            annotation_fg: d.annotation_fg,
+            ghost_text_fg: d.ghost_text_fg,
+            command_line_bg: d.command_line_bg,
+            command_line_fg: d.command_line_fg,
+            board_selected_card_bg: d.board_selected_card_bg,
+            board_col_header_bg: d.board_col_header_bg,
+            badge_running: d.badge_running,
+            badge_passed: d.badge_passed,
+            badge_warning: d.badge_warning,
+            badge_blocked: d.badge_blocked,
+            card_hint_bg: d.card_hint_bg,
+            card_hint_fg: d.card_hint_fg,
+        };
+        assert_eq!(exhaustive, d);
     }
 }
