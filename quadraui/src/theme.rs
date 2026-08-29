@@ -59,10 +59,14 @@ pub struct Theme {
     /// close-button `×` on inactive tabs.
     pub separator: Color,
     /// 1 px accent line painted along the top edge of the active tab —
-    /// VS Code Dark Modern's `tab.activeBorderTop` (#620). Used as the
-    /// default colour when [`crate::TabBar::active_accent`] is `None`;
-    /// a bar that sets `active_accent` overrides this per-instance
-    /// (e.g. to emphasise the focused split's active tab).
+    /// VS Code Dark Modern's `tab.activeBorderTop` (#620). Not applied by
+    /// default: a caller opts in by passing
+    /// `active_accent: Some(theme.tab_active_border_top)`, mirroring VS
+    /// Code's own split between `tab.activeBorderTop` (focused group) and
+    /// `tab.unfocusedActiveBorderTop` (typically unset). Leaving
+    /// [`crate::TabBar::active_accent`] as `None` paints no accent at all
+    /// on every backend (TUI, GTK, macOS) — e.g. for a bottom-panel tab
+    /// strip, a terminal toolbar, or an unfocused split's tab bar.
     pub tab_active_border_top: Color,
 
     // ── ListView pilot (#223 slice 3) ──────────────────────────────────

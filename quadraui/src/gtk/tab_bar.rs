@@ -109,8 +109,9 @@ pub(crate) fn tab_icon_extras(
 /// # Visual contract
 ///
 /// - **Tab row height:** caller-provided via `row_height`.
-/// - **Active tab:** `theme.tab_active_bg` background, optional 2 px
-///   accent line at the top edge in [`TabBar::active_accent`].
+/// - **Active tab:** `theme.tab_active_bg` background, plus a 1 px accent
+///   line at the top edge when [`TabBar::active_accent`] is `Some` — `None`
+///   paints no accent at all, matching the TUI and macOS rasterisers.
 /// - **Dirty tab:** close glyph is `●` (in `theme.foreground`)
 ///   instead of `×`.
 /// - **Preview tab:** italicised label.
@@ -282,20 +283,27 @@ pub fn draw_tab_bar_icons(
         cr.fill().ok();
 
         // Top accent line for the active tab — VS Code Dark Modern's
-        // `tab.activeBorderTop` (#620). `bar.active_accent` overrides the
-        // theme default when set (e.g. to emphasise the focused split's
-        // active tab); every other active tab gets the theme default so
-        // the accent shows up without every caller having to opt in.
+        // `tab.activeBorderTop` (#620). `bar.active_accent` is `None` = no
+        // accent, matching the TUI (`tui/tab_bar.rs`) and macOS
+        // (`macos/tab_bar.rs`) rasterisers and the field's own doc comment
+        // ("`None` = no underline accent (typical for inactive groups)",
+        // `primitives/tab_bar.rs`). Callers that want VS Code's focused-tab
+        // top border opt in explicitly with
+        // `active_accent: Some(theme.tab_active_border_top)`; a bar with no
+        // notion of focus (bottom-panel tab strip, terminal toolbar,
+        // unfocused splits) passes `None` and gets no strip, same as every
+        // other backend.
         if tab.is_active {
-            let accent = bar.active_accent.unwrap_or(theme.tab_active_border_top);
-            set_source(cr, accent);
-            cr.rectangle(
-                x_offset + tab_x,
-                y_offset,
-                tab_visual_w,
-                TAB_ACTIVE_BORDER_TOP_PX,
-            );
-            cr.fill().ok();
+            if let Some(accent) = bar.active_accent {
+                set_source(cr, accent);
+                cr.rectangle(
+                    x_offset + tab_x,
+                    y_offset,
+                    tab_visual_w,
+                    TAB_ACTIVE_BORDER_TOP_PX,
+                );
+                cr.fill().ok();
+            }
         }
 
         // Icon glyph, if this tab has one — painted before the label in
@@ -695,20 +703,22 @@ mod tests {
         );
     }
 
-    /// #620: the active tab's top row of pixels must be
-    /// `theme.tab_active_border_top` by default (VS Code Dark Modern's
-    /// `tab.activeBorderTop`) — no opt-in `active_accent` required. The
-    /// row immediately below must NOT be that colour, confirming the
-    /// accent is a thin top strip, not the whole active-tab background.
+    /// #620: when a bar opts in with `active_accent: Some(colour)`, the
+    /// active tab's top row of pixels must be that colour — VS Code Dark
+    /// Modern's `tab.activeBorderTop`. The row immediately below must NOT
+    /// be that colour, confirming the accent is a thin top strip, not the
+    /// whole active-tab background.
     #[test]
-    fn active_tab_top_row_is_theme_accent_by_default() {
+    fn active_tab_top_row_is_accent_when_opted_in() {
+        let accent = Color::rgb(90, 170, 255);
         let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
         {
             let cr = Context::new(&surface).expect("Context::new");
             cr.set_source_rgb(1.0, 1.0, 1.0);
             cr.paint().ok();
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            let bar = make_bar();
+            let mut bar = make_bar();
+            bar.active_accent = Some(accent);
             let theme = make_theme();
             draw_tab_bar(
                 &cr,
@@ -728,12 +738,11 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
-        let accent = make_theme().tab_active_border_top;
         let top = pixel(&data, stride, 5, 0);
         assert_eq!(
             top,
             (accent.r, accent.g, accent.b),
-            "top row of the active tab should default to theme.tab_active_border_top"
+            "top row of the active tab should be the opted-in active_accent colour"
         );
 
         let below = pixel(&data, stride, 5, 3);
@@ -741,6 +750,58 @@ mod tests {
             below,
             (accent.r, accent.g, accent.b),
             "a few rows below the top accent should be the tab body, not the accent colour"
+        );
+    }
+
+    /// #620 review follow-up: `active_accent: None` must paint no accent
+    /// strip at all — the pre-#620 behaviour, and the contract the TUI
+    /// (`tui::tab_bar::draw_tab_bar`) and macOS (`macos::tab_bar`)
+    /// rasterisers already implement. Regressing this would mean every
+    /// vimcode caller that passes `None` on purpose (bottom-panel tab
+    /// strip, terminal toolbar, any unfocused split) starts painting a
+    /// theme-default accent it never asked for.
+    #[test]
+    fn active_tab_top_row_has_no_accent_when_none() {
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let theme = make_theme();
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bar = make_bar();
+            assert_eq!(bar.active_accent, None, "test fixture must exercise None");
+            draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                None,
+            );
+        }
+        let mut surface = surface;
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let border_top = theme.tab_active_border_top;
+        let active_bg = theme.tab_active_bg;
+        let top = pixel(&data, stride, 5, 0);
+        assert_ne!(
+            top,
+            (border_top.r, border_top.g, border_top.b),
+            "with active_accent: None, the top row must NOT be theme.tab_active_border_top"
+        );
+        assert_eq!(
+            top,
+            (active_bg.r, active_bg.g, active_bg.b),
+            "with active_accent: None, the top row should just be the active tab's \
+             background — no accent strip painted over it"
         );
     }
 }
