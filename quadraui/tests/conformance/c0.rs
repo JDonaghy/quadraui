@@ -117,6 +117,7 @@ pub const CASES: &[Case] = &[
                     is_dirty: false,
                     is_preview: false,
                     is_closable: false,
+                    icon: None,
                 }],
                 scroll_offset: 0,
                 right_segments: vec![],

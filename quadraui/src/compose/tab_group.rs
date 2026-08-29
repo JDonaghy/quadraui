@@ -436,6 +436,7 @@ impl Pane {
                 is_dirty: false,
                 is_preview: false,
                 is_closable: t.closable,
+                icon: None,
             })
             .collect();
         TabBar {

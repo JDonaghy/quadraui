@@ -354,6 +354,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 TabItem {
                     label: "lib.rs".into(),
@@ -361,6 +362,7 @@ mod tests {
                     is_dirty: true,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
             ],
             scroll_offset: 0,
@@ -532,6 +534,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 TabItem {
                     label: "tab.rs".into(),
@@ -539,6 +542,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: false,
+                    icon: None,
                 },
             ],
             scroll_offset: 0,

@@ -58,6 +58,12 @@ pub struct Theme {
     /// Window / panel separator colour. Used by `TabBar` for the
     /// close-button `×` on inactive tabs.
     pub separator: Color,
+    /// 1 px accent line painted along the top edge of the active tab —
+    /// VS Code Dark Modern's `tab.activeBorderTop` (#620). Used as the
+    /// default colour when [`crate::TabBar::active_accent`] is `None`;
+    /// a bar that sets `active_accent` overrides this per-instance
+    /// (e.g. to emphasise the focused split's active tab).
+    pub tab_active_border_top: Color,
 
     // ── ListView pilot (#223 slice 3) ──────────────────────────────────
     /// Background fill for surfaces drawn with a border (e.g. a
@@ -292,6 +298,7 @@ impl Default for Theme {
             tab_preview_active_fg: Color::rgb(180, 180, 200),
             tab_preview_inactive_fg: Color::rgb(110, 110, 125),
             separator: Color::rgb(60, 62, 72),
+            tab_active_border_top: Color::rgb(140, 200, 240),
             surface_bg: Color::rgb(28, 32, 44),
             surface_fg: fg,
             selected_bg: Color::rgb(50, 60, 90),

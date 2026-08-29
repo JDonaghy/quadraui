@@ -269,7 +269,7 @@ pub use primitives::status_bar::{
 };
 pub use primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits, TabBarLayout, TabBarSegment,
-    TabItem, TabMeasure, VisibleSegment, VisibleTab,
+    TabIcon, TabItem, TabMeasure, VisibleSegment, VisibleTab,
 };
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,
@@ -1096,6 +1096,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 TabItem {
                     label: " 2: lib.rs ".to_string(),
@@ -1103,6 +1104,7 @@ mod tests {
                     is_dirty: true,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 TabItem {
                     label: " 3: render.rs ".to_string(),
@@ -1110,6 +1112,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: true,
                     is_closable: true,
+                    icon: None,
                 },
             ],
             scroll_offset: 0,
@@ -4042,6 +4045,7 @@ mod tests {
             is_dirty: false,
             is_preview: false,
             is_closable: true,
+            icon: None,
         }
     }
 

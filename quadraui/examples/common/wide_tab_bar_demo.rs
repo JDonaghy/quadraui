@@ -52,6 +52,7 @@ impl AppLogic for WideTabBarDemo {
                         is_dirty: false,
                         is_preview: false,
                         is_closable: true,
+                        icon: None,
                     },
                     TabItem {
                         label: ASCII_LABEL.to_string(),
@@ -59,6 +60,7 @@ impl AppLogic for WideTabBarDemo {
                         is_dirty: false,
                         is_preview: false,
                         is_closable: true,
+                        icon: None,
                     },
                 ],
                 scroll_offset: 0,

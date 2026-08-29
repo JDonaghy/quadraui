@@ -1154,7 +1154,10 @@ impl Backend for TuiBackend {
         };
         // Measure in display columns, not `char`s (#554) — a CJK/emoji
         // glyph occupies two columns, and `draw_tab_bar` paints with
-        // `char_cell_width` strides, so the budget must agree.
+        // `char_cell_width` strides, so the budget must agree. Also add
+        // `icon_cols()` (#620) so a tab's optional icon glyph + gap is
+        // reserved the same way the GTK rasteriser reserves its own
+        // Pango-measured icon width.
         let tab_widths: Vec<usize> = bar
             .tabs
             .iter()
@@ -1164,7 +1167,7 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close
+                display_width(&t.label) + tab_close + t.icon_cols() as usize
             })
             .collect();
         let layout = bar.layout(
@@ -1240,7 +1243,7 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close
+                display_width(&t.label) + tab_close + t.icon_cols() as usize
             })
             .collect();
         let layout = bar.layout(
@@ -3486,6 +3489,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
                 crate::primitives::tab_bar::TabItem {
                     label: "lib.rs".into(),
@@ -3493,6 +3497,7 @@ mod tests {
                     is_dirty: false,
                     is_preview: false,
                     is_closable: true,
+                    icon: None,
                 },
             ],
             right_segments: vec![],

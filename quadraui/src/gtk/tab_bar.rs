@@ -25,6 +25,11 @@ const TAB_PAD: f64 = 14.0;
 const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
 const TAB_OUTER_GAP: f64 = 1.0;
+/// Gap between a tab's icon glyph (see [`crate::TabIcon`]) and its label.
+const TAB_ICON_GAP: f64 = 6.0;
+/// Height of the active-tab top-edge accent line — VS Code Dark Modern's
+/// `tab.activeBorderTop` (#620).
+const TAB_ACTIVE_BORDER_TOP_PX: f64 = 1.0;
 
 /// Draw a [`TabBar`] into `(x_offset, y_offset, width, row_height)` on `cr`.
 /// Caller is responsible for setting the desired UI font on `layout`
@@ -128,8 +133,35 @@ pub fn draw_tab_bar(
         })
         .collect();
 
+    // Icon glyphs share the label's size/weight/style but swap in a Nerd
+    // Font family, matching the activity bar's glyph-sourcing convention —
+    // the UI font itself typically isn't patched with icon codepoints.
+    let icon_font = {
+        let mut f = normal_font.clone();
+        f.set_family("Symbols Nerd Font, monospace");
+        f
+    };
+
+    // Per-tab extra width reserved for an icon glyph + trailing gap.
+    // `0.0` when the tab has no icon, so icon-less tabs keep their exact
+    // pre-#620 width and hit-test geometry.
+    let tab_icon_extras: Vec<f64> = bar
+        .tabs
+        .iter()
+        .map(|tab| match &tab.icon {
+            Some(icon) => {
+                pango_layout.set_font_description(Some(&icon_font));
+                pango_layout.set_text(&icon.glyph);
+                let (icon_w, _) = pango_layout.pixel_size();
+                icon_w as f64 + TAB_ICON_GAP
+            }
+            None => 0.0,
+        })
+        .collect();
+
     let measure_tab = |i: usize| -> TabMeasure {
         let name_w = tab_name_widths[i] as f32;
+        let icon_extra = tab_icon_extras[i] as f32;
         // Per-tab closability: only reserve space for the × glyph when both
         // `show_tab_close` (bar-level) and `is_closable` (tab-level) are set.
         let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
@@ -139,6 +171,7 @@ pub fn draw_tab_bar(
             0.0
         };
         let total = tab_pad as f32
+            + icon_extra
             + name_w
             + tab_close_extra as f32
             + tab_pad as f32
@@ -183,14 +216,32 @@ pub fn draw_tab_bar(
         cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, tab_row_height);
         cr.fill().ok();
 
-        // Top accent line for active tab in focused group.
+        // Top accent line for the active tab — VS Code Dark Modern's
+        // `tab.activeBorderTop` (#620). `bar.active_accent` overrides the
+        // theme default when set (e.g. to emphasise the focused split's
+        // active tab); every other active tab gets the theme default so
+        // the accent shows up without every caller having to opt in.
         if tab.is_active {
-            if let Some(accent) = bar.active_accent {
-                let (ar, ag, ab) = cairo_rgb(accent);
-                cr.set_source_rgb(ar, ag, ab);
-                cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, 2.0);
-                cr.fill().ok();
-            }
+            let accent = bar.active_accent.unwrap_or(theme.tab_active_border_top);
+            set_source(cr, accent);
+            cr.rectangle(
+                x_offset + tab_x,
+                y_offset,
+                tab_visual_w,
+                TAB_ACTIVE_BORDER_TOP_PX,
+            );
+            cr.fill().ok();
+        }
+
+        // Icon glyph, if this tab has one — painted before the label in
+        // its own colour, independent of the tab's active/inactive fg.
+        let icon_extra = tab_icon_extras[vt.tab_idx];
+        if let Some(icon) = &tab.icon {
+            set_source(cr, icon.color);
+            pango_layout.set_font_description(Some(&icon_font));
+            pango_layout.set_text(&icon.glyph);
+            cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
+            super::painted_text::show_layout(cr, pango_layout);
         }
 
         // Tab text.
@@ -207,7 +258,7 @@ pub fn draw_tab_bar(
             &normal_font
         }));
         pango_layout.set_text(&tab.label);
-        cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
+        cr.move_to(x_offset + tab_x + tab_pad + icon_extra, text_y_offset);
         super::painted_text::show_layout(cr, pango_layout);
 
         // Paint the close glyph only when both the bar-level flag and the
@@ -321,7 +372,11 @@ pub fn draw_tab_bar(
                 } else {
                     0.0
                 };
-                tab_name_widths[i] + tab_pad * 2.0 + per_tab_close_extra + tab_outer_gap
+                tab_name_widths[i]
+                    + tab_icon_extras[i]
+                    + tab_pad * 2.0
+                    + per_tab_close_extra
+                    + tab_outer_gap
             })
             .collect();
         TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
@@ -398,6 +453,7 @@ mod tests {
                 is_dirty: false,
                 is_preview: false,
                 is_closable: true,
+                icon: None,
             }],
             scroll_offset: 0,
             right_segments: vec![TabBarSegment {
@@ -488,6 +544,140 @@ mod tests {
             px,
             (255, 255, 255),
             "pixel at x={X_OFFSET} should be tab bar chrome, not white background"
+        );
+    }
+
+    /// #620: a tab with an [`crate::primitives::tab_bar::TabIcon`] must
+    /// reserve extra width over an otherwise-identical icon-less tab, and
+    /// its close button must still resolve to a `TabClose` hit at the
+    /// close bounds the layout reports (the icon reservation must not
+    /// disturb close-glyph hit-test geometry).
+    #[test]
+    fn icon_reserves_extra_width_and_close_still_hit_tests() {
+        use crate::primitives::tab_bar::{TabBarHit, TabIcon};
+
+        let make = |icon: Option<TabIcon>| TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+                icon,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let theme = make_theme();
+
+        let no_icon_bar = make(None);
+        let (_, no_icon_layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            W as f64,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &no_icon_bar,
+            &theme,
+            None,
+        );
+
+        let icon_bar = make(Some(TabIcon {
+            glyph: "\u{f09b}".to_string(),
+            color: Color::rgb(240, 150, 60),
+        }));
+        let (icon_hits, icon_layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            W as f64,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &icon_bar,
+            &theme,
+            None,
+        );
+
+        let no_icon_w = no_icon_layout.visible_tabs[0].bounds.width;
+        let icon_w = icon_layout.visible_tabs[0].bounds.width;
+        assert!(
+            icon_w > no_icon_w,
+            "tab with an icon should reserve more width than an otherwise-identical \
+             icon-less tab: {icon_w} vs {no_icon_w}"
+        );
+
+        let close_bounds = icon_layout.visible_tabs[0]
+            .close_bounds
+            .expect("icon tab should still have a close button reserved");
+        let click_x = close_bounds.x + close_bounds.width / 2.0;
+        let click_y = close_bounds.y + close_bounds.height / 2.0;
+        match icon_layout.hit_test(click_x, click_y) {
+            TabBarHit::TabClose(0) => {}
+            other => panic!("expected TabClose(0) at close bounds, got {other:?}"),
+        }
+        assert!(
+            icon_hits.close_bounds[0].is_some(),
+            "TabBarHits should also report the close bounds for the icon tab"
+        );
+    }
+
+    /// #620: the active tab's top row of pixels must be
+    /// `theme.tab_active_border_top` by default (VS Code Dark Modern's
+    /// `tab.activeBorderTop`) — no opt-in `active_accent` required. The
+    /// row immediately below must NOT be that colour, confirming the
+    /// accent is a thin top strip, not the whole active-tab background.
+    #[test]
+    fn active_tab_top_row_is_theme_accent_by_default() {
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bar = make_bar();
+            let theme = make_theme();
+            draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                None,
+            );
+        }
+        let mut surface = surface;
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let accent = make_theme().tab_active_border_top;
+        let top = pixel(&data, stride, 5, 0);
+        assert_eq!(
+            top,
+            (accent.r, accent.g, accent.b),
+            "top row of the active tab should default to theme.tab_active_border_top"
+        );
+
+        let below = pixel(&data, stride, 5, 3);
+        assert_ne!(
+            below,
+            (accent.r, accent.g, accent.b),
+            "a few rows below the top accent should be the tab body, not the accent colour"
         );
     }
 }
