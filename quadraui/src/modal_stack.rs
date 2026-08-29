@@ -212,6 +212,23 @@ impl ModalStack {
     /// (#619) instead of three near-identical `eprintln!` bodies. Callers
     /// route this through [`crate::diagnostics::emit`] rather than
     /// printing it directly — see that module for why.
+    ///
+    /// All three callers are feature-gated backends while this module is
+    /// not, so a build that enables no backend (CI's `cargo check -p
+    /// quadraui --features win` gate — `WinBackend::end_frame` is still a
+    /// `todo!()` stub with no modal-paint check to make) compiles this
+    /// with zero callers and trips `dead_code` under `-D warnings`. Scoped
+    /// by `cfg_attr` to exactly that configuration so the lint keeps
+    /// working wherever a caller is actually compiled. Same reasoning, and
+    /// the same shape, as `diagnostics::emit`.
+    #[cfg_attr(
+        not(any(
+            feature = "tui",
+            feature = "gtk",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
     pub(crate) fn unpainted_modal_message(id: &WidgetId) -> String {
         format!(
             "quadraui: modal {id:?} is registered in ModalStack (and therefore \
