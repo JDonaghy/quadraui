@@ -350,49 +350,43 @@ mod tests {
         assert_eq!(alt_char_byte_range("Sa&ve", "Save"), Some((2, 3)));
     }
 
-    /// End-to-end version of the two unit tests above: paints a label
-    /// with no `&` and asserts no underline attribute reaches Pango by
-    /// checking the rendered glyph position is unaffected (the
-    /// underline itself isn't pixel-probed here — Pango underline
-    /// metrics aren't guaranteed stable across fonts/CI — but this
-    /// exercises `draw_menu_bar`'s full call path with a `&`-free
-    /// label end to end, guarding against the attribute-building code
-    /// regressing back to always inserting an underline attr).
+    /// The paint path feeds `display_text(label)` and
+    /// `alt_char_byte_range(label, &display)` to Pango as a pair, so the
+    /// byte range must index the *display* string (the one with `&`
+    /// stripped), not the raw label — and must stay a valid char
+    /// boundary for multi-byte labels. Pinned here rather than by
+    /// pixel-probing a painted surface: the underline's own pixels are
+    /// Pango-font-metric dependent and not stable across CI hosts, and
+    /// `paint_and_click_round_trip*` above already covers
+    /// `draw_menu_bar`'s full cairo/pango call path.
     #[test]
-    fn paint_no_ampersand_label_does_not_panic_and_paints_glyph() {
-        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-        let mut bar = make_bar();
-        // No '&' marker on the first item — the case under test.
-        bar.items[0].label = "File".into();
-        // The Context (and the Pango layout it owns) must be dropped
-        // before `surface.data()`, which needs exclusive access to the
-        // surface — otherwise it fails with `NonExclusive`. Same
-        // scoping as `paint_and_click_round_trip_at` above.
-        let layout = {
-            let cr = Context::new(&surface).expect("Context::new");
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.paint().ok();
-            let pango_layout = pangocairo::functions::create_layout(&cr);
-            draw_menu_bar(
-                &cr,
-                &pango_layout,
-                0.0,
-                0.0,
-                W as f64,
-                20.0,
-                &bar,
-                &test_theme(),
-            )
-        };
-        surface.flush();
-        let stride = surface.stride() as usize;
-        let data = surface.data().expect("surface data");
-        let vi = &layout.visible_items[0];
-        let scan_from = vi.bounds.x.floor() as i32;
-        assert!(
-            leftmost_painted_in_row(&data, stride, 10, scan_from).is_some(),
-            "label should still paint a glyph even with no '&' marker"
-        );
+    fn alt_char_byte_range_indexes_display_text_not_label() {
+        // Multi-byte before the marker: "Ünder" → underline 'd' at
+        // display bytes 3..4 ('Ü' is 2 bytes, 'n' 1).
+        let display = display_text("Ün&der");
+        assert_eq!(display, "Ünder");
+        let (start, end) = alt_char_byte_range("Ün&der", &display).expect("'&' marks a char");
+        assert_eq!(&display[start..end], "d");
+
+        // Same label with the marker removed underlines nothing at all.
+        let display = display_text("Ünder");
+        assert_eq!(alt_char_byte_range("Ünder", &display), None);
+    }
+
+    /// An empty display string has no char to underline, and a trailing
+    /// `&` marks a char that doesn't exist — neither may panic or
+    /// produce an out-of-bounds range for the paint path to slice with.
+    #[test]
+    fn alt_char_byte_range_handles_empty_and_trailing_marker() {
+        assert_eq!(alt_char_byte_range("", ""), None);
+        let display = display_text("File&");
+        assert_eq!(display, "File");
+        if let Some((start, end)) = alt_char_byte_range("File&", &display) {
+            assert!(
+                end <= display.len() && display.is_char_boundary(start),
+                "range {start}..{end} must stay inside {display:?}"
+            );
+        }
     }
 
     /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
