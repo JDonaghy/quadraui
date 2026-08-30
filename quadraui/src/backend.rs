@@ -680,6 +680,12 @@ pub trait Backend {
     // Adding a primitive is a breaking change to this trait — intentional
     // (see `BACKEND_TRAIT_PROPOSAL.md` §4). Backends opt in to the new
     // primitive in the same PR that adds it to the trait.
+    /// Paint `tree` into `rect`. Non-header row height defaults to a
+    /// backend-native derivation from `line_height` (GTK/macOS:
+    /// `line_height * 1.4`; TUI: fixed 1 cell) but a host can pin it via
+    /// [`TreeView::row_height`] instead — e.g. to match a fixed design-
+    /// system row pitch independent of editor font size (#623). TUI
+    /// ignores the override (a terminal cell can't be subdivided).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
     fn draw_data_table(

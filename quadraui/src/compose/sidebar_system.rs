@@ -998,6 +998,7 @@ impl SidebarSystem {
                         scroll_offset: tc.scroll_offset(),
                         style: Default::default(),
                         has_focus: is_active && self.has_focus,
+                        row_height: None,
                     })
                 }
                 SectionController::Form(fc) => {
@@ -2768,6 +2769,7 @@ mod tests {
             scroll_offset: 0,
             style: Default::default(),
             has_focus: true,
+            row_height: None,
         };
 
         let body_b = Rect::new(0.0, 0.0, 200.0, 200.0);

@@ -2,7 +2,8 @@
 //!
 //! Mirrors [`crate::gtk::tree::draw_tree`]: header rows use
 //! `(line_height * 1.2)` pitch, leaves and branches use
-//! `(line_height * 1.4)`. Chevron / icon / text / badge layout within
+//! `(line_height * 1.4)` unless `TreeView::row_height` overrides the
+//! non-header pitch (#623). Chevron / icon / text / badge layout within
 //! a row matches the GTK convention so a paired `macos_multi_tree`
 //! example reads identically to its GTK twin.
 //!
@@ -26,7 +27,8 @@ use crate::types::{Color, Decoration};
 /// Compute the layout the macOS rasteriser would produce for `tree`
 /// in `area` at `line_height`. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch. Header rows use
-/// `(line_height * 1.2).round()`, others use `(line_height * 1.4)`.
+/// `(line_height * 1.2).round()`, others use `(line_height * 1.4)`
+/// unless `tree.row_height` overrides the non-header pitch (#623).
 ///
 /// Coordinate frame: `visible_rows.bounds` and `hit_regions` are in
 /// **tree-local** coords (origin at 0, 0), matching `tui_tree_layout`
@@ -36,7 +38,11 @@ use crate::types::{Color, Decoration};
 /// follow this convention).
 pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
-    let item_height = (line_height * 1.4).round();
+    let item_height = tree
+        .row_height
+        .map(|h| h as f64)
+        .unwrap_or(line_height * 1.4)
+        .round();
     let indent_px = (line_height * 0.9).round();
     let show_chevrons = tree.style.show_chevrons;
     tree.layout(area.width, area.height, |i| {
@@ -94,7 +100,11 @@ pub unsafe fn draw_tree(
 
     let indent_px = (line_height * 0.9).round();
     let header_height = (line_height * 1.2).round();
-    let item_height = (line_height * 1.4).round();
+    let item_height = tree
+        .row_height
+        .map(|rh| rh as f64)
+        .unwrap_or(line_height * 1.4)
+        .round();
 
     for vis_row in &layout.visible_rows {
         let row = &tree.rows[vis_row.row_idx];
@@ -361,6 +371,7 @@ mod tests {
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
+            row_height: None,
         }
     }
 
@@ -533,5 +544,41 @@ mod tests {
             hdr_h,
             item_h,
         );
+    }
+
+    /// #623: with `row_height` set, the row pitch is pinned regardless
+    /// of `line_height` — mirrors `gtk_row_height_override_pins_pitch_across_line_heights`.
+    /// Without the override, item pitch scales with line_height and this
+    /// would fail (`14.0 * 1.4 = 19.6` vs `48.0 * 1.4 = 67.2`).
+    #[test]
+    fn row_height_override_pins_pitch_across_line_heights() {
+        let mut tree = make_tree(vec![
+            leaf(0, "alpha"),
+            leaf(1, "beta"),
+            leaf(2, "gamma"),
+            leaf(3, "delta"),
+        ]);
+        tree.row_height = Some(22.0);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let small = mac_tree_layout(&tree, area, 14.0);
+        let large = mac_tree_layout(&tree, area, 48.0);
+
+        assert_eq!(small.visible_rows.len(), large.visible_rows.len());
+        for (s, l) in small.visible_rows.iter().zip(large.visible_rows.iter()) {
+            assert_eq!(
+                s.bounds, l.bounds,
+                "row_height override must pin row {} bounds across line_heights",
+                s.row_idx
+            );
+            assert_eq!(s.bounds.height, 22.0);
+
+            // Click at the row's center still resolves to the same row
+            // at either line_height — paint and hit-test stay in sync.
+            let cx = s.bounds.x + s.bounds.width * 0.5;
+            let cy = s.bounds.y + s.bounds.height * 0.5;
+            assert_eq!(small.hit_test(cx, cy), TreeViewHit::Row(s.row_idx));
+            assert_eq!(large.hit_test(cx, cy), TreeViewHit::Row(s.row_idx));
+        }
     }
 }
