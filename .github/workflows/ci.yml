@@ -185,6 +185,23 @@ jobs:
         if: matrix.os == 'windows-latest'
         continue-on-error: true
         run: cargo clippy -p quadraui --example win_demo --features win -- -D warnings
+      # Headless Direct2D test surface (#24, `src/win/testing.rs`'s
+      # `HeadlessSurface`: an `ID2D1DCRenderTarget` bound to an in-memory
+      # DIB section — no `HWND`, display, or GPU). The two steps above
+      # only *build* `win_demo`; nothing under `--features win` has ever
+      # been `cargo test`-ed against a real Windows host before this,
+      # since every prior `cfg(target_os = "windows")` arm needed either a
+      # live `HWND` (#19's render-target bootstrap) or a real font
+      # collection (#21's DirectWrite metrics) — neither headless.
+      # `continue-on-error: true`: same phased-rollout posture as the two
+      # steps above — this is the first PR exercising real Direct2D calls
+      # from inside a test, so there's no prior green `develop` run to
+      # trust yet. Flip to blocking once proven stable, same exit
+      # condition as those steps and the `tui`-feature windows-latest leg.
+      - name: Test (win feature, real Windows)
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        run: cargo test -p quadraui --features win
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
       # drives them with real ANSI escape sequences (vt100). No display
