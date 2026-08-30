@@ -585,12 +585,36 @@ mod tests {
     /// offscreen (no display, no `gtk::init`), and read back a known
     /// pixel. `draw_status_bar` fills the bar with the first segment's
     /// `bg` when there's no gap to the right segments, so every pixel in
-    /// the bar's rect should be [`KNOWN_BG`].
+    /// the bar's rect that the segment's *label glyphs* don't cover
+    /// should be [`KNOWN_BG`].
+    ///
+    /// The sample is taken near the bar's right edge, not its left.
+    /// #624 made chrome paint in [`GtkBackend`]'s `ui_font` (`"Sans 11"`)
+    /// rather than the editor font the shared Pango layout happened to
+    /// carry, which widened the left-aligned `"known-pixel"` label to
+    /// ~86px — wide enough that the old `pixel(4, H / 2)` sample landed
+    /// on an anti-aliased glyph stroke and read back a green/white blend
+    /// instead of the fill. The `assert!` below re-derives the label's
+    /// real extent so that a future font change growing it past the
+    /// sample point fails with that width named, rather than resurfacing
+    /// as an opaque colour mismatch.
     #[test]
     fn renders_offscreen_and_reads_back_known_pixel() {
         let mut driver = GtkDriver::new(StatusBarApp, W, H);
 
-        let (r, g, b) = driver.pixel(4, H / 2);
+        let sample_x = W - 4;
+        let label = driver
+            .find_bounds("known-pixel")
+            .expect("the segment's label should have been painted");
+        assert!(
+            (sample_x as f32) > label.x + label.width,
+            "sample x={sample_x} must sit right of the label's own bounds \
+             (x={}, width={}) so it reads the bar's fill, not a glyph stroke",
+            label.x,
+            label.width
+        );
+
+        let (r, g, b) = driver.pixel(sample_x, H / 2);
         assert_eq!(
             (r, g, b),
             (KNOWN_BG.r, KNOWN_BG.g, KNOWN_BG.b),
