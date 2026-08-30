@@ -102,7 +102,10 @@ pub use spinner::{draw_spinner, tui_spinner_layout};
 pub use split::{draw_split, tui_split_layout};
 pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 pub use status_bar::draw_status_bar;
-pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, TAB_CLOSE_CHAR, TAB_CLOSE_COLS};
+pub use tab_bar::{
+    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
+    TAB_CLOSE_CHAR, TAB_CLOSE_COLS,
+};
 pub use terminal::{draw_terminal, draw_terminal_divider};
 pub use text::{char_cell_width, display_width, truncate_to_width, truncate_to_width_ellipsis};
 pub use text_display::{draw_text_display, tui_text_display_layout};

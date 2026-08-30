@@ -46,10 +46,10 @@ use quadraui::{
     RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
     SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split,
     SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-    TabBar, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput,
-    ToastCorner, ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle,
-    TreeView, UiEvent, WidgetId,
+    TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay,
+    TextDisplayLine, TextInput, ToastCorner, ToastItem, ToastSeverity, ToastStack, Toolbar,
+    ToolbarButton, ToolbarItemMeasure, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
+    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -155,6 +155,40 @@ pub const CASES: &[Case] = &[
                 color: Color::rgb(222, 165, 132),
             })];
             let _ = b.draw_tab_bar_icons(Rect::new(0.0, 0.0, area.width, lh), &bar, &icons, None);
+        },
+    },
+    Case {
+        // #631: the chrome-carrying entry point. Same content as
+        // `draw_tab_bar` above (which renders `TabFrame::None`, i.e. no
+        // framing change), but asking explicitly for `Brackets` so C0
+        // exercises a non-default request reaching the backend rather
+        // than only the delegating path.
+        method: "draw_tab_bar_with_chrome",
+        needle: Some("c0chrometabs"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-chrome"),
+                tabs: vec![TabItem {
+                    label: " c0chrometabs ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            };
+            let chrome = TabChrome::new(TabFrame::Brackets);
+            let _ = b.draw_tab_bar_with_chrome(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                &chrome,
+            );
         },
     },
     Case {

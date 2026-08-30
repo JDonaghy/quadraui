@@ -323,20 +323,43 @@ impl TabBar {
 ///
 /// `total_width` is the tab's full visual width (label + padding + close
 /// button + inter-tab gap). `close_width` is the width of the close-button
-/// hit region at the right end of the tab; `0.0` means the tab has no
-/// close button (e.g. a pinned tab).
+/// hit region; `0.0` means the tab has no close button (e.g. a pinned
+/// tab). Absent [`Self::trailing_width`] (the default, `0.0`), the close
+/// region sits flush against the tab's right edge — `total_width -
+/// close_width .. total_width`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabMeasure {
     pub total_width: f32,
     pub close_width: f32,
+    /// Width of chrome painted *after* the close-button hit region —
+    /// e.g. a closing-bracket glyph requested via
+    /// [`TabChrome::active_frame`] — that counts toward `total_width` but
+    /// must be excluded from the close region so [`TabBarLayout`]'s
+    /// `close_bounds` still lands on the glyph itself, not the chrome
+    /// wrapping it. `0.0` (the default via [`Self::new`]) reproduces the
+    /// pre-#631 behaviour where the close region is flush against the
+    /// tab's right edge.
+    pub trailing_width: f32,
 }
 
 impl TabMeasure {
+    /// `trailing_width` defaults to `0.0` — see the struct doc. Use
+    /// [`Self::with_trailing`] to reserve chrome after the close region.
     pub fn new(total_width: f32, close_width: f32) -> Self {
         Self {
             total_width,
             close_width,
+            trailing_width: 0.0,
         }
+    }
+
+    /// Reserve `trailing_width` of `total_width` for chrome painted after
+    /// the close-button hit region (e.g. a closing-bracket glyph), so
+    /// [`TabBarLayout`]'s `close_bounds` lands before it instead of
+    /// overlapping it. Added for #631 ([`TabChrome::active_frame`]).
+    pub fn with_trailing(mut self, trailing_width: f32) -> Self {
+        self.trailing_width = trailing_width;
+        self
     }
 }
 
@@ -481,6 +504,80 @@ impl TabBarLayout {
             .find(|vt| vt.tab_idx == tab_idx)
             .and_then(|vt| vt.close_bounds)
             .map(|cb| (cb.x + cb.width / 2.0, cb.y + cb.height / 2.0))
+    }
+}
+
+/// Active-tab framing vocabulary (#631): which decoration, if any, should
+/// enclose the active tab's full content — label *and* close glyph.
+///
+/// Before this existed, "enclosing" decoration was whatever a backend's
+/// active-tab background fill happened to cover; a consumer that wanted an
+/// explicit bracket-style frame (`[title ×]`) had no declarative way to ask
+/// for it, because [`TabBar::layout`]'s close region is always flush
+/// against the tab's right edge — there's no way for chrome painted
+/// *after* the close glyph to exist without [`TabMeasure::trailing_width`]
+/// telling `close_bounds` to stop short of it. `coord-tui`'s
+/// `doc_tab_label` baked `[`/`]` directly into `TabItem::label` and found
+/// the close glyph by scanning the string for exactly this reason (see
+/// that function's doc comment).
+///
+/// `#[non_exhaustive]`: brand new this PR, so marking it costs no consumer
+/// anything today, and a future frame style (e.g. a stroked border) is
+/// additive rather than breaking.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TabFrame {
+    /// No enclosing decoration beyond the tab's ordinary active
+    /// background — the pre-#631 behaviour on every backend.
+    #[default]
+    None,
+    /// Encloses the active tab's full content — icon, label, and close
+    /// glyph — in bracket framing. TUI paints literal `[` / `]` glyphs
+    /// around the tab's content; GTK mirrors them with Pango-measured
+    /// bracket glyphs so the two backends agree on what "enclosing" means.
+    Brackets,
+}
+
+/// Per-bar chrome request (#631): which active-tab frame a backend should
+/// paint. Passed alongside a [`TabBar`] to
+/// [`crate::Backend::draw_tab_bar_with_chrome`] /
+/// [`crate::Backend::tab_bar_layout_with_chrome`].
+///
+/// A separate sidecar value rather than a field on [`TabBar`] itself, for
+/// the same reason [`crate::TooltipChrome`] sits beside [`crate::Tooltip`]
+/// instead of inside it: `TabBar` is a plain, non-`#[non_exhaustive]`
+/// struct built with exhaustive literals throughout this repo and by
+/// downstream consumers, so a new required field would be a hard break for
+/// every one of them (`PRIMITIVE_RULES.md` rule 8). Threading the
+/// vocabulary through a new value + new trait methods (both given default
+/// bodies that ignore chrome and delegate to the plain `draw_tab_bar` /
+/// `tab_bar_layout`) means #631 adds no required field and breaks no
+/// existing `Backend` implementor or call site.
+///
+/// `#[non_exhaustive]`: brand new this PR, so marking it costs no consumer
+/// anything today, and a future chrome knob (e.g. a frame colour override)
+/// is additive. Construct with [`TabChrome::new`] /
+/// [`TabChrome::default`] and [`TabChrome::with_active_frame`]; the field
+/// stays `pub` for reading.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TabChrome {
+    /// Which frame to paint around the active tab. Defaults to
+    /// [`TabFrame::None`] — no change from pre-#631 behaviour.
+    #[serde(default)]
+    pub active_frame: TabFrame,
+}
+
+impl TabChrome {
+    /// Chrome requesting the given active-tab frame.
+    pub fn new(active_frame: TabFrame) -> Self {
+        Self { active_frame }
+    }
+
+    /// Set the active-tab frame.
+    pub fn with_active_frame(mut self, active_frame: TabFrame) -> Self {
+        self.active_frame = active_frame;
+        self
     }
 }
 
@@ -671,16 +768,17 @@ impl TabBar {
                 break;
             }
             let bounds = Rect::new(cursor_x, 0.0, tm.total_width, bar_height);
-            let close_bounds = if tm.close_width > 0.0 && tm.close_width <= tm.total_width {
-                Some(Rect::new(
-                    cursor_x + tm.total_width - tm.close_width,
-                    0.0,
-                    tm.close_width,
-                    bar_height,
-                ))
-            } else {
-                None
-            };
+            let close_bounds =
+                if tm.close_width > 0.0 && tm.close_width + tm.trailing_width <= tm.total_width {
+                    Some(Rect::new(
+                        cursor_x + tm.total_width - tm.trailing_width - tm.close_width,
+                        0.0,
+                        tm.close_width,
+                        bar_height,
+                    ))
+                } else {
+                    None
+                };
             visible_tabs.push(VisibleTab {
                 tab_idx: i,
                 bounds,

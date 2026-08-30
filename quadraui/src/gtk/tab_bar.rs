@@ -16,7 +16,9 @@ use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
 use crate::backend::tab_bar_layout_to_hits;
-use crate::primitives::tab_bar::{SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabMeasure};
+use crate::primitives::tab_bar::{
+    SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame, TabMeasure,
+};
 use crate::theme::Theme;
 
 /// Per-tab padding (left + right) inside the tab background fill.
@@ -176,6 +178,78 @@ pub fn draw_tab_bar_icons(
     theme: &Theme,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
+    draw_tab_bar_icons_with_chrome(
+        cr,
+        pango_layout,
+        x_offset,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        icons,
+        &TabChrome::default(),
+        theme,
+        hovered_close_tab,
+    )
+}
+
+/// [`draw_tab_bar`] with an explicit [`TabChrome`] request (#631).
+///
+/// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] pixel
+/// for pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tab_bar_with_chrome(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x_offset: f64,
+    width: f64,
+    line_height: f64,
+    y_offset: f64,
+    row_height: f64,
+    bar: &TabBar,
+    chrome: &TabChrome,
+    theme: &Theme,
+    hovered_close_tab: Option<usize>,
+) -> (TabBarHits, TabBarLayout) {
+    draw_tab_bar_icons_with_chrome(
+        cr,
+        pango_layout,
+        x_offset,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        &[],
+        chrome,
+        theme,
+        hovered_close_tab,
+    )
+}
+
+/// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request (#631).
+///
+/// When `chrome.active_frame` is [`TabFrame::Brackets`], the active tab's
+/// full content — icon, label, and close glyph — is enclosed in literal
+/// `[` / `]` glyphs, measured via Pango like every other glyph this
+/// rasteriser paints. Mirrors `tui::tab_bar::draw_tab_bar_icons_with_chrome`
+/// so the two backends agree on what "enclosing" means (#631).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tab_bar_icons_with_chrome(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x_offset: f64,
+    width: f64,
+    line_height: f64,
+    y_offset: f64,
+    row_height: f64,
+    bar: &TabBar,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+    chrome: &TabChrome,
+    theme: &Theme,
+    hovered_close_tab: Option<usize>,
+) -> (TabBarHits, TabBarLayout) {
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
@@ -225,29 +299,60 @@ pub fn draw_tab_bar_icons(
     let icon_font = tab_icon_font(&normal_font);
     let tab_icon_extras = tab_icon_extras(pango_layout, &icon_font, bar.tabs.len(), icons);
 
+    // ── Pre-measure bracket glyphs (#631) ───────────────────────────
+    // Only needed when chrome requests `TabFrame::Brackets`; measured via
+    // Pango like every other glyph here so the reservation always matches
+    // what actually paints, on any font.
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let (bracket_open_w, bracket_close_w) = if brackets {
+        pango_layout.set_font_description(Some(&normal_font));
+        pango_layout.set_text("[");
+        let (ow, _) = pango_layout.pixel_size();
+        pango_layout.set_text("]");
+        let (cw, _) = pango_layout.pixel_size();
+        (ow as f64, cw as f64)
+    } else {
+        (0.0, 0.0)
+    };
+
     let measure_tab = |i: usize| -> TabMeasure {
         let name_w = tab_name_widths[i] as f32;
         let icon_extra = tab_icon_extras[i] as f32;
         // Per-tab closability: only reserve space for the × glyph when both
         // `show_tab_close` (bar-level) and `is_closable` (tab-level) are set.
         let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+        // #631: the active tab's bracket frame, if requested.
+        let is_bracket = brackets && bar.tabs[i].is_active;
         let tab_close_extra = if has_close {
             tab_inner_gap + close_glyph_w
         } else {
             0.0
         };
+        let bracket_extra = if is_bracket {
+            bracket_open_w + bracket_close_w
+        } else {
+            0.0
+        };
         let total = tab_pad as f32
+            + bracket_extra as f32
             + icon_extra
             + name_w
             + tab_close_extra as f32
             + tab_pad as f32
             + tab_outer_gap as f32;
-        let close_w = if has_close {
-            (tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap) as f32
+        if is_bracket && has_close {
+            // The close region covers just the glyph (no trailing
+            // padding/gap) so `close_bounds` lands on `×`, not the `]`
+            // and margin that follow it.
+            let close_w = (tab_inner_gap + close_glyph_w) as f32;
+            let trailing_w = (bracket_close_w + tab_pad + tab_outer_gap) as f32;
+            TabMeasure::new(total, close_w).with_trailing(trailing_w)
+        } else if has_close {
+            let close_w = (tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap) as f32;
+            TabMeasure::new(total, close_w)
         } else {
-            0.0
-        };
-        TabMeasure::new(total, close_w)
+            TabMeasure::new(total, 0.0)
+        }
     };
 
     let measure_segment = |i: usize| -> SegmentMeasure {
@@ -306,6 +411,28 @@ pub fn draw_tab_bar_icons(
             }
         }
 
+        // Tab text colour, computed early so the bracket frame (if any)
+        // paints in the same colour as the label it encloses.
+        let fg_col = match (tab.is_active, tab.is_preview) {
+            (true, true) => theme.tab_preview_active_fg,
+            (true, false) => theme.tab_active_fg,
+            (false, true) => theme.tab_preview_inactive_fg,
+            (false, false) => theme.tab_inactive_fg,
+        };
+
+        // #631: opening bracket, when this tab is active and chrome
+        // requests `TabFrame::Brackets`. `content_pad` shifts every
+        // subsequent paint position right by the bracket's width.
+        let is_bracket = brackets && tab.is_active;
+        let content_pad = tab_pad + if is_bracket { bracket_open_w } else { 0.0 };
+        if is_bracket {
+            set_source(cr, fg_col);
+            pango_layout.set_font_description(Some(&normal_font));
+            pango_layout.set_text("[");
+            cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
+            super::painted_text::show_layout(cr, pango_layout);
+        }
+
         // Icon glyph, if this tab has one — painted before the label in
         // its own colour, independent of the tab's active/inactive fg.
         let icon_extra = tab_icon_extras[vt.tab_idx];
@@ -313,17 +440,11 @@ pub fn draw_tab_bar_icons(
             set_source(cr, icon.color);
             pango_layout.set_font_description(Some(&icon_font));
             pango_layout.set_text(&icon.glyph);
-            cr.move_to(x_offset + tab_x + tab_pad, text_y_offset);
+            cr.move_to(x_offset + tab_x + content_pad, text_y_offset);
             super::painted_text::show_layout(cr, pango_layout);
         }
 
         // Tab text.
-        let fg_col = match (tab.is_active, tab.is_preview) {
-            (true, true) => theme.tab_preview_active_fg,
-            (true, false) => theme.tab_active_fg,
-            (false, true) => theme.tab_preview_inactive_fg,
-            (false, false) => theme.tab_inactive_fg,
-        };
         set_source(cr, fg_col);
         pango_layout.set_font_description(Some(if tab.is_preview {
             &italic_font
@@ -331,8 +452,24 @@ pub fn draw_tab_bar_icons(
             &normal_font
         }));
         pango_layout.set_text(&tab.label);
-        cr.move_to(x_offset + tab_x + tab_pad + icon_extra, text_y_offset);
+        cr.move_to(x_offset + tab_x + content_pad + icon_extra, text_y_offset);
         super::painted_text::show_layout(cr, pango_layout);
+
+        // #631: closing bracket, for a bracket-framed tab with no close
+        // button — painted right after the label. (When there *is* a
+        // close button, the closing bracket paints after the glyph,
+        // inside the block below, since its position depends on the
+        // glyph's own measured width.)
+        if is_bracket && !(bar.show_tab_close && tab.is_closable) {
+            set_source(cr, fg_col);
+            pango_layout.set_font_description(Some(&normal_font));
+            pango_layout.set_text("]");
+            cr.move_to(
+                x_offset + tab_x + content_pad + icon_extra + tab_name_widths[vt.tab_idx],
+                text_y_offset,
+            );
+            super::painted_text::show_layout(cr, pango_layout);
+        }
 
         // Paint the close glyph only when both the bar-level flag and the
         // per-tab `is_closable` flag are set — matching the measurement above.
@@ -401,6 +538,18 @@ pub fn draw_tab_bar_icons(
                 pango_layout.set_text(close_glyph);
                 cr.move_to(x_offset + close_x, text_y_offset);
                 super::painted_text::show_layout(cr, pango_layout);
+
+                // #631: closing bracket, right after the glyph — `cb.x`
+                // already stops short of it via
+                // `TabMeasure::trailing_width`, so this lands exactly
+                // where the reservation left room for it.
+                if is_bracket {
+                    set_source(cr, fg_col);
+                    pango_layout.set_font_description(Some(&normal_font));
+                    pango_layout.set_text("]");
+                    cr.move_to(x_offset + close_x + close_glyph_w, text_y_offset);
+                    super::painted_text::show_layout(cr, pango_layout);
+                }
             }
         }
     }
@@ -803,5 +952,108 @@ mod tests {
             "with active_accent: None, the top row should just be the active tab's \
              background — no accent strip painted over it"
         );
+    }
+
+    /// #631: `TabFrame::Brackets` must widen the active tab (room for `[`
+    /// and `]`) and shift its close-button hit region right of the
+    /// leading bracket — while `close_bounds`' own *width* stays exactly
+    /// the glyph's, so a click still resolves to `TabClose`, not `Tab`.
+    #[test]
+    fn bracket_frame_widens_active_tab_and_close_bounds_excludes_the_bracket() {
+        use crate::primitives::tab_bar::{TabBarHit, TabChrome, TabFrame};
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                ..Default::default()
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let theme = make_theme();
+
+        let (_, plain_layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            W as f64,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &bar,
+            &theme,
+            None,
+        );
+
+        let chrome = TabChrome::new(TabFrame::Brackets);
+        let (chrome_hits, chrome_layout) = draw_tab_bar_with_chrome(
+            &cr,
+            &pango_layout,
+            0.0,
+            W as f64,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &bar,
+            &chrome,
+            &theme,
+            None,
+        );
+
+        let plain_w = plain_layout.visible_tabs[0].bounds.width;
+        let chrome_w = chrome_layout.visible_tabs[0].bounds.width;
+        assert!(
+            chrome_w > plain_w,
+            "bracket framing should widen the active tab: {chrome_w} vs {plain_w}"
+        );
+
+        let plain_close = plain_layout.visible_tabs[0]
+            .close_bounds
+            .expect("plain tab should still report close bounds");
+        let chrome_close = chrome_layout.visible_tabs[0]
+            .close_bounds
+            .expect("bracket-framed tab should still report close bounds");
+        // The plain close region bundles the trailing padding + outer gap
+        // (it's flush against the tab's right edge); the bracket-framed
+        // region excludes that trailing chrome via `TabMeasure::trailing_width`
+        // instead, so it's narrower by exactly `TAB_PAD + TAB_OUTER_GAP`.
+        assert!(
+            (plain_close.width - chrome_close.width - (TAB_PAD as f32 + TAB_OUTER_GAP as f32))
+                .abs()
+                < 0.01,
+            "bracket close region should be narrower than the plain one by exactly the \
+             trailing pad + outer gap it no longer bundles: plain={}, chrome={}",
+            plain_close.width,
+            chrome_close.width
+        );
+        assert!(
+            chrome_close.x > plain_close.x,
+            "close region should shift right to make room for the leading bracket"
+        );
+        let chrome_tab_end =
+            chrome_layout.visible_tabs[0].bounds.x + chrome_layout.visible_tabs[0].bounds.width;
+        assert!(
+            chrome_close.x + chrome_close.width < chrome_tab_end,
+            "close bounds must stop before the tab's right edge, leaving room for ']'"
+        );
+
+        let click_x = chrome_close.x + chrome_close.width / 2.0;
+        let click_y = chrome_close.y + chrome_close.height / 2.0;
+        match chrome_layout.hit_test(click_x, click_y) {
+            TabBarHit::TabClose(0) => {}
+            other => panic!("expected TabClose(0) at close bounds, got {other:?}"),
+        }
+
+        assert_eq!(chrome_hits.close_bounds.len(), 1);
+        assert!(chrome_hits.close_bounds[0].is_some());
     }
 }

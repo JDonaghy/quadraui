@@ -55,7 +55,8 @@ use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
     ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, StatusBar,
-    TabBar, TabBarLayout, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport,
+    TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView,
+    UiEvent, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -1915,6 +1916,39 @@ impl Backend for GtkBackend {
         hits
     }
 
+    fn draw_tab_bar_with_chrome(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> crate::TabBarHits {
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tab_bar_with_chrome called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.width as f64,
+            self.current_line_height,
+            rect.y as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            chrome,
+            &self.current_theme,
+            hovered_close_tab,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        self.tab_bar_layouts
+            .insert(bar.id.clone(), (rect, resolved_layout));
+        hits
+    }
+
     fn draw_activity_bar(
         &mut self,
         rect: QRect,
@@ -2124,6 +2158,127 @@ impl Backend for GtkBackend {
                         + tab_outer_gap)
                         .ceil() as usize
                 },
+            )
+        } else {
+            bar.scroll_offset
+        };
+
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
+
+        hits
+    }
+
+    fn tab_bar_layout_with_chrome(
+        &self,
+        rect: QRect,
+        bar: &TabBar,
+        chrome: &TabChrome,
+    ) -> crate::TabBarHits {
+        let char_w = self.current_char_width as f32;
+        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
+        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+
+        // See `tab_bar_layout_icons` for why a missing Pango handle falls
+        // back to the most recent paint's cached geometry rather than a
+        // char-cell guess that would disagree with the bracket glyphs'
+        // actual measured width.
+        if pango_layout.is_none() {
+            if let Some(hits) = self.cached_tab_bar_hits(rect, bar) {
+                return hits;
+            }
+        }
+
+        let ui_font_desc = pango::FontDescription::from_string(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
+
+        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+        let (bracket_open_w, bracket_close_w): (f32, f32) = if brackets {
+            (
+                self.pango_str_width(&pango_layout, "[", char_w),
+                self.pango_str_width(&pango_layout, "]", char_w),
+            )
+        } else {
+            (0.0, 0.0)
+        };
+
+        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
+        let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
+
+        let close_glyph_w = if bar.show_tab_close {
+            self.pango_str_width(&pango_layout, "×", char_w)
+        } else {
+            0.0
+        };
+
+        let tab_name_widths: Vec<f32> = bar
+            .tabs
+            .iter()
+            .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
+            .collect();
+
+        // Mirrors `gtk::tab_bar::draw_tab_bar_icons_with_chrome`'s
+        // `measure_tab` exactly — the no-paint twin must reserve the same
+        // pixels the paint path did, or a click on the bracket-widened
+        // active tab lands on the wrong slot.
+        let measure = |i: usize| -> crate::TabMeasure {
+            let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+            let is_bracket = brackets && bar.tabs[i].is_active;
+            let tab_close_extra = if has_close {
+                tab_inner_gap + close_glyph_w
+            } else {
+                0.0
+            };
+            let bracket_extra = if is_bracket {
+                bracket_open_w + bracket_close_w
+            } else {
+                0.0
+            };
+            let total = tab_pad
+                + bracket_extra
+                + tab_name_widths[i]
+                + tab_close_extra
+                + tab_pad
+                + tab_outer_gap;
+            if is_bracket && has_close {
+                let close_w = tab_inner_gap + close_glyph_w;
+                let trailing_w = bracket_close_w + tab_pad + tab_outer_gap;
+                crate::TabMeasure::new(total, close_w).with_trailing(trailing_w)
+            } else if has_close {
+                let close_w = tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap;
+                crate::TabMeasure::new(total, close_w)
+            } else {
+                crate::TabMeasure::new(total, 0.0)
+            }
+        };
+
+        let layout = bar.layout(rect.width, rect.height, 0.0, measure, |i| {
+            let text_w = self.pango_str_width(&pango_layout, &bar.right_segments[i].text, char_w);
+            crate::SegmentMeasure::new(text_w)
+        });
+
+        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+
+        let active_idx = bar.tabs.iter().position(|t| t.is_active);
+        let reserved_px: f32 = bar
+            .right_segments
+            .iter()
+            .map(|seg| self.pango_str_width(&pango_layout, &seg.text, char_w))
+            .sum();
+        let effective_tab_area = (rect.width - reserved_px).max(0.0);
+
+        hits.correct_scroll_offset = if let Some(active) = active_idx {
+            TabBar::fit_active_scroll_offset(
+                active,
+                bar.tabs.len(),
+                effective_tab_area as usize,
+                |i| measure(i).total_width.ceil() as usize,
             )
         } else {
             bar.scroll_offset

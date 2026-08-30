@@ -693,6 +693,19 @@ name = "gtk_tab_icons"
 path = "examples/gtk_tab_icons.rs"
 required-features = ["gtk"]
 
+# #631 — active-tab bracket framing via `TabChrome::active_frame`, painted
+# through `Backend::draw_tab_bar_with_chrome`. Paired runners over one
+# shared `AppLogic`, per CLAUDE.md's examples-are-paired-by-shape rule.
+[[example]]
+name = "tui_tab_chrome"
+path = "examples/tui_tab_chrome.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_tab_chrome"
+path = "examples/gtk_tab_chrome.rs"
+required-features = ["gtk"]
+
 # #595 — `SidebarSystem::reveal`. Both entries are mandatory, not
 # cosmetic: without an explicit `[[example]]`, cargo's autodiscovery
 # picks the file up with NO `required-features`, so

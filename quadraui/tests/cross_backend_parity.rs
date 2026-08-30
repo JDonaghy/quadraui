@@ -30,6 +30,10 @@ use quadraui::{
 mod pipeline_app;
 use pipeline_app::PipelineApp;
 
+#[path = "../examples/common/tab_chrome_demo.rs"]
+mod tab_chrome_demo;
+use tab_chrome_demo::TabChromeDemo;
+
 #[path = "../examples/common/appshell_demo.rs"]
 mod appshell_demo;
 use appshell_demo::{ActivityProbe, AppShellDemo};
@@ -157,6 +161,67 @@ fn pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state() {
         vec![false, true, true],
         "expected: no stage-3 mention before the click, a mention after \
          clicking Go, and exited after 'q'"
+    );
+}
+
+// ─── TabChrome parity (quadraui#631): bracket framing encloses the close
+// glyph on both backends, and a click on it resolves to *close*, never
+// *activate* — the logical distinction #631 exists to make reachable
+// through `Backend::draw_tab_bar_with_chrome` instead of a hand-rolled
+// bracket string baked into `TabItem::label` (coord-tui's pre-#631
+// workaround, which had no declarative close-button geometry at all).
+
+/// Script: read the hint bar before touching anything, click the `×` glyph
+/// (unique on screen — only the active tab in [`TabChromeDemo`] is
+/// closable), then click the other tab's label to activate it. Returns the
+/// observations a test wants to compare across backends.
+///
+/// Deliberately asserts on the hint bar's text (one contiguous
+/// [`quadraui::StatusBarSegment`] string, painted as a single run on every
+/// backend) rather than the tab bar's own painted bracket/label/glyph —
+/// GTK paints those as separate Pango runs (`"["`, `"main.rs"`, `"×"`,
+/// `"]"`), while TUI's cell grid reads them back concatenated, so a needle
+/// spanning more than one of those pieces (`"[main.rs"`) is a
+/// TUI-only string, not a portable one; see `docs/TESTING.md`'s
+/// "assert on logic/text, not pixels" rule.
+fn run_tab_chrome_script<D: ConformanceDriver>(d: &mut D) -> Vec<bool> {
+    let before = d.screen_has("closed main.rs");
+    d.click_text("×");
+    let closed_not_activated = d.screen_has("closed main.rs");
+    // A close that had been mis-resolved as `TabActivated` on tab 0 would
+    // show this instead — the click stayed a close, not a same-tab
+    // activation.
+    let not_self_activated = !d.screen_has("activated main.rs");
+    d.click_text("lib.rs");
+    let activated_other = d.screen_has("activated lib.rs");
+    vec![
+        before,
+        closed_not_activated,
+        not_self_activated,
+        activated_other,
+    ]
+}
+
+#[test]
+fn tab_chrome_parity_tui_and_gtk_agree_on_logical_state() {
+    let mut tui = TuiDriver::new_fixture(TabChromeDemo::new(), LogicalViewport::new(100, 10));
+    let mut gtk = GtkDriver::new_fixture(TabChromeDemo::new(), LogicalViewport::new(800, 300));
+
+    let tui_observations = run_tab_chrome_script(&mut tui);
+    let gtk_observations = run_tab_chrome_script(&mut gtk);
+
+    assert_eq!(
+        tui_observations, gtk_observations,
+        "TUI and GTK should reach the same logical state (closed-mention \
+         before click, after clicking ×, still-bracket-framed, activated \
+         the other tab) for the identical TabChromeDemo event script"
+    );
+    assert_eq!(
+        tui_observations,
+        vec![false, true, true, true],
+        "expected: no close mention before the click, a close mention \
+         after clicking ×, tab 0 still bracket-framed (close != activate), \
+         and the other tab activated by its own click"
     );
 }
 

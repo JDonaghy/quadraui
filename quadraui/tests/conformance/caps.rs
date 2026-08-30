@@ -395,6 +395,13 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "editor_col_at_x",
         "no CoreText hit-test resolution yet; the uniform-division default is used",
     ),
+    (
+        "macos",
+        "tab_bar_layout_with_chrome",
+        "#631's `TabFrame::Brackets` isn't wired to the CoreText tab-bar rasteriser yet — the \
+         issue's acceptance bar is TUI + GTK; macOS falls back to the plain `tab_bar_layout` \
+         geometry (no bracket reservation) until that lands",
+    ),
     // ── Win: every method is a `todo!()` stub (#19). Listed one by one
     // anyway — "the whole backend is a stub" is exactly the kind of
     // blanket excuse that outlives the stub.
@@ -414,6 +421,11 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
     ("win", "register_zone", "stub backend — see #19"),
+    (
+        "win",
+        "tab_bar_layout_with_chrome",
+        "stub backend — see #19",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

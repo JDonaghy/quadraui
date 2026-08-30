@@ -42,7 +42,7 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabIcon};
+use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
@@ -802,6 +802,31 @@ pub trait Backend {
         icons: &[Option<TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
+    /// Draw a tab bar with an explicit [`TabChrome`] request (#631): which
+    /// decoration, if any, should enclose the active tab's full content
+    /// (label *and* close glyph).
+    ///
+    /// Added rather than folded into [`Self::draw_tab_bar`]'s signature,
+    /// and given a default body, so that #631 breaks no existing `Backend`
+    /// implementor and no existing call site — see
+    /// `primitives::tab_bar`'s [`TabChrome`] doc, which mirrors #541's
+    /// [`crate::TooltipChrome`] shape for exactly this reason.
+    ///
+    /// The default body **ignores `chrome`** and delegates to
+    /// [`Self::draw_tab_bar`], i.e. renders [`crate::TabFrame::None`] —
+    /// the correct fallback for a backend with no frame vocabulary of its
+    /// own. The TUI and GTK backends override it and honour
+    /// [`crate::TabFrame::Brackets`] in full.
+    fn draw_tab_bar_with_chrome(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> TabBarHits {
+        let _ = chrome;
+        self.draw_tab_bar(rect, bar, hovered_close_tab)
+    }
     /// Draw an activity bar. `hovered_idx` carries per-frame hover
     /// state so the rasteriser can paint a tint on the hovered row.
     /// Returns per-row hit regions for click + tooltip dispatch.
@@ -909,6 +934,30 @@ pub trait Backend {
         bar: &TabBar,
         icons: &[Option<TabIcon>],
     ) -> TabBarHits;
+
+    /// Compute the tab bar layout without painting, for a bar painted
+    /// with [`Self::draw_tab_bar_with_chrome`] (#631). The no-paint twin
+    /// of that method, exactly as [`Self::tab_bar_layout`] is the twin of
+    /// [`Self::draw_tab_bar`] — same absolute-coordinate contract.
+    ///
+    /// A caller that paints with chrome **must** route its no-paint click
+    /// geometry through this method rather than [`Self::tab_bar_layout`]:
+    /// [`crate::TabFrame::Brackets`] widens the active tab and moves its
+    /// close-button hit region, so the chrome-less twin would report it
+    /// shifted from the painted glyph.
+    ///
+    /// Default body ignores `chrome` and delegates to
+    /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
+    /// default.
+    fn tab_bar_layout_with_chrome(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        chrome: &TabChrome,
+    ) -> TabBarHits {
+        let _ = chrome;
+        self.tab_bar_layout(rect, bar)
+    }
 
     /// Compute activity bar row hit regions without painting. Returns
     /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
