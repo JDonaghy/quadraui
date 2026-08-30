@@ -17,6 +17,17 @@
 //! message loop itself needs to stay alive. This module covers the rest
 //! of the table: mouse buttons/motion/wheel, keyboard, and focus.
 //!
+//! # Known gaps (follow-up, not this issue's table)
+//!
+//! - `WM_SYSKEYDOWN`/`WM_SYSKEYUP`/`WM_SYSCHAR` (fired while Alt is held
+//!   — Alt+F4, menu mnemonics) aren't dispatched. Plain `WM_KEYDOWN`/
+//!   `WM_CHAR` never fire for those combinations on real Windows, so
+//!   wiring this up needs an extra `wndproc` arm reusing the same
+//!   translators here.
+//! - `WM_*BUTTONDBLCLK` isn't dispatched, so [`UiEvent::DoubleClick`]
+//!   (which GTK's translator supports via `GestureClick`'s `n_press ==
+//!   2`) has no Win-GUI producer yet.
+//!
 //! # Coordinate convention
 //!
 //! Mouse positions arrive at the wndproc in **client-area device

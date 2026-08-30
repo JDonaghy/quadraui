@@ -41,9 +41,11 @@ impl quadraui::AppLogic for BootstrapDemo {
         _backend: &mut dyn quadraui::Backend,
     ) -> quadraui::Reaction {
         match event {
-            // Mouse/keyboard translation lands in #20 — the only input
-            // this bootstrap needs to honour is the window chrome's own
-            // close button, which arrives as `WindowClose` regardless.
+            // #20 wired mouse/keyboard/focus translation into `win::run`'s
+            // `wndproc`, but this bootstrap demo still draws nothing (see
+            // module docs above) and has no widgets to route input to —
+            // the only event it needs to honour is the window chrome's
+            // own close button, which arrives as `WindowClose`.
             quadraui::UiEvent::WindowClose => quadraui::Reaction::Exit,
             _ => quadraui::Reaction::Continue,
         }

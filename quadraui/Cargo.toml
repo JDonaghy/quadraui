@@ -128,6 +128,11 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
     "Win32_UI_HiDpi",
+    # `GetKeyState` + `VK_*` — issue #20's per-message modifier reads
+    # (`win::run`'s `win_key_modifiers`). Not bundled into
+    # `Win32_UI_WindowsAndMessaging`; `WM_*`/`MK_*` live there but the
+    # virtual-key API is its own binding-crate feature.
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

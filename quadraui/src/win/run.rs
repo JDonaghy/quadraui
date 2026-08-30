@@ -10,15 +10,19 @@
 //! call `quadraui::win::run(MyApp::new())` and the same `AppLogic`
 //! impl drives every backend.
 //!
-//! # Scope (issue #19)
+//! # Scope
 //!
-//! This is the window + render-target *bootstrap*, not the full event
-//! pipeline. It wires exactly the three window-lifecycle events the
-//! message loop itself needs to stay alive and responsive:
-//! `WM_SIZE` → [`UiEvent::WindowResized`], `WM_DPICHANGED` →
-//! [`UiEvent::DpiChanged`], `WM_CLOSE` → [`UiEvent::WindowClose`].
-//! Mouse and keyboard translation (`WM_LBUTTONDOWN`, `WM_KEYDOWN`, …)
-//! land in issue #20 — see `super::backend`'s module docs.
+//! Issue #19 landed the window + render-target *bootstrap* and exactly
+//! the three window-lifecycle events the message loop itself needs to
+//! stay alive and responsive: `WM_SIZE` → [`UiEvent::WindowResized`],
+//! `WM_DPICHANGED` → [`UiEvent::DpiChanged`], `WM_CLOSE` →
+//! [`UiEvent::WindowClose`]. Issue #20 adds the rest of the input table
+//! this `wndproc` dispatches: mouse buttons/motion/wheel, `WM_KEYDOWN` +
+//! `WM_CHAR`, and focus — decoded by [`super::msg`], translated by
+//! [`super::events`]. `WM_KEYUP` and the `WM_SYSKEY*`/double-click
+//! families remain unhandled (no quadraui `UiEvent` counterpart exists
+//! yet for the former; see `super::events`' module docs for the latter
+//! two).
 //!
 //! # Dispatch model: direct, not `poll_events`/`wait_events`
 //!
@@ -61,29 +65,48 @@ mod win32 {
     use std::mem::size_of;
 
     use windows::core::{Error as WinError, PCWSTR};
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-    use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, ValidateRect};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        InvalidateRect, ScreenToClient, UpdateWindow, ValidateRect,
+    };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
         GetWindowLongPtrW, LoadCursorW, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW,
         SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
         CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
-        WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_NCCREATE, WM_PAINT, WM_SIZE,
-        WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE,
+        WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
 
     use crate::backend::Backend;
     use crate::event::UiEvent;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
+    // Message → `UiEvent` translation lives in `super::events` so it can
+    // be unit-tested off Windows (pure functions over already-decoded
+    // ints/floats/bools) — see that module's docs.
+    use crate::win::events::{
+        win_button_down, win_button_up, win_focus_to_uievent, win_modifiers,
+        win_mouse_button_for_message, win_mouse_moved, win_wheel_to_uievent, wm_char_to_uievent,
+        wm_keydown_to_uievent,
+    };
     // Payload decoding lives in `super::msg` so it can be unit-tested off
     // Windows — see that module's docs for why the shifts aren't inlined
     // here.
-    use crate::win::msg::{dpi_scale_from_wparam, size_from_lparam};
+    use crate::win::msg::{
+        dpi_scale_from_wparam, is_repeat_from_lparam, point_from_lparam, size_from_lparam,
+        wheel_delta_from_wparam,
+    };
+    use crate::{ButtonMask, Modifiers};
 
     /// Window-class name. Null-terminated up front — every `PCWSTR` this
     /// module builds from a Rust string does the same, since Win32 wide
@@ -110,6 +133,37 @@ mod win32 {
     /// UTF-16 for a Win32 wide-string API.
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    // `WM_MOUSEMOVE`'s `wparam` key-state flags (`<winuser.h>`'s
+    // `MK_LBUTTON`/`MK_RBUTTON`/`MK_MBUTTON`). Defined locally rather than
+    // pulled from the `windows` crate — same reasoning `super::events`'
+    // module docs give for its local `WM_*` consts: only the arithmetic
+    // mask is needed, and it's one less binding-crate detail to get right.
+    const MK_LBUTTON: usize = 0x0001;
+    const MK_RBUTTON: usize = 0x0002;
+    const MK_MBUTTON: usize = 0x0010;
+
+    /// Live modifier state for the message currently being dispatched,
+    /// via `GetKeyState` — see `super::events`' module docs on why Win32
+    /// needs a per-message read here rather than a bitmask carried on the
+    /// message itself (the one exception, `WM_MOUSEMOVE`'s `MK_*` button
+    /// flags, is handled separately above).
+    fn win_key_modifiers() -> Modifiers {
+        win_modifiers(
+            key_is_down(VK_CONTROL),
+            key_is_down(VK_SHIFT),
+            key_is_down(VK_MENU),
+            key_is_down(VK_LWIN) || key_is_down(VK_RWIN),
+        )
+    }
+
+    /// `GetKeyState`'s return value has its high bit set when the key is
+    /// currently down — reading it as a signed `i16` and comparing `< 0`
+    /// is the standard idiom (matches `IS_KEY_DOWN`-style macros other
+    /// Win32 bindings define for this).
+    fn key_is_down(vk: VIRTUAL_KEY) -> bool {
+        unsafe { GetKeyState(vk.0 as i32) < 0 }
     }
 
     pub(super) fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
@@ -410,6 +464,120 @@ mod win32 {
                     }
                 }
                 dispatch(state, hwnd, UiEvent::DpiChanged(scale));
+                LRESULT(0)
+            }
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
+                if let Some(button) = win_mouse_button_for_message(msg, wparam.0) {
+                    let (x, y) = point_from_lparam(lparam.0);
+                    let scale = state.borrow().backend.viewport().scale;
+                    let modifiers = win_key_modifiers();
+                    dispatch(state, hwnd, win_button_down(button, x, y, scale, modifiers));
+                }
+                // `WM_XBUTTONDOWN`/`WM_XBUTTONUP` are the one pair in this
+                // group whose docs require returning `TRUE` when handled —
+                // every other message here (and everywhere else in this
+                // `wndproc`) wants `0`.
+                if msg == WM_XBUTTONDOWN {
+                    LRESULT(1)
+                } else {
+                    LRESULT(0)
+                }
+            }
+            WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
+                if let Some(button) = win_mouse_button_for_message(msg, wparam.0) {
+                    let (x, y) = point_from_lparam(lparam.0);
+                    let scale = state.borrow().backend.viewport().scale;
+                    dispatch(state, hwnd, win_button_up(button, x, y, scale));
+                }
+                if msg == WM_XBUTTONUP {
+                    LRESULT(1)
+                } else {
+                    LRESULT(0)
+                }
+            }
+            WM_MOUSEMOVE => {
+                let (x, y) = point_from_lparam(lparam.0);
+                let scale = state.borrow().backend.viewport().scale;
+                let buttons = ButtonMask {
+                    left: wparam.0 & MK_LBUTTON != 0,
+                    right: wparam.0 & MK_RBUTTON != 0,
+                    middle: wparam.0 & MK_MBUTTON != 0,
+                };
+                dispatch(state, hwnd, win_mouse_moved(x, y, scale, buttons));
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+                // Unlike every other mouse message, `WM_MOUSEWHEEL`'s
+                // `lparam` carries **screen** coordinates — `ScreenToClient`
+                // converts before handing off to `win_wheel_to_uievent`,
+                // which (like every other translator here) expects
+                // client-area pixels. See `super::events`' module docs.
+                let raw_delta = wheel_delta_from_wparam(wparam.0);
+                let (screen_x, screen_y) = point_from_lparam(lparam.0);
+                let mut pt = POINT {
+                    x: screen_x as i32,
+                    y: screen_y as i32,
+                };
+                unsafe {
+                    let _ = ScreenToClient(hwnd, &mut pt);
+                }
+                let scale = state.borrow().backend.viewport().scale;
+                let event = win_wheel_to_uievent(
+                    raw_delta,
+                    pt.x as i16,
+                    pt.y as i16,
+                    scale,
+                    msg == WM_MOUSEHWHEEL,
+                );
+                dispatch(state, hwnd, event);
+                LRESULT(0)
+            }
+            WM_KEYDOWN => {
+                // `WM_KEYUP` isn't separately dispatched: quadraui's
+                // `UiEvent` has no key-release variant (mirroring the GTK
+                // translator, which only wires `key-press-event`) — a
+                // future release-tracking need should add that variant
+                // rather than inventing one here. `TranslateMessage` in
+                // `run_inner`'s message loop reads the raw `WM_KEYDOWN`
+                // from the queue regardless of what this arm returns, so
+                // intercepting it here doesn't suppress the `WM_CHAR` it
+                // generates for printable keys.
+                // Truncate rather than trust the upper `WPARAM` bits are
+                // zero — a virtual-key code is always a single byte, same
+                // masking discipline `super::msg`'s decoders use for
+                // `LPARAM`.
+                let vk = (wparam.0 & 0xFF) as u32;
+                let repeat = is_repeat_from_lparam(lparam.0);
+                let modifiers = win_key_modifiers();
+                if let Some(event) = wm_keydown_to_uievent(vk, modifiers, repeat) {
+                    dispatch(state, hwnd, event);
+                }
+                LRESULT(0)
+            }
+            WM_CHAR => {
+                // `wparam`'s low word is the UTF-16 code unit
+                // `TranslateMessage` resolved through the active keyboard
+                // layout. Surrogate-pair characters (outside the BMP) are
+                // dropped here — `char::from_u32` returns `None` for a
+                // lone surrogate half — same scope boundary
+                // `wm_char_to_uievent`'s docs describe.
+                let repeat = is_repeat_from_lparam(lparam.0);
+                // Truncate to the 16-bit code unit before widening — same
+                // reasoning as `WM_KEYDOWN`'s `vk` above.
+                if let Some(c) = char::from_u32((wparam.0 & 0xFFFF) as u32) {
+                    let modifiers = win_key_modifiers();
+                    if let Some(event) = wm_char_to_uievent(c, modifiers, repeat) {
+                        dispatch(state, hwnd, event);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_SETFOCUS => {
+                dispatch(state, hwnd, win_focus_to_uievent(true));
+                LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                dispatch(state, hwnd, win_focus_to_uievent(false));
                 LRESULT(0)
             }
             WM_PAINT => {
