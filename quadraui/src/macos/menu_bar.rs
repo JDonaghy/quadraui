@@ -11,7 +11,10 @@
 //!   `kCTUnderlineStyleAttributeName` but the existing
 //!   [`super::text::draw_text`] path doesn't thread attributes
 //!   through. Deferred with bold/italic to a unified text-attribute
-//!   pass.
+//!   pass. When this lands, mirror the GTK/TUI fix from quadraui#625:
+//!   underline only the char after `&`, and paint no underline at all
+//!   when the label has no `&` — don't reintroduce a "fall back to
+//!   char 0" default.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
