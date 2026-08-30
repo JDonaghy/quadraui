@@ -1,14 +1,22 @@
 //! `WinBackend` — Direct2D + DirectWrite implementation of [`Backend`].
 //!
-//! Every method is a `todo!()` stub. Implement against Direct2D /
-//! DirectWrite (via `windows-rs`) and the compiler tells you when
-//! you're done.
+//! #19 landed the window + render-target bootstrap: `begin_frame` /
+//! `end_frame` bracket real `ID2D1HwndRenderTarget::BeginDraw` /
+//! `Clear` / `EndDraw` calls (gated on `cfg(target_os = "windows")` —
+//! see [`Surface`] and [`WinBackend::attach_surface`]), and
+//! `Viewport::scale` carries the real per-window DPI ratio. Every
+//! `draw_*`/`*_layout` rasteriser method is still a `todo!()` stub —
+//! later issues implement each one against Direct2D / DirectWrite, same
+//! as the GTK backend did one primitive at a time.
 //!
 //! # Implementation notes
 //!
-//! - **Render target**: `ID2D1HwndRenderTarget` or
-//!   `ID2D1DeviceContext` for the main window. Offscreen:
-//!   `ID2D1BitmapRenderTarget` for headless tests (#24).
+//! - **Render target**: `ID2D1HwndRenderTarget` for the main window
+//!   (this issue). Offscreen: `ID2D1BitmapRenderTarget` for headless
+//!   tests (#24) — not needed yet since nothing here is unit-tested
+//!   against a real target (Windows-only code, verified by
+//!   `cargo check --target x86_64-pc-windows-msvc`, not by this repo's
+//!   Linux CI — see `ci.yml`).
 //! - **Text**: `IDWriteTextFormat` + `IDWriteTextLayout` for
 //!   measurement and rendering. Store `line_height` and `char_width`
 //!   from `IDWriteFontMetrics` (same role as GTK's
@@ -17,11 +25,16 @@
 //!   Unlike GTK, the render target is available outside the frame
 //!   scope for measurement — `_layout()` methods can use
 //!   `IDWriteTextLayout` directly.
-//! - **DPI**: use `GetDpiForWindow()` and scale coordinates
-//!   accordingly. `Viewport::scale` carries the DPI ratio.
+//! - **DPI**: `GetDpiForWindow()` / 96.0 → `Viewport::scale` (this
+//!   issue). Rasterisers landing later scale coordinates by it the same
+//!   way GTK's rasterisers use `DrawingArea::scale_factor()`.
 //! - **Events**: translate `WM_LBUTTONDOWN` → `UiEvent::MouseDown`,
 //!   `WM_KEYDOWN` → `UiEvent::KeyPressed`, etc. See `win::run` and
-//!   issue #20 (event translation).
+//!   issue #20 (event translation) — #19 only wires `WM_SIZE` →
+//!   `UiEvent::WindowResized`, `WM_DPICHANGED` → `UiEvent::DpiChanged`,
+//!   and `WM_CLOSE` → `UiEvent::WindowClose`, the window-lifecycle
+//!   events the message-loop bootstrap itself needs to stay alive and
+//!   responsive.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -63,6 +76,61 @@ use crate::{
 
 use super::services::WinPlatformServices;
 
+// ─── Direct2D bootstrap (#19) ───────────────────────────────────────────
+//
+// Real WinAPI/Direct2D calls only compile where the `windows` crate
+// actually has bindings, i.e. `target_os = "windows"` (see
+// `Cargo.toml`'s target-specific `windows` dependency). Everywhere else
+// — including a plain `cargo check --features win` on Linux — the
+// `Backend` trait methods below fall back to the original `todo!()`
+// stub bodies, which is what keeps this file's per-repo "every trait
+// method has a WinBackend impl" compile gate (`ci.yml`'s "Compile check
+// (win feature)" step) meaningful without a Windows runner.
+#[cfg(target_os = "windows")]
+use windows::core::Result as WinResult;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HWND, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::{
+    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_PROPERTIES,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+/// Standard "96 DPI = 100% scale" baseline every Win32 DPI API measures
+/// against (`GetDpiForWindow`, `WM_DPICHANGED`'s `wparam`).
+#[cfg(target_os = "windows")]
+const USER_DEFAULT_SCREEN_DPI: f32 = 96.0;
+
+/// The live Direct2D handles behind a real Win32 window. Only exists once
+/// [`WinBackend::attach_surface`] has run — a `WinBackend` constructed
+/// standalone (headless, or before `CreateWindowExW` returns a `HWND`)
+/// has `surface: None` and every draw call keeps hitting the `todo!()`
+/// arm until a later issue implements it.
+#[cfg(target_os = "windows")]
+struct Surface {
+    /// Kept for `WM_SIZE`/paint-recovery diagnostics; not read yet by any
+    /// method below, but every other backend's render-target handle
+    /// (GTK's `DrawingArea`, macOS's `CGContextRef`) carries its owning
+    /// handle too — dropping it here would be the odd one out.
+    #[allow(dead_code)]
+    hwnd: HWND,
+    /// Kept alive only because `ID2D1HwndRenderTarget` was created from
+    /// it — never called again after `attach_surface` populates `target`.
+    #[allow(dead_code)]
+    factory: ID2D1Factory,
+    target: ID2D1HwndRenderTarget,
+}
+
 pub struct WinBackend {
     viewport: Viewport,
     modal_stack: ModalStack,
@@ -71,10 +139,20 @@ pub struct WinBackend {
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
-    // TODO: add Direct2D / DirectWrite handles here:
-    // render_target: ID2D1HwndRenderTarget,
+    /// DPI ratio (`GetDpiForWindow(hwnd) / 96.0`). Mirrored into
+    /// `viewport.scale` on every attach/resize/`WM_DPICHANGED` so
+    /// `Backend::viewport()` and this field never drift. Kept as its own
+    /// field (rather than always re-deriving from `viewport.scale`)
+    /// because `WM_DPICHANGED` updates it independently of a resize.
+    /// `cfg`-gated like `surface` below — nothing outside the
+    /// `target_os = "windows"` methods reads or writes it, so on every
+    /// other host it would otherwise be dead code.
+    #[cfg(target_os = "windows")]
+    dpi_scale: f32,
+    #[cfg(target_os = "windows")]
+    surface: Option<Surface>,
+    // TODO: add DirectWrite handles here:
     // text_format: IDWriteTextFormat,
-    // dpi_scale: f32,
 }
 
 impl WinBackend {
@@ -87,7 +165,105 @@ impl WinBackend {
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            #[cfg(target_os = "windows")]
+            dpi_scale: 1.0,
+            #[cfg(target_os = "windows")]
+            surface: None,
         }
+    }
+
+    /// Create a single-threaded `ID2D1Factory` and an `ID2D1HwndRenderTarget`
+    /// sized to `hwnd`'s current client rect, and store both on `self`.
+    ///
+    /// Called once by [`crate::win::run`] right after `CreateWindowExW`
+    /// returns a live `HWND` (#19's bootstrap). Also seeds
+    /// [`Backend::viewport`][crate::backend::Backend::viewport] with the
+    /// window's real pixel size and DPI scale, so the very first
+    /// `WM_PAINT` (and any app code reading `backend.viewport()` from
+    /// `setup()`, which per the trait doc runs *before* this is called
+    /// and so still sees the zeroed seed) catches up to reality on that
+    /// first paint.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn attach_surface(&mut self, hwnd: HWND) -> WinResult<()> {
+        let factory: ID2D1Factory =
+            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
+
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rect)? };
+        let width = (rect.right - rect.left).max(1) as u32;
+        let height = (rect.bottom - rect.top).max(1) as u32;
+
+        let render_props = D2D1_RENDER_TARGET_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
+            },
+            ..Default::default()
+        };
+        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U { width, height },
+            ..Default::default()
+        };
+        let target = unsafe { factory.CreateHwndRenderTarget(&render_props, &hwnd_props)? };
+
+        self.dpi_scale = dpi_scale_for_window(hwnd);
+        self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
+        self.surface = Some(Surface {
+            hwnd,
+            factory,
+            target,
+        });
+        Ok(())
+    }
+
+    /// Resize the live render target to `width` x `height` device pixels.
+    /// Called from `win::run`'s `WM_SIZE` handler (#19's "responds to
+    /// resize without crashing" acceptance criterion).
+    ///
+    /// A no-op on the render-target side if no surface is attached yet —
+    /// Windows can fire an initial `WM_SIZE` synchronously from inside
+    /// `CreateWindowExW`, before the caller has the `HWND` back to pass
+    /// to [`Self::attach_surface`]. The viewport is still updated so
+    /// `Backend::viewport()` reflects the window's real size as soon as
+    /// it's known, even before there's a surface to paint onto.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn resize_surface(&mut self, width: u32, height: u32) -> WinResult<()> {
+        let width = width.max(1);
+        let height = height.max(1);
+        if let Some(surface) = &self.surface {
+            let size = D2D_SIZE_U { width, height };
+            unsafe { surface.target.Resize(&size)? };
+        }
+        self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
+        Ok(())
+    }
+
+    /// Update the cached DPI scale (`WM_DPICHANGED`) without touching the
+    /// render target's pixel size — the caller is responsible for
+    /// resizing separately, once it has applied the new-DPI suggested
+    /// window rect Windows hands back with that message.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn set_dpi_scale(&mut self, scale: f32) {
+        self.dpi_scale = scale;
+        self.viewport.scale = scale;
+    }
+}
+
+/// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
+/// for this backend (issue #19's "DPI scale factor plumbed to
+/// `Viewport::scale`" acceptance criterion). `GetDpiForWindow` returning
+/// `0` would only happen for an invalid `HWND`, which can't reach here
+/// (the caller always passes the `HWND` it just created/received a
+/// message for) — falls back to 100% scale rather than dividing by zero
+/// on the off chance it ever does.
+#[cfg(target_os = "windows")]
+fn dpi_scale_for_window(hwnd: HWND) -> f32 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        1.0
+    } else {
+        dpi as f32 / USER_DEFAULT_SCREEN_DPI
     }
 }
 
@@ -106,10 +282,51 @@ impl Backend for WinBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            // `BeginDraw`/`Clear` are infallible on `ID2D1RenderTarget`
+            // (device-lost errors only surface later, from `EndDraw` —
+            // handled in `end_frame` below).
+            unsafe {
+                surface.target.BeginDraw();
+            }
+            // Placeholder clear color until #20+ wires the app's real
+            // `Theme` background through. Rasterisers land per-primitive
+            // in later issues; this bootstrap only needs a cleared
+            // surface (issue #19's acceptance criterion).
+            let clear_color = D2D1_COLOR_F {
+                r: 0.117,
+                g: 0.117,
+                b: 0.117,
+                a: 1.0,
+            };
+            unsafe {
+                surface.target.Clear(Some(&clear_color));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
         todo!("ID2D1RenderTarget::BeginDraw()")
     }
 
     fn end_frame(&mut self) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            // `EndDraw` fails for two distinct reasons, both handled the
+            // same way here since the `Backend` trait's frame lifecycle
+            // has no error channel to report through
+            // (`docs/SMELL_AUDIT_2026-07.md` #93): the well-known
+            // `D2DERR_RECREATE_TARGET` (GPU driver reset, remote-desktop
+            // session change, etc.) and anything else. Either way, drop
+            // the surface — the next `WM_PAINT`/`WM_SIZE` reaching
+            // `win::run` recreates it via `attach_surface` rather than
+            // this silently pretending the frame presented, or the next
+            // frame painting onto a target Direct2D has already
+            // discarded.
+            if unsafe { surface.target.EndDraw(None, None) }.is_err() {
+                self.surface = None;
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
         todo!("ID2D1RenderTarget::EndDraw()")
     }
 
@@ -149,13 +366,21 @@ impl Backend for WinBackend {
 
     // ─── Capability declaration ──────────────────────────────────────────
 
-    /// quadraui#492: honest, not aspirational — every method on this
-    /// backend is a `todo!()` stub (see module docs), so nothing optional
-    /// is implemented yet either. That includes the three input
-    /// capabilities: `poll_events`/`wait_events` are `todo!("PeekMessage
-    /// loop → translate WM_* → UiEvent")`, so `mouse`/`scroll`/`drag` are
-    /// all `false` and every scenario requiring one enumerates as a named
-    /// `skip` rather than a silent pass (#19 wires them up).
+    /// quadraui#492: honest, not aspirational. #19 landed the window +
+    /// render-target bootstrap (`begin_frame`/`end_frame`) and the three
+    /// window-lifecycle events the message loop itself needs
+    /// (`WindowResized`/`DpiChanged`/`WindowClose`, dispatched directly
+    /// from `win::run`'s `WndProc` — see that module's docs for why this
+    /// mirrors the GTK backend's signal-callback dispatch rather than
+    /// `poll_events`/`wait_events`), but every `draw_*`/`*_layout`
+    /// rasteriser is still a `todo!()` stub, and so is real input
+    /// translation. That includes the three input capabilities:
+    /// `poll_events`/`wait_events` are still `todo!("PeekMessage loop →
+    /// translate WM_* → UiEvent")` — they're not on `win::run`'s hot
+    /// path (see above), so nothing exercises them yet — and
+    /// `mouse`/`scroll`/`drag` are all `false` so every scenario
+    /// requiring one enumerates as a named `skip` rather than a silent
+    /// pass. #20 wires up mouse/keyboard event translation.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps::empty()
     }

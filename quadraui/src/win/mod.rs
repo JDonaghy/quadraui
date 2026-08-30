@@ -1,7 +1,12 @@
 //! Win-GUI backend: Direct2D + DirectWrite rasterisers.
 //!
-//! Scaffolded module structure — every Backend trait method has a
-//! `todo!()` stub. Implement each one against Direct2D / DirectWrite
+//! #19 landed the Win32 window + Direct2D render-target bootstrap
+//! (`run.rs`'s message loop, `backend.rs`'s `begin_frame`/`end_frame`)
+//! — real WinAPI calls gated on `cfg(target_os = "windows")` so `cargo
+//! check --features win` still type-checks `WinBackend`'s trait
+//! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
+//! `win` feature comment). Every `draw_*`/`*_layout` rasteriser is still
+//! a `todo!()` stub — implement each one against Direct2D / DirectWrite
 //! and the compiler will tell you when you're done.
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered

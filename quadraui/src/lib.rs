@@ -128,6 +128,13 @@ pub mod gtk;
 pub mod macos;
 #[cfg(feature = "tui")]
 pub mod tui;
+// Unlike `macos` (target-gated in full — see that arm's comment), `win`
+// stays available on every host: `src/win/{backend,run}.rs` internally
+// `cfg(target_os = "windows")`-gate each real WinAPI call and fall back
+// to their original `todo!()` bodies elsewhere, specifically so this
+// module keeps compiling on Linux under plain `--features win` (see
+// `ci.yml`'s "Compile check (win feature)" step and `Cargo.toml`'s `win`
+// feature comment for why that per-repo, not per-OS, check exists).
 #[cfg(feature = "win")]
 pub mod win;
 

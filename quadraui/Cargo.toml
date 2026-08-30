@@ -20,11 +20,19 @@ tui = ["dep:ratatui", "dep:arboard"]
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard"]
 
-# Public Win-GUI rasterisers in `quadraui::win`. No deps yet — the
-# feature gate exists so the module compiles and the Backend impl is
-# exercised by `cargo check --features win`. Actual Direct2D /
-# DirectWrite deps (via `windows-rs`) land when #19 ships.
-win = []
+# Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
+# target-specific optional dependency (see the
+# `[target.'cfg(target_os = "windows")'.dependencies]` table below),
+# same pattern as `macos`'s objc2 family — `dep:windows` unifies fine
+# on non-Windows hosts where the dependency simply doesn't exist.
+# `#19` landed the Win32 window + Direct2D render-target bootstrap in
+# `src/win/run.rs` / `src/win/backend.rs`, gated internally on
+# `cfg(target_os = "windows")` so `cargo check --features win` keeps
+# type-checking `WinBackend`'s trait-completeness on Linux (the whole
+# point of the ubuntu "win compile gate" in ci.yml — see its comment)
+# without needing a real WinAPI. Most `Backend::draw_*` methods are
+# still `todo!()` stubs — later issues implement each rasteriser.
+win = ["dep:windows"]
 
 # Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
 # keeps working as a deprecated spelling. Prefer `--features gtk` going
@@ -108,6 +116,20 @@ objc2-foundation = { version = "0.2", optional = true, features = [
 core-graphics = { version = "0.23", optional = true }
 core-text = { version = "20.1", optional = true }
 core-foundation = { version = "0.9", optional = true }
+
+# Windows-only optional dep. Gated on `target_os = "windows"` so the `win`
+# feature is a no-op on other platforms (mirrors the macOS block above).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 serde_json = "1.0"
@@ -674,3 +696,13 @@ required-features = ["tui"]
 name = "gtk_sidebar_reveal"
 path = "examples/gtk_sidebar_reveal.rs"
 required-features = ["gtk"]
+
+# #19 — Win32 + Direct2D window bootstrap smoke test. Windows-only at
+# runtime (see the example's module docs), but its `main()` is itself
+# `cfg`-split so `cargo build --example win_demo --features win` also
+# compiles cleanly on Linux — same "compiles everywhere, only *works*
+# on Windows" posture as the rest of `src/win/`.
+[[example]]
+name = "win_demo"
+path = "examples/win_demo.rs"
+required-features = ["win"]
