@@ -4,8 +4,9 @@
 //! text measurement. Per-row heights are **non-uniform**: header rows
 //! use `line_height`, leaves and ordinary branches use
 //! `(line_height * 1.4).round()` (the established GTK convention) —
-//! unless the host set [`TreeView::row_height`], which pins the
-//! leaf/branch pitch independent of `line_height` (#623). The
+//! unless the host set
+//! [`TreeStyle::row_height`](crate::types::TreeStyle::row_height), which
+//! pins the leaf/branch pitch independent of `line_height` (#623). The
 //! primitive's `tree.layout()` measurer reports each row's height so
 //! the visible-row positions stack accurately.
 
@@ -23,7 +24,7 @@ use crate::types::Decoration;
 /// `area` at `line_height`. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch (`1.0 × line_height` for
 /// `Decoration::Header`, `1.4 × line_height` for everything else, unless
-/// `tree.row_height` overrides the non-header pitch — #623).
+/// `tree.style.row_height` overrides the non-header pitch — #623).
 /// `draw_tree` uses this same helper internally so paint and hit_test
 /// consume one layout instance per frame — the source-of-truth
 /// contract `TreeView` exists to enforce.
@@ -33,6 +34,7 @@ use crate::types::Decoration;
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree
+        .style
         .row_height
         .map(|h| h as f64)
         .unwrap_or(line_height * 1.4)
@@ -131,8 +133,9 @@ pub fn draw_tree(
     let indent_px = (line_height * 0.9).round();
     let header_height = (line_height * 1.2).round();
     let item_height = tree
+        .style
         .row_height
-        .map(|rh| rh as f64)
+        .map(|h| h as f64)
         .unwrap_or(line_height * 1.4)
         .round();
     let tree_layout = gtk_tree_layout(tree, QRect::new(0.0, 0.0, w as f32, h as f32), line_height);
@@ -431,7 +434,6 @@ mod tests {
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
-            row_height: None,
         }
     }
 
@@ -832,7 +834,7 @@ mod tests {
         }
     }
 
-    // ── #623: TreeView::row_height host override ───────────────────────
+    // ── #623: TreeStyle::row_height host override ───────────────────────
 
     /// With `row_height` set, the painted row pitch is identical at two
     /// wildly different editor `line_height`s — the whole point of #623.
@@ -846,7 +848,7 @@ mod tests {
             leaf(2, "gamma"),
             leaf(3, "delta"),
         ]);
-        tree.row_height = Some(22.0);
+        tree.style.row_height = Some(22);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
         let small_font_layout = gtk_tree_layout(&tree, area, 14.0);
@@ -888,7 +890,7 @@ mod tests {
             leaf(2, "gamma"),
             leaf(3, "delta"),
         ]);
-        tree.row_height = Some(22.0);
+        tree.style.row_height = Some(22);
 
         for line_height in [14.0_f64, 48.0] {
             let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");

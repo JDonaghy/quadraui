@@ -4319,7 +4319,6 @@ mod tests {
                 scroll_offset: 0,
                 style: crate::types::TreeStyle::default(),
                 has_focus: false,
-                row_height: None,
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             {

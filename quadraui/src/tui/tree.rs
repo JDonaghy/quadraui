@@ -5,7 +5,7 @@
 //! tall) and paints the resolved positions verbatim. The GTK rasteriser
 //! supplies a different per-row measurer (header rows 1× line_height,
 //! leaves 1.4×) — that's a backend-specific decision the rasteriser
-//! owns, not the primitive. `TreeView::row_height` (#623) is a GUI-pixel
+//! owns, not the primitive. `TreeStyle::row_height` (#623) is a GUI-pixel
 //! override; a terminal cell can't be subdivided, so TUI intentionally
 //! ignores it and always measures 1 cell per row.
 
@@ -306,7 +306,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             style: TreeStyle::default(),
-            row_height: None,
         }
     }
 
@@ -382,7 +381,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let theme = Theme {
             header_bg: crate::types::Color::rgb(7, 7, 7),
@@ -469,7 +467,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         }
     }
 
@@ -621,7 +618,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
 
@@ -668,7 +664,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let layout = tui_tree_layout(&tree, area);
         // indent=0, chevron='▾'(1 char)+1 space → chevron_end_x = 2.0
@@ -699,7 +694,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let layout = tui_tree_layout(&tree, area);
         // chevron_end_x = 2.0 → x >= 2.0 is Row region
@@ -723,7 +717,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let layout = tui_tree_layout(&tree, area);
         for x in [0.0_f32, 0.5, 1.0, 5.0, 15.0] {
@@ -759,7 +752,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let layout = tui_tree_layout(&tree, area);
         let hit = layout.hit_test(0.0, 0.0);
@@ -834,7 +826,6 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
-            row_height: None,
         };
         let theme = Theme::default();
         draw_tree(&mut buf, area, &tree, &theme, false);

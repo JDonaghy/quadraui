@@ -846,7 +846,6 @@ impl TreeController {
             scroll_offset: self.scroll_offset,
             style: Default::default(),
             has_focus: self.has_focus,
-            row_height: None,
         }
     }
 

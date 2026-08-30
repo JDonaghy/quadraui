@@ -310,6 +310,28 @@ pub struct TreeStyle {
     pub chevron_expanded: String,
     /// Chevron drawn for a collapsed branch.
     pub chevron_collapsed: String,
+    /// Host override for non-header row height, in the backend's native
+    /// unit (pixels for GTK / macOS / Win-GUI). `None` (the default)
+    /// keeps today's behaviour: GUI backends derive the row pitch from
+    /// the editor `line_height` (`line_height * 1.4` for leaves and
+    /// branches); TUI rows stay a fixed 1 cell regardless — a terminal
+    /// cell can't be subdivided, so TUI ignores this field entirely.
+    ///
+    /// `Some(h)` pins leaf/branch rows to `h`, independent of editor
+    /// font size — e.g. VS Code's fixed 22px `list.rowHeight` (#623).
+    /// Header rows (`Decoration::Header`) are unaffected; they stay
+    /// pitched off `line_height`, since #623 only concerns item rows.
+    ///
+    /// Integral because both GUI rasterisers `.round()` the row pitch
+    /// to whole native units before painting — a fractional override
+    /// could not survive to the frame anyway.
+    ///
+    /// Both `gtk_tree_layout` / `mac_tree_layout` (hit-test) and
+    /// `draw_tree` (paint) read this same field, so paint and hit-test
+    /// stay in sync by construction — the measure/paint desync class
+    /// documented in #654 does not reappear here.
+    #[serde(default)]
+    pub row_height: Option<u16>,
 }
 
 impl Default for TreeStyle {
@@ -319,6 +341,7 @@ impl Default for TreeStyle {
             show_chevrons: true,
             chevron_expanded: "▾".into(),
             chevron_collapsed: "▸".into(),
+            row_height: None,
         }
     }
 }

@@ -19,9 +19,10 @@
 //! No measurement-dependent state — backends pick a uniform row height
 //! (often `line_height` for leaves, `line_height * 1.4` for branches in
 //! GUI backends, exactly `1` cell for TUI). Per-backend row cadence is
-//! allowed; the primitive only constrains data shape. `row_height` (below)
-//! lets a host pin that cadence to a fixed value instead of letting it
-//! float with the editor font — see #623.
+//! allowed; the primitive only constrains data shape.
+//! [`TreeStyle::row_height`](crate::types::TreeStyle::row_height) lets a
+//! host pin that cadence to a fixed value instead of letting it float
+//! with the editor font — see #623.
 //!
 //! Apps that need "scroll selection into view" do it themselves by
 //! adjusting `scroll_offset` based on the selected row's flat index and
@@ -34,7 +35,7 @@ use crate::types::{
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `TreeView` widget.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeView {
     pub id: WidgetId,
     /// Pre-flattened, pre-expanded rows in visual order.
@@ -49,24 +50,6 @@ pub struct TreeView {
     pub style: TreeStyle,
     #[serde(default)]
     pub has_focus: bool,
-    /// Host override for non-header row height, in the backend's native
-    /// unit (pixels for GTK/macOS/Win-GUI). `None` (the default) keeps
-    /// today's behaviour: GUI backends derive the row pitch from the
-    /// editor `line_height` (`line_height * 1.4` for leaves/branches);
-    /// TUI rows stay a fixed 1 cell regardless — a terminal cell can't be
-    /// subdivided, so TUI ignores this field entirely.
-    ///
-    /// `Some(h)` pins leaf/branch rows to `h`, independent of editor font
-    /// size — e.g. VS Code's fixed 22px `list.rowHeight` (#623). Header
-    /// rows (`Decoration::Header`) are unaffected; they stay pitched off
-    /// `line_height` since #623 only concerns item rows.
-    ///
-    /// Both `gtk_tree_layout`/`mac_tree_layout` (hit-test) and
-    /// `draw_tree` (paint) read this same field, so paint and hit-test
-    /// stay in sync by construction — the measure/paint desync class
-    /// documented in #654 does not reappear here.
-    #[serde(default)]
-    pub row_height: Option<f32>,
 }
 
 /// One visible row in a `TreeView`.
