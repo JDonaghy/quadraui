@@ -28,13 +28,13 @@
 //! - **DPI**: `GetDpiForWindow()` / 96.0 → `Viewport::scale` (this
 //!   issue). Rasterisers landing later scale coordinates by it the same
 //!   way GTK's rasterisers use `DrawingArea::scale_factor()`.
-//! - **Events**: translate `WM_LBUTTONDOWN` → `UiEvent::MouseDown`,
-//!   `WM_KEYDOWN` → `UiEvent::KeyPressed`, etc. See `win::run` and
-//!   issue #20 (event translation) — #19 only wires `WM_SIZE` →
-//!   `UiEvent::WindowResized`, `WM_DPICHANGED` → `UiEvent::DpiChanged`,
-//!   and `WM_CLOSE` → `UiEvent::WindowClose`, the window-lifecycle
-//!   events the message-loop bootstrap itself needs to stay alive and
-//!   responsive.
+//! - **Events**: `WM_LBUTTONDOWN` → `UiEvent::MouseDown`, `WM_KEYDOWN` →
+//!   `UiEvent::KeyPressed`, etc. — landed in #20 (`win::events`'
+//!   translators, dispatched from `win::run`'s `WndProc`). #19 wired only
+//!   the three window-lifecycle events the message-loop bootstrap itself
+//!   needs to stay alive: `WM_SIZE` → `UiEvent::WindowResized`,
+//!   `WM_DPICHANGED` → `UiEvent::DpiChanged`, and `WM_CLOSE` →
+//!   `UiEvent::WindowClose`.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -385,18 +385,22 @@ impl Backend for WinBackend {
     /// quadraui#492: honest, not aspirational. #19 landed the window +
     /// render-target bootstrap (`begin_frame`/`end_frame`) and the three
     /// window-lifecycle events the message loop itself needs
-    /// (`WindowResized`/`DpiChanged`/`WindowClose`, dispatched directly
-    /// from `win::run`'s `WndProc` — see that module's docs for why this
-    /// mirrors the GTK backend's signal-callback dispatch rather than
-    /// `poll_events`/`wait_events`), but every `draw_*`/`*_layout`
-    /// rasteriser is still a `todo!()` stub, and so is real input
-    /// translation. That includes the three input capabilities:
-    /// `poll_events`/`wait_events` are still `todo!("PeekMessage loop →
-    /// translate WM_* → UiEvent")` — they're not on `win::run`'s hot
-    /// path (see above), so nothing exercises them yet — and
-    /// `mouse`/`scroll`/`drag` are all `false` so every scenario
-    /// requiring one enumerates as a named `skip` rather than a silent
-    /// pass. #20 wires up mouse/keyboard event translation.
+    /// (`WindowResized`/`DpiChanged`/`WindowClose`); #20 added the rest of
+    /// the input table — mouse buttons/motion/wheel, `WM_KEYDOWN`/
+    /// `WM_CHAR`, and focus — all dispatched directly from `win::run`'s
+    /// `WndProc` (see that module's docs for why this mirrors the GTK
+    /// backend's signal-callback dispatch rather than
+    /// `poll_events`/`wait_events`, which stay `todo!("PeekMessage loop →
+    /// translate WM_* → UiEvent")` since they're not on that hot path).
+    ///
+    /// `mouse`/`scroll`/`drag` still read `false` here despite that
+    /// translation existing: every `draw_*`/`*_layout` rasteriser below is
+    /// still a `todo!()` stub, so a conformance scenario that declares
+    /// `requires: ["mouse"]` and then exercises a click against a real
+    /// widget would panic mid-scenario rather than the named `skip`
+    /// `BackendCaps` exists to produce (`docs/TESTING.md`'s coverage
+    /// taxonomy). Flip these once the rasterisers they'd actually be
+    /// clicking on land.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps::empty()
     }
