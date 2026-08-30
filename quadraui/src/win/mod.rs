@@ -14,6 +14,11 @@
 //! as the reference implementation for a pixel-based backend.
 
 pub mod backend;
+/// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
+/// ratio). Crate-private and host-independent — it is the one part of this
+/// backend that is pure arithmetic, so it is the one part that can be
+/// unit-tested off Windows. See its module docs.
+pub(crate) mod msg;
 pub mod run;
 pub mod services;
 

@@ -126,6 +126,8 @@ fn required_backend_for(file: &str) -> Option<&'static str> {
         Some("gtk")
     } else if name.starts_with("macos_") {
         Some("macos")
+    } else if name.starts_with("win_") {
+        Some("win")
     } else if name.starts_with("tui_") || name.starts_with("msv_") {
         Some("tui")
     } else {
@@ -272,5 +274,9 @@ serde_json = "1.0"
         required_backend_for("examples/macos_demo.rs"),
         Some("macos")
     );
+    // #19 added the first `win_*` example. Without this arm the prefix fell
+    // through to `None`, which only asserts "some feature is declared" — a
+    // `win_*` example gated on `["tui"]` would have passed.
+    assert_eq!(required_backend_for("examples/win_demo.rs"), Some("win"));
     assert_eq!(required_backend_for("examples/whatever.rs"), None);
 }

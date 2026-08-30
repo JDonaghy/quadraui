@@ -150,6 +150,20 @@ jobs:
       - name: Compile check (win feature)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p quadraui --features win
+      # The step above only type-checks; nothing under `--features win` was
+      # ever *run*. `src/win/msg.rs` exists to close that hole: it holds the
+      # one part of the Win32 bootstrap that is pure arithmetic (`WM_SIZE`
+      # LOWORD/HIWORD unpacking, `WM_DPICHANGED`'s DPI → `Viewport::scale`
+      # ratio), deliberately host-independent so its unit tests execute on
+      # this ubuntu runner. Those transposition/units bugs are invisible to
+      # `cargo check` on every platform, and the windows-latest steps below
+      # only *build*, so without this step they would ship untested. Runs on
+      # ubuntu rather than windows-latest for the same reason the compile
+      # check does: the code under test has no `cfg(target_os)` in it, so
+      # running it twice would prove nothing new.
+      - name: Test (win feature)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p quadraui --features win
       # Real Windows build for #19's Win32 + Direct2D bootstrap. Unlike the
       # step above (a same-source-any-OS type-check), this actually
       # exercises the `cfg(target_os = "windows")` arms in

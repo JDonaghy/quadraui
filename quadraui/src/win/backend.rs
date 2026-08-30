@@ -106,11 +106,6 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
-/// Standard "96 DPI = 100% scale" baseline every Win32 DPI API measures
-/// against (`GetDpiForWindow`, `WM_DPICHANGED`'s `wparam`).
-#[cfg(target_os = "windows")]
-const USER_DEFAULT_SCREEN_DPI: f32 = 96.0;
-
 /// The live Direct2D handles behind a real Win32 window. Only exists once
 /// [`WinBackend::attach_surface`] has run — a `WinBackend` constructed
 /// standalone (headless, or before `CreateWindowExW` returns a `HWND`)
@@ -252,19 +247,14 @@ impl WinBackend {
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
 /// for this backend (issue #19's "DPI scale factor plumbed to
-/// `Viewport::scale`" acceptance criterion). `GetDpiForWindow` returning
-/// `0` would only happen for an invalid `HWND`, which can't reach here
-/// (the caller always passes the `HWND` it just created/received a
-/// message for) — falls back to 100% scale rather than dividing by zero
-/// on the off chance it ever does.
+/// `Viewport::scale`" acceptance criterion).
+///
+/// The divide (and its zero-DPI fallback) lives in
+/// [`crate::win::msg::dpi_ratio`] so it stays unit-tested off Windows;
+/// this wrapper is only the `GetDpiForWindow` call that can't be.
 #[cfg(target_os = "windows")]
 fn dpi_scale_for_window(hwnd: HWND) -> f32 {
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
-    if dpi == 0 {
-        1.0
-    } else {
-        dpi as f32 / USER_DEFAULT_SCREEN_DPI
-    }
+    crate::win::msg::dpi_ratio(unsafe { GetDpiForWindow(hwnd) })
 }
 
 impl Default for WinBackend {
