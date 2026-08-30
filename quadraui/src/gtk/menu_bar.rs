@@ -362,21 +362,28 @@ mod tests {
     fn paint_no_ampersand_label_does_not_panic_and_paints_glyph() {
         let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
         let mut bar = make_bar();
-        bar.items[0].label = "File".into(); // no '&' marker
-        let cr = Context::new(&surface).expect("Context::new");
-        cr.set_source_rgb(1.0, 1.0, 1.0);
-        cr.paint().ok();
-        let pango_layout = pangocairo::functions::create_layout(&cr);
-        let layout = draw_menu_bar(
-            &cr,
-            &pango_layout,
-            0.0,
-            0.0,
-            W as f64,
-            20.0,
-            &bar,
-            &test_theme(),
-        );
+        // No '&' marker on the first item — the case under test.
+        bar.items[0].label = "File".into();
+        // The Context (and the Pango layout it owns) must be dropped
+        // before `surface.data()`, which needs exclusive access to the
+        // surface — otherwise it fails with `NonExclusive`. Same
+        // scoping as `paint_and_click_round_trip_at` above.
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_menu_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                20.0,
+                &bar,
+                &test_theme(),
+            )
+        };
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
