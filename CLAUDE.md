@@ -130,14 +130,41 @@ All non-trivial work should be tracked via GitHub Issues.
 
 ## Quality Gate
 
+These are the *exact* commands `.github/workflows/ci.yml` runs. Copy them
+verbatim — the package selection flags are load-bearing, not noise:
+
 ```bash
-cargo build --features tui --features gtk
-cargo test --features tui
-cargo test --features gtk
-cargo clippy --features tui -- -D warnings
-cargo clippy --features gtk -- -D warnings
-cargo fmt --check
+# tui leg — kubeui-gtk is EXCLUDED (it has no `tui` feature, and its
+# unconditional gtk4/pangocairo dep needs pkg-config + the GTK4 -dev
+# packages). Excluding it is what lets the whole tui gate run on a
+# machine with no GTK toolchain installed.
+cargo build  --features tui --workspace --exclude kubeui-gtk
+cargo test   --features tui --workspace --exclude kubeui-gtk
+cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
+
+# gtk leg — kubeui (the TUI demo binary) is excluded instead. Needs
+# pkg-config + libgtk-4-dev; skip this leg locally if you don't have them
+# and let CI's gtk job cover it.
+cargo build  --features gtk,tui --workspace --exclude kubeui
+cargo test   --features gtk,tui --workspace --exclude kubeui --no-fail-fast
+cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
+
+# win leg — no GTK, no Windows host required. `src/win/` is compiled on
+# every platform (only its WinAPI calls are `cfg(target_os = "windows")`),
+# so both of these run anywhere; the real Windows build is CI-only.
+cargo check -p quadraui --features win
+cargo test  -p quadraui --features win
+
+cargo fmt --all --check
 ```
+
+**Do NOT substitute a bare `cargo test --features tui` at the workspace
+root.** It selects every member, so it drags in `kubeui-gtk` → `gtk4` →
+`glib-sys` → `pkg-config`, and on any machine without those system
+packages it fails in a build script before compiling a single line of
+quadraui — a failure that says nothing whatsoever about your diff. That
+is why CI spells out `--workspace --exclude kubeui-gtk`, and why you
+should too.
 
 ## Code Style
 
