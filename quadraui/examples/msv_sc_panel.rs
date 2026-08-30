@@ -146,6 +146,7 @@ impl SCSidebar {
                         scroll_offset: s.scroll_offset,
                         style: Default::default(),
                         has_focus: !self.commit_input_active && self.active_section == Some(idx),
+                        row_height: None,
                     }),
                     aux,
                     size,

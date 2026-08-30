@@ -697,6 +697,7 @@ mod tests {
                 scroll_offset: 0,
                 style: Default::default(),
                 has_focus: true,
+                row_height: None,
             }),
             aux: None,
             size: SectionSize::EqualShare,
@@ -1053,6 +1054,7 @@ mod tests {
             scroll_offset: 0,
             style: Default::default(),
             has_focus: true,
+            row_height: None,
         };
 
         let section = Section {

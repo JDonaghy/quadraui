@@ -3,9 +3,11 @@
 //! Paints the tree onto a [`Context`] using a [`pango::Layout`] for
 //! text measurement. Per-row heights are **non-uniform**: header rows
 //! use `line_height`, leaves and ordinary branches use
-//! `(line_height * 1.4).round()` (the established GTK convention).
-//! The primitive's `tree.layout()` measurer reports each row's
-//! height so the visible-row positions stack accurately.
+//! `(line_height * 1.4).round()` (the established GTK convention) —
+//! unless the host set [`TreeView::row_height`], which pins the
+//! leaf/branch pitch independent of `line_height` (#623). The
+//! primitive's `tree.layout()` measurer reports each row's height so
+//! the visible-row positions stack accurately.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -20,7 +22,8 @@ use crate::types::Decoration;
 /// Compute the layout the GTK rasteriser would produce for `tree` in
 /// `area` at `line_height`. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch (`1.0 × line_height` for
-/// `Decoration::Header`, `1.4 × line_height` for everything else).
+/// `Decoration::Header`, `1.4 × line_height` for everything else, unless
+/// `tree.row_height` overrides the non-header pitch — #623).
 /// `draw_tree` uses this same helper internally so paint and hit_test
 /// consume one layout instance per frame — the source-of-truth
 /// contract `TreeView` exists to enforce.
@@ -29,7 +32,11 @@ use crate::types::Decoration;
 /// in row pitch (TUI = 1 cell uniform; GTK = mixed via decoration).
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
-    let item_height = (line_height * 1.4).round();
+    let item_height = tree
+        .row_height
+        .map(|h| h as f64)
+        .unwrap_or(line_height * 1.4)
+        .round();
     let indent_px = (line_height * 0.9).round();
     let show_chevrons = tree.style.show_chevrons;
     tree.layout(area.width, area.height, |i| {
@@ -123,7 +130,11 @@ pub fn draw_tree(
 
     let indent_px = (line_height * 0.9).round();
     let header_height = (line_height * 1.2).round();
-    let item_height = (line_height * 1.4).round();
+    let item_height = tree
+        .row_height
+        .map(|rh| rh as f64)
+        .unwrap_or(line_height * 1.4)
+        .round();
     let tree_layout = gtk_tree_layout(tree, QRect::new(0.0, 0.0, w as f32, h as f32), line_height);
 
     for vis_row in &tree_layout.visible_rows {
@@ -420,6 +431,7 @@ mod tests {
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
+            row_height: None,
         }
     }
 
@@ -817,6 +829,105 @@ mod tests {
                 "leaf click at x={x} should return Row(0), got {:?}",
                 hit
             );
+        }
+    }
+
+    // ── #623: TreeView::row_height host override ───────────────────────
+
+    /// With `row_height` set, the painted row pitch is identical at two
+    /// wildly different editor `line_height`s — the whole point of #623.
+    /// Without the override, `item_height` scales with `line_height` and
+    /// this would fail (`14.0 * 1.4 = 19.6` vs `48.0 * 1.4 = 67.2`).
+    #[test]
+    fn gtk_row_height_override_pins_pitch_across_line_heights() {
+        let mut tree = make_tree(vec![
+            leaf(0, "alpha"),
+            leaf(1, "beta"),
+            leaf(2, "gamma"),
+            leaf(3, "delta"),
+        ]);
+        tree.row_height = Some(22.0);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let small_font_layout = gtk_tree_layout(&tree, area, 14.0);
+        let large_font_layout = gtk_tree_layout(&tree, area, 48.0);
+
+        assert_eq!(
+            small_font_layout.visible_rows.len(),
+            large_font_layout.visible_rows.len(),
+            "same tree at two line_heights must show the same row count"
+        );
+        for (small, large) in small_font_layout
+            .visible_rows
+            .iter()
+            .zip(large_font_layout.visible_rows.iter())
+        {
+            assert_eq!(
+                small.bounds, large.bounds,
+                "row_height override must pin every row's bounds regardless \
+                 of editor line_height (row {})",
+                small.row_idx
+            );
+            assert_eq!(
+                small.bounds.height, 22.0,
+                "row height must equal the override"
+            );
+        }
+    }
+
+    /// Companion to the pitch-pinning test: a click at row N's painted
+    /// position still resolves to row N at both line_heights, and
+    /// `draw_tree`'s own internal layout (not just `gtk_tree_layout`
+    /// called standalone) honours the same override — paint and
+    /// hit-test can't drift apart by construction (#654).
+    #[test]
+    fn gtk_row_height_override_click_resolves_to_same_row_at_any_line_height() {
+        let mut tree = make_tree(vec![
+            leaf(0, "alpha"),
+            leaf(1, "beta"),
+            leaf(2, "gamma"),
+            leaf(3, "delta"),
+        ]);
+        tree.row_height = Some(22.0);
+
+        for line_height in [14.0_f64, 48.0] {
+            let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+            let layout = {
+                let cr = Context::new(&surface).expect("Context::new");
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_layout = pangocairo::functions::create_layout(&cr);
+                draw_tree(
+                    &cr,
+                    &pango_layout,
+                    0.0,
+                    0.0,
+                    W as f64,
+                    H as f64,
+                    &tree,
+                    &test_theme(),
+                    line_height,
+                    /* nerd_fonts */ false,
+                );
+                let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+                gtk_tree_layout(&tree, area, line_height)
+            };
+
+            for row_idx in 0..tree.rows.len() {
+                let bounds = layout.visible_rows[row_idx].bounds;
+                let hit = layout.hit_test(bounds.x + 5.0, bounds.y + bounds.height / 2.0);
+                assert!(
+                    matches!(hit, TreeViewHit::Row(idx) if idx == row_idx),
+                    "at line_height={line_height}, row {row_idx} bounds {:?} should hit_test \
+                     back to Row({row_idx}), got {:?}",
+                    bounds,
+                    hit
+                );
+                assert_eq!(
+                    bounds.height, 22.0,
+                    "row {row_idx} must keep the overridden height at line_height={line_height}"
+                );
+            }
         }
     }
 }

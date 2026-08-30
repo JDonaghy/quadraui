@@ -249,6 +249,7 @@ pub const CASES: &[Case] = &[
                 scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: false,
+                row_height: None,
             };
             b.draw_tree(area, &tree);
         },

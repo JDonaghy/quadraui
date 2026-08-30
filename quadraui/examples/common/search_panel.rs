@@ -183,6 +183,7 @@ impl SearchPanelApp {
             scroll_offset: self.scroll_offset,
             style: quadraui::TreeStyle::default(),
             has_focus: !self.input_active,
+            row_height: None,
         };
 
         MultiSectionView {
