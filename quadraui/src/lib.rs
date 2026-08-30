@@ -429,6 +429,46 @@ mod tests {
         assert_eq!(tree, back);
     }
 
+    /// #623: `TreeStyle::row_height` is additive, not a required field.
+    ///
+    /// A `TreeStyle` serialised before #623 (or hand-written by a Lua
+    /// plugin, per the `types.rs` design invariant that every primitive
+    /// is plugin-constructible from JSON) carries no `row_height` key at
+    /// all. `#[serde(default)]` must decode that as `None` — i.e. "keep
+    /// deriving the row pitch from `line_height`" — rather than failing
+    /// the whole `TreeView` deserialisation with a missing-field error.
+    #[test]
+    fn tree_style_row_height_defaults_to_none_when_absent_from_json() {
+        let legacy = r#"{
+            "indent": 2,
+            "show_chevrons": true,
+            "chevron_expanded": "▾",
+            "chevron_collapsed": "▸"
+        }"#;
+        let style: TreeStyle =
+            serde_json::from_str(legacy).expect("pre-#623 TreeStyle must decode");
+        assert_eq!(
+            style.row_height, None,
+            "absent row_height means 'derive from line_height', not a decode error"
+        );
+        assert_eq!(style, TreeStyle::default());
+    }
+
+    /// #623: an explicit override survives a serde round-trip, so a host
+    /// that pins the row pitch keeps it across a save/restore of its UI
+    /// state (and across the plugin JSON boundary).
+    #[test]
+    fn tree_style_row_height_override_roundtrips_serde() {
+        let style = TreeStyle {
+            row_height: Some(22),
+            ..TreeStyle::default()
+        };
+        let json = serde_json::to_string(&style).unwrap();
+        let back: TreeStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.row_height, Some(22));
+        assert_eq!(style, back);
+    }
+
     #[test]
     fn form_roundtrip_serde() {
         let form = Form {
