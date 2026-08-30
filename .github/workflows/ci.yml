@@ -123,18 +123,26 @@ jobs:
         run: cargo test --features tui --workspace --exclude kubeui-gtk
       - name: Clippy (tui feature)
         run: cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
-      # win compile gate (#538). `win = []` has zero dependencies and
-      # `WinBackend` is `todo!()` stubs, so this type-checks on Linux with no
-      # new runner — that is exactly what makes it free to add here. Its
-      # entire purpose is to keep the `Backend` trait's no-default-impl
-      # policy (BACKEND_TRAIT_PROPOSAL.md §4, PRIMITIVE_RULES.md rule 7)
-      # actually enforced for the win backend: before this step existed,
-      # #531 merged `draw_settings_chrome` with no `WinBackend` impl and
-      # nothing caught it (7 missing methods accumulated silently, fixed by
-      # #540/#537). A *compile* check is per-repo, not per-OS, so this runs
-      # once on the ubuntu leg rather than once per matrix leg — running it
-      # again on the windows-latest leg would check the exact same source
-      # against the exact same toolchain target and prove nothing new.
+      # win compile gate (#538). `win`'s Cargo dependency on `windows` is
+      # gated to `target.'cfg(target_os = "windows")'`, and every real
+      # WinAPI call `src/win/{backend,run}.rs` makes is itself wrapped in
+      # `cfg(target_os = "windows")` with a `todo!()` fallback body — #19
+      # deliberately kept that shape (rather than target-gating the whole
+      # `win` module the way `macos` is gated in `lib.rs`) specifically so
+      # this still type-checks on Linux with no new runner. That's what
+      # keeps this step free to run here. Its entire purpose is to keep the
+      # `Backend` trait's no-default-impl policy (BACKEND_TRAIT_PROPOSAL.md
+      # §4, PRIMITIVE_RULES.md rule 7) actually enforced for the win
+      # backend: before this step existed, #531 merged `draw_settings_chrome`
+      # with no `WinBackend` impl and nothing caught it (7 missing methods
+      # accumulated silently, fixed by #540/#537). A *compile* check is
+      # per-repo, not per-OS, so this runs once on the ubuntu leg rather
+      # than once per matrix leg — running it again on the windows-latest
+      # leg would check the exact same source against the exact same
+      # toolchain target and prove nothing new. What it can't prove: that
+      # the `cfg(target_os = "windows")` arms landed by #19 actually build
+      # for real — that's the separate, non-blocking "win feature" step on
+      # the windows-latest leg below.
       # Blocking (no continue-on-error): unlike the windows-latest leg above,
       # which starts non-blocking because the *portable core* has never run
       # on real Windows, this only needs to compile — #540 already made it
@@ -142,6 +150,27 @@ jobs:
       - name: Compile check (win feature)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p quadraui --features win
+      # Real Windows build for #19's Win32 + Direct2D bootstrap. Unlike the
+      # step above (a same-source-any-OS type-check), this actually
+      # exercises the `cfg(target_os = "windows")` arms in
+      # `src/win/{backend,run}.rs` against the real `windows` crate on the
+      # `windows-latest` runner's `x86_64-pc-windows-msvc` toolchain — the
+      # only place that can happen, since `ubuntu-latest` never has
+      # `target_os = "windows"` regardless of which `--target` you pass.
+      # `continue-on-error: true`: same phased-rollout posture the
+      # `tui`-feature windows-latest leg started with above (see that
+      # comment) — this is the first PR to land real Win32/Direct2D calls,
+      # so there's no prior green run to trust yet. Flip to blocking once
+      # it's proven stable across a few `develop` runs, same exit condition
+      # as that leg.
+      - name: Build (win feature)
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        run: cargo build -p quadraui --example win_demo --features win
+      - name: Clippy (win feature)
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        run: cargo clippy -p quadraui --example win_demo --features win -- -D warnings
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
       # drives them with real ANSI escape sequences (vt100). No display
