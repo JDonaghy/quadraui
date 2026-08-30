@@ -333,6 +333,14 @@ jobs:
     # wrong makes the override a no-op and the coord-tui leg silently inert;
     # a `cargo metadata` assertion below fails the job loudly if it ever
     # regresses. Both consumers are then `cargo check --all-targets`ed.
+    #
+    # coord-tui lives in `JDonaghy/coord-tui` since claude-coordinator#2899
+    # (2026-08-29) split it out of the coordinator repo — repo root = crate
+    # root now, and the coordinator repo itself was renamed to
+    # `code-coordinator`. That repo is not anonymously readable, so the
+    # coord-tui leg only runs when a `COORD_TUI_TOKEN` secret is available;
+    # see the clone step for the full rationale. The vimcode leg is
+    # unconditional.
     name: downstream consumers (compile truth)
     runs-on: ubuntu-latest
     env:
@@ -370,43 +378,113 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
 
+      # coord-tui no longer lives in the coordinator repo. claude-coordinator
+      # #2899 (2026-08-29, phase 4 of its #2894) deleted `tui/` and moved the
+      # crate to a standalone `JDonaghy/coord-tui` whose *repo root is the
+      # crate root* — and the coordinator repo itself was renamed
+      # `claude-coordinator` → `code-coordinator`. The old
+      # `$P/claude-coordinator/tui` shape below therefore resolved to a
+      # directory holding nothing but `tests/acceptance/`, the override
+      # template's existence guard fired, and this job went red on every
+      # quadraui PR regardless of its contents (caught on #19).
+      #
+      # `coord-tui` is not anonymously readable today (an unauthenticated
+      # clone 404s), and quadraui's `GITHUB_TOKEN` is scoped to this repo
+      # only, so the coord-tui leg *cannot* run without a cross-repo
+      # credential. `COORD_TUI_TOKEN` (a read-only PAT / fine-grained token
+      # with contents:read on coord-tui) re-arms it the moment one exists;
+      # until then the leg is skipped with a loud warning rather than
+      # failing, because holding every quadraui PR hostage to a consumer
+      # repo quadraui cannot even read is strictly worse than shipping with
+      # the vimcode leg alone. This is the one place in this job where
+      # "skipped" is acceptable — do not extend that posture to the checks
+      # themselves, and delete this branch as soon as the token/visibility
+      # lands.
+      #
+      # `GIT_TERMINAL_PROMPT=0` matters: without it a private/absent repo
+      # makes git block on a username prompt and the step hangs until the
+      # job timeout instead of failing in a second.
       - name: Clone consumers as siblings of this checkout
+        id: clone
+        env:
+          COORD_TUI_TOKEN: ${{ secrets.COORD_TUI_TOKEN }}
         run: |
           set -euo pipefail
+          export GIT_TERMINAL_PROMPT=0
           P="$(dirname "$GITHUB_WORKSPACE")"
-          git clone --depth 1 https://github.com/JDonaghy/claude-coordinator "$P/claude-coordinator"
           git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$P/vimcode"
 
+          if [ -n "${COORD_TUI_TOKEN:-}" ]; then
+            URL="https://x-access-token:${COORD_TUI_TOKEN}@github.com/JDonaghy/coord-tui"
+          else
+            URL="https://github.com/JDonaghy/coord-tui"
+          fi
+          if git clone --depth 1 "$URL" "$P/coord-tui"; then
+            echo "coord_tui=true" >> "$GITHUB_OUTPUT"
+            # Tolerate both layouts: the post-#2899 repo root, and a
+            # `tui/` subdirectory in case the crate is ever re-nested.
+            if [ -f "$P/coord-tui/Cargo.toml" ]; then
+              D="$P/coord-tui"
+            elif [ -f "$P/coord-tui/tui/Cargo.toml" ]; then
+              D="$P/coord-tui/tui"
+            else
+              echo "::error::Cloned JDonaghy/coord-tui but found no Cargo.toml at its root or under tui/. The crate moved again — repoint this step rather than deleting it, or this gate silently stops covering coord-tui."
+              exit 1
+            fi
+            echo "COORD_TUI_DIR=$D" >> "$GITHUB_ENV"
+          else
+            echo "coord_tui=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not clone JDonaghy/coord-tui (private or absent, and no COORD_TUI_TOKEN secret is set on this repo). The coord-tui half of the downstream compile-truth gate did NOT run — only vimcode did. Add a read-only COORD_TUI_TOKEN secret, or make the repo public, to re-arm it."
+          fi
+
       # coord-tui's Cargo.toml stopped being a path dependency in
-      # claude-coordinator#1973 (2026-08-10): it now pins
+      # claude-coordinator#1973 (2026-08-10): it pins
       # `quadraui = { git = "...", rev = "<fixed sha>" }`. A git+rev source
       # is resolved from GitHub, completely independent of the sibling
       # checkout above — so without this step, `cargo check` on coord-tui
       # would silently build against that fixed rev forever, never against
       # this PR's quadraui, and this whole leg of the gate would be inert.
-      # The consumer side already ships the fix for exactly this case: a
-      # `.cargo/config.toml` `paths` override
-      # (`tui/cargo-config-local-quadraui.toml.example`) that redirects the
-      # `quadraui` package (matched by name+version, not by source) to a
-      # local checkout regardless of what's pinned in Cargo.toml. Copy it
-      # into place so the PR-side check actually exercises the PR.
+      # The fix is the `paths` override coord-tui documents for local
+      # co-development (`cargo-config-local-quadraui.toml.example`), which
+      # redirects the `quadraui` package — matched by name+version, not by
+      # source — onto a local checkout regardless of what Cargo.toml pins.
       #
-      # The override's `paths = ["../../quadraui/quadraui"]` is resolved
-      # relative to the directory holding the `.cargo` dir (i.e. `tui/`), so
-      # it lands on `<parent-of-checkout>/quadraui/quadraui` — exactly where
-      # the clone step above puts things. Verified empirically, not from
-      # memory, with cargo 1.97.1.
+      # We write the override ourselves with an ABSOLUTE path instead of
+      # copying that template verbatim, which is what the pre-#2899 version
+      # of this step did. The template's `paths = ["../../quadraui/quadraui"]`
+      # is resolved relative to the directory holding the `.cargo` dir, so it
+      # encodes *coord-tui's own* checkout layout — and that layout just
+      # changed underneath us (one directory level shallower now that the
+      # repo root is the crate root), which would have silently pointed the
+      # override at a nonexistent path. An absolute path derived from
+      # $GITHUB_WORKSPACE cannot drift with their layout, and the property
+      # that actually matters is still asserted, not assumed: the
+      # `cargo metadata` step below hard-fails unless cargo really resolved
+      # `quadraui` to this PR's checkout. Assert the outcome, not the proxy.
+      # (Template absence is now a warning for the same reason — it is
+      # evidence about *their* dev docs, not about whether this gate works.)
+      #
+      # Note for future dependency changes: a `paths` override that adds a
+      # dependency the overridden package didn't have — exactly what #19 did
+      # by adding the optional, Windows-gated `windows` crate — makes cargo
+      # print "path override for crate `quadraui` has altered the original
+      # list of dependencies". Verified on cargo 1.97.1: it is a *warning*,
+      # not an error, and `RUSTFLAGS` has no bearing on it since it comes
+      # from cargo rather than rustc. Cargo's docs say it will eventually
+      # become a hard error; when that day comes, switch this to a
+      # `[patch."https://github.com/JDonaghy/quadraui"]` block (cargo's own
+      # recommended replacement) rather than dropping the coord-tui leg.
       - name: Point coord-tui at this PR's quadraui, not its pinned git rev
+        if: steps.clone.outputs.coord_tui == 'true'
         run: |
           set -euo pipefail
-          D="$(dirname "$GITHUB_WORKSPACE")/claude-coordinator/tui"
-          SRC="$D/cargo-config-local-quadraui.toml.example"
-          if [ ! -f "$SRC" ]; then
-            echo "::error::$SRC is gone — coord-tui's local-quadraui override template was renamed or removed upstream. This gate cannot redirect coord-tui's pinned git dep onto this PR's quadraui without it, so it would silently test nothing. Fix the path here rather than deleting the step."
-            exit 1
+          D="$COORD_TUI_DIR"
+          Q="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)"
+          if [ ! -f "$D/cargo-config-local-quadraui.toml.example" ]; then
+            echo "::warning::coord-tui no longer ships cargo-config-local-quadraui.toml.example. Writing the paths override anyway; the cargo metadata assertion below is what proves it took effect."
           fi
           mkdir -p "$D/.cargo"
-          cp "$SRC" "$D/.cargo/config.toml"
+          printf 'paths = ["%s"]\n' "$Q" > "$D/.cargo/config.toml"
 
       # Placed after the consumer clone (and the coord-tui .cargo override
       # above) so the action's Cargo.lock hashing can actually see the
@@ -416,8 +494,13 @@ jobs:
       # a sibling directory outside the checkout.
       - uses: Swatinem/rust-cache@v2
         with:
+          # `../coord-tui` (not `../claude-coordinator/tui`) since
+          # claude-coordinator#2899 moved the crate to its own repo whose
+          # root is the crate root. A stale entry here is only a cache miss,
+          # never a wrong result — but it silently costs a full cold consumer
+          # build every run, so keep it pointed at the real crate.
           workspaces: |
-            ../claude-coordinator/tui -> target
+            ../coord-tui -> target
             ../vimcode -> target
 
       # cargo check, not build/test: the question this job answers is
@@ -456,11 +539,18 @@ jobs:
       # sibling quadraui from CARGO_MANIFEST_DIR, so it is CWD-independent),
       # but its steps below cd in too, so adding one upstream can't silently
       # re-open this same hole.
+      #
+      # `working-directory: ${{ env.COORD_TUI_DIR }}` rather than a literal
+      # path: the clone step above resolves the crate directory (repo root
+      # post-#2899, `tui/` if it is ever re-nested) and exports it. `env` is
+      # available to `working-directory`, but NOT to `if:` — which is why the
+      # skip conditions below read `steps.clone.outputs.coord_tui` instead.
       - name: Assert coord-tui actually resolves quadraui to this PR's checkout
-        working-directory: ../claude-coordinator/tui
+        if: steps.clone.outputs.coord_tui == 'true'
+        working-directory: ${{ env.COORD_TUI_DIR }}
         run: |
           set -euo pipefail
-          want="$(cd ../../quadraui/quadraui && pwd -P)/Cargo.toml"
+          want="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)/Cargo.toml"
           got="$(cargo metadata --format-version 1 \
                  | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
           echo "quadraui resolved to: $got"
@@ -471,8 +561,9 @@ jobs:
 
       - name: cargo check — coord-tui (this PR's quadraui)
         id: pr_coord_tui
+        if: steps.clone.outputs.coord_tui == 'true'
         continue-on-error: true
-        working-directory: ../claude-coordinator/tui
+        working-directory: ${{ env.COORD_TUI_DIR }}
         run: cargo check --all-targets
 
       # vimcode's build.rs (vimcode#638) panics before compiling any real
@@ -508,34 +599,49 @@ jobs:
       # `cargo check — control` steps below via their own `if:`, which only
       # build the consumer(s) whose PR-side check actually failed. This is
       # still the expensive path and most PRs never touch it.
+      # The coord-tui clone here is unconditional-on-this-step for the same
+      # reason as the PR side: if the PR-side coord-tui check was skipped
+      # (repo unreadable), `pr_coord_tui.outcome` is 'skipped', never
+      # 'failure', so none of the coord-tui control steps below run at all.
       - name: Clone develop's tip quadraui + consumers as control
         if: steps.pr_coord_tui.outcome == 'failure' || steps.pr_vimcode.outcome == 'failure'
+        env:
+          COORD_TUI_TOKEN: ${{ secrets.COORD_TUI_TOKEN }}
         run: |
           set -euo pipefail
+          export GIT_TERMINAL_PROMPT=0
           C="$RUNNER_TEMP/control"
           mkdir -p "$C"
           git clone --depth 1 --branch develop https://github.com/JDonaghy/quadraui "$C/quadraui"
-          git clone --depth 1 https://github.com/JDonaghy/claude-coordinator "$C/claude-coordinator"
           git clone --depth 1 --branch develop https://github.com/JDonaghy/vimcode "$C/vimcode"
+          if [ "${{ steps.pr_coord_tui.outcome }}" = "failure" ]; then
+            if [ -n "${COORD_TUI_TOKEN:-}" ]; then
+              URL="https://x-access-token:${COORD_TUI_TOKEN}@github.com/JDonaghy/coord-tui"
+            else
+              URL="https://github.com/JDonaghy/coord-tui"
+            fi
+            git clone --depth 1 "$URL" "$C/coord-tui"
+            if [ -f "$C/coord-tui/Cargo.toml" ]; then
+              echo "COORD_TUI_CONTROL_DIR=$C/coord-tui" >> "$GITHUB_ENV"
+            else
+              echo "COORD_TUI_CONTROL_DIR=$C/coord-tui/tui" >> "$GITHUB_ENV"
+            fi
+          fi
 
       # Same git+rev-vs-path-override problem as the PR-side check above,
-      # applied to the control clone. The control tree mirrors the sibling
-      # layout ($RUNNER_TEMP/control/{quadraui,claude-coordinator,vimcode}),
-      # so the template's `../../quadraui/quadraui` resolves onto the
-      # develop-tip quadraui cloned alongside it — same relative shape, just
-      # rooted at $RUNNER_TEMP/control instead of the workspace's parent.
+      # applied to the control clone — and written the same way, as an
+      # absolute `paths` override rather than a copy of coord-tui's
+      # layout-relative template. The control tree mirrors the sibling
+      # layout ($RUNNER_TEMP/control/{quadraui,coord-tui,vimcode}), so the
+      # override points at the develop-tip quadraui cloned alongside it.
       - name: Point coord-tui (control) at develop's tip quadraui
         if: steps.pr_coord_tui.outcome == 'failure'
         run: |
           set -euo pipefail
-          D="$RUNNER_TEMP/control/claude-coordinator/tui"
-          SRC="$D/cargo-config-local-quadraui.toml.example"
-          if [ ! -f "$SRC" ]; then
-            echo "::error::$SRC is gone — see the PR-side step's error for context."
-            exit 1
-          fi
+          D="$COORD_TUI_CONTROL_DIR"
+          Q="$(cd "$RUNNER_TEMP/control/quadraui/quadraui" && pwd -P)"
           mkdir -p "$D/.cargo"
-          cp "$SRC" "$D/.cargo/config.toml"
+          printf 'paths = ["%s"]\n' "$Q" > "$D/.cargo/config.toml"
 
       # Control-side twin of the PR-side assertion. Without it, a control run
       # that silently fell back to the pinned git rev would look "green" and
@@ -543,10 +649,10 @@ jobs:
       # just as misleading.
       - name: Assert coord-tui (control) resolves quadraui to develop's tip
         if: steps.pr_coord_tui.outcome == 'failure'
-        working-directory: ${{ runner.temp }}/control/claude-coordinator/tui
+        working-directory: ${{ env.COORD_TUI_CONTROL_DIR }}
         run: |
           set -euo pipefail
-          want="$(cd ../../quadraui/quadraui && pwd -P)/Cargo.toml"
+          want="$(cd "$RUNNER_TEMP/control/quadraui/quadraui" && pwd -P)/Cargo.toml"
           got="$(cargo metadata --format-version 1 \
                  | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
           echo "quadraui resolved to: $got"
@@ -561,7 +667,7 @@ jobs:
         if: steps.pr_coord_tui.outcome == 'failure'
         id: control_coord_tui
         continue-on-error: true
-        working-directory: ${{ runner.temp }}/control/claude-coordinator/tui
+        working-directory: ${{ env.COORD_TUI_CONTROL_DIR }}
         run: cargo check --all-targets
 
       - name: cargo check — vimcode (control, develop's tip quadraui)
@@ -582,6 +688,12 @@ jobs:
         if: always()
         run: |
           fail=0
+          # 'skipped' (never 'failure') is what a coord-tui leg that could
+          # not be cloned reports. Say so out loud in the job summary rather
+          # than letting a one-consumer run read as full coverage.
+          if [ "${{ steps.clone.outputs.coord_tui }}" != "true" ]; then
+            echo "::warning::COVERAGE GAP: only vimcode was checked. coord-tui (JDonaghy/coord-tui) could not be cloned by this job — see the clone step's warning."
+          fi
           if [ "${{ steps.pr_coord_tui.outcome }}" = "failure" ]; then
             if [ "${{ steps.control_coord_tui.outcome }}" = "failure" ]; then
               echo "::warning::coord-tui also fails to compile against develop's tip quadraui — pre-existing consumer breakage, not caused by this PR. Not failing this gate."
