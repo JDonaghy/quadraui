@@ -63,7 +63,7 @@ jobs:
             --base "${{ github.event.pull_request.base.sha }}"
 
   tui:
-    name: tui (build, test, clippy) — ${{ matrix.os }}
+    name: tui + win (build, test, clippy) — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # BOTH legs are blocking (#590, W-7 of #580). The windows-latest leg
     # landed in #581 with `continue-on-error` because the *portable core*

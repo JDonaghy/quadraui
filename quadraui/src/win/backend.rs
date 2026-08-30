@@ -113,12 +113,6 @@ use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 /// arm until a later issue implements it.
 #[cfg(target_os = "windows")]
 struct Surface {
-    /// Kept for `WM_SIZE`/paint-recovery diagnostics; not read yet by any
-    /// method below, but every other backend's render-target handle
-    /// (GTK's `DrawingArea`, macOS's `CGContextRef`) carries its owning
-    /// handle too — dropping it here would be the odd one out.
-    #[allow(dead_code)]
-    hwnd: HWND,
     /// Kept alive only because `ID2D1HwndRenderTarget` was created from
     /// it — never called again after `attach_surface` populates `target`.
     #[allow(dead_code)]
@@ -146,6 +140,14 @@ pub struct WinBackend {
     dpi_scale: f32,
     #[cfg(target_os = "windows")]
     surface: Option<Surface>,
+    /// The last `HWND` a surface was successfully attached to, kept
+    /// *outside* `Surface` (and outlasting it) so a dropped surface
+    /// (`end_frame`'s device-lost recovery) can still be re-created by
+    /// [`Self::ensure_surface`] without needing `win::run` to thread the
+    /// `HWND` back through a second time. `None` until the first
+    /// `attach_surface` call succeeds.
+    #[cfg(target_os = "windows")]
+    hwnd: Option<HWND>,
     // TODO: add DirectWrite handles here:
     // text_format: IDWriteTextFormat,
 }
@@ -164,6 +166,8 @@ impl WinBackend {
             dpi_scale: 1.0,
             #[cfg(target_os = "windows")]
             surface: None,
+            #[cfg(target_os = "windows")]
+            hwnd: None,
         }
     }
 
@@ -204,12 +208,32 @@ impl WinBackend {
 
         self.dpi_scale = dpi_scale_for_window(hwnd);
         self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
-        self.surface = Some(Surface {
-            hwnd,
-            factory,
-            target,
-        });
+        self.surface = Some(Surface { factory, target });
+        self.hwnd = Some(hwnd);
         Ok(())
+    }
+
+    /// Re-create the render target after a prior `EndDraw` failure
+    /// dropped it — the actual implementation of the recovery path
+    /// [`Backend::end_frame`]'s docs promise. `win::run` calls this from
+    /// its `WM_PAINT` and `WM_SIZE` handlers before touching the surface,
+    /// so a lost surface comes back on the next paint or resize instead
+    /// of leaving the window permanently blank.
+    ///
+    /// A no-op returning `Ok(())` if a surface is already live, and a
+    /// no-op returning `Ok(())` if no window has ever attached one yet
+    /// (nothing to recover to — covers the synchronous `WM_SIZE` Windows
+    /// fires from inside `CreateWindowExW`, before `run_inner` has a
+    /// `HWND` to attach at all).
+    #[cfg(target_os = "windows")]
+    pub(crate) fn ensure_surface(&mut self) -> WinResult<()> {
+        if self.surface.is_some() {
+            return Ok(());
+        }
+        match self.hwnd {
+            Some(hwnd) => self.attach_surface(hwnd),
+            None => Ok(()),
+        }
     }
 
     /// Resize the live render target to `width` x `height` device pixels.
@@ -307,11 +331,13 @@ impl Backend for WinBackend {
             // (`docs/SMELL_AUDIT_2026-07.md` #93): the well-known
             // `D2DERR_RECREATE_TARGET` (GPU driver reset, remote-desktop
             // session change, etc.) and anything else. Either way, drop
-            // the surface — the next `WM_PAINT`/`WM_SIZE` reaching
-            // `win::run` recreates it via `attach_surface` rather than
-            // this silently pretending the frame presented, or the next
-            // frame painting onto a target Direct2D has already
-            // discarded.
+            // the surface rather than silently pretending the frame
+            // presented, or letting the next frame paint onto a target
+            // Direct2D has already discarded. `self.hwnd` (set by
+            // `attach_surface`, untouched here) survives the drop, so
+            // the next `WM_PAINT`/`WM_SIZE` reaching `win::run` actually
+            // recreates it via `Self::ensure_surface` — see that
+            // method's docs.
             if unsafe { surface.target.EndDraw(None, None) }.is_err() {
                 self.surface = None;
             }

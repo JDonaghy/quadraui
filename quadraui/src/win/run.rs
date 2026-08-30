@@ -230,8 +230,20 @@ mod win32 {
             state.borrow_mut().backend.attach_surface(hwnd)
         };
         if let Err(e) = attach_result {
-            drop(unsafe { Box::from_raw(state_ptr) });
+            // SAFETY: `state_ptr` must stay valid until `DestroyWindow`
+            // returns. `DestroyWindow` synchronously re-enters `wndproc`
+            // on this thread (at minimum for `WM_DESTROY`/`WM_NCDESTROY`,
+            // potentially others), and `wndproc` unconditionally
+            // dereferences `GWLP_USERDATA` before matching on `msg` — so
+            // freeing the box first would leave that pointer dangling
+            // for every message `DestroyWindow` generates, not just the
+            // ones that read `state`. `DestroyWindow` completes its
+            // entire synchronous dispatch before returning — the same
+            // guarantee the normal-shutdown path below relies on when it
+            // frees `state_ptr` only after the message loop has exited —
+            // so freeing it here, after `DestroyWindow` returns, is safe.
             let _ = unsafe { DestroyWindow(hwnd) };
+            drop(unsafe { Box::from_raw(state_ptr) });
             return Err(e);
         }
 
@@ -275,6 +287,15 @@ mod win32 {
     /// below decides what "exit" means for its own message: `WM_CLOSE`
     /// destroys the window, letting `WM_DESTROY` post the quit message
     /// that actually ends `run_inner`'s loop).
+    ///
+    /// Holds `state.borrow_mut()` for the duration of `app.handle`. No
+    /// bootstrap-era `AppLogic` (#19) does anything that pumps messages
+    /// synchronously, but a future impl that shows a native modal or
+    /// `SendMessage`s its own `hwnd` from inside `handle` would re-enter
+    /// `wndproc` on this same thread while this borrow is still live —
+    /// a `RefCell` double-borrow panic. Worth revisiting once #20 lands
+    /// real input handling and third-party `AppLogic` impls get more
+    /// latitude.
     fn dispatch<A: AppLogic>(state: &RefCell<RunState<A>>, hwnd: HWND, event: UiEvent) -> Reaction {
         let reaction = {
             let mut state = state.borrow_mut();
@@ -341,11 +362,15 @@ mod win32 {
                 let (width, height) = size_from_lparam(lparam.0);
                 let viewport = {
                     let mut s = state.borrow_mut();
+                    // Recreate the render target first if a prior
+                    // `EndDraw` failure (see `backend.rs`'s `end_frame`)
+                    // dropped it — `resize_surface` alone is a no-op on
+                    // the render-target side while `surface` is `None`.
+                    let _ = s.backend.ensure_surface();
                     // Best-effort: a failed resize (device lost mid-drag)
-                    // leaves the old-sized target in place for this frame;
-                    // the next `WM_PAINT`'s `end_frame` recovery (see
-                    // `backend.rs`) drops it and a later resize recreates
-                    // it from scratch via `attach_surface`.
+                    // leaves the old-sized target in place for this
+                    // frame; the next `WM_PAINT`/`WM_SIZE` tries
+                    // `ensure_surface` again.
                     let _ = s.backend.resize_surface(width, height);
                     s.backend.viewport()
                 };
@@ -390,6 +415,14 @@ mod win32 {
             WM_PAINT => {
                 {
                     let mut s = state.borrow_mut();
+                    // Recreate the render target if a prior `EndDraw`
+                    // failure dropped it (device lost, RDP session
+                    // change — see `backend.rs`'s `end_frame` docs).
+                    // Best-effort: if recreation fails again (surface
+                    // still unavailable), `begin_frame`/`end_frame`
+                    // below are no-ops while `surface` stays `None`, and
+                    // the next `WM_PAINT`/`WM_SIZE` tries again.
+                    let _ = s.backend.ensure_surface();
                     let viewport = s.backend.viewport();
                     s.backend.begin_frame(viewport);
                     let RunState { app, backend } = &mut *s;
