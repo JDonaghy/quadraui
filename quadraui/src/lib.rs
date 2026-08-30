@@ -276,7 +276,8 @@ pub use primitives::status_bar::{
 };
 pub use primitives::tab_bar::{
     tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits,
-    TabBarLayout, TabBarSegment, TabIcon, TabItem, TabMeasure, VisibleSegment, VisibleTab,
+    TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure, VisibleSegment,
+    VisibleTab,
 };
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,

@@ -13,7 +13,7 @@ use ratatui::style::Modifier;
 
 use super::text::char_cell_width;
 use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled};
-use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout};
+use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
 use crate::theme::Theme;
 
 /// Close-button glyph rendered on each tab. `×` (U+00D7 MULTIPLICATION
@@ -93,6 +93,42 @@ pub fn draw_tab_bar_icons(
     area: Rect,
     bar: &TabBar,
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+    layout: &TabBarLayout,
+    theme: &Theme,
+) -> TabBarHits {
+    draw_tab_bar_icons_with_chrome(buf, area, bar, icons, &TabChrome::default(), layout, theme)
+}
+
+/// [`draw_tab_bar`] with an explicit [`TabChrome`] request (#631).
+///
+/// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] cell
+/// for cell. See [`TabChrome::active_frame`] for what each frame paints.
+pub fn draw_tab_bar_with_chrome(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &TabBar,
+    chrome: &TabChrome,
+    layout: &TabBarLayout,
+    theme: &Theme,
+) -> TabBarHits {
+    draw_tab_bar_icons_with_chrome(buf, area, bar, &[], chrome, layout, theme)
+}
+
+/// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request (#631).
+///
+/// When `chrome.active_frame` is [`TabFrame::Brackets`], the active tab's
+/// full content — icon, label, and close glyph — is enclosed in literal
+/// `[` / `]` glyphs. The caller's measurer must have already reserved the
+/// extra columns this needs in `layout` (see `TuiBackend::draw_tab_bar_*`
+/// in `backend.rs`, which build the chrome-aware
+/// [`crate::TabMeasure`] before calling [`TabBar::layout`]) — this
+/// function paints from `layout` verbatim and does not recompute widths.
+pub fn draw_tab_bar_icons_with_chrome(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &TabBar,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+    chrome: &TabChrome,
     layout: &TabBarLayout,
     theme: &Theme,
 ) -> TabBarHits {
@@ -179,6 +215,18 @@ pub fn draw_tab_bar_icons(
             (false, false) => (inactive_fg, bar_bg),
         };
 
+        // #631: when chrome requests bracket framing, the active tab's
+        // full content — icon, label, close glyph — is enclosed in `[` /
+        // `]`. `lead` shifts every subsequent paint position right by one
+        // column to make room for the opening bracket; the closing
+        // bracket is painted after the close glyph (or after the label,
+        // for a bar with no close button) below.
+        let bracket_active = matches!(chrome.active_frame, TabFrame::Brackets) && tab.is_active;
+        let lead: u16 = if bracket_active { 1 } else { 0 };
+        if bracket_active {
+            set_cell(buf, tab_x, area.y, '[', fg, bg);
+        }
+
         // Icon glyph, if this tab has one — painted before the label in
         // its own colour, independent of the tab's active/inactive fg.
         // `tab_icon_cols` (glyph width + 1-column gap) is exactly what
@@ -189,8 +237,8 @@ pub fn draw_tab_bar_icons(
         let icon_cols = crate::primitives::tab_bar::tab_icon_cols(icons, vt.tab_idx);
         if let Some(icon) = crate::primitives::tab_bar::tab_icon_at(icons, vt.tab_idx) {
             let icon_fg = ratatui_color(icon.color);
-            let icon_end = tab_x + icon_cols;
-            let mut cx = tab_x;
+            let icon_end = tab_x + lead + icon_cols;
+            let mut cx = tab_x + lead;
             for ch in icon.glyph.chars() {
                 if cx >= icon_end {
                     break;
@@ -220,15 +268,25 @@ pub fn draw_tab_bar_icons(
         };
 
         // Layout carries total tab width; close_bounds (when present)
-        // covers the trailing close-glyph + separator cells. Label
-        // occupies the leading cells up to close_bounds.x.
+        // covers the close-glyph cells (already positioned before any
+        // trailing chrome via `TabMeasure::trailing_width` — see
+        // `TuiBackend::draw_tab_bar_with_chrome`). Label occupies the
+        // cells between the leading bracket (if any) and close_bounds.x.
         let tab_width = vt.bounds.width.round() as u16;
-        let label_width = match vt.close_bounds {
-            Some(cb) => (cb.x - vt.bounds.x).round() as u16,
-            None => tab_width,
+        // A bracket-framed tab with no close button still reserves its
+        // last column for the closing bracket; `close_bounds` is `None`
+        // in that case (no close button), so it isn't already excluded
+        // from `tab_width` the way the close region is.
+        let trailing_bracket_no_close: u16 = if bracket_active && vt.close_bounds.is_none() {
+            1
+        } else {
+            0
+        };
+        let label_end = match vt.close_bounds {
+            Some(cb) => area.x + cb.x.round() as u16,
+            None => tab_x + tab_width - trailing_bracket_no_close,
         };
         let tab_end = tab_x + tab_width;
-        let label_end = tab_x + label_width;
 
         // Filename (after the last ": ") carries the underline accent.
         let prefix_len = tab.label.rfind(": ").map(|p| p + 2).unwrap_or(0);
@@ -238,7 +296,7 @@ pub fn draw_tab_bar_icons(
         // right-segment loop above. `TuiBackend::draw_tab_bar` /
         // `tab_bar_layout` (backend.rs) measure `label_end`'s budget with
         // the same `display_width` function, so the two sides agree.
-        let mut x = tab_x + icon_cols;
+        let mut x = tab_x + lead + icon_cols;
         for (ci, ch) in tab.label.chars().enumerate() {
             if x >= label_end {
                 break;
@@ -278,8 +336,16 @@ pub fn draw_tab_bar_icons(
             set_cell(buf, x, area.y, close_ch, close_fg, bg);
             x += 1;
         }
-        // Trailing separator space (within tab bounds, uses bar bg).
-        if x < tab_end {
+        // #631: the closing bracket lands right after the close glyph
+        // (or right after the label, for a bracket-framed tab with no
+        // close button) — taking the place of the plain trailing
+        // separator cell a non-bracket tab paints here.
+        if bracket_active {
+            if x < tab_end {
+                set_cell(buf, x, area.y, ']', fg, bg);
+            }
+        } else if x < tab_end {
+            // Trailing separator space (within tab bounds, uses bar bg).
             set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
         }
     }
@@ -607,5 +673,88 @@ mod tests {
             plain_hits.close_bounds, sidecar_hits.close_bounds,
             "empty sidecar must not move any close button"
         );
+    }
+
+    /// #631: `TabFrame::Brackets` must enclose the active tab's close
+    /// glyph in literal `[` / `]` — and `close_bounds` must still land on
+    /// the glyph itself, not the bracket wrapping it, so a click on `×`
+    /// still resolves to `TabClose` rather than `Tab`.
+    #[test]
+    fn bracket_frame_encloses_close_glyph_and_close_bounds_stay_on_the_glyph() {
+        use crate::primitives::tab_bar::{TabBarHit, TabChrome, TabFrame};
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    ..Default::default()
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        };
+        let chrome = TabChrome::new(TabFrame::Brackets);
+        // Tab 0 (active, bracketed): '[' + "main.rs"(7) + ×(1) + ']' = 10.
+        // Tab 1 (inactive, plain): "lib.rs"(6) + close_cols(2) = 8.
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |i| {
+                if i == 0 {
+                    TabMeasure::new(10.0, 1.0).with_trailing(1.0)
+                } else {
+                    TabMeasure::new(8.0, 2.0)
+                }
+            },
+            |_| SegmentMeasure::new(0.0),
+        );
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        let hits = draw_tab_bar_with_chrome(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &chrome,
+            &layout,
+            &Theme::default(),
+        );
+
+        assert_eq!(cell_char(&buf, 0, 0), '[', "opening bracket at tab start");
+        assert_eq!(cell_char(&buf, 1, 0), 'm', "label starts right after '['");
+        assert_eq!(cell_char(&buf, 8, 0), '×', "close glyph right after label");
+        assert_eq!(
+            cell_char(&buf, 9, 0),
+            ']',
+            "closing bracket right after the close glyph"
+        );
+        // The inactive tab gets no bracket framing at all.
+        assert_eq!(cell_char(&buf, 10, 0), 'l', "tab 1's label is unframed");
+
+        let (start, end) = hits.close_bounds[0].expect("tab 0 should report close bounds");
+        assert_eq!(
+            (start, end),
+            (8.0, 9.0),
+            "close_bounds must cover just the × cell, not the ']' beside it"
+        );
+
+        match layout.hit_test(8.5, 0.0) {
+            TabBarHit::TabClose(0) => {}
+            other => panic!("click on the × glyph expected TabClose(0), got {other:?}"),
+        }
+        match layout.hit_test(9.5, 0.0) {
+            TabBarHit::Tab(0) => {}
+            other => panic!("click on the ']' bracket expected Tab(0) (not close), got {other:?}"),
+        }
     }
 }

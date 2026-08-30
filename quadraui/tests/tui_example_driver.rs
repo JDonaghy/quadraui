@@ -92,6 +92,8 @@ mod sidebar_reveal_demo;
 mod split_app;
 #[path = "../examples/common/split_tree_app.rs"]
 mod split_tree_app;
+#[path = "../examples/common/tab_chrome_demo.rs"]
+mod tab_chrome_demo;
 #[path = "../examples/common/tab_group_demo.rs"]
 mod tab_group_demo;
 #[path = "../examples/common/tab_icons_demo.rs"]
@@ -139,6 +141,7 @@ use sidebar_panel_app::SidebarPanelApp;
 use sidebar_reveal_demo::SidebarRevealDemo;
 use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
+use tab_chrome_demo::TabChromeDemo;
 use tab_group_demo::TabGroupDemo;
 use tab_icons_demo::TabIconsDemo;
 use text_input_demo::TextInputDemo;
@@ -4636,4 +4639,86 @@ fn tab_icons_demo_q_exits() {
     let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the tab icons demo");
+}
+
+// ─── TabChromeDemo: active-tab bracket framing through Backend::draw_tab_bar_with_chrome (#631) ───
+//
+// The whole point of #631 is that a consumer never has to bake `[`/`]`
+// into `TabItem::label` (coord-tui's pre-#631 workaround) to get bracket
+// framing that encloses the close glyph. These drive the shipping
+// `tui_tab_chrome` example through the declarative chrome path end to end.
+
+fn tab_chrome_bar_id() -> quadraui::WidgetId {
+    quadraui::WidgetId::new("tab-chrome-demo:tabs")
+}
+
+#[test]
+fn tab_chrome_demo_active_tab_is_enclosed_in_brackets() {
+    let driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("[main.rs×]"),
+        "active tab's label and close glyph should be enclosed in literal \
+         brackets, not have '[' baked into the label string:\n{screen}"
+    );
+    assert!(
+        !driver.screen_contains("[lib.rs"),
+        "the inactive tab must not get bracket framing:\n{screen}"
+    );
+}
+
+#[test]
+fn tab_chrome_demo_click_on_close_glyph_closes_not_activates() {
+    // Round-trips paint -> `tab_bar_layout_with_chrome` -> handle ->
+    // re-render, exactly like a real consumer's click routing. If the
+    // close click were mis-resolved as a tab-body click, the hint bar
+    // would say "activated main.rs" instead of "closed main.rs" — and
+    // the active tab would still be 0, so a same-tab activation could
+    // otherwise pass unnoticed.
+    let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    assert!(driver.screen_contains(" ready "));
+
+    let (x, y) = driver
+        .tab_close_center(&tab_chrome_bar_id(), 0)
+        .expect("active tab should have painted close-glyph geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains(" closed main.rs "),
+        "clicking the close glyph should record a close, not an activation:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("[main.rs×]"),
+        "tab 0 should still be the active (bracket-framed) tab — closing \
+         is a logically distinct outcome from activating:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_chrome_demo_click_on_other_tab_activates_it() {
+    let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    let (x, y) = driver
+        .tab_center(&tab_chrome_bar_id(), 1)
+        .expect("tab 1 should have painted geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains(" activated lib.rs "),
+        "clicking tab 1's body should activate it:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("[lib.rs×]"),
+        "tab 1 should now carry the bracket framing:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_chrome_demo_q_exits() {
+    let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the tab chrome demo");
 }

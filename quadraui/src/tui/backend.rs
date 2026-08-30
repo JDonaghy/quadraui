@@ -52,8 +52,8 @@ use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, CommandLine, DragState,
     DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
-    Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, Terminal as TerminalPrim,
-    TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame,
+    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding` is only referenced by `#[cfg(test)]` code below (the rest of
 // this file matches already-parsed `Accelerator`s) — gate the import the
@@ -1211,6 +1211,70 @@ impl Backend for TuiBackend {
         crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
     }
 
+    fn draw_tab_bar_with_chrome(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        _hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> crate::TabBarHits {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let close_cols = if bar.show_tab_close {
+            crate::tui::TAB_CLOSE_COLS as usize
+        } else {
+            0
+        };
+        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+        // #631: a bracket-framed active tab reserves one extra column on
+        // each side of its ordinary close-column reservation — see
+        // `tui::tab_bar`'s module doc for the cell-by-cell breakdown.
+        let tab_widths: Vec<usize> = bar
+            .tabs
+            .iter()
+            .map(|t| {
+                let has_close = bar.show_tab_close && t.is_closable;
+                let is_bracket = brackets && t.is_active;
+                let base = display_width(&t.label);
+                if is_bracket && has_close {
+                    // '[' + glyph(1) + ']' , replacing the plain
+                    // glyph+separator reservation.
+                    base + 1 + 1 + 1
+                } else if is_bracket {
+                    // '[' + ']' around a label with no close button.
+                    base + 2
+                } else if has_close {
+                    base + close_cols
+                } else {
+                    base
+                }
+            })
+            .collect();
+        let layout = bar.layout(
+            area.width as f32,
+            area.height as f32,
+            0.0,
+            |i| {
+                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+                let is_bracket = brackets && bar.tabs[i].is_active;
+                if is_bracket && has_close {
+                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
+                } else if has_close {
+                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
+                } else {
+                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
+                }
+            },
+            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+        );
+        self.tab_bar_layouts
+            .insert(bar.id.clone(), (rect, layout.clone()));
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_tab_bar_with_chrome called outside enter_frame_scope");
+        crate::tui::draw_tab_bar_with_chrome(frame.buffer_mut(), area, bar, chrome, &layout, &theme)
+    }
+
     fn draw_activity_bar(
         &mut self,
         rect: QRect,
@@ -1292,6 +1356,78 @@ impl Backend for TuiBackend {
         // trait doc — the same space `draw_tab_bar` returns. Without this
         // the no-paint path returned bar-relative x, off by `rect.x`
         // (nonzero for any tab bar right of a sidebar). Issue #552.
+        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+
+        let active_idx = bar.tabs.iter().position(|t| t.is_active);
+        let reserved: usize = bar
+            .right_segments
+            .iter()
+            .map(|s| s.width_cells as usize)
+            .sum();
+        let effective_tab_area = (rect.width as usize).saturating_sub(reserved);
+
+        hits.correct_scroll_offset = if let Some(active) = active_idx {
+            TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area, |i| {
+                tab_widths[i]
+            })
+        } else {
+            bar.scroll_offset
+        };
+
+        hits
+    }
+
+    fn tab_bar_layout_with_chrome(
+        &self,
+        rect: QRect,
+        bar: &TabBar,
+        chrome: &TabChrome,
+    ) -> crate::TabBarHits {
+        let close_cols = if bar.show_tab_close {
+            crate::tui::TAB_CLOSE_COLS as usize
+        } else {
+            0
+        };
+        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+        // Mirrors `draw_tab_bar_with_chrome`'s measurer exactly — the
+        // no-paint twin must reserve the same columns the paint path did.
+        let tab_widths: Vec<usize> = bar
+            .tabs
+            .iter()
+            .map(|t| {
+                let has_close = bar.show_tab_close && t.is_closable;
+                let is_bracket = brackets && t.is_active;
+                let base = display_width(&t.label);
+                if is_bracket && has_close {
+                    base + 1 + 1 + 1
+                } else if is_bracket {
+                    base + 2
+                } else if has_close {
+                    base + close_cols
+                } else {
+                    base
+                }
+            })
+            .collect();
+        let layout = bar.layout(
+            rect.width,
+            rect.height,
+            0.0,
+            |i| {
+                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+                let is_bracket = brackets && bar.tabs[i].is_active;
+                if is_bracket && has_close {
+                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
+                } else if has_close {
+                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
+                } else {
+                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
+                }
+            },
+            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+        );
+
+        let mut hits = tab_bar_layout_to_hits(&layout, bar);
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
 
         let active_idx = bar.tabs.iter().position(|t| t.is_active);
