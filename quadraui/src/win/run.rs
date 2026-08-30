@@ -80,6 +80,10 @@ mod win32 {
     use crate::event::UiEvent;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
+    // Payload decoding lives in `super::msg` so it can be unit-tested off
+    // Windows — see that module's docs for why the shifts aren't inlined
+    // here.
+    use crate::win::msg::{dpi_scale_from_wparam, size_from_lparam};
 
     /// Window-class name. Null-terminated up front — every `PCWSTR` this
     /// module builds from a Rust string does the same, since Win32 wide
@@ -94,14 +98,6 @@ mod win32 {
     /// actual client size.
     const DEFAULT_WIDTH: i32 = 800;
     const DEFAULT_HEIGHT: i32 = 600;
-
-    /// The 96-DPI baseline Windows' DPI APIs measure against — see
-    /// `backend.rs`'s `USER_DEFAULT_SCREEN_DPI`. Duplicated rather than
-    /// imported: that constant is private to `backend.rs`, and
-    /// `WM_DPICHANGED`'s `wparam` needs the same ratio independently of
-    /// any live `WinBackend` (the divide happens before the borrow
-    /// below).
-    const USER_DEFAULT_SCREEN_DPI: f32 = 96.0;
 
     /// Everything a live window needs, reachable from `wndproc::<A>` via
     /// `GWLP_USERDATA` (see module docs).
@@ -342,8 +338,7 @@ mod win32 {
             WM_SIZE => {
                 // `lparam`'s low/high words are the new client width/height
                 // in pixels — the standard `WM_SIZE` payload shape.
-                let width = (lparam.0 as u32) & 0xFFFF;
-                let height = ((lparam.0 as u32) >> 16) & 0xFFFF;
+                let (width, height) = size_from_lparam(lparam.0);
                 let viewport = {
                     let mut s = state.borrow_mut();
                     // Best-effort: a failed resize (device lost mid-drag)
@@ -363,8 +358,7 @@ mod win32 {
             WM_DPICHANGED => {
                 // `wparam`'s low word is the new DPI (`x` and `y` are
                 // always equal on Windows) — see `WM_DPICHANGED`'s docs.
-                let new_dpi = (wparam.0 & 0xFFFF) as f32;
-                let scale = new_dpi / USER_DEFAULT_SCREEN_DPI;
+                let scale = dpi_scale_from_wparam(wparam.0);
                 {
                     let mut s = state.borrow_mut();
                     s.backend.set_dpi_scale(scale);
