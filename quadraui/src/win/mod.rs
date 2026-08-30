@@ -27,6 +27,14 @@ pub mod events;
 pub(crate) mod msg;
 pub mod run;
 pub mod services;
+/// Headless Direct2D test surface (#24): an offscreen `ID2D1DCRenderTarget`
+/// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
+/// a primitive and read pixels back with no `HWND`, display, or GPU.
+/// `pub` (like [`crate::tui::testing`] / [`crate::gtk::testing`]) rather
+/// than `pub(crate)` — see its module docs for why. Windows-only in full,
+/// same reasoning as `text` below.
+#[cfg(target_os = "windows")]
+pub mod testing;
 /// DirectWrite text infrastructure — factory + text-format creation,
 /// font-metrics measurement, and Direct2D text painting (#21). Windows-only
 /// in full: nothing in here has a meaningful non-Windows fallback (unlike

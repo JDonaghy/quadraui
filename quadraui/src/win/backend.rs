@@ -16,11 +16,16 @@
 //! # Implementation notes
 //!
 //! - **Render target**: `ID2D1HwndRenderTarget` for the main window
-//!   (this issue). Offscreen: `ID2D1BitmapRenderTarget` for headless
-//!   tests (#24) — not needed yet since nothing here is unit-tested
-//!   against a real target (Windows-only code, verified by
-//!   `cargo check --target x86_64-pc-windows-msvc`, not by this repo's
-//!   Linux CI — see `ci.yml`).
+//!   (this issue). Offscreen: [`super::testing::HeadlessSurface`] wraps an
+//!   `ID2D1DCRenderTarget` bound to an in-memory DIB section for headless
+//!   tests (#24) — a lower-level building block than a `WinBackend`
+//!   driver, since every `draw_*`/`*_layout` rasteriser below is still a
+//!   `todo!()` stub with nothing yet for a driver to paint. Only actually
+//!   *runs* on the `windows-latest` leg of `ci.yml`'s `tui` job (see
+//!   `HeadlessSurface`'s module docs and that workflow's "Test (win
+//!   feature, real Windows)" step) — `cargo check --features win` on
+//!   Linux still only type-checks this file, same as everything else
+//!   `target_os = "windows"`-gated in this module.
 //! - **Text** (#21): `IDWriteTextFormat` + `IDWriteTextLayout` for
 //!   measurement and rendering (`super::text`). `line_height`/`char_width`
 //!   are resolved once per surface from `IDWriteFontFace::GetMetrics`

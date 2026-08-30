@@ -35,15 +35,20 @@ this list in the same PR.
 |---|---|---|
 | `rustfmt` | ubuntu-latest | `cargo fmt --all --check` |
 | `Example-test coverage` | ubuntu-latest, PR events only | `tools/example_coverage.py --fail-on-gap` — a new `tui_*.rs` example added by the PR must have a matching `TuiDriver` test |
-| `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check (`cargo check -p quadraui --features win`, ubuntu leg only, #538); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg |
+| `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check + arithmetic-only unit tests (`cargo check`/`test -p quadraui --features win`, ubuntu leg only, #538); on the windows-latest leg (all three `continue-on-error`, see the job's comments for the rollout plan): a real build + clippy of the `win_demo` example (`--features win`, #19/#21) and `cargo test -p quadraui --features win` (#24 — the first step that actually *runs* `cfg(target_os = "windows")` code against real Direct2D, via `src/win/testing.rs`'s `HeadlessSurface`); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg |
 | `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs`); a build of the `gtk_terminal` example (`--features gtk,terminal`, #483, same `required-features` gap as `tui_terminal` above); the gtk+tui conformance matrix, uploaded as an artifact |
 | `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout — see the job's comments for how (#528) |
 | `macos (build, test)` (separate workflow, `macos.yml`) | macos-latest, **`pull_request` gated on a `quadraui/src/macos/**` path filter (#598), plus `workflow_dispatch`/weekly `schedule`** | `cargo build`/`test -p quadraui --features macos` — the only place `src/macos`'s tests (including `MacDriver`'s, quadraui#493, and the Tier-1 `backends()` row it adds to `tests/conformance.rs`) run. The path filter is load-bearing, not incidental (see the workflow's own header comment): a PR that doesn't touch `src/macos/**` gets no check at all, but one that does gets a *real*, merge-blocking macos-latest build+test — `#484`'s progress bar. Still weekly (Mondays 06:00 UTC) / manual-dispatch otherwise, for the same "don't let a regression sit undiscovered" reason as before #598 |
 
-Not yet covered by CI at all: the `win` feature's *portable core* actually
-running on Windows (only a Linux compile-check exists, see the `tui` job
-row above) — that's the milestone the windows-latest leg's rollout
-comments describe.
+Not yet covered by CI at all: real `WinBackend` *rasterisers* running on
+Windows — every `Backend::draw_*`/`*_layout` method is still a `todo!()`
+stub (see `src/win/backend.rs`'s module docs), so there is nothing yet
+for a `windows-latest` test to paint through the trait. #24's
+`HeadlessSurface` closes the *infrastructure* gap (a real, GPU-free
+Direct2D render target a test can paint into and read pixels back from)
+ahead of the rasterisers that will need it — see the `tui` job row above
+for the three `continue-on-error` windows-latest steps and the rollout
+plan that flips each to blocking once proven stable.
 
 ## Coverage taxonomy
 
