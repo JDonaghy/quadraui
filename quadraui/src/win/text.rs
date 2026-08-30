@@ -15,7 +15,8 @@
 //! for why the rest of this repo's `--features win` compile gate stays
 //! meaningful without a Windows host.
 
-use windows::core::{Result as WinResult, BOOL, HSTRING};
+use windows::core::{Error as WinError, Result as WinResult, BOOL, HSTRING};
+use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, D2D1_DRAW_TEXT_OPTIONS_CLIP};
 use windows::Win32::Graphics::DirectWrite::{
@@ -25,6 +26,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 
 use crate::event::Rect;
+use crate::win::msg::pt_to_dip;
 use crate::Color;
 
 /// Live DirectWrite handles for the configured editor font: the shared
@@ -43,9 +45,13 @@ pub(crate) struct DWrite {
 
 impl DWrite {
     /// Create the shared `IDWriteFactory` and an `IDWriteTextFormat` for
-    /// `family` at `size_pt` DIPs (DirectWrite font sizes are already
-    /// DIPs — the same convention [`Backend::line_height`][crate::backend::Backend::line_height] /
-    /// [`Backend::char_width`][crate::backend::Backend::char_width] report in).
+    /// `family` at `size_pt` **points** — the same convention
+    /// [`WinBackend::editor_font_size_pt`][crate::win::backend::WinBackend]
+    /// and GTK's `editor_font_size_pt` (fed through Pango, which is points)
+    /// use. DirectWrite's `fontSize` parameter is DIPs, not points (1 DIP =
+    /// 1/96in, 1 point = 1/72in), so `size_pt` is converted via
+    /// [`pt_to_dip`] before it reaches DirectWrite — see that function's
+    /// docs for why a straight passthrough is wrong.
     ///
     /// Returns the constructed handles plus `(line_height, char_width)`
     /// resolved from the format's real font metrics, so the caller
@@ -54,14 +60,15 @@ impl DWrite {
     /// without a second round-trip through this module.
     pub(crate) fn new(family: &str, size_pt: f32) -> WinResult<(Self, f32, f32)> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-        let text_format = create_text_format(&factory, family, size_pt)?;
+        let size_dip = pt_to_dip(size_pt);
+        let text_format = create_text_format(&factory, family, size_dip)?;
 
         let font_metrics = font_face_metrics(&factory, family)?;
         let units_per_em = (font_metrics.designUnitsPerEm as f32).max(1.0);
         let line_gap = (font_metrics.lineGap as f32).max(0.0);
         let line_height = (font_metrics.ascent as f32 + font_metrics.descent as f32 + line_gap)
             / units_per_em
-            * size_pt;
+            * size_dip;
         let (char_width, _) = measure_text(&factory, &text_format, "0")?;
 
         Ok((
@@ -94,7 +101,9 @@ impl DWrite {
     }
 }
 
-/// `IDWriteFactory::CreateTextFormat` for `family` at `size_pt`, using the
+/// `IDWriteFactory::CreateTextFormat` for `family` at `size_dip` — already
+/// converted from points via [`pt_to_dip`] by the caller, since
+/// `CreateTextFormat`'s `fontSize` parameter is DIPs, not points. Uses the
 /// system font collection (`None`) and the `"en-us"` locale — DirectWrite
 /// requires a non-null locale name; empty/garbage locales silently fall
 /// back to whatever the font supports, so a real BCP-47 tag is used
@@ -102,7 +111,7 @@ impl DWrite {
 fn create_text_format(
     factory: &IDWriteFactory,
     family: &str,
-    size_pt: f32,
+    size_dip: f32,
 ) -> WinResult<IDWriteTextFormat> {
     unsafe {
         factory.CreateTextFormat(
@@ -111,7 +120,7 @@ fn create_text_format(
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            size_pt,
+            size_dip,
             &HSTRING::from("en-us"),
         )
     }
@@ -125,8 +134,17 @@ fn create_text_format(
 fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE_FONT_METRICS> {
     let mut collection: Option<IDWriteFontCollection> = None;
     unsafe { factory.GetSystemFontCollection(&mut collection, false)? };
-    let collection =
-        collection.expect("GetSystemFontCollection returns Ok(()) only when populated");
+    // `GetSystemFontCollection` is documented to populate `collection`
+    // whenever it returns `Ok(())`, but that's an assumption about the FFI
+    // binding's out-param contract, not something the type system proves —
+    // propagate rather than `expect`/panic if it's ever violated, matching
+    // every other fallible call in this module.
+    let collection = collection.ok_or_else(|| {
+        WinError::new(
+            E_UNEXPECTED,
+            "GetSystemFontCollection returned Ok(()) but left the collection unpopulated",
+        )
+    })?;
 
     let mut index = 0u32;
     let mut exists = BOOL(0);
