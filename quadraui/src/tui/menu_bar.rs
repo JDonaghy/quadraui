@@ -1,9 +1,11 @@
 //! TUI rasteriser for [`crate::MenuBar`].
 //!
 //! Paints a horizontal strip of menu-bar items into a single row.
-//! Each item's label is rendered with optional Alt-key underline
-//! (the char after `&` in the label, or the first char if no `&`).
-//! Active/open items get a highlight; disabled items are dimmed.
+//! Each item's label is rendered with optional Alt-key underline: the
+//! char after `&` in the label is underlined, and a label with no `&`
+//! at all is never underlined (quadraui#625 — there is no implicit
+//! "underline the first char" fallback). Active/open items get a
+//! highlight; disabled items are dimmed.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -93,7 +95,7 @@ pub fn draw_menu_bar(buf: &mut Buffer, area: Rect, bar: &MenuBar, theme: &Theme)
             if cx >= area.x + area.width {
                 break;
             }
-            if char_idx == underline_pos {
+            if underline_pos == Some(char_idx) {
                 set_cell_styled(buf, cx, y, ch, fg, bg, Modifier::UNDERLINED, None);
             } else {
                 set_cell(buf, cx, y, ch, fg, bg);
@@ -112,14 +114,16 @@ fn display_width(label: &str) -> usize {
 }
 
 /// Index (in display chars, skipping `&`) of the Alt-activation char.
-/// If `&` is present, the char after it; otherwise char 0.
-fn alt_char_index(label: &str) -> usize {
+/// The char after `&` — or `None` if the label carries no `&` at all
+/// (quadraui#625: this used to fall back to char 0 unconditionally,
+/// so a label could never opt out of the underline).
+fn alt_char_index(label: &str) -> Option<usize> {
     for (i, ch) in label.chars().enumerate() {
         if ch == '&' {
-            return i;
+            return Some(i);
         }
     }
-    0
+    None
 }
 
 #[cfg(test)]
@@ -294,6 +298,43 @@ mod tests {
             !buf[(2, 0)].modifier.contains(Modifier::UNDERLINED),
             "non-alt char 'i' should not be underlined"
         );
+    }
+
+    /// quadraui#625: a label with no `&` at all used to fall back to
+    /// underlining char 0 unconditionally (`alt_char_index`'s old
+    /// `0` fallback), so a label could never opt out of the
+    /// underline. Confirms the fix: no cell in the item's row is
+    /// underlined, and the label paints unchanged otherwise.
+    #[test]
+    fn no_ampersand_label_is_never_underlined() {
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut bar = make_bar(); // "&File", "&Edit", "&View"
+        bar.items[0].label = "File".into(); // dropped the '&' marker
+        let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
+
+        let vi = &layout.visible_items[0];
+        let start_x = vi.bounds.x.round() as u16;
+        let end_x = start_x + vi.bounds.width.round() as u16;
+        for x in start_x..end_x {
+            assert!(
+                !buf[(x, area.y)].modifier.contains(Modifier::UNDERLINED),
+                "label with no '&' must not underline any cell (col {x})"
+            );
+        }
+        // Sanity: the label itself still paints, just without underline.
+        assert_eq!(cell_char(&buf, start_x + 1, area.y), 'F');
+    }
+
+    #[test]
+    fn alt_char_index_none_without_marker() {
+        assert_eq!(alt_char_index("File"), None);
+    }
+
+    #[test]
+    fn alt_char_index_marks_char_after_ampersand() {
+        assert_eq!(alt_char_index("&File"), Some(0));
+        assert_eq!(alt_char_index("Sa&ve"), Some(2));
     }
 
     /// Verify that a dropdown containing a submenu-parent item shows ▶.

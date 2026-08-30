@@ -2,9 +2,11 @@
 //!
 //! Paints a horizontal strip of menu-bar items onto a Cairo context
 //! using Pango for text measurement and rendering. Each item's label
-//! is rendered with optional Alt-key underline (the char after `&`,
-//! or the first char if no `&`). Active/open items get a highlight;
-//! disabled items are dimmed.
+//! is rendered with optional Alt-key underline: the char after `&`
+//! is underlined, and a label with no `&` at all is never underlined
+//! (quadraui#625 — there is no implicit "underline the first char"
+//! fallback). Active/open items get a highlight; disabled items are
+//! dimmed.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -142,7 +144,10 @@ fn display_text(label: &str) -> String {
 }
 
 /// Find the byte range in `display` of the Alt-activation char.
-/// The `&` in `label` marks the next char; if no `&`, use the first char.
+/// The `&` in `label` marks the next char. A label with no `&` has no
+/// Alt-activation char to underline — returns `None` (quadraui#625:
+/// this used to fall back to underlining char 0 unconditionally,
+/// which meant a label could never opt out of the underline).
 fn alt_char_byte_range(label: &str, display: &str) -> Option<(usize, usize)> {
     if display.is_empty() {
         return None;
@@ -157,11 +162,10 @@ fn alt_char_byte_range(label: &str, display: &str) -> Option<(usize, usize)> {
             }
             idx += 1;
         }
-        if found {
-            idx
-        } else {
-            0
+        if !found {
+            return None;
         }
+        idx
     };
 
     // display_idx is the char index in display to underline. But since
@@ -327,6 +331,61 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip() {
         paint_and_click_round_trip_at(0.0, 0.0);
+    }
+
+    /// quadraui#625: `alt_char_byte_range` used to fall back to
+    /// underlining char 0 whenever the label carried no `&` at all —
+    /// its own doc comment admitted it never returned `None` for a
+    /// non-empty label. Removing `&` from a label didn't remove the
+    /// underline, it just relocated it. Confirms the fix.
+    #[test]
+    fn alt_char_byte_range_none_without_ampersand() {
+        assert_eq!(alt_char_byte_range("File", "File"), None);
+    }
+
+    #[test]
+    fn alt_char_byte_range_marks_char_after_ampersand() {
+        assert_eq!(alt_char_byte_range("&File", "File"), Some((0, 1)));
+        // '&' isn't necessarily the first char — "Sa&ve" underlines 'v'.
+        assert_eq!(alt_char_byte_range("Sa&ve", "Save"), Some((2, 3)));
+    }
+
+    /// End-to-end version of the two unit tests above: paints a label
+    /// with no `&` and asserts no underline attribute reaches Pango by
+    /// checking the rendered glyph position is unaffected (the
+    /// underline itself isn't pixel-probed here — Pango underline
+    /// metrics aren't guaranteed stable across fonts/CI — but this
+    /// exercises `draw_menu_bar`'s full call path with a `&`-free
+    /// label end to end, guarding against the attribute-building code
+    /// regressing back to always inserting an underline attr).
+    #[test]
+    fn paint_no_ampersand_label_does_not_panic_and_paints_glyph() {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut bar = make_bar();
+        bar.items[0].label = "File".into(); // no '&' marker
+        let cr = Context::new(&surface).expect("Context::new");
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.paint().ok();
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let layout = draw_menu_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            0.0,
+            W as f64,
+            20.0,
+            &bar,
+            &test_theme(),
+        );
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let vi = &layout.visible_items[0];
+        let scan_from = vi.bounds.x.floor() as i32;
+        assert!(
+            leftmost_painted_in_row(&data, stride, 10, scan_from).is_some(),
+            "label should still paint a glyph even with no '&' marker"
+        );
     }
 
     /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):

@@ -44,7 +44,11 @@ pub struct MenuBarItem {
     /// Display label, e.g. `"&File"` (with the `&` marking the
     /// Alt-activation character — backends render the following char
     /// underlined and map Alt+that-char to this item). If no `&` is
-    /// present, Alt activation uses the first character.
+    /// present, the label is never underlined (quadraui#625 — no
+    /// implicit "underline the first char" fallback), though
+    /// [`MenuBar::find_alt_target`]'s keyboard-activation lookup still
+    /// falls back to the first character, unrelated to the visual
+    /// underline.
     pub label: String,
     /// When true, the item is rendered dimmed and clicks are ignored.
     #[serde(default)]
