@@ -2,7 +2,7 @@
 //!
 //! Mirrors [`crate::gtk::tree::draw_tree`]: header rows use
 //! `(line_height * 1.2)` pitch, leaves and branches use
-//! `(line_height * 1.4)` unless `TreeView::row_height` overrides the
+//! `(line_height * 1.4)` unless `TreeStyle::row_height` overrides the
 //! non-header pitch (#623). Chevron / icon / text / badge layout within
 //! a row matches the GTK convention so a paired `macos_multi_tree`
 //! example reads identically to its GTK twin.
@@ -28,7 +28,7 @@ use crate::types::{Color, Decoration};
 /// in `area` at `line_height`. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch. Header rows use
 /// `(line_height * 1.2).round()`, others use `(line_height * 1.4)`
-/// unless `tree.row_height` overrides the non-header pitch (#623).
+/// unless `tree.style.row_height` overrides the non-header pitch (#623).
 ///
 /// Coordinate frame: `visible_rows.bounds` and `hit_regions` are in
 /// **tree-local** coords (origin at 0, 0), matching `tui_tree_layout`
@@ -39,6 +39,7 @@ use crate::types::{Color, Decoration};
 pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree
+        .style
         .row_height
         .map(|h| h as f64)
         .unwrap_or(line_height * 1.4)
@@ -101,8 +102,9 @@ pub unsafe fn draw_tree(
     let indent_px = (line_height * 0.9).round();
     let header_height = (line_height * 1.2).round();
     let item_height = tree
+        .style
         .row_height
-        .map(|rh| rh as f64)
+        .map(|h| h as f64)
         .unwrap_or(line_height * 1.4)
         .round();
 
@@ -371,7 +373,6 @@ mod tests {
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
-            row_height: None,
         }
     }
 
@@ -558,7 +559,7 @@ mod tests {
             leaf(2, "gamma"),
             leaf(3, "delta"),
         ]);
-        tree.row_height = Some(22.0);
+        tree.style.row_height = Some(22);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
         let small = mac_tree_layout(&tree, area, 14.0);

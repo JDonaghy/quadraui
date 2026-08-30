@@ -831,7 +831,6 @@ mod tests {
                 scroll_offset: 0,
                 style: Default::default(),
                 has_focus: true,
-                row_height: None,
             }),
             aux: None,
             size,
@@ -1354,7 +1353,6 @@ mod tests {
                         scroll_offset: s.scroll_offset,
                         style: Default::default(),
                         has_focus: self.active_section == Some(idx),
-                        row_height: None,
                     }),
                     aux: None,
                     size: SectionSize::EqualShare,
@@ -1841,7 +1839,6 @@ mod tests {
                             style: Default::default(),
                             has_focus: !self.commit_input_active
                                 && self.active_section == Some(idx),
-                            row_height: None,
                         }),
                         aux,
                         size,

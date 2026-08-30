@@ -683,9 +683,10 @@ pub trait Backend {
     /// Paint `tree` into `rect`. Non-header row height defaults to a
     /// backend-native derivation from `line_height` (GTK/macOS:
     /// `line_height * 1.4`; TUI: fixed 1 cell) but a host can pin it via
-    /// [`TreeView::row_height`] instead — e.g. to match a fixed design-
-    /// system row pitch independent of editor font size (#623). TUI
-    /// ignores the override (a terminal cell can't be subdivided).
+    /// [`TreeStyle::row_height`](crate::types::TreeStyle::row_height)
+    /// instead — e.g. to match a fixed design-system row pitch
+    /// independent of editor font size (#623). TUI ignores the override
+    /// (a terminal cell can't be subdivided).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
     fn draw_data_table(

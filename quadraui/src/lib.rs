@@ -423,7 +423,6 @@ mod tests {
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
-            row_height: None,
         };
         let json = serde_json::to_string(&tree).unwrap();
         let back: TreeView = serde_json::from_str(&json).unwrap();
@@ -3730,7 +3729,6 @@ mod tests {
             scroll_offset: scroll,
             style: TreeStyle::default(),
             has_focus: true,
-            row_height: None,
         }
     }
 
