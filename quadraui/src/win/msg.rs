@@ -73,6 +73,49 @@ pub(crate) fn dpi_ratio(dpi: u32) -> f32 {
     }
 }
 
+/// Decode a mouse message's `lparam` (`WM_MOUSEMOVE`, `WM_LBUTTONDOWN/UP`,
+/// `WM_RBUTTONDOWN/UP`, …) into client-area `(x, y)` device pixels.
+///
+/// Win32 packs both into one `LPARAM` the same way `WM_SIZE` does — `x` in
+/// the low word, `y` in the high word — but unlike `WM_SIZE`'s always-
+/// non-negative client size, mouse coordinates go negative during a
+/// mouse-captured drag that tracks outside the client rect. Each word is
+/// therefore read as a **signed** 16-bit value (`i16`, matching the
+/// `GET_X_LPARAM`/`GET_Y_LPARAM` macros' `(short)` casts), not masked and
+/// widened the way [`size_from_lparam`] treats its always-unsigned words.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn point_from_lparam(lparam: isize) -> (i16, i16) {
+    let packed = lparam as u32;
+    ((packed & 0xFFFF) as i16, ((packed >> 16) & 0xFFFF) as i16)
+}
+
+/// Decode `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`'s `wparam` into the signed wheel
+/// delta (the `GET_WHEEL_DELTA_WPARAM` macro's `(short)HIWORD(wParam)`).
+/// Positive is forward/right, negative is backward/left — one full
+/// detent is `WHEEL_DELTA` (120); high-resolution wheels/trackpads may
+/// report smaller fractional steps.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn wheel_delta_from_wparam(wparam: usize) -> i16 {
+    ((wparam as u32 >> 16) & 0xFFFF) as i16
+}
+
+/// `WHEEL_DELTA` — one full wheel-notch's worth of [`wheel_delta_from_wparam`].
+/// Dividing by this normalises a raw delta to "notches" (quadraui's
+/// `ScrollDelta` unit), matching the TUI backend's crossterm translator
+/// (one `ScrollUp`/`ScrollDown` event = 1.0) and the GTK/macOS backends'
+/// small-magnitude deltas.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) const WHEEL_DELTA: f32 = 120.0;
+
+/// Decode `WM_KEYDOWN`/`WM_KEYUP`'s `lparam` bit 30 (the "previous key
+/// state" flag) into whether this is an OS-generated auto-repeat rather
+/// than the key's first press. Per `WM_KEYDOWN`'s documented layout, bit
+/// 30 is `1` if the key was already down before this message.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn is_repeat_from_lparam(lparam: isize) -> bool {
+    (lparam as u32) & (1 << 30) != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +181,60 @@ mod tests {
         let scale = dpi_ratio(0);
         assert!(scale.is_finite(), "scale must never be inf/NaN");
         assert_eq!(scale, 1.0);
+    }
+
+    /// LOWORD is x, HIWORD is y — same word order as `WM_SIZE`, but read
+    /// as signed 16-bit values this time.
+    #[test]
+    fn point_from_lparam_reads_x_from_the_low_word() {
+        let lparam = (200isize << 16) | 100isize;
+        assert_eq!(point_from_lparam(lparam), (100, 200));
+    }
+
+    /// A drag that tracks outside the client rect (mouse capture) reports
+    /// negative coordinates — `point_from_lparam` must sign-extend each
+    /// 16-bit word individually rather than treating the whole `LPARAM`
+    /// as one signed value the way [`super::size_from_lparam`] does *not*
+    /// need to (client sizes are never negative).
+    #[test]
+    fn point_from_lparam_sign_extends_negative_coordinates() {
+        // x = -5, y = -10, packed as their 16-bit two's-complement forms.
+        let x = (-5i16) as u16 as isize;
+        let y = (-10i16) as u16 as isize;
+        let lparam = (y << 16) | x;
+        assert_eq!(point_from_lparam(lparam), (-5, -10));
+    }
+
+    #[test]
+    fn point_from_lparam_handles_the_origin() {
+        assert_eq!(point_from_lparam(0), (0, 0));
+    }
+
+    /// `GET_WHEEL_DELTA_WPARAM` reads the *signed* high word — a forward
+    /// wheel notch (120) and a backward one (-120) must round-trip.
+    #[test]
+    fn wheel_delta_from_wparam_reads_forward_and_backward_notches() {
+        let forward = (120i16 as u16 as usize) << 16;
+        assert_eq!(wheel_delta_from_wparam(forward), 120);
+
+        let backward = ((-120i16) as u16 as usize) << 16;
+        assert_eq!(wheel_delta_from_wparam(backward), -120);
+    }
+
+    /// The low word (key-state flags: `MK_CONTROL`, `MK_SHIFT`, …) must
+    /// not leak into the decoded delta.
+    #[test]
+    fn wheel_delta_from_wparam_ignores_the_low_word_key_state_flags() {
+        let wparam = (120usize << 16) | 0x0009; // MK_CONTROL | MK_SHIFT
+        assert_eq!(wheel_delta_from_wparam(wparam), 120);
+    }
+
+    #[test]
+    fn is_repeat_from_lparam_reads_bit_30() {
+        assert!(!is_repeat_from_lparam(0));
+        assert!(is_repeat_from_lparam(1 << 30));
+        // Unrelated bits (e.g. bit 31 = transition state) don't affect it.
+        assert!(is_repeat_from_lparam((1 << 30) | (1 << 31)));
+        assert!(!is_repeat_from_lparam(1 << 29));
     }
 }

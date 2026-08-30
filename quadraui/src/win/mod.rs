@@ -14,6 +14,12 @@
 //! as the reference implementation for a pixel-based backend.
 
 pub mod backend;
+/// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
+/// focus). Pure free functions, host-independent and unit-tested off
+/// Windows — mirrors `crate::gtk::events` / `crate::macos::events`. See
+/// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
+/// landed in #19 via `msg` + `run` instead — see this module's docs.
+pub mod events;
 /// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
 /// ratio). Crate-private and host-independent — it is the one part of this
 /// backend that is pure arithmetic, so it is the one part that can be
