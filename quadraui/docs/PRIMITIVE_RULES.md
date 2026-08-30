@@ -58,13 +58,17 @@ Read this when adding or changing a primitive.
 ## Rule 8 — public-API lifecycle
 
 `quadraui` is `publish = false` at `version = "0.0.1"`. Nothing pins a
-published version. `coord-tui` (`claude-coordinator/tui`) and `vimcode`
-both path-dep a sibling checkout, and both CI jobs clone `develop` — so
-a breaking change is live in both repos the moment it merges, turning
-every open PR there red with no version bump to blame. quadraui's own CI
-has no downstream build, so it stays green. See the *Downstream
-consumers* section of `CLAUDE.md` for the declarations and the #476
-post-mortem.
+published version. `vimcode` path-deps a sibling checkout and its CI
+clones `develop`, so a breaking change is live there the moment it
+merges, turning every open PR red with no version bump to blame.
+`coord-tui` — `JDonaghy/coord-tui`, a standalone repo since
+`claude-coordinator#2899` (2026-08-29) — pins a git rev instead, which
+delays the same break to whenever someone bumps that pin. quadraui's CI
+does carry a `downstream` compile-truth job (#528), but its coord-tui
+leg is currently skipped for lack of a read token on that repo, so
+coord-tui breakage will *not* show up here. See the *Downstream
+consumers* section of `CLAUDE.md` for the declarations, the token, and
+the #476 post-mortem.
 
 **What is breaking here vs. what isn't.** Consumers implement `ShellApp`
 and `AppLogic` — never `Backend`. So:
@@ -80,7 +84,7 @@ and `AppLogic` — never `Backend`. So:
 **Measure before you cut.** Both consumers sit beside this checkout:
 
 ```bash
-grep -rn '<symbol>' ~/src/claude-coordinator/tui/src ~/src/vimcode/src
+grep -rn '<symbol>' ~/src/coord-tui/src ~/src/vimcode/src
 ```
 
 Zero hits in both plus no in-tree use ⇒ remove it outright; that is what

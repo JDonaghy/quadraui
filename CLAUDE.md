@@ -55,9 +55,11 @@ If you're tempted to take a shortcut — bypass the runner, copy-paste an exampl
 
 quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** `vimcode` depends on it by *relative path to a sibling checkout*, and its CI clones `develop`. `coord-tui` used to as well, but since `claude-coordinator#1973` (2026-08-10) it pins `quadraui` to a fixed git rev instead — a *deliberate, reviewable* dependency bump on coord-tui's side, not automatic drift:
 
+**coord-tui moved repos on 2026-08-29.** `claude-coordinator#2899` deleted `tui/` from the coordinator repo and split it into a standalone `JDonaghy/coord-tui` (the coordinator repo itself was renamed `claude-coordinator` → `code-coordinator`; GitHub still redirects the old URL). Anything in this repo that referenced `claude-coordinator/tui` as a *path* — the blast-radius grep below, `ci.yml`'s `downstream` job — had to move with it. `JDonaghy/coord-tui` is **not anonymously readable**, so the `downstream` job's coord-tui leg only runs when a repo secret `COORD_TUI_TOKEN` (read-only, `contents:read` on coord-tui) is present; without it that leg skips with a loud `::warning::` and **only vimcode is compile-checked**. Until that secret exists, treat coord-tui's compile status as *unverified by CI* and do the blast-radius grep by hand.
+
 | Consumer | Declaration | Its CI |
 |---|---|---|
-| `coord-tui` — `JDonaghy/claude-coordinator`, `tui/` | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", features = ["tui","terminal"] }` | `cargo-test.yml` builds against the pinned rev, **not** `develop`'s tip |
+| `coord-tui` — `JDonaghy/coord-tui` (repo root *is* the crate root) | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", features = ["tui","terminal"] }` | its own CI builds against the pinned rev, **not** `develop`'s tip |
 | `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop`, hard-pinned further by `build.rs` against `quadraui-pin.txt` (vimcode#638) |
 
 Consequences, all of which have already bitten:
@@ -66,7 +68,7 @@ Consequences, all of which have already bitten:
 - It turns **every open vimcode PR red**, including PRs that touch nothing related, retroactively.
 - There is **no version bump to blame**, so a breaking merge can't be spotted by "which release did this."
 
-`ci.yml`'s `downstream` job (#528) now `cargo check --all-targets`s both consumers against every PR's quadraui — for coord-tui this means overriding its git-rev pin with a `.cargo/config.toml` `paths` override onto the PR's checkout (mirroring `tui/cargo-config-local-quadraui.toml.example`, the same mechanism coord-tui documents for local co-development), and for vimcode it means setting `VIMCODE_QUADRAUI_UNPINNED=1` so `build.rs`'s pin-mismatch check downgrades to a warning instead of aborting the build before any real compilation happens — with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing." You are still the gate for everything the compiler can't see.
+`ci.yml`'s `downstream` job (#528) now `cargo check --all-targets`s both consumers against every PR's quadraui — for coord-tui this means overriding its git-rev pin with a `.cargo/config.toml` `paths` override onto the PR's checkout (the same mechanism coord-tui documents for local co-development in `cargo-config-local-quadraui.toml.example`, written with an absolute path so it can't drift when their checkout layout moves — as it did in #2899), and for vimcode it means setting `VIMCODE_QUADRAUI_UNPINNED=1` so `build.rs`'s pin-mismatch check downgrades to a warning instead of aborting the build before any real compilation happens — with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing." You are still the gate for everything the compiler can't see.
 
 Three details in that job are load-bearing and easy to "tidy" into a permanently-green no-op — if you touch it, keep all three:
 
@@ -82,8 +84,9 @@ This is not hypothetical. #476 ("de-coord board.rs") replaced `Stage` with `Card
 
 1. **Measure the blast radius.** Both consumers are checked out beside this repo:
    ```bash
-   grep -rn '<symbol>' ~/src/claude-coordinator/tui/src ~/src/vimcode/src
+   grep -rn '<symbol>' ~/src/coord-tui/src ~/src/vimcode/src
    ```
+   (`~/src/coord-tui`, not `~/src/claude-coordinator/tui` — see the repo-move note above.)
    Zero hits in both, and no in-tree use ⇒ free to remove; **paste the grep output in the PR body** rather than asserting it. Any hit ⇒ this is a breaking change, and rules 2–4 apply.
 2. **Prefer a shape that isn't breaking at all.** In order:
    - a **default impl on any trait a consumer implements** — today that is `ShellApp` and `AppLogic`, the only quadraui traits `coord-tui` and `vimcode` implement. (`Backend` is in-tree-only: rule 7's deliberate no-default compile error is a to-do list for our own backends and costs consumers nothing. Don't "fix" it with defaults.)
