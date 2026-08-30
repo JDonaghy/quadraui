@@ -73,6 +73,26 @@ pub(crate) fn dpi_ratio(dpi: u32) -> f32 {
     }
 }
 
+/// Convert a font size in **points** (1/72in) to **DIPs** (1/96in) —
+/// DirectWrite's `IDWriteFactory::CreateTextFormat` `fontSize` parameter is
+/// documented in DIPs, not points, unlike Pango's `FontDescription` size
+/// (which GTK feeds points into directly; Pango-Cairo does this same
+/// 96/72 conversion internally at its default 96dpi resolution — see
+/// `src/gtk/activity_bar.rs`'s `18 * 96 / 72 = 24` comment for the same
+/// ratio documented on the GTK side).
+///
+/// `WinBackend::editor_font_size_pt` is documented as points "matching
+/// GTK's default" of `11.0`, so every call site that turns that value into
+/// a DirectWrite `fontSize` must go through this conversion — passing
+/// `size_pt` straight into `CreateTextFormat` renders text at 72/96 (75%)
+/// of the size every other backend produces for the same nominal point
+/// size, and skews `line_height()`/`char_width()` (which are derived from
+/// the same text format) by the same ratio.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn pt_to_dip(size_pt: f32) -> f32 {
+    size_pt * USER_DEFAULT_SCREEN_DPI / 72.0
+}
+
 /// Decode a mouse message's `lparam` (`WM_MOUSEMOVE`, `WM_LBUTTONDOWN/UP`,
 /// `WM_RBUTTONDOWN/UP`, …) into client-area `(x, y)` device pixels.
 ///
@@ -181,6 +201,21 @@ mod tests {
         let scale = dpi_ratio(0);
         assert!(scale.is_finite(), "scale must never be inf/NaN");
         assert_eq!(scale, 1.0);
+    }
+
+    /// The bug this issue's review caught: `11.0` points (GTK's default
+    /// editor font size) must become `14.666...` DIPs, not pass through
+    /// unchanged — a straight passthrough renders 25% smaller than every
+    /// other backend for the same nominal point size.
+    #[test]
+    fn pt_to_dip_converts_points_to_dips_at_96_over_72() {
+        assert_eq!(pt_to_dip(72.0), 96.0);
+        assert!((pt_to_dip(11.0) - 14.666_667).abs() < 0.001);
+    }
+
+    #[test]
+    fn pt_to_dip_maps_zero_to_zero() {
+        assert_eq!(pt_to_dip(0.0), 0.0);
     }
 
     /// LOWORD is x, HIWORD is y — same word order as `WM_SIZE`, but read
