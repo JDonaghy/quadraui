@@ -678,6 +678,37 @@ impl GtkBackend {
             .map(|(rect, layout)| (*rect, layout))
     }
 
+    /// [`crate::TabBarHits`] derived from the layout `bar` was most
+    /// recently *painted* with, in the same target-surface coordinates
+    /// [`Backend::tab_bar_layout`] reports — or `None` when this frame
+    /// painted no such bar, painted it at a different rect, or painted
+    /// fewer tabs than `bar` now carries (a stale entry must never index
+    /// past `bar.tabs`).
+    ///
+    /// Used by the no-paint `tab_bar_layout` twin when there is no Pango
+    /// handle to measure with, so click routing follows painted pixels
+    /// instead of a char-cell estimate that drifts with the host's UI
+    /// font. Same "cache at paint, hit-test at click" pattern the rest of
+    /// the backend uses.
+    fn cached_tab_bar_hits(&self, rect: QRect, bar: &TabBar) -> Option<crate::TabBarHits> {
+        let (cached_rect, layout) = self.tab_bar_layouts.get(&bar.id)?;
+        if *cached_rect != rect {
+            return None;
+        }
+        if layout
+            .visible_tabs
+            .iter()
+            .any(|vt| vt.tab_idx >= bar.tabs.len())
+        {
+            return None;
+        }
+        let mut hits = crate::backend::tab_bar_layout_to_hits(layout, bar);
+        // `TabBarLayout` is bar-relative; `TabBarHits` are target-surface
+        // coordinates (issue #552), exactly as the measured path below.
+        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+        Some(hits)
+    }
+
     /// Get the current cairo context + pango layout inside the
     /// frame-scope, or `None` outside. Trait `draw_*` methods call
     /// this and bail (panic in dev) if the scope isn't active.
@@ -1949,6 +1980,23 @@ impl Backend for GtkBackend {
         let char_w = self.current_char_width as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+
+        // No Pango handle at all — headless (`GtkDriver`) or a widget
+        // that hasn't realised yet. The char-cell estimate further down
+        // is the only measurement left, and it does *not* agree with the
+        // Pango widths the paint path used, so every click lands left or
+        // right of the glyph the user sees. Prefer the geometry the most
+        // recent `draw_tab_bar` for this bar actually resolved — the same
+        // per-frame cache `GtkDriver::tab_close_center` reads, so the
+        // driver's reported close-button centre and this twin's close
+        // region are the *same numbers* instead of two independent
+        // guesses that only happen to overlap when the host's UI font is
+        // close enough to the 8px nominal cell.
+        if pango_layout.is_none() {
+            if let Some(hits) = self.cached_tab_bar_hits(rect, bar) {
+                return hits;
+            }
+        }
 
         // #624: tab labels/segments are chrome, painted with `ui_font` by
         // `gtk::draw_tab_bar_icons` (via `GtkBackend::draw_tab_bar_icons`,

@@ -971,10 +971,31 @@ mod tests {
     struct InteractiveTabBarApp {
         active: usize,
         closed_idx: Option<usize>,
+        /// UI font the app installs in `setup`, or `None` to keep the
+        /// backend default. Lets a test paint the same bar at a
+        /// deliberately narrow / wide font and prove the driver's click
+        /// targets still land where the tabs were painted, whatever the
+        /// host's default font happens to measure.
+        ui_font: Option<&'static str>,
     }
 
     impl InteractiveTabBarApp {
         const RECT: Rect = Rect::new(0.0, 0.0, TAB_BAR_W as f32, TAB_BAR_H as f32);
+
+        fn new(active: usize) -> Self {
+            Self {
+                active,
+                closed_idx: None,
+                ui_font: None,
+            }
+        }
+
+        fn with_ui_font(font: &'static str) -> Self {
+            Self {
+                ui_font: Some(font),
+                ..Self::new(0)
+            }
+        }
 
         fn bar(&self) -> TabBar {
             TabBar {
@@ -999,6 +1020,12 @@ mod tests {
 
     impl AppLogic for InteractiveTabBarApp {
         type AreaId = ();
+
+        fn setup(&mut self, backend: &mut dyn Backend) {
+            if let Some(font) = self.ui_font {
+                backend.set_ui_font(font);
+            }
+        }
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.draw_tab_bar(Self::RECT, &self.bar(), None);
@@ -1034,10 +1061,7 @@ mod tests {
     /// `driver.click(tab_center(&bar, 1))` activates tab 1.
     #[test]
     fn tab_center_click_activates_target_tab() {
-        let app = InteractiveTabBarApp {
-            active: 0,
-            closed_idx: None,
-        };
+        let app = InteractiveTabBarApp::new(0);
         let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);
         let bar_id = WidgetId::new("tabs");
 
@@ -1054,14 +1078,59 @@ mod tests {
         );
     }
 
+    /// The no-paint [`Backend::tab_bar_layout`] twin an app hit-tests
+    /// clicks against must report the geometry the bar was *painted*
+    /// with — not an independent estimate.
+    ///
+    /// Headless (`GtkDriver`) there is no Pango handle outside the frame
+    /// scope, so the twin used to fall back to `current_char_width`
+    /// cells while the paint path measured real Pango widths. The two
+    /// only overlapped by luck: with this fixture's tabs the painted
+    /// close-button centre sat 9px inside the estimated close region, so
+    /// any host whose UI font measured ~5% narrower than the nominal
+    /// 8px cell pushed `tab_close_center`'s click into the *body* region
+    /// and `tab_close_center_click_closes_target_tab_not_just_activates`
+    /// below failed there and only there. Pinned as exact equality so
+    /// the two paths can't drift apart again on any font.
+    #[test]
+    fn tab_bar_layout_twin_matches_painted_geometry_headless() {
+        let app = InteractiveTabBarApp::new(0);
+        let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);
+        let bar = driver.app().bar();
+
+        let (rect, painted) = driver
+            .backend
+            .cached_tab_bar_layout(&bar.id)
+            .map(|(r, l)| (r, l.clone()))
+            .expect("the first frame painted the tab bar");
+        let hits = crate::Backend::tab_bar_layout(&mut driver.backend, rect, &bar);
+
+        for vt in &painted.visible_tabs {
+            let painted_slot = (
+                (rect.x + vt.bounds.x) as f64,
+                (rect.x + vt.bounds.x + vt.bounds.width) as f64,
+            );
+            assert_eq!(
+                hits.slot_positions[vt.tab_idx], painted_slot,
+                "tab {} body: click-time region must equal the painted one",
+                vt.tab_idx
+            );
+            let painted_close = vt
+                .close_bounds
+                .map(|cb| ((rect.x + cb.x) as f64, (rect.x + cb.x + cb.width) as f64));
+            assert_eq!(
+                hits.close_bounds[vt.tab_idx], painted_close,
+                "tab {} close button: click-time region must equal the painted one",
+                vt.tab_idx
+            );
+        }
+    }
+
     /// Acceptance criterion: `driver.click(tab_close_center(&bar, 1))`
     /// closes tab 1 and does **not** merely activate it.
     #[test]
     fn tab_close_center_click_closes_target_tab_not_just_activates() {
-        let app = InteractiveTabBarApp {
-            active: 0,
-            closed_idx: None,
-        };
+        let app = InteractiveTabBarApp::new(0);
         let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);
         let bar_id = WidgetId::new("tabs");
 
@@ -1080,6 +1149,41 @@ mod tests {
             1,
             "closing tab 1 must not merely activate it — active should stay at its prior value"
         );
+    }
+
+    /// The close-button click above must hold at *any* UI font, not just
+    /// whatever the host's default `Sans` happens to measure. Painting
+    /// the same bar at a deliberately narrow and a deliberately wide font
+    /// moves every tab boundary, and the driver's click target has to
+    /// move with it — that host-to-host font difference is exactly what
+    /// used to make this scenario pass locally and fail on the test
+    /// machine.
+    #[test]
+    fn tab_close_center_click_closes_target_tab_at_any_ui_font() {
+        for font in ["Sans 6", "Sans 20"] {
+            let mut driver = GtkDriver::new(
+                InteractiveTabBarApp::with_ui_font(font),
+                TAB_BAR_W,
+                TAB_BAR_H,
+            );
+            let bar_id = WidgetId::new("tabs");
+
+            let (x, y) = driver
+                .tab_close_center(&bar_id, 1)
+                .unwrap_or_else(|| panic!("tab 1 should have a close button at {font:?}"));
+            driver.click(x, y);
+
+            assert_eq!(
+                driver.app().closed_idx,
+                Some(1),
+                "at ui_font {font:?}, clicking tab 1's close button should close it"
+            );
+            assert_ne!(
+                driver.app().active,
+                1,
+                "at ui_font {font:?}, closing tab 1 must not merely activate it"
+            );
+        }
     }
 
     /// Acceptance criterion: `tab_close_center` returns `None` for a tab
