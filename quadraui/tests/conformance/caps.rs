@@ -347,6 +347,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "tui",
+        "set_ui_font",
+        "same fixed-cell reason as `set_editor_font` — chrome glyphs are terminal cells too, so \
+         there is no chrome font description to honour (#624)",
+    ),
+    (
+        "tui",
         "scales_text_rows",
         "a terminal cell cannot grow; the `false` default is the correct answer, not a missing \
          one — scaled rows render bold at normal cell height",
@@ -375,6 +381,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
+        "set_ui_font",
+        "chrome font override not wired to CoreText yet — macOS chrome still paints with the \
+         renderer's own font (#624)",
+    ),
+    (
+        "macos",
         "scales_text_rows",
         "per-row glyph scaling not implemented, so `false` is honest today",
     ),
@@ -393,6 +405,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          by #19 (Direct2D/DirectWrite)",
     ),
     ("win", "set_nerd_fonts", "stub backend — see #19"),
+    (
+        "win",
+        "set_ui_font",
+        "editor font is now wired via DirectWrite (#21), but the chrome font override isn't — \
+         Win chrome still paints with the renderer's own font (#624)",
+    ),
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
     ("win", "register_zone", "stub backend — see #19"),
