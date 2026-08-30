@@ -393,7 +393,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          by #19 (Direct2D/DirectWrite)",
     ),
     ("win", "set_nerd_fonts", "stub backend — see #19"),
-    ("win", "set_editor_font", "stub backend — see #19"),
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
     ("win", "register_zone", "stub backend — see #19"),

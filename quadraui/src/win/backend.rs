@@ -4,10 +4,14 @@
 //! `end_frame` bracket real `ID2D1HwndRenderTarget::BeginDraw` /
 //! `Clear` / `EndDraw` calls (gated on `cfg(target_os = "windows")` —
 //! see [`Surface`] and [`WinBackend::attach_surface`]), and
-//! `Viewport::scale` carries the real per-window DPI ratio. Every
-//! `draw_*`/`*_layout` rasteriser method is still a `todo!()` stub —
-//! later issues implement each one against Direct2D / DirectWrite, same
-//! as the GTK backend did one primitive at a time.
+//! `Viewport::scale` carries the real per-window DPI ratio. #21 landed
+//! the DirectWrite text infrastructure — [`super::text::DWrite`],
+//! [`WinBackend::measure_text`], [`WinBackend::draw_text`] — so
+//! `line_height()`/`char_width()` return real font metrics instead of
+//! the `16.0`/`8.0` placeholder defaults. Every other `draw_*`/`*_layout`
+//! rasteriser method is still a `todo!()` stub — later issues implement
+//! each one against Direct2D / DirectWrite, same as the GTK backend did
+//! one primitive at a time.
 //!
 //! # Implementation notes
 //!
@@ -17,10 +21,12 @@
 //!   against a real target (Windows-only code, verified by
 //!   `cargo check --target x86_64-pc-windows-msvc`, not by this repo's
 //!   Linux CI — see `ci.yml`).
-//! - **Text**: `IDWriteTextFormat` + `IDWriteTextLayout` for
-//!   measurement and rendering. Store `line_height` and `char_width`
-//!   from `IDWriteFontMetrics` (same role as GTK's
-//!   `current_line_height` / `current_char_width`).
+//! - **Text** (#21): `IDWriteTextFormat` + `IDWriteTextLayout` for
+//!   measurement and rendering (`super::text`). `line_height`/`char_width`
+//!   are resolved once per surface from `IDWriteFontFace::GetMetrics`
+//!   (same role as GTK's `current_line_height` / `current_char_width`,
+//!   see [`WinBackend::set_current_line_height`] /
+//!   [`WinBackend::set_current_char_width`]).
 //! - **Frame scope**: `BeginDraw()` / `EndDraw()` bracket each frame.
 //!   Unlike GTK, the render target is available outside the frame
 //!   scope for measurement — `_layout()` methods can use
@@ -106,6 +112,15 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
+#[cfg(target_os = "windows")]
+use super::text::DWrite;
+
+/// Default editor font family for the Win-GUI backend — the historical
+/// default monospace face shipped with every Windows version since Vista,
+/// same role as GTK's hardcoded `"Monospace"` fontconfig alias.
+#[cfg(target_os = "windows")]
+const DEFAULT_EDITOR_FONT_FAMILY: &str = "Consolas";
+
 /// The live Direct2D handles behind a real Win32 window. Only exists once
 /// [`WinBackend::attach_surface`] has run — a `WinBackend` constructed
 /// standalone (headless, or before `CreateWindowExW` returns a `HWND`)
@@ -148,8 +163,25 @@ pub struct WinBackend {
     /// `attach_surface` call succeeds.
     #[cfg(target_os = "windows")]
     hwnd: Option<HWND>,
-    // TODO: add DirectWrite handles here:
-    // text_format: IDWriteTextFormat,
+    /// DirectWrite factory + `IDWriteTextFormat` for the current editor
+    /// font (`editor_font_family`/`editor_font_size_pt`). `None` until
+    /// [`Self::attach_surface`] creates it — same lifecycle as `surface`,
+    /// and recreated alongside it whenever [`Self::ensure_surface`]'s
+    /// device-lost recovery re-attaches (#21).
+    #[cfg(target_os = "windows")]
+    dwrite: Option<DWrite>,
+    /// Font family used to paint text via DirectWrite. Defaults to
+    /// [`DEFAULT_EDITOR_FONT_FAMILY`]. Set via
+    /// [`Backend::set_editor_font`]; [`Self::attach_surface`] reads it
+    /// when constructing the `IDWriteTextFormat` — mirrors GTK's
+    /// `editor_font_family` (#422). `cfg`-gated like `dwrite`: nothing
+    /// outside the `target_os = "windows"` methods reads or writes it.
+    #[cfg(target_os = "windows")]
+    editor_font_family: String,
+    /// Editor font size in points, paired with `editor_font_family`.
+    /// Defaults to `11.0`, matching GTK's default.
+    #[cfg(target_os = "windows")]
+    editor_font_size_pt: f32,
 }
 
 impl WinBackend {
@@ -168,7 +200,28 @@ impl WinBackend {
             surface: None,
             #[cfg(target_os = "windows")]
             hwnd: None,
+            #[cfg(target_os = "windows")]
+            dwrite: None,
+            #[cfg(target_os = "windows")]
+            editor_font_family: DEFAULT_EDITOR_FONT_FAMILY.to_string(),
+            #[cfg(target_os = "windows")]
+            editor_font_size_pt: 11.0,
         }
+    }
+
+    /// Update the cached DirectWrite line height (in DIPs). Mirrors
+    /// `GtkBackend::set_current_line_height` — normally set once by
+    /// [`Self::attach_surface`] from real font metrics, but exposed
+    /// publicly (like GTK's) so tests and callers can override it
+    /// directly.
+    pub fn set_current_line_height(&mut self, line_height: f32) {
+        self.current_line_height = line_height;
+    }
+
+    /// Update the cached DirectWrite approximate-char-width (in DIPs).
+    /// Mirrors `GtkBackend::set_current_char_width`.
+    pub fn set_current_char_width(&mut self, char_width: f32) {
+        self.current_char_width = char_width;
     }
 
     /// Create a single-threaded `ID2D1Factory` and an `ID2D1HwndRenderTarget`
@@ -210,7 +263,46 @@ impl WinBackend {
         self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
         self.surface = Some(Surface { factory, target });
         self.hwnd = Some(hwnd);
+
+        // DirectWrite bootstrap (#21): build the factory + text format for
+        // the currently-configured editor font and seed `line_height()` /
+        // `char_width()` from its real font metrics, same role as
+        // `gtk::run::render_frame`'s per-frame Pango metrics resolve —
+        // except here it only needs to happen once per surface, since
+        // DirectWrite text formats aren't tied to the Direct2D device the
+        // way the render target is.
+        let (dwrite, line_height, char_width) =
+            DWrite::new(&self.editor_font_family, self.editor_font_size_pt)?;
+        self.dwrite = Some(dwrite);
+        self.current_line_height = line_height;
+        self.current_char_width = char_width;
+
         Ok(())
+    }
+
+    /// `(width, height)` DIPs of `text` measured against the current
+    /// editor font (#21's `measure_text(text) -> (width_dips,
+    /// height_dips)` helper). Returns `(0.0, 0.0)` if no surface has
+    /// attached yet — nothing to measure against, same "not wired up
+    /// yet" posture as every `todo!()` rasteriser below.
+    #[cfg(target_os = "windows")]
+    pub fn measure_text(&self, text: &str) -> (f32, f32) {
+        self.dwrite
+            .as_ref()
+            .and_then(|d| d.measure_text(text).ok())
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Paint `text` inside `rect` (DIPs) in `color` onto the live render
+    /// target (#21's `draw_text(target, text, rect, color)` helper, with
+    /// `target` implicit via `self.surface` rather than threaded through
+    /// explicitly — matching every other `draw_*` method on this
+    /// backend). No-op if no surface/DirectWrite handle is attached yet.
+    #[cfg(target_os = "windows")]
+    pub fn draw_text(&self, text: &str, rect: Rect, color: crate::Color) {
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let _ = dwrite.draw_text(&surface.target, text, rect, color);
+        }
     }
 
     /// Re-create the render target after a prior `EndDraw` failure
@@ -413,6 +505,28 @@ impl Backend for WinBackend {
 
     fn char_width(&self) -> f32 {
         self.current_char_width
+    }
+
+    /// Store the editor font family + size for the next
+    /// [`Self::attach_surface`]/[`Self::ensure_surface`] call to build an
+    /// `IDWriteTextFormat` from (#21). Mirrors `GtkBackend::set_editor_font`
+    /// (#422): a live surface doesn't rebuild its `IDWriteTextFormat`
+    /// immediately on a runtime font change — same limitation the GTK
+    /// backend has today (its Pango layout is rebuilt fresh every frame
+    /// from these fields instead, which this backend's once-per-surface
+    /// DirectWrite bootstrap doesn't yet mirror). A future issue can wire
+    /// a live-reload path through `win::run`'s `WM_PAINT` handler if that
+    /// gap needs closing.
+    fn set_editor_font(&mut self, family: &str, size_pt: f32) {
+        #[cfg(target_os = "windows")]
+        {
+            self.editor_font_family = family.to_string();
+            self.editor_font_size_pt = size_pt;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (family, size_pt);
+        }
     }
 
     // ─── Drawing ──────────────────────────────────────────────────────

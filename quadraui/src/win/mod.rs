@@ -27,6 +27,14 @@ pub mod events;
 pub(crate) mod msg;
 pub mod run;
 pub mod services;
+/// DirectWrite text infrastructure — factory + text-format creation,
+/// font-metrics measurement, and Direct2D text painting (#21). Windows-only
+/// in full: nothing in here has a meaningful non-Windows fallback (unlike
+/// `msg`, this isn't pure arithmetic), so the module itself only exists on
+/// `target_os = "windows"` rather than being internally `cfg`-gated
+/// line-by-line like `backend.rs`.
+#[cfg(target_os = "windows")]
+pub(crate) mod text;
 
 pub use backend::WinBackend;
 pub use run::run;
