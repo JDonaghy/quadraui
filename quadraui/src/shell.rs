@@ -187,7 +187,8 @@ impl<'a> ShellContext<'a> {
     ///
     /// `cfg`-gated with `ShellAdapter` itself (#540): under `win` alone
     /// there is no caller, so this and `take_activity_focus_requested`
-    /// below go dead-code under `-D warnings`.
+    /// below go dead-code under `-D warnings`. `macos` joined the gate in
+    /// #465 alongside `crate::macos::shell_runner`.
     ///
     /// `test` is in the gate too (#484): this module's own tests build a
     /// `ShellContext` through it, and without `test` here
@@ -195,7 +196,12 @@ impl<'a> ShellContext<'a> {
     /// first feature set to exercise that combination. In a non-test
     /// build the gate is unchanged, so the dead-code guard #540 added
     /// still holds.
-    #[cfg(any(feature = "tui", feature = "gtk", test))]
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        test
+    ))]
     pub(crate) fn new(
         active_panel_id: Option<&'a WidgetId>,
         sidebar_visible: bool,
@@ -268,7 +274,11 @@ impl<'a> ShellContext<'a> {
     /// `ShellApp::handle` returns.
     ///
     /// `cfg`-gated with `ShellAdapter` itself (#540); see [`Self::new`].
-    #[cfg(any(feature = "tui", feature = "gtk"))]
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos")
+    ))]
     pub(crate) fn take_activity_focus_requested(&self) -> bool {
         self.activity_focus_requested.replace(false)
     }
