@@ -1568,6 +1568,20 @@ pub trait Clipboard {
 
     /// Write plain text to the clipboard.
     fn write_text(&self, text: &str);
+
+    /// Read the X11/Wayland **PRIMARY** selection — the platform
+    /// convention behind middle-click paste, distinct from
+    /// [`read_text`](Self::read_text)'s CLIPBOARD selection (populated by
+    /// an explicit copy). Backed by whatever text was last *selected*
+    /// (drag-select, double-click), with no separate copy action needed.
+    ///
+    /// Defaults to `None` — most platforms (Windows, macOS, TUI-over-any-
+    /// terminal) have no PRIMARY-selection concept at all, so this is
+    /// only meaningfully overridden by the GTK backend on Linux/BSD
+    /// (quadraui#415).
+    fn read_primary_selection(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Options for [`PlatformServices::show_file_open_dialog`] and

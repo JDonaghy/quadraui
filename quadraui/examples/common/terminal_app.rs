@@ -19,7 +19,11 @@
 //! - Dragging the scrollbar thumb scrolls the history.
 //! - Window resize triggers a PTY resize.
 //! - Ctrl+Q quits.
-//! - Bracketed paste is forwarded verbatim.
+//! - `ClipboardPaste` is routed through [`TerminalSession::paste`], which
+//!   bracketed-paste-wraps the text when the child has enabled that mode
+//!   and sends it raw otherwise. On GTK this fires for Ctrl-V,
+//!   Ctrl-Shift-V, and middle-click (PRIMARY selection) — all three route
+//!   to the same `ClipboardPaste` event (quadraui#415).
 //! - When the shell exits a status line shows the exit code; Ctrl+Q closes.
 
 use quadraui::terminal_engine::{default_shell, TerminalMouseKind, TerminalSession};
@@ -405,17 +409,15 @@ impl AppLogic for TerminalApp {
                 }
             }
 
-            // ── Bracketed paste ───────────────────────────────────────────────
+            // ── Paste ────────────────────────────────────────────────────────
             UiEvent::ClipboardPaste(text) => {
                 if let Some(ref mut sess) = self.session {
                     if !sess.is_exited() {
-                        // Wrap in bracketed-paste markers so the shell handles it
-                        // correctly (avoids interpreting pasted newlines as commands).
-                        let mut bytes = b"\x1b[200~".to_vec();
-                        bytes.extend_from_slice(text.as_bytes());
-                        bytes.extend_from_slice(b"\x1b[201~");
-                        sess.write_input(&bytes);
-                        sess.scroll_reset();
+                        // `TerminalSession::paste` centralizes the
+                        // bracketed-paste wrap (only applied when the
+                        // child has enabled bracketed-paste mode) so this
+                        // example doesn't hand-roll it — quadraui#415.
+                        sess.paste(&text);
                     }
                 }
                 return Reaction::Redraw;
