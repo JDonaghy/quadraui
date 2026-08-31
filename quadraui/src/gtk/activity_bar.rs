@@ -25,6 +25,13 @@ pub const ACTIVITY_ROW_PX: f64 = 48.0;
 /// ≈ 24px at the standard 96 dpi (`18 * 96 / 72 = 24`), matching VS
 /// Code's 24px codicons — the pre-#620 "… 20" size rendered ≈ 26.7px,
 /// visibly oversized against the unchanged 48px row (`ACTIVITY_ROW_PX`).
+///
+/// The family (`"Symbols Nerd Font"`) is the same one
+/// [`super::NERD_FONT_FALLBACK_FAMILY`] names for every other GTK
+/// chrome glyph path (#416) — kept as a literal here rather than built
+/// from the constant because `pub const` string concatenation isn't
+/// expressible on stable Rust; if the fallback family ever changes,
+/// update both.
 pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 
 /// Draw an [`ActivityBar`] into `(0, 0, width, height)` on `cr`.

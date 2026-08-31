@@ -314,9 +314,27 @@ pub trait Backend {
     /// `draw_multi_section_view`, etc.) render `Icon::glyph` when `true`
     /// and `Icon::fallback` when `false`.
     ///
-    /// Call at the start of `render_content()` (or once from `setup()` if
-    /// the setting is static) so that the runner-owned backend picks up the
-    /// app's preference before any draw calls are made.
+    /// Call at the start of `render_content()` if the setting can change
+    /// at runtime (a settings toggle, a config file reload), or once from
+    /// `setup()` only if it is truly static for the process lifetime.
+    /// This mirrors `set_theme`'s contract above, and for the same
+    /// reason: the backend does not re-derive this flag on its own each
+    /// frame the way it re-derives `line_height`/`char_width` from the
+    /// editor font — whatever was last set stays set until the host sets
+    /// it again.
+    ///
+    /// **Don't call this only from `setup()` and assume it stays synced.**
+    /// vimcode#547 was exactly this bug: nerd-fonts detection used to be
+    /// re-applied on a periodic "refresh" message, which stopped firing
+    /// after the `ShellApp` cutover — nothing re-called `set_nerd_fonts`
+    /// after the first frame, so the flag silently stuck at whatever
+    /// `setup()` had seen (often `false`, if the capability probe hadn't
+    /// resolved yet at startup), and every icon fell back to ASCII from
+    /// then on with no visible error. If the setting can ever change
+    /// after `setup()` runs — including "probe finishes after the first
+    /// frame" — call this from `render_content()` every frame instead;
+    /// it's cheap, and correctness doesn't depend on remembering to
+    /// re-fire a refresh path elsewhere.
     ///
     /// Default: no-op. Backends that always use one icon form (e.g. a
     /// headless test backend) can accept this default.

@@ -210,6 +210,48 @@ sufficient — the consumer's own root `Cargo.toml` must add a matching
 location. Document that companion requirement explicitly wherever the
 quadraui-side patch is added; don't assume it propagates.
 
+## GTK chrome glyphs need an explicit Nerd-Font fallback family, not implicit fontconfig fallback
+
+`GtkBackend::draw_tree`/`draw_status_bar`/`draw_tab_bar`/etc. paint
+`Icon::glyph` and consumer-composed status-bar text through a shared
+`pango::Layout` whose font description came straight from `ui_font`
+(e.g. `"Sans 11"`, `#624`). Nerd-Font icon glyphs live in Private-Use-Area
+codepoints that "Sans" (or any ordinary system UI font) has zero
+coverage for — Pango's automatic per-character fallback then has to
+guess at *some* installed font that claims coverage of that codepoint
+range, and PUA ranges are exactly where unrelated fonts (icon fonts for
+other toolkits, private vendor glyphs) squat on the same numbers. The
+result is nondeterministic: works on one machine's font set, renders
+tofu/blank or the wrong glyph on another's, with no error anywhere.
+
+Two more rasterisers had a *worse* version of the same gap: `draw_list`
+and `draw_palette` never swapped the shared layout onto `ui_font` at
+all (`draw_tree`/`draw_status_bar`/`draw_tab_bar` did, per #624) — their
+icon glyphs painted in whatever font the frame's *editor* content
+happened to leave behind, which is a doubly-wrong font for both the row
+label and the icon.
+
+Fix (#416): a shared `gtk::chrome_font_description(ui_font)` /
+`gtk::with_nerd_font_fallback(base)` pair *appends*
+`Symbols Nerd Font` to the family list instead of relying on implicit
+fallback — Pango only consults the appended family for characters the
+primary one can't cover, so ordinary text is unaffected. `draw_tab_bar`
+icons and `ActivityBar` icons (#620) already used this append/replace
+pattern in isolation; #416 generalized it into one named constant
+(`gtk::NERD_FONT_FALLBACK_FAMILY`) so every chrome glyph path resolves
+against the same font, instead of five call sites each hand-rolling
+(or omitting) their own version of the same fix.
+
+Rule: any GTK rasteriser that paints a glyph outside the BMP-common
+range — an icon, a status/badge symbol, anything sourced from an
+`Icon`/similar glyph+fallback pair — must build its `FontDescription`
+through `chrome_font_description`/`with_nerd_font_fallback`, not a bare
+`pango::FontDescription::from_string`. And when adding a new
+icon-bearing chrome rasteriser: check whether it also needs the
+`ui_font`-not-editor-font swap `draw_tree` established in #624 — don't
+assume a new `draw_*` inherits the right font just because it shares
+the frame's `pango::Layout` with rasterisers that got it right.
+
 ## What NOT to do
 
 - **Don't re-derive layouts with different inputs in click vs paint.**
