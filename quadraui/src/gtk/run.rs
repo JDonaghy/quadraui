@@ -1261,16 +1261,18 @@ mod paste_tests {
     //!
     //! `is_paste_keypress` is a pure predicate, tested directly with no
     //! display required. The `GtkDriver`-based tests below exercise the
-    //! actual [`dispatch_event`] wiring end to end; they rely on this
-    //! sandbox having no `DISPLAY` (true in CI's deliberately Xvfb-free
-    //! `gtk` job — see the module doc's "Headless smoke mode" section),
-    //! so `arboard::Clipboard::new()` fails and every clipboard read
-    //! deterministically returns `None` — the "nothing to paste" branch.
-    //! The "there IS something to paste" branch needs a real OS
-    //! clipboard/PRIMARY selection and is only exercised by the
-    //! operator-run Xvfb smoke script (`quadraui/scripts/gtk_smoke.sh`),
-    //! same as the existing Ctrl-V path.
+    //! actual [`dispatch_event`] wiring end to end.
+    //!
+    //! Each of those installs an in-memory clipboard via
+    //! [`GtkBackend::install_test_clipboard`] before dispatching, so both
+    //! the "there IS something to paste" and "there is nothing to paste"
+    //! branches are covered on *any* host. Reading the host's real
+    //! clipboard instead would make these assertions environment-
+    //! dependent — green on a headless box where
+    //! `arboard::Clipboard::new()` fails, red on a developer machine or a
+    //! CI runner with a live display and a non-empty clipboard.
     use super::*;
+    use crate::gtk::services::TestClipboardContents;
     use crate::gtk::testing::GtkDriver;
 
     /// Minimal [`AppLogic`] that records every event `handle` receives,
@@ -1353,22 +1355,106 @@ mod paste_tests {
 
     // ── `dispatch_event` wiring (GtkDriver, no display) ───────────────
 
-    #[test]
-    fn ctrl_shift_v_is_intercepted_not_forwarded_as_raw_v() {
-        let mut driver = GtkDriver::new(RecordingApp::default(), 100, 30);
+    /// Build a driver whose clipboard is an in-memory fake seeded with
+    /// `clipboard` (the CLIPBOARD selection Ctrl-V reads) and `primary`
+    /// (the PRIMARY selection middle-click reads). Nothing here touches
+    /// the host's real clipboard, so every assertion below holds on a
+    /// headless CI runner and on a developer desktop alike.
+    fn driver_with_clipboard(
+        clipboard: Option<&str>,
+        primary: Option<&str>,
+    ) -> GtkDriver<RecordingApp> {
+        let driver = GtkDriver::new(RecordingApp::default(), 100, 30);
+        driver
+            .backend()
+            .install_test_clipboard(TestClipboardContents {
+                clipboard: clipboard.map(str::to_string),
+                primary: primary.map(str::to_string),
+            });
+        driver
+    }
+
+    /// Dispatch `v` with the given modifiers.
+    fn press_v(driver: &mut GtkDriver<RecordingApp>, modifiers: Modifiers) {
         driver.dispatch(UiEvent::KeyPressed {
             key: Key::Char('v'),
-            modifiers: Modifiers {
+            modifiers,
+            repeat: false,
+        });
+    }
+
+    fn middle_click(driver: &mut GtkDriver<RecordingApp>) {
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Middle,
+            position: Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    /// The single event the app received, or a panic naming what it got.
+    fn only_event(driver: &GtkDriver<RecordingApp>) -> &UiEvent {
+        let events = &driver.app().events;
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly one event to reach app.handle, got {events:?}"
+        );
+        &events[0]
+    }
+
+    #[test]
+    fn ctrl_v_delivers_the_clipboard_selection_as_a_paste() {
+        let mut driver = driver_with_clipboard(Some("copied text"), None);
+        press_v(
+            &mut driver,
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        assert!(
+            matches!(only_event(&driver), UiEvent::ClipboardPaste(t) if t == "copied text"),
+            "Ctrl-V should deliver ClipboardPaste with the CLIPBOARD contents, got {:?}",
+            driver.app().events
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_v_delivers_the_clipboard_selection_as_a_paste() {
+        // quadraui#415: Ctrl-Shift-V is the paste shortcut in terminal
+        // emulators that reserve Ctrl-V for a literal control byte.
+        let mut driver = driver_with_clipboard(Some("copied text"), None);
+        press_v(
+            &mut driver,
+            Modifiers {
                 ctrl: true,
                 shift: true,
                 ..Modifiers::default()
             },
-            repeat: false,
-        });
-        // No OS clipboard in this sandbox → nothing to paste, but the
-        // keypress must still be swallowed here rather than falling
-        // through to `app.handle` as a literal 'v' character (which
-        // would be wrong for a focused terminal / text input).
+        );
+        assert!(
+            matches!(only_event(&driver), UiEvent::ClipboardPaste(t) if t == "copied text"),
+            "Ctrl-Shift-V should deliver ClipboardPaste, got {:?}",
+            driver.app().events
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_v_is_intercepted_not_forwarded_as_raw_v() {
+        let mut driver = driver_with_clipboard(None, None);
+        press_v(
+            &mut driver,
+            Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        // Empty clipboard → nothing to paste, but the keypress must
+        // still be swallowed here rather than falling through to
+        // `app.handle` as a literal 'v' character (which would be wrong
+        // for a focused terminal / text input).
         assert!(
             driver.app().events.is_empty(),
             "Ctrl-Shift-V should be intercepted as a paste attempt, not \
@@ -1379,42 +1465,72 @@ mod paste_tests {
 
     #[test]
     fn ctrl_alt_v_falls_through_to_app_unmodified() {
-        let mut driver = GtkDriver::new(RecordingApp::default(), 100, 30);
-        driver.dispatch(UiEvent::KeyPressed {
-            key: Key::Char('v'),
-            modifiers: Modifiers {
+        // Clipboard deliberately non-empty: proves the fall-through is
+        // driven by the modifier combination, not by an empty clipboard.
+        let mut driver = driver_with_clipboard(Some("copied text"), None);
+        press_v(
+            &mut driver,
+            Modifiers {
                 ctrl: true,
                 alt: true,
                 ..Modifiers::default()
             },
-            repeat: false,
-        });
-        assert_eq!(
-            driver.app().events.len(),
-            1,
-            "Ctrl-Alt-V is not a paste trigger and should reach app.handle unmodified"
+        );
+        assert!(
+            matches!(
+                only_event(&driver),
+                UiEvent::KeyPressed {
+                    key: Key::Char('v'),
+                    ..
+                }
+            ),
+            "Ctrl-Alt-V is not a paste trigger and should reach app.handle unmodified, got {:?}",
+            driver.app().events
+        );
+    }
+
+    #[test]
+    fn middle_click_delivers_the_primary_selection_as_a_paste() {
+        let mut driver = driver_with_clipboard(None, Some("selected text"));
+        middle_click(&mut driver);
+        assert!(
+            matches!(only_event(&driver), UiEvent::ClipboardPaste(t) if t == "selected text"),
+            "middle-click should deliver ClipboardPaste with the PRIMARY selection, got {:?}",
+            driver.app().events
+        );
+    }
+
+    #[test]
+    fn middle_click_reads_primary_selection_not_the_clipboard() {
+        // The two selections are distinct on X11/Wayland; middle-click
+        // must never fall back to CLIPBOARD (quadraui#415).
+        let mut driver = driver_with_clipboard(Some("CLIPBOARD"), Some("PRIMARY"));
+        middle_click(&mut driver);
+        assert!(
+            matches!(only_event(&driver), UiEvent::ClipboardPaste(t) if t == "PRIMARY"),
+            "middle-click pasted the wrong selection: {:?}",
+            driver.app().events
         );
     }
 
     #[test]
     fn middle_click_without_primary_selection_falls_through_to_app() {
-        let mut driver = GtkDriver::new(RecordingApp::default(), 100, 30);
-        driver.dispatch(UiEvent::MouseDown {
-            widget: None,
-            button: MouseButton::Middle,
-            position: Point::new(5.0, 5.0),
-            modifiers: Modifiers::default(),
-        });
-        // No OS PRIMARY selection in this sandbox → the intercept must
-        // not swallow the click; it should reach app.handle as an
-        // ordinary MouseDown so apps without terminal focus still see it.
-        assert_eq!(driver.app().events.len(), 1);
-        assert!(matches!(
-            driver.app().events[0],
-            UiEvent::MouseDown {
-                button: MouseButton::Middle,
-                ..
-            }
-        ));
+        // Empty PRIMARY but a non-empty CLIPBOARD: the intercept must
+        // not swallow the click (and must not substitute CLIPBOARD); it
+        // should reach app.handle as an ordinary MouseDown so apps
+        // without terminal focus still see it.
+        let mut driver = driver_with_clipboard(Some("CLIPBOARD"), None);
+        middle_click(&mut driver);
+        assert!(
+            matches!(
+                only_event(&driver),
+                UiEvent::MouseDown {
+                    button: MouseButton::Middle,
+                    ..
+                }
+            ),
+            "middle-click with no PRIMARY selection should fall through, got {:?}",
+            driver.app().events
+        );
     }
 }

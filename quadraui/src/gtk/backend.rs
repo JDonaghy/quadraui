@@ -363,6 +363,20 @@ impl GtkBackend {
         self.services.pump_depth()
     }
 
+    /// Seed this backend's clipboard with deterministic in-memory
+    /// contents, so a test can drive the Ctrl-V / Ctrl-Shift-V and
+    /// middle-click paste paths without depending on the host's real
+    /// clipboard state (quadraui#415). Test-only.
+    #[cfg(test)]
+    pub(crate) fn install_test_clipboard(
+        &self,
+        contents: crate::gtk::services::TestClipboardContents,
+    ) {
+        self.services
+            .gtk_clipboard()
+            .install_test_contents(contents);
+    }
+
     /// Stash the raw GDK context of a primary-button press. Called by
     /// `gtk/run.rs`'s `GestureClick::connect_pressed`, before the press is
     /// translated to a portable [`UiEvent`], so
