@@ -24,6 +24,14 @@
 //!   and sends it raw otherwise. On GTK this fires for Ctrl-V,
 //!   Ctrl-Shift-V, and middle-click (PRIMARY selection) — all three route
 //!   to the same `ClipboardPaste` event (quadraui#415).
+//! - **IME / dead-key composed input is out of scope here.** quadraui#415
+//!   ("route clipboard paste + IME/dead-key composition into the focused
+//!   terminal PTY") covers only the clipboard-paste half in this example
+//!   and in `gtk::run::dispatch_event`. No backend runs an IME composition
+//!   pipeline yet — see [`quadraui::UiEvent::CharTyped`]'s doc comment and
+//!   epic quadraui#481, which owns wiring a real `GtkIMContext` (commit +
+//!   preedit) end to end. Composed characters (e.g. a dead-key `´` + `e` →
+//!   `é`) are not yet forwarded to the PTY by this example on any backend.
 //! - When the shell exits a status line shows the exit code; Ctrl+Q closes.
 
 use quadraui::terminal_engine::{default_shell, TerminalMouseKind, TerminalSession};

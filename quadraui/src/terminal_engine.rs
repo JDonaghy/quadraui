@@ -722,9 +722,10 @@ impl TerminalSession {
 
     /// Send pasted text to the shell — the single paste entry point every
     /// paste source (GTK Ctrl-V/Ctrl-Shift-V, GTK middle-click PRIMARY
-    /// selection, TUI crossterm bracketed paste, a supervising process)
-    /// should call instead of hand-rolling the bracketed-paste wrap
-    /// (quadraui#415).
+    /// selection, TUI crossterm bracketed paste) should call instead of
+    /// hand-rolling the bracketed-paste wrap (quadraui#415). Also the
+    /// natural entry point for a future supervising process that wants to
+    /// inject text programmatically, though nothing wires that up today.
     ///
     /// Wraps `text` in bracketed-paste markers (`ESC[200~ ... ESC[201~`)
     /// when the child has enabled bracketed-paste mode
