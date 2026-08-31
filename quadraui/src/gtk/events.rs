@@ -93,14 +93,52 @@ pub fn gdk_motion_to_uievent(x: f64, y: f64, buttons: crate::ButtonMask) -> UiEv
 }
 
 /// Translate a GDK scroll event into [`UiEvent::Scroll`]. `dx`/`dy`
-/// are GTK's `EventControllerScroll` deltas (positive `dy` = down).
-/// We negate `dy` for `UiEvent::Scroll`'s convention (positive y =
-/// up toward the top of content) — same as the TUI translator does
-/// for crossterm scroll events.
+/// are GTK's `EventControllerScroll` deltas (positive `dy` = down —
+/// this is the sign GTK4 apps consume directly when driving a
+/// `GtkAdjustment`, e.g. `value += dy`; wheel-down / two-finger-down
+/// on a non-natural-scroll touchpad reports positive `dy`). We negate
+/// `dy` for `UiEvent::Scroll`'s convention (positive y = up toward
+/// the top of content) — same as the TUI translator does for
+/// crossterm scroll events, and the same negation `macos::events::ns_scroll`
+/// applies to `NSEvent` deltas. Win32 is the one native backend that
+/// *doesn't* negate — see `win::events::win_wheel_to_uievent`'s doc
+/// for why.
+///
+/// This is the `natural_scroll = false` case of
+/// [`gdk_scroll_to_uievent_with_direction`]; kept as its own function
+/// so existing callers (and the GTK runner's default wiring) don't
+/// need to thread an extra argument through for the common case.
 pub fn gdk_scroll_to_uievent(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
+    gdk_scroll_to_uievent_with_direction(dx, dy, x, y, false)
+}
+
+/// Translate a GDK scroll event into [`UiEvent::Scroll`], with an
+/// explicit natural-scroll override (quadraui#418).
+///
+/// `natural_scroll = false` reproduces [`gdk_scroll_to_uievent`]'s
+/// traditional-direction behavior exactly: wheel-down (positive raw
+/// `dy`) becomes negative `delta.y`, i.e. "not up", so compose
+/// controllers (`TreeController`, `SidebarSystem`, `ChatController`,
+/// `FormController`) scroll the view toward later content.
+///
+/// `natural_scroll = true` flips the sign again — content follows the
+/// gesture, matching touchscreen/trackpad "natural scrolling"
+/// semantics — for apps that want an in-app toggle independent of (or
+/// layered on top of) the OS-level libinput natural-scroll setting.
+/// [`crate::AppLogic::natural_scroll`] is the trait hook the GTK
+/// runner reads to pick the flag; `wire_da_events_with_scroll_direction`
+/// is the equivalent for consumers wiring their own `DrawingArea`.
+pub fn gdk_scroll_to_uievent_with_direction(
+    dx: f64,
+    dy: f64,
+    x: f64,
+    y: f64,
+    natural_scroll: bool,
+) -> UiEvent {
+    let sign: f32 = if natural_scroll { 1.0 } else { -1.0 };
     UiEvent::Scroll {
         widget: None,
-        delta: crate::ScrollDelta::new(dx as f32, -dy as f32),
+        delta: crate::ScrollDelta::new(dx as f32, sign * dy as f32),
         position: Point::new(x as f32, y as f32),
     }
 }
@@ -224,8 +262,29 @@ pub fn gdk_button_to_quadraui(button: u32) -> MouseButton {
 ///
 /// This eliminates ~40 lines of per-DrawingArea signal wiring that
 /// every GTK consumer otherwise needs to write manually.
+///
+/// Scroll direction always follows [`gdk_scroll_to_uievent`]'s
+/// traditional (`natural_scroll = false`) convention. Use
+/// [`wire_da_events_with_scroll_direction`] to make it configurable
+/// (quadraui#418).
 pub fn wire_da_events<F>(da: &gtk4::DrawingArea, on_event: F)
 where
+    F: Fn(UiEvent) + Clone + 'static,
+{
+    wire_da_events_with_scroll_direction(da, on_event, false);
+}
+
+/// Same as [`wire_da_events`], with an explicit natural-scroll flag
+/// (quadraui#418) passed straight through to
+/// [`gdk_scroll_to_uievent_with_direction`]. Consumers building their
+/// own `DrawingArea` outside [`crate::gtk::run`] (which reads
+/// [`crate::AppLogic::natural_scroll`] instead) use this to honour
+/// the same preference.
+pub fn wire_da_events_with_scroll_direction<F>(
+    da: &gtk4::DrawingArea,
+    on_event: F,
+    natural_scroll: bool,
+) where
     F: Fn(UiEvent) + Clone + 'static,
 {
     use gtk4::{
@@ -284,7 +343,13 @@ where
         let on_event = on_event.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
             let (x, y) = cursor_pos.get();
-            on_event(gdk_scroll_to_uievent(dx, dy, x, y));
+            on_event(gdk_scroll_to_uievent_with_direction(
+                dx,
+                dy,
+                x,
+                y,
+                natural_scroll,
+            ));
             glib::Propagation::Stop
         });
     }
@@ -404,6 +469,30 @@ mod tests {
                 assert_eq!(position.x, 10.0);
                 assert_eq!(position.y, 20.0);
             }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn scroll_with_direction_false_matches_default_translator() {
+        let a = gdk_scroll_to_uievent(0.0, 1.0, 10.0, 20.0);
+        let b = gdk_scroll_to_uievent_with_direction(0.0, 1.0, 10.0, 20.0, false);
+        match (a, b) {
+            (UiEvent::Scroll { delta: da, .. }, UiEvent::Scroll { delta: db, .. }) => {
+                assert_eq!(da, db);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn scroll_with_direction_true_flips_sign() {
+        // Same raw wheel-down gesture (dy = 1.0), but with the
+        // natural-scroll override on: the sign flips relative to
+        // `gdk_scroll_to_uievent`'s traditional -1.0.
+        let ev = gdk_scroll_to_uievent_with_direction(0.0, 1.0, 10.0, 20.0, true);
+        match ev {
+            UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, 1.0),
             _ => panic!(),
         }
     }

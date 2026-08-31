@@ -1080,6 +1080,61 @@ mod tests {
         assert_eq!(tc.scroll_offset(), 0);
     }
 
+    // ── GTK wheel-direction round-trip (quadraui#418) ────────────────
+    //
+    // Regression guard tying the real GDK → UiEvent translator to a
+    // compose controller's scroll behavior, not just the internal
+    // ScrollDelta convention (`UiEvent::Scroll` built by hand). Confirms
+    // the GTK backend's traditional (non-natural) wheel-down actually
+    // moves the tree toward later rows, and that flipping
+    // `natural_scroll` flips the observed direction too.
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn gtk_wheel_down_scrolls_tree_toward_later_rows_traditional() {
+        use crate::gtk::events::gdk_scroll_to_uievent_with_direction;
+
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("row", 20));
+        let rect = Rect::new(0.0, 0.0, 40.0, 3.0); // 3 visible rows
+
+        // Raw GDK dy > 0 == wheel rotated down / two-finger-down on a
+        // non-natural-scroll touchpad. `natural_scroll = false` is the
+        // GTK runner's default (quadraui::AppLogic::natural_scroll).
+        let ev = gdk_scroll_to_uievent_with_direction(0.0, 1.0, 5.0, 5.0, false);
+        let outcome = tc.handle(&ev, &mut MockBackend, rect);
+
+        assert_eq!(outcome, TreeControllerEvent::Consumed);
+        assert!(
+            tc.scroll_offset() > 0,
+            "wheel-down should move the view toward later rows, got offset={}",
+            tc.scroll_offset()
+        );
+    }
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn gtk_wheel_down_scrolls_tree_toward_earlier_rows_when_natural() {
+        use crate::gtk::events::gdk_scroll_to_uievent_with_direction;
+
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("row", 20));
+        tc.set_scroll_offset(5);
+        let rect = Rect::new(0.0, 0.0, 40.0, 3.0);
+
+        // Same raw wheel-down gesture, but with the natural-scroll
+        // override on: direction flips relative to the traditional case.
+        let ev = gdk_scroll_to_uievent_with_direction(0.0, 1.0, 5.0, 5.0, true);
+        let outcome = tc.handle(&ev, &mut MockBackend, rect);
+
+        assert_eq!(outcome, TreeControllerEvent::Consumed);
+        assert!(
+            tc.scroll_offset() < 5,
+            "natural_scroll should flip wheel-down toward earlier rows, got offset={}",
+            tc.scroll_offset()
+        );
+    }
+
     // ── Page scroll ─────────────────────────────────────────────────
 
     #[test]

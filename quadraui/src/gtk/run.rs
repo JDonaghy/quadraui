@@ -119,7 +119,7 @@ use pangocairo::functions as pcfn;
 use super::backend::GtkBackend;
 use super::events::{
     gdk_button_to_quadraui, gdk_key_to_uievent, gdk_modifiers_to_quadraui, gdk_resize_to_uievent,
-    gdk_scroll_to_uievent,
+    gdk_scroll_to_uievent_with_direction,
 };
 use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
@@ -653,7 +653,8 @@ fn activate<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             }
             let (x, y) = cursor_pos.get();
-            let ev = gdk_scroll_to_uievent(dx, dy, x, y);
+            let natural_scroll = app.borrow().natural_scroll();
+            let ev = gdk_scroll_to_uievent_with_direction(dx, dy, x, y, natural_scroll);
             let outcome = {
                 let mut backend_mut = backend.borrow_mut();
                 let mut app_mut = app.borrow_mut();
