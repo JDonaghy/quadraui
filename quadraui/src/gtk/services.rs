@@ -81,6 +81,15 @@ impl GtkPlatformServices {
     pub(crate) fn pump_depth(&self) -> Rc<Cell<u32>> {
         Rc::clone(&self.pumping)
     }
+
+    /// Concrete (non-trait-object) handle on the clipboard, so in-crate
+    /// tests can call [`GtkClipboard::install_test_contents`] — the
+    /// `&dyn Clipboard` returned by [`PlatformServices::clipboard`]
+    /// can't reach an inherent method. Test-only (quadraui#415).
+    #[cfg(test)]
+    pub(crate) fn gtk_clipboard(&self) -> &GtkClipboard {
+        &self.clipboard
+    }
 }
 
 impl Default for GtkPlatformServices {
@@ -228,44 +237,72 @@ impl Drop for PumpGuard<'_> {
     }
 }
 
+/// In-memory stand-in for the two OS selections, installed by
+/// [`GtkClipboard::install_test_contents`] so unit tests can exercise the
+/// clipboard-paste code paths **without** depending on whatever the host
+/// running the tests happens to have on its real clipboard (quadraui#415).
+///
+/// Test-only on purpose: without it, a test asserting "nothing to paste"
+/// passes on a headless box (where `arboard::Clipboard::new()` fails) and
+/// fails on any developer machine or CI runner with a live display and a
+/// non-empty clipboard — a genuinely flaky, environment-dependent
+/// assertion rather than a statement about quadraui's behaviour.
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TestClipboardContents {
+    /// Contents of the CLIPBOARD selection — what Ctrl-V / Ctrl-Shift-V
+    /// reads. `None` models "nothing has been copied".
+    pub clipboard: Option<String>,
+    /// Contents of the PRIMARY selection — what middle-click reads.
+    /// `None` models "nothing is selected anywhere".
+    pub primary: Option<String>,
+}
+
 /// System clipboard via `arboard`. The handle is kept alive for the
 /// process lifetime so Linux clipboard serving threads persist.
 pub struct GtkClipboard {
     inner: RefCell<Option<arboard::Clipboard>>,
+    /// When `Some`, every read/write below is served from this in-memory
+    /// fake instead of the OS, making clipboard-dependent unit tests
+    /// deterministic on any host. Only ever populated by
+    /// [`Self::install_test_contents`]; production builds don't compile
+    /// the field at all.
+    #[cfg(test)]
+    test_contents: RefCell<Option<TestClipboardContents>>,
 }
 
 impl GtkClipboard {
     fn new() -> Self {
         Self {
             inner: RefCell::new(arboard::Clipboard::new().ok()),
-        }
-    }
-}
-
-impl Clipboard for GtkClipboard {
-    fn read_text(&self) -> Option<String> {
-        self.inner.borrow_mut().as_mut()?.get_text().ok()
-    }
-
-    fn write_text(&self, text: &str) {
-        if let Some(cb) = self.inner.borrow_mut().as_mut() {
-            let _ = cb.set_text(text);
+            #[cfg(test)]
+            test_contents: RefCell::new(None),
         }
     }
 
-    /// PRIMARY selection (middle-click paste source) — only meaningful on
-    /// X11/Wayland, where `arboard`'s Linux extension trait exposes it as
-    /// a distinct selection from CLIPBOARD (quadraui#415). Gated to the
-    /// same `cfg` `arboard` itself uses for `GetExtLinux` (see
-    /// `arboard::lib`): on any other target this quietly falls back to
-    /// the trait's default `None`, since Windows/macOS have no PRIMARY
-    /// selection concept and quadraui's `gtk` feature only ships a Linux
-    /// backend in practice.
+    /// Swap this clipboard over to an in-memory fake seeded with
+    /// `contents`. Every subsequent read and write goes to the fake and
+    /// the OS clipboard is left untouched — so a test can assert on the
+    /// "there is something to paste" and "there is nothing to paste"
+    /// branches independently of the host (quadraui#415).
+    #[cfg(test)]
+    pub(crate) fn install_test_contents(&self, contents: TestClipboardContents) {
+        *self.test_contents.borrow_mut() = Some(contents);
+    }
+
+    /// OS-level PRIMARY-selection read, split out from the trait method
+    /// so the trait method itself stays uncfg'd (and therefore honours
+    /// [`Self::install_test_contents`] on every target).
+    ///
+    /// Gated to the same `cfg` `arboard` itself uses for `GetExtLinux`
+    /// (see `arboard::lib`). Windows/macOS have no PRIMARY-selection
+    /// concept, and quadraui's `gtk` feature only ships a Linux backend
+    /// in practice, so there the OS read is simply `None`.
     #[cfg(all(
         unix,
         not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
     ))]
-    fn read_primary_selection(&self) -> Option<String> {
+    fn read_os_primary_selection(&self) -> Option<String> {
         use arboard::{GetExtLinux, LinuxClipboardKind};
         self.inner
             .borrow_mut()
@@ -274,6 +311,56 @@ impl Clipboard for GtkClipboard {
             .clipboard(LinuxClipboardKind::Primary)
             .text()
             .ok()
+    }
+
+    /// Non-Linux counterpart of [`Self::read_os_primary_selection`] —
+    /// there is no PRIMARY selection to read.
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
+    )))]
+    fn read_os_primary_selection(&self) -> Option<String> {
+        None
+    }
+}
+
+impl Clipboard for GtkClipboard {
+    fn read_text(&self) -> Option<String> {
+        #[cfg(test)]
+        {
+            if let Some(fake) = self.test_contents.borrow().as_ref() {
+                return fake.clipboard.clone();
+            }
+        }
+        self.inner.borrow_mut().as_mut()?.get_text().ok()
+    }
+
+    fn write_text(&self, text: &str) {
+        #[cfg(test)]
+        {
+            if let Some(fake) = self.test_contents.borrow_mut().as_mut() {
+                fake.clipboard = Some(text.to_string());
+                return;
+            }
+        }
+        if let Some(cb) = self.inner.borrow_mut().as_mut() {
+            let _ = cb.set_text(text);
+        }
+    }
+
+    /// PRIMARY selection (middle-click paste source) — only meaningful on
+    /// X11/Wayland, where `arboard`'s Linux extension trait exposes it as
+    /// a distinct selection from CLIPBOARD (quadraui#415). See
+    /// [`GtkClipboard::read_os_primary_selection`] for the per-target
+    /// split.
+    fn read_primary_selection(&self) -> Option<String> {
+        #[cfg(test)]
+        {
+            if let Some(fake) = self.test_contents.borrow().as_ref() {
+                return fake.primary.clone();
+            }
+        }
+        self.read_os_primary_selection()
     }
 }
 
