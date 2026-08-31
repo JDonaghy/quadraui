@@ -137,6 +137,10 @@ fn paint_line(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &The
         }
     }
 
+    // Grid is background: paint it before axes and series so data and
+    // axes are drawn on top of it, not cut by it (#648).
+    paint_grid(buf, layout, chart, theme);
+
     // Axes: left edge and bottom edge.
     for row in py..py + ph {
         set_cell(buf, px, row, '│', dim, bg);
@@ -279,6 +283,11 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
         }
     }
 
+    // Grid is background: paint it before any bars are drawn so bars sit
+    // on top of it, not cut by it (#648). Painted even for an empty
+    // chart (below) so the grid stays consistent regardless of data.
+    paint_grid(buf, layout, chart, theme);
+
     let n = chart.max_data_len();
     if n == 0 {
         // Nothing to plot: still paint the legend and axis labels so an
@@ -383,6 +392,30 @@ fn paint_legend(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &T
     }
 }
 
+/// Paint the horizontal grid rules at each y-tick row. Background layer:
+/// must run *before* axes and series are painted so data sits on top of
+/// the grid rather than being cut by it (#648). Mirrors the macOS
+/// rasteriser's grid-then-series ordering (`macos/chart.rs`).
+fn paint_grid(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
+    if !chart.show_grid {
+        return;
+    }
+    let bg = ratatui_color(theme.background);
+    let dim = ratatui_color(theme.muted_fg);
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let pw = pa.width.round() as u16;
+
+    for &(sy, _val) in &layout.y_tick_positions {
+        let row = sy.round() as u16;
+        if row > pa.y.round() as u16 && row < (pa.y + pa.height).round() as u16 {
+            for col in (px + 1)..(px + pw) {
+                set_cell(buf, col, row, '┄', dim, bg);
+            }
+        }
+    }
+}
+
 fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
     let bg = ratatui_color(theme.background);
     let fg = ratatui_color(theme.foreground);
@@ -400,11 +433,6 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
             let col = label_start + i as u16;
             if col < gutter_end {
                 set_cell(buf, col, row, ch, dim, bg);
-            }
-        }
-        if chart.show_grid && row > pa.y.round() as u16 && row < (pa.y + pa.height).round() as u16 {
-            for col in (px + 1)..(px + pw) {
-                set_cell(buf, col, row, '┄', dim, bg);
             }
         }
     }
@@ -1101,5 +1129,112 @@ mod tests {
         let chart = spark(vec![1.0, 2.0]);
         let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Grid paints under data, not over it (#648) ──────────────────────
+
+    /// A tall bar and an empty (zero-height) bar share a y-tick row: the
+    /// tall bar's cell must stay `█` (data wins) while the empty bar's
+    /// cell on the same row must still show the grid dash — proving the
+    /// grid is painted *underneath* the data rather than deleted
+    /// outright (deleting the grid would also make this pass if we only
+    /// asserted the bar cell).
+    #[test]
+    fn bar_chart_grid_paints_under_bars_not_over_them() {
+        let area = Rect::new(0, 0, 12, 9);
+        let mut buf = Buffer::empty(area);
+        let mut chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![series_of("B", vec![3.0, 0.0], Color::rgb(1, 2, 3))],
+            Some((0.0, 4.0)),
+        );
+        chart.show_grid = true;
+        chart.y_ticks = Some(4);
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let pa = &layout.plot_area;
+        let px = pa.x.round() as u16;
+        let py = pa.y.round() as u16;
+        let ph = pa.height.round() as u16;
+        let pw = pa.width.round() as u16;
+        let slot_w = (pw / 2).max(1);
+
+        let bar_col = px; // first data point: value 3.0, a tall bar
+        let empty_col = px + slot_w; // second data point: value 0.0, no bar
+
+        let tick_row_in_bar = layout
+            .y_tick_positions
+            .iter()
+            .map(|&(sy, _)| sy.round() as u16)
+            .filter(|&row| row > py && row < py + ph)
+            .find(|&row| cell_char(&buf, bar_col, row) == '█')
+            .unwrap_or_else(|| {
+                panic!(
+                    "no tick row landed inside the bar for this fixture:\n{:?}",
+                    grid(&buf, area)
+                )
+            });
+
+        assert_eq!(cell_char(&buf, bar_col, tick_row_in_bar), '█');
+        assert_eq!(
+            cell_char(&buf, empty_col, tick_row_in_bar),
+            '┄',
+            "grid should still show through cells the data does not occupy:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    /// A line chart's braille line crosses several y-tick rows; the
+    /// braille glyph at the crossing must survive, not be replaced by
+    /// the grid dash (#648).
+    #[test]
+    fn line_chart_grid_paints_under_braille_not_over_it() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data: vec![0.0, 2.5, 5.0, 7.5, 10.0, 7.5, 5.0, 2.5, 0.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 10.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(5),
+            x_ticks: None,
+            show_grid: true,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let pa = &layout.plot_area;
+        let px = pa.x.round() as u16;
+        let py = pa.y.round() as u16;
+        let ph = pa.height.round() as u16;
+        let pw = pa.width.round() as u16;
+
+        // A tick row strictly inside the plot (excluding the axis border
+        // rows) where the line's braille dots cross should still show a
+        // braille glyph somewhere along the row.
+        let tick_row = layout
+            .y_tick_positions
+            .iter()
+            .map(|&(sy, _)| sy.round() as u16)
+            .find(|&row| row > py && row < py + ph.saturating_sub(1))
+            .expect("fixture should have an interior tick row");
+
+        let braille_survives = (px + 1..px + pw).any(|col| {
+            let ch = cell_char(&buf, col, tick_row);
+            ('\u{2800}'..='\u{28ff}').contains(&ch)
+        });
+        assert!(
+            braille_survives,
+            "expected a braille dot to survive on tick row {tick_row}:\n{:?}",
+            grid(&buf, area)
+        );
     }
 }
