@@ -7,6 +7,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::braille::pack_braille_cell;
 use super::{ratatui_color, set_cell};
 use crate::primitives::chart::{Chart, ChartKind, ChartLayout, ChartMeasure};
 use crate::theme::Theme;
@@ -208,16 +209,12 @@ fn paint_line(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &The
         // Render braille grid to buffer.
         for cell_row in 0..plot_rows {
             for cell_col in 0..plot_cols {
-                let mut code: u32 = 0x2800;
-                for (bit, &(dr, dc)) in BRAILLE_OFFSETS.iter().enumerate() {
+                let ch = pack_braille_cell(|dr, dc| {
                     let gy = cell_row * 4 + dr;
                     let gx = cell_col * 2 + dc;
-                    if gy < dot_h && gx < dot_w && grid[gy][gx] {
-                        code |= 1 << bit;
-                    }
-                }
-                if code != 0x2800 {
-                    let ch = char::from_u32(code).unwrap_or(' ');
+                    gy < dot_h && gx < dot_w && grid[gy][gx]
+                });
+                if ch != '\u{2800}' {
                     let bx = px + 1 + cell_col as u16;
                     let by = py + cell_row as u16;
                     if bx < px + pw && by < py + ph - 1 {
@@ -231,19 +228,6 @@ fn paint_line(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &The
     paint_legend(buf, layout, chart, theme);
     paint_axis_labels(buf, layout, chart, theme);
 }
-
-// Braille dot offsets: (row_in_cell, col_in_cell) → bit index.
-// Standard Unicode braille ordering.
-const BRAILLE_OFFSETS: [(usize, usize); 8] = [
-    (0, 0), // bit 0
-    (1, 0), // bit 1
-    (2, 0), // bit 2
-    (0, 1), // bit 3
-    (1, 1), // bit 4
-    (2, 1), // bit 5
-    (3, 0), // bit 6
-    (3, 1), // bit 7
-];
 
 fn interpolate_dots(grid: &mut [Vec<bool>], x0: usize, y0: usize, x1: usize, y1: usize) {
     let dx = (x1 as isize - x0 as isize).abs();

@@ -2092,6 +2092,29 @@ impl Backend for TuiBackend {
             .expect("TuiBackend::draw_board called outside enter_frame_scope");
         crate::tui::draw_board(frame.buffer_mut(), area, model, &theme)
     }
+
+    fn draw_minimap(
+        &mut self,
+        rect: QRect,
+        minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::backend::MinimapPaintResult {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_minimap called outside enter_frame_scope");
+        let layout = crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme);
+        self.register_zone(minimap.id.clone(), rect);
+        crate::backend::MinimapPaintResult { layout }
+    }
+
+    fn minimap_layout(
+        &self,
+        rect: QRect,
+        minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::primitives::minimap::MinimapLayout {
+        crate::tui::tui_minimap_layout(minimap, q_rect_to_ratatui(rect))
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -2803,6 +2826,22 @@ mod tests {
                     0.0,
                 ),
             )
+        }
+
+        fn draw_minimap(
+            &mut self,
+            _r: QRect,
+            _m: &crate::primitives::minimap::Minimap,
+        ) -> crate::backend::MinimapPaintResult {
+            crate::backend::MinimapPaintResult::default()
+        }
+
+        fn minimap_layout(
+            &self,
+            _r: QRect,
+            _m: &crate::primitives::minimap::Minimap,
+        ) -> crate::primitives::minimap::MinimapLayout {
+            crate::primitives::minimap::MinimapLayout::default()
         }
     }
 

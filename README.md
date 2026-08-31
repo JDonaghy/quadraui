@@ -104,6 +104,9 @@ Current set (declarative descriptions + layout + dual rasterisers):
 - `ProgressBar` — determinate/indeterminate bar with optional cancel.
 - `Spinner` — indeterminate braille animation glyph + label.
 - `CommandCenter` — back/forward nav arrows + search box for menu bar row.
+- `Minimap` — code-overview minimap: GTK paints real glyphs via font
+  scaling, TUI packs `U+2800`-block braille dots — same `sample_lines` /
+  `aggregate_spans` data on both (#382).
 - Plus: `Tooltip`, `ContextMenu`, `Dialog`, `Palette`, `Terminal`,
   `RichTextPopup`, `TextDisplay` (with optional scrollbar), etc.
 

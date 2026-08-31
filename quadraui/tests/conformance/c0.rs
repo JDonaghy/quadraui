@@ -41,12 +41,12 @@ use quadraui::{
     Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
     DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
     EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, ListItem, ListView, MenuBar,
-    MenuBarItem, MessageList, MessageRow, MsvAxis, MultiSectionView, Palette, PaletteItem,
-    PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect,
-    RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
-    SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split,
-    SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-    TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay,
+    MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, Palette,
+    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
+    Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar,
+    Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner,
+    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
+    StyledText, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay,
     TextDisplayLine, TextInput, ToastCorner, ToastItem, ToastSeverity, ToastStack, Toolbar,
     ToolbarButton, ToolbarItemMeasure, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
     TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
@@ -1066,6 +1066,37 @@ pub const CASES: &[Case] = &[
                 col_scroll_offset: 0,
             };
             let _ = b.draw_board(area, &model);
+        },
+    },
+    // GTK's font-scaling technique paints real text, but TUI's braille
+    // technique never shapes literal glyphs at all — a needle search for
+    // painted text would pass on one backend and fail the other for
+    // reasons that have nothing to do with a broken rasteriser. Both
+    // backends register a zone for the minimap's own bounds instead (the
+    // same "chrome-only" observability path `draw_scrollbar` above uses),
+    // so this case works identically on both.
+    Case {
+        method: "draw_minimap",
+        needle: None,
+        paint: |b, area| {
+            let minimap = Minimap {
+                id: id("minimap"),
+                lines: vec![
+                    MinimapLine {
+                        text: "c0mini".to_string(),
+                        line_idx: 0,
+                    },
+                    MinimapLine {
+                        text: "fn main() {}".to_string(),
+                        line_idx: 1,
+                    },
+                ],
+                syntax_spans: vec![],
+                visible_row_start: 0,
+                visible_row_count: 2,
+                total_buffer_lines: 2,
+            };
+            let _ = b.draw_minimap(area, &minimap);
         },
     },
 ];

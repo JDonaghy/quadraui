@@ -783,6 +783,22 @@ impl Backend for WinBackend {
         todo!("Direct2D board rasteriser")
     }
 
+    fn draw_minimap(
+        &mut self,
+        _rect: Rect,
+        _minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::backend::MinimapPaintResult {
+        todo!("Direct2D minimap rasteriser — out of scope per #382")
+    }
+
+    fn minimap_layout(
+        &self,
+        _rect: Rect,
+        _minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::primitives::minimap::MinimapLayout {
+        todo!("Direct2D minimap layout — out of scope per #382")
+    }
+
     fn draw_panel(&mut self, _rect: Rect, _panel: &Panel) -> PanelLayout {
         todo!("Direct2D panel rasteriser")
     }
