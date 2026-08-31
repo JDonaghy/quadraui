@@ -96,7 +96,7 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
     width: i32,
     height: i32,
 ) -> GtkDriver<impl AppLogic> {
-    let adapter = super::shell_runner::build_shell_adapter(app, config);
+    let adapter = crate::shell_adapter::build_shell_adapter(app, config);
     GtkDriver::new(adapter, width, height)
 }
 
