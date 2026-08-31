@@ -249,6 +249,26 @@ unlike `draw_palette`, a toolbar has no "preview pane" content sharing
 the layout, so there's no reason to scope the swap narrower than the
 whole button strip.
 
+**Moving a rasteriser's paint font moves its hit regions too.** The
+first cut of that toolbar change swapped only `GtkBackend::draw_toolbar`
+and broke every toolbar *click*: `AppLogic::handle` hit-tests by calling
+`Backend::toolbar_layout` between frames, and that method still measured
+with whatever font was live, so the button the user visibly clicked was
+no longer the one the hit test reported. Any `draw_*` font swap must be
+mirrored into its `*_layout` twin — the same contract #624 wrote into
+`status_bar_layout` ("measure with `ui_font`, matching the paint font").
+Two related traps sit behind it: those `*_layout` calls run *outside*
+`enter_frame_scope`, so they fall back to the persistent `pango_ctx`,
+and if there is no `pango_ctx` either they fall back again to
+`chars().count() * char_width` — an estimate that is only right for a
+monospace font and silently drifts under a proportional `ui_font`. That
+second fallback is what hid the bug from `GtkDriver`-based tests until
+the driver started seeding `pango_ctx` the way `gtk::run::activate`
+does. Prefer production parity in the harness over a "close enough"
+measurement fallback; a fallback that is accurate only for the font you
+happened to be using is a test that stops testing the moment the font
+changes.
+
 Fix (#416): a shared `gtk::chrome_font_description(ui_font)` /
 `gtk::with_nerd_font_fallback(base)` pair *appends*
 `Symbols Nerd Font` to the family list instead of relying on implicit

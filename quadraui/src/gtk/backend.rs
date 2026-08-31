@@ -3388,7 +3388,19 @@ impl Backend for GtkBackend {
         let char_w = self.current_char_width;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        crate::gtk::gtk_toolbar_layout(
+        // #416: measure with `ui_font`, matching `Self::draw_toolbar`'s
+        // paint font — same #624 contract `status_bar_layout` documents.
+        // A no-paint caller (hit-testing without repainting, which is
+        // exactly what `AppLogic::handle` does on every mouse event) must
+        // resolve the same button widths the paint path produced, or the
+        // button the user visibly clicked is not the one the hit test
+        // reports.
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
+        let result = crate::gtk::gtk_toolbar_layout(
             bar,
             pango_layout.as_ref(),
             char_w,
@@ -3396,7 +3408,11 @@ impl Backend for GtkBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-        )
+        );
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
+        result
     }
 
     fn draw_sidebar_panel(
@@ -3448,7 +3464,16 @@ impl Backend for GtkBackend {
         let line_h = self.current_line_height;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        crate::gtk::gtk_sidebar_panel_layout(
+        // #416: the panel's header is a `Toolbar`, so its measured button
+        // widths must come from the same `ui_font`
+        // `Self::draw_sidebar_panel` now paints with — see
+        // `Self::toolbar_layout` above.
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(Some(&ui_font_desc));
+        }
+        let result = crate::gtk::gtk_sidebar_panel_layout(
             panel,
             pango_layout.as_ref(),
             char_w,
@@ -3457,7 +3482,11 @@ impl Backend for GtkBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-        )
+        );
+        if let Some(pl) = &pango_layout {
+            pl.set_font_description(saved_font.as_ref());
+        }
+        result
     }
 
     fn draw_diff_view(
@@ -4793,6 +4822,51 @@ mod tests {
             ui_font_width > small_editor_width + 20.0,
             "changing ui_font alone must visibly widen the painted toolbar action: \
              default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
+        );
+    }
+
+    /// #416 regression guard: moving `draw_toolbar`'s paint onto
+    /// `ui_font` without moving `toolbar_layout`'s *measurement* with it
+    /// splits paint from hit-test. `AppLogic::handle` hit-tests by
+    /// calling `Backend::toolbar_layout` between frames — outside any
+    /// `enter_frame_scope` — so the two must resolve identical button
+    /// bounds or the button the user visibly clicked is not the one the
+    /// hit test reports (which is exactly how
+    /// `gtk_example_driver::toolbar_clicking_filter_toggles_it_without_keyboard_focus`
+    /// failed). Deliberately measured with the *editor* font live on
+    /// both the frame layout and the stable `pango_ctx`, so a regression
+    /// that drops either swap shows up as a width mismatch here.
+    #[test]
+    fn gtk_backend_toolbar_layout_matches_draw_toolbar_bounds_outside_frame() {
+        let (surface, editor_font, _) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let bar = ui_font_test_toolbar();
+        let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
+
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        pango_ctx.set_font_description(Some(&editor_font));
+        let layout = pango::Layout::new(&pango_ctx);
+        let mut backend = GtkBackend::new();
+        // Stable click-time context, as `gtk::run::activate` seeds it on
+        // `DrawingArea` realize — also carrying the editor font, so the
+        // hit-test path can only agree with paint by swapping onto
+        // `ui_font` itself.
+        let stable_ctx = pangocairo::functions::create_context(&cr);
+        stable_ctx.set_font_description(Some(&editor_font));
+        backend.set_pango_context(stable_ctx);
+        Backend::set_ui_font(&mut backend, "Sans 40");
+
+        let painted = backend.enter_frame_scope(&cr, &layout, |b| {
+            b.draw_toolbar(rect, &bar, None, None).visible_items[0].bounds
+        });
+        // Outside the frame scope — the click-time path.
+        let hit_tested = Backend::toolbar_layout(&backend, rect, &bar).visible_items[0].bounds;
+
+        assert!(
+            (painted.width - hit_tested.width).abs() <= 1.0
+                && (painted.x - hit_tested.x).abs() <= 1.0,
+            "click-time toolbar_layout must resolve the same button bounds \
+             draw_toolbar painted: painted={painted:?}, hit_tested={hit_tested:?}"
         );
     }
 
