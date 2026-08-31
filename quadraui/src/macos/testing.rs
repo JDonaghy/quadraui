@@ -645,4 +645,123 @@ mod tests {
         assert!(driver.app().quit, "app.handle should have run");
         assert!(driver.exited(), "'q' should make the app exit");
     }
+
+    // ── ActivityBar keyboard-focus redirect (#465) ────────────────────
+
+    /// App that paints one [`crate::primitives::activity_bar::ActivityBar`]
+    /// whose `is_keyboard_focused` flag is fixed at construction, and
+    /// records every event `dispatch_event` hands it.
+    struct ActivityBarApp {
+        focused: bool,
+        seen: Vec<UiEvent>,
+    }
+
+    impl AppLogic for ActivityBarApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            use crate::primitives::activity_bar::{ActivityBar, ActivityItem};
+            backend.draw_activity_bar(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &ActivityBar {
+                    id: WidgetId::new("bar"),
+                    top_items: vec![ActivityItem {
+                        id: WidgetId::new("panel:explorer"),
+                        icon: "E".into(),
+                        tooltip: "Explorer".into(),
+                        is_active: true,
+                        is_keyboard_selected: self.focused,
+                    }],
+                    bottom_items: Vec::new(),
+                    active_accent: None,
+                    selection_bg: None,
+                    is_keyboard_focused: self.focused,
+                },
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.seen.push(event);
+            Reaction::Continue
+        }
+    }
+
+    /// Regression for #465: while a painted `ActivityBar` declares
+    /// `is_keyboard_focused`, `dispatch_event` must hand the app
+    /// `UiEvent::ActivityBar(bar_id, ActivityBarEvent::KeyPressed { … })`
+    /// — the synthesized form `ShellAdapter`'s built-in activity-bar
+    /// navigation (#409) matches on — rather than the raw `KeyPressed`.
+    /// TUI (`TuiBackend::apply_dispatch`) and GTK (`gtk::run::dispatch_event`)
+    /// already did this; macOS did not, so every `ShellApp` driven through
+    /// `macos::shell_runner::run_with_shell` silently lost `j`/`k`/`Enter`
+    /// panel navigation.
+    #[test]
+    fn keypress_redirects_to_focused_activity_bar() {
+        let mut driver = MacDriver::new(
+            ActivityBarApp {
+                focused: true,
+                seen: Vec::new(),
+            },
+            W,
+            H,
+        );
+
+        driver.type_char('j');
+        driver.press_named(crate::NamedKey::Enter);
+
+        let keys: Vec<String> = driver
+            .app()
+            .seen
+            .iter()
+            .filter_map(|ev| match ev {
+                UiEvent::ActivityBar(id, crate::ActivityBarEvent::KeyPressed { key, .. }) => {
+                    Some(format!("{}:{key}", id.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["bar:j".to_string(), "bar:Enter".to_string()],
+            "focused bar must receive normalised ActivityBar key events, got {:?}",
+            driver.app().seen
+        );
+        assert!(
+            !driver
+                .app()
+                .seen
+                .iter()
+                .any(|ev| matches!(ev, UiEvent::KeyPressed { .. })),
+            "no raw KeyPressed should leak through while the bar is focused"
+        );
+    }
+
+    /// The complement: with no keyboard-focused bar painted, keys reach the
+    /// app unchanged — the redirect must not swallow ordinary typing.
+    #[test]
+    fn keypress_untouched_when_no_activity_bar_is_focused() {
+        let mut driver = MacDriver::new(
+            ActivityBarApp {
+                focused: false,
+                seen: Vec::new(),
+            },
+            W,
+            H,
+        );
+
+        driver.type_char('j');
+
+        assert!(
+            driver.app().seen.iter().any(|ev| matches!(
+                ev,
+                UiEvent::KeyPressed {
+                    key: Key::Char('j'),
+                    ..
+                }
+            )),
+            "unfocused bar must not intercept: {:?}",
+            driver.app().seen
+        );
+    }
 }

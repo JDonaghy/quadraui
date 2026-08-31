@@ -147,6 +147,14 @@ impl From<Reaction> for EventOutcome {
 ///   detector's time/position window. Runs on the *dispatched* events,
 ///   after modal arbitration — same relative order as
 ///   `TuiBackend::translate_events`.
+/// - ActivityBar keyboard-focus redirect (#465): while the last painted
+///   frame contained an `ActivityBar` with `is_keyboard_focused = true`,
+///   every `KeyPressed` becomes
+///   `UiEvent::ActivityBar(bar_id, ActivityBarEvent::KeyPressed { … })`
+///   instead of reaching the app as a raw key. This must win over
+///   accelerator dispatch below (same ordering `gtk::run::dispatch_event`
+///   uses), otherwise a bound accelerator would steal a navigation key
+///   out from under the focused bar.
 /// - Global accelerator dispatch (#486): a `KeyPressed` matching a
 ///   registered `Global`-scope accelerator becomes `UiEvent::Accelerator`.
 /// - Cmd-V paste interception (#486): AppKit has no native paste signal
@@ -210,7 +218,37 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 
     // `MouseDown` is the only variant `fold_double_click` acts on, and
     // every `MouseDown` returned above — so the remaining pipeline
-    // (accelerators, Cmd-V paste, plain forward) skips the fold.
+    // (activity-bar redirect, accelerators, Cmd-V paste, plain forward)
+    // skips the fold.
+
+    // ── ActivityBar keyboard focus intercept (#465) ──────────────────
+    //
+    // `AppShell`/`ShellAdapter`'s built-in activity-bar keyboard cursor
+    // (#409) is driven by `UiEvent::ActivityBar(id, KeyPressed { … })`,
+    // which is *synthesized by the backend* — `TuiBackend::apply_dispatch`
+    // and `gtk::run::dispatch_event` both do it. Without this arm the
+    // macOS backend delivered the raw `KeyPressed` instead, so `j`/`k`/
+    // `Enter` fell through to `ShellApp::handle` and the shell's cursor
+    // never moved: every `ShellApp` on macOS (#465's `run_with_shell`)
+    // silently lost keyboard navigation the other two backends have.
+    //
+    // Ordered before accelerator matching, matching `gtk::run`.
+    if let UiEvent::KeyPressed {
+        ref key, modifiers, ..
+    } = event
+    {
+        if let Some(bar_id) = backend.focused_activity_bar_id().cloned() {
+            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
+            let bar_ev = UiEvent::ActivityBar(
+                bar_id,
+                crate::ActivityBarEvent::KeyPressed {
+                    key: key_str,
+                    modifiers,
+                },
+            );
+            return app.handle(bar_ev, backend).into();
+        }
+    }
 
     let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
         match backend.match_keypress(key, *modifiers) {

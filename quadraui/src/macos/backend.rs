@@ -169,6 +169,13 @@ pub struct MacBackend {
     /// [`Self::enter_frame_scope`] with `painted_text_recording` on —
     /// see [`Self::set_painted_text_recording`].
     text_runs: Vec<TextRun>,
+    /// `WidgetId` of the [`ActivityBar`] that painted itself with
+    /// `is_keyboard_focused = true` this frame, if any. Set by
+    /// [`Backend::draw_activity_bar`], cleared by [`Backend::begin_frame`]
+    /// (same per-frame lifecycle as `zones`), read by
+    /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
+    /// into the bar. Mirrors `GtkBackend::focused_activity_bar` (#465).
+    focused_activity_bar: Option<WidgetId>,
 }
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -245,6 +252,7 @@ impl MacBackend {
             zones: Vec::new(),
             painted_text_recording: false,
             text_runs: Vec::new(),
+            focused_activity_bar: None,
         }
     }
 
@@ -345,6 +353,22 @@ impl MacBackend {
         &self.text_runs
     }
 
+    /// `WidgetId` of the [`ActivityBar`] that declared
+    /// `is_keyboard_focused = true` during the most recent render pass,
+    /// or `None` if no bar is focused.
+    ///
+    /// Read by [`super::run::dispatch_event`] to decide whether a
+    /// `KeyPressed` should be redirected into
+    /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`
+    /// instead of reaching `AppLogic::handle` as a raw key. The macOS twin
+    /// of `GtkBackend::focused_activity_bar_id` / `TuiBackend`'s
+    /// `apply_dispatch` translation (#465) — without it, `ShellAdapter`'s
+    /// built-in activity-bar keyboard navigation (#409) is unreachable on
+    /// this backend.
+    pub(crate) fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar.as_ref()
+    }
+
     /// Zones registered during the last frame via
     /// [`Backend::register_zone`].
     pub(crate) fn zones(&self) -> &[ZoneRec] {
@@ -420,6 +444,10 @@ impl Backend for MacBackend {
         // `enter_frame_scope`) until whatever reads them after the frame
         // (e.g. `MacDriver::inventory`).
         self.zones.clear();
+        // Clear the focused activity bar — re-set by `draw_activity_bar`
+        // during this render pass if a bar is still keyboard-focused. Same
+        // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
+        self.focused_activity_bar = None;
         // #455: clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.reset_frame_paint();
@@ -892,6 +920,12 @@ impl Backend for MacBackend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
+        // Track keyboard focus so `run::dispatch_event` can redirect the
+        // next `KeyPressed` into this bar (#465) — same contract
+        // `GtkBackend::draw_activity_bar` implements.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
