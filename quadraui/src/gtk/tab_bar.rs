@@ -41,9 +41,20 @@ const TAB_ACTIVE_BORDER_TOP_PX: f64 = 1.0;
 ///
 /// Shared by [`draw_tab_bar_icons`] and `GtkBackend::tab_bar_layout_icons`
 /// so the no-paint measurement can't drift from the painted glyph.
+///
+/// Unlike [`super::with_nerd_font_fallback`] (#416, used by
+/// list/tree/palette icon glyphs), this *replaces* the family entirely
+/// rather than appending — tab icons are always painted as a Nerd-Font
+/// glyph with no ASCII-fallback text form (`TabIcon` carries just one
+/// `glyph` field, unlike `Icon`'s `glyph`/`fallback` pair), so there's
+/// no caller-family text to preserve. Built from
+/// [`super::NERD_FONT_FALLBACK_FAMILY`] (unlike
+/// [`super::activity_bar::ICON_FONT_DESC`], which hand-rolls the same
+/// family name because it's a `pub const` and consts can't be
+/// concatenated on stable) so the two can't drift apart.
 pub(crate) fn tab_icon_font(base: &pango::FontDescription) -> pango::FontDescription {
     let mut f = base.clone();
-    f.set_family("Symbols Nerd Font, monospace");
+    f.set_family(&format!("{}, monospace", super::NERD_FONT_FALLBACK_FAMILY));
     f
 }
 

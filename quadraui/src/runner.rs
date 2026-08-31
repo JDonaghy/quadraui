@@ -105,4 +105,30 @@ pub trait AppLogic {
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
         Reaction::Continue
     }
+
+    /// Whether wheel/trackpad scroll events should use "natural scroll"
+    /// direction (content follows the gesture, like a touchscreen) instead
+    /// of the traditional wheel convention (wheel-down reveals content
+    /// further down the document, i.e. `UiEvent::Scroll`'s `delta.y`
+    /// becomes negative on wheel-down).
+    ///
+    /// Defaults to `false` (traditional direction), so apps that don't
+    /// override this method keep quadraui's existing behavior unchanged.
+    ///
+    /// Only [`crate::gtk::run`] consults this today (quadraui#418) — TUI
+    /// and Win32 wheel events already arrive in a single fixed direction
+    /// with no natural-scroll concept, and macOS's translator
+    /// (`crate::macos::events::ns_scroll`) doesn't yet expose the option.
+    /// Consumers wiring their own `DrawingArea` outside `crate::gtk::run`
+    /// use `crate::gtk::events::wire_da_events_with_scroll_direction`
+    /// directly instead of this trait hook. On Linux, libinput already applies
+    /// the OS-level natural-scroll preference
+    /// (`org.gnome.desktop.peripherals.touchpad natural-scroll`) before
+    /// GTK ever sees the event, so most apps should leave this `false`
+    /// and let the OS handle it — override it only if the app wants an
+    /// in-app preference independent of (or layered on top of) the OS
+    /// setting.
+    fn natural_scroll(&self) -> bool {
+        false
+    }
 }

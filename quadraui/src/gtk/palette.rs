@@ -275,10 +275,23 @@ pub fn draw_palette(
             };
             layout.set_attributes(None);
             cr.set_source_rgb(fg.0, fg.1, fg.2);
+            // #416: swap in a Nerd-Font-fallback variant of whatever base
+            // font the row is painting with (the caller's `ui_font`, or —
+            // for a palette with no explicit override — whatever font was
+            // live before `draw_palette` was called) just for the glyph,
+            // then restore immediately so the label/detail text painted
+            // around it is unaffected. Without the swap, `icon.glyph`'s
+            // Private-Use-Area codepoint depends on Pango finding some
+            // installed font that covers it — unreliable, and prone to a
+            // blank/tofu glyph.
+            let base_font = layout.font_description().unwrap_or_default();
+            let icon_font = super::with_nerd_font_fallback(&base_font);
+            layout.set_font_description(Some(&icon_font));
             layout.set_text(glyph);
             let (iw, ih) = layout.pixel_size();
             cr.move_to(cursor, row_y + (row_h - ih as f64) / 2.0);
             super::painted_text::show_layout(cr, layout);
+            layout.set_font_description(Some(&base_font));
             cursor += iw as f64 + 6.0;
         }
 

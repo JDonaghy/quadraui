@@ -83,7 +83,7 @@ pub use dialog::draw_dialog;
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
 pub use editor::{draw_editor, editor_col_at_x};
-pub use events::wire_da_events;
+pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
 pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
 pub use list::draw_list;
@@ -148,3 +148,108 @@ pub(crate) fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, r:
 /// Re-export so apps can name the Pango layout type without depending
 /// on `gtk4::pango` directly.
 pub use pango::Layout as PangoLayout;
+
+/// Font family GTK chrome text falls back to for Nerd-Font glyphs.
+///
+/// Matches the family [`activity_bar::ICON_FONT_DESC`] and
+/// [`tab_bar::tab_icon_font`] already pin for the activity bar and tab
+/// icons (#620) — kept as one named constant so retargeting to a
+/// differently-named Nerd Font patch (or a consumer's fontconfig alias)
+/// is a one-line change instead of hunting every rasteriser that
+/// references the literal.
+pub const NERD_FONT_FALLBACK_FAMILY: &str = "Symbols Nerd Font";
+
+/// Build a Pango font description for GTK chrome text (list/tree/
+/// palette rows, status bar segments, menu items, dialogs, ...) from a
+/// `ui_font`-style description string (e.g. `"Sans 11"`), appending
+/// [`NERD_FONT_FALLBACK_FAMILY`] to the family list.
+///
+/// Chrome primitives paint icon glyphs (`Icon::glyph`) and — on the
+/// status bar — consumer-composed segment text that can itself embed a
+/// raw Nerd-Font codepoint, inline with ordinary label text, all using
+/// the *same* Pango layout and font. Most system UI fonts ("Sans",
+/// "Cantarell", ...) have no coverage for the Private-Use-Area
+/// codepoints Nerd Font glyphs live in, so without an explicit fallback
+/// family in the description Pango's per-character font substitution is
+/// left to guess at a system font that happens to cover that codepoint
+/// range — unreliable, and prone to picking an unrelated font that
+/// defines *something* there, rather than the intended glyph. Naming
+/// the fallback family explicitly, in family-list order right after the
+/// caller's own family, makes glyph resolution deterministic instead of
+/// dependent on what else is installed (quadraui#416).
+///
+/// Harmless when no glyph is being painted: Pango only consults a later
+/// family in the list for characters the earlier one doesn't cover, so
+/// plain text keeps rendering in the caller's own `ui_font` family.
+pub(crate) fn chrome_font_description(ui_font: &str) -> pango::FontDescription {
+    with_nerd_font_fallback(&pango::FontDescription::from_string(ui_font))
+}
+
+/// Clone `base` with [`NERD_FONT_FALLBACK_FAMILY`] appended to its family
+/// list. Used where a rasteriser can't build a fresh description from a
+/// `ui_font` string (the caller only hands it an already-live
+/// [`pango::FontDescription`] to paint one glyph with, e.g. an icon
+/// inside an otherwise editor-font-painted row) — see
+/// [`chrome_font_description`] for the string-based sibling and the full
+/// rationale.
+pub(crate) fn with_nerd_font_fallback(base: &pango::FontDescription) -> pango::FontDescription {
+    let mut desc = base.clone();
+    let family = desc.family().map(|f| f.to_string()).unwrap_or_default();
+    let with_fallback = if family.is_empty() {
+        NERD_FONT_FALLBACK_FAMILY.to_string()
+    } else {
+        format!("{family},{NERD_FONT_FALLBACK_FAMILY}")
+    };
+    desc.set_family(&with_fallback);
+    desc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The family list must lead with the caller's own `ui_font` family
+    /// (so ordinary chrome text keeps rendering in the configured font)
+    /// and include [`NERD_FONT_FALLBACK_FAMILY`] afterward (so a glyph
+    /// the primary family can't cover — e.g. a Nerd-Font icon — still
+    /// resolves instead of rendering tofu/blank).
+    #[test]
+    fn chrome_font_description_appends_nerd_font_fallback() {
+        let desc = chrome_font_description("Sans 11");
+        let family = desc.family().expect("family set").to_string();
+        assert_eq!(family, "Sans,Symbols Nerd Font");
+    }
+
+    /// The point size from the input description string must survive —
+    /// only the family list is touched.
+    #[test]
+    fn chrome_font_description_preserves_size() {
+        let plain = pango::FontDescription::from_string("Sans 11");
+        let desc = chrome_font_description("Sans 11");
+        assert_eq!(desc.size(), plain.size());
+    }
+
+    /// A caller-supplied multi-family list (a consumer's own fallback
+    /// chain) is preserved verbatim, with the Nerd Font family appended
+    /// rather than replacing it.
+    #[test]
+    fn chrome_font_description_appends_after_existing_family_list() {
+        let desc = chrome_font_description("Cantarell,DejaVu Sans 12");
+        let family = desc.family().expect("family set").to_string();
+        assert_eq!(family, "Cantarell,DejaVu Sans,Symbols Nerd Font");
+    }
+
+    /// [`with_nerd_font_fallback`] mirrors [`chrome_font_description`]
+    /// for callers that only have a live `FontDescription` to hand (e.g.
+    /// `gtk::palette::draw_palette`'s icon-glyph swap, which must not
+    /// disturb the row's base font for the label text painted around
+    /// it) — same family-list-append behaviour, size preserved.
+    #[test]
+    fn with_nerd_font_fallback_appends_to_an_existing_description() {
+        let base = pango::FontDescription::from_string("Monospace 13");
+        let desc = with_nerd_font_fallback(&base);
+        let family = desc.family().expect("family set").to_string();
+        assert_eq!(family, "Monospace,Symbols Nerd Font");
+        assert_eq!(desc.size(), base.size());
+    }
+}
