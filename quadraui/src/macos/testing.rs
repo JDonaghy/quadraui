@@ -48,6 +48,7 @@
 
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
+use crate::shell::{ShellApp, ShellConfig};
 use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport};
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, ScrollDelta, UiEvent};
 
@@ -55,6 +56,48 @@ use super::backend::MacBackend;
 use super::headless::BitmapSurface;
 use super::run::{dispatch_event, render_frame, EventOutcome};
 use super::text::make_font;
+
+/// Build a [`MacDriver`] that wraps `app` in the full
+/// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
+/// [`crate::macos::shell_runner::run_with_shell`] does at runtime — but
+/// returning a testable driver instead of entering the live `NSApplication`
+/// run loop. The macOS twin of [`crate::tui::testing::driver_with_shell`] /
+/// [`crate::gtk::testing::driver_with_shell`]; all three share the same
+/// [`ShellApp`] + [`ShellConfig`] input, differing only in the native units
+/// their respective drivers take (TUI cells vs GTK/macOS points/pixels).
+///
+/// Use this constructor in tests that need to verify the full
+/// `ShellApp → ShellAdapter → dispatch_event` integration path on the macOS
+/// backend — e.g. confirming that shell chrome (activity bar, sidebar
+/// panel) renders and that panel switches reach the real [`AppShell`]
+/// instance [`crate::shell_adapter::ShellAdapter`] paints, not a shadow
+/// copy.
+///
+/// [`AppShell`]: crate::compose::app_shell::AppShell
+///
+/// # Example
+///
+/// ```no_run
+/// # use quadraui::macos::testing::driver_with_shell;
+/// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
+/// # struct MyApp;
+/// # impl ShellApp for MyApp {
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
+/// # }
+/// let config = ShellConfig::new("Demo", vec![]);
+/// let mut driver = driver_with_shell(MyApp, config, 800, 480);
+/// let _ = driver.pixel(0, 0);
+/// ```
+pub fn driver_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+    width: u32,
+    height: u32,
+) -> MacDriver<impl AppLogic> {
+    let adapter = crate::shell_adapter::build_shell_adapter(app, config);
+    MacDriver::new(adapter, width, height)
+}
 
 /// Drives an [`AppLogic`] impl headlessly against the macOS backend for
 /// tests. Construct with [`Self::new`] (runs `setup` + paints the first

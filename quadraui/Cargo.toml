@@ -471,6 +471,11 @@ path = "examples/macos_hscroll.rs"
 required-features = ["macos"]
 
 [[example]]
+name = "macos_appshell_demo"
+path = "examples/macos_appshell_demo.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "tui_bottom_panel"
 path = "examples/tui_bottom_panel.rs"
 required-features = ["tui"]

@@ -51,6 +51,7 @@ pub mod rich_text_popup;
 mod run;
 pub mod scrollbar;
 pub mod services;
+pub mod shell_runner;
 pub mod sidebar_panel;
 pub mod spinner;
 pub mod split;
