@@ -274,6 +274,31 @@ pub fn encode_mouse_sgr(
     format!("\x1b[<{cb};{cx};{cy}{}", terminator as char).into_bytes()
 }
 
+/// Encode pasted `text` as PTY input bytes.
+///
+/// When `bracketed` is `true`, wraps `text` in bracketed-paste markers
+/// (`ESC[200~ ... ESC[201~`, DEC private mode 2004) so a program that
+/// understands them (readline-based shells, `vim`, `claude`, ...) can
+/// tell pasted text apart from typed text. When `bracketed` is `false`,
+/// returns `text`'s raw UTF-8 bytes unchanged — wrapping unconditionally
+/// would leak literal escape bytes into programs that never asked for
+/// bracketed paste and don't know to strip them (e.g. `cat`, `less`).
+///
+/// Pulled out as a standalone function (rather than inlined into
+/// [`TerminalSession::paste`]) so the encoding itself is unit-testable
+/// without spawning a PTY — see the `tests` module below.
+fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let mut bytes = Vec::with_capacity(text.len() + 12);
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        text.as_bytes().to_vec()
+    }
+}
+
 // ── TerminalSession ───────────────────────────────────────────────────────────
 
 /// Longest [`TerminalSession::resize`] waits for the child to *begin* its
@@ -693,6 +718,31 @@ impl TerminalSession {
     /// dropped. Backed by vt100's tracking of the DEC private mode `2004`.
     pub fn bracketed_paste_enabled(&self) -> bool {
         self.parser.screen().bracketed_paste()
+    }
+
+    /// Send pasted text to the shell — the single paste entry point every
+    /// paste source (GTK Ctrl-V/Ctrl-Shift-V, GTK middle-click PRIMARY
+    /// selection, TUI crossterm bracketed paste, a supervising process)
+    /// should call instead of hand-rolling the bracketed-paste wrap
+    /// (quadraui#415).
+    ///
+    /// Wraps `text` in bracketed-paste markers (`ESC[200~ ... ESC[201~`)
+    /// when the child has enabled bracketed-paste mode
+    /// ([`bracketed_paste_enabled`](Self::bracketed_paste_enabled)), so
+    /// programs that understand it (readline-based shells, `vim`, `claude`,
+    /// ...) can tell pasted text apart from typed text — most importantly,
+    /// so pasted newlines don't get interpreted as "run this line" one at a
+    /// time. Sends `text` raw when the child hasn't enabled that mode,
+    /// since wrapping unconditionally would leak literal escape bytes into
+    /// programs that don't strip them (e.g. `cat`, `less`).
+    ///
+    /// Also resets the scroll offset to the live view — like ordinary
+    /// keystroke input — so a paste is always visible immediately even if
+    /// the user had scrolled into history first.
+    pub fn paste(&mut self, text: &str) {
+        self.scroll_reset();
+        let bytes = encode_paste(text, self.bracketed_paste_enabled());
+        self.write_input(&bytes);
     }
 
     /// Returns `true` when the child has enabled application-cursor-keys mode
@@ -2299,6 +2349,37 @@ mod tests {
         sess.send_str("exit\n");
     }
 
+    /// `TerminalSession::paste` resets the scroll offset back to the live
+    /// view — mirroring ordinary keystroke input — so a paste is always
+    /// visible immediately even if the user had scrolled into history.
+    /// (Real-PTY test since `scroll_reset`/`cursor_visible` are session
+    /// state, not the pure `encode_paste` byte-encoding covered above.)
+    #[test]
+    #[cfg(unix)]
+    fn paste_resets_scroll_to_live_view() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
+
+        for _ in 0..30 {
+            sess.send_str("echo line\n");
+        }
+        let _ = poll_until(&mut sess, 5000, |s| s.history_len() > 0);
+
+        sess.scroll_up(5);
+        assert!(
+            !sess.cursor_visible(),
+            "precondition: scrolled into history should hide the cursor"
+        );
+
+        sess.paste("hello");
+        assert!(
+            sess.cursor_visible(),
+            "paste should reset scroll back to the live view"
+        );
+
+        sess.send_str("exit\n");
+    }
+
     /// `bracketed_paste_enabled()` reflects the child's DEC private mode
     /// 2004 (`ESC[?2004h` / `ESC[?2004l`) — the input-readiness signal a
     /// programmatic driver waits on before injecting input (quadraui #343).
@@ -2550,6 +2631,54 @@ mod tests {
             Modifiers::default(),
         );
         assert_eq!(bytes, b"\x1b[<1;5;3m");
+    }
+
+    // ── Paste → PTY encoding (quadraui#415) ──────────────────────────────────
+
+    /// Bracketed-paste mode on: `text` gets wrapped in `ESC[200~` /
+    /// `ESC[201~` markers so the child can tell pasted text apart from
+    /// typed text.
+    #[test]
+    fn encode_paste_wraps_when_bracketed() {
+        let bytes = encode_paste("hello", true);
+        assert_eq!(bytes, b"\x1b[200~hello\x1b[201~");
+    }
+
+    /// Bracketed-paste mode off: `text` is sent completely raw — no
+    /// markers. Wrapping unconditionally would leak literal escape bytes
+    /// into programs that never asked for bracketed paste.
+    #[test]
+    fn encode_paste_is_raw_when_not_bracketed() {
+        let bytes = encode_paste("hello", false);
+        assert_eq!(bytes, b"hello");
+    }
+
+    /// Multi-line paste (the case bracketed paste exists to protect —
+    /// without it, a shell would try to run each line as it arrives)
+    /// wraps the whole blob once, not per line.
+    #[test]
+    fn encode_paste_wraps_multiline_text_once() {
+        let bytes = encode_paste("echo one\necho two\n", true);
+        assert_eq!(bytes, b"\x1b[200~echo one\necho two\n\x1b[201~");
+    }
+
+    /// Non-ASCII UTF-8 text round-trips through the wrap byte-for-byte.
+    #[test]
+    fn encode_paste_preserves_utf8() {
+        let bytes = encode_paste("日本語 🎉", true);
+        let mut expected = b"\x1b[200~".to_vec();
+        expected.extend_from_slice("日本語 🎉".as_bytes());
+        expected.extend_from_slice(b"\x1b[201~");
+        assert_eq!(bytes, expected);
+    }
+
+    /// Empty paste still gets wrapped (a paste of "nothing" is still a
+    /// paste event as far as the child's bracketed-paste state machine is
+    /// concerned) — no special-casing to drop the markers.
+    #[test]
+    fn encode_paste_wraps_empty_text() {
+        let bytes = encode_paste("", true);
+        assert_eq!(bytes, b"\x1b[200~\x1b[201~");
     }
 
     // ── Mouse → PTY encoding (require a real PTY) ────────────────────────────

@@ -252,6 +252,29 @@ impl Clipboard for GtkClipboard {
             let _ = cb.set_text(text);
         }
     }
+
+    /// PRIMARY selection (middle-click paste source) — only meaningful on
+    /// X11/Wayland, where `arboard`'s Linux extension trait exposes it as
+    /// a distinct selection from CLIPBOARD (quadraui#415). Gated to the
+    /// same `cfg` `arboard` itself uses for `GetExtLinux` (see
+    /// `arboard::lib`): on any other target this quietly falls back to
+    /// the trait's default `None`, since Windows/macOS have no PRIMARY
+    /// selection concept and quadraui's `gtk` feature only ships a Linux
+    /// backend in practice.
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
+    ))]
+    fn read_primary_selection(&self) -> Option<String> {
+        use arboard::{GetExtLinux, LinuxClipboardKind};
+        self.inner
+            .borrow_mut()
+            .as_mut()?
+            .get()
+            .clipboard(LinuxClipboardKind::Primary)
+            .text()
+            .ok()
+    }
 }
 
 #[cfg(test)]

@@ -987,6 +987,19 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.end_frame();
 }
 
+/// Whether a key press should trigger clipboard paste: plain Ctrl-V or
+/// Ctrl-Shift-V, with Alt/Cmd unheld (quadraui#415). `Shift` is
+/// deliberately not checked — some terminal emulators reserve Ctrl-V
+/// for a literal control byte and use Ctrl-Shift-V as the paste
+/// shortcut instead, and quadraui treats the two identically since a
+/// terminal grid has no "paste without formatting" distinction.
+fn is_paste_keypress(key: &Key, modifiers: &Modifiers) -> bool {
+    matches!(key, Key::Char('v') | Key::Char('V'))
+        && modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.cmd
+}
+
 /// What the caller should do after [`dispatch_event`] handles one event.
 /// Mirrors [`crate::tui::run::EventOutcome`].
 pub(crate) enum EventOutcome {
@@ -1015,9 +1028,18 @@ pub(crate) enum EventOutcome {
 ///   `UiEvent::Accelerator`.
 /// - Ctrl-C with an active text selection: copy to the clipboard and
 ///   deliver `TextCopied` instead of forwarding the raw key press.
-/// - Ctrl-V: read the system clipboard and deliver `ClipboardPaste`
-///   (GTK has no native paste signal on a bespoke `DrawingArea`, unlike
-///   TUI's crossterm bracketed paste).
+/// - Ctrl-V or Ctrl-Shift-V: read the system clipboard and deliver
+///   `ClipboardPaste` (GTK has no native paste signal on a bespoke
+///   `DrawingArea`, unlike TUI's crossterm bracketed paste). Ctrl-Shift-V
+///   is accepted alongside plain Ctrl-V because several terminal
+///   emulators reserve Ctrl-V for a control byte and use Shift as the
+///   paste-disambiguator (quadraui#415) — quadraui treats them
+///   identically since there's no "paste without formatting" distinction
+///   for a terminal grid.
+/// - Middle-click (`MouseDown` with `MouseButton::Middle`): read the
+///   X11/Wayland PRIMARY selection and deliver `ClipboardPaste` — the
+///   platform convention for "paste what was last selected", distinct
+///   from the CLIPBOARD selection Ctrl-V reads (quadraui#415).
 /// - Ctrl-A: select the entire content of the most-recently focused
 ///   `TextRegion`, if one is registered.
 /// - `MouseDown`: clear the displayed selection highlight (a fresh drag
@@ -1091,27 +1113,39 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         }
     }
 
-    // ── Ctrl-V interception (paste) ───────────────────────────────────
-    if let UiEvent::KeyPressed {
-        key: Key::Char('v') | Key::Char('V'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
+    // ── Ctrl-V / Ctrl-Shift-V interception (paste) ────────────────────
+    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        if is_paste_keypress(key, modifiers) {
+            if let Some(text) = backend.services().clipboard().read_text() {
+                return match app.handle(UiEvent::ClipboardPaste(text), backend) {
+                    Reaction::Continue => EventOutcome::Continue,
+                    Reaction::Redraw => EventOutcome::Redraw,
+                    Reaction::Exit => EventOutcome::Exit,
+                };
+            }
+            return EventOutcome::Continue;
+        }
+    }
+
+    // ── Middle-click interception (PRIMARY-selection paste) ───────────
+    //
+    // X11/Wayland convention: middle-click pastes the PRIMARY selection
+    // (whatever text was last selected anywhere), independent of the
+    // CLIPBOARD selection Ctrl-V reads. Falls through to ordinary
+    // `MouseDown` handling (scrollbar drags, text-selection start, …)
+    // when there's no primary selection to paste (quadraui#415).
+    if let UiEvent::MouseDown {
+        button: MouseButton::Middle,
         ..
     } = &event
     {
-        if let Some(text) = backend.services().clipboard().read_text() {
+        if let Some(text) = backend.services().clipboard().read_primary_selection() {
             return match app.handle(UiEvent::ClipboardPaste(text), backend) {
                 Reaction::Continue => EventOutcome::Continue,
                 Reaction::Redraw => EventOutcome::Redraw,
                 Reaction::Exit => EventOutcome::Exit,
             };
         }
-        return EventOutcome::Continue;
     }
 
     // ── Ctrl-A interception (select-all for text regions) ────────────
@@ -1216,6 +1250,171 @@ mod smoke_tests {
         assert!(!smoke_clipboard_round_trip_ok(
             "quadraui smoke",
             Some("something else")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    //! Coverage for quadraui#415 — GTK clipboard-paste and PRIMARY-
+    //! selection routing added to [`dispatch_event`].
+    //!
+    //! `is_paste_keypress` is a pure predicate, tested directly with no
+    //! display required. The `GtkDriver`-based tests below exercise the
+    //! actual [`dispatch_event`] wiring end to end; they rely on this
+    //! sandbox having no `DISPLAY` (true in CI's deliberately Xvfb-free
+    //! `gtk` job — see the module doc's "Headless smoke mode" section),
+    //! so `arboard::Clipboard::new()` fails and every clipboard read
+    //! deterministically returns `None` — the "nothing to paste" branch.
+    //! The "there IS something to paste" branch needs a real OS
+    //! clipboard/PRIMARY selection and is only exercised by the
+    //! operator-run Xvfb smoke script (`quadraui/scripts/gtk_smoke.sh`),
+    //! same as the existing Ctrl-V path.
+    use super::*;
+    use crate::gtk::testing::GtkDriver;
+
+    /// Minimal [`AppLogic`] that records every event `handle` receives,
+    /// so tests can assert on exactly what reached the app — in
+    /// particular, that an intercepted paste trigger does NOT also
+    /// forward the raw key/mouse event underneath it.
+    #[derive(Default)]
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            Reaction::Continue
+        }
+    }
+
+    // ── `is_paste_keypress` — pure predicate ──────────────────────────
+
+    #[test]
+    fn plain_ctrl_v_is_a_paste_keypress() {
+        let mods = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        assert!(is_paste_keypress(&Key::Char('v'), &mods));
+        assert!(is_paste_keypress(&Key::Char('V'), &mods));
+    }
+
+    #[test]
+    fn ctrl_shift_v_is_a_paste_keypress() {
+        // quadraui#415: several terminal emulators reserve Ctrl-V for a
+        // control byte and use Ctrl-Shift-V for paste instead.
+        let mods = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert!(is_paste_keypress(&Key::Char('v'), &mods));
+    }
+
+    #[test]
+    fn ctrl_alt_v_is_not_a_paste_keypress() {
+        let mods = Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert!(!is_paste_keypress(&Key::Char('v'), &mods));
+    }
+
+    #[test]
+    fn ctrl_cmd_v_is_not_a_paste_keypress() {
+        let mods = Modifiers {
+            ctrl: true,
+            cmd: true,
+            ..Modifiers::default()
+        };
+        assert!(!is_paste_keypress(&Key::Char('v'), &mods));
+    }
+
+    #[test]
+    fn shift_v_without_ctrl_is_not_a_paste_keypress() {
+        let mods = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert!(!is_paste_keypress(&Key::Char('v'), &mods));
+    }
+
+    #[test]
+    fn plain_v_is_not_a_paste_keypress() {
+        assert!(!is_paste_keypress(&Key::Char('v'), &Modifiers::default()));
+    }
+
+    // ── `dispatch_event` wiring (GtkDriver, no display) ───────────────
+
+    #[test]
+    fn ctrl_shift_v_is_intercepted_not_forwarded_as_raw_v() {
+        let mut driver = GtkDriver::new(RecordingApp::default(), 100, 30);
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char('v'),
+            modifiers: Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        });
+        // No OS clipboard in this sandbox → nothing to paste, but the
+        // keypress must still be swallowed here rather than falling
+        // through to `app.handle` as a literal 'v' character (which
+        // would be wrong for a focused terminal / text input).
+        assert!(
+            driver.app().events.is_empty(),
+            "Ctrl-Shift-V should be intercepted as a paste attempt, not \
+             forwarded to app.handle as a raw keypress: {:?}",
+            driver.app().events
+        );
+    }
+
+    #[test]
+    fn ctrl_alt_v_falls_through_to_app_unmodified() {
+        let mut driver = GtkDriver::new(RecordingApp::default(), 100, 30);
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char('v'),
+            modifiers: Modifiers {
+                ctrl: true,
+                alt: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        });
+        assert_eq!(
+            driver.app().events.len(),
+            1,
+            "Ctrl-Alt-V is not a paste trigger and should reach app.handle unmodified"
+        );
+    }
+
+    #[test]
+    fn middle_click_without_primary_selection_falls_through_to_app() {
+        let mut driver = GtkDriver::new(RecordingApp::default(), 100, 30);
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Middle,
+            position: Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        });
+        // No OS PRIMARY selection in this sandbox → the intercept must
+        // not swallow the click; it should reach app.handle as an
+        // ordinary MouseDown so apps without terminal focus still see it.
+        assert_eq!(driver.app().events.len(), 1);
+        assert!(matches!(
+            driver.app().events[0],
+            UiEvent::MouseDown {
+                button: MouseButton::Middle,
+                ..
+            }
         ));
     }
 }
