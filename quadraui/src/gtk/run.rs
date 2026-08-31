@@ -188,8 +188,65 @@ fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&str>) -> bool
     read_back == Some(written)
 }
 
+/// Configuration for [`run_with`] — the GTK application id and window
+/// title that [`run`] hardcodes to generic defaults (`"org.quadraui.app"`
+/// / `"quadraui app"`).
+///
+/// Apps that need a stable app id (Wayland/GNOME dock pinning, D-Bus
+/// single-instance activation, Flatpak) or a custom window title build
+/// this and call [`run_with`] instead of [`run`]. `run` itself is just
+/// `run_with(app, RunConfig::default())` — see quadraui#234.
+///
+/// ```no_run
+/// # struct MyApp;
+/// # impl quadraui::AppLogic for MyApp {
+/// #     type AreaId = ();
+/// #     fn render(&self, _b: &mut dyn quadraui::Backend, _a: ()) {}
+/// #     fn handle(&mut self, _e: quadraui::UiEvent, _b: &mut dyn quadraui::Backend) -> quadraui::Reaction { quadraui::Reaction::Continue }
+/// # }
+/// use quadraui::gtk::RunConfig;
+///
+/// let config = RunConfig::new("io.github.jdonaghy.kubeui-gtk", "kubeui");
+/// quadraui::gtk::run_with(MyApp, config);
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunConfig {
+    /// GTK application id, e.g. `"io.github.jdonaghy.kubeui-gtk"`. Used by
+    /// GTK/GLib for Wayland/GNOME dock integration, D-Bus activation, and
+    /// desktop-file matching. Should be a valid reverse-DNS app id — see
+    /// the [GNOME application ID guidelines](https://developer.gnome.org/documentation/tutorials/application-id.html).
+    pub app_id: String,
+    /// Window title shown by the window manager (titlebar, taskbar,
+    /// Alt-Tab switcher).
+    pub title: String,
+}
+
+impl RunConfig {
+    /// Build a config with the given app id and window title.
+    pub fn new(app_id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            title: title.into(),
+        }
+    }
+}
+
+impl Default for RunConfig {
+    /// Mirrors [`run`]'s previously-hardcoded defaults, so `run_with(app,
+    /// RunConfig::default())` and `run(app)` behave identically.
+    fn default() -> Self {
+        Self {
+            app_id: "org.quadraui.app".to_string(),
+            title: "quadraui app".to_string(),
+        }
+    }
+}
+
 /// Drive `app` to completion in a basic single-`DrawingArea` GTK
-/// environment.
+/// environment, using the default [`RunConfig`] (generic app id and
+/// window title). See [`run_with`] to set a custom app id / title
+/// (quadraui#234) — needed by any app that isn't quadraui itself, e.g.
+/// for Wayland/GNOME dock integration.
 ///
 /// Creates an `Application`, a single window, and a single
 /// `DrawingArea` filling the window. Wires `set_draw_func`,
@@ -203,30 +260,29 @@ fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&str>) -> bool
 /// translating between `glib::ExitCode` and the stdlib type. Mirrors
 /// the ergonomic shape of `quadraui::tui::run` (which returns
 /// `std::io::Result<()>` so apps' `main` is similarly trivial).
-///
-/// ## Window title + app id
-///
-/// Both default to a generic `"quadraui app"`. Apps that need a
-/// custom title or a stable app id (Flatpak, dock-pinning) build the
-/// runner via lower-level pieces in `quadraui::gtk::backend` /
-/// `events`. A future stage may add a builder API.
 pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+    run_with(app, RunConfig::default())
+}
+
+/// Same as [`run`], but with a caller-supplied [`RunConfig`] (app id +
+/// window title) instead of the generic quadraui defaults (quadraui#234).
+pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(GtkBackend::new()));
     // quadraui#450 (GD-5): `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
     // see the module doc's "Headless smoke mode" section.
     let smoke = SmokeConfig::from_env();
     let smoke_failed = Rc::new(Cell::new(false));
+    let title = config.title;
 
-    let gapp = Application::builder()
-        .application_id("org.quadraui.app")
-        .build();
+    let gapp = Application::builder().application_id(config.app_id).build();
 
     {
         let app = app.clone();
         let backend = backend.clone();
         let smoke = smoke.clone();
         let smoke_failed = smoke_failed.clone();
+        let title = title.clone();
         gapp.connect_activate(move |gapp| {
             activate(
                 gapp,
@@ -234,6 +290,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
                 backend.clone(),
                 smoke.clone(),
                 smoke_failed.clone(),
+                title.clone(),
             );
         });
     }
@@ -255,10 +312,11 @@ fn activate<A: AppLogic + 'static>(
     backend: Rc<RefCell<GtkBackend>>,
     smoke: Option<SmokeConfig>,
     smoke_failed: Rc<Cell<bool>>,
+    title: String,
 ) {
     let window = ApplicationWindow::builder()
         .application(gapp)
-        .title("quadraui app")
+        .title(title)
         .default_width(DEFAULT_WINDOW_WIDTH)
         .default_height(DEFAULT_WINDOW_HEIGHT)
         .build();
@@ -1213,6 +1271,43 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         }
         Reaction::Redraw => EventOutcome::Redraw,
         Reaction::Exit => EventOutcome::Exit,
+    }
+}
+
+#[cfg(test)]
+mod run_config_tests {
+    //! Coverage for [`RunConfig`] (quadraui#234) — display-free, since
+    //! `RunConfig` itself is a plain data struct with no GTK dependency.
+    //! `run_with`'s actual wiring (app id → `Application::builder`, title
+    //! → `ApplicationWindow::builder`) can't be exercised without a real
+    //! display; that's covered by the operator-run smoke tier same as the
+    //! rest of this module (see `smoke_tests` below).
+    use super::*;
+
+    #[test]
+    fn default_matches_runs_previous_hardcoded_values() {
+        // `run(app)` used to hardcode these two literals directly into
+        // `Application::builder()` / `ApplicationWindow::builder()`. Now
+        // that `run` is `run_with(app, RunConfig::default())`, this pins
+        // the default so it can't silently drift and change every
+        // existing caller's app id / window title.
+        let config = RunConfig::default();
+        assert_eq!(config.app_id, "org.quadraui.app");
+        assert_eq!(config.title, "quadraui app");
+    }
+
+    #[test]
+    fn new_sets_both_fields() {
+        let config = RunConfig::new("io.github.jdonaghy.kubeui-gtk", "kubeui");
+        assert_eq!(config.app_id, "io.github.jdonaghy.kubeui-gtk");
+        assert_eq!(config.title, "kubeui");
+    }
+
+    #[test]
+    fn new_accepts_owned_and_borrowed_strings() {
+        let owned = RunConfig::new(String::from("a.b.c"), String::from("Title"));
+        let borrowed = RunConfig::new("a.b.c", "Title");
+        assert_eq!(owned, borrowed);
     }
 }
 

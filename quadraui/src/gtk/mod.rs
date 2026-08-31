@@ -100,7 +100,7 @@ pub use progress::{draw_progress, gtk_progress_layout};
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
-pub use run::run;
+pub use run::{run, run_with, RunConfig};
 pub use scrollbar::draw_scrollbar;
 pub use sidebar_panel::{draw_sidebar_panel, gtk_sidebar_panel_layout};
 pub use spinner::{draw_spinner, gtk_spinner_layout};
