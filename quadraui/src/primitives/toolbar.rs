@@ -181,6 +181,20 @@ pub struct ToolbarLayout {
 }
 
 impl ToolbarLayout {
+    /// A layout for an area the rasteriser did not (or could not) paint
+    /// into: no visible items at all, so [`Self::hit_test`] returns
+    /// [`ToolbarHit::Empty`] for every point. Use this instead of
+    /// [`Toolbar::layout`]'s geometric result whenever the paint loop
+    /// skips the widget entirely — a `width == 0` / `height == 0` area,
+    /// for instance — so the returned layout never describes cells that
+    /// were never actually drawn (quadraui#649).
+    pub fn empty(bar_bounds: Rect) -> Self {
+        ToolbarLayout {
+            bar_bounds,
+            visible_items: Vec::new(),
+        }
+    }
+
     /// Test which clickable action (if any) contains point `(x, y)`.
     /// Returns [`ToolbarHit::Empty`] when no clickable region matches —
     /// disabled actions, separators, labels, and the gap between buttons

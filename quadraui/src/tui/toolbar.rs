@@ -91,11 +91,22 @@ pub fn draw_toolbar(
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
 ) -> ToolbarLayout {
-    let layout = tui_toolbar_layout(bar, area);
-
     if area.width == 0 || area.height == 0 {
-        return layout;
+        // `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`
+        // (so single-row callers don't have to special-case it), which
+        // means a `height == 0` area would otherwise still get back a
+        // fully populated, clickable layout for a row that was never
+        // painted — the same footgun as quadraui#649's command-center
+        // bug. Return an empty layout instead of computing one.
+        return ToolbarLayout::empty(crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ));
     }
+
+    let layout = tui_toolbar_layout(bar, area);
 
     let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
     let fg = qc(theme.foreground);
@@ -386,8 +397,36 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert!(layout.visible_items.is_empty());
+        assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
+    }
+
+    /// Issue #649 (same shape as the `CommandCenter` bug it names):
+    /// `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`,
+    /// so a `height == 0` area used to still come back with real,
+    /// clickable `visible_items` — a row that was never painted, but
+    /// whose action buttons hit-tested as if it had been. A host that
+    /// hides a toolbar by zeroing its height (rather than not calling
+    /// `draw_toolbar` at all) would inherit an invisible-but-clickable
+    /// button.
+    #[test]
+    fn zero_height_area_has_no_hit_testable_buttons() {
+        let buf_area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(buf_area);
+        let area = Rect::new(0, 0, 10, 0);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "X", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        assert!(layout.visible_items.is_empty());
+        // Pre-fix, the forced `bar_height.max(1)` row band at y == 0
+        // would hit-test the button here even though nothing painted.
+        assert_eq!(layout.hit_test(1.0, 0.0), ToolbarHit::Empty);
     }
 
     // ── Gap 1: multi-row rasteriser ─────────────────────────────────────
