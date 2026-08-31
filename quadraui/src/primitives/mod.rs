@@ -21,6 +21,7 @@ pub mod form;
 pub mod list;
 pub mod menu_bar;
 pub mod message_list;
+pub mod minimap;
 pub mod modal;
 pub mod multi_section_view;
 pub mod palette;

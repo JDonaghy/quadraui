@@ -29,6 +29,7 @@ use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
+use crate::primitives::minimap::{Minimap, MinimapLayout};
 use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
@@ -1402,6 +1403,36 @@ pub trait Backend {
     /// A no-op default here would let a backend silently paint an empty
     /// board instead of failing to build (quadraui#600, PORT-01).
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
+
+    /// Draw a [`Minimap`] (code-overview density view). GTK paints real
+    /// glyphs at a scaled-down absolute Pango size ("font scaling");
+    /// TUI packs `U+2800`-block braille dots. Both techniques consume
+    /// the exact same [`Minimap`] data — the primitive owns the sampling
+    /// and colour-aggregation math (`sample_lines` / `aggregate_spans`),
+    /// so no backend re-derives it (#382).
+    ///
+    /// Returns [`MinimapPaintResult`] carrying the resolved
+    /// [`MinimapLayout`] so hosts can route clicks via
+    /// `result.layout.hit_test(x, y)` without re-deriving geometry.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
+    /// rule 7).
+    fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
+
+    /// Compute [`Minimap`] layout without painting — mirrors
+    /// [`Backend::chart_layout`] / [`Backend::tree_layout`]. Apps call
+    /// this from `AppLogic::handle` (which only has `&mut self`, not the
+    /// `MinimapPaintResult` `render` produced) to hit-test a click
+    /// against the same geometry the last paint used.
+    fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
+}
+
+/// Paint-side data returned by [`Backend::draw_minimap`]. See
+/// [`EditorPaintResult`] for the sibling pattern this mirrors.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MinimapPaintResult {
+    pub layout: MinimapLayout,
 }
 
 // ── Shared layout helpers ───────────────────────────────────────────────

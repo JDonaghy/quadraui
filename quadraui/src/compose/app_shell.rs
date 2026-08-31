@@ -2379,5 +2379,21 @@ mod tests {
                 columns: vec![],
             }
         }
+
+        fn draw_minimap(
+            &mut self,
+            _r: Rect,
+            _m: &crate::primitives::minimap::Minimap,
+        ) -> crate::backend::MinimapPaintResult {
+            crate::backend::MinimapPaintResult::default()
+        }
+
+        fn minimap_layout(
+            &self,
+            _r: Rect,
+            _m: &crate::primitives::minimap::Minimap,
+        ) -> crate::primitives::minimap::MinimapLayout {
+            crate::primitives::minimap::MinimapLayout::default()
+        }
     }
 }

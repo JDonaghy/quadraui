@@ -296,6 +296,16 @@ path = "examples/gtk_chart.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_minimap"
+path = "examples/tui_minimap.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_minimap"
+path = "examples/gtk_minimap.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "macos_app"
 path = "examples/macos_app.rs"
 required-features = ["macos"]

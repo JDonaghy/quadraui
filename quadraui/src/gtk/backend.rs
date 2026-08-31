@@ -3703,6 +3703,43 @@ impl Backend for GtkBackend {
             &theme,
         )
     }
+
+    fn draw_minimap(
+        &mut self,
+        rect: QRect,
+        minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::backend::MinimapPaintResult {
+        let theme = self.current_theme;
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_minimap called outside enter_frame_scope");
+        let layout = crate::gtk::draw_minimap(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            minimap,
+            &theme,
+        );
+        self.register_zone(minimap.id.clone(), rect);
+        crate::backend::MinimapPaintResult { layout }
+    }
+
+    fn minimap_layout(
+        &self,
+        rect: QRect,
+        minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::primitives::minimap::MinimapLayout {
+        crate::gtk::gtk_minimap_layout(
+            minimap,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────

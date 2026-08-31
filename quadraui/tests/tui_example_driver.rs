@@ -68,6 +68,8 @@ mod markdown_demo;
 mod menu_bar_app;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
+#[path = "../examples/common/minimap_app.rs"]
+mod minimap_app;
 #[path = "../examples/common/modal_occlusion_demo.rs"]
 mod modal_occlusion_demo;
 #[path = "../examples/common/multi_tree.rs"]
@@ -129,6 +131,7 @@ use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
 use menu_bar_app::MenuBarApp;
 use mini_app::MiniApp;
+use minimap_app::MinimapApp;
 use modal_occlusion_demo::ModalOcclusionDemo;
 use multi_tree::DebugSidebar;
 use palette_dual_mode_app::PaletteDualModeApp;
@@ -4721,4 +4724,64 @@ fn tab_chrome_demo_q_exits() {
     let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the tab chrome demo");
+}
+
+// ─── MinimapApp (issue #382): braille density view + click-to-seek ────────
+//
+// The TUI rasteriser never shapes literal text — it packs `U+2800`-block
+// braille dots — so unlike every other driver test in this file, "did the
+// primitive paint" can't be asserted with `screen_contains` against the
+// minimap's own content. Instead this scans the rendered screen for any
+// codepoint in the braille block, and separately proves the click-to-seek
+// path via the status bar's scroll-position label, which the app *does*
+// paint as literal text.
+
+#[test]
+fn minimap_paints_braille_glyphs_and_status_bar_tracks_scroll() {
+    let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
+    assert!(
+        driver.screen_contains("Minimap demo — line 0"),
+        "status bar should show the initial scroll position:\n{}",
+        driver.screen()
+    );
+
+    let has_braille = driver
+        .screen()
+        .chars()
+        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    assert!(
+        has_braille,
+        "minimap should paint braille glyphs:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Down);
+    assert!(
+        driver.screen_contains("Minimap demo — line 3"),
+        "status bar should track Down presses:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn clicking_the_minimap_seeks_the_viewport() {
+    let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
+    // The minimap sits at the right edge of a 100x30 viewport (14-cell
+    // wide, from y=1 to y=29 — see `MinimapApp::minimap_rect`). Clicking
+    // low in that track should seek far past the top of the file.
+    driver.click(98.0, 25.0);
+    assert!(
+        !driver.screen_contains("Minimap demo — line 0"),
+        "clicking low in the minimap track should scroll away from the top:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn minimap_demo_q_exits() {
+    let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the minimap demo");
 }

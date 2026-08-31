@@ -44,6 +44,7 @@ mod list;
 mod menu_bar;
 pub mod menu_overlay;
 mod message_list;
+mod minimap;
 mod multi_section_view;
 mod painted_text;
 mod palette;
@@ -90,6 +91,10 @@ pub use list::draw_list;
 pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use menu_overlay::MenuOverlay;
 pub use message_list::draw_message_list;
+pub use minimap::{
+    bar_width_fraction, draw_minimap, gtk_minimap_layout, is_legible, minimap_font_px, render_mode,
+    MinimapRenderMode, LEGIBILITY_FLOOR_PX,
+};
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };

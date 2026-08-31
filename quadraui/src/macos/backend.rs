@@ -1986,6 +1986,28 @@ impl Backend for MacBackend {
             )
         }
     }
+
+    /// #382 scopes the `Minimap` rasteriser to GTK (font scaling) and TUI
+    /// (braille) only — macOS and Win-GUI rasterisers are explicitly out
+    /// of scope until those backends carry the rest of the editor chrome.
+    /// The trait method itself is still mandatory here (rule 7: no
+    /// default impl, in-tree-only cost), so this is a deliberate `todo!`
+    /// rather than the `BoardModel`-style real implementation above.
+    fn draw_minimap(
+        &mut self,
+        _rect: Rect,
+        _minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::backend::MinimapPaintResult {
+        todo!("Core Graphics/Core Text minimap rasteriser — out of scope per #382")
+    }
+
+    fn minimap_layout(
+        &self,
+        _rect: Rect,
+        _minimap: &crate::primitives::minimap::Minimap,
+    ) -> crate::primitives::minimap::MinimapLayout {
+        todo!("Core Graphics/Core Text minimap layout — out of scope per #382")
+    }
 }
 
 #[cfg(test)]
