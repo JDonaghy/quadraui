@@ -206,6 +206,39 @@ impl TerminalLayout {
 }
 
 impl Terminal {
+    /// Compare `self` against the previously-painted `prev` snapshot and
+    /// return the indices of rows whose cell content differs.
+    ///
+    /// Returns `None` when a full repaint is required rather than a
+    /// row-by-row diff: the two grids have different row counts, so
+    /// `prev`'s row `i` doesn't necessarily correspond to `self`'s row
+    /// `i` (a resize/reflow shifted everything). Returns `Some(rows)`
+    /// otherwise — sorted ascending, deduplicated, and possibly empty
+    /// (e.g. a cursor-blink tick that produced an identical grid).
+    ///
+    /// This backs the #417 dirty-row repaint optimisation: backends may
+    /// call this to skip re-rasterising cells that haven't changed since
+    /// the last frame (see the high-FPS note in this module's doc
+    /// comment). `TerminalCell` compares by value, so any change to a
+    /// cell's glyph, colour, or overlay flag (`selected` / `is_cursor` /
+    /// `is_find_match` / `is_find_active`) — i.e. scroll, selection,
+    /// cursor move, and find-highlight updates — registers the owning
+    /// row as dirty; there is nothing overlay-specific for a caller to
+    /// special-case.
+    pub fn dirty_rows(&self, prev: &Terminal) -> Option<Vec<usize>> {
+        if self.cells.len() != prev.cells.len() {
+            return None;
+        }
+        Some(
+            self.cells
+                .iter()
+                .zip(prev.cells.iter())
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(i))
+                .collect(),
+        )
+    }
+
     /// Compute viewport → grid conversion. The layout is uniform-cell,
     /// so this is just division; there's no per-cell work.
     ///
@@ -524,5 +557,82 @@ mod tests {
         };
         // total == visible → no scrollable range
         assert_eq!(sb.effective_scroll_offset(), 0);
+    }
+
+    // ── dirty_rows (#417) ────────────────────────────────────────────
+
+    fn cell(ch: char) -> TerminalCell {
+        TerminalCell {
+            ch,
+            fg: Color::rgb(255, 255, 255),
+            bg: Color::rgb(0, 0, 0),
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        }
+    }
+
+    fn grid(rows: &[&str]) -> Terminal {
+        Terminal {
+            id: WidgetId::new("term"),
+            cells: rows
+                .iter()
+                .map(|row| row.chars().map(cell).collect())
+                .collect(),
+            scrollbar: None,
+        }
+    }
+
+    #[test]
+    fn dirty_rows_identical_grids_are_clean() {
+        let prev = grid(&["abc", "def"]);
+        let next = grid(&["abc", "def"]);
+        assert_eq!(next.dirty_rows(&prev), Some(vec![]));
+    }
+
+    #[test]
+    fn dirty_rows_flags_only_changed_rows() {
+        let prev = grid(&["abc", "def", "ghi"]);
+        let next = grid(&["abc", "XYZ", "ghi"]);
+        assert_eq!(next.dirty_rows(&prev), Some(vec![1]));
+    }
+
+    #[test]
+    fn dirty_rows_flags_multiple_changed_rows() {
+        let prev = grid(&["abc", "def", "ghi"]);
+        let next = grid(&["AAA", "def", "GGG"]);
+        assert_eq!(next.dirty_rows(&prev), Some(vec![0, 2]));
+    }
+
+    #[test]
+    fn dirty_rows_none_when_row_count_differs() {
+        let prev = grid(&["abc", "def"]);
+        let next = grid(&["abc", "def", "ghi"]);
+        assert_eq!(next.dirty_rows(&prev), None);
+    }
+
+    #[test]
+    fn dirty_rows_row_length_change_counts_as_dirty() {
+        // Same row count, but one row grew (ragged rows) — the
+        // `Vec<TerminalCell>` equality is length-sensitive, so this
+        // must show up as dirty rather than silently comparing equal.
+        let prev = grid(&["ab", "cd"]);
+        let next = grid(&["abc", "cd"]);
+        assert_eq!(next.dirty_rows(&prev), Some(vec![0]));
+    }
+
+    #[test]
+    fn dirty_rows_overlay_flag_change_is_dirty() {
+        // Cursor / selection / find-highlight overlays are plain
+        // `TerminalCell` fields, so a flag-only change (same glyph and
+        // colour) still registers the row as dirty.
+        let prev = grid(&["abc"]);
+        let mut next = grid(&["abc"]);
+        next.cells[0][1].is_cursor = true;
+        assert_eq!(next.dirty_rows(&prev), Some(vec![0]));
     }
 }
