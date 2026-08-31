@@ -288,6 +288,59 @@ pub struct GtkBackend {
     /// coordinates. Read by [`super::testing::GtkDriver::tab_center`] /
     /// [`super::testing::GtkDriver::tab_close_center`] (quadraui#594).
     tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
+    /// Monotonically increasing counter bumped once per [`Self::begin_frame`]
+    /// call. Backs the #417 dirty-row repaint fast path: a `TermPaintCache`
+    /// entry is only reused when it was written during the *immediately
+    /// preceding* frame (`painted_frame + 1 == frame_counter`). Any gap
+    /// (the terminal pane went unpainted for a frame — e.g. a tab switch
+    /// away and back) means some other primitive may have painted over
+    /// those pixels in the meantime, so the cache is discarded and the
+    /// next paint falls back to a full repaint.
+    frame_counter: u64,
+    /// Per-terminal-id cache of the most recently painted `Terminal`
+    /// snapshot and the pixel geometry it was painted at — see
+    /// [`Self::draw_terminal`] and `TermPaintCache`'s own docs (#417).
+    term_paint_cache: HashMap<WidgetId, TermPaintCache>,
+}
+
+/// Cached state from the most recent successful [`GtkBackend::draw_terminal`]
+/// paint for one terminal id (#417).
+///
+/// GTK retains the previous frame's pixels for anything a draw call
+/// doesn't touch (see the ghosting note on [`GtkBackend::draw_terminal`]
+/// and the resize-damage discussion in `gtk/run.rs`'s `connect_resize`
+/// handler) — so as long as nothing else could have painted over a
+/// terminal's rect since this snapshot was taken, rows whose cell content
+/// hasn't changed can be skipped entirely rather than re-rasterised. The
+/// `rect` / `line_height` / `char_width` / `cell_area_w` fields detect any
+/// resize/reflow/scrollbar-toggle (which invalidates row alignment, not
+/// just content); `painted_frame` / `modal_was_empty` detect anything else
+/// that might have painted on top of this terminal's pixels between two
+/// `draw_terminal` calls for the same id (a tab switch away and back, or a
+/// dialog/palette/context-menu opening then closing); `theme` detects a
+/// live theme swap (`Backend::set_theme`) between two paints, since
+/// `dirty_rows` only diffs `TerminalCell` content and is blind to the
+/// theme-derived colours `draw_terminal_cells` applies on top of unchanged
+/// cells (`selected` / `is_cursor` / `is_find_match` overlays — see
+/// `primitives/terminal.rs`'s module doc). Without this, selecting text
+/// then toggling light/dark would leave the old theme's selection colour
+/// on screen until some unrelated event forced a full repaint (#417 review).
+#[derive(Debug, Clone)]
+struct TermPaintCache {
+    term: TerminalPrim,
+    rect: QRect,
+    line_height: f64,
+    char_width: f64,
+    cell_area_w: f64,
+    /// [`GtkBackend::frame_counter`] value when this snapshot was painted.
+    painted_frame: u64,
+    /// Whether `modal_stack` was empty at the time of that paint.
+    modal_was_empty: bool,
+    /// The theme in effect at the time of that paint. Compared by value
+    /// (`Theme` is `Copy + PartialEq`) so *any* field change — not just the
+    /// ones the terminal rasteriser currently reads — invalidates the fast
+    /// path.
+    theme: crate::Theme,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -338,6 +391,8 @@ impl GtkBackend {
             last_menu_bar_pango_layout: None,
             last_editor_pango_layout: None,
             tab_bar_layouts: HashMap::new(),
+            frame_counter: 0,
+            term_paint_cache: HashMap::new(),
         }
     }
 
@@ -1209,6 +1264,10 @@ impl Backend for GtkBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        // #417: bump once per frame so `TermPaintCache::painted_frame`
+        // can detect a terminal that went unpainted for a frame (see its
+        // docs) — must happen before any `draw_terminal` call this frame.
+        self.frame_counter = self.frame_counter.wrapping_add(1);
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors TuiBackend::begin_frame.
         self.text_regions.clear();
@@ -2324,9 +2383,6 @@ impl Backend for GtkBackend {
         let lh = self.current_line_height;
         let cw = self.current_char_width;
         let theme = self.current_theme;
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
 
         let sb_width = match &term.scrollbar {
             Some(sb) => sb.width.map(|w| w as f64).unwrap_or(8.0),
@@ -2334,41 +2390,109 @@ impl Backend for GtkBackend {
         };
         let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
 
-        // Clear the entire terminal pane to the terminal background before
-        // painting cells (quadraui#437). `draw_terminal_cells` only fills
-        // each *live* cell's own background, so without this any pixel the
-        // current grid doesn't cover — a sub-cell sliver, the strip below the
-        // last row, or (critically) a region GTK didn't re-clear on an
-        // interactive-resize frame where the widget's cached render node is
-        // partially reused — keeps showing glyphs from the pre-resize frame.
-        // That was the "stale ~ / > prompt fragments stuck on rows that
-        // should be blank after a shrink-then-expand" ghosting. vimcode's
-        // bespoke renderer does the same full-pane fill first; the trait doc
-        // on `draw_terminal_cells` delegates this to the caller, and the GTK
-        // backend is that caller. (30,30,30) matches the vt100 default cell
-        // background used by `TerminalSession::build_rows`, so blank areas
-        // blend seamlessly with blank cells.
-        cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        cr.set_source_rgb(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0);
-        cr.fill().ok();
+        // #417: dirty-row fast path. Reuse the previous frame's cache
+        // entry for this terminal id only when every geometry input that
+        // affects row alignment is unchanged, the theme hasn't changed
+        // (a same-content row can still need repainting if a
+        // `selected`/`is_cursor`/`is_find_match` overlay's colour moved),
+        // *and* nothing else could have painted over these pixels since —
+        // see `TermPaintCache`'s docs for what each guard rules out.
+        // `dirty_rows` then comes back `Some(rows)` (paint only `rows`,
+        // possibly empty) or `None` (row counts differ — full repaint).
+        let modal_empty_now = self.modal_stack.borrow().is_empty();
+        let frame_now = self.frame_counter;
+        // Direct `==` on the `f64`/`Theme` fields below is safe only
+        // because each is deterministically *recomputed* every frame
+        // (from layout/font metrics or `set_theme`'s argument), never
+        // accumulated. A future refactor that turns any of them into a
+        // running sum would silently defeat the fast path (forcing extra
+        // full repaints) rather than corrupt output — but it would no
+        // longer be safe to compare this way.
+        let dirty_rows: Option<Vec<usize>> =
+            self.term_paint_cache.get(&term.id).and_then(|cached| {
+                if cached.rect == rect
+                    && cached.line_height == lh
+                    && cached.char_width == cw
+                    && cached.cell_area_w == cell_area_w
+                    && cached.painted_frame.wrapping_add(1) == frame_now
+                    && cached.modal_was_empty
+                    && modal_empty_now
+                    && cached.theme == theme
+                {
+                    term.dirty_rows(&cached.term)
+                } else {
+                    None
+                }
+            });
 
-        crate::gtk::draw_terminal_cells(
-            cr,
-            layout,
-            term,
-            rect.x as f64,
-            rect.y as f64,
-            cell_area_w,
-            rect.height as f64,
-            lh,
-            cw,
-            &theme,
-        );
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
+
+        match &dirty_rows {
+            Some(rows) => {
+                // Fast path: geometry is unchanged (checked above), so
+                // there's no newly-exposed area needing the full-pane
+                // clear below, and rows outside `rows` are assumed
+                // already correct on GTK's persistent render surface —
+                // skip them (and, when `rows` is empty, skip painting
+                // entirely — e.g. a cursor-blink tick with no new PTY
+                // output).
+                if !rows.is_empty() {
+                    crate::gtk::draw_terminal_cells(
+                        cr,
+                        layout,
+                        term,
+                        rect.x as f64,
+                        rect.y as f64,
+                        cell_area_w,
+                        rect.height as f64,
+                        lh,
+                        cw,
+                        &theme,
+                        Some(rows),
+                    );
+                }
+            }
+            None => {
+                // Clear the entire terminal pane to the terminal background before
+                // painting cells (quadraui#437). `draw_terminal_cells` only fills
+                // each *live* cell's own background, so without this any pixel the
+                // current grid doesn't cover — a sub-cell sliver, the strip below the
+                // last row, or (critically) a region GTK didn't re-clear on an
+                // interactive-resize frame where the widget's cached render node is
+                // partially reused — keeps showing glyphs from the pre-resize frame.
+                // That was the "stale ~ / > prompt fragments stuck on rows that
+                // should be blank after a shrink-then-expand" ghosting. vimcode's
+                // bespoke renderer does the same full-pane fill first; the trait doc
+                // on `draw_terminal_cells` delegates this to the caller, and the GTK
+                // backend is that caller. (30,30,30) matches the vt100 default cell
+                // background used by `TerminalSession::build_rows`, so blank areas
+                // blend seamlessly with blank cells.
+                cr.rectangle(
+                    rect.x as f64,
+                    rect.y as f64,
+                    rect.width as f64,
+                    rect.height as f64,
+                );
+                cr.set_source_rgb(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0);
+                cr.fill().ok();
+
+                crate::gtk::draw_terminal_cells(
+                    cr,
+                    layout,
+                    term,
+                    rect.x as f64,
+                    rect.y as f64,
+                    cell_area_w,
+                    rect.height as f64,
+                    lh,
+                    cw,
+                    &theme,
+                    None,
+                );
+            }
+        }
 
         if let Some(ref sb_state) = term.scrollbar {
             let sb = crate::primitives::scrollbar::Scrollbar::vertical(
@@ -2397,6 +2521,22 @@ impl Backend for GtkBackend {
         // so the frame is still attributable to this call until that
         // tracking gap is closed.
         self.register_zone(term.id.clone(), rect);
+
+        // #417: remember this frame's snapshot and geometry so the next
+        // `draw_terminal` call for this id can attempt the fast path.
+        self.term_paint_cache.insert(
+            term.id.clone(),
+            TermPaintCache {
+                term: term.clone(),
+                rect,
+                line_height: lh,
+                char_width: cw,
+                cell_area_w,
+                painted_frame: frame_now,
+                modal_was_empty: modal_empty_now,
+                theme,
+            },
+        );
     }
 
     fn draw_terminal_divider(&mut self, rect: QRect) {
@@ -3546,7 +3686,7 @@ impl Backend for GtkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MenuBarItem, WidgetId};
+    use crate::{MenuBarItem, TerminalCell, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
     /// `Backend` through `<B>`. Same shape as the one in
@@ -5104,6 +5244,390 @@ mod tests {
             "an undecorated tab must keep byte-identical width: {:?} vs {:?}",
             from_layout.slot_positions[1],
             plain_layout.slot_positions[1]
+        );
+    }
+
+    // ── #417 dirty-row fast path ─────────────────────────────────────
+    //
+    // These tests drive `GtkBackend::draw_terminal` across several
+    // frames against one shared `ImageSurface` — a fresh `cairo::Context`
+    // per frame, same backing pixels, mirroring how GTK gives
+    // `set_draw_func` a new `Context` every call while the widget's
+    // render surface persists underneath (see the resize-ghosting note
+    // on `draw_terminal` and `gtk/run.rs`'s `connect_resize` handler).
+    // Between frames a throwaway `Context` paints a "corruption" colour
+    // directly over one row's cell — standing in for whatever a *skipped*
+    // repaint would fail to erase — so a passing test proves the row was
+    // (or wasn't) actually touched by the following `draw_terminal` call,
+    // not just that the end colour happens to match by coincidence.
+
+    /// A one-cell row whose only visible output is a solid `bg` fill.
+    ///
+    /// `ch` is a space **on purpose**, so `draw_terminal_cells` fills the
+    /// cell rectangle and draws no glyph at all. These tests probe a
+    /// *fixed* pixel inside a cell and assert it equals that row's
+    /// background, but where a glyph's strokes land — and how far past the
+    /// `line_height`-tall cell box they bleed — is a property of whatever
+    /// font Pango happens to default to on the host, which is not the same
+    /// on a dev machine and on the `gtk` CI runner.
+    ///
+    /// That is not hypothetical: the first cut of these tests used
+    /// `ch: 'X'` with a contrasting `fg`. The local default (`serif 12`)
+    /// rasterises `X` into rows 6..=17 of a 20px cell with a natural height
+    /// of 23px, so it cleared the row-relative y=5 probe by *one* pixel
+    /// above and bled 3px into the row below — passing locally by a margin
+    /// no font is obliged to reproduce, and failing on CI. Re-running these
+    /// tests with the layout forced to `monospace 22` reproduces the CI
+    /// failure exactly (the row above's glyph bleeds down over the probed
+    /// pixel), which is what this shape rules out for good.
+    ///
+    /// Glyph rasterisation under the dirty-row filter is covered — with
+    /// real glyphs — by `gtk::terminal::tests`, whose probes are positioned
+    /// so no neighbouring row can paint over them.
+    fn term_row_417(bg: crate::types::Color) -> Vec<TerminalCell> {
+        vec![TerminalCell {
+            ch: ' ',
+            fg: bg,
+            bg,
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        }]
+    }
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    fn probe_pixel_417(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// Paint a solid colour directly over `(x, y, w, h)` on `surface`,
+    /// bypassing `draw_terminal` entirely — the "corruption" stand-in
+    /// described above.
+    fn paint_corruption_417(
+        surface: &pangocairo::cairo::ImageSurface,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        color: crate::types::Color,
+    ) {
+        let cr = pangocairo::cairo::Context::new(surface).expect("Context::new");
+        cr.rectangle(x, y, w, h);
+        cr.set_source_rgb(
+            color.r as f64 / 255.0,
+            color.g as f64 / 255.0,
+            color.b as f64 / 255.0,
+        );
+        cr.fill().ok();
+    }
+
+    const TERM_417_W: i32 = 40;
+    const TERM_417_H: i32 = 40;
+    const TERM_417_LH: f64 = 20.0;
+    const TERM_417_CW: f64 = 10.0;
+
+    #[test]
+    fn draw_terminal_fast_path_does_not_repaint_unchanged_rows() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let red = crate::types::Color::rgb(200, 0, 0);
+        let blue = crate::types::Color::rgb(0, 0, 200);
+        let green = crate::types::Color::rgb(0, 200, 0);
+        let magenta = crate::types::Color::rgb(200, 0, 200);
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = TERM_417_LH;
+        backend.current_char_width = TERM_417_CW;
+        let mut surface = ImageSurface::create(Format::ARgb32, TERM_417_W, TERM_417_H)
+            .expect("create ImageSurface");
+        let rect = QRect::new(0.0, 0.0, TERM_417_W as f32, TERM_417_H as f32);
+        let id = WidgetId::new("test:term");
+
+        // Frame 1: full paint — row 0 red, row 1 blue.
+        let term1 = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(red), term_row_417(blue)],
+            scrollbar: None,
+        };
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(
+                &mut backend,
+                Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0),
+            );
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term1));
+        }
+
+        // Stand-in for "whatever a skipped repaint would fail to erase":
+        // paint row 1's cell magenta directly, bypassing draw_terminal.
+        paint_corruption_417(
+            &surface,
+            0.0,
+            TERM_417_LH,
+            TERM_417_CW,
+            TERM_417_LH,
+            magenta,
+        );
+
+        // Frame 2: row 0 changes to green; row 1's `TerminalCell` is
+        // byte-identical to frame 1's, so `dirty_rows` must report only
+        // row 0 — the fast path should leave row 1 (now magenta) alone.
+        let term2 = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(green), term_row_417(blue)],
+            scrollbar: None,
+        };
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(
+                &mut backend,
+                Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0),
+            );
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term2));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, 5),
+            (green.r, green.g, green.b),
+            "row 0 (dirty) must be repainted with its new colour"
+        );
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, TERM_417_LH as i32 + 5),
+            (magenta.r, magenta.g, magenta.b),
+            "row 1 (clean) must not be touched by the fast path — the \
+             corruption colour proves draw_terminal skipped it entirely"
+        );
+    }
+
+    #[test]
+    fn draw_terminal_full_repaint_after_a_skipped_frame() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let red = crate::types::Color::rgb(200, 0, 0);
+        let blue = crate::types::Color::rgb(0, 0, 200);
+        let magenta = crate::types::Color::rgb(200, 0, 200);
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = TERM_417_LH;
+        backend.current_char_width = TERM_417_CW;
+        let mut surface = ImageSurface::create(Format::ARgb32, TERM_417_W, TERM_417_H)
+            .expect("create ImageSurface");
+        let rect = QRect::new(0.0, 0.0, TERM_417_W as f32, TERM_417_H as f32);
+        let id = WidgetId::new("test:term");
+        let term = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(red), term_row_417(blue)],
+            scrollbar: None,
+        };
+        let viewport = Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0);
+
+        // Frame 1: full paint.
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        // Simulate something else painting over row 1 while this
+        // terminal pane goes unpainted for a frame (e.g. a tab switch
+        // away and back) — `begin_frame` fires with no matching
+        // `draw_terminal` call for this id, opening the gap the
+        // `painted_frame` guard exists to catch.
+        Backend::begin_frame(&mut backend, viewport);
+        paint_corruption_417(
+            &surface,
+            0.0,
+            TERM_417_LH,
+            TERM_417_CW,
+            TERM_417_LH,
+            magenta,
+        );
+
+        // Frame 3: content is byte-identical to frame 1's, but the
+        // one-frame gap must force a full repaint rather than trusting
+        // the (now stale) cache.
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, TERM_417_LH as i32 + 5),
+            (blue.r, blue.g, blue.b),
+            "a paint gap must force a full repaint, erasing whatever \
+             painted over this terminal's pixels while it was skipped"
+        );
+    }
+
+    #[test]
+    fn draw_terminal_full_repaint_after_a_modal_opened_and_closed() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let red = crate::types::Color::rgb(200, 0, 0);
+        let blue = crate::types::Color::rgb(0, 0, 200);
+        let magenta = crate::types::Color::rgb(200, 0, 200);
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = TERM_417_LH;
+        backend.current_char_width = TERM_417_CW;
+        let mut surface = ImageSurface::create(Format::ARgb32, TERM_417_W, TERM_417_H)
+            .expect("create ImageSurface");
+        let rect = QRect::new(0.0, 0.0, TERM_417_W as f32, TERM_417_H as f32);
+        let id = WidgetId::new("test:term");
+        let term = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(red), term_row_417(blue)],
+            scrollbar: None,
+        };
+        let viewport = Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0);
+
+        // Frame 1: full paint, no modal open.
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        // Frame 2: a context menu / dialog / palette opens and overlaps
+        // the terminal pane, painting after it in z-order.
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .push(WidgetId::new("test:menu"), QRect::new(0.0, 0.0, 10.0, 10.0));
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+        paint_corruption_417(
+            &surface,
+            0.0,
+            TERM_417_LH,
+            TERM_417_CW,
+            TERM_417_LH,
+            magenta,
+        );
+
+        // Frame 3: the modal closes. Content is unchanged, but the
+        // modal's paint over row 1 in frame 2 means the cache from
+        // *before* the modal opened can't be trusted — it must force a
+        // full repaint rather than skip row 1.
+        backend.modal_stack_handle().borrow_mut().pop_top();
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, TERM_417_LH as i32 + 5),
+            (blue.r, blue.g, blue.b),
+            "closing a modal that overlapped the terminal must force a \
+             full repaint, erasing its overlay"
+        );
+    }
+
+    #[test]
+    fn draw_terminal_full_repaint_after_theme_change() {
+        // Regression test for the #417 review finding: `set_theme` (a
+        // consumer-callable trait method — a live dark/light toggle) was
+        // not plumbed into `TermPaintCache`'s validity guard. `dirty_rows`
+        // only diffs `TerminalCell` content, so a theme swap with
+        // byte-identical cells between two frames used to be invisible to
+        // the fast path — leaving stale theme-derived overlay colours
+        // (`selected` / `is_cursor` / `is_find_match`, see
+        // `primitives/terminal.rs`) on screen. This proves a theme change
+        // alone now forces a full repaint, even with unchanged content and
+        // no modal/gap in between.
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let red = crate::types::Color::rgb(200, 0, 0);
+        let blue = crate::types::Color::rgb(0, 0, 200);
+        let magenta = crate::types::Color::rgb(200, 0, 200);
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = TERM_417_LH;
+        backend.current_char_width = TERM_417_CW;
+        let mut surface = ImageSurface::create(Format::ARgb32, TERM_417_W, TERM_417_H)
+            .expect("create ImageSurface");
+        let rect = QRect::new(0.0, 0.0, TERM_417_W as f32, TERM_417_H as f32);
+        let id = WidgetId::new("test:term");
+        let term = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(red), term_row_417(blue)],
+            scrollbar: None,
+        };
+        let viewport = Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0);
+
+        // Frame 1: full paint under the default (dark) theme.
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        // Simulate a skipped repaint of row 1 so the test can tell "was
+        // this row actually repainted" from "did it just happen to still
+        // be correct" — same technique as the sibling tests above.
+        paint_corruption_417(
+            &surface,
+            0.0,
+            TERM_417_LH,
+            TERM_417_CW,
+            TERM_417_LH,
+            magenta,
+        );
+
+        // Frame 2: content is byte-identical to frame 1's — no scroll, no
+        // new PTY bytes, no modal — but the app calls `set_theme` (e.g. a
+        // dark/light toggle) in between. This alone must force a full
+        // repaint rather than trusting the (now theme-stale) cache.
+        Backend::set_theme(
+            &mut backend,
+            crate::Theme {
+                background: crate::types::Color::rgb(255, 255, 255),
+                foreground: crate::types::Color::rgb(0, 0, 0),
+                ..crate::Theme::default()
+            },
+        );
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, TERM_417_LH as i32 + 5),
+            (blue.r, blue.g, blue.b),
+            "a theme change must force a full repaint even with unchanged \
+             cell content, so theme-derived overlay colours never go stale"
         );
     }
 }

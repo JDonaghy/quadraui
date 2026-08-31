@@ -54,6 +54,15 @@ use crate::theme::Theme;
 /// grid that still has the pre-resize (taller) row count into an
 /// already-shrunk pixel pane (quadraui#437). `line_height` and
 /// `char_width` are the per-cell dimensions in DIPs.
+///
+/// `dirty_rows` (#417) restricts painting to a subset of rows: `None`
+/// paints every row (the historical behaviour); `Some(rows)` paints only
+/// the rows whose index appears in `rows` (expected sorted ascending,
+/// e.g. from [`crate::primitives::terminal::Terminal::dirty_rows`]) and
+/// leaves every other row's pixels untouched. Callers only pass
+/// `Some(_)` when they can guarantee nothing else painted over those
+/// pixels since they were last correctly rendered — see
+/// `GtkBackend::draw_terminal`'s cache-invalidation guards.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_terminal_cells(
     cr: &Context,
@@ -66,6 +75,7 @@ pub fn draw_terminal_cells(
     line_height: f64,
     char_width: f64,
     theme: &Theme,
+    dirty_rows: Option<&[usize]>,
 ) {
     for (row_idx, row) in term.cells.iter().enumerate() {
         let row_y = content_y + row_idx as f64 * line_height;
@@ -75,6 +85,11 @@ pub fn draw_terminal_cells(
         // (and clipped by the pane fill / footer painted over it).
         if row_y >= content_y + cell_area_h {
             break;
+        }
+        if let Some(rows) = dirty_rows {
+            if rows.binary_search(&row_idx).is_err() {
+                continue;
+            }
         }
         let mut cell_x = x;
         let mut col = 0usize;
@@ -279,6 +294,7 @@ mod tests {
                 LINE_H,
                 CHAR_W,
                 &theme,
+                None,
             );
         }
         surface
@@ -409,5 +425,78 @@ mod tests {
     fn degenerate_glyph_width_falls_back_to_no_scale() {
         assert_eq!(wide_glyph_x_scale(0, 18.0), 1.0);
         assert_eq!(wide_glyph_x_scale(-3, 18.0), 1.0);
+    }
+
+    /// #417: passing `Some(dirty_rows)` must paint only the listed rows
+    /// and leave every other row's pixels completely untouched — that's
+    /// the whole premise of the dirty-row fast path, since those pixels
+    /// are assumed to already be correct from an earlier frame.
+    ///
+    /// Both probes are deliberately font-independent, because the host's
+    /// default Pango font differs between a dev machine and CI and a glyph
+    /// routinely rasterises taller than its `line_height`-tall cell box:
+    /// the painted row uses `fg == bg`, so its glyph cannot change the
+    /// probed pixel's colour, and the *skipped* row probed here is row 0 —
+    /// above the only row that paints, so nothing can bleed onto it. Keep
+    /// both properties if you extend this test; a contrasting `fg` with a
+    /// probe under a painting row is what reddened the `gtk` CI job once
+    /// already (see `gtk::backend::tests::term_row_417`).
+    #[test]
+    fn dirty_rows_filter_skips_untouched_rows() {
+        let sentinel = Color::rgb(1, 2, 3);
+        let painted = Color::rgb(200, 200, 200);
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![
+                vec![cell('A', painted, painted)],
+                vec![cell('B', painted, painted)],
+            ],
+            scrollbar: None,
+        };
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            // Stand in for "whatever a previous frame already painted
+            // here" — draw_terminal_cells must not touch row 0's pixels
+            // when row 0 is excluded from `dirty_rows`.
+            cr.set_source_rgb(
+                sentinel.r as f64 / 255.0,
+                sentinel.g as f64 / 255.0,
+                sentinel.b as f64 / 255.0,
+            );
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let theme = Theme::default();
+            draw_terminal_cells(
+                &cr,
+                &pango_layout,
+                &term,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                LINE_H,
+                CHAR_W,
+                &theme,
+                Some(&[1]),
+            );
+        }
+        let mut s = surface;
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        let row0 = pixel(&data, stride, 5, 5);
+        assert_eq!(
+            row0,
+            (sentinel.r, sentinel.g, sentinel.b),
+            "row 0 excluded from dirty_rows must be left untouched"
+        );
+        let row1 = pixel(&data, stride, 5, LINE_H as i32 + 5);
+        assert_eq!(
+            row1,
+            (painted.r, painted.g, painted.b),
+            "row 1 included in dirty_rows must be repainted"
+        );
     }
 }
