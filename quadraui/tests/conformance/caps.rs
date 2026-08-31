@@ -363,6 +363,16 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "the default *is* uniform-monospace division (`EditorLayout::col_at_x`), which is exact \
          for a cell grid — GTK overrides it only because Pango advance widths vary",
     ),
+    // ── GTK, macOS, Win: `snap_height` is deliberately unimplemented on
+    // every pixel backend. The trait's default (identity) *is* the right
+    // answer for them — they paint fractional heights exactly, unlike
+    // TUI's cell grid — so there is nothing to override (quadraui#632).
+    (
+        "gtk",
+        "snap_height",
+        "pixel backend — Cairo paints fractional heights exactly, so the identity default is \
+         correct, not unfinished work (quadraui#632)",
+    ),
     // ── macOS: real backend, genuinely unfinished. `MacDriver`
     // (quadraui#493) gives it a `ConformanceDriver` and a Tier-1
     // (`backends()`) row, but it's deliberately still absent from
@@ -402,6 +412,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          issue's acceptance bar is TUI + GTK; macOS falls back to the plain `tab_bar_layout` \
          geometry (no bracket reservation) until that lands",
     ),
+    (
+        "macos",
+        "snap_height",
+        "pixel backend — CoreText paints fractional heights exactly, so the identity default is \
+         correct, not unfinished work (quadraui#632)",
+    ),
     // ── Win: every method is a `todo!()` stub (#19). Listed one by one
     // anyway — "the whole backend is a stub" is exactly the kind of
     // blanket excuse that outlives the stub.
@@ -425,6 +441,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "win",
         "tab_bar_layout_with_chrome",
         "stub backend — see #19",
+    ),
+    (
+        "win",
+        "snap_height",
+        "pixel backend — DirectWrite paints fractional heights exactly, so the identity default \
+         is correct, not unfinished work (quadraui#632); unrelated to the #19 stub gaps above",
     ),
 ];
 

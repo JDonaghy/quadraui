@@ -966,6 +966,15 @@ impl Backend for TuiBackend {
         1.0
     }
 
+    fn snap_height(&self, h: f32) -> f32 {
+        // Mirrors the height component of `q_rect_to_ratatui` exactly —
+        // same `.max(0.0).round()` — so a height computed via this method
+        // always matches what a rect with that height paints as. A unit
+        // test below pins the two against each other so they can't drift
+        // (quadraui#632).
+        h.max(0.0).round()
+    }
+
     // ─── Drawing ───────────────────────────────────────────────────────────
     //
     // Implementations call into the public `crate::tui::draw_*` free
@@ -3765,5 +3774,43 @@ mod tests {
             "close-button spans must match between the paint and no-paint \
              paths too"
         );
+    }
+
+    /// `Backend::snap_height` must agree with `q_rect_to_ratatui`'s height
+    /// rounding for every height a rect can carry, since it exists to let
+    /// consumers predict that rounding without reimplementing it
+    /// (quadraui#632). If the two ever drift, a consumer's pre-snapped
+    /// layout height stops matching what the rasteriser actually paints —
+    /// the exact one-row misalignment that bit coord-tui in #464 and #995.
+    #[test]
+    fn snap_height_matches_q_rect_to_ratatui_height_rounding() {
+        let backend = TuiBackend::new();
+        for h in [
+            0.0_f32, 0.2, 0.49, 0.5, 0.51, 1.0, 1.4, 1.6, 2.5, 13.999, -1.0, -0.4,
+        ] {
+            let snapped = backend.snap_height(h);
+            let via_rect = q_rect_to_ratatui(QRect::new(0.0, 0.0, 0.0, h)).height;
+            assert_eq!(
+                snapped as u16, via_rect,
+                "snap_height({h}) = {snapped}, but q_rect_to_ratatui reports \
+                 height {via_rect} for the same input"
+            );
+        }
+    }
+
+    /// A pixel backend must not quantize — `snap_height` returns the input
+    /// unchanged via the trait's default impl. `MockBackend` doesn't
+    /// override `snap_height`, so it stands in for "any backend that only
+    /// paints pixels/DIPs" here (quadraui#632).
+    #[test]
+    fn snap_height_default_impl_is_identity() {
+        let backend = MockBackend::new();
+        for h in [0.0_f32, 0.4, 1.6, 13.999, -1.0] {
+            assert_eq!(
+                Backend::snap_height(&backend, h),
+                h,
+                "default snap_height impl must be identity for pixel backends"
+            );
+        }
     }
 }
