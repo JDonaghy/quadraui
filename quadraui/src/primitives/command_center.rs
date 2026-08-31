@@ -53,6 +53,23 @@ pub struct CommandCenterLayout {
 }
 
 impl CommandCenterLayout {
+    /// A layout for an area the rasteriser did not (or could not) paint
+    /// into: no hit regions at all, so [`Self::hit_test`] returns
+    /// [`CommandCenterHit::Outside`] for every point. Use this instead of
+    /// [`CommandCenter::layout`]'s geometric result whenever the paint
+    /// loop skips the widget entirely — a `width == 0` / `height == 0`
+    /// area, for instance — so the returned layout never describes cells
+    /// that were never actually drawn (quadraui#649).
+    pub fn empty(bounds: Rect) -> Self {
+        CommandCenterLayout {
+            bounds,
+            back_bounds: None,
+            forward_bounds: None,
+            search_bounds: None,
+            hit_regions: Vec::new(),
+        }
+    }
+
     pub fn hit_test(&self, x: f32, y: f32) -> CommandCenterHit {
         for (rect, hit) in &self.hit_regions {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
