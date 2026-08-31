@@ -83,6 +83,24 @@
 //! `quadraui/docs/TESTING.md` documents as "live-app headless smoke".
 //! The size/text assertion *logic* is unit-tested below with no display
 //! required.
+//!
+//! ## Clipboard paste vs. IME/dead-key composition (quadraui#415)
+//!
+//! quadraui#415 ("route clipboard paste + IME/dead-key composition into
+//! the focused terminal PTY") is two distinct input paths. Only the
+//! clipboard-paste half — Ctrl-V, Ctrl-Shift-V, and middle-click PRIMARY,
+//! all handled below in [`dispatch_event`] — is implemented by this
+//! module. IME/dead-key composed input (e.g. a dead-key `´` followed by
+//! `e` composing to `é`, or any real IME committing multi-keystroke text)
+//! is **not** wired up: `EventControllerKey` here only ever sees raw,
+//! already-resolved keysyms via `gdk_key_to_uievent`, with no
+//! `gtk4::IMMulticontext` attached to intercept `key-press-event` first
+//! and expose its `commit` / `preedit-changed` signals. That's a
+//! deliberate scope split, not an oversight: no quadraui backend runs an
+//! IME composition pipeline yet (see [`crate::UiEvent::CharTyped`]'s doc
+//! comment), and epic quadraui#481 owns adding one across every backend,
+//! not just GTK's terminal example. `examples/common/terminal_app.rs`'s
+//! module doc carries the consumer-facing version of this note.
 
 use std::cell::{Cell, RefCell};
 use std::env;
