@@ -127,6 +127,26 @@ impl<A: AppLogic> GtkDriver<A> {
         // hand-roll a `record_painted_text` call (quadraui#489). Off in
         // production runners — a live app never reads the map.
         backend.set_painted_text_recording(true);
+        // Seed the backend's persistent Pango context, exactly as
+        // `gtk::run::activate` does from the realized `DrawingArea`
+        // (same `"Sans 11"` UI font it sets there). Without this, every
+        // `*_layout()` method called *outside* a frame scope — which is
+        // where all click hit-testing happens, since `AppLogic::handle`
+        // runs between frames — had no Pango layout at all and silently
+        // fell back to `chars().count() * char_width`. That estimate is
+        // only accurate for a monospace font, so the driver's hit
+        // regions drifted off the painted labels for any chrome painted
+        // in the proportional `ui_font` (quadraui#416), while the same
+        // click landed correctly in a real window. Seeding it here makes
+        // the harness measure clicks the way production does.
+        {
+            let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
+            let pctx = pangocairo::functions::create_context(&cr);
+            pctx.set_font_description(Some(&pangocairo::pango::FontDescription::from_string(
+                "Sans 11",
+            )));
+            backend.set_pango_context(pctx);
+        }
         // Seed the viewport from the driver's surface size BEFORE setup,
         // exactly as the live `gtk::run::activate` does (quadraui#437):
         // without this, `app.setup()` would read `GtkBackend::new()`'s
