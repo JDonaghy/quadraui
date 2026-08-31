@@ -5261,10 +5261,33 @@ mod tests {
     // (or wasn't) actually touched by the following `draw_terminal` call,
     // not just that the end colour happens to match by coincidence.
 
+    /// A one-cell row whose only visible output is a solid `bg` fill.
+    ///
+    /// `ch` is a space **on purpose**, so `draw_terminal_cells` fills the
+    /// cell rectangle and draws no glyph at all. These tests probe a
+    /// *fixed* pixel inside a cell and assert it equals that row's
+    /// background, but where a glyph's strokes land — and how far past the
+    /// `line_height`-tall cell box they bleed — is a property of whatever
+    /// font Pango happens to default to on the host, which is not the same
+    /// on a dev machine and on the `gtk` CI runner.
+    ///
+    /// That is not hypothetical: the first cut of these tests used
+    /// `ch: 'X'` with a contrasting `fg`. The local default (`serif 12`)
+    /// rasterises `X` into rows 6..=17 of a 20px cell with a natural height
+    /// of 23px, so it cleared the row-relative y=5 probe by *one* pixel
+    /// above and bled 3px into the row below — passing locally by a margin
+    /// no font is obliged to reproduce, and failing on CI. Re-running these
+    /// tests with the layout forced to `monospace 22` reproduces the CI
+    /// failure exactly (the row above's glyph bleeds down over the probed
+    /// pixel), which is what this shape rules out for good.
+    ///
+    /// Glyph rasterisation under the dirty-row filter is covered — with
+    /// real glyphs — by `gtk::terminal::tests`, whose probes are positioned
+    /// so no neighbouring row can paint over them.
     fn term_row_417(bg: crate::types::Color) -> Vec<TerminalCell> {
         vec![TerminalCell {
-            ch: 'X',
-            fg: crate::types::Color::rgb(255, 255, 255),
+            ch: ' ',
+            fg: bg,
             bg,
             bold: false,
             italic: false,

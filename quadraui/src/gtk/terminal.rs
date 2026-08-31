@@ -431,6 +431,16 @@ mod tests {
     /// and leave every other row's pixels completely untouched — that's
     /// the whole premise of the dirty-row fast path, since those pixels
     /// are assumed to already be correct from an earlier frame.
+    ///
+    /// Both probes are deliberately font-independent, because the host's
+    /// default Pango font differs between a dev machine and CI and a glyph
+    /// routinely rasterises taller than its `line_height`-tall cell box:
+    /// the painted row uses `fg == bg`, so its glyph cannot change the
+    /// probed pixel's colour, and the *skipped* row probed here is row 0 —
+    /// above the only row that paints, so nothing can bleed onto it. Keep
+    /// both properties if you extend this test; a contrasting `fg` with a
+    /// probe under a painting row is what reddened the `gtk` CI job once
+    /// already (see `gtk::backend::tests::term_row_417`).
     #[test]
     fn dirty_rows_filter_skips_untouched_rows() {
         let sentinel = Color::rgb(1, 2, 3);
