@@ -50,8 +50,8 @@ pub struct ActivityBar {
     /// `None` = backends fall back to their own default.
     #[serde(default)]
     pub selection_bg: Option<Color>,
-    /// When `true` the bar is accepting keyboard input. Both TUI and GTK
-    /// backends intercept key events and emit
+    /// When `true` the bar is accepting keyboard input. The TUI, GTK and
+    /// macOS backends intercept key events and emit
     /// [`ActivityBarEvent::KeyPressed`] (wrapped in
     /// [`crate::UiEvent::ActivityBar`]) rather than forwarding them as raw
     /// [`crate::UiEvent::KeyPressed`] events.
@@ -328,17 +328,21 @@ pub enum ActivityBarEvent {
 /// - Printable characters map to their single-character string (`"j"`, `"k"`, …).
 /// - Named keys use TitleCase names (`"Escape"`, `"Enter"`, `"Up"`, …).
 ///
-/// Both the TUI and GTK backends use this helper so the emitted key strings
-/// are identical regardless of which backend is active.
+/// The TUI, GTK and macOS backends all use this helper so the emitted key
+/// strings are identical regardless of which backend is active.
 ///
 /// This is `pub(crate)` because external consumers receive the already-normalised
 /// string from [`ActivityBarEvent::KeyPressed::key`] — they have no reason to call
 /// the conversion helper directly.
 ///
-/// `cfg`-gated: only `crate::tui::backend` and `crate::gtk::run` call this
-/// today. Under `win` alone (no consumer yet) it goes dead-code under
-/// `-D warnings` (#540).
-#[cfg(any(feature = "tui", feature = "gtk"))]
+/// `cfg`-gated: only `crate::tui::backend`, `crate::gtk::run` and
+/// `crate::macos::run` (#465) call this today. Under `win` alone (no
+/// consumer yet) it goes dead-code under `-D warnings` (#540).
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     use crate::event::{Key, NamedKey};
     match key {
