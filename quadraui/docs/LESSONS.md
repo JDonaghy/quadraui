@@ -229,7 +229,25 @@ and `draw_palette` never swapped the shared layout onto `ui_font` at
 all (`draw_tree`/`draw_status_bar`/`draw_tab_bar` did, per #624) — their
 icon glyphs painted in whatever font the frame's *editor* content
 happened to leave behind, which is a doubly-wrong font for both the row
-label and the icon.
+label and the icon. The two didn't get identical treatment, though:
+`draw_list` (and `draw_multi_section_view`) got the full `draw_tree`-style
+save/swap/restore, so its row label *and* icon both paint in
+`chrome_font_description(ui_font)`. `draw_palette` only got a narrow
+per-glyph `with_nerd_font_fallback` swap scoped to `item.icon`'s glyph —
+its title/query/row-label/detail text still paints in whatever font was
+live going in, because `draw_palette` also paints an optional preview
+pane through the same layout, and that pane's content (a file/diff
+preview) must keep the caller's own font rather than being forced onto
+chrome's `ui_font`. Widening `draw_palette`'s swap to match `draw_list`
+would fix the row-label gap but incorrectly drag the preview pane onto
+`ui_font` too — left as a follow-up, not folded into #416.
+
+`draw_toolbar` and `draw_sidebar_panel` (which composes a `Toolbar`
+header internally) got the same gap too, and #416 gave both the full
+`draw_list`-style save/swap/restore around the whole paint call —
+unlike `draw_palette`, a toolbar has no "preview pane" content sharing
+the layout, so there's no reason to scope the swap narrower than the
+whole button strip.
 
 Fix (#416): a shared `gtk::chrome_font_description(ui_font)` /
 `gtk::with_nerd_font_fallback(base)` pair *appends*

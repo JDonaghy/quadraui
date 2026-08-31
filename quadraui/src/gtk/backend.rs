@@ -3336,10 +3336,21 @@ impl Backend for GtkBackend {
         pressed_id: Option<&crate::types::WidgetId>,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_toolbar called outside enter_frame_scope");
-        crate::gtk::draw_toolbar(
+        // #416: action labels and `Toolbar::Action` icon glyphs are chrome,
+        // not editor content — mirrors `Self::draw_list`/`Self::draw_tree`'s
+        // save/swap/restore. Before this, `draw_toolbar` painted with
+        // whatever font the shared layout happened to carry into the frame
+        // (typically the editor font, set once at frame start in
+        // `gtk/run.rs`), which has no Nerd-Font fallback family, so an
+        // icon glyph in `ToolbarButton::Action.icon` could render as
+        // tofu/blank depending on what else is installed.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let layout = crate::gtk::draw_toolbar(
             cr,
             pango_layout,
             rect.x as f64,
@@ -3350,7 +3361,9 @@ impl Backend for GtkBackend {
             &theme,
             hovered_id,
             pressed_id,
-        )
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        layout
     }
 
     fn toolbar_layout(
@@ -3382,10 +3395,19 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
-        crate::gtk::draw_sidebar_panel(
+        // #416: `SidebarPanel` composes a `Toolbar` header internally
+        // (`gtk::sidebar_panel::draw_sidebar_panel` calls
+        // `gtk::toolbar::draw_toolbar` directly, not through
+        // `Self::draw_toolbar`), so the same save/swap/restore has to
+        // happen here too or its icon glyphs inherit the same gap
+        // `Self::draw_toolbar` had.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let layout = crate::gtk::draw_sidebar_panel(
             cr,
             pango_layout,
             line_height,
@@ -3398,7 +3420,9 @@ impl Backend for GtkBackend {
             &theme,
             hovered_toolbar_id,
             pressed_toolbar_id,
-        )
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        layout
     }
 
     fn sidebar_panel_layout(
@@ -4693,6 +4717,121 @@ mod tests {
             ui_font_extent > small_editor_extent + 20,
             "changing ui_font alone must visibly widen the painted row label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
+    }
+
+    fn ui_font_test_toolbar() -> crate::primitives::toolbar::Toolbar {
+        crate::primitives::toolbar::Toolbar {
+            id: WidgetId::new("test:toolbar"),
+            buttons: vec![crate::primitives::toolbar::ToolbarButton::Action {
+                id: WidgetId::new("test:toolbar:action"),
+                label: "Refine".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    /// #416 review follow-up: `draw_toolbar` painted `ToolbarButton::Action`
+    /// text with whatever font the shared layout happened to carry into the
+    /// frame (typically the editor font) — the one rasteriser this review
+    /// found the original #416 fix skipped. Same shape as
+    /// `gtk_backend_draw_list_uses_ui_font_not_editor_font` above: painted
+    /// width must be editor-font-size independent, then move when `ui_font`
+    /// itself changes.
+    #[test]
+    fn gtk_backend_draw_toolbar_uses_ui_font_not_editor_font() {
+        let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let bar = ui_font_test_toolbar();
+        let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
+
+        let width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(Some(editor_font));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            if let Some(f) = ui_font {
+                Backend::set_ui_font(&mut backend, f);
+            }
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_toolbar(rect, &bar, None, None).visible_items[0]
+                    .bounds
+                    .width
+            })
+        };
+
+        let small_editor_width = width_at(&small_editor_font, None);
+        let large_editor_width = width_at(&large_editor_font, None);
+        assert!(
+            (small_editor_width - large_editor_width).abs() <= 1.0,
+            "toolbar action width must be editor-font-size independent: \
+             small_editor={small_editor_width}, large_editor={large_editor_width}"
+        );
+
+        let ui_font_width = width_at(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_width > small_editor_width + 20.0,
+            "changing ui_font alone must visibly widen the painted toolbar action: \
+             default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
+        );
+    }
+
+    /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
+    /// internally (`gtk::sidebar_panel::draw_sidebar_panel` calls
+    /// `gtk::toolbar::draw_toolbar` directly, bypassing
+    /// `GtkBackend::draw_toolbar`), so the same editor-font leak the
+    /// previous test guards against propagates here too unless
+    /// `GtkBackend::draw_sidebar_panel` does its own save/swap/restore.
+    #[test]
+    fn gtk_backend_draw_sidebar_panel_toolbar_uses_ui_font_not_editor_font() {
+        let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let panel = crate::primitives::sidebar_panel::SidebarPanel {
+            id: WidgetId::new("test:sidebar-panel"),
+            toolbar: Some(ui_font_test_toolbar()),
+            toolbar_height: None,
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
+
+        let width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(Some(editor_font));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            if let Some(f) = ui_font {
+                Backend::set_ui_font(&mut backend, f);
+            }
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_sidebar_panel(rect, &panel, None, None)
+                    .toolbar_layout
+                    .expect("panel has a toolbar")
+                    .visible_items[0]
+                    .bounds
+                    .width
+            })
+        };
+
+        let small_editor_width = width_at(&small_editor_font, None);
+        let large_editor_width = width_at(&large_editor_font, None);
+        assert!(
+            (small_editor_width - large_editor_width).abs() <= 1.0,
+            "sidebar-panel toolbar action width must be editor-font-size \
+             independent: small_editor={small_editor_width}, \
+             large_editor={large_editor_width}"
+        );
+
+        let ui_font_width = width_at(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_width > small_editor_width + 20.0,
+            "changing ui_font alone must visibly widen the painted \
+             sidebar-panel toolbar action: default_ui_font={small_editor_width}, \
+             ui_font_Sans_40={ui_font_width}"
         );
     }
 
