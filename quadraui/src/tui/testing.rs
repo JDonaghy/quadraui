@@ -98,7 +98,7 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
     width: u16,
     height: u16,
 ) -> TuiDriver<impl AppLogic> {
-    let adapter = crate::tui::shell_runner::build_shell_adapter(app, config);
+    let adapter = crate::shell_adapter::build_shell_adapter(app, config);
     TuiDriver::new(adapter, width, height)
 }
 

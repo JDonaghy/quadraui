@@ -15,7 +15,8 @@
 //! Previously the TUI and GTK runners each embedded a byte-for-byte copy of
 //! `ShellAdapter` and its `AppLogic` impl. This module is the single canonical
 //! location; the per-backend `run_with_shell` functions merely construct the
-//! adapter and forward it to their native runner.
+//! adapter (via [`build_shell_adapter`], also shared here — #497) and forward
+//! it to their native runner.
 
 use std::cell::RefCell;
 
@@ -23,7 +24,7 @@ use crate::compose::app_shell::{AppShell, AppShellEvent, AppShellLayout};
 use crate::compose::bottom_panel::{BottomPanelController, BottomPanelEvent};
 use crate::event::{Point, Rect};
 use crate::runner::{AppLogic, Reaction};
-use crate::shell::{ShellApp, ShellContext};
+use crate::shell::{ShellApp, ShellConfig, ShellContext};
 use crate::types::WidgetId;
 use crate::{ActivityBarEvent, Backend, MouseButton, UiEvent};
 
@@ -116,6 +117,81 @@ impl<A: ShellApp> ShellAdapter<A> {
         self.app.on_shell_event_ctx(ev, &ctx);
         Reaction::Redraw
     }
+}
+
+/// Assemble the [`AppShell`] + [`ShellAdapter`] stack for a [`ShellApp`].
+///
+/// This is the single source of truth for shell construction across every
+/// backend — the live runners ([`crate::tui::shell_runner::run_with_shell`],
+/// [`crate::gtk::shell_runner::run_with_shell`]) and the headless test
+/// drivers ([`crate::tui::testing::driver_with_shell`],
+/// [`crate::gtk::testing::driver_with_shell`]) all call this so they cannot
+/// drift apart as [`ShellConfig`] grows (#497 — previously each backend
+/// re-inlined an identical copy of this function). It takes only
+/// backend-neutral inputs (`ShellConfig` + the app), so a future backend
+/// (macOS, win) adopts it by calling it directly — no per-backend copy
+/// needed.
+pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+) -> ShellAdapter<A> {
+    let editor_font = config.editor_font.clone();
+    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
+        .with_bottom_items(config.bottom_items)
+        .with_min_width(config.min_sidebar_width)
+        .with_max_width(config.max_sidebar_width)
+        .with_position(config.position);
+
+    // Configure the height unconditionally and let `has_title_bar` control
+    // only initial visibility. Gating the whole call on `has_title_bar`
+    // (as before) silently discarded `title_bar_height_lh` whenever the
+    // bar started hidden — exactly the case where it matters later: a
+    // consumer that reveals the bar at runtime via `set_title_bar_visible`
+    // got the `AppShell` struct default (1.5 line-heights) instead of the
+    // height it configured (#547).
+    shell = shell.with_title_bar(config.title_bar_height_lh);
+    shell.set_title_bar_visible(config.has_title_bar);
+
+    // Bottom panel does NOT share this defect, despite the parallel shape:
+    // `AppShell` has no runtime setter that flips `has_bottom_panel` alone
+    // the way `set_title_bar_visible` flips `has_title_bar`. The only way
+    // to enable it is `with_bottom_panel(height)`, which sets the flag and
+    // height together — `show_bottom_panel`/`hide_bottom_panel`/
+    // `toggle_bottom_panel` only touch the independent `bottom_panel_visible`
+    // flag and are no-ops while `has_bottom_panel` is false. So gating this
+    // call on `config.has_bottom_panel` cannot later reveal a stale height.
+    if config.has_bottom_panel {
+        shell = shell
+            .with_bottom_panel(config.bottom_panel_height_lh)
+            .with_bottom_panel_limits(
+                config.min_bottom_panel_height_lh,
+                config.max_bottom_panel_height_lh,
+            );
+    }
+    if config.has_command_line {
+        shell = shell.with_command_line();
+    }
+    if config.has_status_bar {
+        shell = shell.with_status_bar();
+    }
+
+    // When a BottomPanelConfig is present, enable the bottom panel region
+    // and create the controller. Initial height is set in setup() once we
+    // have the backend's viewport + line_height.
+    let bottom_panel = if let Some(bp_config) = config.bottom_panel {
+        // Enable the panel with a generous initial height; setup() will
+        // recalculate from height_fraction once the backend is ready.
+        shell = shell
+            .with_bottom_panel(10.0)
+            .with_bottom_panel_limits(3.0, 40.0);
+        Some(RefCell::new(BottomPanelController::new(bp_config)))
+    } else {
+        None
+    };
+
+    let active_panel_id = shell.active_panel_id().cloned();
+
+    ShellAdapter::new(app, shell, active_panel_id, bottom_panel, editor_font)
 }
 
 impl<A: ShellApp> AppLogic for ShellAdapter<A> {
@@ -399,6 +475,75 @@ fn resized_to_fraction(new_height: f32, viewport_height: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::app_shell::AppShellLayout;
+
+    struct NoopApp;
+
+    impl ShellApp for NoopApp {
+        fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+        fn handle(
+            &mut self,
+            _event: UiEvent,
+            _backend: &mut dyn Backend,
+            _ctx: &ShellContext,
+        ) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// #547: `title_bar_height_lh` must survive a start-hidden title bar.
+    ///
+    /// Before the fix, `build_shell_adapter` only called
+    /// `shell.with_title_bar(height)` when `config.has_title_bar` was
+    /// already `true`, so a consumer configuring a 1-line-height bar but
+    /// starting it hidden (the common case: reveal on demand, e.g. a menu
+    /// bar toggled via `Alt` or `:set menu`) had the height silently
+    /// discarded. `set_title_bar_visible(true)` would then reserve the
+    /// `AppShell` struct default of 1.5 line-heights — 2 rows at
+    /// `line_height = 1.0` — instead of the configured 1 row. This test
+    /// must fail before the fix.
+    ///
+    /// #497: this test used to be duplicated verbatim in
+    /// `tui::shell_runner` and `gtk::shell_runner` — one copy per backend
+    /// that inlined `build_shell_adapter`. Now that the function lives
+    /// here once, so does its regression coverage; both backends exercise
+    /// the exact same code path, so one test suffices.
+    #[test]
+    fn title_bar_height_lh_survives_start_hidden_then_shown() {
+        let mut config = ShellConfig::new("t", Vec::new());
+        config.has_title_bar = false;
+        config.title_bar_height_lh = 1.0;
+
+        let mut adapter = build_shell_adapter(NoopApp, config);
+        assert!(!adapter.shell.title_bar_visible());
+
+        adapter.shell.set_title_bar_visible(true);
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let tb = layout.title_bar_bounds.expect("row now reserved");
+        assert_eq!(
+            tb.height, 1.0,
+            "configured height (1.0 lh) must be honoured, not the 1.5 lh AppShell default"
+        );
+    }
+
+    /// Companion case: `has_title_bar: true` consumers are unaffected —
+    /// same height, visible from the first frame, no behaviour change.
+    #[test]
+    fn title_bar_height_lh_honoured_when_started_visible() {
+        let mut config = ShellConfig::new("t", Vec::new());
+        config.has_title_bar = true;
+        config.title_bar_height_lh = 1.0;
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        assert!(adapter.shell.title_bar_visible());
+
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let tb = layout
+            .title_bar_bounds
+            .expect("row reserved from construction");
+        assert_eq!(tb.height, 1.0);
+    }
 
     #[test]
     fn resized_to_fraction_recovers_proportion() {
