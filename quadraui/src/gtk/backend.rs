@@ -2665,9 +2665,25 @@ impl Backend for GtkBackend {
     ) -> Vec<(QRect, crate::WidgetId)> {
         // #455: see draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_context_menu called outside enter_frame_scope");
+        // #637: dropdown items are chrome, not editor content — same
+        // save/swap/restore as `Self::draw_menu_bar` (the bar above this
+        // dropdown), so the two agree within a single frame instead of
+        // the bar painting in `ui_font` while the dropdown under it paints
+        // in whatever font the shared layout happened to carry in.
+        //
+        // Row pitch (`line_height` below) stays the editor line height,
+        // matching every other #624 chrome primitive (`draw_status_bar`,
+        // `draw_tab_bar`, `draw_tree`) — that half of the fix is a
+        // pre-existing, deliberately deferred gap across all of them, not
+        // introduced here. It also isn't reachable from this call site:
+        // the row heights baked into `layout_arg` are computed upstream in
+        // `compose::menu_system`, outside this issue's file list.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
         let hits = crate::gtk::draw_context_menu(
             cr,
             pango_layout,
@@ -2676,6 +2692,7 @@ impl Backend for GtkBackend {
             self.current_line_height,
             &self.current_theme,
         );
+        pango_layout.set_font_description(saved_font.as_ref());
         // Reshape rasteriser's `(x, y, w, h, id)` tuples into
         // `(Rect, WidgetId)` for the trait return.
         hits.into_iter()
@@ -3398,10 +3415,22 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::command_center::CommandCenterLayout {
         let line_height = self.current_line_height;
         let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_command_center called outside enter_frame_scope");
-        crate::gtk::draw_command_center(
+        // #637: the back/forward arrows and search label are chrome, not
+        // editor content — same save/swap/restore as the other #624
+        // chrome primitives, so the command centre agrees with the menu
+        // bar / status bar above and below it in the same frame.
+        //
+        // `line_height` (used only for vertical text centring here) stays
+        // the editor line height, matching #624's deliberately deferred
+        // pitch gap for every other chrome primitive — see the comment on
+        // `Self::draw_context_menu`.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let layout = crate::gtk::draw_command_center(
             cr,
             pango_layout,
             rect.x as f64,
@@ -3411,7 +3440,9 @@ impl Backend for GtkBackend {
             cc,
             &theme,
             line_height,
-        )
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        layout
     }
 
     fn command_center_layout(
@@ -4900,6 +4931,159 @@ mod tests {
             ui_font_extent > small_editor_extent + 20,
             "changing ui_font alone must visibly widen the painted row label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
+    }
+
+    /// #637: `draw_context_menu` painted dropdown item labels with
+    /// whatever font the frame's editor-content layout happened to
+    /// carry — unlike `draw_menu_bar` (the bar directly above it, fixed
+    /// by #624), it never swapped the shared layout onto `ui_font` at
+    /// all, so the bar and the dropdown under it visibly disagreed in
+    /// the same frame. Same shape as
+    /// `gtk_backend_draw_tree_uses_ui_font_not_editor_font` above: paint
+    /// a single-item dropdown under two wildly different "editor" font
+    /// sizes with `ui_font` left at its default — the painted glyph
+    /// extent must be identical — then change `ui_font` alone as a
+    /// positive control and see the extent move.
+    #[test]
+    fn gtk_backend_draw_context_menu_uses_ui_font_not_editor_font() {
+        let small_editor_font = pango::FontDescription::from_string("Sans 8");
+        let large_editor_font = pango::FontDescription::from_string("Sans 40");
+        const W: i32 = 1600;
+        const H: i32 = 60;
+        const ITEM_H: f32 = 40.0;
+
+        let row_text_extent = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            let menu = crate::ContextMenu {
+                id: WidgetId::new("test:menu"),
+                items: vec![crate::primitives::context_menu::ContextMenuItem {
+                    id: Some(WidgetId::new("test:menu:item")),
+                    label: crate::types::StyledText::plain("mmmmmmmmmm".to_string()),
+                    ..Default::default()
+                }],
+                // Out of range so no item ever paints as keyboard-selected —
+                // the selection highlight isn't what this test measures.
+                selected_idx: 1,
+                bg: None,
+                placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            };
+            let viewport = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
+            let menu_layout = menu.layout_at(
+                crate::event::Rect::new(0.0, 0.0, 0.0, 0.0),
+                viewport,
+                300.0,
+                |_| crate::primitives::context_menu::ContextMenuItemMeasure::new(ITEM_H),
+            );
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(Some(editor_font));
+                let layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                // White menu chrome so the box's own fill/border doesn't
+                // itself read as "non-white" and saturate the scan below.
+                backend.set_current_theme(crate::Theme {
+                    hover_bg: crate::types::Color::rgb(255, 255, 255),
+                    hover_border: crate::types::Color::rgb(255, 255, 255),
+                    foreground: crate::types::Color::rgb(0, 0, 0),
+                    ..crate::Theme::default()
+                });
+                if let Some(f) = ui_font {
+                    Backend::set_ui_font(&mut backend, f);
+                }
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    b.draw_context_menu(&menu, &menu_layout);
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            // Rightmost non-white pixel within the first (only) item
+            // row's vertical span — proxy for the painted label's glyph
+            // extent. The row spans `[0, ITEM_H)` regardless of font.
+            let y = (ITEM_H / 2.0) as usize;
+            (0..W as usize)
+                .rev()
+                .find(|&x| {
+                    let off = y * stride + x * 4;
+                    !(data[off] == 255 && data[off + 1] == 255 && data[off + 2] == 255)
+                })
+                .unwrap_or(0)
+        };
+
+        let small_editor_extent = row_text_extent(&small_editor_font, None);
+        let large_editor_extent = row_text_extent(&large_editor_font, None);
+        assert!(
+            small_editor_extent.abs_diff(large_editor_extent) <= 1,
+            "context menu item glyph extent must be editor-font-size independent: \
+             small_editor={small_editor_extent}, large_editor={large_editor_extent}"
+        );
+
+        let ui_font_extent = row_text_extent(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_extent > small_editor_extent + 20,
+            "changing ui_font alone must visibly widen the painted item label: \
+             default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
+    }
+
+    /// #637: `draw_command_center` painted its arrows/search label with
+    /// whatever font the frame's editor-content layout happened to
+    /// carry, same gap as `draw_context_menu` above. Unlike the pixel-scan
+    /// tests above, `gtk_command_center_layout` measures the search
+    /// label's width against the same shared Pango layout it paints
+    /// with, so the returned `search_bounds.width` is itself a direct
+    /// font-size probe — no pixel scan needed.
+    #[test]
+    fn gtk_backend_draw_command_center_uses_ui_font_not_editor_font() {
+        let small_editor_font = pango::FontDescription::from_string("Sans 8");
+        let large_editor_font = pango::FontDescription::from_string("Sans 40");
+        let surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, 400, 40)
+                .expect("create ImageSurface");
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let cc = crate::primitives::command_center::CommandCenter {
+            id: WidgetId::new("test:command-center"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "mmmmmmmmmm".to_string(),
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
+
+        let search_width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(Some(editor_font));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            if let Some(f) = ui_font {
+                Backend::set_ui_font(&mut backend, f);
+            }
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_command_center(rect, &cc)
+                    .search_bounds
+                    .expect("non-empty search_label produces search_bounds")
+                    .width
+            })
+        };
+
+        let small_editor_width = search_width_at(&small_editor_font, None);
+        let large_editor_width = search_width_at(&large_editor_font, None);
+        assert!(
+            (small_editor_width - large_editor_width).abs() < 0.5,
+            "command centre search box width must be editor-font-size independent: \
+             small_editor={small_editor_width}, large_editor={large_editor_width}"
+        );
+
+        let ui_font_width = search_width_at(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_width > small_editor_width * 1.5,
+            "changing ui_font alone must visibly widen the painted search box: \
+             default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
         );
     }
 
