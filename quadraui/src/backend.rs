@@ -665,6 +665,29 @@ pub trait Backend {
         false
     }
 
+    /// Snap a proposed height (in logical units — the same units as
+    /// [`Self::line_height`]) to what this backend will actually paint.
+    ///
+    /// Cell-grid backends (TUI) quantize to whole rows; pixel backends
+    /// paint fractional heights exactly and return the input unchanged.
+    ///
+    /// This is the sanctioned replacement for consumer-side `.round()` on
+    /// a `line_height`-derived extent (quadraui#632). Before this method
+    /// existed, `coord-tui` reimplemented TUI's cell-rounding rule by hand
+    /// in two places — the layout math and the hit-test — that had to be
+    /// kept in sync manually, and drifted by one row twice (#464, #995).
+    /// Call this instead of modelling the rounding yourself:
+    ///
+    /// ```ignore
+    /// let tab_bar_h = backend.snap_height(backend.line_height() * 1.4);
+    /// ```
+    ///
+    /// Default: returns `h` unchanged (correct for every pixel backend).
+    /// Only [`crate::tui::backend::TuiBackend`] overrides it.
+    fn snap_height(&self, h: f32) -> f32 {
+        h
+    }
+
     // ─── Drawing — one method per primitive ────────────────────────────
     //
     // Implementations are thin wrappers around each backend crate's
