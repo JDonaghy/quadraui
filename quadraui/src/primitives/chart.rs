@@ -460,15 +460,8 @@ impl Chart {
             }
             ChartKind::Line | ChartKind::Bar | ChartKind::BarGrouped => {
                 let (y_min, y_max) = self.effective_y_range();
+                let range = y_max - y_min;
                 let y_tick_count = self.y_ticks.unwrap_or(5);
-                let y_label_width = if y_tick_count > 0 || self.y_label.is_some() {
-                    let max_label_len = format_tick_value(y_max)
-                        .len()
-                        .max(format_tick_value(y_min).len());
-                    measure.char_width * (max_label_len as f32 + 1.0)
-                } else {
-                    0.0
-                };
                 let x_label_height = if self.x_label.is_some() {
                     measure.line_height
                 } else {
@@ -479,11 +472,45 @@ impl Chart {
                 } else {
                     0.0
                 };
+                // Independent of `y_label_width` (it only subtracts the
+                // x-label row and legend row), so it's safe to compute
+                // ahead of the gutter to know whether ticks will actually
+                // be painted into it.
+                let plot_h_avail = (measure.height - x_label_height - legend_height).max(0.0);
+
+                // Size the gutter from the labels that will actually be
+                // painted — the interior tick values, not just the
+                // endpoints (#647). `format_tick_value` emits a decimal
+                // place for any non-integral value, so an interior tick
+                // like `14.4` between endpoints `0` and `18` is routinely
+                // longer than either end.
+                let y_label_width = if y_tick_count > 0 || self.y_label.is_some() {
+                    let mut max_label_len = if y_tick_count > 0 && plot_h_avail > 0.0 && range > 0.0
+                    {
+                        (0..=y_tick_count)
+                            .map(|i| {
+                                let frac = i as f64 / y_tick_count as f64;
+                                format_tick_value(y_min + frac * range).len()
+                            })
+                            .max()
+                            .unwrap_or(0)
+                    } else {
+                        format_tick_value(y_max)
+                            .len()
+                            .max(format_tick_value(y_min).len())
+                    };
+                    if let Some(label) = &self.y_label {
+                        max_label_len = max_label_len.max(label.len());
+                    }
+                    measure.char_width * (max_label_len as f32 + 1.0)
+                } else {
+                    0.0
+                };
 
                 let plot_x = origin_x + y_label_width;
                 let plot_y = origin_y + legend_height;
                 let plot_w = (measure.width - y_label_width).max(0.0);
-                let plot_h = (measure.height - x_label_height - legend_height).max(0.0);
+                let plot_h = plot_h_avail;
                 let plot_area = Rect::new(plot_x, plot_y, plot_w, plot_h);
 
                 let legend_bounds = if legend_height > 0.0 {
@@ -514,7 +541,6 @@ impl Chart {
                 }
                 hit_regions.push((plot_area, ChartHit::Body(self.id.clone())));
 
-                let range = y_max - y_min;
                 let mut data_point_positions = Vec::new();
                 if self.kind.is_bar() {
                     // Bars own a slot, not a point: anchor each segment
@@ -703,6 +729,78 @@ mod tests {
             "x-label + legend reduce height"
         );
         assert!(layout.legend_bounds.is_some());
+    }
+
+    // ── Y-axis gutter sizing (#647) ──────────────────────────────────────
+
+    /// A `Line` chart with an explicit y-range/tick-count and no legend or
+    /// x-label, for exercising gutter sizing in isolation.
+    fn line_chart_with_ticks(y_range: (f64, f64), y_ticks: usize) -> Chart {
+        Chart {
+            id: WidgetId::new("chart"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "S".into(),
+                data: vec![1.0, 2.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some(y_range),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(y_ticks),
+            x_ticks: None,
+            show_grid: false,
+        }
+    }
+
+    #[test]
+    fn y_gutter_sizes_from_interior_tick_labels_not_just_endpoints() {
+        // 0..18 over 5 ticks: the interior ticks format as "3.6", "7.2",
+        // "10.8", "14.4" — 4 characters, longer than either endpoint
+        // ("0"/"18", 1-2 chars). Pre-fix the gutter was sized from the
+        // endpoints alone and the interior labels spilled outside the
+        // chart's own bounds.
+        let chart = line_chart_with_ticks((0.0, 18.0), 5);
+        let m = ChartMeasure {
+            width: 40.0,
+            height: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+        };
+        let bounds_x = 2.0;
+        let layout = chart.layout(bounds_x, 0.0, m);
+        assert!(
+            layout.plot_area.x - bounds_x >= 5.0,
+            "gutter should reserve the 4-char interior label + 1 padding: \
+             plot_area.x={}, bounds.x={bounds_x}",
+            layout.plot_area.x
+        );
+    }
+
+    #[test]
+    fn y_label_longer_than_tick_labels_widens_the_gutter() {
+        // A `y_label` longer than the widest tick label must not be
+        // silently truncated: the gutter has to widen to fit it too.
+        let mut chart = line_chart_with_ticks((0.0, 18.0), 5);
+        let long_label = "Merges per bucket"; // 18 chars vs. "14.4"'s 4.
+        chart.y_label = Some(long_label.into());
+        let m = ChartMeasure {
+            width: 60.0,
+            height: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+        };
+        let layout = chart.layout(0.0, 0.0, m);
+        let expected_min = long_label.len() as f32 + 1.0;
+        assert!(
+            layout.plot_area.x >= expected_min,
+            "gutter should widen to fit the y_label in full: \
+             plot_area.x={}, expected >= {expected_min}",
+            layout.plot_area.x
+        );
     }
 
     #[test]

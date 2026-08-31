@@ -424,12 +424,19 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
     let px = pa.x.round() as u16;
     let pw = pa.width.round() as u16;
 
+    // Right-align each label against the gutter's right edge, but never
+    // let it start left of the chart's own bounds (#647): a label wider
+    // than the gutter has its leading characters dropped instead of
+    // spilling onto whatever the enclosing panel painted there.
+    let bounds_x = layout.bounds.x.round() as u16;
     for &(sy, val) in &layout.y_tick_positions {
         let row = sy.round() as u16;
         let label = crate::primitives::chart::format_tick_value(val);
         let gutter_end = px.saturating_sub(1);
-        let label_start = gutter_end.saturating_sub(label.len() as u16);
-        for (i, ch) in label.chars().enumerate() {
+        let desired_start = gutter_end.saturating_sub(label.len() as u16);
+        let label_start = desired_start.max(bounds_x);
+        let skip = (label_start - desired_start) as usize;
+        for (i, ch) in label.chars().skip(skip).enumerate() {
             let col = label_start + i as u16;
             if col < gutter_end {
                 set_cell(buf, col, row, ch, dim, bg);
@@ -693,13 +700,11 @@ mod tests {
     /// rationale (quadraui#494).
     fn bar_chart_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 10, 5);
-        // A full-screen-sized buffer, not one exactly matching `area`:
-        // y-axis tick-label painting can spill a few cells left of
-        // `area.x` when there's no reserved label gutter (pre-existing
-        // rasteriser behaviour, unrelated to this regression guard) —
-        // mirrors `tui/activity_bar.rs`'s tests, which likewise paint
-        // into a buffer larger than the widget's own area.
-        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 10, origin_y + 5));
+        // A buffer exactly matching `area`: since #647, y-axis tick-label
+        // painting is clamped to `bounds.x` and can no longer spill left
+        // of the widget's own area, so this no longer needs the
+        // full-screen buffer the pre-fix rasteriser required.
+        let mut buf = Buffer::empty(area);
         let chart = Chart {
             id: WidgetId::new("c"),
             kind: ChartKind::Bar,
@@ -744,14 +749,67 @@ mod tests {
         bar_chart_paint_and_click_round_trip_at(7, 13);
     }
 
+    /// #647 regression: y-range `0..18` over the default 5 ticks formats
+    /// the interior ticks as `3.6`, `7.2`, `10.8`, `14.4` — 4 characters,
+    /// wider than either endpoint (`0`/`18`). Pre-fix, the gutter was
+    /// sized from the endpoints alone and these interior labels spilled
+    /// left of `area.x` onto whatever the host buffer held there. The
+    /// buffer here starts at the screen's own origin (not `area`'s), the
+    /// same shape the pre-fix `bar_chart_paint_and_click_round_trip_at`
+    /// and `legend_paint_and_click_round_trip_at` needed to tolerate the
+    /// spill — this is the direct inverse: it now asserts nothing left
+    /// of `area.x` was ever painted.
+    #[test]
+    fn y_axis_tick_labels_never_paint_left_of_area_bounds() {
+        let origin_x = 5u16;
+        let origin_y = 2u16;
+        let area = Rect::new(origin_x, origin_y, 20, 8);
+        let mut buf = Buffer::empty(Rect::new(
+            0,
+            0,
+            origin_x + area.width,
+            origin_y + area.height,
+        ));
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Bar,
+            series: vec![Series {
+                label: "B".into(),
+                data: vec![1.0, 5.0, 9.0, 13.0, 17.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 18.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: None, // default 5
+            x_ticks: None,
+            show_grid: false,
+        };
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        for y in 0..buf.area.height {
+            for x in 0..origin_x {
+                assert_eq!(
+                    cell_char(&buf, x, y),
+                    ' ',
+                    "cell ({x},{y}) left of area.x={origin_x} was painted"
+                );
+            }
+        }
+    }
+
     /// Shared body for `legend_paint_and_click_round_trip[_at_nonzero_origin]`
     /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
     /// rationale (quadraui#494).
     fn legend_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 30, 10);
-        // See `bar_chart_paint_and_click_round_trip_at`: a full-screen
-        // buffer, since axis-label painting can spill left of `area.x`.
-        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 30, origin_y + 10));
+        // See `bar_chart_paint_and_click_round_trip_at`: since #647
+        // axis-label painting can no longer spill left of `area.x`, so a
+        // buffer exactly matching `area` is enough.
+        let mut buf = Buffer::empty(area);
         let chart = Chart {
             id: WidgetId::new("c"),
             kind: ChartKind::Line,
@@ -862,14 +920,18 @@ mod tests {
             None,
         );
         let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        // #647: the gutter is now sized from the widest *interior* tick
+        // label ("1.4"/"1.8"/"2.2"/"2.6", 3 chars) rather than just the
+        // endpoints ("1"/"3", 1 char), so it's a column wider than
+        // pre-fix and every column below shifts right to match.
         assert_eq!(
             grid(&buf, area),
             vec![
-                "3...██....",
-                "2...██....",
-                "2...████..",
-                "1...████..",
-                "1.────────",
+                "..3...██..",
+                "2.6...██..",
+                "2.2...████",
+                "1.8...████",
+                "1.4.──────",
             ]
         );
     }
@@ -889,14 +951,17 @@ mod tests {
             None,
         );
         let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        // #647: the gutter now reserves room for the widest interior
+        // tick label ("-4.2", 4 chars) rather than just the endpoints
+        // ("-5"/"-1", 2 chars), shifting every column right by 1.
         assert_eq!(
             grid(&buf, area),
             vec![
-                "-1.....██.",
-                "-1.....██.",
-                "-2...████.",
-                "-3...████.",
-                "-4.───────",
+                "..-1...█..",
+                "-1.8...█..",
+                "-2.6..██..",
+                "-3.4..██..",
+                "-4.2.─────",
             ]
         );
     }
