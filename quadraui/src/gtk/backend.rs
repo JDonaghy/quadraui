@@ -317,7 +317,14 @@ pub struct GtkBackend {
 /// just content); `painted_frame` / `modal_was_empty` detect anything else
 /// that might have painted on top of this terminal's pixels between two
 /// `draw_terminal` calls for the same id (a tab switch away and back, or a
-/// dialog/palette/context-menu opening then closing).
+/// dialog/palette/context-menu opening then closing); `theme` detects a
+/// live theme swap (`Backend::set_theme`) between two paints, since
+/// `dirty_rows` only diffs `TerminalCell` content and is blind to the
+/// theme-derived colours `draw_terminal_cells` applies on top of unchanged
+/// cells (`selected` / `is_cursor` / `is_find_match` overlays — see
+/// `primitives/terminal.rs`'s module doc). Without this, selecting text
+/// then toggling light/dark would leave the old theme's selection colour
+/// on screen until some unrelated event forced a full repaint (#417 review).
 #[derive(Debug, Clone)]
 struct TermPaintCache {
     term: TerminalPrim,
@@ -329,6 +336,11 @@ struct TermPaintCache {
     painted_frame: u64,
     /// Whether `modal_stack` was empty at the time of that paint.
     modal_was_empty: bool,
+    /// The theme in effect at the time of that paint. Compared by value
+    /// (`Theme` is `Copy + PartialEq`) so *any* field change — not just the
+    /// ones the terminal rasteriser currently reads — invalidates the fast
+    /// path.
+    theme: crate::Theme,
 }
 
 /// Active text selection state for the GTK backend. Stores the region id
@@ -2369,13 +2381,22 @@ impl Backend for GtkBackend {
 
         // #417: dirty-row fast path. Reuse the previous frame's cache
         // entry for this terminal id only when every geometry input that
-        // affects row alignment is unchanged *and* nothing else could
-        // have painted over these pixels since — see `TermPaintCache`'s
-        // docs for what each guard rules out. `dirty_rows` then comes
-        // back `Some(rows)` (paint only `rows`, possibly empty) or
-        // `None` (row counts differ — full repaint).
+        // affects row alignment is unchanged, the theme hasn't changed
+        // (a same-content row can still need repainting if a
+        // `selected`/`is_cursor`/`is_find_match` overlay's colour moved),
+        // *and* nothing else could have painted over these pixels since —
+        // see `TermPaintCache`'s docs for what each guard rules out.
+        // `dirty_rows` then comes back `Some(rows)` (paint only `rows`,
+        // possibly empty) or `None` (row counts differ — full repaint).
         let modal_empty_now = self.modal_stack.borrow().is_empty();
         let frame_now = self.frame_counter;
+        // Direct `==` on the `f64`/`Theme` fields below is safe only
+        // because each is deterministically *recomputed* every frame
+        // (from layout/font metrics or `set_theme`'s argument), never
+        // accumulated. A future refactor that turns any of them into a
+        // running sum would silently defeat the fast path (forcing extra
+        // full repaints) rather than corrupt output — but it would no
+        // longer be safe to compare this way.
         let dirty_rows: Option<Vec<usize>> =
             self.term_paint_cache.get(&term.id).and_then(|cached| {
                 if cached.rect == rect
@@ -2385,6 +2406,7 @@ impl Backend for GtkBackend {
                     && cached.painted_frame.wrapping_add(1) == frame_now
                     && cached.modal_was_empty
                     && modal_empty_now
+                    && cached.theme == theme
                 {
                     term.dirty_rows(&cached.term)
                 } else {
@@ -2501,6 +2523,7 @@ impl Backend for GtkBackend {
                 cell_area_w,
                 painted_frame: frame_now,
                 modal_was_empty: modal_empty_now,
+                theme,
             },
         );
     }
@@ -5173,6 +5196,88 @@ mod tests {
             (blue.r, blue.g, blue.b),
             "closing a modal that overlapped the terminal must force a \
              full repaint, erasing its overlay"
+        );
+    }
+
+    #[test]
+    fn draw_terminal_full_repaint_after_theme_change() {
+        // Regression test for the #417 review finding: `set_theme` (a
+        // consumer-callable trait method — a live dark/light toggle) was
+        // not plumbed into `TermPaintCache`'s validity guard. `dirty_rows`
+        // only diffs `TerminalCell` content, so a theme swap with
+        // byte-identical cells between two frames used to be invisible to
+        // the fast path — leaving stale theme-derived overlay colours
+        // (`selected` / `is_cursor` / `is_find_match`, see
+        // `primitives/terminal.rs`) on screen. This proves a theme change
+        // alone now forces a full repaint, even with unchanged content and
+        // no modal/gap in between.
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let red = crate::types::Color::rgb(200, 0, 0);
+        let blue = crate::types::Color::rgb(0, 0, 200);
+        let magenta = crate::types::Color::rgb(200, 0, 200);
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = TERM_417_LH;
+        backend.current_char_width = TERM_417_CW;
+        let mut surface = ImageSurface::create(Format::ARgb32, TERM_417_W, TERM_417_H)
+            .expect("create ImageSurface");
+        let rect = QRect::new(0.0, 0.0, TERM_417_W as f32, TERM_417_H as f32);
+        let id = WidgetId::new("test:term");
+        let term = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(red), term_row_417(blue)],
+            scrollbar: None,
+        };
+        let viewport = Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0);
+
+        // Frame 1: full paint under the default (dark) theme.
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        // Simulate a skipped repaint of row 1 so the test can tell "was
+        // this row actually repainted" from "did it just happen to still
+        // be correct" — same technique as the sibling tests above.
+        paint_corruption_417(
+            &surface,
+            0.0,
+            TERM_417_LH,
+            TERM_417_CW,
+            TERM_417_LH,
+            magenta,
+        );
+
+        // Frame 2: content is byte-identical to frame 1's — no scroll, no
+        // new PTY bytes, no modal — but the app calls `set_theme` (e.g. a
+        // dark/light toggle) in between. This alone must force a full
+        // repaint rather than trusting the (now theme-stale) cache.
+        Backend::set_theme(
+            &mut backend,
+            crate::Theme {
+                background: crate::types::Color::rgb(255, 255, 255),
+                foreground: crate::types::Color::rgb(0, 0, 0),
+                ..crate::Theme::default()
+            },
+        );
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, TERM_417_LH as i32 + 5),
+            (blue.r, blue.g, blue.b),
+            "a theme change must force a full repaint even with unchanged \
+             cell content, so theme-derived overlay colours never go stale"
         );
     }
 }
