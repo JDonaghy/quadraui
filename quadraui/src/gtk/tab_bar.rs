@@ -32,6 +32,12 @@ pub(crate) const TAB_ICON_GAP: f64 = 6.0;
 /// Height of the active-tab top-edge accent line — VS Code Dark Modern's
 /// `tab.activeBorderTop` (#620).
 const TAB_ACTIVE_BORDER_TOP_PX: f64 = 1.0;
+/// Vertical margin (px) above and below the active-tab chip fill. VS Code
+/// insets its active-tab pill inside the tab strip rather than filling the
+/// full row height edge to edge (#646).
+const TAB_CHIP_INSET_Y: f64 = 4.0;
+/// Corner radius (px) of the active-tab chip, all four corners (#646).
+const TAB_CHIP_RADIUS: f64 = 4.0;
 
 /// The Nerd-Font-swapped variant of the tab bar's label font, used to
 /// measure and paint [`crate::TabIcon`] glyphs (#620). Icon glyphs share
@@ -84,6 +90,45 @@ pub(crate) fn tab_icon_extras(
             },
         )
         .collect()
+}
+
+/// Trace a rounded-rectangle path on `cr` at `(x, y, w, h)` with corner
+/// radius `radius` on all four corners. Callers set the source and consume
+/// the path themselves (`cr.fill()` or otherwise) — this only builds it.
+///
+/// Shared by the active-tab chip fill (#646) and the close-button hover
+/// background so the two rounded-rect shapes can't drift apart.
+fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
+    cr.new_path();
+    cr.arc(
+        x + w - radius,
+        y + radius,
+        radius,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    );
+    cr.arc(
+        x + w - radius,
+        y + h - radius,
+        radius,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    cr.arc(
+        x + radius,
+        y + h - radius,
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    cr.arc(
+        x + radius,
+        y + radius,
+        radius,
+        std::f64::consts::PI,
+        3.0 * std::f64::consts::FRAC_PI_2,
+    );
+    cr.close_path();
 }
 
 /// Draw a [`TabBar`] into `(x_offset, y_offset, width, row_height)` on `cr`.
@@ -388,23 +433,40 @@ pub fn draw_tab_bar_icons_with_chrome(
         let tab_x = vt.bounds.x as f64;
         let tab_visual_w = vt.bounds.width as f64 - tab_outer_gap;
 
-        // Tab background.
-        let bg_col = if tab.is_active {
-            theme.tab_active_bg
+        // Tab background. The active tab paints an inset, rounded chip
+        // (VS Code's pill, ~24px inside a 35px strip) rather than a square
+        // block filling the full row height edge to edge (#646). Inactive
+        // tabs are unchanged: a full-height rectangle (typically the same
+        // colour as the bar background, since neither VS Code nor quadraui
+        // chips an inactive tab).
+        let chip_y = y_offset + TAB_CHIP_INSET_Y;
+        let chip_h = (tab_row_height - 2.0 * TAB_CHIP_INSET_Y).max(0.0);
+        if tab.is_active {
+            set_source(cr, theme.tab_active_bg);
+            rounded_rect_path(
+                cr,
+                x_offset + tab_x,
+                chip_y,
+                tab_visual_w,
+                chip_h,
+                TAB_CHIP_RADIUS,
+            );
+            cr.fill().ok();
         } else {
-            theme.tab_bar_bg
-        };
-        set_source(cr, bg_col);
-        cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, tab_row_height);
-        cr.fill().ok();
+            set_source(cr, theme.tab_bar_bg);
+            cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, tab_row_height);
+            cr.fill().ok();
+        }
 
         // Top accent line for the active tab — VS Code Dark Modern's
-        // `tab.activeBorderTop` (#620). `bar.active_accent` is `None` = no
-        // accent, matching the TUI (`tui/tab_bar.rs`) and macOS
-        // (`macos/tab_bar.rs`) rasterisers and the field's own doc comment
-        // ("`None` = no underline accent (typical for inactive groups)",
-        // `primitives/tab_bar.rs`). Callers that want VS Code's focused-tab
-        // top border opt in explicitly with
+        // `tab.activeBorderTop` (#620), painted on the chip's own inset top
+        // edge rather than the strip's top edge (#646) so it stays attached
+        // to the pill instead of floating in the strip's top margin.
+        // `bar.active_accent` is `None` = no accent, matching the TUI
+        // (`tui/tab_bar.rs`) and macOS (`macos/tab_bar.rs`) rasterisers and
+        // the field's own doc comment ("`None` = no underline accent
+        // (typical for inactive groups)", `primitives/tab_bar.rs`). Callers
+        // that want VS Code's focused-tab top border opt in explicitly with
         // `active_accent: Some(theme.tab_active_border_top())`; a bar with no
         // notion of focus (bottom-panel tab strip, terminal toolbar,
         // unfocused splits) passes `None` and gets no strip, same as every
@@ -414,7 +476,7 @@ pub fn draw_tab_bar_icons_with_chrome(
                 set_source(cr, accent);
                 cr.rectangle(
                     x_offset + tab_x,
-                    y_offset,
+                    chip_y,
                     tab_visual_w,
                     TAB_ACTIVE_BORDER_TOP_PX,
                 );
@@ -499,36 +561,7 @@ pub fn draw_tab_bar_icons_with_chrome(
                     let (hr, hg, hb) = cairo_rgb(theme.foreground);
                     cr.set_source_rgba(hr, hg, hb, 0.15);
                     let radius = 3.0;
-                    cr.new_path();
-                    cr.arc(
-                        rx + rw - radius,
-                        ry + radius,
-                        radius,
-                        -std::f64::consts::FRAC_PI_2,
-                        0.0,
-                    );
-                    cr.arc(
-                        rx + rw - radius,
-                        ry + rh - radius,
-                        radius,
-                        0.0,
-                        std::f64::consts::FRAC_PI_2,
-                    );
-                    cr.arc(
-                        rx + radius,
-                        ry + rh - radius,
-                        radius,
-                        std::f64::consts::FRAC_PI_2,
-                        std::f64::consts::PI,
-                    );
-                    cr.arc(
-                        rx + radius,
-                        ry + radius,
-                        radius,
-                        std::f64::consts::PI,
-                        3.0 * std::f64::consts::FRAC_PI_2,
-                    );
-                    cr.close_path();
+                    rounded_rect_path(cr, rx, ry, rw, rh, radius);
                     cr.fill().ok();
                 }
 
@@ -863,11 +896,13 @@ mod tests {
         );
     }
 
-    /// #620: when a bar opts in with `active_accent: Some(colour)`, the
-    /// active tab's top row of pixels must be that colour — VS Code Dark
-    /// Modern's `tab.activeBorderTop`. The row immediately below must NOT
-    /// be that colour, confirming the accent is a thin top strip, not the
-    /// whole active-tab background.
+    /// #620/#646: when a bar opts in with `active_accent: Some(colour)`,
+    /// the accent paints on the chip's inset top edge — `TAB_CHIP_INSET_Y`
+    /// rows below the strip's own top edge (#646), not row 0 of the strip
+    /// itself. The strip's own inset margin above the chip must not be the
+    /// accent colour, and the row a few pixels below the accent must be
+    /// the tab body, confirming the accent is a thin strip on the chip,
+    /// not the whole active-tab background.
     #[test]
     fn active_tab_top_row_is_accent_when_opted_in() {
         let accent = Color::rgb(90, 170, 255);
@@ -898,14 +933,23 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
-        let top = pixel(&data, stride, 5, 0);
+        let chip_top = TAB_CHIP_INSET_Y as i32;
+
+        let margin = pixel(&data, stride, 5, 0);
+        assert_ne!(
+            margin,
+            (accent.r, accent.g, accent.b),
+            "the strip's inset margin above the chip must not be the accent colour"
+        );
+
+        let top = pixel(&data, stride, 5, chip_top);
         assert_eq!(
             top,
             (accent.r, accent.g, accent.b),
-            "top row of the active tab should be the opted-in active_accent colour"
+            "the chip's inset top edge should be the opted-in active_accent colour"
         );
 
-        let below = pixel(&data, stride, 5, 3);
+        let below = pixel(&data, stride, 5, chip_top + 3);
         assert_ne!(
             below,
             (accent.r, accent.g, accent.b),
@@ -951,16 +995,17 @@ mod tests {
 
         let border_top = theme.tab_active_border_top();
         let active_bg = theme.tab_active_bg;
-        let top = pixel(&data, stride, 5, 0);
+        let chip_top = TAB_CHIP_INSET_Y as i32;
+        let top = pixel(&data, stride, 5, chip_top);
         assert_ne!(
             top,
             (border_top.r, border_top.g, border_top.b),
-            "with active_accent: None, the top row must NOT be theme.tab_active_border_top()"
+            "with active_accent: None, the chip's top row must NOT be theme.tab_active_border_top()"
         );
         assert_eq!(
             top,
             (active_bg.r, active_bg.g, active_bg.b),
-            "with active_accent: None, the top row should just be the active tab's \
+            "with active_accent: None, the chip's top row should just be the active tab's \
              background — no accent strip painted over it"
         );
     }
@@ -1066,5 +1111,309 @@ mod tests {
 
         assert_eq!(chrome_hits.close_bounds.len(), 1);
         assert!(chrome_hits.close_bounds[0].is_some());
+    }
+
+    /// #646: the active-tab chip's fill height must equal
+    /// `row_height - 2.0 * TAB_CHIP_INSET_Y` — checked for two different
+    /// `row_height` values so a hardcoded inset (rather than one computed
+    /// from `row_height`) would be caught. Antialiasing is disabled so the
+    /// chip's straight top/bottom edges (the sample column is well clear of
+    /// the rounded corners, which only affect the outermost
+    /// `TAB_CHIP_RADIUS` px on each side) land on exact pixel rows.
+    #[test]
+    fn active_chip_height_scales_with_row_height() {
+        let theme = make_theme();
+        for row_h in [24.0_f64, 40.0_f64] {
+            let h = row_h.ceil() as i32;
+            let surface = ImageSurface::create(Format::ARgb32, W, h).expect("create ImageSurface");
+            {
+                let cr = Context::new(&surface).expect("Context::new");
+                cr.set_antialias(pangocairo::cairo::Antialias::None);
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_layout = pangocairo::functions::create_layout(&cr);
+                let bar = make_bar();
+                draw_tab_bar(
+                    &cr,
+                    &pango_layout,
+                    0.0,
+                    W as f64,
+                    LINE_H,
+                    0.0,
+                    row_h,
+                    &bar,
+                    &theme,
+                    None,
+                );
+            }
+            let mut surface = surface;
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let active_bg = theme.tab_active_bg;
+
+            // Sample a column safely clear of the chip's rounded corners.
+            let x = TAB_CHIP_RADIUS as i32 + 4;
+            let mut count = 0;
+            for y in 0..h {
+                if pixel(&data, stride, x, y) == (active_bg.r, active_bg.g, active_bg.b) {
+                    count += 1;
+                }
+            }
+            let expected = (row_h - 2.0 * TAB_CHIP_INSET_Y).round() as i32;
+            assert_eq!(
+                count, expected,
+                "chip fill height at row_height={row_h} should be row_height - 2*inset, \
+                 got a run of {count} active_bg rows"
+            );
+        }
+    }
+
+    /// #646: the chip's top edge sits `TAB_CHIP_INSET_Y` below the bar's
+    /// own `y_offset`, and its bottom edge the same distance above the
+    /// bar's bottom — symmetric, and relative to a non-zero `y_offset` so
+    /// the test can't pass by accident on the `y_offset == 0` coincidence.
+    #[test]
+    fn active_chip_inset_is_symmetric_around_a_nonzero_y_offset() {
+        const Y_OFFSET: f64 = 10.0;
+        const ROW_H_F: f64 = 24.0;
+        let full_h = (Y_OFFSET + ROW_H_F).ceil() as i32;
+        let surface = ImageSurface::create(Format::ARgb32, W, full_h).expect("create ImageSurface");
+        let theme = make_theme();
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_antialias(pangocairo::cairo::Antialias::None);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bar = make_bar();
+            draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                Y_OFFSET,
+                ROW_H_F,
+                &bar,
+                &theme,
+                None,
+            );
+        }
+        let mut surface = surface;
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let active_bg = theme.tab_active_bg;
+
+        let x = TAB_CHIP_RADIUS as i32 + 4;
+        let is_chip =
+            |y: i32| pixel(&data, stride, x, y) == (active_bg.r, active_bg.g, active_bg.b);
+
+        let first_chip_row = (0..full_h)
+            .find(|&y| is_chip(y))
+            .expect("chip should paint");
+        let last_chip_row = (0..full_h)
+            .rev()
+            .find(|&y| is_chip(y))
+            .expect("chip should paint");
+
+        let top_margin = first_chip_row as f64 - Y_OFFSET;
+        let bottom_margin = (Y_OFFSET + ROW_H_F) - (last_chip_row as f64 + 1.0);
+
+        assert_eq!(
+            top_margin, TAB_CHIP_INSET_Y,
+            "chip top edge should sit TAB_CHIP_INSET_Y below the bar's y_offset"
+        );
+        assert_eq!(
+            bottom_margin, TAB_CHIP_INSET_Y,
+            "chip bottom edge should sit TAB_CHIP_INSET_Y above the bar's bottom, \
+             symmetric with the top margin"
+        );
+    }
+
+    /// #646: the four corner pixels of the active chip's bounding rect must
+    /// be the bar background, not `tab_active_bg` — the assertion that
+    /// actually pins the rounded radius (a square chip would fill those
+    /// corners with the active colour).
+    #[test]
+    fn active_chip_corners_are_bar_background_not_active_fill() {
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let theme = make_theme();
+        let layout;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_antialias(pangocairo::cairo::Antialias::None);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bar = make_bar();
+            let (_, l) = draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                None,
+            );
+            layout = l;
+        }
+        let mut surface = surface;
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let bounds = layout.visible_tabs[0].bounds;
+        let chip_x0 = bounds.x as i32;
+        // Painted fill width excludes the trailing TAB_OUTER_GAP (see
+        // `tab_visual_w` in `draw_tab_bar_icons_with_chrome`).
+        let chip_x1 = (bounds.x + bounds.width - TAB_OUTER_GAP as f32) as i32 - 1;
+        let chip_y0 = TAB_CHIP_INSET_Y as i32;
+        let chip_y1 = ROW_H - TAB_CHIP_INSET_Y as i32 - 1;
+
+        let bar_bg = theme.tab_bar_bg;
+        for &(x, y) in &[
+            (chip_x0, chip_y0),
+            (chip_x1, chip_y0),
+            (chip_x0, chip_y1),
+            (chip_x1, chip_y1),
+        ] {
+            let px = pixel(&data, stride, x, y);
+            assert_eq!(
+                px,
+                (bar_bg.r, bar_bg.g, bar_bg.b),
+                "chip bounding-rect corner ({x},{y}) should be bar background \
+                 (rounded off by TAB_CHIP_RADIUS), not the active fill"
+            );
+        }
+    }
+
+    /// #646 "not in scope: the hit rect" — `tab_bar_layout_to_hits` (via
+    /// `TabBarLayout::hit_test`) must keep reporting the tab's hit region
+    /// at the full `row_height`, even though the visible chip is now inset.
+    /// A click 1px into the strip's top margin — above the chip's
+    /// `TAB_CHIP_INSET_Y`-px inset — must still resolve to the tab, not
+    /// `Empty`.
+    #[test]
+    fn hit_test_in_top_margin_above_chip_still_resolves_to_tab() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        assert!(
+            TAB_CHIP_INSET_Y > 1.0,
+            "test assumes the chip's inset margin is more than 1px"
+        );
+
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let bar = make_bar();
+        let theme = make_theme();
+        let (_hits, layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            W as f64,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &bar,
+            &theme,
+            None,
+        );
+
+        let bounds = layout.visible_tabs[0].bounds;
+        assert_eq!(
+            bounds.height, ROW_H as f32,
+            "the tab's hit rect must stay the full row_height, not the visible chip height"
+        );
+
+        let click_x = bounds.x + 5.0;
+        match layout.hit_test(click_x, 1.0) {
+            TabBarHit::Tab(0) => {}
+            other => panic!(
+                "expected Tab(0) for a click in the top margin above the chip, got {other:?}"
+            ),
+        }
+    }
+
+    /// #646: the inactive-tab paint path is untouched — no chip, no radius.
+    /// An inactive tab must never show `tab_active_bg` anywhere in its
+    /// column; if the chip logic ever leaked into the inactive branch (or
+    /// the `is_active` check were dropped), this would catch it, since
+    /// `tab_active_bg` is asserted distinct from `tab_bar_bg` by
+    /// `make_theme`.
+    #[test]
+    fn inactive_tab_never_paints_the_active_chip_colour() {
+        let theme = make_theme();
+        assert_ne!(
+            theme.tab_active_bg, theme.tab_bar_bg,
+            "fixture requires active/inactive colours to differ"
+        );
+
+        let bar = TabBar {
+            id: WidgetId::new("test-tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: false,
+                ..Default::default()
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let layout;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let (_, l) = draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                None,
+            );
+            layout = l;
+        }
+        let mut surface = surface;
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let bounds = layout.visible_tabs[0].bounds;
+        // Sample inside the tab's left padding (`TAB_PAD`), well clear of
+        // the label glyphs — a column through the text would show the
+        // label's foreground colour instead of the background fill.
+        let x = bounds.x as i32 + 3;
+        let active_bg = theme.tab_active_bg;
+        let bar_bg = theme.tab_bar_bg;
+        for y in 0..ROW_H {
+            let px = pixel(&data, stride, x, y);
+            assert_ne!(
+                px,
+                (active_bg.r, active_bg.g, active_bg.b),
+                "inactive tab must never paint the active chip colour at y={y}"
+            );
+            assert_eq!(
+                px,
+                (bar_bg.r, bar_bg.g, bar_bg.b),
+                "inactive tab should fill its full row_height with bar background, \
+                 unrestricted by the chip's inset, at y={y}"
+            );
+        }
     }
 }
