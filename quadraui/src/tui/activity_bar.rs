@@ -26,10 +26,10 @@ pub fn draw_activity_bar(
 
     let bg = qc(theme.tab_bar_bg);
     let sep = qc(theme.separator);
-    let accent = bar
-        .active_accent
-        .map(qc)
-        .unwrap_or_else(|| qc(theme.accent_fg));
+    // #658: no theme fallback for either knob — `None` genuinely means
+    // "don't paint this" for both the accent line and the row fill.
+    let accent: Option<ratatui::style::Color> = bar.active_accent.map(qc);
+    let active_bg: Option<ratatui::style::Color> = bar.active_bg.map(qc);
     let active_fg = qc(theme.foreground);
     let inactive_fg = qc(theme.inactive_fg);
     let hover_bg = qc(theme.tab_bar_bg.lighten(0.10));
@@ -77,6 +77,8 @@ pub fn draw_activity_bar(
             sel_explicit_bg.unwrap_or(if is_hovered { hover_bg } else { bg })
         } else if is_hovered {
             hover_bg
+        } else if item.is_active {
+            active_bg.unwrap_or(bg)
         } else {
             bg
         };
@@ -86,18 +88,24 @@ pub fn draw_activity_bar(
             inactive_fg
         };
 
-        // Row background fill (hover tint or explicit keyboard-selection bg).
-        // Both use the same `row_bg` computed above, but we only fill when
-        // there is actually a tint to apply.
-        if is_hovered || (item.is_keyboard_selected && sel_explicit_bg.is_some()) {
+        // Row background fill (hover tint, explicit keyboard-selection bg,
+        // or the active-row fill). All three use the same `row_bg` computed
+        // above, but we only fill when there is actually a tint to apply.
+        if is_hovered
+            || (item.is_keyboard_selected && sel_explicit_bg.is_some())
+            || (item.is_active && active_bg.is_some())
+        {
             for col in area.x..sep_col {
                 set_cell(buf, col, y, ' ', fg, row_bg);
             }
         }
 
-        // Left-edge accent bar for active items.
+        // Left-edge accent bar for active items — only when the bar opts in
+        // via `active_accent`. `None` paints zero accent-line pixels (#658).
         if item.is_active {
-            set_cell(buf, area.x, y, '▎', accent, row_bg);
+            if let Some(ac) = accent {
+                set_cell(buf, area.x, y, '▎', ac, row_bg);
+            }
         }
 
         // Icon glyph — centered in the available width (excluding accent
@@ -170,6 +178,7 @@ mod tests {
             top_items: vec![item("explorer", "E"), item("search", "S"), item("git", "G")],
             bottom_items: vec![item("settings", "*")],
             active_accent: None,
+            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         }

@@ -45,8 +45,13 @@ pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 ///
 /// - **Background:** filled with `theme.tab_bar_bg`.
 /// - **Right-edge separator:** 1 px column in `theme.separator`.
-/// - **Active row:** 2 px left-edge accent bar in
-///   `theme.accent_fg` (or `bar.active_accent` if the bar overrides).
+/// - **Active row:** two independent, opt-in indicators (#658), each
+///   `None` (no rendering) unless the bar sets it:
+///   - `bar.active_bg` fills the whole row (VS Code style).
+///   - `bar.active_accent` paints a 2 px left-edge line (JetBrains style).
+///
+///   Set either, both, or neither — there is no theme fallback for
+///   either knob.
 /// - **Hovered row:** subtle background tint
 ///   (`theme.tab_bar_bg.lighten(0.10)`).
 /// - **Icon glyph:** centred in each row using [`ICON_FONT_DESC`]
@@ -89,16 +94,14 @@ pub fn draw_activity_bar(
     pango_layout.set_font_description(Some(&icon_font));
     pango_layout.set_attributes(None);
 
+    // #658: no theme fallback for either knob — `None` genuinely means
+    // "don't paint this". `Some` colours pass straight through.
     let accent_col = bar
         .active_accent
-        .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0))
-        .unwrap_or_else(|| {
-            (
-                theme.accent_fg.r as f64 / 255.0,
-                theme.accent_fg.g as f64 / 255.0,
-                theme.accent_fg.b as f64 / 255.0,
-            )
-        });
+        .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0));
+    let active_bg_col = bar
+        .active_bg
+        .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0));
     let inactive_fg = (
         theme.inactive_fg.r as f64 / 255.0,
         theme.inactive_fg.g as f64 / 255.0,
@@ -131,6 +134,18 @@ pub fn draw_activity_bar(
 
         let is_hovered = hovered_idx == Some(flat_idx);
 
+        // Active-row fill (VS Code style). Lowest-priority layer — painted
+        // first so hover/keyboard-selection tints below still take visual
+        // precedence over it when they also apply to this row. `None`
+        // (the default) paints nothing here (#658).
+        if item.is_active {
+            if let Some((r, g, b)) = active_bg_col {
+                cr.set_source_rgb(r, g, b);
+                cr.rectangle(0.0, y, width, row_h);
+                cr.fill().ok();
+            }
+        }
+
         // Hover tint (lower priority: painted first so selection can win).
         if is_hovered {
             cr.set_source_rgb(hover_bg.0, hover_bg.1, hover_bg.2);
@@ -156,9 +171,11 @@ pub fn draw_activity_bar(
         }
 
         if item.is_active {
-            cr.set_source_rgb(accent_col.0, accent_col.1, accent_col.2);
-            cr.rectangle(0.0, y, 2.0, row_h);
-            cr.fill().ok();
+            if let Some((r, g, b)) = accent_col {
+                cr.set_source_rgb(r, g, b);
+                cr.rectangle(0.0, y, 2.0, row_h);
+                cr.fill().ok();
+            }
         }
 
         pango_layout.set_text(&item.icon);
@@ -237,5 +254,140 @@ mod tests {
             "new icon glyph width ({new_w}) should not exceed the pre-#620 20pt \
              width ({old_w})"
         );
+    }
+
+    // ── #658: active_bg / active_accent independence ────────────────────
+
+    use crate::primitives::activity_bar::ActivityItem;
+    use crate::types::{Color, WidgetId};
+
+    const ROW_W: i32 = 48;
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    ///
+    /// Cairo's `ARgb32` stores each pixel as four bytes in native
+    /// (little-endian) byte order: [B, G, R, A].
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn one_item_bar(active_accent: Option<Color>, active_bg: Option<Color>) -> ActivityBar {
+        ActivityBar {
+            id: WidgetId::new("bar"),
+            top_items: vec![ActivityItem {
+                id: WidgetId::new("activity:explorer"),
+                icon: "E".into(),
+                tooltip: String::new(),
+                is_active: true,
+                is_keyboard_selected: false,
+            }],
+            bottom_items: vec![],
+            active_accent,
+            active_bg,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        }
+    }
+
+    fn paint_one_row(bar: &ActivityBar) -> ImageSurface {
+        let surface = ImageSurface::create(Format::ARgb32, ROW_W, ACTIVITY_ROW_PX as i32)
+            .expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_activity_bar(
+                &cr,
+                &pango_layout,
+                ROW_W as f64,
+                ACTIVITY_ROW_PX,
+                bar,
+                &Theme::default(),
+                None,
+            );
+        }
+        surface.flush();
+        surface
+    }
+
+    /// #658 acceptance: `active_bg: Some(..)` + `active_accent: None` paints
+    /// a filled active row with **zero** accent-line pixels — the legacy
+    /// 2px left-edge column (x ∈ [0, 2)) must show the fill colour, not a
+    /// leftover accent tint (the pre-#658 rasteriser fell back to
+    /// `theme.accent_fg` there regardless of `active_accent`).
+    #[test]
+    fn active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none() {
+        let active_bg = Color::rgb(49, 50, 51);
+        let bar = one_item_bar(None, Some(active_bg));
+        let mut surface = paint_one_row(&bar);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let mid_y = (ACTIVITY_ROW_PX as i32) / 2;
+        for x in 0..2 {
+            let px = pixel(&data, stride, x, mid_y);
+            assert_eq!(
+                px,
+                (active_bg.r, active_bg.g, active_bg.b),
+                "x={x} is inside the legacy accent column; with active_accent \
+                 None it must show the active_bg fill, not any accent tint \
+                 (zero accent-line pixels)"
+            );
+        }
+        // Deep in the row, away from the glyph, should also be filled.
+        let px = pixel(&data, stride, ROW_W - 4, mid_y);
+        assert_eq!(px, (active_bg.r, active_bg.g, active_bg.b));
+    }
+
+    /// The flip side: `active_accent: Some(..)` with no `active_bg` still
+    /// paints the traditional 2px line, and nothing past it.
+    #[test]
+    fn active_accent_paints_two_px_line_when_set() {
+        let accent = Color::rgb(80, 140, 255);
+        let bar = one_item_bar(Some(accent), None);
+        let mut surface = paint_one_row(&bar);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let mid_y = (ACTIVITY_ROW_PX as i32) / 2;
+        assert_eq!(
+            pixel(&data, stride, 0, mid_y),
+            (accent.r, accent.g, accent.b)
+        );
+        assert_eq!(
+            pixel(&data, stride, 1, mid_y),
+            (accent.r, accent.g, accent.b)
+        );
+
+        let theme = Theme::default();
+        let bg_px = pixel(&data, stride, 2, 2);
+        assert_eq!(
+            bg_px,
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "x=2 is past the 2px accent strip and should be tab_bar_bg"
+        );
+    }
+
+    /// Neither knob set: the active row paints exactly like an inactive
+    /// row — no fill, no line. This is "today's behaviour" the doc on
+    /// both fields promises stays the default.
+    #[test]
+    fn neither_knob_set_paints_plain_row() {
+        let bar = one_item_bar(None, None);
+        let mut surface = paint_one_row(&bar);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let theme = Theme::default();
+
+        let mid_y = (ACTIVITY_ROW_PX as i32) / 2;
+        for x in [0, 1, ROW_W - 4] {
+            let px = pixel(&data, stride, x, mid_y);
+            assert_eq!(
+                px,
+                (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+                "x={x} should be plain tab_bar_bg when neither active_bg nor \
+                 active_accent is set"
+            );
+        }
     }
 }

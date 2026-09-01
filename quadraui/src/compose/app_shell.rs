@@ -583,7 +583,14 @@ impl AppShell {
             id: WidgetId::new("app-shell:activity-bar"),
             top_items,
             bottom_items,
+            // #658: `AppShell` has no `Theme` in scope here to source a
+            // colour from (that wiring is #381's job), so both active-item
+            // indicators are left unset rather than hardcoded. As of #658
+            // neither rasteriser falls back to a theme default anymore, so
+            // this means the built-in shell chrome paints no active-item
+            // indicator until #381 lands.
             active_accent: None,
+            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: focused,
         }

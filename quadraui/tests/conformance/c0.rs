@@ -562,6 +562,7 @@ pub const CASES: &[Case] = &[
                 }],
                 bottom_items: vec![],
                 active_accent: None,
+                active_bg: None,
                 selection_bg: None,
                 is_keyboard_focused: false,
             };
