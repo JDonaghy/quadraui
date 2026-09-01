@@ -15,6 +15,7 @@
 //! default button (the first whose `is_default = true`); Escape emits
 //! `Cancelled` unconditionally.
 
+use crate::backend::{MessageDialogButton, MessageDialogOptions};
 use crate::event::Rect;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
 use crate::types::{Color, Modifiers, StyledText, WidgetId};
@@ -485,6 +486,50 @@ impl Dialog {
     }
 }
 
+/// Flatten a [`StyledText`] to plain text. Native alert facilities carry
+/// no per-span styling, so this discards it the same way `gtk::dialog`
+/// and `tui::dialog`'s private `flatten` helpers do for the in-canvas
+/// rasterisers.
+fn flatten(text: &StyledText) -> String {
+    text.spans.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// Map a [`Dialog`] descriptor to the options
+/// [`crate::backend::PlatformServices::show_message_dialog`] needs, or
+/// `None` when `d` is not natively expressible (quadraui#666).
+///
+/// Not natively expressible today: `d.table.is_some() || d.input.is_some()`
+/// — no native alert facility hosts a table or a text field, so callers
+/// must fall back to `draw_dialog` (the in-canvas primitive) for those.
+/// This decision lives here, as a pure function of the descriptor, so
+/// callers never grow their own hand-written list of "which dialogs can
+/// go native" — the same reasoning behind keeping `gtk::minimap::render_mode`
+/// pure and unit-testable with no live surface.
+///
+/// `DialogButton::tint` has no equivalent in [`MessageDialogButton`] (no
+/// native alert facility exposes per-button colour) and is silently
+/// dropped — every other field maps straight across.
+pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
+    if d.table.is_some() || d.input.is_some() {
+        return None;
+    }
+    Some(MessageDialogOptions {
+        title: flatten(&d.title),
+        body: d.body.iter().map(flatten).collect::<Vec<_>>().join("\n"),
+        buttons: d
+            .buttons
+            .iter()
+            .map(|b| MessageDialogButton {
+                id: b.id.clone(),
+                label: b.label.clone(),
+                is_default: b.is_default,
+                is_cancel: b.is_cancel,
+            })
+            .collect(),
+        severity: d.severity,
+    })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -869,5 +914,79 @@ mod tests {
         let json = r#"{"id":"d","title":{"spans":[{"text":"T","fg":null,"bg":null,"bold":false,"italic":false,"underline":false,"strike":false}]},"body":[],"buttons":[]}"#;
         let d: Dialog = serde_json::from_str(json).unwrap();
         assert!(d.table.is_none());
+    }
+
+    // ── native_dialog_options (quadraui#666) ──────────────────────────────
+
+    fn dialog_with_buttons() -> Dialog {
+        Dialog {
+            id: WidgetId::new("d"),
+            title: crate::types::StyledText::plain("Unsaved Changes"),
+            body: vec![
+                crate::types::StyledText::plain("Do you want to save?"),
+                crate::types::StyledText::plain("Changes will be lost."),
+            ],
+            buttons: vec![
+                DialogButton {
+                    id: WidgetId::new("save"),
+                    label: "Save".into(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                },
+                DialogButton {
+                    id: WidgetId::new("cancel"),
+                    label: "Cancel".into(),
+                    is_default: false,
+                    is_cancel: true,
+                    tint: None,
+                },
+            ],
+            severity: Some(DialogSeverity::Warning),
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        }
+    }
+
+    #[test]
+    fn native_dialog_options_maps_title_body_buttons_default_cancel_severity() {
+        let d = dialog_with_buttons();
+        let opts =
+            native_dialog_options(&d).expect("no table/input — must be natively expressible");
+        assert_eq!(opts.title, "Unsaved Changes");
+        assert_eq!(opts.body, "Do you want to save?\nChanges will be lost.");
+        assert_eq!(opts.buttons.len(), 2);
+        assert_eq!(opts.buttons[0].id.as_str(), "save");
+        assert_eq!(opts.buttons[0].label, "Save");
+        assert!(opts.buttons[0].is_default);
+        assert!(!opts.buttons[0].is_cancel);
+        assert_eq!(opts.buttons[1].id.as_str(), "cancel");
+        assert_eq!(opts.buttons[1].label, "Cancel");
+        assert!(opts.buttons[1].is_cancel);
+        assert!(!opts.buttons[1].is_default);
+        assert_eq!(opts.severity, Some(DialogSeverity::Warning));
+    }
+
+    #[test]
+    fn native_dialog_options_none_for_table() {
+        let d = table_dialog();
+        assert!(
+            native_dialog_options(&d).is_none(),
+            "no native alert facility hosts a DialogTable"
+        );
+    }
+
+    #[test]
+    fn native_dialog_options_none_for_input() {
+        let d = base_dialog(Some(DialogInput::TextInput(DialogTextInput {
+            value: "x".into(),
+            placeholder: String::new(),
+            cursor: None,
+        })));
+        assert!(
+            native_dialog_options(&d).is_none(),
+            "no native alert facility hosts a DialogInput text field"
+        );
     }
 }

@@ -21,7 +21,9 @@ use std::process::Command;
 use objc2_app_kit::{NSOpenPanel, NSSavePanel};
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 
-use crate::backend::{Clipboard, FileDialogOptions, Notification};
+use crate::backend::{
+    Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
+};
 use crate::PlatformServices;
 
 /// `NSModalResponseOK` — the user clicked Open / Save.
@@ -85,6 +87,14 @@ impl PlatformServices for MacPlatformServices {
             }
             url_to_path(panel.URL().as_deref())
         }
+    }
+
+    /// Not yet implemented — no `native_dialogs` capability declared
+    /// (`MacBackend::backend_caps`). A real `NSAlert`-backed
+    /// implementation is follow-up work (quadraui#666); until then this
+    /// behaves like a dismissed dialog, same as `WinPlatformServices`.
+    fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+        None
     }
 
     fn send_notification(&self, n: Notification) {

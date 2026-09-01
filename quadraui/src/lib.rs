@@ -203,8 +203,8 @@ pub use primitives::data_table::{
     DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
 };
 pub use primitives::dialog::{
-    Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout, DialogMeasure,
-    DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
+    native_dialog_options, Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout,
+    DialogMeasure, DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
 };
 pub use primitives::diff_view::{
     DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewEvent,
@@ -332,8 +332,8 @@ pub use accelerator::{
     AcceleratorScope, KeyBinding, ParsedBinding, Platform,
 };
 pub use backend::{
-    Backend, BackendCaps, Clipboard, FileDialogOptions, Notification, PlatformServices,
-    PointerShape, ResizeEdge,
+    Backend, BackendCaps, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
+    MessageDialogOptions, Notification, PlatformServices, PointerShape, ResizeEdge,
 };
 pub use event::{
     BackendNativeEvent, ButtonMask, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent,

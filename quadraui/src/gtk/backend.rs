@@ -1445,6 +1445,10 @@ impl Backend for GtkBackend {
     ///   window yet (see [`crate::backend::BackendCaps::ime`]).
     /// - `file_dialogs`: `GtkPlatformServices` uses real `gtk4::FileDialog`
     ///   pickers (`src/gtk/services.rs`), not a stub.
+    /// - `native_dialogs`: `GtkPlatformServices::show_message_dialog` uses
+    ///   a real `gtk4::AlertDialog` (`src/gtk/services.rs`), pumped
+    ///   through the same `pump_until_ready` + `pump_depth` guard the
+    ///   file dialogs use (quadraui#666).
     /// - `notifications`: **not** declared —
     ///   `GtkPlatformServices::send_notification` is still stubbed pending
     ///   an async-aware trait shape (`src/gtk/services.rs` module docs).
@@ -1457,6 +1461,7 @@ impl Backend for GtkBackend {
             window_chrome: true,
             pointer_cursor: true,
             file_dialogs: true,
+            native_dialogs: true,
             ..crate::backend::BackendCaps::empty()
         }
     }

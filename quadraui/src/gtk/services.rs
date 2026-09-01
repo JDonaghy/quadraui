@@ -2,11 +2,13 @@
 //!
 //! Clipboard uses `arboard` for synchronous system clipboard access
 //! (GTK's native read API is async, incompatible with the sync trait).
-//! `open_url` uses GIO. File dialogs use `gtk4::FileDialog` behind a
-//! nested-mainloop adapter (see [`pump_until_ready`]) so the trait's
-//! synchronous signature can be honored even though GTK4 only exposes
-//! an async dialog API (#427). Notifications remain stubbed pending an
-//! async-aware trait shape.
+//! `open_url` uses GIO. File dialogs use `gtk4::FileDialog`, and message
+//! dialogs use `gtk4::AlertDialog` (quadraui#666) — `gtk4::MessageDialog`
+//! has been deprecated since GTK 4.10, and the fleet is on 4.14.5 — both
+//! behind the same nested-mainloop adapter (see [`pump_until_ready`]) so
+//! the trait's synchronous signatures can be honored even though GTK4
+//! only exposes async dialog APIs (#427). Notifications remain stubbed
+//! pending an async-aware trait shape.
 //!
 //! ## Re-entrancy guard (#427 follow-up)
 //!
@@ -32,7 +34,10 @@ use std::rc::Rc;
 use gtk4::gio;
 use gtk4::glib;
 
-use crate::backend::{Clipboard, FileDialogOptions, Notification};
+use crate::backend::{
+    Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
+    Notification,
+};
 use crate::PlatformServices;
 
 /// GTK platform-services impl. Clipboard is backed by `arboard` for
@@ -112,6 +117,8 @@ impl PlatformServices for GtkPlatformServices {
             *result_cb.borrow_mut() = Some(res);
         });
         pump_until_ready(&result, &self.pumping)
+            .ok()
+            .and_then(|file| gtk4::prelude::FileExt::path(&file))
     }
 
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
@@ -124,6 +131,44 @@ impl PlatformServices for GtkPlatformServices {
             *result_cb.borrow_mut() = Some(res);
         });
         pump_until_ready(&result, &self.pumping)
+            .ok()
+            .and_then(|file| gtk4::prelude::FileExt::path(&file))
+    }
+
+    /// `gtk4::AlertDialog::choose()` (quadraui#666) — see the module docs
+    /// for why `AlertDialog`, not the deprecated `MessageDialog`. Driven
+    /// through the same [`pump_until_ready`] + `pump_depth` guard the
+    /// file dialogs use above; this does **not** hand-roll a second
+    /// nested loop.
+    fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+        let order = hig_button_order(&opts.buttons);
+        let labels: Vec<&str> = order
+            .iter()
+            .map(|&i| opts.buttons[i].label.as_str())
+            .collect();
+
+        let dialog = gtk4::AlertDialog::default();
+        dialog.set_message(&opts.title);
+        dialog.set_detail(&opts.body);
+        dialog.set_modal(true);
+        dialog.set_buttons(&labels);
+        if let Some(pos) = order.iter().position(|&i| opts.buttons[i].is_cancel) {
+            dialog.set_cancel_button(pos as i32);
+        }
+        if let Some(pos) = order.iter().position(|&i| opts.buttons[i].is_default) {
+            dialog.set_default_button(pos as i32);
+        }
+
+        let window = self.window.borrow().clone();
+        let result = Rc::new(RefCell::new(None));
+        let result_cb = Rc::clone(&result);
+        dialog.choose(window.as_ref(), gio::Cancellable::NONE, move |res| {
+            *result_cb.borrow_mut() = Some(res);
+        });
+        let idx = pump_until_ready(&result, &self.pumping).ok()?;
+        let pos = usize::try_from(idx).ok()?;
+        let orig = *order.get(pos)?;
+        Some(opts.buttons[orig].id.clone())
     }
 
     fn send_notification(&self, _n: Notification) {}
@@ -168,16 +213,21 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
     dialog
 }
 
-/// Nested-mainloop adapter: `gtk4::FileDialog::open`/`save` are async-only
-/// (GTK4 dropped the blocking `FileChooserDialog` API), but
-/// [`PlatformServices::show_file_open_dialog`] /
-/// `show_file_save_dialog` are synchronous across every backend (the
-/// signature macOS's `NSOpenPanel::runModal` and Win32's `comdlg32` map
-/// onto directly). This closes the gap the same way GTK itself closes it
+/// Nested-mainloop adapter: `gtk4::FileDialog::open`/`save` and
+/// `gtk4::AlertDialog::choose` (quadraui#666) are async-only (GTK4
+/// dropped the blocking `FileChooserDialog` API and never had a blocking
+/// alert), but [`PlatformServices::show_file_open_dialog`] /
+/// `show_file_save_dialog` / `show_message_dialog` are synchronous
+/// across every backend (the signature macOS's `NSOpenPanel::runModal` /
+/// `NSAlert::runModal` and Win32's `comdlg32` / `MessageBoxEx` map onto
+/// directly). This closes the gap the same way GTK itself closes it
 /// internally for modal dialogs (e.g. the legacy `gtk_dialog_run`): pump
 /// `glib::MainContext::iteration(true)` — which blocks until *some*
-/// source is ready and dispatches it — in a loop until the dialog's
-/// completion callback has stashed a result in `result`.
+/// source is ready and dispatches it — in a loop until the async
+/// operation's completion callback has stashed a result in `result`.
+/// Generic over the result type so every blocking-dialog call site
+/// (file open/save, message/alert) shares this one pump instead of each
+/// hand-rolling its own nested loop.
 ///
 /// # Re-entrancy note
 ///
@@ -185,11 +235,11 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
 /// including redraw/timer/other-widget callbacks that would normally
 /// wait their turn — the same way a native nested loop (or GTK's old
 /// `gtk_dialog_run`) does. If one of those callbacks itself triggers
-/// another file dialog, the inner call's `iteration(true)` loop will
-/// also service the outer dialog's completion source, which is safe but
+/// another dialog, the inner call's `iteration(true)` loop will also
+/// service the outer dialog's completion source, which is safe but
 /// means dialogs can resolve out of call order. Apps should avoid
-/// opening a second file dialog from inside a callback that runs while
-/// one is already open.
+/// opening a second dialog from inside a callback that runs while one is
+/// already open.
 ///
 /// Critically, this is called while `quadraui::gtk::run`'s caller (an
 /// `AppLogic::handle` invocation) still holds the shared
@@ -198,10 +248,7 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
 /// callbacks (idle-drain timer, input controllers, draw func) detect
 /// that and skip their own `backend.borrow_mut()` instead of panicking
 /// on a double-borrow (#427).
-fn pump_until_ready(
-    result: &Rc<RefCell<Option<Result<gio::File, glib::Error>>>>,
-    pumping: &Rc<Cell<u32>>,
-) -> Option<PathBuf> {
+fn pump_until_ready<T>(result: &Rc<RefCell<Option<T>>>, pumping: &Rc<Cell<u32>>) -> T {
     let _guard = PumpGuard::new(pumping);
     let ctx = glib::MainContext::default();
     while result.borrow().is_none() {
@@ -210,8 +257,41 @@ fn pump_until_ready(
     result
         .borrow_mut()
         .take()
-        .and_then(|res| res.ok())
-        .and_then(|file| gtk4::prelude::FileExt::path(&file))
+        .expect("loop above only exits once `result` is Some")
+}
+
+/// GNOME HIG button ordering for `gtk4::AlertDialog::set_buttons`: the
+/// cancel button (if any) goes first (leftmost); the default/primary
+/// button (if any) goes last (rightmost); every other button keeps its
+/// original relative order in between. Returns indices into `buttons`,
+/// in the order to hand to `set_buttons` — `show_message_dialog` maps
+/// the chosen index back through this same `Vec` to recover the
+/// original [`MessageDialogButton::id`].
+///
+/// A button with both `is_default` and `is_cancel` set (a single-button
+/// "OK" dialog) is treated as the cancel slot here — see below, both
+/// `set_cancel_button` and `set_default_button` are still pointed at its
+/// position afterward regardless of which bucket placed it.
+fn hig_button_order(buttons: &[MessageDialogButton]) -> Vec<usize> {
+    let mut cancel_idx = None;
+    let mut default_idx = None;
+    let mut middle = Vec::new();
+    for (i, b) in buttons.iter().enumerate() {
+        if b.is_cancel && cancel_idx.is_none() {
+            cancel_idx = Some(i);
+        } else if b.is_default && default_idx.is_none() {
+            default_idx = Some(i);
+        } else {
+            middle.push(i);
+        }
+    }
+    let mut order = Vec::with_capacity(buttons.len());
+    order.extend(cancel_idx);
+    order.extend(middle);
+    if let Some(d) = default_idx {
+        order.push(d);
+    }
+    order
 }
 
 /// RAII bump/decrement for the shared pump-depth counter. A counter
@@ -537,5 +617,55 @@ mod tests {
             1,
             "handle must observe the mutation made through services.pumping"
         );
+    }
+
+    // ── hig_button_order (quadraui#666) ────────────────────────────────
+
+    fn msg_btn(id: &str, is_default: bool, is_cancel: bool) -> MessageDialogButton {
+        MessageDialogButton {
+            id: crate::types::WidgetId::new(id),
+            label: id.to_string(),
+            is_default,
+            is_cancel,
+        }
+    }
+
+    #[test]
+    fn hig_button_order_puts_cancel_first_and_default_last() {
+        let buttons = vec![
+            msg_btn("save", true, false),
+            msg_btn("dont-save", false, false),
+            msg_btn("cancel", false, true),
+        ];
+        // Declared order is default, other, cancel — HIG order must
+        // reshuffle to cancel, other, default.
+        assert_eq!(hig_button_order(&buttons), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn hig_button_order_preserves_middle_button_relative_order() {
+        let buttons = vec![
+            msg_btn("cancel", false, true),
+            msg_btn("a", false, false),
+            msg_btn("b", false, false),
+            msg_btn("save", true, false),
+        ];
+        assert_eq!(hig_button_order(&buttons), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn hig_button_order_single_button_both_default_and_cancel() {
+        // A single "OK" button dialog: is_cancel is checked first, so it
+        // lands in the cancel slot — but `show_message_dialog` still
+        // points both `set_cancel_button` and `set_default_button` at
+        // its position since `is_default` also reads true on it.
+        let buttons = vec![msg_btn("ok", true, true)];
+        assert_eq!(hig_button_order(&buttons), vec![0]);
+    }
+
+    #[test]
+    fn hig_button_order_no_default_or_cancel_keeps_declared_order() {
+        let buttons = vec![msg_btn("a", false, false), msg_btn("b", false, false)];
+        assert_eq!(hig_button_order(&buttons), vec![0, 1]);
     }
 }

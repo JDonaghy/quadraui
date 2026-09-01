@@ -561,6 +561,11 @@ impl Backend for MacBackend {
     /// - `file_dialogs` / `notifications`: `MacPlatformServices` uses real
     ///   `NSOpenPanel`/`NSSavePanel` and `osascript` notifications
     ///   (`src/macos/services.rs`), not stubs.
+    /// - `native_dialogs`: **not** declared —
+    ///   `MacPlatformServices::show_message_dialog` is still a `None`
+    ///   stub pending an `NSAlert` implementation (quadraui#666); the
+    ///   in-canvas `Dialog` primitive stays the only dialog path here
+    ///   for now, same as TUI.
     /// - Everything else — `text_selection`, `window_chrome`,
     ///   `pointer_cursor`, `ime` — is **not** declared: `register_text_region`,
     ///   `begin_window_drag`/`toggle_window_maximize`/`begin_window_resize`,

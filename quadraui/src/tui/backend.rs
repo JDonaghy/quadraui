@@ -944,10 +944,13 @@ impl Backend for TuiBackend {
     ///   mouse-drag selection highlight is real.
     /// - everything else: **not** declared. No window to
     ///   drag/resize/maximize, no native pointer glyph, no native menu,
-    ///   no IME positioning, and both `PlatformServices` dialog methods
-    ///   unconditionally return `None`
+    ///   no IME positioning, and every `PlatformServices` dialog method
+    ///   unconditionally returns `None`
     ///   (`TuiPlatformServices::show_file_open_dialog` /
-    ///   `show_file_save_dialog`) with notifications a no-op.
+    ///   `show_file_save_dialog` / `show_message_dialog`) with
+    ///   notifications a no-op. The in-canvas `Dialog` primitive
+    ///   (`draw_dialog`) stays the only dialog path on this backend
+    ///   (quadraui#666).
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
             mouse: true,
@@ -2178,7 +2181,9 @@ impl Backend for TuiBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Clipboard, FileDialogOptions, Notification};
+    use crate::backend::{
+        Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
+    };
     use crate::{ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, WidgetId};
 
     /// Records every draw call so tests can assert what the trait
@@ -2215,6 +2220,9 @@ mod tests {
             None
         }
         fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
             None
         }
         fn send_notification(&self, _n: Notification) {}
@@ -3904,5 +3912,25 @@ mod tests {
                 "default snap_height impl must be identity for pixel backends"
             );
         }
+    }
+
+    /// quadraui#666: TUI has no native alert facility — `backend_caps`
+    /// must not claim `native_dialogs`, and `services().show_message_dialog`
+    /// must actually return `None` regardless of what's asked for. Both
+    /// halves of the same honesty contract `file_dialogs` already has.
+    #[test]
+    fn tui_backend_declares_no_native_dialogs() {
+        let backend = TuiBackend::new();
+        assert!(
+            !backend.backend_caps().native_dialogs,
+            "TUI has no native alert facility; native_dialogs must stay false"
+        );
+        let opts = MessageDialogOptions {
+            title: "Unsaved Changes".to_string(),
+            body: "Do you want to save?".to_string(),
+            buttons: Vec::new(),
+            severity: None,
+        };
+        assert!(backend.services().show_message_dialog(opts).is_none());
     }
 }

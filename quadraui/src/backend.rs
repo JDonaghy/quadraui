@@ -21,7 +21,7 @@ use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
-use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::{Editor, EditorLayout};
@@ -101,8 +101,8 @@ pub enum PointerShape {
 /// reason instead of either silently passing or spuriously failing.
 ///
 /// Deliberately a plain bitflag-shaped struct — one `bool` field per
-/// capability — rather than pulling in the `bitflags` crate: ten fields
-/// is small enough that a dependency buys nothing but the `|` operator,
+/// capability — rather than pulling in the `bitflags` crate: eleven
+/// fields is small enough that a dependency buys nothing but the `|` operator,
 /// and every field maps to zero or more `Backend` /
 /// [`PlatformServices`] methods (documented per field below) that a
 /// `BackendCaps` field of `true` promises are overridden away from their
@@ -202,6 +202,25 @@ pub struct BackendCaps {
     /// only running a native dialog would tell the two apart. See
     /// `CAP_CONTRACTS`.
     pub file_dialogs: bool,
+    /// [`PlatformServices::show_message_dialog`] shows a real native
+    /// alert/message dialog rather than unconditionally returning
+    /// `None`. Same no-default, same `None`-is-ambiguous shape as
+    /// [`Self::file_dialogs`] — this flag is the caller's only way to
+    /// tell "the user dismissed it" from "this backend has no native
+    /// alert facility" (quadraui#666).
+    ///
+    /// [`crate::primitives::dialog::native_dialog_options`] is the pure
+    /// mapping from a [`Dialog`] descriptor to
+    /// [`MessageDialogOptions`], and returns `None` for a dialog
+    /// carrying a [`crate::primitives::dialog::DialogTable`] or
+    /// [`crate::primitives::dialog::DialogInput`] — no native alert
+    /// facility hosts either, so those dialogs stay in-canvas
+    /// (`draw_dialog`) even on a backend where this flag is `true`.
+    ///
+    /// Not mechanically checkable for the same reason as
+    /// [`Self::file_dialogs`]: every backend implements the method, so
+    /// its *presence* proves nothing. See `CAP_CONTRACTS`.
+    pub native_dialogs: bool,
     /// [`PlatformServices::send_notification`] dispatches a real system
     /// notification rather than silently discarding it. Not mechanically
     /// checkable, same as [`Self::file_dialogs`].
@@ -227,6 +246,7 @@ impl BackendCaps {
             pointer_cursor: false,
             ime: false,
             file_dialogs: false,
+            native_dialogs: false,
             notifications: false,
         }
     }
@@ -283,6 +303,7 @@ impl BackendCaps {
         ("pointer_cursor", |c| c.pointer_cursor),
         ("ime", |c| c.ime),
         ("file_dialogs", |c| c.file_dialogs),
+        ("native_dialogs", |c| c.native_dialogs),
         ("notifications", |c| c.notifications),
     ];
 }
@@ -1660,8 +1681,8 @@ pub trait BackendWidget: Send + 'static {
     fn render(&self, backend: &mut dyn Backend, rect: Rect);
 }
 
-/// Platform services the backend exposes to apps: clipboard, file dialogs,
-/// notifications, URL opening.
+/// Platform services the backend exposes to apps: clipboard, file
+/// dialogs, message/alert dialogs, notifications, URL opening.
 pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
 
@@ -1673,6 +1694,25 @@ pub trait PlatformServices {
 
     /// Show a native file-save dialog.
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
+
+    /// Show a native message/alert dialog (blocking). Returns the id of
+    /// the button the user chose, or `None` if the dialog was dismissed
+    /// without choosing one (Escape, close box) **or** this backend has
+    /// no native alert facility at all — mirrors
+    /// [`Self::show_file_open_dialog`]'s `None` shape exactly. Callers
+    /// separate the two via [`BackendCaps::native_dialogs`], the same
+    /// way they already do for [`BackendCaps::file_dialogs`].
+    ///
+    /// This is a parallel path alongside the in-canvas [`Dialog`]
+    /// primitive (`Backend::draw_dialog`), not a replacement for it:
+    /// [`crate::primitives::dialog::native_dialog_options`] decides,
+    /// per-dialog, whether a given [`Dialog`] can go native at all —
+    /// callers should consult that before calling this method, and fall
+    /// back to `draw_dialog` when it returns `None`. TUI backends have
+    /// no native dialog to show and unconditionally return `None` (no
+    /// stderr hint is written); the in-canvas `Dialog` primitive stays
+    /// the TUI path.
+    fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice>;
 
     /// Dispatch a system notification.
     fn send_notification(&self, n: Notification);
@@ -1722,6 +1762,50 @@ pub struct FileDialogOptions {
     /// File type filters — `(display_name, &[ext])` pairs.
     pub filters: Vec<(String, Vec<String>)>,
 }
+
+/// Options for [`PlatformServices::show_message_dialog`]. Produced from
+/// a [`Dialog`] descriptor by
+/// [`crate::primitives::dialog::native_dialog_options`], or built
+/// directly by a caller that just wants a native alert with no
+/// in-canvas fallback.
+#[derive(Debug, Clone)]
+pub struct MessageDialogOptions {
+    /// Dialog title / primary message text.
+    pub title: String,
+    /// Body / secondary detail text.
+    pub body: String,
+    /// Action buttons. Order is caller-declared intent, not necessarily
+    /// paint order — [`crate::gtk::services::GtkPlatformServices`], for
+    /// instance, re-orders these per GNOME HIG (cancel leftmost, default
+    /// rightmost) before handing them to the native widget.
+    pub buttons: Vec<MessageDialogButton>,
+    /// Optional severity tint — backends may use this to pick an icon.
+    /// `None` = neutral. Mirrors [`DialogSeverity`], the in-canvas
+    /// `Dialog`'s equivalent field.
+    pub severity: Option<DialogSeverity>,
+}
+
+/// One button in a [`MessageDialogOptions`] button row. Mirrors
+/// [`crate::primitives::dialog::DialogButton`]'s id/label/default/cancel
+/// shape (minus `tint`, which no native alert facility exposes).
+#[derive(Debug, Clone)]
+pub struct MessageDialogButton {
+    pub id: WidgetId,
+    pub label: String,
+    /// When true, Enter (or the platform's default-action gesture)
+    /// activates this button.
+    pub is_default: bool,
+    /// When true, Escape (or the platform's cancel gesture) activates
+    /// this button.
+    pub is_cancel: bool,
+}
+
+/// The [`WidgetId`] of the [`MessageDialogButton`] the user chose from a
+/// [`PlatformServices::show_message_dialog`] call. A plain alias rather
+/// than a wrapper type: callers already hold the
+/// `Vec<MessageDialogButton>` they passed in and match the result
+/// against each button's `id` directly.
+pub type MessageDialogChoice = WidgetId;
 
 /// A system notification request.
 #[derive(Debug, Clone)]
@@ -1788,6 +1872,7 @@ mod backend_caps_tests {
         ("pointer_cursor", |c| c.pointer_cursor = true),
         ("ime", |c| c.ime = true),
         ("file_dialogs", |c| c.file_dialogs = true),
+        ("native_dialogs", |c| c.native_dialogs = true),
         ("notifications", |c| c.notifications = true),
     ];
 
@@ -1809,6 +1894,7 @@ mod backend_caps_tests {
             pointer_cursor: _,
             ime: _,
             file_dialogs: _,
+            native_dialogs: _,
             notifications: _,
         } = BackendCaps::empty();
 

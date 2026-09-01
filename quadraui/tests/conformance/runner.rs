@@ -689,6 +689,7 @@ mod tests {
             pointer_cursor: true,
             ime: true,
             file_dialogs: true,
+            native_dialogs: true,
             notifications: true,
         };
         assert_eq!(
