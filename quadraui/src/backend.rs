@@ -1435,12 +1435,14 @@ pub trait Backend {
     /// board instead of failing to build (quadraui#600, PORT-01).
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
 
-    /// Draw a [`Minimap`] (code-overview density view). GTK paints real
-    /// glyphs at a scaled-down absolute Pango size ("font scaling");
-    /// TUI packs `U+2800`-block braille dots. Both techniques consume
-    /// the exact same [`Minimap`] data — the primitive owns the sampling
-    /// and colour-aggregation math (`sample_lines` / `aggregate_spans`),
-    /// so no backend re-derives it (#382).
+    /// Draw a [`Minimap`] (code-overview density view). GTK tiles rows at
+    /// a fixed pitch and paints one colour block per non-blank character
+    /// column ([`crate::MinimapSizing::FixedPitch`], #667); TUI packs
+    /// `U+2800`-block braille dots at a stretch-to-fill pitch
+    /// ([`crate::MinimapSizing::Fill`]). Both techniques consume the
+    /// exact same [`Minimap`] data — the primitive owns the sampling and
+    /// colour-aggregation math (`sample_lines` / `aggregate_spans`), so
+    /// no backend re-derives it (#382, #667).
     ///
     /// Returns [`MinimapPaintResult`] carrying the resolved
     /// [`MinimapLayout`] so hosts can route clicks via

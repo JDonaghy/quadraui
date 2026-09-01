@@ -20,18 +20,35 @@
 //! for GTK, typically one entry per rendered row; for TUI, four
 //! consecutive entries are packed into one braille row. [`Minimap::layout`]
 //! takes `lines_per_row` (the backend's own grouping factor: `1` for GTK,
-//! `4` for TUI) and groups `lines` into that many rows, tiling them across
-//! `bounds.height` at a pitch that is never allowed to exceed
-//! [`MAX_ROW_PITCH`] (issue #663) — a file short enough that `bounds.height
-//! / row_count` would blow past that ceiling instead top-aligns and only
-//! occupies `row_count * row_h` of the strip, leaving the remainder
-//! unpainted, rather than stretching to fill it. Each
-//! [`VisibleMinimapLine::bounds`] carries the *resolved* (already-capped)
-//! row height, so a rasteriser reads its pitch straight off the layout
+//! `4` for TUI) and groups `lines` into that many rows, then tiles those
+//! rows according to [`MinimapSizing`] (issue #667):
+//!
+//! - [`MinimapSizing::Fill`] — stretch to fill `bounds.height`, at a pitch
+//!   that is never allowed to exceed [`MAX_ROW_PITCH`] (issue #663): a file
+//!   short enough that `bounds.height / row_count` would blow past that
+//!   ceiling instead top-aligns and only occupies `row_count * row_h` of
+//!   the strip, leaving the remainder unpainted, rather than stretching to
+//!   fill it. TUI is the only user — it is cell-native (braille rows) and
+//!   has no font to scale.
+//! - [`MinimapSizing::FixedPitch`] — rows tile top-down at exactly the
+//!   given pitch, regardless of `row_count`. When more rows exist than the
+//!   strip can hold at that pitch, [`Minimap::layout`] doesn't shrink the
+//!   pitch to compress everything in — it slides: only a window of
+//!   `bounds.height / pitch` rows is shown at once, and that window's
+//!   position tracks [`Minimap::visible_row_start`] against
+//!   [`Minimap::total_buffer_lines`] (VS Code's `minimap.size:
+//!   proportional`). GTK is the only user, and this is what makes a
+//!   minimap row's on-screen size independent of the file's length: the
+//!   same buffer, painted into the same strip, always resolves to the same
+//!   `vline.bounds.height` no matter how many lines it has.
+//!
+//! Each [`VisibleMinimapLine::bounds`] carries the *resolved* row height
+//! and position, so a rasteriser reads its pitch straight off the layout
 //! (`vline.bounds.height`) instead of re-deriving it via `bounds.height /
-//! layout.visible_lines.len()` — re-deriving it that way silently
-//! undoes the cap (see the rasteriser spec in #382, and #663 for the bug
-//! this replaced).
+//! layout.visible_lines.len()` — re-deriving it that way silently undoes
+//! both the [`MAX_ROW_PITCH`] cap under `Fill` and the fixed pitch itself
+//! under `FixedPitch` (see the rasteriser spec in #382, #663 for the
+//! `Fill` bug this replaced, and #667 for `FixedPitch`).
 //!
 //! `visible_row_start` / `visible_row_count` describe the *editor's*
 //! current viewport as an index range into `lines` (not a separate scroll
@@ -41,7 +58,8 @@
 //! [`MinimapLine::line_idx`] as the bridge back to real buffer line
 //! numbers (sampling may skip lines, so a `lines`-relative fraction and a
 //! `total_buffer_lines`-relative fraction are not the same thing whenever
-//! sampling is non-uniform).
+//! sampling is non-uniform). [`MinimapSizing::FixedPitch`]'s own slide
+//! offset uses that same buffer-line bridge, for the same reason.
 
 use crate::event::Rect;
 use crate::primitives::scrollbar::Scrollbar;
@@ -145,24 +163,43 @@ pub struct MinimapLayout {
     pub scrollbar: Option<Scrollbar>,
 }
 
-/// Ceiling on a minimap row's pitch, in `bounds`'s own coordinate units
-/// (device pixels for GTK, terminal cell rows for TUI) — issue #663.
+/// Ceiling on a minimap row's pitch under [`MinimapSizing::Fill`], in
+/// `bounds`'s own coordinate units (terminal cell rows for TUI, the only
+/// remaining `Fill` user as of #667 — GTK moved to
+/// [`MinimapSizing::FixedPitch`]) — issue #663.
 ///
-/// Without a ceiling, [`Minimap::layout`]'s `row_h` is `bounds.height /
-/// row_count`, which grows without bound as a file gets shorter than the
-/// strip. For GTK, which maps pitch directly to an absolute Pango font
-/// size (`gtk::minimap::minimap_font_px`), that meant a short file's font
-/// ballooned toward that function's own 64px clamp — a 3-line file
-/// rendered at near-editor scale. `MAX_ROW_PITCH` keeps a minimap always
-/// minimap-sized: comfortably above the 4px legibility floor (so short
-/// files still render real glyphs, not colour bars) but nowhere near a
-/// normal ~18px editor line height. Below the ceiling, `row_count *
-/// row_h` rows top-align inside `bounds` and the remainder of the strip
-/// stays unpainted — mirroring [`sample_lines`]'s own never-upscale rule.
-/// Long files are unaffected: `bounds.height / row_count` is already
-/// below the ceiling once the caller's sampling has downsampled them to
-/// roughly fit the strip.
+/// Without a ceiling, `Fill`'s `row_h` is `bounds.height / row_count`,
+/// which grows without bound as a file gets shorter than the strip.
+/// `MAX_ROW_PITCH` keeps a `Fill`-sized minimap always minimap-sized.
+/// Below the ceiling, `row_count * row_h` rows top-align inside `bounds`
+/// and the remainder of the strip stays unpainted — mirroring
+/// [`sample_lines`]'s own never-upscale rule. Long files are unaffected:
+/// `bounds.height / row_count` is already below the ceiling once the
+/// caller's sampling has downsampled them to roughly fit the strip.
 pub const MAX_ROW_PITCH: f32 = 8.0;
+
+/// How [`Minimap::layout`] sizes rows across `bounds.height` — issue #667.
+///
+/// The two backends want opposite things: TUI's braille rows are
+/// cell-native and have no font to scale, so it always wants to fill the
+/// strip ([`Self::Fill`]). GTK's row pitch drives a Pango font size (or,
+/// below the legibility floor, a colour block), so a file-length-dependent
+/// pitch means a file-length-dependent glyph size — exactly the defect
+/// #667 removes. GTK always wants [`Self::FixedPitch`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MinimapSizing {
+    /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`]
+    /// (#663). A file shorter than the strip at that cap top-aligns
+    /// rather than stretching further; there is no sliding window — every
+    /// row is always visible.
+    Fill,
+    /// Tile rows top-down at exactly this pitch (in `bounds`'s own
+    /// coordinate units), regardless of `row_count`. When the file needs
+    /// more rows than `bounds.height / pitch` holds, [`Minimap::layout`]
+    /// shows a sliding window onto the map — see the module docs — instead
+    /// of shrinking the pitch to compress everything in.
+    FixedPitch(f32),
+}
 
 /// Classification of a minimap hit-test result.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -192,8 +229,14 @@ impl Minimap {
     /// Compute layout + hit regions. `lines_per_row` is the backend's
     /// grouping factor (`1` for GTK, `4` for TUI) — see the module docs
     /// for why layout needs it but painting-only metrics (font size,
-    /// dot density) don't.
-    pub fn layout(&self, bounds: Rect, lines_per_row: usize) -> MinimapLayout {
+    /// dot density) don't. `sizing` picks the row-pitch strategy — see
+    /// [`MinimapSizing`].
+    pub fn layout(
+        &self,
+        bounds: Rect,
+        lines_per_row: usize,
+        sizing: MinimapSizing,
+    ) -> MinimapLayout {
         let lines_per_row = lines_per_row.max(1);
 
         if self.lines.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -206,29 +249,53 @@ impl Minimap {
         }
 
         let row_count = self.lines.len().div_ceil(lines_per_row);
-        // Bounded, not stretch-to-fill: see MAX_ROW_PITCH's doc for why a
-        // short file must not blow its pitch (and, for GTK, its font
-        // size) up to fill the whole strip (#663).
-        let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
 
-        let visible_lines: Vec<VisibleMinimapLine> = (0..row_count)
-            .map(|r| VisibleMinimapLine {
-                start_line_idx: r * lines_per_row,
-                bounds: Rect::new(bounds.x, bounds.y + row_h * r as f32, bounds.width, row_h),
+        let (row_h, window_start_row, rows_shown) = match sizing {
+            MinimapSizing::Fill => {
+                // Bounded, not stretch-to-fill: see MAX_ROW_PITCH's doc
+                // for why a short file must not blow its pitch up to fill
+                // the whole strip (#663). No sliding window: every row is
+                // always visible.
+                let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
+                (row_h, 0usize, row_count)
+            }
+            MinimapSizing::FixedPitch(px) => {
+                let row_h = px.max(f32::MIN_POSITIVE);
+                let rows_that_fit = (bounds.height / row_h).floor() as usize;
+                let rows_shown = rows_that_fit.min(row_count);
+                let window_start_row = self.slide_window_start_row(row_count, rows_shown);
+                (row_h, window_start_row, rows_shown)
+            }
+        };
+
+        let visible_lines: Vec<VisibleMinimapLine> = (0..rows_shown)
+            .map(|i| {
+                let r = window_start_row + i;
+                VisibleMinimapLine {
+                    start_line_idx: r * lines_per_row,
+                    bounds: Rect::new(bounds.x, bounds.y + row_h * i as f32, bounds.width, row_h),
+                }
             })
             .collect();
 
-        let start_row = (self.visible_row_start / lines_per_row) as f32;
+        // Absolute row positions of the editor's viewport, then clipped
+        // into the visible window (`FixedPitch` may be sliding, so the
+        // editor's viewport band can be partly or wholly off-strip).
+        let start_row_abs = (self.visible_row_start / lines_per_row) as f32;
         let end_line = (self.visible_row_start + self.visible_row_count).min(self.lines.len());
-        let end_row = if end_line == 0 {
+        let end_row_abs = if end_line == 0 {
             0.0
         } else {
             ((end_line - 1) / lines_per_row) as f32 + 1.0
         };
-        let highlight_h = (end_row - start_row).max(0.0) * row_h;
+        let window_lo = window_start_row as f32;
+        let window_hi = (window_start_row + rows_shown) as f32;
+        let clipped_start = start_row_abs.clamp(window_lo, window_hi);
+        let clipped_end = end_row_abs.clamp(window_lo, window_hi);
+        let highlight_h = (clipped_end - clipped_start).max(0.0) * row_h;
         let viewport_highlight = Rect::new(
             bounds.x,
-            bounds.y + start_row * row_h,
+            bounds.y + (clipped_start - window_lo) * row_h,
             bounds.width,
             highlight_h,
         );
@@ -241,6 +308,34 @@ impl Minimap {
             viewport_highlight,
             scrollbar,
         }
+    }
+
+    /// First row index shown by a [`MinimapSizing::FixedPitch`] window of
+    /// `rows_shown` rows out of `row_count` total — the "slide" the module
+    /// docs describe. `0` when the whole map already fits (`row_count <=
+    /// rows_shown`, or `rows_shown == 0`). Otherwise tracks how far
+    /// [`Self::visible_row_start`] (mapped to a real buffer line via
+    /// [`MinimapLine::line_idx`], the same bridge [`Self::scroll_thumb`]
+    /// uses) has advanced through [`Self::total_buffer_lines`], so both
+    /// ends of the file are reachable: the window sits at the top when the
+    /// editor viewport is at the top, and at the bottom when it's at the
+    /// bottom.
+    fn slide_window_start_row(&self, row_count: usize, rows_shown: usize) -> usize {
+        if rows_shown == 0 || row_count <= rows_shown {
+            return 0;
+        }
+        let max_start = row_count - rows_shown;
+        if self.total_buffer_lines <= 1 {
+            return 0;
+        }
+        let start_buffer_line = self
+            .lines
+            .get(self.visible_row_start)
+            .map(|l| l.line_idx)
+            .unwrap_or(0);
+        let denom = (self.total_buffer_lines - 1) as f32;
+        let fraction = (start_buffer_line as f32 / denom).clamp(0.0, 1.0);
+        ((fraction * max_start as f32).round() as usize).min(max_start)
     }
 
     /// Scroll-thumb geometry for the editor's viewport within the whole
@@ -427,7 +522,7 @@ mod tests {
         // (that's `layout_caps_row_pitch_and_top_aligns_short_files`,
         // below).
         let bounds = Rect::new(0.0, 0.0, 10.0, 16.0);
-        let layout = mm.layout(bounds, 2); // 8 lines / 2 per row = 4 rows
+        let layout = mm.layout(bounds, 2, MinimapSizing::Fill); // 8 lines / 2 per row = 4 rows
         assert_eq!(layout.visible_lines.len(), 4);
         assert_eq!(
             layout.visible_lines[0].bounds,
@@ -450,7 +545,7 @@ mod tests {
         // grouped 2-per-row -> row 1 (start) through row 3 (exclusive).
         let mm = minimap(8, 2, 3);
         let bounds = Rect::new(0.0, 0.0, 10.0, 16.0); // pitch 4px, under the cap
-        let layout = mm.layout(bounds, 2);
+        let layout = mm.layout(bounds, 2, MinimapSizing::Fill);
         assert_eq!(layout.viewport_highlight, Rect::new(0.0, 4.0, 10.0, 8.0));
     }
 
@@ -464,7 +559,7 @@ mod tests {
         // the tall strip stays unpainted rather than stretching to fill.
         let mm = minimap(3, 0, 3);
         let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
-        let layout = mm.layout(bounds, 1);
+        let layout = mm.layout(bounds, 1, MinimapSizing::Fill);
         assert_eq!(layout.visible_lines.len(), 3);
         for vline in &layout.visible_lines {
             assert!(
@@ -490,7 +585,7 @@ mod tests {
     #[test]
     fn layout_empty_lines_is_a_no_op() {
         let mm = minimap(0, 0, 0);
-        let layout = mm.layout(Rect::new(0.0, 0.0, 10.0, 40.0), 4);
+        let layout = mm.layout(Rect::new(0.0, 0.0, 10.0, 40.0), 4, MinimapSizing::Fill);
         assert!(layout.visible_lines.is_empty());
         assert_eq!(layout.viewport_highlight.height, 0.0);
     }
@@ -498,8 +593,85 @@ mod tests {
     #[test]
     fn layout_zero_size_bounds_is_a_no_op() {
         let mm = minimap(8, 0, 4);
-        let layout = mm.layout(Rect::new(0.0, 0.0, 0.0, 0.0), 4);
+        let layout = mm.layout(Rect::new(0.0, 0.0, 0.0, 0.0), 4, MinimapSizing::Fill);
         assert!(layout.visible_lines.is_empty());
+    }
+
+    // ── MinimapSizing::FixedPitch (#667) ────────────────────────────
+
+    #[test]
+    fn fixed_pitch_row_height_is_independent_of_file_length() {
+        // The core #667 acceptance test: the same strip, at the same
+        // fixed pitch, yields an identical row height for a 3-line file
+        // and a 10,000-line file -- unlike `Fill`, where a short file's
+        // pitch balloons and a long file's pitch shrinks.
+        let bounds = Rect::new(0.0, 0.0, 40.0, 400.0);
+        let short = minimap(3, 0, 3);
+        let long = minimap(10_000, 0, 10);
+
+        let short_layout = short.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        let long_layout = long.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+
+        assert_eq!(short_layout.visible_lines[0].bounds.height, 2.0);
+        assert_eq!(long_layout.visible_lines[0].bounds.height, 2.0);
+        assert_eq!(
+            short_layout.visible_lines[0].bounds.height,
+            long_layout.visible_lines[0].bounds.height
+        );
+    }
+
+    #[test]
+    fn fixed_pitch_short_file_top_aligns_without_stretching() {
+        // 3 rows at a 2px pitch only occupy 6px of a 400px strip -- no
+        // windowing needed, no stretching either.
+        let mm = minimap(3, 0, 3);
+        let bounds = Rect::new(0.0, 0.0, 40.0, 400.0);
+        let layout = mm.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        assert_eq!(layout.visible_lines.len(), 3);
+        let last = layout.visible_lines.last().unwrap();
+        assert!(last.bounds.y + last.bounds.height < bounds.height);
+    }
+
+    #[test]
+    fn fixed_pitch_slides_monotonically_and_reaches_both_ends() {
+        // 1000 rows at 2px pitch need 2000px; a 200px strip only shows
+        // 100 at a time, so the window must slide as visible_row_start
+        // advances -- and both ends of the file must be reachable.
+        let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
+        let n = 1000;
+
+        let mut starts = Vec::new();
+        for visible_row_start in [0, 100, 300, 500, 700, 900, 999] {
+            let mm = minimap(n, visible_row_start, 1);
+            let layout = mm.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+            let first_line_idx = layout.visible_lines.first().unwrap().start_line_idx;
+            starts.push(first_line_idx);
+        }
+
+        assert!(
+            starts.windows(2).all(|w| w[0] <= w[1]),
+            "window start must advance monotonically as visible_row_start advances: {starts:?}"
+        );
+        assert_eq!(
+            starts[0], 0,
+            "scrolled to the top, the window starts at row 0"
+        );
+        assert_eq!(
+            *starts.last().unwrap(),
+            n - 100,
+            "scrolled to the bottom, the window's last row must reach the file's end"
+        );
+    }
+
+    #[test]
+    fn fixed_pitch_whole_file_fits_needs_no_slide() {
+        // row_count (100) <= rows that fit (100 at 2px in 200px): every
+        // row is visible regardless of visible_row_start.
+        let mm = minimap(100, 50, 1);
+        let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
+        let layout = mm.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        assert_eq!(layout.visible_lines.len(), 100);
+        assert_eq!(layout.visible_lines[0].start_line_idx, 0);
     }
 
     // ── hit_test ─────────────────────────────────────────────────────

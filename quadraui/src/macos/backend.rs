@@ -2023,8 +2023,9 @@ impl Backend for MacBackend {
         }
     }
 
-    /// #382 scopes the `Minimap` rasteriser to GTK (font scaling) and TUI
-    /// (braille) only — macOS and Win-GUI rasterisers are explicitly out
+    /// #382 scopes the `Minimap` rasteriser to GTK (fixed-pitch colour
+    /// blocks, #667) and TUI (braille) only — macOS and Win-GUI
+    /// rasterisers are explicitly out
     /// of scope until those backends carry the rest of the editor chrome.
     /// The trait method itself is still mandatory here (rule 7: no
     /// default impl, in-tree-only cost), so this is a deliberate `todo!`

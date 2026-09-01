@@ -23,7 +23,7 @@ use ratatui::layout::Rect;
 
 use super::braille::pack_braille_cell;
 use super::{ratatui_color, set_cell};
-use crate::primitives::minimap::{Minimap, MinimapLayout};
+use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapSizing};
 use crate::theme::Theme;
 
 /// Buffer lines packed into one terminal row's braille dots.
@@ -32,6 +32,10 @@ pub const LINES_PER_ROW: usize = 4;
 pub const COLS_PER_CELL: usize = 2;
 
 /// Compute the TUI cell-unit layout for a [`Minimap`] without painting.
+///
+/// TUI keeps [`MinimapSizing::Fill`] (#667): braille rows are cell-native
+/// with no font to scale, so there's no file-length-dependent glyph size
+/// to fix here the way GTK's fixed pitch fixes GTK's.
 pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
     minimap.layout(
         crate::event::Rect::new(
@@ -41,6 +45,7 @@ pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
             area.height as f32,
         ),
         LINES_PER_ROW,
+        MinimapSizing::Fill,
     )
 }
 
