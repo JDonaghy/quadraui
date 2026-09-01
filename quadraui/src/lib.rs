@@ -240,7 +240,7 @@ pub use primitives::menu_bar::{
 pub use primitives::message_list::{MessageList, MessageRow};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_lines, Minimap, MinimapGrid, MinimapHit, MinimapLayout,
-    MinimapLine, MinimapSpan, SyntaxSpan, VisibleMinimapLine,
+    MinimapLine, MinimapSizing, MinimapSpan, SyntaxSpan, VisibleMinimapLine,
 };
 pub use primitives::modal::{Modal, ModalEvent, ModalHit, ModalLayout};
 pub use primitives::multi_section_view::{

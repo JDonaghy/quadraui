@@ -1,12 +1,20 @@
 //! Minimap `AppLogic` + `quadraui::{tui,gtk}::run` example ([`tui_minimap`]
 //! / [`gtk_minimap`]).
 //!
-//! A static ~80-line "buffer" rendered as a code-overview minimap, plus a
+//! A static ~300-line "buffer" rendered as a code-overview minimap, plus a
 //! status bar showing the current scroll position. Demonstrates
 //! `sample_lines` (row down-sampling) and `aggregate_spans` (colour
 //! down-sampling) feeding one `Minimap` descriptor that both backends
-//! paint with zero backend-specific app code — GTK via font scaling, TUI
-//! via braille (#382).
+//! paint with zero backend-specific app code — GTK via fixed-pitch
+//! per-column colour blocks, TUI via braille (#382, #667).
+//!
+//! The buffer is deliberately tall enough that GTK's fixed row pitch
+//! (`gtk::minimap::ROW_PITCH_PX`) can't show every row in a typical strip
+//! at once — this app hands `Minimap.lines` every buffer line (no
+//! app-level pre-downsampling to "just enough to fill the strip"; that
+//! was the old `Fill`-only model) and lets `Minimap::layout`'s own
+//! `FixedPitch` slide window decide how much is visible, so scrolling
+//! with Up/Down visibly slides the map (#667).
 //!
 //! Controls:
 //! - Up/Down       scroll the viewport (moves the highlighted band)
@@ -25,9 +33,12 @@ const VIEWPORT_ROWS: usize = 10;
 
 /// TUI packs 4 buffer lines into one braille row; GTK paints 1 buffer
 /// line per row. This example doesn't know (or need to know) which
-/// backend it's running under, so it samples generously at the denser
-/// factor — both backends handle receiving more `lines` than they have
-/// rows for by grouping/tiling, per `Minimap::layout`.
+/// backend it's running under, so `syntax_spans` is aggregated at TUI's
+/// coarser `4`-line grid — GTK's per-column colour lookup still resolves
+/// correctly against a coarser span, just at TUI's granularity rather
+/// than its own finer one. Unrelated to how many rows are actually
+/// *visible* at once, which is `Minimap::layout`'s own `MinimapSizing`
+/// concern (#667), not this app's.
 const LINES_PER_ROW: usize = 4;
 
 pub struct MinimapApp {
@@ -37,7 +48,7 @@ pub struct MinimapApp {
 
 impl MinimapApp {
     pub fn new() -> Self {
-        let buffer = (0..80)
+        let buffer = (0..300)
             .map(|i| match i % 6 {
                 0 => format!("fn function_{i}() {{"),
                 1 => "    let value = compute();".to_string(),
@@ -58,10 +69,18 @@ impl MinimapApp {
     }
 
     /// Build the `Minimap` descriptor for the current scroll position.
-    fn minimap(&self, target_rows: usize) -> Minimap {
+    ///
+    /// Unlike the pre-#667 model, this doesn't try to pre-compute "just
+    /// enough rows to fill the strip" from the viewport's pixel height —
+    /// that was only ever needed because `Fill` sizing had no sliding
+    /// window, so a mismatch meant either wasted rows or an over-squeezed
+    /// pitch. `sample_lines` here is called with a target at least as
+    /// large as the buffer, so it's the identity (never upscales): GTK's
+    /// `FixedPitch` layout and TUI's `Fill` layout each decide for
+    /// themselves how much of `lines` actually gets painted.
+    fn minimap(&self) -> Minimap {
         let refs = self.buffer_refs();
-        let target = target_rows.saturating_mul(LINES_PER_ROW).max(1);
-        let lines = sample_lines(&refs, target);
+        let lines = sample_lines(&refs, self.buffer.len());
 
         // A couple of illustrative syntax spans — "fn" in one colour,
         // comments in another — aggregated down to whatever cell size
@@ -173,8 +192,7 @@ impl AppLogic for MinimapApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let minimap_rect = self.minimap_rect(backend);
-        let approx_rows = (minimap_rect.height / lh).max(1.0) as usize;
-        let minimap = self.minimap(approx_rows);
+        let minimap = self.minimap();
         let _ = backend.draw_minimap(minimap_rect, &minimap);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -212,9 +230,7 @@ impl AppLogic for MinimapApp {
                 ..
             } => {
                 let minimap_rect = self.minimap_rect(backend);
-                let lh = backend.line_height();
-                let approx_rows = (minimap_rect.height / lh).max(1.0) as usize;
-                let minimap = self.minimap(approx_rows);
+                let minimap = self.minimap();
                 let layout = backend.minimap_layout(minimap_rect, &minimap);
                 if let MinimapHit::Seek { fraction } = layout.hit_test(position.x, position.y) {
                     self.seek(fraction);

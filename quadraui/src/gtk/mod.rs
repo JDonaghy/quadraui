@@ -94,8 +94,8 @@ pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use menu_overlay::MenuOverlay;
 pub use message_list::draw_message_list;
 pub use minimap::{
-    bar_width_fraction, draw_minimap, gtk_minimap_layout, is_legible, minimap_font_px, render_mode,
-    MinimapRenderMode, LEGIBILITY_FLOOR_PX,
+    draw_minimap, gtk_minimap_layout, is_legible, minimap_font_px, render_mode, MinimapRenderMode,
+    COLUMN_CAPACITY, LEGIBILITY_FLOOR_PX, ROW_PITCH_PX,
 };
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
