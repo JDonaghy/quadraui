@@ -20,11 +20,18 @@
 //! for GTK, typically one entry per rendered row; for TUI, four
 //! consecutive entries are packed into one braille row. [`Minimap::layout`]
 //! takes `lines_per_row` (the backend's own grouping factor: `1` for GTK,
-//! `4` for TUI) and groups `lines` into that many rows, tiling
-//! `bounds.height` evenly across them — this is what lets
-//! [`MinimapLayout::visible_lines`].len() serve directly as the row count
-//! the GTK rasteriser divides by for font-pitch (`line_px = bounds.height
-//! / layout.visible_lines.len()`, see the rasteriser spec in #382).
+//! `4` for TUI) and groups `lines` into that many rows, tiling them across
+//! `bounds.height` at a pitch that is never allowed to exceed
+//! [`MAX_ROW_PITCH`] (issue #663) — a file short enough that `bounds.height
+//! / row_count` would blow past that ceiling instead top-aligns and only
+//! occupies `row_count * row_h` of the strip, leaving the remainder
+//! unpainted, rather than stretching to fill it. Each
+//! [`VisibleMinimapLine::bounds`] carries the *resolved* (already-capped)
+//! row height, so a rasteriser reads its pitch straight off the layout
+//! (`vline.bounds.height`) instead of re-deriving it via `bounds.height /
+//! layout.visible_lines.len()` — re-deriving it that way silently
+//! undoes the cap (see the rasteriser spec in #382, and #663 for the bug
+//! this replaced).
 //!
 //! `visible_row_start` / `visible_row_count` describe the *editor's*
 //! current viewport as an index range into `lines` (not a separate scroll
@@ -138,6 +145,25 @@ pub struct MinimapLayout {
     pub scrollbar: Option<Scrollbar>,
 }
 
+/// Ceiling on a minimap row's pitch, in `bounds`'s own coordinate units
+/// (device pixels for GTK, terminal cell rows for TUI) — issue #663.
+///
+/// Without a ceiling, [`Minimap::layout`]'s `row_h` is `bounds.height /
+/// row_count`, which grows without bound as a file gets shorter than the
+/// strip. For GTK, which maps pitch directly to an absolute Pango font
+/// size (`gtk::minimap::minimap_font_px`), that meant a short file's font
+/// ballooned toward that function's own 64px clamp — a 3-line file
+/// rendered at near-editor scale. `MAX_ROW_PITCH` keeps a minimap always
+/// minimap-sized: comfortably above the 4px legibility floor (so short
+/// files still render real glyphs, not colour bars) but nowhere near a
+/// normal ~18px editor line height. Below the ceiling, `row_count *
+/// row_h` rows top-align inside `bounds` and the remainder of the strip
+/// stays unpainted — mirroring [`sample_lines`]'s own never-upscale rule.
+/// Long files are unaffected: `bounds.height / row_count` is already
+/// below the ceiling once the caller's sampling has downsampled them to
+/// roughly fit the strip.
+pub const MAX_ROW_PITCH: f32 = 8.0;
+
 /// Classification of a minimap hit-test result.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MinimapHit {
@@ -180,7 +206,10 @@ impl Minimap {
         }
 
         let row_count = self.lines.len().div_ceil(lines_per_row);
-        let row_h = bounds.height / row_count as f32;
+        // Bounded, not stretch-to-fill: see MAX_ROW_PITCH's doc for why a
+        // short file must not blow its pitch (and, for GTK, its font
+        // size) up to fill the whole strip (#663).
+        let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
 
         let visible_lines: Vec<VisibleMinimapLine> = (0..row_count)
             .map(|r| VisibleMinimapLine {
@@ -393,20 +422,24 @@ mod tests {
     #[test]
     fn layout_tiles_rows_evenly_across_bounds() {
         let mm = minimap(8, 2, 3);
-        let bounds = Rect::new(0.0, 0.0, 10.0, 40.0);
+        // 4 rows over 16px: pitch 4px, comfortably under MAX_ROW_PITCH,
+        // so this exercises even tiling rather than the pitch cap
+        // (that's `layout_caps_row_pitch_and_top_aligns_short_files`,
+        // below).
+        let bounds = Rect::new(0.0, 0.0, 10.0, 16.0);
         let layout = mm.layout(bounds, 2); // 8 lines / 2 per row = 4 rows
         assert_eq!(layout.visible_lines.len(), 4);
         assert_eq!(
             layout.visible_lines[0].bounds,
-            Rect::new(0.0, 0.0, 10.0, 10.0)
+            Rect::new(0.0, 0.0, 10.0, 4.0)
         );
         assert_eq!(
             layout.visible_lines[1].bounds,
-            Rect::new(0.0, 10.0, 10.0, 10.0)
+            Rect::new(0.0, 4.0, 10.0, 4.0)
         );
         assert_eq!(
             layout.visible_lines[3].bounds,
-            Rect::new(0.0, 30.0, 10.0, 10.0)
+            Rect::new(0.0, 12.0, 10.0, 4.0)
         );
         assert_eq!(layout.visible_lines[3].start_line_idx, 6);
     }
@@ -416,9 +449,42 @@ mod tests {
         // visible_row_start=2, visible_row_count=3 -> lines[2..5), rows
         // grouped 2-per-row -> row 1 (start) through row 3 (exclusive).
         let mm = minimap(8, 2, 3);
-        let bounds = Rect::new(0.0, 0.0, 10.0, 40.0);
+        let bounds = Rect::new(0.0, 0.0, 10.0, 16.0); // pitch 4px, under the cap
         let layout = mm.layout(bounds, 2);
-        assert_eq!(layout.viewport_highlight, Rect::new(0.0, 10.0, 10.0, 20.0));
+        assert_eq!(layout.viewport_highlight, Rect::new(0.0, 4.0, 10.0, 8.0));
+    }
+
+    #[test]
+    fn layout_caps_row_pitch_and_top_aligns_short_files() {
+        // A 3-line file (lines_per_row=1 -> 3 rows) inside a tall 200px
+        // strip. Uncapped, row_h would be 200/3 ~= 66.7px -- a 3-line
+        // file rendering at near-editor scale (#663). Capped, no row's
+        // pitch may exceed MAX_ROW_PITCH, and the rows top-align, only
+        // occupying the strip's top `row_count * row_h` -- the rest of
+        // the tall strip stays unpainted rather than stretching to fill.
+        let mm = minimap(3, 0, 3);
+        let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
+        let layout = mm.layout(bounds, 1);
+        assert_eq!(layout.visible_lines.len(), 3);
+        for vline in &layout.visible_lines {
+            assert!(
+                vline.bounds.height <= MAX_ROW_PITCH,
+                "row pitch {} exceeds the MAX_ROW_PITCH ceiling",
+                vline.bounds.height
+            );
+        }
+        assert_eq!(
+            layout.visible_lines[0].bounds.y, bounds.y,
+            "rows must top-align to the strip"
+        );
+        let last = layout.visible_lines.last().unwrap();
+        let occupied = last.bounds.y + last.bounds.height;
+        assert!(
+            occupied < bounds.height,
+            "a short file must not stretch its rows to fill the whole strip \
+             (occupied {occupied}, strip height {})",
+            bounds.height
+        );
     }
 
     #[test]

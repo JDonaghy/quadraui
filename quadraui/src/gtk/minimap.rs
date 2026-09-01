@@ -119,9 +119,26 @@ pub fn draw_minimap(
         cr.fill().ok();
     }
 
-    let row_px = h / layout.visible_lines.len() as f64;
+    // Row pitch already lives on the layout, post-cap (`Minimap::layout`,
+    // #663) -- read it back rather than recomputing `h /
+    // visible_lines.len()`, which would silently undo the cap and let a
+    // short file's font balloon again. All rows share one pitch, so the
+    // first is representative.
+    let row_px = layout
+        .visible_lines
+        .first()
+        .map(|v| v.bounds.height as f64)
+        .unwrap_or(0.0);
     let mode = render_mode(row_px);
     let saved_font = pango_layout.font_description();
+
+    // Clip all row painting to the strip: a legible pitch can still shape
+    // a line longer than `w`, and below-floor colour bars are already
+    // width-bounded but glyphs are not -- without this, text bled across
+    // whatever the host painted beside the minimap (#663).
+    cr.save().ok();
+    cr.rectangle(x, y, w, h);
+    cr.clip();
 
     for vline in &layout.visible_lines {
         let Some(line) = minimap.lines.get(vline.start_line_idx) else {
@@ -147,6 +164,12 @@ pub fn draw_minimap(
 
     pango_layout.set_attributes(None);
     pango_layout.set_font_description(saved_font.as_ref());
+    // Reset the ellipsize/width state `paint_row_glyphs` set below so it
+    // can't leak onto whatever the shared layout paints next.
+    pango_layout.set_width(-1);
+    pango_layout.set_ellipsize(pango::EllipsizeMode::None);
+
+    cr.restore().ok();
 
     layout
 }
@@ -180,6 +203,12 @@ fn paint_row_glyphs(
     let mut font = saved_font.cloned().unwrap_or_default();
     font.set_absolute_size(minimap_font_px(row_px) * pango::SCALE as f64);
     pango_layout.set_font_description(Some(&font));
+    // Bound the shaped run to the row's own width and ellipsize rather
+    // than shaping (and then relying on the Cairo clip to hide) glyphs
+    // that will never be visible -- keeps shaping cheap even for a very
+    // long line; the `cr.clip()` in `draw_minimap` is the hard guarantee.
+    pango_layout.set_width((vline.bounds.width * pango::SCALE as f32).round() as i32);
+    pango_layout.set_ellipsize(pango::EllipsizeMode::End);
     pango_layout.set_text(text);
 
     let spans: Vec<_> = minimap
@@ -300,14 +329,18 @@ mod tests {
 
     #[test]
     fn same_buffer_at_two_heights_yields_two_different_font_sizes() {
+        // Pitch is bounded (#663: MAX_ROW_PITCH), so read it back from
+        // the resolved layout rather than recomputing `h /
+        // visible_lines.len()` -- that naive division is exactly the
+        // pre-#663 bug and would silently undo the cap.
         let lines: Vec<&str> = vec!["fn main() {}"; 8];
         let mm = minimap_from(lines, 8);
 
-        let tall = gtk_minimap_layout(&mm, 0.0, 0.0, 40.0, 80.0); // pitch 10px
-        let short = gtk_minimap_layout(&mm, 0.0, 0.0, 40.0, 16.0); // pitch 2px
+        let tall = gtk_minimap_layout(&mm, 0.0, 0.0, 40.0, 80.0); // naive pitch 10px, capped to 8px
+        let short = gtk_minimap_layout(&mm, 0.0, 0.0, 40.0, 16.0); // naive pitch 2px, under the cap
 
-        let tall_px = 80.0 / tall.visible_lines.len() as f64;
-        let short_px = 16.0 / short.visible_lines.len() as f64;
+        let tall_px = tall.visible_lines[0].bounds.height as f64;
+        let short_px = short.visible_lines[0].bounds.height as f64;
         assert_ne!(tall_px, short_px);
 
         let tall_font = minimap_font_px(tall_px);
@@ -316,6 +349,24 @@ mod tests {
             tall_font, short_font,
             "font size must track row pitch, not a fixed constant"
         );
+    }
+
+    #[test]
+    fn short_file_in_a_tall_strip_does_not_hit_the_64px_clamp() {
+        // The exact #663 repro: a 3-line file (e.g. `//! Placeholder
+        // module`) in a strip tall enough that the old `bounds.height /
+        // row_count` division would land at or above
+        // `minimap_font_px`'s 64px ceiling. Capped pitch must keep the
+        // resolved font well under that -- at or below MAX_ROW_PITCH.
+        let mm = minimap_from(vec!["//! Placeholder module"; 3], 3);
+        let layout = gtk_minimap_layout(&mm, 0.0, 0.0, 200.0, 200.0);
+        let row_px = layout.visible_lines[0].bounds.height as f64;
+        let font_px = minimap_font_px(row_px);
+        assert!(
+            font_px <= crate::primitives::minimap::MAX_ROW_PITCH as f64,
+            "a short file's font must stay at/below the pitch ceiling, got {font_px}"
+        );
+        assert!(font_px < 64.0, "must not hit minimap_font_px's clamp");
     }
 
     // ── legibility floor ─────────────────────────────────────────────
@@ -438,5 +489,74 @@ mod tests {
             &Theme::default(),
         );
         assert!(layout.visible_lines.is_empty());
+    }
+
+    // ── glyph clipping (#663) ───────────────────────────────────────────
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    ///
+    /// Cairo's `ARgb32` stores each pixel as four bytes in native
+    /// (little-endian) byte order: [B, G, R, A].
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    #[test]
+    fn wide_line_glyphs_never_paint_right_of_bounds() {
+        // Pre-#663 there was no `cr.clip()` and no Pango layout width, so
+        // a line wider than the strip painted straight across whatever
+        // sat beside it (in vimcode's case, the neighbouring editor
+        // pane). Paint a pathologically long line into a strip embedded
+        // in a wider white canvas and assert nothing right of the strip
+        // is touched.
+        const STRIP_W: i32 = 40;
+        const CANVAS_W: i32 = 200;
+        const H: i32 = 40;
+
+        let long_line = "x".repeat(500);
+        let mm = minimap_from(vec![&long_line], 1);
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, CANVAS_W, H).expect("create surface");
+        {
+            let cr = CairoContext::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0); // white sentinel
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let theme = Theme {
+                background: Color::rgb(20, 20, 20),
+                foreground: Color::rgb(255, 255, 255),
+                ..Theme::default()
+            };
+            // One row over 40px -> pitch capped at MAX_ROW_PITCH (8px),
+            // above the legibility floor, so this exercises the
+            // Characters branch (glyph shaping), not the colour-bar
+            // fallback.
+            draw_minimap(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                STRIP_W as f64,
+                H as f64,
+                &mm,
+                &theme,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        for y in 0..H {
+            for x in STRIP_W..CANVAS_W {
+                assert_eq!(
+                    pixel(&data, stride, x, y),
+                    (255, 255, 255),
+                    "pixel ({x},{y}) is right of bounds.x + bounds.width and must be untouched"
+                );
+            }
+        }
     }
 }
