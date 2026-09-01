@@ -219,15 +219,31 @@ pub struct RunConfig {
     /// Window title shown by the window manager (titlebar, taskbar,
     /// Alt-Tab switcher).
     pub title: String,
+    /// Themed icon name (`gtk4::Window::set_icon_name`), e.g.
+    /// `"io.github.jdonaghy.vimcode"`. `None` (the default) leaves GTK's
+    /// own fallback icon in place. Set via [`Self::with_icon_name`] — see
+    /// quadraui#656.
+    pub icon_name: Option<String>,
 }
 
 impl RunConfig {
-    /// Build a config with the given app id and window title.
+    /// Build a config with the given app id and window title. No icon
+    /// override — see [`Self::with_icon_name`].
     pub fn new(app_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             app_id: app_id.into(),
             title: title.into(),
+            icon_name: None,
         }
+    }
+
+    /// Set a themed icon name for the window (quadraui#656). Feeds
+    /// `gtk4::Window::set_icon_name` in [`run_with`] so themed-icon lookup
+    /// works even on window managers that don't resolve `app_id` to an
+    /// installed `.desktop` file.
+    pub fn with_icon_name(mut self, icon_name: impl Into<String>) -> Self {
+        self.icon_name = Some(icon_name.into());
+        self
     }
 }
 
@@ -238,6 +254,7 @@ impl Default for RunConfig {
         Self {
             app_id: "org.quadraui.app".to_string(),
             title: "quadraui app".to_string(),
+            icon_name: None,
         }
     }
 }
@@ -274,6 +291,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let smoke = SmokeConfig::from_env();
     let smoke_failed = Rc::new(Cell::new(false));
     let title = config.title;
+    let icon_name = config.icon_name;
 
     let gapp = Application::builder().application_id(config.app_id).build();
 
@@ -283,6 +301,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         let smoke = smoke.clone();
         let smoke_failed = smoke_failed.clone();
         let title = title.clone();
+        let icon_name = icon_name.clone();
         gapp.connect_activate(move |gapp| {
             activate(
                 gapp,
@@ -291,6 +310,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
                 smoke.clone(),
                 smoke_failed.clone(),
                 title.clone(),
+                icon_name.clone(),
             );
         });
     }
@@ -313,13 +333,19 @@ fn activate<A: AppLogic + 'static>(
     smoke: Option<SmokeConfig>,
     smoke_failed: Rc<Cell<bool>>,
     title: String,
+    icon_name: Option<String>,
 ) {
-    let window = ApplicationWindow::builder()
+    let mut window_builder = ApplicationWindow::builder()
         .application(gapp)
         .title(title)
         .default_width(DEFAULT_WINDOW_WIDTH)
-        .default_height(DEFAULT_WINDOW_HEIGHT)
-        .build();
+        .default_height(DEFAULT_WINDOW_HEIGHT);
+    // quadraui#656: themed icon lookup, independent of the app-id ↔
+    // `.desktop` file match — see `RunConfig::icon_name`'s doc comment.
+    if let Some(icon_name) = icon_name {
+        window_builder = window_builder.icon_name(icon_name);
+    }
+    let window = window_builder.build();
 
     // Stash the window handle so `Backend::begin_window_drag` /
     // `Backend::toggle_window_maximize` (#400) have something to drive.
@@ -1294,6 +1320,7 @@ mod run_config_tests {
         let config = RunConfig::default();
         assert_eq!(config.app_id, "org.quadraui.app");
         assert_eq!(config.title, "quadraui app");
+        assert_eq!(config.icon_name, None);
     }
 
     #[test]
@@ -1301,6 +1328,7 @@ mod run_config_tests {
         let config = RunConfig::new("io.github.jdonaghy.kubeui-gtk", "kubeui");
         assert_eq!(config.app_id, "io.github.jdonaghy.kubeui-gtk");
         assert_eq!(config.title, "kubeui");
+        assert_eq!(config.icon_name, None);
     }
 
     #[test]
@@ -1308,6 +1336,17 @@ mod run_config_tests {
         let owned = RunConfig::new(String::from("a.b.c"), String::from("Title"));
         let borrowed = RunConfig::new("a.b.c", "Title");
         assert_eq!(owned, borrowed);
+    }
+
+    /// #656: `with_icon_name` stores the icon name for `activate` to feed
+    /// into `ApplicationWindow::builder().icon_name(..)`.
+    #[test]
+    fn with_icon_name_sets_the_icon() {
+        let config = RunConfig::new("a.b.c", "Title").with_icon_name("io.github.jdonaghy.vimcode");
+        assert_eq!(
+            config.icon_name,
+            Some("io.github.jdonaghy.vimcode".to_string())
+        );
     }
 }
 
