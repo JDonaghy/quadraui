@@ -712,6 +712,13 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
              exercises the app-side flow instead",
         ),
         (
+            "native_dialogs",
+            "same as `file_dialogs` — a modal native alert cannot run headless; \
+             `GtkDriver` sees Cairo paint, not native windows (quadraui#666), so its \
+             visibility has no automated coverage here, only the smoke item that gap \
+             calls out",
+        ),
+        (
             "notifications",
             "fire-and-forget to a system daemon — nothing paints, so no assertion in this \
              suite's vocabulary can observe it",

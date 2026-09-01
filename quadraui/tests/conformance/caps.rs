@@ -150,6 +150,14 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
         ),
     },
     CapContract {
+        cap: "native_dialogs",
+        proof: Proof::Unprovable(
+            "`PlatformServices::show_message_dialog` likewise has no no-op default — every \
+             backend implements it — so only *running* a native alert distinguishes a real \
+             dialog from a `None`-returning stub, same as `file_dialogs` (quadraui#666)",
+        ),
+    },
+    CapContract {
         cap: "notifications",
         proof: Proof::Unprovable(
             "`PlatformServices::send_notification` likewise has no default to diverge from",
@@ -284,7 +292,7 @@ const BACKEND_TRAIT_SRC: &str = include_str!("../../src/backend.rs");
 ///
 /// quadraui#492's Problem section counts 13 such methods and calls them
 /// the bug: a new backend compiles while silently discarding whatever
-/// they carry. `CAP_CONTRACTS` covers the eight that a `BackendCaps`
+/// they carry. `CAP_CONTRACTS` covers the nine that a `BackendCaps`
 /// field gates and `c0::CASES` covers the defaulted `draw_*` ones, which
 /// leaves a remainder — `set_theme`, `set_nerd_fonts`, `set_editor_font`,
 /// `scales_text_rows`, `editor_col_at_x`, `register_zone` — that nothing

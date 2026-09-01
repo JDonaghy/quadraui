@@ -31,7 +31,10 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use crate::backend::{Clipboard, FileDialogOptions, Notification, PlatformServices};
+use crate::backend::{
+    Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
+    PlatformServices,
+};
 
 // ── OSC 52 support ────────────────────────────────────────────────────────────
 
@@ -398,11 +401,41 @@ impl PlatformServices for TuiPlatformServices {
         None
     }
 
+    /// No native alert facility on TUI — unconditionally `None`, same as
+    /// the file-dialog methods above. The in-canvas `Dialog` primitive
+    /// (`draw_dialog`) stays the only dialog path on this backend
+    /// (quadraui#666).
+    fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+        None
+    }
+
     fn send_notification(&self, _n: Notification) {}
 
     fn open_url(&self, _url: &str) {}
 
     fn platform_name(&self) -> &'static str {
         "tui"
+    }
+}
+
+#[cfg(test)]
+mod message_dialog_tests {
+    use super::*;
+    use crate::backend::MessageDialogOptions;
+
+    /// quadraui#666: TUI has no native alert facility, so
+    /// `show_message_dialog` unconditionally returns `None` — the
+    /// in-canvas `Dialog` primitive stays the only dialog path here,
+    /// regardless of what's in `opts`.
+    #[test]
+    fn show_message_dialog_always_returns_none() {
+        let services = TuiPlatformServices::new();
+        let opts = MessageDialogOptions {
+            title: "Unsaved Changes".to_string(),
+            body: "Do you want to save?".to_string(),
+            buttons: Vec::new(),
+            severity: None,
+        };
+        assert!(services.show_message_dialog(opts).is_none());
     }
 }

@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use crate::backend::{Clipboard, FileDialogOptions, Notification, PlatformServices};
+use crate::backend::{
+    Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
+    PlatformServices,
+};
 
 pub struct WinClipboard;
 
@@ -54,6 +57,12 @@ impl PlatformServices for WinPlatformServices {
     fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
         // TODO(#23): IFileSaveDialog / GetSaveFileName.
         // Graceful no-op until then — behaves like a cancelled dialog.
+        None
+    }
+
+    fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+        // TODO(#23): TaskDialogIndirect / MessageBoxEx (quadraui#666).
+        // Graceful no-op until then — behaves like a dismissed dialog.
         None
     }
 
