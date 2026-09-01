@@ -154,7 +154,11 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
         proof: Proof::Unprovable(
             "`PlatformServices::show_message_dialog` likewise has no no-op default — every \
              backend implements it — so only *running* a native alert distinguishes a real \
-             dialog from a `None`-returning stub, same as `file_dialogs` (quadraui#666)",
+             dialog from a `None`-returning stub, same as `file_dialogs` (quadraui#666). \
+             `GtkDriver` paints Cairo offscreen and never opens the native window an \
+             `AlertDialog` lives in, so its visibility has no automated coverage here — see \
+             the manual smoke item in `docs/TESTING.md`'s \"What unit tests don't cover\" \
+             section (`gtk_message_dialog` example) for the procedure that gap calls for",
         ),
     },
     CapContract {

@@ -14,6 +14,22 @@
 //! Click on a button emits `ButtonClicked { id }`. Enter activates the
 //! default button (the first whose `is_default = true`); Escape emits
 //! `Cancelled` unconditionally.
+//!
+//! # A deliberate two-way reference with `backend.rs` (quadraui#666)
+//!
+//! [`native_dialog_options`] below imports [`MessageDialogButton`] /
+//! [`MessageDialogOptions`] from `crate::backend` — the first import
+//! from `crate::backend` anywhere under `src/primitives/` (every other
+//! primitive file stays backend-import-free). `backend.rs` already
+//! imports [`Dialog`]/[`DialogSeverity`] from here, so this creates a
+//! two-way reference between the two files. That inverts the
+//! documented one-directional primitives→backend layering, but doesn't
+//! violate `ARCHITECTURE.md`'s literal rule (`MessageDialogOptions` is
+//! a plain data type, not a `ratatui`/`gtk4`/`cairo`/backend-crate
+//! type), and the #666 design explicitly mandates this file for the
+//! mapping (it's a pure function of the `Dialog` descriptor, unit-
+//! testable with no live surface — see [`native_dialog_options`]'s own
+//! doc). Called out here so it isn't mistaken for drift.
 
 use crate::backend::{MessageDialogButton, MessageDialogOptions};
 use crate::event::Rect;
@@ -509,6 +525,14 @@ fn flatten(text: &StyledText) -> String {
 /// `DialogButton::tint` has no equivalent in [`MessageDialogButton`] (no
 /// native alert facility exposes per-button colour) and is silently
 /// dropped — every other field maps straight across.
+///
+/// `d.buttons` is passed through as-is, including when empty — this
+/// function does not enforce "a dialog must declare at least one
+/// button". Every native alert facility (GTK's `AlertDialog`, macOS's
+/// `NSAlert`, Win32's `MessageBoxEx`) expects at least one, so a caller
+/// building a `Dialog` for native display should always populate
+/// `buttons`; `Dialog`'s own doc doesn't currently state that invariant
+/// either.
 pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
     if d.table.is_some() || d.input.is_some() {
         return None;
@@ -966,6 +990,15 @@ mod tests {
         assert!(opts.buttons[1].is_cancel);
         assert!(!opts.buttons[1].is_default);
         assert_eq!(opts.severity, Some(DialogSeverity::Warning));
+    }
+
+    #[test]
+    fn native_dialog_options_passes_through_none_severity() {
+        let mut d = dialog_with_buttons();
+        d.severity = None;
+        let opts =
+            native_dialog_options(&d).expect("no table/input — must be natively expressible");
+        assert_eq!(opts.severity, None);
     }
 
     #[test]

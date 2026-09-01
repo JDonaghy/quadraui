@@ -152,6 +152,12 @@ impl PlatformServices for GtkPlatformServices {
         dialog.set_detail(&opts.body);
         dialog.set_modal(true);
         dialog.set_buttons(&labels);
+        // `opts.severity` is intentionally unread here: gtk4-rs 0.7.3's
+        // `AlertDialog` (`auto/alert_dialog.rs`) exposes no icon-setting
+        // API at all, so there is nothing to map it onto. Not a bug —
+        // `MessageDialogOptions::severity`'s doc already says "backends
+        // *may* use this" — but worth calling out so the next reader
+        // doesn't go looking for where it's supposed to go.
         if let Some(pos) = order.iter().position(|&i| opts.buttons[i].is_cancel) {
             dialog.set_cancel_button(pos as i32);
         }
