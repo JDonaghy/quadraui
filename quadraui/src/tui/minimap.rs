@@ -37,7 +37,7 @@ pub const COLS_PER_CELL: usize = 2;
 /// with no font to scale, so there's no file-length-dependent glyph size
 /// to fix here the way GTK's fixed pitch fixes GTK's.
 pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
-    minimap.layout(
+    minimap.layout_with_sizing(
         crate::event::Rect::new(
             area.x as f32,
             area.y as f32,

@@ -18,10 +18,15 @@
 //!
 //! [`Minimap::lines`] is the *fine-grained* list the app chose to show —
 //! for GTK, typically one entry per rendered row; for TUI, four
-//! consecutive entries are packed into one braille row. [`Minimap::layout`]
-//! takes `lines_per_row` (the backend's own grouping factor: `1` for GTK,
-//! `4` for TUI) and groups `lines` into that many rows, then tiles those
-//! rows according to [`MinimapSizing`] (issue #667):
+//! consecutive entries are packed into one braille row.
+//! [`Minimap::layout_with_sizing`] takes `lines_per_row` (the backend's own
+//! grouping factor: `1` for GTK, `4` for TUI) and groups `lines` into that
+//! many rows, then tiles those rows according to [`MinimapSizing`] (issue
+//! #667). [`Minimap::layout`] is the pre-#667 two-argument shape, kept as a
+//! deprecated shim over `layout_with_sizing(bounds, lines_per_row,
+//! MinimapSizing::Fill)` for source compatibility (see the *Downstream
+//! consumers* section of `CLAUDE.md`) — new call sites should use
+//! `layout_with_sizing` directly:
 //!
 //! - [`MinimapSizing::Fill`] — stretch to fill `bounds.height`, at a pitch
 //!   that is never allowed to exceed [`MAX_ROW_PITCH`] (issue #663): a file
@@ -32,8 +37,8 @@
 //!   has no font to scale.
 //! - [`MinimapSizing::FixedPitch`] — rows tile top-down at exactly the
 //!   given pitch, regardless of `row_count`. When more rows exist than the
-//!   strip can hold at that pitch, [`Minimap::layout`] doesn't shrink the
-//!   pitch to compress everything in — it slides: only a window of
+//!   strip can hold at that pitch, [`Minimap::layout_with_sizing`] doesn't
+//!   shrink the pitch to compress everything in — it slides: only a window of
 //!   `bounds.height / pitch` rows is shown at once, and that window's
 //!   position tracks [`Minimap::visible_row_start`] against
 //!   [`Minimap::total_buffer_lines`] (VS Code's `minimap.size:
@@ -226,12 +231,32 @@ impl MinimapLayout {
 }
 
 impl Minimap {
+    /// Pre-#667 two-argument shape of [`Self::layout_with_sizing`], kept as
+    /// a deprecated shim for source compatibility with out-of-tree callers
+    /// (per CLAUDE.md's rule 8 deprecate-then-remove protocol —
+    /// `vimcode`'s `src/render.rs::minimap_click_line` calls this exact
+    /// 2-arg shape with no version pin on this crate). Forwards to
+    /// [`Self::layout_with_sizing`] with [`MinimapSizing::Fill`], which is
+    /// this method's own pre-#667 behaviour byte-for-byte — this shim does
+    /// not change what any existing caller sees.
+    ///
+    /// New call sites — everything in this crate, and any new downstream
+    /// code — should call [`Self::layout_with_sizing`] directly and choose
+    /// a `sizing` explicitly instead of relying on this default.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `layout_with_sizing(bounds, lines_per_row, sizing)` instead — this shim defaults to `MinimapSizing::Fill` (#667)"
+    )]
+    pub fn layout(&self, bounds: Rect, lines_per_row: usize) -> MinimapLayout {
+        self.layout_with_sizing(bounds, lines_per_row, MinimapSizing::Fill)
+    }
+
     /// Compute layout + hit regions. `lines_per_row` is the backend's
     /// grouping factor (`1` for GTK, `4` for TUI) — see the module docs
     /// for why layout needs it but painting-only metrics (font size,
     /// dot density) don't. `sizing` picks the row-pitch strategy — see
     /// [`MinimapSizing`].
-    pub fn layout(
+    pub fn layout_with_sizing(
         &self,
         bounds: Rect,
         lines_per_row: usize,
@@ -328,11 +353,16 @@ impl Minimap {
         if self.total_buffer_lines <= 1 {
             return 0;
         }
+        // `visible_row_start` is caller-supplied and expected to stay in
+        // `0..self.lines.len()`; if it's ever out of range, treat that as
+        // "the viewport is past the end of the file" rather than "at the
+        // top" — falling back to `0` would snap the slide window to the
+        // top of the file on out-of-range input, which is the wrong end.
         let start_buffer_line = self
             .lines
             .get(self.visible_row_start)
             .map(|l| l.line_idx)
-            .unwrap_or(0);
+            .unwrap_or_else(|| self.total_buffer_lines.saturating_sub(1));
         let denom = (self.total_buffer_lines - 1) as f32;
         let fraction = (start_buffer_line as f32 / denom).clamp(0.0, 1.0);
         ((fraction * max_start as f32).round() as usize).min(max_start)
@@ -522,7 +552,7 @@ mod tests {
         // (that's `layout_caps_row_pitch_and_top_aligns_short_files`,
         // below).
         let bounds = Rect::new(0.0, 0.0, 10.0, 16.0);
-        let layout = mm.layout(bounds, 2, MinimapSizing::Fill); // 8 lines / 2 per row = 4 rows
+        let layout = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill); // 8 lines / 2 per row = 4 rows
         assert_eq!(layout.visible_lines.len(), 4);
         assert_eq!(
             layout.visible_lines[0].bounds,
@@ -540,12 +570,28 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercising the deprecated shim itself (#667)
+    fn deprecated_layout_shim_matches_layout_with_sizing_fill() {
+        // The pre-#667 two-argument `layout()` must keep resolving exactly
+        // like `layout_with_sizing(.., MinimapSizing::Fill)` -- that's the
+        // whole point of the shim (CLAUDE.md rule 8: `vimcode`'s
+        // `src/render.rs::minimap_click_line` still calls the 2-arg form
+        // with no version pin on this crate, so its behaviour must not
+        // change out from under it).
+        let mm = minimap(8, 2, 3);
+        let bounds = Rect::new(0.0, 0.0, 10.0, 16.0);
+        let shim = mm.layout(bounds, 2);
+        let direct = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill);
+        assert_eq!(shim, direct);
+    }
+
+    #[test]
     fn layout_viewport_highlight_spans_the_editor_viewport() {
         // visible_row_start=2, visible_row_count=3 -> lines[2..5), rows
         // grouped 2-per-row -> row 1 (start) through row 3 (exclusive).
         let mm = minimap(8, 2, 3);
         let bounds = Rect::new(0.0, 0.0, 10.0, 16.0); // pitch 4px, under the cap
-        let layout = mm.layout(bounds, 2, MinimapSizing::Fill);
+        let layout = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill);
         assert_eq!(layout.viewport_highlight, Rect::new(0.0, 4.0, 10.0, 8.0));
     }
 
@@ -559,7 +605,7 @@ mod tests {
         // the tall strip stays unpainted rather than stretching to fill.
         let mm = minimap(3, 0, 3);
         let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
-        let layout = mm.layout(bounds, 1, MinimapSizing::Fill);
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::Fill);
         assert_eq!(layout.visible_lines.len(), 3);
         for vline in &layout.visible_lines {
             assert!(
@@ -585,7 +631,7 @@ mod tests {
     #[test]
     fn layout_empty_lines_is_a_no_op() {
         let mm = minimap(0, 0, 0);
-        let layout = mm.layout(Rect::new(0.0, 0.0, 10.0, 40.0), 4, MinimapSizing::Fill);
+        let layout = mm.layout_with_sizing(Rect::new(0.0, 0.0, 10.0, 40.0), 4, MinimapSizing::Fill);
         assert!(layout.visible_lines.is_empty());
         assert_eq!(layout.viewport_highlight.height, 0.0);
     }
@@ -593,7 +639,7 @@ mod tests {
     #[test]
     fn layout_zero_size_bounds_is_a_no_op() {
         let mm = minimap(8, 0, 4);
-        let layout = mm.layout(Rect::new(0.0, 0.0, 0.0, 0.0), 4, MinimapSizing::Fill);
+        let layout = mm.layout_with_sizing(Rect::new(0.0, 0.0, 0.0, 0.0), 4, MinimapSizing::Fill);
         assert!(layout.visible_lines.is_empty());
     }
 
@@ -609,8 +655,8 @@ mod tests {
         let short = minimap(3, 0, 3);
         let long = minimap(10_000, 0, 10);
 
-        let short_layout = short.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
-        let long_layout = long.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        let short_layout = short.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        let long_layout = long.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
 
         assert_eq!(short_layout.visible_lines[0].bounds.height, 2.0);
         assert_eq!(long_layout.visible_lines[0].bounds.height, 2.0);
@@ -626,7 +672,7 @@ mod tests {
         // windowing needed, no stretching either.
         let mm = minimap(3, 0, 3);
         let bounds = Rect::new(0.0, 0.0, 40.0, 400.0);
-        let layout = mm.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
         assert_eq!(layout.visible_lines.len(), 3);
         let last = layout.visible_lines.last().unwrap();
         assert!(last.bounds.y + last.bounds.height < bounds.height);
@@ -643,7 +689,7 @@ mod tests {
         let mut starts = Vec::new();
         for visible_row_start in [0, 100, 300, 500, 700, 900, 999] {
             let mm = minimap(n, visible_row_start, 1);
-            let layout = mm.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+            let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
             let first_line_idx = layout.visible_lines.first().unwrap().start_line_idx;
             starts.push(first_line_idx);
         }
@@ -664,12 +710,32 @@ mod tests {
     }
 
     #[test]
+    fn fixed_pitch_out_of_range_visible_row_start_slides_to_the_end() {
+        // `visible_row_start >= lines.len()` is out-of-range input (callers
+        // are expected to keep it in bounds), but `slide_window_start_row`
+        // must not silently snap to the top of the file for it -- that's
+        // the wrong end for a viewport that's (nominally) past the end.
+        let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
+        let n = 1000;
+        let mut mm = minimap(n, 0, 1);
+        mm.visible_row_start = n; // one past the last valid `lines` index
+
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        let first_line_idx = layout.visible_lines.first().unwrap().start_line_idx;
+        assert_eq!(
+            first_line_idx,
+            n - 100,
+            "out-of-range visible_row_start must slide to the bottom of the file, not the top"
+        );
+    }
+
+    #[test]
     fn fixed_pitch_whole_file_fits_needs_no_slide() {
         // row_count (100) <= rows that fit (100 at 2px in 200px): every
         // row is visible regardless of visible_row_start.
         let mm = minimap(100, 50, 1);
         let bounds = Rect::new(0.0, 0.0, 40.0, 200.0);
-        let layout = mm.layout(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
         assert_eq!(layout.visible_lines.len(), 100);
         assert_eq!(layout.visible_lines[0].start_line_idx, 0);
     }
