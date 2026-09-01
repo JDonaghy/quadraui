@@ -87,6 +87,14 @@ pub struct AppShell {
     max_sidebar_width: f32,
     /// Activity bar width in line_height multiples.
     activity_bar_width: f32,
+    /// Fixed-pixel activity bar width override, set via
+    /// [`Self::with_activity_bar_width_px`]. When `Some`, this wins over
+    /// `activity_bar_width` and is used verbatim regardless of
+    /// `line_height` — VS Code's activity bar is a fixed 48px (matching
+    /// `ACTIVITY_ROW_PX`) independent of editor font size, and font-scaled
+    /// chrome is the wrong unit for a bar whose contents are fixed-size
+    /// icons (#657).
+    activity_bar_width_px: Option<f32>,
     position: ShellPosition,
     drag_offset: Option<f32>,
     hovered_activity_idx: Option<usize>,
@@ -136,6 +144,7 @@ impl AppShell {
             min_sidebar_width: 8.0,
             max_sidebar_width: 800.0,
             activity_bar_width: 3.0,
+            activity_bar_width_px: None,
             position: ShellPosition::Left,
             drag_offset: None,
             hovered_activity_idx: None,
@@ -173,6 +182,23 @@ impl AppShell {
 
     pub fn with_activity_bar_width(mut self, width: f32) -> Self {
         self.activity_bar_width = width;
+        self
+    }
+
+    /// Pin the activity bar to a fixed pixel width, overriding the
+    /// line-height-derived width from [`Self::with_activity_bar_width`].
+    ///
+    /// The row height GTK/macOS paint each activity item at
+    /// (`ACTIVITY_ROW_PX = 48.0`) is already a fixed pixel constant, not a
+    /// `line_height` multiple — so a `with_activity_bar_width(2.4)`-style
+    /// call only produces a square 48×48 bar at whatever `line_height`
+    /// happens to make `2.4 * lh == 48.0`. Passing `48.0` here keeps the
+    /// bar square regardless of the app's editor font size (#657).
+    ///
+    /// `None` (the default) leaves the existing `line_height`-derived
+    /// width in place — this call is additive, not a replacement.
+    pub fn with_activity_bar_width_px(mut self, width_px: f32) -> Self {
+        self.activity_bar_width_px = Some(width_px);
         self
     }
 
@@ -857,7 +883,9 @@ impl AppShell {
 
         // ── Horizontal carve: activity bar + sidebar + divider + main ──
 
-        let ab_w = (self.activity_bar_width * lh).round();
+        let ab_w = self
+            .activity_bar_width_px
+            .unwrap_or_else(|| (self.activity_bar_width * lh).round());
         let divider_w = (lh * 0.25).max(1.0).round().min(4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
@@ -1125,6 +1153,47 @@ mod tests {
         let content = l.sidebar_content_bounds.unwrap();
         assert_eq!(content.y, header.y + header.height);
         assert_eq!(content.width, header.width);
+    }
+
+    // ── Activity bar width (#657) ───────────────────────────────────
+
+    /// The default activity bar width (3.0 line-heights) tracks
+    /// `line_height`, same as every other chrome dimension.
+    #[test]
+    fn activity_bar_width_tracks_line_height_by_default() {
+        let s = shell();
+        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 60.0);
+        assert_eq!(s.layout(area(), 10.0).activity_bar_bounds.width, 30.0);
+    }
+
+    /// `with_activity_bar_width` overrides the line-height multiple itself
+    /// — e.g. 2.4 lh lands on 48px at lh=20, matching VS Code's 48px bar.
+    #[test]
+    fn with_activity_bar_width_overrides_the_multiple() {
+        let s = shell().with_activity_bar_width(2.4);
+        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
+    }
+
+    /// `with_activity_bar_width_px` pins the bar to an exact pixel width
+    /// that does not move when `line_height` changes — the fix for a bar
+    /// that's only square by coincidence of the app's editor font size.
+    #[test]
+    fn with_activity_bar_width_px_is_independent_of_line_height() {
+        let s = shell().with_activity_bar_width_px(48.0);
+        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
+        assert_eq!(s.layout(area(), 10.0).activity_bar_bounds.width, 48.0);
+        assert_eq!(s.layout(area(), 37.5).activity_bar_bounds.width, 48.0);
+    }
+
+    /// A fixed-px override wins over a line-height multiple set via
+    /// `with_activity_bar_width` on the same shell, not the other way
+    /// around.
+    #[test]
+    fn with_activity_bar_width_px_wins_over_line_height_multiple() {
+        let s = shell()
+            .with_activity_bar_width(3.0)
+            .with_activity_bar_width_px(48.0);
+        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
     }
 
     // ── Layout — sidebar hidden ─────────────────────────────────────

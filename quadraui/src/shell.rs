@@ -24,6 +24,19 @@ pub struct ShellConfig {
     pub default_sidebar_width: f32,
     pub min_sidebar_width: f32,
     pub max_sidebar_width: f32,
+    /// Activity bar width in line-height multiples (`3.0` by default,
+    /// matching [`AppShell`]'s own default) — same unit as
+    /// `default_sidebar_width`. Set via [`Self::with_activity_bar_width`].
+    /// See [`Self::activity_bar_width_px`] for a fixed-pixel alternative
+    /// that doesn't move with the app's editor font (#657).
+    pub activity_bar_width: f32,
+    /// Fixed-pixel activity bar width override. `None` (the default)
+    /// leaves `activity_bar_width` (a line-height multiple) in charge.
+    /// Set via [`Self::with_activity_bar_width_px`] to pin the bar to an
+    /// exact width — e.g. `48.0` to match VS Code's activity bar and the
+    /// `ACTIVITY_ROW_PX` row height GTK/macOS already paint each item at
+    /// — regardless of `line_height` (#657).
+    pub activity_bar_width_px: Option<f32>,
     pub position: ShellPosition,
     pub has_title_bar: bool,
     pub title_bar_height_lh: f32,
@@ -82,6 +95,8 @@ impl ShellConfig {
             default_sidebar_width: 20.0,
             min_sidebar_width: 8.0,
             max_sidebar_width: 50.0,
+            activity_bar_width: 3.0,
+            activity_bar_width_px: None,
             position: ShellPosition::Left,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
@@ -105,6 +120,24 @@ impl ShellConfig {
 
     pub fn with_position(mut self, position: ShellPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Override the activity bar width in line-height multiples (`3.0` by
+    /// default). Same unit as `default_sidebar_width`. See
+    /// [`Self::with_activity_bar_width_px`] for a fixed-pixel alternative
+    /// (#657).
+    pub fn with_activity_bar_width(mut self, width_lh: f32) -> Self {
+        self.activity_bar_width = width_lh;
+        self
+    }
+
+    /// Pin the activity bar to a fixed pixel width, overriding
+    /// `activity_bar_width`. Independent of `line_height` — e.g. `48.0`
+    /// keeps the bar square against `ACTIVITY_ROW_PX` regardless of the
+    /// app's editor font size (#657).
+    pub fn with_activity_bar_width_px(mut self, width_px: f32) -> Self {
+        self.activity_bar_width_px = Some(width_px);
         self
     }
 
@@ -643,6 +676,33 @@ mod tests {
             config.icon_name,
             Some("io.github.jdonaghy.vimcode".to_string())
         );
+    }
+
+    /// #657: a fresh `ShellConfig` keeps `AppShell`'s own default (3.0
+    /// line-heights) and no fixed-pixel override, so nothing that predates
+    /// this field changes behavior.
+    #[test]
+    fn shell_config_activity_bar_width_defaults_match_app_shell() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.activity_bar_width, 3.0);
+        assert_eq!(config.activity_bar_width_px, None);
+    }
+
+    /// #657: `with_activity_bar_width` stores the line-height multiple
+    /// verbatim for `build_shell_adapter` to pass through to `AppShell`.
+    #[test]
+    fn shell_config_with_activity_bar_width_overrides_the_multiple() {
+        let config = ShellConfig::new("test", Vec::new()).with_activity_bar_width(2.4);
+        assert_eq!(config.activity_bar_width, 2.4);
+    }
+
+    /// #657: `with_activity_bar_width_px` stores a fixed-pixel override,
+    /// letting a consumer pin the bar to VS Code's 48px regardless of the
+    /// app's editor font / line height.
+    #[test]
+    fn shell_config_with_activity_bar_width_px_sets_the_override() {
+        let config = ShellConfig::new("test", Vec::new()).with_activity_bar_width_px(48.0);
+        assert_eq!(config.activity_bar_width_px, Some(48.0));
     }
 
     #[test]

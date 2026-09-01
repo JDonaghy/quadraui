@@ -140,7 +140,14 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
         .with_max_width(config.max_sidebar_width)
+        .with_activity_bar_width(config.activity_bar_width)
         .with_position(config.position);
+
+    // Fixed-pixel override wins over the line-height multiple set just
+    // above — see `AppShell::with_activity_bar_width_px` (#657).
+    if let Some(width_px) = config.activity_bar_width_px {
+        shell = shell.with_activity_bar_width_px(width_px);
+    }
 
     // Configure the height unconditionally and let `has_title_bar` control
     // only initial visibility. Gating the whole call on `has_title_bar`
