@@ -40,16 +40,17 @@ use quadraui::{
     ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable,
     Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
     DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
-    EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, ListItem, ListView, MenuBar,
-    MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, Palette,
-    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
-    Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar,
-    Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner,
-    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay,
-    TextDisplayLine, TextInput, ToastCorner, ToastItem, ToastSeverity, ToastStack, Toolbar,
-    ToolbarButton, ToolbarItemMeasure, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, Image, ImageFit, ImageSource,
+    ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine,
+    MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel, PipelineStage,
+    PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure,
+    ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize,
+    SelectionMode, Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus,
+    StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame, TabIcon,
+    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
+    ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
+    UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1130,6 +1131,26 @@ pub const CASES: &[Case] = &[
                 total_buffer_lines: 2,
             };
             let _ = b.draw_minimap(area, &minimap);
+        },
+    },
+    // #662: GTK paints real pixels (no text run); TUI paints
+    // `fallback_text` into the buffer. A single needle can't cover both
+    // paint techniques, so — like `draw_minimap` above — this relies on
+    // the `zones()` fallback, which both backends register
+    // unconditionally in `draw_image` (even on a decode failure, as
+    // this case deliberately exercises via an empty byte source).
+    Case {
+        method: "draw_image",
+        needle: None,
+        paint: |b, area| {
+            let image = Image {
+                id: id("image"),
+                source: ImageSource::Bytes(vec![]),
+                intrinsic_size: Some((16, 16)),
+                fit: ImageFit::Contain,
+                fallback_text: "c0img".to_string(),
+            };
+            let _ = b.draw_image(area, &image);
         },
     },
 ];

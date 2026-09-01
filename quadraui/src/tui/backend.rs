@@ -2143,6 +2143,23 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::minimap::MinimapLayout {
         crate::tui::tui_minimap_layout(minimap, q_rect_to_ratatui(rect))
     }
+
+    fn draw_image(
+        &mut self,
+        rect: QRect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let result = {
+            let frame = self
+                .current_frame_mut()
+                .expect("TuiBackend::draw_image called outside enter_frame_scope");
+            crate::tui::draw_image(frame.buffer_mut(), area, image, &theme)
+        };
+        self.register_zone(image.id.clone(), rect);
+        result
+    }
 }
 
 // ─── Cross-backend validation tests ──────────────────────────────────────────
@@ -2870,6 +2887,14 @@ mod tests {
             _m: &crate::primitives::minimap::Minimap,
         ) -> crate::primitives::minimap::MinimapLayout {
             crate::primitives::minimap::MinimapLayout::default()
+        }
+
+        fn draw_image(
+            &mut self,
+            _r: QRect,
+            _i: &crate::primitives::image::Image,
+        ) -> crate::backend::ImagePaintResult {
+            crate::backend::ImagePaintResult::Unsupported
         }
     }
 

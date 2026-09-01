@@ -3758,6 +3758,26 @@ impl Backend for GtkBackend {
         crate::backend::MinimapPaintResult { layout }
     }
 
+    fn draw_image(
+        &mut self,
+        rect: QRect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        let (cr, _pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_image called outside enter_frame_scope");
+        let result = crate::gtk::draw_image(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            image,
+        );
+        self.register_zone(image.id.clone(), rect);
+        result
+    }
+
     fn minimap_layout(
         &self,
         rect: QRect,

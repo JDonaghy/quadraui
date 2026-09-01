@@ -178,6 +178,51 @@ impl MenuBar {
         }
     }
 
+    /// Like [`Self::layout`], but reserves `leading_width` device units
+    /// at the start of `bounds` for a fixed-size leading element — an
+    /// app-logo [`crate::Image`] left of the first menu item, VS-Code
+    /// style (#662) — before laying out items.
+    ///
+    /// This exists because the offset math is the actual regression
+    /// risk of a leading slot, not the paint: a consumer that narrows
+    /// the rect it hands to a paint call but not the rect it hands to a
+    /// click-routing call (or vice versa) gets a menu bar whose visible
+    /// items and clickable items silently disagree — the same bug class
+    /// #552 found in `TabBar`'s hit-x-offset. Centralizing the shift
+    /// here means both call sites can pass the *same* `bounds` +
+    /// `leading_width` pair instead of each independently computing a
+    /// narrowed rect.
+    ///
+    /// `leading_width <= 0.0` behaves exactly like [`Self::layout`]
+    /// called with `bounds` unchanged. [`MenuBarLayout::bounds`] on the
+    /// result still covers the *full* `bounds` (including the reserved
+    /// leading region) so [`MenuBarLayout::hit_test`]'s "inside the bar"
+    /// check keeps treating a click over the icon as `MenuBarHit::Bar`
+    /// rather than `MenuBarHit::Outside` — callers that want to
+    /// special-case a click on the icon itself compare the click x
+    /// against `bounds.x + leading_width` themselves, since the icon's
+    /// own geometry isn't a `MenuBar` concern.
+    pub fn layout_with_leading<F>(
+        &self,
+        bounds: Rect,
+        leading_width: f32,
+        measure_item: F,
+    ) -> MenuBarLayout
+    where
+        F: Fn(usize) -> MenuBarItemMeasure,
+    {
+        let leading_width = leading_width.max(0.0).min(bounds.width);
+        let items_bounds = Rect::new(
+            bounds.x + leading_width,
+            bounds.y,
+            (bounds.width - leading_width).max(0.0),
+            bounds.height,
+        );
+        let mut layout = self.layout(items_bounds, measure_item);
+        layout.bounds = bounds;
+        layout
+    }
+
     /// Find the index of the item whose label contains the Alt-key
     /// character `ch` (case-insensitive). The label's `&` prefix marks
     /// the activation character; if no `&`, the first character is
@@ -200,5 +245,92 @@ impl MenuBar {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(n: usize) -> MenuBar {
+        MenuBar {
+            id: WidgetId("bar".into()),
+            items: (0..n)
+                .map(|i| MenuBarItem {
+                    id: WidgetId(format!("item{i}")),
+                    label: format!("Item{i}"),
+                    disabled: false,
+                    submenu: None,
+                })
+                .collect(),
+            open_item: None,
+            focused_item: None,
+        }
+    }
+
+    // #662: a leading icon slot (app logo left of the first menu item)
+    // must shift every item's x-offset by exactly `leading_width`, and a
+    // click that used to land on item 0 pre-shift must land on item 0
+    // again post-shift, at its new (shifted) x. This is the regression
+    // the module doc on `layout_with_leading` calls out — the paint
+    // itself is trivial, keeping paint and hit-test in agreement is not.
+    #[test]
+    fn leading_icon_shifts_item_x_offsets_by_its_width() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 1.0);
+        let measure = |_: usize| MenuBarItemMeasure::new(20.0);
+        let leading_width = 32.0;
+
+        let plain = bar(3).layout(bounds, measure);
+        let with_icon = bar(3).layout_with_leading(bounds, leading_width, measure);
+
+        assert_eq!(plain.visible_items.len(), with_icon.visible_items.len());
+        for (p, w) in plain.visible_items.iter().zip(&with_icon.visible_items) {
+            assert_eq!(w.bounds.x, p.bounds.x + leading_width);
+            assert_eq!(w.bounds.width, p.bounds.width);
+        }
+    }
+
+    #[test]
+    fn leading_icon_click_on_first_item_still_hits_it_at_its_shifted_x() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 1.0);
+        let measure = |_: usize| MenuBarItemMeasure::new(20.0);
+        let leading_width = 32.0;
+
+        let layout = bar(3).layout_with_leading(bounds, leading_width, measure);
+        let item0 = &layout.visible_items[0];
+        assert_eq!(item0.bounds.x, leading_width);
+
+        // Click in the middle of item 0's shifted bounds.
+        let hit = layout.hit_test(item0.bounds.x + 1.0, 0.0);
+        assert_eq!(hit, MenuBarHit::Item(0));
+
+        // Click over the reserved icon region (left of the shift) is
+        // still "inside the bar" — `bounds` covers the full width —
+        // but doesn't land on any item.
+        let icon_hit = layout.hit_test(leading_width / 2.0, 0.0);
+        assert_eq!(icon_hit, MenuBarHit::Bar);
+    }
+
+    #[test]
+    fn zero_leading_width_matches_plain_layout() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 1.0);
+        let measure = |_: usize| MenuBarItemMeasure::new(20.0);
+
+        let plain = bar(3).layout(bounds, measure);
+        let zero_leading = bar(3).layout_with_leading(bounds, 0.0, measure);
+
+        assert_eq!(plain, zero_leading);
+    }
+
+    #[test]
+    fn leading_width_is_clamped_to_bounds_width() {
+        let bounds = Rect::new(0.0, 0.0, 50.0, 1.0);
+        let measure = |_: usize| MenuBarItemMeasure::new(20.0);
+
+        // Absurdly large leading_width must not push items_bounds.width
+        // negative (which would panic or wrap in a naive `width -
+        // leading_width` subtraction).
+        let layout = bar(2).layout_with_leading(bounds, 10_000.0, measure);
+        assert!(layout.visible_items.is_empty());
     }
 }
