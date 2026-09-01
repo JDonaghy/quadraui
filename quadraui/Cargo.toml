@@ -691,6 +691,16 @@ path = "examples/gtk_file_dialog.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_message_dialog"
+path = "examples/tui_message_dialog.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_message_dialog"
+path = "examples/gtk_message_dialog.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_modal_occlusion"
 path = "examples/tui_modal_occlusion.rs"
 required-features = ["tui"]
