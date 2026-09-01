@@ -69,7 +69,7 @@ pub const COLUMN_CAPACITY: usize = 120;
 
 /// Compute the GTK pixel-unit layout for a [`Minimap`] without painting.
 pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> MinimapLayout {
-    minimap.layout(
+    minimap.layout_with_sizing(
         QRect::new(x as f32, y as f32, w as f32, h as f32),
         LINES_PER_ROW,
         MinimapSizing::FixedPitch(ROW_PITCH_PX as f32),
