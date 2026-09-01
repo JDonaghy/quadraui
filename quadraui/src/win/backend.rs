@@ -268,6 +268,12 @@ impl WinBackend {
         self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
         self.surface = Some(Surface { factory, target });
         self.hwnd = Some(hwnd);
+        // #23: give `WinPlatformServices` the live window so file dialogs
+        // open parented to it and notifications have an owning `HWND` —
+        // mirrors `GtkBackend::set_window` calling
+        // `GtkPlatformServices::set_window` right after its own window is
+        // constructed.
+        self.services.set_window(hwnd);
 
         // DirectWrite bootstrap (#21): build the factory + text format for
         // the currently-configured editor font and seed `line_height()` /
@@ -499,7 +505,25 @@ impl Backend for WinBackend {
     /// taxonomy). Flip these once the rasterisers they'd actually be
     /// clicking on land.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
-        crate::backend::BackendCaps::empty()
+        // Only mutated under `cfg(target_os = "windows")` below — `mut`
+        // would otherwise warn as unused on every other host, same
+        // `cfg_attr` pattern `win::msg` uses for its host-independent
+        // helpers.
+        #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+        let mut caps = crate::backend::BackendCaps::empty();
+        // #23: file dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
+        // notifications (`Shell_NotifyIconW`) go through COM/Shell APIs
+        // independent of the Direct2D rasteriser work above — unlike
+        // `mouse`/`scroll`/`drag`, there is no unfinished rasteriser
+        // gating these on, so they're honestly `true` on Windows itself.
+        // `native_dialogs` (message/alert dialogs) stays unset — that's
+        // still a `None`-returning stub pending quadraui#666.
+        #[cfg(target_os = "windows")]
+        {
+            caps.file_dialogs = true;
+            caps.notifications = true;
+        }
+        caps
     }
 
     // ─── Measurement ──────────────────────────────────────────────────
