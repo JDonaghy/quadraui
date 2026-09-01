@@ -950,6 +950,42 @@ impl Backend for MacBackend {
         }
     }
 
+    fn draw_activity_bar_with_style(
+        &mut self,
+        rect: Rect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
+        style: &crate::ActivityBarStyle,
+    ) -> Vec<ActivityBarRowHit> {
+        // Track keyboard focus — same contract as `draw_activity_bar` above.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_activity_bar_with_style called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_activity_bar_with_style requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx non-null inside frame scope.
+        unsafe {
+            super::activity_bar::draw_activity_bar_with_style(
+                ctx,
+                font,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                style,
+                &theme,
+                hovered_idx,
+            )
+        }
+    }
+
     fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
         // No-paint twin of `draw_status_bar`: same `mac_status_bar_layout`
         // call, so hit regions match the painted frame exactly. Hit

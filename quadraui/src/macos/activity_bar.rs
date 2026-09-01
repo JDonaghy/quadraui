@@ -33,7 +33,9 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
+use crate::primitives::activity_bar::{
+    ActivityBar, ActivityBarRowHit, ActivityBarStyle, ActivityItem,
+};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -94,6 +96,11 @@ pub fn mac_activity_bar_layout(
 
 /// Paint `bar` into `(0, 0, width, height)` on `ctx`.
 ///
+/// Equivalent to [`draw_activity_bar_with_style`] with
+/// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
+/// function for the full behaviour and #658's reasoning for why the fill
+/// lives in a separate style value rather than a field on [`ActivityBar`].
+///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
@@ -104,6 +111,37 @@ pub unsafe fn draw_activity_bar(
     width: f64,
     height: f64,
     bar: &ActivityBar,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+) -> Vec<ActivityBarRowHit> {
+    draw_activity_bar_with_style(
+        ctx,
+        font,
+        width,
+        height,
+        bar,
+        &ActivityBarStyle::default(),
+        theme,
+        hovered_idx,
+    )
+}
+
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
+/// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// pixel for pixel.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_activity_bar_with_style(
+    ctx: CGContextRef,
+    font: &CTFont,
+    width: f64,
+    height: f64,
+    bar: &ActivityBar,
+    style: &ActivityBarStyle,
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> Vec<ActivityBarRowHit> {
@@ -131,7 +169,7 @@ pub unsafe fn draw_activity_bar(
         // it when it also applies to this row. `None` (the default) paints
         // nothing here (#658).
         if item.is_active {
-            if let Some(bgc) = bar.active_bg {
+            if let Some(bgc) = style.active_bg {
                 fill_rect(ctx, 0.0, y, width, ACTIVITY_ROW_PX, bgc);
             }
         }
@@ -252,7 +290,6 @@ mod tests {
                 is_keyboard_selected: false,
             }],
             active_accent: Some(Color::rgb(80, 140, 255)),
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         }
@@ -271,6 +308,31 @@ mod tests {
         let regions = std::cell::RefCell::new(Vec::new());
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             let r = b.draw_activity_bar(QRect::new(0.0, 0.0, W as f32, H as f32), bar, hovered);
+            *regions.borrow_mut() = r;
+        });
+        backend.end_frame();
+        (surface, regions.into_inner())
+    }
+
+    fn paint_via_backend_with_style(
+        bar: &ActivityBar,
+        style: &crate::ActivityBarStyle,
+        hovered: Option<usize>,
+    ) -> (BitmapSurface, Vec<ActivityBarRowHit>) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let regions = std::cell::RefCell::new(Vec::new());
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let r = b.draw_activity_bar_with_style(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                bar,
+                hovered,
+                style,
+            );
             *regions.borrow_mut() = r;
         });
         backend.end_frame();
@@ -316,6 +378,33 @@ mod tests {
             (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
             "x=2 should be tab_bar_bg, not accent",
         );
+    }
+
+    /// #658 acceptance: `style.active_bg: Some(..)` + `active_accent: None`
+    /// paints a filled active row with **zero** accent-line pixels — the
+    /// legacy 2-pt left-edge strip (x ∈ [0, 2)) must show the fill colour,
+    /// not any accent tint. macOS parity with the GTK/TUI acceptance tests.
+    #[test]
+    fn active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none() {
+        let mut bar = sample_bar();
+        bar.active_accent = None;
+        let fill = Color::rgb(49, 50, 51);
+        let style = crate::ActivityBarStyle::new().with_active_bg(fill);
+        let (surface, _) = paint_via_backend_with_style(&bar, &style, None);
+
+        let probe_y = (ACTIVITY_ROW_PX as u32) / 2;
+        for x in [0, 1] {
+            let (r, g, b, _) = surface.pixel(x, probe_y);
+            assert_eq!(
+                (r, g, b),
+                (fill.r, fill.g, fill.b),
+                "x={x} is inside the legacy accent strip; with active_accent \
+                 None it must show the active_bg fill, not any accent tint"
+            );
+        }
+        // Deep in the row, away from the glyph, should also be filled.
+        let (r, g, b, _) = surface.pixel(W - 6, probe_y);
+        assert_eq!((r, g, b), (fill.r, fill.g, fill.b));
     }
 
     #[test]

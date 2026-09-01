@@ -67,7 +67,7 @@ pub mod toolbar;
 pub mod tooltip;
 pub mod tree;
 
-pub use activity_bar::{draw_activity_bar, mac_activity_bar_layout};
+pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, mac_activity_bar_layout};
 pub use backend::MacBackend;
 pub use board::{draw_board, mac_board_layout};
 pub use chart::{draw_chart, mac_chart_layout};

@@ -584,13 +584,16 @@ impl AppShell {
             top_items,
             bottom_items,
             // #658: `AppShell` has no `Theme` in scope here to source a
-            // colour from (that wiring is #381's job), so both active-item
-            // indicators are left unset rather than hardcoded. As of #658
-            // neither rasteriser falls back to a theme default anymore, so
-            // this means the built-in shell chrome paints no active-item
-            // indicator until #381 lands.
+            // colour from (that wiring is #381's job), so the accent line
+            // is left unset rather than hardcoded. As of #658 the
+            // rasterisers no longer fall back to a theme default, so this
+            // means the built-in shell chrome paints no active-item
+            // indicator until #381 lands. (The VS-Code-style row fill is a
+            // separate `ActivityBarStyle` sidecar passed to
+            // `Backend::draw_activity_bar_with_style`, not a field here —
+            // `AppShell` still calls the plain `draw_activity_bar`, which
+            // never paints a fill.)
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: focused,
         }

@@ -73,7 +73,7 @@ mod tree;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
 
-pub use activity_bar::draw_activity_bar;
+pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
 pub use board::{draw_board, tui_board_layout};
 pub use chart::{draw_chart, tui_chart_layout};

@@ -10,13 +10,40 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
 use super::{qc, set_cell, set_cell_wide};
-use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivitySide};
+use crate::primitives::activity_bar::{
+    ActivityBar, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
+};
 use crate::theme::Theme;
 
+/// Equivalent to [`draw_activity_bar_with_style`] with
+/// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
+/// function for the full behaviour and #658's reasoning for why the fill
+/// lives in a separate style value rather than a field on [`ActivityBar`].
 pub fn draw_activity_bar(
     buf: &mut Buffer,
     area: Rect,
     bar: &ActivityBar,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+) -> Vec<ActivityBarRowHit> {
+    draw_activity_bar_with_style(
+        buf,
+        area,
+        bar,
+        &ActivityBarStyle::default(),
+        theme,
+        hovered_idx,
+    )
+}
+
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
+/// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// cell for cell.
+pub fn draw_activity_bar_with_style(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &ActivityBar,
+    style: &ActivityBarStyle,
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> Vec<ActivityBarRowHit> {
@@ -29,7 +56,7 @@ pub fn draw_activity_bar(
     // #658: no theme fallback for either knob — `None` genuinely means
     // "don't paint this" for both the accent line and the row fill.
     let accent: Option<ratatui::style::Color> = bar.active_accent.map(qc);
-    let active_bg: Option<ratatui::style::Color> = bar.active_bg.map(qc);
+    let active_bg: Option<ratatui::style::Color> = style.active_bg.map(qc);
     let active_fg = qc(theme.foreground);
     let inactive_fg = qc(theme.inactive_fg);
     let hover_bg = qc(theme.tab_bar_bg.lighten(0.10));
@@ -160,7 +187,7 @@ pub fn draw_activity_bar(
 mod tests {
     use super::*;
     use crate::primitives::activity_bar::ActivityItem;
-    use crate::types::WidgetId;
+    use crate::types::{Color, WidgetId};
 
     fn item(id: &str, icon: &str) -> ActivityItem {
         ActivityItem {
@@ -178,7 +205,6 @@ mod tests {
             top_items: vec![item("explorer", "E"), item("search", "S"), item("git", "G")],
             bottom_items: vec![item("settings", "*")],
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         }
@@ -285,6 +311,79 @@ mod tests {
             row_text(4).contains('S'),
             "second icon on screen row 4, got {:?}",
             row_text(4)
+        );
+    }
+
+    // ── #658: active_bg / active_accent independence (TUI parity with the
+    //    GTK acceptance test in `crate::gtk::activity_bar::tests`) ────────
+
+    /// `style.active_bg: Some(..)` with `active_accent: None` fills the
+    /// active row's cells with the requested colour and paints **zero**
+    /// accent-line pixels — the accent column (`area.x`) must not carry
+    /// the `'▎'` glyph, only the plain fill background.
+    #[test]
+    fn active_bg_fills_row_cells_with_zero_accent_glyph_when_accent_is_none() {
+        let mut b = bar();
+        b.top_items[0].is_active = true; // "explorer"
+        let theme = Theme::default();
+        let fill_color = Color::rgb(49, 50, 51);
+        let style = ActivityBarStyle::new().with_active_bg(fill_color);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        let area = Rect::new(0, 0, 3, 10);
+        draw_activity_bar_with_style(&mut buf, area, &b, &style, &theme, None);
+
+        let fill = qc(fill_color);
+        assert_ne!(
+            buf[(area.x, area.y)].symbol(),
+            "▎",
+            "active_accent is None: the accent column must not carry the \
+             accent glyph (zero accent-line pixels)"
+        );
+        assert_eq!(
+            buf[(area.x, area.y)].bg,
+            fill,
+            "accent column should carry the active_bg fill, not the plain bar bg"
+        );
+        let icon_col = area.x + 1;
+        assert_eq!(
+            buf[(icon_col, area.y)].bg,
+            fill,
+            "icon column should also carry the active_bg fill"
+        );
+    }
+
+    /// The flip side: `active_accent: Some(..)` with no `style.active_bg`
+    /// still paints the traditional accent glyph, and the row keeps the
+    /// plain bar background elsewhere.
+    #[test]
+    fn active_accent_paints_glyph_when_set_with_no_active_bg() {
+        let mut b = bar();
+        b.top_items[0].is_active = true; // "explorer"
+        b.active_accent = Some(Color::rgb(80, 140, 255));
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        let area = Rect::new(0, 0, 3, 10);
+        draw_activity_bar_with_style(
+            &mut buf,
+            area,
+            &b,
+            &ActivityBarStyle::default(),
+            &theme,
+            None,
+        );
+
+        assert_eq!(
+            buf[(area.x, area.y)].symbol(),
+            "▎",
+            "active_accent is set: the accent column should carry the accent glyph"
+        );
+        let icon_col = area.x + 1;
+        assert_eq!(
+            buf[(icon_col, area.y)].bg,
+            qc(theme.tab_bar_bg),
+            "with no active_bg, the icon column keeps the plain bar background"
         );
     }
 }

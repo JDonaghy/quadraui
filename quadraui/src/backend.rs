@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
-use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
@@ -901,6 +901,36 @@ pub trait Backend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit>;
+
+    /// Draw an activity bar with an explicit [`ActivityBarStyle`] request
+    /// (#658) — currently just the active item's row-fill colour, VS Code
+    /// style (no line, a soft chip on the row itself).
+    ///
+    /// Added rather than folded into [`Self::draw_activity_bar`]'s
+    /// signature, and given a default body, so that #658 breaks no existing
+    /// `Backend` implementor and no existing call site — mirrors
+    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`] (#541)
+    /// and [`TabChrome`] / [`Self::draw_tab_bar_with_chrome`] (#631), which
+    /// solve the identical "additive field would break exhaustive
+    /// downstream literals" problem for `Tooltip` and `TabBar`. See
+    /// [`ActivityBarStyle`]'s doc for the full reasoning.
+    ///
+    /// The default body **ignores `style`** and delegates to
+    /// [`Self::draw_activity_bar`] — the correct fallback for a backend
+    /// with no fill vocabulary of its own. The TUI, GTK, and macOS
+    /// backends override it and honour `style.active_bg` in full; Win
+    /// takes the default for now (#19 — every `draw_*` method there is a
+    /// stub).
+    fn draw_activity_bar_with_style(
+        &mut self,
+        rect: Rect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
+        style: &ActivityBarStyle,
+    ) -> Vec<ActivityBarRowHit> {
+        let _ = style;
+        self.draw_activity_bar(rect, bar, hovered_idx)
+    }
 
     /// Compute the status bar layout without painting. Same measurement
     /// logic as `draw_status_bar` — call after `ScreenLayout::draw()` to
