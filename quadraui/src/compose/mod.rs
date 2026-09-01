@@ -24,6 +24,10 @@
 //! - [`HelpRegistry`] / [`HelpOverlayController`] — per-view help registry +
 //!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
 //!   actions into the command palette.
+//! - [`WorkspaceController`] — open-N-view-one document set (ordered
+//!   opaque ids, one active) rendered through the `TabBar` primitive.
+//!   Unlike [`TabGroupController`] it owns no content, so the host can
+//!   paint a body that borrows app state (#596).
 //! - [`KeyMap`] — ordered, scope-aware key binding table so consumers
 //!   declare `AcceleratorScope` once instead of hand-gating every key
 //!   match arm (#473).
@@ -45,6 +49,7 @@ pub mod status_bar_interaction;
 pub mod tab_group;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
+pub mod workspace;
 
 pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
 pub use bottom_panel::{
@@ -73,3 +78,4 @@ pub use tab_group::{
 };
 pub use toolbar_hover_tracker::ToolbarHoverTracker;
 pub use tree_controller::{TreeController, TreeControllerEvent};
+pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

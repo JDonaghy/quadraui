@@ -804,3 +804,18 @@ required-features = ["tui"]
 name = "gtk_image"
 path = "examples/gtk_image.rs"
 required-features = ["gtk"]
+
+# #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
+# inside an `AppShell` panel. Both entries are mandatory (see #595's note
+# above): without an explicit `[[example]]`, `gtk_workspace.rs` gets
+# autodiscovered with no `required-features` and fails
+# `cargo test --features tui` on `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_workspace"
+path = "examples/tui_workspace.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_workspace"
+path = "examples/gtk_workspace.rs"
+required-features = ["gtk"]

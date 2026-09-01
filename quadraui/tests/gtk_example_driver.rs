@@ -14,7 +14,7 @@
 #![cfg(feature = "gtk")]
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
-use quadraui::{NamedKey, Reaction};
+use quadraui::{Key, Modifiers, NamedKey, Reaction, UiEvent};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -39,6 +39,11 @@ use shell_app::ShellApp;
 #[path = "../examples/common/menu_bar_app.rs"]
 mod menu_bar_app;
 use menu_bar_app::MenuBarApp;
+
+#[path = "../examples/common/workspace_demo.rs"]
+#[allow(dead_code)]
+mod workspace_demo;
+use workspace_demo::WorkspaceDemo;
 
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
@@ -503,4 +508,87 @@ fn data_table_divider_before_last_column_widens_on_right_drag() {
         "dragging the divider before the last column right should widen it: \
          before={before}, after={widened}"
     );
+}
+
+// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel (#596) ───
+//
+// GTK twin of `tests/tui_example_driver.rs`'s workspace set. Same
+// `ShellApp`, so the controller is driven through the Pango-measured
+// tab-bar rasteriser — which, unlike the TUI one, reports its own
+// `correct_scroll_offset` and therefore exercises `WorkspaceController::render`'s
+// second, corrected paint pass. Kept deliberately thin per this file's
+// scope note; the exhaustive behaviour matrix lives on the TUI side and in
+// `compose::workspace`'s own unit tests.
+
+fn workspace_bar_id() -> quadraui::WidgetId {
+    quadraui::WidgetId::new(workspace_demo::BAR_ID)
+}
+
+#[test]
+fn workspace_paints_a_tab_per_document_and_the_active_body() {
+    let driver = driver_with_shell(WorkspaceDemo::new(), WorkspaceDemo::config(), W, H);
+    for (_, label) in workspace_demo::INITIAL {
+        assert!(
+            driver.screen_contains(label),
+            "every open document gets a tab ({label} missing)"
+        );
+    }
+    assert!(
+        driver.screen_contains("viewing: doc:alpha"),
+        "the host paints the active document's body itself"
+    );
+}
+
+#[test]
+fn workspace_clicking_a_tab_activates_that_document() {
+    // No hardcoded pixels: the click target comes from the `TabBarLayout`
+    // the GTK rasteriser cached for this bar on the last paint.
+    let mut driver = driver_with_shell(WorkspaceDemo::new(), WorkspaceDemo::config(), W, H);
+    let (x, y) = driver
+        .tab_center(&workspace_bar_id(), 1)
+        .expect("tab 1 should have painted geometry");
+    let reaction = driver.click(x, y);
+
+    assert_eq!(reaction, Reaction::Redraw, "click should trigger a redraw");
+    assert!(
+        driver.screen_contains("viewing: doc:beta"),
+        "clicking tab 1's body activates it"
+    );
+}
+
+#[test]
+fn workspace_clicking_close_glyph_closes_and_activates_the_right_neighbour() {
+    let mut driver = driver_with_shell(WorkspaceDemo::new(), WorkspaceDemo::config(), W, H);
+    let (x, y) = driver
+        .tab_close_center(&workspace_bar_id(), 0)
+        .expect("tab 0 should paint a close glyph");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("closed doc:alpha"),
+        "clicking the × must close, not merely activate"
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:beta"),
+        "closing the active document activates its right-hand neighbour"
+    );
+}
+
+#[test]
+fn workspace_ctrl_tab_cycles_and_wraps() {
+    let mut driver = driver_with_shell(WorkspaceDemo::new(), WorkspaceDemo::config(), W, H);
+    for expected in ["doc:beta", "doc:gamma", "doc:alpha"] {
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        });
+        assert!(
+            driver.screen_contains(&format!("viewing: {expected}")),
+            "Ctrl+Tab should step (and wrap) to {expected}"
+        );
+    }
 }

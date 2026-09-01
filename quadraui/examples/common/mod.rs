@@ -26,6 +26,10 @@
 //! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree
 //!   section exercising `SidebarSystem::reveal` (#595), used by
 //!   `tui_sidebar_reveal` / `gtk_sidebar_reveal`.
+//! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
+//!   (#596) mounted inside an `AppShell` panel: open-N-view-one document
+//!   tabs in the panel's rect, body painted by the app. Used by
+//!   `tui_workspace` / `gtk_workspace`.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -92,6 +96,7 @@ pub mod toast_app;
 pub mod toolbar_app;
 pub mod tooltip_demo;
 pub mod wide_tab_bar_demo;
+pub mod workspace_demo;
 
 pub use activity_nav::ActivityNavApp;
 pub use activity_style_demo::ActivityStyleDemo;
@@ -145,3 +150,4 @@ pub use toast_app::ToastApp;
 pub use toolbar_app::ToolbarApp;
 pub use tooltip_demo::TooltipDemo;
 pub use wide_tab_bar_demo::WideTabBarDemo;
+pub use workspace_demo::WorkspaceDemo;
