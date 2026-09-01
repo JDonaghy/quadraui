@@ -51,6 +51,26 @@ pub struct ShellConfig {
     /// the app's own `setup()` runs, so painted glyphs and click-column
     /// math derive from the same font from the very first frame (#422).
     pub editor_font: Option<(String, f32)>,
+    /// GTK application id, e.g. `"io.github.jdonaghy.VimCode"`. Feeds
+    /// `gtk4::Application::builder().application_id(..)` in the GTK shell
+    /// runner (`quadraui::gtk::run_with_shell`), which is what a live GDK
+    /// backend derives the toplevel's identity from: Wayland
+    /// `xdg_toplevel.set_app_id`, X11 `WM_CLASS`. The window manager uses
+    /// that id to match a live window to an installed `.desktop` file —
+    /// with the default generic id, every downstream app's taskbar/dock/
+    /// alt-tab entry shows a generic icon instead of the app's own (#656).
+    /// Defaults to `"org.quadraui.app"` so existing callers are
+    /// unaffected. Set via [`Self::with_app_id`]. Backends with no
+    /// window-manager concept (TUI) ignore this field.
+    pub app_id: String,
+    /// Themed icon name, e.g. `"io.github.jdonaghy.vimcode"`, matching an
+    /// icon installed under an XDG icon theme directory. Feeds
+    /// `gtk4::Window::set_icon_name` in the GTK shell runner so themed-icon
+    /// lookup works even on window managers that don't resolve the app id
+    /// to a `.desktop` file (#656). `None` (the default) leaves GTK's own
+    /// fallback icon in place. Set via [`Self::with_icon_name`]. Backends
+    /// with no icon-theme concept (TUI) ignore this field.
+    pub icon_name: Option<String>,
 }
 
 impl ShellConfig {
@@ -73,6 +93,8 @@ impl ShellConfig {
             has_status_bar: false,
             bottom_panel: None,
             editor_font: None,
+            app_id: "org.quadraui.app".to_string(),
+            icon_name: None,
         }
     }
 
@@ -140,6 +162,25 @@ impl ShellConfig {
     /// zoom-in/out keybinding.
     pub fn with_editor_font(mut self, family: impl Into<String>, size_pt: f32) -> Self {
         self.editor_font = Some((family.into(), size_pt));
+        self
+    }
+
+    /// Override the GTK application id (`"org.quadraui.app"` by default).
+    ///
+    /// Should be a reverse-DNS id — see the
+    /// [GNOME application ID guidelines](https://developer.gnome.org/documentation/tutorials/application-id.html).
+    /// GTK warns and ignores a malformed id rather than rejecting it
+    /// outright, so this method does not validate the string itself.
+    /// See [`Self::app_id`] for why this matters (#656).
+    pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
+        self.app_id = app_id.into();
+        self
+    }
+
+    /// Set a themed icon name for the window (unset — GTK's own fallback —
+    /// by default). See [`Self::icon_name`] for why this matters (#656).
+    pub fn with_icon_name(mut self, icon_name: impl Into<String>) -> Self {
+        self.icon_name = Some(icon_name.into());
         self
     }
 }
@@ -572,6 +613,36 @@ mod tests {
     fn shell_config_with_editor_font_sets_family_and_size() {
         let config = ShellConfig::new("test", Vec::new()).with_editor_font("Fira Code", 14.0);
         assert_eq!(config.editor_font, Some(("Fira Code".to_string(), 14.0)));
+    }
+
+    /// #656: a fresh `ShellConfig` keeps the generic app id and no icon
+    /// override, so nothing that predates this field changes behavior.
+    #[test]
+    fn shell_config_app_id_defaults_to_generic() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.app_id, "org.quadraui.app");
+        assert_eq!(config.icon_name, None);
+    }
+
+    /// #656: `with_app_id` stores the caller's id verbatim, replacing the
+    /// generic default the GTK shell runner would otherwise announce to
+    /// the window manager (Wayland `app_id` / X11 `WM_CLASS`).
+    #[test]
+    fn shell_config_with_app_id_overrides_the_default() {
+        let config = ShellConfig::new("test", Vec::new()).with_app_id("io.github.jdonaghy.VimCode");
+        assert_eq!(config.app_id, "io.github.jdonaghy.VimCode");
+    }
+
+    /// #656: `with_icon_name` stores the themed icon name for the GTK
+    /// shell runner to apply via `gtk4::Window::set_icon_name`.
+    #[test]
+    fn shell_config_with_icon_name_sets_the_icon() {
+        let config =
+            ShellConfig::new("test", Vec::new()).with_icon_name("io.github.jdonaghy.vimcode");
+        assert_eq!(
+            config.icon_name,
+            Some("io.github.jdonaghy.vimcode".to_string())
+        );
     }
 
     #[test]
