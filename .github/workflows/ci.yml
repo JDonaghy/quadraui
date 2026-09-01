@@ -177,14 +177,20 @@ jobs:
       # so there's no prior green run to trust yet. Flip to blocking once
       # it's proven stable across a few `develop` runs, same exit condition
       # as that leg.
+      # #23 added `win_platform_services` alongside `win_demo` — same
+      # bootstrap posture (draws nothing, `cfg`-split `main()`), now
+      # exercising `WinPlatformServices` instead of just the window/
+      # render-target lifecycle. Built in the same two steps rather than
+      # new ones so a future example added here only needs a name added
+      # to these `--example` lists, not a new step pair.
       - name: Build (win feature)
         if: matrix.os == 'windows-latest'
         continue-on-error: true
-        run: cargo build -p quadraui --example win_demo --features win
+        run: cargo build -p quadraui --example win_demo --example win_platform_services --features win
       - name: Clippy (win feature)
         if: matrix.os == 'windows-latest'
         continue-on-error: true
-        run: cargo clippy -p quadraui --example win_demo --features win -- -D warnings
+        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --features win -- -D warnings
       # Headless Direct2D test surface (#24, `src/win/testing.rs`'s
       # `HeadlessSurface`: an `ID2D1DCRenderTarget` bound to an in-memory
       # DIB section — no `HWND`, display, or GPU). The two steps above

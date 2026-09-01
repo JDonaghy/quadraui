@@ -140,6 +140,21 @@ windows = { version = "0.62", optional = true, features = [
     # virtual-key API is its own binding-crate feature.
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    # Platform services (#23, `src/win/services.rs`): clipboard
+    # (`OpenClipboard`/`GetClipboardData`/`SetClipboardData` +
+    # `GlobalAlloc`/`GlobalLock` for the `CF_UNICODETEXT` payload), native
+    # file dialogs (`IFileOpenDialog`/`IFileSaveDialog` via COM), a
+    # `Shell_NotifyIconW` balloon-tip notification, and `ShellExecuteW`
+    # for `open_url`.
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    # `CF_UNICODETEXT` itself lives in `Ole`, not `DataExchange` — see
+    # that crate module's `pub const CF_UNICODETEXT`.
+    "Win32_System_Ole",
+    "Win32_UI_Shell",
+    # `COMDLG_FILTERSPEC` (file-type filters for `IFileDialog::SetFileTypes`).
+    "Win32_UI_Shell_Common",
 ] }
 
 [dev-dependencies]
@@ -764,6 +779,15 @@ required-features = ["gtk"]
 [[example]]
 name = "win_demo"
 path = "examples/win_demo.rs"
+required-features = ["win"]
+
+# #23 — Win-GUI platform services smoke test (clipboard, native file
+# dialogs, a `Shell_NotifyIconW` notification, `open_url`). Same
+# Windows-only-at-runtime / `cfg`-split-`main()` posture as `win_demo`
+# above.
+[[example]]
+name = "win_platform_services"
+path = "examples/win_platform_services.rs"
 required-features = ["win"]
 
 # #662 — `Image` primitive + `MenuBar` leading-icon slot. Both entries are
