@@ -799,6 +799,14 @@ impl Backend for WinBackend {
         todo!("Direct2D minimap layout — out of scope per #382")
     }
 
+    fn draw_image(
+        &mut self,
+        _rect: Rect,
+        _image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        todo!("Direct2D image rasteriser — out of scope per #662's first pass")
+    }
+
     fn draw_panel(&mut self, _rect: Rect, _panel: &Panel) -> PanelLayout {
         todo!("Direct2D panel rasteriser")
     }

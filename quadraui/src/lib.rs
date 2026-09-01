@@ -228,6 +228,7 @@ pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,
 };
+pub use primitives::image::{Image, ImageFit, ImageLayout, ImageSource};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
     VisibleListItem,

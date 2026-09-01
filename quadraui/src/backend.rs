@@ -27,6 +27,7 @@ use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::{Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
+use crate::primitives::image::Image;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout};
@@ -1456,6 +1457,32 @@ pub trait Backend {
     /// `MinimapPaintResult` `render` produced) to hit-test a click
     /// against the same geometry the last paint used.
     fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
+
+    /// Paint `image` within `rect`, honoring `image.fit` (see
+    /// [`Image::layout`] for the geometry). GTK decodes `image.source`
+    /// through `gdk_pixbuf` and paints real pixels; macOS/Win are scoped
+    /// out of this first pass the same way `draw_minimap` scopes
+    /// macOS/Win out of #382 — a deliberate `todo!()`, not a silent
+    /// no-op, because this method has no default (rule 7 below still
+    /// applies to it).
+    ///
+    /// **TUI cannot rasterise an image** — there is no pixel grid to
+    /// draw into, and this primitive deliberately does not attempt an
+    /// ASCII-art decoder (see `primitives::image` module docs' scope
+    /// guard). It paints [`Image::fallback_text`] instead, centered in
+    /// `rect`, and reports [`ImagePaintResult::Unsupported`] rather than
+    /// a silent no-op — #507's Unsupported-vs-failure question, and this
+    /// primitive is a fresh, deliberate instance of it: TUI genuinely
+    /// cannot do this, so it says so. A GTK/macOS decode failure (bad
+    /// path, corrupt bytes) also reports `Unsupported` and paints
+    /// nothing, so a host can tell "no pixels appeared" apart from a
+    /// successful paint without inspecting pixels itself.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser, or an explicit
+    /// `todo!()` if the primitive is out of scope for that backend for
+    /// now (`PRIMITIVE_RULES.md` rule 7).
+    fn draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
 }
 
 /// Paint-side data returned by [`Backend::draw_minimap`]. See
@@ -1463,6 +1490,23 @@ pub trait Backend {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MinimapPaintResult {
     pub layout: MinimapLayout,
+}
+
+/// Paint-side result of [`Backend::draw_image`]. Deliberately a plain
+/// enum, not a struct carrying a layout like [`MinimapPaintResult`] —
+/// [`Image::layout`] is pure geometry with no backend-specific
+/// measurement step (unlike `Minimap`'s TUI/GTK sampling density), so
+/// callers needing the target rect call that directly instead of
+/// threading it through the paint result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImagePaintResult {
+    /// The backend rasterised actual image pixels into the target rect.
+    Painted,
+    /// The backend could not (or, for TUI, categorically can not)
+    /// rasterise pixels. TUI paints `image.fallback_text` instead;
+    /// GTK/macOS on a decode failure paint nothing. See
+    /// [`Backend::draw_image`]'s doc comment.
+    Unsupported,
 }
 
 // ── Shared layout helpers ───────────────────────────────────────────────

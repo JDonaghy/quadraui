@@ -18,6 +18,7 @@ pub mod drop_zone;
 pub mod editor;
 pub mod find_replace;
 pub mod form;
+pub mod image;
 pub mod list;
 pub mod menu_bar;
 pub mod message_list;

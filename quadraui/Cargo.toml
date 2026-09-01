@@ -755,3 +755,18 @@ required-features = ["gtk"]
 name = "win_demo"
 path = "examples/win_demo.rs"
 required-features = ["win"]
+
+# #662 — `Image` primitive + `MenuBar` leading-icon slot. Both entries are
+# mandatory (see #595's note above this same manifest for why): without an
+# explicit `[[example]]`, `gtk_image.rs` gets picked up by autodiscovery
+# with no `required-features` and fails `cargo test --features tui` on
+# `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_image"
+path = "examples/tui_image.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_image"
+path = "examples/gtk_image.rs"
+required-features = ["gtk"]

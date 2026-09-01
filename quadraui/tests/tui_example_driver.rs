@@ -62,6 +62,8 @@ mod help_layer_demo;
 mod hit_map_recover_demo;
 #[path = "../examples/common/hscroll_editor.rs"]
 mod hscroll_editor;
+#[path = "../examples/common/image_app.rs"]
+mod image_app;
 #[path = "../examples/common/indicators_app.rs"]
 mod indicators_app;
 #[path = "../examples/common/markdown_demo.rs"]
@@ -130,6 +132,7 @@ use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
 use hit_map_recover_demo::HitMapRecoverDemo;
 use hscroll_editor::HScrollEditor;
+use image_app::ImageApp;
 use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
 use menu_bar_app::MenuBarApp;
@@ -4844,4 +4847,53 @@ fn minimap_demo_q_exits() {
     let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the minimap demo");
+}
+
+// ─── ImageApp (#662): Image primitive + MenuBar leading icon slot ─────────
+//
+// TUI can't rasterise `examples/assets/quadra_logo.png`, so
+// `Backend::draw_image` paints the descriptor's `fallback_text` ("[Q]")
+// instead — this is the one driver test proving that fallback path (and
+// its `ImagePaintResult::Unsupported` contract) actually reaches the
+// screen, not just the unit tests in `tui::image::tests`. It also proves
+// the leading-icon-slot composition end to end: the menu items are
+// visible past the reserved icon width, and a click on the first item
+// still lands on it.
+
+#[test]
+fn image_paints_fallback_text_left_of_the_shifted_menu_items() {
+    let driver = TuiDriver::new(ImageApp::new(), 100, 10);
+    assert!(
+        driver.screen_contains("[Q]"),
+        "TUI should paint the Image's fallback_text since it can't rasterise pixels:\n{}",
+        driver.screen()
+    );
+    for label in ["File", "Edit", "View"] {
+        assert!(
+            driver.screen_contains(label),
+            "menu item {label:?} should still paint past the reserved icon width:\n{}",
+            driver.screen()
+        );
+    }
+}
+
+#[test]
+fn clicking_the_first_menu_item_past_the_icon_slot_still_hits_it() {
+    let mut driver = TuiDriver::new(ImageApp::new(), 100, 10);
+    let (x, y) = driver
+        .find("File")
+        .expect("File should be painted somewhere on screen");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("activated: &File"),
+        "clicking File's shifted position should still activate it:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn image_demo_q_exits() {
+    let mut driver = TuiDriver::new(ImageApp::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the image demo");
 }

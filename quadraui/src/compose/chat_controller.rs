@@ -1706,6 +1706,14 @@ mod tests {
         ) -> crate::primitives::minimap::MinimapLayout {
             crate::primitives::minimap::MinimapLayout::default()
         }
+
+        fn draw_image(
+            &mut self,
+            _r: Rect,
+            _i: &crate::primitives::image::Image,
+        ) -> crate::backend::ImagePaintResult {
+            crate::backend::ImagePaintResult::Unsupported
+        }
     }
 
     fn make_rect() -> Rect {

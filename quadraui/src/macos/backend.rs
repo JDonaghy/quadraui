@@ -2044,6 +2044,20 @@ impl Backend for MacBackend {
     ) -> crate::primitives::minimap::MinimapLayout {
         todo!("Core Graphics/Core Text minimap layout — out of scope per #382")
     }
+
+    /// #662 scopes the `Image` rasteriser to GTK only for this first
+    /// pass — macOS's natural decoder is `NSImage`, not `gdk_pixbuf`,
+    /// and wiring that up is out of scope here the same way `draw_minimap`
+    /// above scopes macOS out of #382. The trait method itself is still
+    /// mandatory (rule 7: no default impl, in-tree-only cost), so this
+    /// is a deliberate `todo!` rather than a real implementation.
+    fn draw_image(
+        &mut self,
+        _rect: Rect,
+        _image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        todo!("NSImage rasteriser — out of scope per #662's first pass")
+    }
 }
 
 #[cfg(test)]
