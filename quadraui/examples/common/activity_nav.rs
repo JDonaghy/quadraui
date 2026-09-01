@@ -111,7 +111,10 @@ impl ActivityNavApp {
             id: WidgetId::new("demo:activity-bar"),
             top_items: items,
             bottom_items: vec![],
+            // JetBrains-style accent line. See issue #658 for the
+            // VS-Code-style alternative (`active_bg` row fill).
             active_accent: Some(Color::rgb(100, 150, 255)),
+            active_bg: None,
             selection_bg: Some(Color::rgb(70, 70, 100)),
             is_keyboard_focused: self.bar_focused,
         }

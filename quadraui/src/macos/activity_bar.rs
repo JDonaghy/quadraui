@@ -114,7 +114,9 @@ pub unsafe fn draw_activity_bar(
     // Right-edge separator (1 point).
     fill_rect(ctx, width - 1.0, 0.0, 1.0, height, theme.separator);
 
-    let accent_col = bar.active_accent.unwrap_or(theme.accent_fg);
+    // #658: no theme fallback for either knob — `None` genuinely means
+    // "don't paint this" for both the accent line and the row fill.
+    let accent_col = bar.active_accent;
     let inactive_fg = theme.inactive_fg;
     let active_fg = theme.foreground;
     let hover_bg = theme.tab_bar_bg.lighten(0.10);
@@ -124,11 +126,24 @@ pub unsafe fn draw_activity_bar(
     let draw_row = |y: f64, item: &ActivityItem, row_idx: usize, regions: &mut Vec<_>| {
         let is_hovered = hovered_idx == Some(row_idx);
 
+        // Active-row fill (VS Code style). Lowest-priority layer — painted
+        // first so the hover tint below still takes visual precedence over
+        // it when it also applies to this row. `None` (the default) paints
+        // nothing here (#658).
+        if item.is_active {
+            if let Some(bgc) = bar.active_bg {
+                fill_rect(ctx, 0.0, y, width, ACTIVITY_ROW_PX, bgc);
+            }
+        }
         if is_hovered {
             fill_rect(ctx, 0.0, y, width, ACTIVITY_ROW_PX, hover_bg);
         }
+        // Left-edge accent line — only when the bar opts in via
+        // `active_accent`. `None` paints zero accent-line pixels (#658).
         if item.is_active {
-            fill_rect(ctx, 0.0, y, 2.0, ACTIVITY_ROW_PX, accent_col);
+            if let Some(ac) = accent_col {
+                fill_rect(ctx, 0.0, y, 2.0, ACTIVITY_ROW_PX, ac);
+            }
         }
 
         let (iw, ih) = measure_text(font, &item.icon);
@@ -237,6 +252,7 @@ mod tests {
                 is_keyboard_selected: false,
             }],
             active_accent: Some(Color::rgb(80, 140, 255)),
+            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         }

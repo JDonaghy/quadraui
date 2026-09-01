@@ -2156,21 +2156,23 @@ fn shell_menu_dropdown_item_over_activity_bar_activates() {
 /// cursor.
 ///
 /// Locates the click target instead of guessing a row: `ShellMenuDemo`'s
-/// first panel (Explorer) is active by default, and
-/// `tui::activity_bar::draw_activity_bar` paints its left-edge accent glyph
-/// (`'▎'`) at exactly the row `AppShell`'s cached hit-region reports for
-/// that item — see that module's `icons_still_paint_at_the_absolute_row`
-/// and `hit_regions_are_bar_relative_not_absolute` tests. `'▎'` is unique
-/// to that one call site (nothing else in the TUI backend paints it), so
-/// `find` unambiguously locates the active item's row without a brute-force
-/// scan.
+/// first panel (Explorer) is active by default. `AppShell::build_activity_bar`
+/// doesn't set `active_accent`/`active_bg` (it has no `Theme` to source a
+/// colour from — see quadraui#658/#381), so as of #658 there is no
+/// left-edge accent glyph to search for here (the rasterisers no longer
+/// fall back to a theme default when those fields are `None`). Instead
+/// this searches for `"E│"` — the Explorer icon glyph immediately
+/// followed by the activity bar's right-edge separator column, which only
+/// `tui::activity_bar::draw_activity_bar` ever paints (`'│'` is unique to
+/// that separator; no other TUI chrome uses it), so the pair unambiguously
+/// locates the Explorer row without depending on any active-item styling.
 #[test]
 fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
     let mut driver = driver_with_shell(ShellMenuDemo::new(), ShellMenuDemo::config(), 100, 30);
 
-    let (x, y) = driver.find("▎").unwrap_or_else(|| {
+    let (x, y) = driver.find("E│").unwrap_or_else(|| {
         panic!(
-            "Explorer (active by default) should paint its accent bar:\n{}",
+            "Explorer's activity-bar row (icon + separator) should be painted:\n{}",
             driver.screen()
         )
     });

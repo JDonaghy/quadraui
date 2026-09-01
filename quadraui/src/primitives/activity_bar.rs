@@ -43,9 +43,22 @@ pub struct ActivityBar {
     #[serde(default)]
     pub bottom_items: Vec<ActivityItem>,
     /// Colour of the left-edge accent bar on active items.
-    /// `None` = no accent rendering.
+    /// `None` = no accent rendering. Every rasteriser honours this
+    /// literally as of #658 — there is no theme fallback, so `None`
+    /// genuinely paints zero accent pixels (previously the GTK/TUI/macOS
+    /// rasterisers silently fell back to `theme.accent_fg`, which
+    /// contradicted this doc; see
+    /// `active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none`
+    /// in `crate::gtk::activity_bar::tests`).
     #[serde(default)]
     pub active_accent: Option<Color>,
+    /// Background fill colour for the active item's row (VS Code style —
+    /// no line, a soft chip on the row itself). `None` = no fill, today's
+    /// behaviour. Independent of `active_accent`: set `active_bg` alone
+    /// for a VS-Code-style fill, `active_accent` alone for a
+    /// JetBrains-style line, both, or neither. (#658)
+    #[serde(default)]
+    pub active_bg: Option<Color>,
     /// Background colour for keyboard-selected items (arrow-nav highlight).
     /// `None` = backends fall back to their own default.
     #[serde(default)]
