@@ -356,7 +356,8 @@ pub use compose::{
     MenuSystem, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind,
     ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBarAction,
     StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToolbarHoverTracker,
-    TreeController, TreeControllerEvent, ViewHelp, PALETTE_CHROME_ROWS,
+    TreeController, TreeControllerEvent, ViewHelp, WorkspaceController, WorkspaceDoc,
+    WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

@@ -115,6 +115,13 @@ mod toast_app;
 mod tooltip_demo;
 #[path = "../examples/common/wide_tab_bar_demo.rs"]
 mod wide_tab_bar_demo;
+// `BACKLOG` / `INITIAL` are read by some of this file's tests and not
+// others; `examples/common/mod.rs`'s blanket `#![allow(dead_code)]`
+// doesn't reach a `#[path]` include, so opt out locally (same as
+// `chart_app` above).
+#[path = "../examples/common/workspace_demo.rs"]
+#[allow(dead_code)]
+mod workspace_demo;
 
 use activity_style_demo::ActivityStyleDemo;
 use ai_transcript::AiTranscript;
@@ -160,6 +167,7 @@ use text_input_demo::TextInputDemo;
 use toast_app::ToastApp;
 use tooltip_demo::TooltipDemo;
 use wide_tab_bar_demo::WideTabBarDemo;
+use workspace_demo::WorkspaceDemo;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
 
@@ -4941,4 +4949,256 @@ fn image_demo_q_exits() {
     let mut driver = TuiDriver::new(ImageApp::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the image demo");
+}
+
+// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel (#596) ───
+//
+// #596 shipped the controller half of #469: an ordered set of *opaque*
+// document ids with one active, rendered through the `TabBar` primitive
+// into whatever rect the host owns — here, the sidebar panel's content
+// rect, with the active document's body painted by the app into the main
+// content area. These drive the shipping `tui_workspace` example
+// end-to-end through `driver_with_shell`, so the whole
+// `event → ShellAdapter → WorkspaceController → render` path is real.
+//
+// Tab targets always come from `tab_center` / `tab_close_center` against
+// the controller's own bar id — never a hardcoded column — because every
+// tab paints the same `×` chrome and `find()` cannot disambiguate them.
+
+fn workspace_bar_id() -> quadraui::WidgetId {
+    quadraui::WidgetId::new(workspace_demo::BAR_ID)
+}
+
+fn workspace_driver() -> TuiDriver<impl quadraui::AppLogic> {
+    driver_with_shell(WorkspaceDemo::new(), WorkspaceDemo::config(), 100, 16)
+}
+
+/// Deliver `key` with Ctrl (and optionally Shift) held. `TuiDriver` has
+/// `ctrl_char` but no named-key equivalent, and `WorkspaceController`'s
+/// bindings are all on named keys (Tab / PageUp / PageDown).
+fn press_ctrl_named<A: quadraui::AppLogic>(driver: &mut TuiDriver<A>, key: NamedKey, shift: bool) {
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(key),
+        modifiers: Modifiers {
+            ctrl: true,
+            shift,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+}
+
+#[test]
+fn workspace_demo_paints_a_tab_per_document_and_the_active_body() {
+    let driver = workspace_driver();
+    let screen = driver.screen();
+    for (_, label) in workspace_demo::INITIAL {
+        assert!(
+            driver.screen_contains(label),
+            "every open document gets a tab ({label} missing):\n{screen}"
+        );
+    }
+    assert!(
+        driver.screen_contains("viewing: doc:alpha"),
+        "the host paints the active document's body — the controller owns \
+         no content:\n{screen}"
+    );
+}
+
+#[test]
+fn workspace_demo_clicking_a_tab_activates_that_document() {
+    let mut driver = workspace_driver();
+    let (x, y) = driver
+        .tab_center(&workspace_bar_id(), 1)
+        .expect("tab 1 should have painted geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("activated doc:beta"),
+        "clicking a tab body emits Activated:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:beta"),
+        "and the host's body follows the active document:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_ctrl_tab_cycles_forward_and_wraps() {
+    let mut driver = workspace_driver();
+    // alpha → beta → gamma → alpha (3 documents, wrapping).
+    press_ctrl_named(&mut driver, NamedKey::Tab, false);
+    assert!(
+        driver.screen_contains("viewing: doc:beta"),
+        "Ctrl+Tab should step to the next document:\n{}",
+        driver.screen()
+    );
+    press_ctrl_named(&mut driver, NamedKey::Tab, false);
+    assert!(
+        driver.screen_contains("viewing: doc:gamma"),
+        "{}",
+        driver.screen()
+    );
+    press_ctrl_named(&mut driver, NamedKey::Tab, false);
+    assert!(
+        driver.screen_contains("viewing: doc:alpha"),
+        "Ctrl+Tab wraps past the last document:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_ctrl_shift_tab_and_page_keys_step_backwards() {
+    let mut driver = workspace_driver();
+    press_ctrl_named(&mut driver, NamedKey::Tab, true);
+    assert!(
+        driver.screen_contains("viewing: doc:gamma"),
+        "Ctrl+Shift+Tab wraps backwards off the first document:\n{}",
+        driver.screen()
+    );
+    press_ctrl_named(&mut driver, NamedKey::PageUp, false);
+    assert!(
+        driver.screen_contains("viewing: doc:beta"),
+        "Ctrl+PageUp is the same step:\n{}",
+        driver.screen()
+    );
+    press_ctrl_named(&mut driver, NamedKey::PageDown, false);
+    assert!(
+        driver.screen_contains("viewing: doc:gamma"),
+        "Ctrl+PageDown steps forward:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_clicking_close_glyph_closes_and_activates_the_right_neighbour() {
+    // The close-neighbour rule from `compose::workspace`'s module doc,
+    // pinned end-to-end rather than only at the controller's own API:
+    // closing the active document activates the tab that slid into its
+    // index — its right-hand neighbour.
+    let mut driver = workspace_driver();
+    let (x, y) = driver
+        .tab_center(&workspace_bar_id(), 1)
+        .expect("tab 1 geometry");
+    driver.click(x, y);
+    assert!(driver.screen_contains("viewing: doc:beta"));
+
+    let (x, y) = driver
+        .tab_close_center(&workspace_bar_id(), 1)
+        .expect("tab 1 should paint a close glyph");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("closed doc:beta"),
+        "clicking the × must close, not merely activate:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:gamma"),
+        "closing the active document activates its right-hand neighbour:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("beta×"),
+        "the closed document's tab is gone from the strip:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_closing_the_last_document_leaves_an_empty_workspace() {
+    let mut driver = workspace_driver();
+    // Three closes land on nearly the same cell in quick succession, which
+    // the driver's double-click detector would otherwise fold into a
+    // `DoubleClick` the demo doesn't bind — turn folding off so each click
+    // stays a distinct `MouseDown` (quadraui#592).
+    driver.set_double_click_folding(false);
+    // Repeatedly close whatever tab 0 is until the strip is empty. Each
+    // close re-lays-out the strip, so the target is re-resolved every
+    // iteration instead of being captured once.
+    for expected_remaining in (0..workspace_demo::INITIAL.len()).rev() {
+        let (x, y) = driver
+            .tab_close_center(&workspace_bar_id(), 0)
+            .unwrap_or_else(|| {
+                panic!(
+                    "tab 0 should still be painted with {} documents left:\n{}",
+                    expected_remaining + 1,
+                    driver.screen()
+                )
+            });
+        driver.click(x, y);
+    }
+
+    assert!(
+        driver.screen_contains("viewing: (no documents open)"),
+        "closing the last document empties the workspace instead of \
+         panicking:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("closed doc:gamma"),
+        "the final close still emits Closed:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.tab_center(&workspace_bar_id(), 0).is_none(),
+        "no tabs left to paint:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_overflowing_strip_keeps_the_active_tab_visible() {
+    // The panel is ~20 columns wide; `o` opens documents from BACKLOG
+    // until the strip cannot show them all. The newly-opened document is
+    // the active one, so it must be on screen on the *same* frame — the
+    // scroll offset is resolved before the strip paints, not one frame
+    // late (see `WorkspaceController::render`).
+    let mut driver = workspace_driver();
+    for _ in 0..workspace_demo::BACKLOG.len() {
+        driver.type_char('o');
+    }
+    let total = workspace_demo::INITIAL.len() + workspace_demo::BACKLOG.len();
+    let last = total - 1;
+
+    assert!(
+        driver.tab_center(&workspace_bar_id(), last).is_some(),
+        "the active (last-opened) tab must be scrolled into view:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.tab_center(&workspace_bar_id(), 0).is_none(),
+        "…and with {total} documents in a ~20-column panel, the first tab \
+         must have scrolled off — otherwise this test isn't exercising \
+         overflow at all:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:eta"),
+        "body follows the newly-opened document:\n{}",
+        driver.screen()
+    );
+
+    // Now walk back to the *first* document with Ctrl+Shift+Tab: the
+    // scroll offset has to move the other way too.
+    press_ctrl_named(&mut driver, NamedKey::Tab, false);
+    assert!(
+        driver.screen_contains("viewing: doc:alpha"),
+        "Ctrl+Tab wraps from the last document to the first:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.tab_center(&workspace_bar_id(), 0).is_some(),
+        "activating the first document scrolls the strip back:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_q_exits() {
+    let mut driver = workspace_driver();
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the workspace demo");
 }
