@@ -656,6 +656,16 @@ path = "examples/gtk_activity_nav.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_activity_style"
+path = "examples/tui_activity_style.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_activity_style"
+path = "examples/gtk_activity_style.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_dialog_table"
 path = "examples/tui_dialog_table.rs"
 required-features = ["tui"]

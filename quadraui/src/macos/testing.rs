@@ -674,7 +674,6 @@ mod tests {
                     }],
                     bottom_items: Vec::new(),
                     active_accent: None,
-                    active_bg: None,
                     selection_bg: None,
                     is_keyboard_focused: self.focused,
                 },

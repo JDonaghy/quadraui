@@ -177,7 +177,7 @@ pub mod shell_adapter;
 pub use diff::compute_hunks;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
-    ActivityItem, ActivitySide, VisibleActivityItem,
+    ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,
 };
 pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
@@ -1115,7 +1115,6 @@ mod tests {
                 is_keyboard_selected: false,
             }],
             active_accent: Some(Color::rgb(120, 180, 255)),
-            active_bg: Some(Color::rgb(49, 50, 51)),
             selection_bg: Some(Color::rgb(80, 80, 80)),
             is_keyboard_focused: false,
         };
@@ -1124,21 +1123,23 @@ mod tests {
         assert_eq!(bar, back);
     }
 
-    /// #658: `active_bg` is new — a payload serialized before it existed
-    /// (no `active_bg` key at all) must still deserialize, defaulting the
-    /// field to `None`.
+    /// #658: `ActivityBarStyle` round-trips, and a payload with no
+    /// `active_bg` key at all (as if serialized before the type existed)
+    /// still deserializes, defaulting the field to `None`. It's a sidecar
+    /// rather than a field on `ActivityBar` itself specifically so that no
+    /// existing `ActivityBar { .. }` literal — in-tree or downstream — ever
+    /// needs to change; see `ActivityBarStyle`'s doc for the full reasoning.
     #[test]
-    fn activity_bar_active_bg_defaults_to_none_for_pre_658_payloads() {
-        let old_json = r#"{
-            "id": "main-activity-bar",
-            "top_items": [],
-            "bottom_items": [],
-            "active_accent": null,
-            "selection_bg": null,
-            "is_keyboard_focused": false
-        }"#;
-        let bar: ActivityBar = serde_json::from_str(old_json).unwrap();
-        assert_eq!(bar.active_bg, None);
+    fn activity_bar_style_roundtrip_and_defaults_to_none_for_pre_658_payloads() {
+        let style = ActivityBarStyle::new().with_active_bg(Color::rgb(49, 50, 51));
+        let json = serde_json::to_string(&style).unwrap();
+        let back: ActivityBarStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(style, back);
+
+        let old_json = "{}";
+        let defaulted: ActivityBarStyle = serde_json::from_str(old_json).unwrap();
+        assert_eq!(defaulted, ActivityBarStyle::default());
+        assert_eq!(defaulted.active_bg, None);
     }
 
     #[test]
@@ -3471,7 +3472,6 @@ mod tests {
             top_items: vec![],
             bottom_items: vec![],
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         };
@@ -3490,7 +3490,6 @@ mod tests {
             ],
             bottom_items: vec![],
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         };
@@ -3512,7 +3511,6 @@ mod tests {
             top_items: vec![make_activity_item("activity:explorer", 'E')],
             bottom_items: vec![make_activity_item("activity:settings", 'G')],
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         };
@@ -3555,7 +3553,6 @@ mod tests {
                 .map(|i| make_activity_item(&format!("bot:{i}"), 'B'))
                 .collect(),
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         };
@@ -3587,7 +3584,6 @@ mod tests {
                 .collect(),
             bottom_items: vec![make_activity_item("activity:settings", 'G')],
             active_accent: None,
-            active_bg: None,
             selection_bg: None,
             is_keyboard_focused: false,
         };

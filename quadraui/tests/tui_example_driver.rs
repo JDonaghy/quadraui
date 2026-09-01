@@ -20,6 +20,8 @@ use shell_app_ex::ShellApp as ShellAppEx;
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
 
+#[path = "../examples/common/activity_style_demo.rs"]
+mod activity_style_demo;
 #[path = "../examples/common/ai_transcript.rs"]
 mod ai_transcript;
 #[path = "../examples/common/appshell_demo.rs"]
@@ -110,6 +112,7 @@ mod tooltip_demo;
 #[path = "../examples/common/wide_tab_bar_demo.rs"]
 mod wide_tab_bar_demo;
 
+use activity_style_demo::ActivityStyleDemo;
 use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
 use bottom_panel_demo::BottomPanelDemo;
@@ -4726,6 +4729,61 @@ fn tab_chrome_demo_q_exits() {
     let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the tab chrome demo");
+}
+
+// ─── ActivityStyleDemo: VS-Code-style row fill through
+//     Backend::draw_activity_bar_with_style (#658) ────────────────────────
+//
+// #658 adds `ActivityBarStyle::active_bg` as a sidecar rather than a field
+// on `ActivityBar` — see that type's doc for why a new field there would
+// have broken every existing exhaustive `ActivityBar { .. }` literal. These
+// drive the shipping `tui_activity_style` example through the new
+// `Backend::draw_activity_bar_with_style` entry point end to end. The TUI
+// rasteriser's actual fill *colour* is a cell-background assertion, already
+// covered at the primitive level by
+// `tui::activity_bar::tests::active_bg_fills_row_cells_with_zero_accent_glyph_when_accent_is_none`
+// — this driver test instead proves the example's own behaviour: no
+// left-edge accent glyph on screen, and a click on an icon activates it.
+
+#[test]
+fn activity_style_demo_paints_no_accent_glyph() {
+    // `active_accent` is `None` throughout this demo — the row fill is the
+    // only active-item indicator. `'▎'` is the glyph
+    // `tui::activity_bar::draw_activity_bar_with_style` paints for a
+    // *set* `active_accent`, so its total absence here is the observable
+    // proxy for "zero accent-line pixels" that a text-only driver can
+    // assert (the actual fill colour is a cell-background test, covered
+    // at the primitive level).
+    let driver = TuiDriver::new(ActivityStyleDemo::new(), 100, 10);
+    assert!(
+        !driver.screen_contains("▎"),
+        "active_accent is None throughout this demo: zero accent-line \
+         pixels expected:\n{}",
+        driver.screen()
+    );
+    assert!(driver.screen_contains(" ready "));
+}
+
+#[test]
+fn activity_style_demo_click_on_icon_activates_it() {
+    let mut driver = TuiDriver::new(ActivityStyleDemo::new(), 100, 10);
+    let (x, y) = driver
+        .find("S")
+        .unwrap_or_else(|| panic!("Search icon 'S' should be painted:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains(" activated Search "),
+        "clicking the Search icon should activate it:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn activity_style_demo_q_exits() {
+    let mut driver = TuiDriver::new(ActivityStyleDemo::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the activity style demo");
 }
 
 // ─── MinimapApp (issue #382): braille density view + click-to-seek ────────

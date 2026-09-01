@@ -1304,6 +1304,34 @@ impl Backend for TuiBackend {
         crate::tui::draw_activity_bar(frame.buffer_mut(), area, bar, &theme, hovered_idx)
     }
 
+    fn draw_activity_bar_with_style(
+        &mut self,
+        rect: QRect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
+        style: &crate::ActivityBarStyle,
+    ) -> Vec<crate::ActivityBarRowHit> {
+        // Track keyboard focus: if this bar declares `is_keyboard_focused`,
+        // record its id so `apply_dispatch` can convert incoming `KeyPressed`
+        // events to `UiEvent::ActivityBar(id, KeyPressed { … })`.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope");
+        crate::tui::draw_activity_bar_with_style(
+            frame.buffer_mut(),
+            area,
+            bar,
+            style,
+            &theme,
+            hovered_idx,
+        )
+    }
+
     fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
         bar.layout(rect.width, 1.0, MIN_GAP_CELLS, |seg| {
             crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)

@@ -72,7 +72,7 @@ mod tooltip;
 mod tree;
 
 pub use crate::primitives::tab_bar::TabBarHits;
-pub use activity_bar::{draw_activity_bar, ACTIVITY_ROW_PX};
+pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, ACTIVITY_ROW_PX};
 pub use backend::GtkBackend;
 pub use board::{draw_board, gtk_board_layout};
 pub use chart::{draw_chart, gtk_chart_layout};

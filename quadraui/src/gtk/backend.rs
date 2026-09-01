@@ -2062,6 +2062,37 @@ impl Backend for GtkBackend {
         hits
     }
 
+    fn draw_activity_bar_with_style(
+        &mut self,
+        rect: QRect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
+        style: &crate::ActivityBarStyle,
+    ) -> Vec<crate::ActivityBarRowHit> {
+        // Track keyboard focus so the GTK runner's key handler can
+        // redirect KeyPressed events to this bar.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_activity_bar_with_style called outside enter_frame_scope");
+        cr.save().ok();
+        cr.translate(rect.x as f64, rect.y as f64);
+        let hits = crate::gtk::draw_activity_bar_with_style(
+            cr,
+            layout,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            style,
+            &self.current_theme,
+            hovered_idx,
+        );
+        cr.restore().ok();
+        hits
+    }
+
     fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
         let char_w = self.current_char_width as f32;
         let lh = self.current_line_height as f32;

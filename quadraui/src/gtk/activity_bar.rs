@@ -14,7 +14,9 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 use gtk4::pango::FontDescription;
 
-use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivitySide};
+use crate::primitives::activity_bar::{
+    ActivityBar, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
+};
 use crate::theme::Theme;
 
 /// Fixed height (in pixels) of a single activity bar row — matches the
@@ -41,13 +43,42 @@ pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 /// `visible_items`. Returns per-row hit regions for click + tooltip
 /// dispatch.
 ///
+/// Equivalent to [`draw_activity_bar_with_style`] with
+/// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
+/// function for the full visual contract and #658's reasoning for why the
+/// fill lives in a separate style value rather than a field here.
+pub fn draw_activity_bar(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    width: f64,
+    height: f64,
+    bar: &ActivityBar,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+) -> Vec<ActivityBarRowHit> {
+    draw_activity_bar_with_style(
+        cr,
+        pango_layout,
+        width,
+        height,
+        bar,
+        &ActivityBarStyle::default(),
+        theme,
+        hovered_idx,
+    )
+}
+
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
+/// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// pixel for pixel.
+///
 /// # Visual contract
 ///
 /// - **Background:** filled with `theme.tab_bar_bg`.
 /// - **Right-edge separator:** 1 px column in `theme.separator`.
 /// - **Active row:** two independent, opt-in indicators (#658), each
-///   `None` (no rendering) unless the bar sets it:
-///   - `bar.active_bg` fills the whole row (VS Code style).
+///   producing zero pixels unless requested:
+///   - `style.active_bg` fills the whole row (VS Code style).
 ///   - `bar.active_accent` paints a 2 px left-edge line (JetBrains style).
 ///
 ///   Set either, both, or neither — there is no theme fallback for
@@ -60,12 +91,14 @@ pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 ///   `theme.foreground` for active/hovered rows, `theme.inactive_fg`
 ///   otherwise. `ACTIVITY_ROW_PX` (the 48px row) is unrelated and
 ///   unchanged — only the glyph shrank.
-pub fn draw_activity_bar(
+#[allow(clippy::too_many_arguments)]
+pub fn draw_activity_bar_with_style(
     cr: &Context,
     pango_layout: &pango::Layout,
     width: f64,
     height: f64,
     bar: &ActivityBar,
+    style: &ActivityBarStyle,
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> Vec<ActivityBarRowHit> {
@@ -99,7 +132,7 @@ pub fn draw_activity_bar(
     let accent_col = bar
         .active_accent
         .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0));
-    let active_bg_col = bar
+    let active_bg_col = style
         .active_bg
         .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0));
     let inactive_fg = (
@@ -272,7 +305,7 @@ mod tests {
         (data[off + 2], data[off + 1], data[off])
     }
 
-    fn one_item_bar(active_accent: Option<Color>, active_bg: Option<Color>) -> ActivityBar {
+    fn one_item_bar(active_accent: Option<Color>) -> ActivityBar {
         ActivityBar {
             id: WidgetId::new("bar"),
             top_items: vec![ActivityItem {
@@ -284,24 +317,24 @@ mod tests {
             }],
             bottom_items: vec![],
             active_accent,
-            active_bg,
             selection_bg: None,
             is_keyboard_focused: false,
         }
     }
 
-    fn paint_one_row(bar: &ActivityBar) -> ImageSurface {
+    fn paint_one_row(bar: &ActivityBar, style: &ActivityBarStyle) -> ImageSurface {
         let surface = ImageSurface::create(Format::ARgb32, ROW_W, ACTIVITY_ROW_PX as i32)
             .expect("create ImageSurface");
         {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            draw_activity_bar(
+            draw_activity_bar_with_style(
                 &cr,
                 &pango_layout,
                 ROW_W as f64,
                 ACTIVITY_ROW_PX,
                 bar,
+                style,
                 &Theme::default(),
                 None,
             );
@@ -310,16 +343,17 @@ mod tests {
         surface
     }
 
-    /// #658 acceptance: `active_bg: Some(..)` + `active_accent: None` paints
-    /// a filled active row with **zero** accent-line pixels — the legacy
-    /// 2px left-edge column (x ∈ [0, 2)) must show the fill colour, not a
-    /// leftover accent tint (the pre-#658 rasteriser fell back to
+    /// #658 acceptance: `style.active_bg: Some(..)` + `active_accent: None`
+    /// paints a filled active row with **zero** accent-line pixels — the
+    /// legacy 2px left-edge column (x ∈ [0, 2)) must show the fill colour,
+    /// not a leftover accent tint (the pre-#658 rasteriser fell back to
     /// `theme.accent_fg` there regardless of `active_accent`).
     #[test]
     fn active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none() {
         let active_bg = Color::rgb(49, 50, 51);
-        let bar = one_item_bar(None, Some(active_bg));
-        let mut surface = paint_one_row(&bar);
+        let bar = one_item_bar(None);
+        let style = ActivityBarStyle::new().with_active_bg(active_bg);
+        let mut surface = paint_one_row(&bar, &style);
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
@@ -344,8 +378,8 @@ mod tests {
     #[test]
     fn active_accent_paints_two_px_line_when_set() {
         let accent = Color::rgb(80, 140, 255);
-        let bar = one_item_bar(Some(accent), None);
-        let mut surface = paint_one_row(&bar);
+        let bar = one_item_bar(Some(accent));
+        let mut surface = paint_one_row(&bar, &ActivityBarStyle::default());
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
@@ -373,8 +407,8 @@ mod tests {
     /// both fields promises stays the default.
     #[test]
     fn neither_knob_set_paints_plain_row() {
-        let bar = one_item_bar(None, None);
-        let mut surface = paint_one_row(&bar);
+        let bar = one_item_bar(None);
+        let mut surface = paint_one_row(&bar, &ActivityBarStyle::default());
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
         let theme = Theme::default();

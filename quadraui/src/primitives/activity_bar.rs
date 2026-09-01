@@ -49,16 +49,10 @@ pub struct ActivityBar {
     /// rasterisers silently fell back to `theme.accent_fg`, which
     /// contradicted this doc; see
     /// `active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none`
-    /// in `crate::gtk::activity_bar::tests`).
+    /// in `crate::gtk::activity_bar::tests`). See [`ActivityBarStyle`] for
+    /// the independent VS-Code-style row-fill knob.
     #[serde(default)]
     pub active_accent: Option<Color>,
-    /// Background fill colour for the active item's row (VS Code style —
-    /// no line, a soft chip on the row itself). `None` = no fill, today's
-    /// behaviour. Independent of `active_accent`: set `active_bg` alone
-    /// for a VS-Code-style fill, `active_accent` alone for a
-    /// JetBrains-style line, both, or neither. (#658)
-    #[serde(default)]
-    pub active_bg: Option<Color>,
     /// Background colour for keyboard-selected items (arrow-nav highlight).
     /// `None` = backends fall back to their own default.
     #[serde(default)]
@@ -105,6 +99,67 @@ pub struct ActivityItem {
     /// `ActivityBar::is_keyboard_focused` is `true`.
     #[serde(default)]
     pub is_keyboard_selected: bool,
+}
+
+/// Per-frame style overrides for
+/// [`crate::Backend::draw_activity_bar_with_style`] (#658) — currently just
+/// the active-item row-fill colour, VS Code style (no line, a soft chip on
+/// the row itself).
+///
+/// This is a **sidecar** passed alongside an [`ActivityBar`] rather than a
+/// field on it. `ActivityBar` is a plain, non-`#[non_exhaustive]`,
+/// all-`pub`-field struct constructed via *exhaustive* literals both
+/// in-tree and downstream (`vimcode`'s `src/render.rs`), so adding a
+/// required field to it is an `error[E0063]: missing fields` break for
+/// every one of those call sites the instant it lands — Rust offers no
+/// shim that keeps an exhaustive literal compiling across an added field
+/// (`Default` + `..Default::default()` only helps literals that already
+/// spread, and `#[non_exhaustive]` retrofitted onto `ActivityBar` now would
+/// swap that break for `E0639: cannot construct non-exhaustive struct
+/// outside its crate` — strictly worse, since it would break *every*
+/// existing exhaustive `ActivityBar { .. }` literal, not just ones missing
+/// the new field). Threading the row-fill colour through this separate
+/// value sidesteps the break entirely — mirrors [`crate::TooltipChrome`]
+/// (#541) and [`crate::TabChrome`] (#631), which solve the identical
+/// problem for `Tooltip` and `TabBar`. See those types' module docs for the
+/// full reasoning.
+///
+/// [`crate::Backend::draw_activity_bar`] keeps its exact signature and
+/// behaviour (delegates to the new method with
+/// `ActivityBarStyle::default()`, i.e. no fill), so existing `Backend`
+/// implementors and callers are untouched.
+///
+/// `#[non_exhaustive]`: brand new this PR, so marking it costs no consumer
+/// anything today (nobody has an exhaustive literal of it yet), and it
+/// means a future style knob (e.g. a corner radius for the fill) is
+/// additive rather than the very breaking change this type exists to
+/// avoid. Construct with [`ActivityBarStyle::new`] /
+/// [`ActivityBarStyle::default`] and the `with_*` builders; the field
+/// stays `pub` for reading.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ActivityBarStyle {
+    /// Background fill colour for the active item's row. `None` (the
+    /// default) = no fill, i.e. today's behaviour. Independent of
+    /// [`ActivityBar::active_accent`]: set this alone for a VS-Code-style
+    /// fill, `active_accent` alone for a JetBrains-style line, both, or
+    /// neither.
+    #[serde(default)]
+    pub active_bg: Option<Color>,
+}
+
+impl ActivityBarStyle {
+    /// Style with no overrides — identical to [`Self::default`], provided
+    /// for symmetry with [`crate::TooltipChrome::new`] / [`crate::TabChrome::new`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the active-item row-fill colour.
+    pub fn with_active_bg(mut self, color: Color) -> Self {
+        self.active_bg = Some(color);
+        self
+    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

@@ -34,11 +34,11 @@
 //! entry here, or a stale entry naming a method that no longer exists.
 
 use quadraui::{
-    compute_hunks, ActivityBar, ActivityItem, AppLogic, Backend, BadgeStatus, BoardCard,
-    BoardColumn, BoardModel, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
-    CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu,
-    ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, Decoration,
-    Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
+    compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, BadgeStatus,
+    BoardCard, BoardColumn, BoardModel, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign,
+    ColumnWidth, CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure, Completions,
+    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable,
+    Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
     DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
     EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, ListItem, ListView, MenuBar,
     MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, Palette,
@@ -562,11 +562,43 @@ pub const CASES: &[Case] = &[
                 }],
                 bottom_items: vec![],
                 active_accent: None,
-                active_bg: None,
                 selection_bg: None,
                 is_keyboard_focused: false,
             };
             let _ = b.draw_activity_bar(Rect::new(0.0, 0.0, lh * 3.0, area.height), &bar, None);
+        },
+    },
+    Case {
+        // #658: the style-carrying entry point. Same content as
+        // `draw_activity_bar` above, but asking explicitly for an
+        // `ActivityBarStyle` row fill so C0 exercises a non-default
+        // request reaching the backend rather than only the delegating
+        // path (mirrors `draw_tab_bar_with_chrome` above).
+        method: "draw_activity_bar_with_style",
+        needle: None,
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = ActivityBar {
+                id: id("activity-bar-style"),
+                top_items: vec![ActivityItem {
+                    id: id("activity-item-style"),
+                    icon: "c0actystyle".to_string(),
+                    tooltip: String::new(),
+                    is_active: true,
+                    is_keyboard_selected: false,
+                }],
+                bottom_items: vec![],
+                active_accent: None,
+                selection_bg: None,
+                is_keyboard_focused: false,
+            };
+            let style = ActivityBarStyle::new().with_active_bg(Color::rgb(49, 50, 51));
+            let _ = b.draw_activity_bar_with_style(
+                Rect::new(0.0, 0.0, lh * 3.0, area.height),
+                &bar,
+                None,
+                &style,
+            );
         },
     },
     Case {
