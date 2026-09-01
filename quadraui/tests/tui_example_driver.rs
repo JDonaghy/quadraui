@@ -70,6 +70,8 @@ mod indicators_app;
 mod markdown_demo;
 #[path = "../examples/common/menu_bar_app.rs"]
 mod menu_bar_app;
+#[path = "../examples/common/message_dialog_demo.rs"]
+mod message_dialog_demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
 #[path = "../examples/common/minimap_app.rs"]
@@ -136,6 +138,7 @@ use image_app::ImageApp;
 use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
 use menu_bar_app::MenuBarApp;
+use message_dialog_demo::MessageDialogDemo;
 use mini_app::MiniApp;
 use minimap_app::MinimapApp;
 use modal_occlusion_demo::ModalOcclusionDemo;
@@ -409,6 +412,48 @@ fn file_dialog_demo_save_reports_unsupported_on_tui() {
 #[test]
 fn file_dialog_demo_escape_exits() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
+}
+
+// ─── MessageDialogDemo: TUI's documented "unsupported" contract ────────────
+//
+// #666 implements a real native `gtk4::AlertDialog` for GTK only;
+// `PlatformServices`'s TUI impl keeps returning `None` unconditionally (the
+// in-canvas `Dialog` primitive / `Backend::draw_dialog` stays the TUI
+// path). These tests pin that documented contract so a future change
+// can't silently make the TUI path block waiting on something that will
+// never resolve headlessly. The GTK path (a real, modal, nested-mainloop-
+// pumped `gtk4::AlertDialog`) can't be driven by `TuiDriver` — it's
+// covered by the `gtk_message_dialog` example's manual smoke test instead
+// (see `docs/TESTING.md`'s "What unit tests don't cover" and the
+// SMOKE_TESTS in the #666 PR).
+
+#[test]
+fn message_dialog_demo_shows_starting_hint() {
+    let driver = TuiDriver::new(MessageDialogDemo::new(), 100, 20);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("m = show dialog"),
+        "status bar should hint at the dialog key:\n{screen}"
+    );
+}
+
+#[test]
+fn message_dialog_demo_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(MessageDialogDemo::new(), 100, 20);
+    driver.type_char('m');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("unsupported"),
+        "message dialog must report None as unsupported on TUI:\n{screen}"
+    );
+}
+
+#[test]
+fn message_dialog_demo_escape_exits() {
+    let mut driver = TuiDriver::new(MessageDialogDemo::new(), 100, 20);
     assert!(!driver.exited());
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the demo");

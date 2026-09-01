@@ -702,3 +702,31 @@ choices, accessibility heuristics, "does this feel right". These
 remain manual smoke / human review. Goal: every story ratchets
 harness coverage forward so the manual-residue surface shrinks
 toward "things that genuinely need eyes".
+
+- **Native message-dialog visibility** (`PlatformServices::show_message_dialog`,
+  quadraui#666). `GtkDriver` paints `cairo::ImageSurface` offscreen — it
+  never opens a real GTK `Application`/window, so it structurally cannot
+  see a `gtk4::AlertDialog`, which is a *separate* native window GTK owns
+  outside the `DrawingArea` this crate rasterises into. `scripts/gtk_smoke.sh`'s
+  generic live-window check (window/`DrawingArea` size floor, optional
+  clipboard round-trip — see "Live-app headless smoke" above) doesn't open
+  a dialog either, so it proves the window itself is alive, not that the
+  alert appears or that its buttons behave. Same structural gap as
+  `PlatformServices::show_file_open_dialog`/`show_file_save_dialog`
+  (#427), which has never had automated coverage of the native picker
+  actually appearing. Manual smoke, until a `GtkDriver` successor can see
+  native windows:
+  1. `cargo run --example gtk_message_dialog --features gtk`
+  2. Press `m`. Confirm a real OS dialog titled "Discard unsaved
+     changes?" appears, parented to (centered on) the demo window, with
+     "Keep Editing" right of "Discard" (GNOME HIG: cancel leftmost,
+     default rightmost).
+  3. Click each button in turn (re-running step 1 between clicks) and
+     confirm the status bar reports "Kept editing" / "Discarded"
+     matching the click. Press `m` again and dismiss via Escape or the
+     window's close box; confirm the status bar reports "Cancelled".
+  4. `cargo run --example tui_message_dialog --features tui` and press
+     `m` — confirm the status bar reports "unsupported" instead of
+     hanging (the `TuiDriver` tests in `tests/tui_example_driver.rs`
+     already pin this contract headlessly; this step is just the human
+     sanity check that the real terminal binary matches).
