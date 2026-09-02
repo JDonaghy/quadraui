@@ -299,6 +299,29 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
     Ok(())
 }
 
+/// Stroke the outline of `rect` (DIPs, target-relative) in `color` at
+/// `stroke_width` — the Direct2D twin of `fill_rect` for the overlay
+/// rasterisers (#28: tooltip / context menu / dialog / palette /
+/// completions / find-replace / rich-text-popup) that all draw a
+/// bordered box, mirroring GTK/Cairo's `cr.rectangle(..).stroke()`
+/// idiom used throughout `crate::gtk`.
+pub(crate) fn stroke_rect(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    color: Color,
+    stroke_width: f32,
+) -> WinResult<()> {
+    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let rect_f = D2D_RECT_F {
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.width,
+        bottom: rect.y + rect.height,
+    };
+    unsafe { target.DrawRectangle(&rect_f, &brush, stroke_width, None) };
+    Ok(())
+}
+
 /// Push an axis-aligned clip rect (DIPs, target-relative) onto `target`.
 /// Every push must be balanced by a [`pop_clip`] — content rasterisers
 /// that paint per-row / per-cell text wider than their own bounds (e.g.

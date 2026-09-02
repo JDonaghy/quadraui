@@ -6,11 +6,14 @@
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
 //! `win` feature comment). #25 landed the four chrome-strip rasterisers
-//! (`status_bar`/`tab_bar`/`activity_bar`/`menu_bar`) and #26 the six
+//! (`status_bar`/`tab_bar`/`activity_bar`/`menu_bar`), #26 the six
 //! content-area rasterisers (`tree`/`list`/`form`/`data_table`/`editor`/
-//! `chart`) — every other `draw_*`/`*_layout` rasteriser is still a
-//! `todo!()` stub; implement each one against Direct2D / DirectWrite
-//! and the compiler will tell you when you're done.
+//! `chart`), #27 the multi-section view + standalone scrollbar, and #28
+//! the seven overlay/popup rasterisers (`tooltip`/`context_menu`/
+//! `dialog`/`palette`/`completions`/`find_replace`/`rich_text_popup`) —
+//! every other `draw_*`/`*_layout` rasteriser is still a `todo!()` stub;
+//! implement each one against Direct2D / DirectWrite and the compiler
+//! will tell you when you're done.
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
 //! during earlier Win-GUI work. See the GTK backend (`quadraui/src/gtk/`)
@@ -25,10 +28,22 @@ pub mod backend;
 /// (#26). Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod chart;
+/// Direct2D / DirectWrite rasteriser for [`crate::Completions`] (#28).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod completions;
+/// Direct2D / DirectWrite rasteriser for [`crate::ContextMenu`] (#28).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod context_menu;
 /// Direct2D / DirectWrite rasteriser for [`crate::DataTable`] (#26).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod data_table;
+/// Direct2D / DirectWrite rasteriser for [`crate::Dialog`] (#28).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod dialog;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`]
 /// (#26). Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -39,6 +54,10 @@ mod editor;
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// landed in #19 via `msg` + `run` instead — see this module's docs.
 pub mod events;
+/// Direct2D / DirectWrite rasteriser for [`crate::FindReplacePanel`]
+/// (#28). Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod find_replace;
 /// Direct2D / DirectWrite rasteriser for [`crate::Form`] (#26).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -60,6 +79,14 @@ pub(crate) mod msg;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod multi_section_view;
+/// Direct2D / DirectWrite rasteriser for [`crate::Palette`] (#28).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod palette;
+/// Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`] (#28).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod rich_text_popup;
 pub mod run;
 /// Direct2D rasteriser for [`crate::Scrollbar`] (#27). Windows-only in
 /// full — see its module docs.
@@ -100,6 +127,10 @@ pub mod testing;
 /// and `DWrite`'s public surface in step with the rasterisers that take it.
 #[cfg(target_os = "windows")]
 pub mod text;
+/// Direct2D / DirectWrite rasteriser for [`crate::Tooltip`] (#28).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod tooltip;
 /// Direct2D / DirectWrite rasteriser for [`crate::TreeView`] (#26).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -111,9 +142,17 @@ pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 pub use chart::{draw_chart, win_chart_layout};
 #[cfg(target_os = "windows")]
+pub use completions::draw_completions;
+#[cfg(target_os = "windows")]
+pub use context_menu::draw_context_menu;
+#[cfg(target_os = "windows")]
 pub use data_table::{draw_data_table, win_data_table_layout};
 #[cfg(target_os = "windows")]
+pub use dialog::draw_dialog;
+#[cfg(target_os = "windows")]
 pub use editor::draw_editor;
+#[cfg(target_os = "windows")]
+pub use find_replace::draw_find_replace;
 #[cfg(target_os = "windows")]
 pub use form::{draw_form, win_form_layout};
 #[cfg(target_os = "windows")]
@@ -122,6 +161,10 @@ pub use list::{draw_list, win_list_layout};
 pub use menu_bar::{draw_menu_bar, win_menu_bar_layout};
 #[cfg(target_os = "windows")]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
+#[cfg(target_os = "windows")]
+pub use palette::{draw_palette, win_palette_layout};
+#[cfg(target_os = "windows")]
+pub use rich_text_popup::draw_rich_text_popup;
 pub use run::run;
 #[cfg(target_os = "windows")]
 pub use scrollbar::draw_scrollbar;
@@ -130,5 +173,7 @@ pub use services::WinPlatformServices;
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
+#[cfg(target_os = "windows")]
+pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]
 pub use tree::{draw_tree, win_tree_layout};
