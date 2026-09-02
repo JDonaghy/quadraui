@@ -1262,12 +1262,40 @@ impl Backend for WinBackend {
         todo!("DirectWrite menu bar layout (no surface attached yet)")
     }
 
-    fn draw_split(&mut self, _rect: Rect, _split: &Split) -> SplitLayout {
-        todo!("Direct2D split rasteriser")
+    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. `Split` paints no text, so unlike
+    /// most of that method's siblings this doesn't need `self.dwrite`.
+    fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            return super::split::draw_split(&surface.target, rect, split);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, split);
+        todo!("Direct2D split rasteriser (no surface attached yet)")
     }
 
-    fn split_layout(&self, _rect: Rect, _split: &Split) -> SplitLayout {
-        todo!("DirectWrite split layout")
+    /// #29: pure geometry — no measurer at all (uniform divider
+    /// thickness), so unlike most `*_layout` siblings this doesn't even
+    /// need `self.dwrite`, only kept behind the `target_os = "windows"`
+    /// gate for consistency with every other method in this file.
+    fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
+        // No `return` here (unlike the `if let Some(dwrite)` early-returns
+        // elsewhere in this file): on `target_os = "windows"` the
+        // `not(windows)` block below is stripped, so this block *is* the
+        // tail expression and an explicit `return` trips
+        // `clippy::needless_return` — an error under CI's `-D warnings`,
+        // and only on the windows-latest leg. See `activity_bar_layout`'s
+        // matching comment.
+        #[cfg(target_os = "windows")]
+        {
+            super::split::win_split_layout(rect, split)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, split);
+            todo!("DirectWrite split layout (no surface attached yet)")
+        }
     }
 
     fn draw_split_tree(
@@ -1314,20 +1342,72 @@ impl Backend for WinBackend {
         todo!("Direct2D image rasteriser — out of scope per #662's first pass")
     }
 
-    fn draw_panel(&mut self, _rect: Rect, _panel: &Panel) -> PanelLayout {
-        todo!("Direct2D panel rasteriser")
+    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
+    fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::panel::draw_panel(
+                &surface.target,
+                dwrite,
+                rect,
+                panel,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, panel);
+        todo!("Direct2D panel rasteriser (no surface attached yet)")
     }
 
-    fn panel_layout(&self, _rect: Rect, _panel: &Panel) -> PanelLayout {
-        todo!("DirectWrite panel layout")
+    /// #29: pure geometry — `Panel::layout` needs only `line_height`,
+    /// not text measurement, so this only needs `self.dwrite` to exist
+    /// (for the `target_os = "windows"` gate below) rather than a live
+    /// render target — same posture as [`Self::status_bar_layout`].
+    fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
+        #[cfg(target_os = "windows")]
+        if self.dwrite.is_some() {
+            return super::panel::win_panel_layout(rect, panel, self.current_line_height);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, panel);
+        todo!("DirectWrite panel layout (no surface attached yet)")
     }
 
-    fn draw_toast_stack(&mut self, _rect: Rect, _stack: &ToastStack) -> ToastStackLayout {
-        todo!("Direct2D toast stack rasteriser")
+    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
+    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::toast::draw_toast_stack(
+                &surface.target,
+                dwrite,
+                rect,
+                stack,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, stack);
+        todo!("Direct2D toast stack rasteriser (no surface attached yet)")
     }
 
-    fn toast_stack_layout(&self, _rect: Rect, _stack: &ToastStack) -> ToastStackLayout {
-        todo!("DirectWrite toast stack layout")
+    /// #29: pure measurement — only needs `self.dwrite`, not a live
+    /// render target, so this works as soon as a surface has ever been
+    /// attached — same posture as [`Self::status_bar_layout`].
+    fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::toast::win_toast_stack_layout(
+                dwrite,
+                rect,
+                stack,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, stack);
+        todo!("DirectWrite toast stack layout (no surface attached yet)")
     }
 
     fn draw_pipeline_view(
@@ -1346,20 +1426,59 @@ impl Backend for WinBackend {
         todo!("DirectWrite pipeline view layout")
     }
 
-    fn draw_progress(&mut self, _rect: Rect, _bar: &ProgressBar) -> ProgressBarLayout {
-        todo!("Direct2D progress bar rasteriser")
+    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
+    fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::progress::draw_progress(&surface.target, dwrite, rect, bar);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar);
+        todo!("Direct2D progress bar rasteriser (no surface attached yet)")
     }
 
-    fn progress_layout(&self, _rect: Rect, _bar: &ProgressBar) -> ProgressBarLayout {
-        todo!("DirectWrite progress layout")
+    /// #29: pure geometry — `ProgressBar::layout` needs no measurer at
+    /// all (uniform cancel-affordance width), so unlike most
+    /// `*_layout` siblings this doesn't even need `self.dwrite`, only
+    /// kept behind the `target_os = "windows"` gate for consistency
+    /// with every other method in this file.
+    fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
+        // See `split_layout`'s comment on why this block has no `return`.
+        #[cfg(target_os = "windows")]
+        {
+            super::progress::win_progress_layout(rect, bar)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, bar);
+            todo!("DirectWrite progress layout (no surface attached yet)")
+        }
     }
 
-    fn draw_spinner(&mut self, _rect: Rect, _spinner: &Spinner) -> SpinnerLayout {
-        todo!("Direct2D spinner rasteriser")
+    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
+    fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::spinner::draw_spinner(&surface.target, dwrite, rect, spinner);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, spinner);
+        todo!("Direct2D spinner rasteriser (no surface attached yet)")
     }
 
-    fn spinner_layout(&self, _rect: Rect, _spinner: &Spinner) -> SpinnerLayout {
-        todo!("DirectWrite spinner layout")
+    /// #29: pure measurement — only needs `self.dwrite`, not a live
+    /// render target, so this works as soon as a surface has ever been
+    /// attached — same posture as [`Self::status_bar_layout`].
+    fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::spinner::win_spinner_layout(dwrite, rect, spinner);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, spinner);
+        todo!("DirectWrite spinner layout (no surface attached yet)")
     }
 
     fn draw_command_center(&mut self, _rect: Rect, _cc: &CommandCenter) -> CommandCenterLayout {
