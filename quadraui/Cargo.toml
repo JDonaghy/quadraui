@@ -94,6 +94,13 @@ objc2-app-kit = { version = "0.2", optional = true, features = [
     "NSGraphics",
     "NSColor",
     "NSEvent",
+    # `objc2-app-kit` gates every generated class behind a same-named
+    # feature: without this one, `objc2_app_kit::NSCursor` simply does not
+    # exist and `macos::backend`'s `set_cursor` / `mac_cursor_for_shape`
+    # (#498) fail to resolve. Invisible on Linux — `src/macos` is gated on
+    # `target_os = "macos"` in `lib.rs`, so only the `macOS` workflow's
+    # `macos-latest` runner ever compiles the import.
+    "NSCursor",
     "NSCell",
     "NSMenu",
     "NSMenuItem",

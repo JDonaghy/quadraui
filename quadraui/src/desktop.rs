@@ -135,6 +135,16 @@ impl<P> WindowDragArm<P> {
     /// moved past the threshold — the press was a plain click (or the
     /// first half of a double-click), and leaving the state armed would
     /// let a later, unrelated hover-motion event accidentally commit it.
+    ///
+    /// Gated on `gtk`-or-`test` for the same `-D warnings` reason the
+    /// module doc gives: `macos::backend` uses [`Self::arm`] /
+    /// [`Self::take`] only (AppKit's `performWindowDragWithEvent:` needs
+    /// no threshold gating), so on a `--features macos` build with no
+    /// `gtk` around this method has no production caller and an ungated
+    /// `pub(crate) fn` would be a hard `dead_code` build failure. A
+    /// future backend that adopts the threshold path adds its feature
+    /// here.
+    #[cfg(any(feature = "gtk", test))]
     pub(crate) fn discard(&mut self) {
         self.armed = None;
     }
@@ -154,6 +164,10 @@ impl<P> WindowDragArm<P> {
     /// start the native gesture. Returns `None` — leaving the request
     /// armed — if nothing is armed yet, or if it's armed but still
     /// under threshold.
+    ///
+    /// Gated on `gtk`-or-`test` for the same reason as [`Self::discard`]
+    /// — see that method's note.
+    #[cfg(any(feature = "gtk", test))]
     pub(crate) fn commit_if_past_threshold(
         &mut self,
         current_x: f64,
@@ -201,11 +215,20 @@ impl<P> Default for WindowDragArm<P> {
 /// panic aborts the whole process instead of propagating. Every runner
 /// closure that might re-enter should clone this handle and check
 /// [`Self::is_pumping`] before touching the backend.
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+///
+/// `#[cfg(feature = "gtk")]`, not `any(gtk, macos)`: GTK's async
+/// `FileDialog` pump is the only adopter today. `macos::backend`'s
+/// `performWindowDragWithEvent:` is listed above as a *candidate* nested
+/// pump, but nothing in `macos/` guards on this counter yet — and per
+/// the module doc, a `pub(crate)` item with no caller under some
+/// compiled feature set is a hard `-D warnings` build failure, not a
+/// warning. A macOS (or Win32) adopter widens this gate in the same
+/// commit that adds the call.
+#[cfg(feature = "gtk")]
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModalPumpDepth(std::rc::Rc<std::cell::Cell<u32>>);
 
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+#[cfg(feature = "gtk")]
 impl ModalPumpDepth {
     /// A fresh counter at depth 0 (no pump in flight).
     pub(crate) fn new() -> Self {
@@ -230,12 +253,14 @@ impl ModalPumpDepth {
 /// out of the pump), so nested pumps stay guarded until the *outermost*
 /// one finishes. Construct one right before starting a nested native
 /// modal loop; hold it for the loop's duration.
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+///
+/// `#[cfg(feature = "gtk")]` — see [`ModalPumpDepth`]'s gate note.
+#[cfg(feature = "gtk")]
 pub(crate) struct ModalPumpGuard<'a> {
     depth: &'a ModalPumpDepth,
 }
 
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+#[cfg(feature = "gtk")]
 impl<'a> ModalPumpGuard<'a> {
     pub(crate) fn new(depth: &'a ModalPumpDepth) -> Self {
         depth.0.set(depth.0.get() + 1);
@@ -243,7 +268,7 @@ impl<'a> ModalPumpGuard<'a> {
     }
 }
 
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+#[cfg(feature = "gtk")]
 impl Drop for ModalPumpGuard<'_> {
     fn drop(&mut self) {
         self.depth.0.set(self.depth.0.get() - 1);
@@ -456,10 +481,7 @@ mod window_drag_arm_tests {
     }
 }
 
-#[cfg(all(
-    test,
-    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
-))]
+#[cfg(all(test, feature = "gtk"))]
 mod modal_pump_tests {
     use super::*;
 
