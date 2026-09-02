@@ -236,8 +236,8 @@ pub fn draw_activity_bar_with_style(
         super::painted_text::show_layout(cr, pango_layout);
 
         regions.push(ActivityBarRowHit {
-            y_start: y,
-            y_end: y + row_h,
+            y_start: y as f32,
+            y_end: (y + row_h) as f32,
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
         });

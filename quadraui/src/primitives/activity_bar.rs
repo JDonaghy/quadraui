@@ -243,10 +243,10 @@ pub enum ActivityBarHit {
 pub struct ActivityBarRowHit {
     /// Top edge of the row, **relative to the bar's `rect.y`** (first
     /// row is `0.0`). Add the bar origin before hit-testing a click.
-    pub y_start: f64,
+    pub y_start: f32,
     /// Bottom edge (exclusive) of the row, **relative to the bar's
     /// `rect.y`**. Add the bar origin before hit-testing a click.
-    pub y_end: f64,
+    pub y_end: f32,
     pub id: WidgetId,
     pub tooltip: String,
 }

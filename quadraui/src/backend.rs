@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::dispatch::DragState;
-use crate::event::{Rect, UiEvent, Viewport};
+use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
@@ -1750,8 +1750,8 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
         hits.push(ActivityBarRowHit {
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
-            y_start: y as f64,
-            y_end: (y + lh) as f64,
+            y_start: y,
+            y_end: y + lh,
         });
         y += lh;
     }
@@ -1761,8 +1761,8 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
         hits.push(ActivityBarRowHit {
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
-            y_start: by as f64,
-            y_end: (by + lh) as f64,
+            y_start: by,
+            y_end: by + lh,
         });
         by += lh;
     }
@@ -1777,11 +1777,15 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
 /// terminal cursor) populate the actual cursor cell.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EditorPaintResult {
-    /// Cursor's painted position in backend-native units, if the
-    /// host is responsible for terminal-cursor positioning. `None`
+    /// Cursor's painted position in backend-native units (issue #504 —
+    /// this used to be a terminal-cell `(u16, u16)` pair leaked from the
+    /// TUI backend's `ratatui::Frame::set_cursor_position` plumbing; every
+    /// other backend just wants a [`Point`] in its own native unit), if
+    /// the host is responsible for terminal-cursor positioning. `None`
     /// when the backend painted its own caret OR when the cursor is
-    /// outside the viewport.
-    pub cursor_position: Option<(u16, u16)>,
+    /// outside the viewport. TUI rounds to the nearest cell internally
+    /// before returning.
+    pub cursor_position: Option<Point>,
 }
 
 /// Trait for content that can render itself into a rect using any backend.

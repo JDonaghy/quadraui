@@ -452,11 +452,26 @@ pub struct TextRegion {
 ///
 /// Coordinates are clamped to `bounds`. Returns an empty `Vec` when
 /// `anchor == focus` (selection collapsed to a point — plain click).
+///
+/// # Units (issue #504)
+///
+/// `row` is a discrete line/cell-row index (it indexes
+/// [`TextRegion::lines`] and is always integral in every backend's
+/// space) and stays `u16`. `col_start` / `col_end` used to be `u16`
+/// too, silently assuming the caller's x-axis is a whole-cell grid —
+/// true for TUI, but GTK/macOS only get that by pre-quantizing pixel
+/// coordinates into a fake cell grid (`bounds.width / char_width`) and
+/// rounding, which loses the fractional remainder of a viewport that
+/// isn't an exact multiple of the glyph advance. They're `f32` now,
+/// matching every other native-unit span in this crate ([`Point`],
+/// [`crate::event::Rect`]) — callers still pass pre-quantized
+/// cell-space coordinates (the "+1" below is one *unit*, i.e. one
+/// character cell, not one pixel), just without the lossy truncation.
 pub fn text_selection_line_range(
     anchor: Point,
     focus: Point,
     bounds: crate::event::Rect,
-) -> Vec<(u16, u16, u16)> {
+) -> Vec<(u16, f32, f32)> {
     // Empty when anchor == focus (no movement → collapsed click).
     let ax = anchor.x.round() as i32;
     let ay = anchor.y.round() as i32;
@@ -473,17 +488,17 @@ pub fn text_selection_line_range(
         (focus, anchor)
     };
 
-    let region_x = bounds.x.round() as u16;
-    let region_end_x = (bounds.x + bounds.width).round() as u16;
+    let region_x = bounds.x.round();
+    let region_end_x = (bounds.x + bounds.width).round();
     let region_y = bounds.y.round() as u16;
     let region_end_y = (bounds.y + bounds.height).round() as u16;
 
     // Clamp start/end rows and cols to region.
     let start_row = (start.y.round() as u16).clamp(region_y, region_end_y.saturating_sub(1));
     let end_row = (end.y.round() as u16).clamp(region_y, region_end_y.saturating_sub(1));
-    let start_col = (start.x.round() as u16).clamp(region_x, region_end_x);
-    // End col is inclusive → add 1 for the half-open range, then clamp.
-    let end_col = ((end.x.round() as u16).saturating_add(1)).clamp(region_x, region_end_x);
+    let start_col = start.x.round().clamp(region_x, region_end_x);
+    // End col is inclusive → add one unit for the half-open range, then clamp.
+    let end_col = (end.x.round() + 1.0).clamp(region_x, region_end_x);
 
     if start_row == end_row {
         if start_col >= end_col {
@@ -2251,7 +2266,7 @@ mod tests {
         let bounds = rect(0.0, 0.0, 40.0, 10.0);
         let ranges = text_selection_line_range(pt(5.0, 3.0), pt(10.0, 3.0), bounds);
         // Half-open: 5..11 (focus_col 10 is inclusive → +1 = 11).
-        assert_eq!(ranges, vec![(3, 5, 11)]);
+        assert_eq!(ranges, vec![(3, 5.0, 11.0)]);
     }
 
     #[test]
@@ -2259,7 +2274,7 @@ mod tests {
         // Same row, focus before anchor — must swap to document order.
         let bounds = rect(0.0, 0.0, 40.0, 10.0);
         let ranges = text_selection_line_range(pt(10.0, 3.0), pt(5.0, 3.0), bounds);
-        assert_eq!(ranges, vec![(3, 5, 11)]);
+        assert_eq!(ranges, vec![(3, 5.0, 11.0)]);
     }
 
     #[test]
@@ -2270,7 +2285,7 @@ mod tests {
         // Row 1: 2..40 (start_col to region_end)
         // Row 2: 0..40 (full width)
         // Row 3: 0..6  (region_start to focus_col+1)
-        assert_eq!(ranges, vec![(1, 2, 40), (2, 0, 40), (3, 0, 6)]);
+        assert_eq!(ranges, vec![(1, 2.0, 40.0), (2, 0.0, 40.0), (3, 0.0, 6.0)]);
     }
 
     #[test]
@@ -2278,7 +2293,7 @@ mod tests {
         let bounds = rect(0.0, 0.0, 40.0, 10.0);
         // Swap anchor and focus — must produce same result in document order.
         let ranges = text_selection_line_range(pt(5.0, 3.0), pt(2.0, 1.0), bounds);
-        assert_eq!(ranges, vec![(1, 2, 40), (2, 0, 40), (3, 0, 6)]);
+        assert_eq!(ranges, vec![(1, 2.0, 40.0), (2, 0.0, 40.0), (3, 0.0, 6.0)]);
     }
 
     #[test]
@@ -2290,18 +2305,18 @@ mod tests {
         // start_col clamped to 5, end_col clamped to 25.
         assert_eq!(
             ranges[0],
-            (2, 5, 25),
+            (2, 5.0, 25.0),
             "first row: anchor clamped to region x"
         );
         assert_eq!(
             *ranges.last().unwrap(),
-            (6, 5, 25),
+            (6, 5.0, 25.0),
             "last row: focus clamped to region end"
         );
         // All middle rows are full region width.
         for &(_, c_start, c_end) in &ranges[1..ranges.len() - 1] {
-            assert_eq!(c_start, 5);
-            assert_eq!(c_end, 25);
+            assert_eq!(c_start, 5.0);
+            assert_eq!(c_end, 25.0);
         }
     }
 

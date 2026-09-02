@@ -406,13 +406,16 @@ impl TuiBackend {
         let area = buf.area;
 
         // Cache text before inverting so we read the original cell content.
+        // `text_selection_line_range` reports cell-space columns as f32
+        // (issue #504); TUI cells are always whole units, so round-trip
+        // through `u16` for buffer indexing.
         let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
         for &(row, col_start, col_end) in &ranges {
             if row >= area.y + area.height {
                 continue;
             }
             let mut line = String::new();
-            for col in col_start..col_end {
+            for col in (col_start as u16)..(col_end as u16) {
                 if col < area.x + area.width {
                     line.push_str(buf[(col, row)].symbol());
                 }
@@ -424,7 +427,7 @@ impl TuiBackend {
 
         // Now invert cells for the highlight.
         for (row, col_start, col_end) in ranges {
-            for col in col_start..col_end {
+            for col in (col_start as u16)..(col_end as u16) {
                 if col < area.x + area.width && row < area.y + area.height {
                     let cell = &mut buf[(col, row)];
                     let fg = cell.fg;
@@ -552,7 +555,7 @@ impl TuiBackend {
                 continue;
             }
             let mut line = String::new();
-            for col in col_start..col_end {
+            for col in (col_start as u16)..(col_end as u16) {
                 if col < area.x + area.width {
                     line.push_str(buf[(col, row)].symbol());
                 }
@@ -1722,7 +1725,13 @@ impl Backend for TuiBackend {
         // `last_cursor_position`'s field doc for the full handoff.
         self.last_cursor_position = tui_result.cursor_position;
         crate::backend::EditorPaintResult {
-            cursor_position: tui_result.cursor_position,
+            // `tui_result.cursor_position` is the TUI-internal, already
+            // cell-rounded `(u16, u16)` shape `Frame::set_cursor_position`
+            // needs (see `last_cursor_position`'s doc); widen to the
+            // portable `Point` (issue #504) for the trait's return value.
+            cursor_position: tui_result
+                .cursor_position
+                .map(|(x, y)| crate::event::Point::new(x as f32, y as f32)),
         }
     }
 

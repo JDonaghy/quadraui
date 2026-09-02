@@ -731,9 +731,9 @@ impl AppShell {
         for hit in &hits {
             let item_bounds = Rect::new(
                 layout.activity_bar_bounds.x,
-                layout.activity_bar_bounds.y + hit.y_start as f32,
+                layout.activity_bar_bounds.y + hit.y_start,
                 layout.activity_bar_bounds.width,
-                (hit.y_end - hit.y_start) as f32,
+                hit.y_end - hit.y_start,
             );
             backend.register_zone(hit.id.clone(), item_bounds);
         }
@@ -1099,8 +1099,8 @@ impl AppShell {
         let ab = (*self.cached_activity_bar_bounds.borrow())?;
         let hits = self.cached_activity_hits.borrow();
         for hit in hits.iter() {
-            if position.y >= hit.y_start as f32 + ab.y
-                && position.y < hit.y_end as f32 + ab.y
+            if position.y >= hit.y_start + ab.y
+                && position.y < hit.y_end + ab.y
                 && position.x >= ab.x
                 && position.x < ab.x + ab.width
             {
@@ -1114,9 +1114,9 @@ impl AppShell {
         if contains(layout.activity_bar_bounds, *position) {
             let ab = layout.activity_bar_bounds;
             let hits = self.cached_activity_hits.borrow();
-            self.hovered_activity_idx = hits.iter().position(|hit| {
-                position.y >= hit.y_start as f32 + ab.y && position.y < hit.y_end as f32 + ab.y
-            });
+            self.hovered_activity_idx = hits
+                .iter()
+                .position(|hit| position.y >= hit.y_start + ab.y && position.y < hit.y_end + ab.y);
         } else {
             self.hovered_activity_idx = None;
         }

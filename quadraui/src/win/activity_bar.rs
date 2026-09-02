@@ -117,8 +117,8 @@ pub fn draw_activity_bar(
         let _ = dwrite.draw_text(target, icon_str, icon_rect, fg);
 
         regions.push(ActivityBarRowHit {
-            y_start: vi.bounds.y as f64,
-            y_end: (vi.bounds.y + vi.bounds.height) as f64,
+            y_start: vi.bounds.y,
+            y_end: vi.bounds.y + vi.bounds.height,
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
         });

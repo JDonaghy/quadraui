@@ -184,7 +184,7 @@ pub fn draw_activity_bar_with_style(
         // revealed it. GTK, macOS, and `backend::activity_bar_hits`
         // all already used this space; the TUI was the lone outlier.
         // Issue #552 (the coordinate-space half of #547's height fix).
-        let rel_y = (y - area.y) as f64;
+        let rel_y = (y - area.y) as f32;
         regions.push(ActivityBarRowHit {
             y_start: rel_y,
             y_end: rel_y + 1.0,

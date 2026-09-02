@@ -906,8 +906,8 @@ impl Backend for WinBackend {
                         }
                     };
                     ActivityBarRowHit {
-                        y_start: vi.bounds.y as f64,
-                        y_end: (vi.bounds.y + vi.bounds.height) as f64,
+                        y_start: vi.bounds.y,
+                        y_end: vi.bounds.y + vi.bounds.height,
                         id: item.id.clone(),
                         tooltip: item.tooltip.clone(),
                     }

@@ -4512,8 +4512,8 @@ mod tests {
         assert_eq!(ranges.len(), 1, "single-row selection → 1 range entry");
         let (row_cell, col_start, col_end) = ranges[0];
         assert_eq!(row_cell, 0, "row should be cell row 0");
-        assert_eq!(col_start, 0, "col_start should be 0");
-        assert_eq!(col_end, 6, "col_end = focus_col(5) + 1 = 6 (half-open)");
+        assert_eq!(col_start, 0.0, "col_start should be 0");
+        assert_eq!(col_end, 6.0, "col_end = focus_col(5) + 1 = 6 (half-open)");
 
         // Verify pixel coordinates: 6 cols × 8px = 48px wide.
         let px_x = bounds.x as f64 + col_start as f64 * char_w as f64;
