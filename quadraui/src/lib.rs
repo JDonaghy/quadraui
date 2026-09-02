@@ -186,6 +186,13 @@ pub mod shell_adapter;
 ))]
 mod runtime;
 
+// Shared, backend-neutral desktop-interaction plumbing (#498): window-drag
+// arm/threshold/commit, modal-pump re-entrancy guard, headless smoke-mode
+// predicates, PointerShape enum-walk scaffold. Compiled unconditionally —
+// no toolkit dependency of its own — so a brand-new backend gets it for
+// free. See `desktop`'s module doc and `BACKEND.md` §10.
+mod desktop;
+
 pub use diff::compute_hunks;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,

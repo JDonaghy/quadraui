@@ -38,9 +38,12 @@ use std::time::Duration;
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
+use objc2::rc::Retained;
+use objc2_app_kit::{NSCursor, NSEvent, NSWindow};
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{Backend, EditorPaintResult};
+use crate::backend::{Backend, EditorPaintResult, PointerShape, ResizeEdge};
+use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, DragState};
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
@@ -176,6 +179,27 @@ pub struct MacBackend {
     /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
     /// into the bar. Mirrors `GtkBackend::focused_activity_bar` (#465).
     focused_activity_bar: Option<WidgetId>,
+    /// Top-level window handle, set once by `macos::run::run` via
+    /// [`Self::set_window`]. `None` until the runner finishes
+    /// constructing the window (and in unit tests, which never call
+    /// it). Backs [`Backend::begin_window_drag`] /
+    /// [`Backend::toggle_window_maximize`] / [`Backend::set_cursor`]
+    /// (#498) — mirrors `GtkBackend::window`.
+    window: Option<Retained<NSWindow>>,
+    /// Raw press `NSEvent`, stashed by `macos::run`'s `mouseDown:`
+    /// responder before the press is translated to a portable
+    /// `UiEvent`. [`Backend::begin_window_drag`] consumes this (via
+    /// `.take()`) — `performWindowDragWithEvent:` requires the
+    /// *originating* mouse-down event, not a synthesized one.
+    ///
+    /// Stored in the shared [`crate::desktop::WindowDragArm`] (#498)
+    /// purely as an arm/take stash: unlike `GtkBackend`'s
+    /// `armed_window_drag`, there's no threshold-gated commit step
+    /// here, because AppKit's `performWindowDragWithEvent:` already
+    /// disambiguates a drag from a double-click internally (see that
+    /// type's doc comment) — so the `origin_x`/`origin_y` `arm()`
+    /// arguments are always `0.0` and go unread.
+    pending_window_press: WindowDragArm<Retained<NSEvent>>,
 }
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -224,6 +248,35 @@ fn macos_universal_binding_modifiers(
     parsed
 }
 
+/// Map a [`PointerShape`] to a native `NSCursor` (#498). Mirrors
+/// `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s public
+/// API (`objc2-app-kit`'s binding of it — see `Self::set_cursor`) only
+/// exposes horizontal (`resizeLeftRightCursor`) and vertical
+/// (`resizeUpDownCursor`) resize glyphs, unlike GTK's CSS cursor-name
+/// space which has all 8 directional keywords. There is no public
+/// diagonal-resize `NSCursor` to fall back to (`_windowResize*Cursor`
+/// selectors are private API), so the 4 corner edges fall back to the
+/// plain arrow — honest about the gap (see `crate::desktop`'s
+/// pointer-shape-scaffold doc) rather than pointing a horizontal or
+/// vertical glyph in a direction the user isn't actually dragging.
+fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
+    match shape {
+        PointerShape::Default => NSCursor::arrowCursor(),
+        PointerShape::Resize(ResizeEdge::North | ResizeEdge::South) => {
+            NSCursor::resizeUpDownCursor()
+        }
+        PointerShape::Resize(ResizeEdge::East | ResizeEdge::West) => {
+            NSCursor::resizeLeftRightCursor()
+        }
+        PointerShape::Resize(
+            ResizeEdge::NorthEast
+            | ResizeEdge::NorthWest
+            | ResizeEdge::SouthEast
+            | ResizeEdge::SouthWest,
+        ) => NSCursor::arrowCursor(),
+    }
+}
+
 impl MacBackend {
     /// Construct a fresh `MacBackend` with a default viewport, empty
     /// event queue, default theme, and no font. The runner overwrites
@@ -253,7 +306,27 @@ impl MacBackend {
             painted_text_recording: false,
             text_runs: Vec::new(),
             focused_activity_bar: None,
+            window: None,
+            pending_window_press: WindowDragArm::new(),
         }
+    }
+
+    /// Store the top-level window handle. Called once by
+    /// `macos::run::run` right after the window is constructed. Backs
+    /// [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`]
+    /// / [`Backend::set_cursor`] (#498) — mirrors `GtkBackend::set_window`.
+    pub(crate) fn set_window(&mut self, window: Retained<NSWindow>) {
+        self.window = Some(window);
+    }
+
+    /// Stash the raw press `NSEvent`. Called by `macos::run`'s
+    /// `mouseDown:` responder before the press is translated to a
+    /// portable `UiEvent`, so [`Backend::begin_window_drag`] has the
+    /// originating event `performWindowDragWithEvent:` requires.
+    /// Overwritten by the next press; harmless if never consumed
+    /// (mirrors `GtkBackend::stash_window_press`).
+    pub(crate) fn stash_window_press(&mut self, event: Retained<NSEvent>) {
+        self.pending_window_press.arm(event, 0.0, 0.0);
     }
 
     /// Shared `Rc<Cell<bool>>` controlling whether `InlineInput` carets
@@ -566,12 +639,24 @@ impl Backend for MacBackend {
     ///   stub pending an `NSAlert` implementation (quadraui#666); the
     ///   in-canvas `Dialog` primitive stays the only dialog path here
     ///   for now, same as TUI.
-    /// - Everything else — `text_selection`, `window_chrome`,
-    ///   `pointer_cursor`, `ime` — is **not** declared: `register_text_region`,
-    ///   `begin_window_drag`/`toggle_window_maximize`/`begin_window_resize`,
-    ///   and `set_cursor` are all still the trait's no-op default on this
-    ///   backend today (see #493 — no macOS runner in the fleet yet to
-    ///   exercise them).
+    /// - `window_chrome`: `begin_window_drag` / `toggle_window_maximize`
+    ///   are overridden below, via the shared `crate::desktop::WindowDragArm`
+    ///   (#498) — `CAP_CONTRACTS`'s `window_chrome` cap only requires
+    ///   *any* of the three CSD methods, and these two satisfy it.
+    ///   `begin_window_resize` stays the trait's no-op default: the
+    ///   vendored `objc2-app-kit` binding has no public "begin native
+    ///   edge-resize" primitive (unlike `performWindowDragWithEvent:` /
+    ///   `zoom:`), and a manual `setFrame_display`-driven implementation
+    ///   would need live mouse-motion wiring through `QuadraView` that
+    ///   doesn't exist yet — a real gap, tracked as follow-up rather than
+    ///   guessed at blind (no macOS host in this dev loop to verify the
+    ///   geometry math against).
+    /// - `pointer_cursor`: `set_cursor` is overridden below, via
+    ///   `crate::desktop`'s `PointerShape`/`ResizeEdge` scaffold.
+    /// - Everything else — `text_selection`, `ime` — is **not** declared:
+    ///   `register_text_region` is still the trait's no-op default on
+    ///   this backend today (see #493 — no macOS runner in the fleet yet
+    ///   to exercise it).
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
             mouse: true,
@@ -580,8 +665,62 @@ impl Backend for MacBackend {
             native_menu: true,
             file_dialogs: true,
             notifications: true,
+            window_chrome: true,
+            pointer_cursor: true,
             ..crate::backend::BackendCaps::empty()
         }
+    }
+
+    // ─── Window chrome (CSD, #498) ──────────────────────────────────────
+    //
+    // See `backend_caps`'s doc above for exactly which of the three
+    // window-chrome methods are overridden and why.
+
+    fn begin_window_drag(&mut self) -> bool {
+        // Unlike `GtkBackend::begin_window_drag`, this does not need to
+        // defer past a movement threshold: `NSWindow::performWindowDragWithEvent:`
+        // is designed to be called synchronously from `mouseDown:` and
+        // disambiguates a drag from a double-click internally (that's
+        // the whole point of the API — see Apple's docs), so there is no
+        // "swallows the second press" hazard `WindowDragArm::commit_if_past_threshold`
+        // exists to avoid on GTK/GDK. Takes the stashed press
+        // unconditionally instead.
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        let Some(event) = self.pending_window_press.take() else {
+            return false;
+        };
+        window.performWindowDragWithEvent(&event);
+        true
+    }
+
+    fn toggle_window_maximize(&mut self) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        // `zoom:` (not `NSWindow::toggleFullScreen:`) is the
+        // double-click-to-maximize equivalent: it toggles between the
+        // window's current frame and its "zoomed" (ideal) frame, same
+        // as clicking the native green titlebar button.
+        window.zoom(None);
+        true
+    }
+
+    fn set_cursor(&mut self, shape: PointerShape) -> bool {
+        if self.window.is_none() {
+            return false;
+        }
+        // SAFETY: `NSCursor::set` is documented safe to call any time
+        // this view's window is key; called from `AppLogic::handle`
+        // (via `Backend::set_cursor`), which only ever runs on the main
+        // thread inside the live AppKit run loop, same precondition
+        // every other `unsafe` AppKit call in this file already relies
+        // on.
+        unsafe {
+            mac_cursor_for_shape(shape).set();
+        }
+        true
     }
 
     fn line_height(&self) -> f32 {
@@ -2406,5 +2545,63 @@ mod tests {
         assert!(b.line_height() > 0.0);
         assert!(b.char_width() > 0.0);
         assert!(b.current_font.is_some());
+    }
+
+    // ── Window chrome (CSD, #498) ────────────────────────────────────
+    //
+    // Every unit test runs with no `NSWindow` constructed (`self.window`
+    // stays `None` — `set_window` is only ever called by `macos::run::run`)
+    // and no `NSApplication` main-loop running, so these only cover the
+    // no-window guard clauses: each method must short-circuit and return
+    // `false` *before* touching any `objc2-app-kit` API, not attempt a
+    // real AppKit call (which would need a live window server connection
+    // this CI/test environment doesn't have) and hang or panic. Mirrors
+    // `gtk::backend`'s equivalent `*_false_without_window` tests.
+
+    #[test]
+    fn begin_window_drag_false_without_window() {
+        let mut b = MacBackend::new();
+        assert!(!Backend::begin_window_drag(&mut b));
+    }
+
+    /// #498: also no-ops when a window is present but no press was ever
+    /// stashed — there's no real `NSEvent` to hand
+    /// `performWindowDragWithEvent:`. Can't construct a real `NSWindow`
+    /// headlessly, so this exercises the guard against the private
+    /// `pending_window_press` field directly, same rationale as GTK's
+    /// analogous `armed_window_drag`-field test.
+    #[test]
+    fn begin_window_drag_false_without_pending_press() {
+        let mut b = MacBackend::new();
+        assert!(b.pending_window_press.take().is_none());
+    }
+
+    #[test]
+    fn toggle_window_maximize_false_without_window() {
+        let mut b = MacBackend::new();
+        assert!(!Backend::toggle_window_maximize(&mut b));
+    }
+
+    #[test]
+    fn set_cursor_false_without_window() {
+        let mut b = MacBackend::new();
+        assert!(!Backend::set_cursor(&mut b, PointerShape::Default));
+        assert!(!Backend::set_cursor(
+            &mut b,
+            PointerShape::Resize(ResizeEdge::North)
+        ));
+    }
+
+    /// #498: `backend_caps` must stay honest — declaring `window_chrome`
+    /// / `pointer_cursor` requires the corresponding methods actually be
+    /// overridden (see `tests/conformance/caps.rs`'s
+    /// `backends_declare_only_what_they_override`, which checks this
+    /// mechanically from source; this just pins the two flags directly).
+    #[test]
+    fn backend_caps_declares_window_chrome_and_pointer_cursor() {
+        let b = MacBackend::new();
+        let caps = b.backend_caps();
+        assert!(caps.window_chrome);
+        assert!(caps.pointer_cursor);
     }
 }

@@ -26,8 +26,14 @@
 //! detect "a dialog pump is in flight further up the stack" and no-op
 //! instead of touching the backend. See `GtkBackend::pump_depth` /
 //! `quadraui::gtk::run::activate`.
+//!
+//! The depth counter and its RAII guard are the backend-neutral
+//! [`crate::desktop::ModalPumpDepth`] / [`crate::desktop::ModalPumpGuard`]
+//! (#498) — extracted here first (#427) and generalised because AppKit's
+//! `runModal` and Win32's `IFileOpenDialog::Show` have the identical
+//! nested-pump re-entrancy hazard.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -38,6 +44,7 @@ use crate::backend::{
     Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
     Notification,
 };
+use crate::desktop::{ModalPumpDepth, ModalPumpGuard};
 use crate::PlatformServices;
 
 /// GTK platform-services impl. Clipboard is backed by `arboard` for
@@ -59,7 +66,7 @@ pub struct GtkPlatformServices {
     /// controllers and idle-drain timer so they can detect the
     /// re-entrant-pump condition and skip touching the backend's
     /// `RefCell` — see the module-level re-entrancy note.
-    pumping: Rc<Cell<u32>>,
+    pumping: ModalPumpDepth,
 }
 
 impl GtkPlatformServices {
@@ -67,7 +74,7 @@ impl GtkPlatformServices {
         Self {
             clipboard: GtkClipboard::new(),
             window: Rc::new(RefCell::new(None)),
-            pumping: Rc::new(Cell::new(0)),
+            pumping: ModalPumpDepth::new(),
         }
     }
 
@@ -82,9 +89,9 @@ impl GtkPlatformServices {
     /// `quadraui::gtk::run::activate` fetches this once, before installing
     /// any event controllers, and clones it into each closure that would
     /// otherwise call `backend.borrow_mut()` — so they can check
-    /// `depth.get() > 0` and no-op while a dialog's nested pump is live.
-    pub(crate) fn pump_depth(&self) -> Rc<Cell<u32>> {
-        Rc::clone(&self.pumping)
+    /// `depth.is_pumping()` and no-op while a dialog's nested pump is live.
+    pub(crate) fn pump_depth(&self) -> ModalPumpDepth {
+        self.pumping.clone()
     }
 
     /// Concrete (non-trait-object) handle on the clipboard, so in-crate
@@ -254,8 +261,8 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
 /// callbacks (idle-drain timer, input controllers, draw func) detect
 /// that and skip their own `backend.borrow_mut()` instead of panicking
 /// on a double-borrow (#427).
-fn pump_until_ready<T>(result: &Rc<RefCell<Option<T>>>, pumping: &Rc<Cell<u32>>) -> T {
-    let _guard = PumpGuard::new(pumping);
+fn pump_until_ready<T>(result: &Rc<RefCell<Option<T>>>, pumping: &ModalPumpDepth) -> T {
+    let _guard = ModalPumpGuard::new(pumping);
     let ctx = glib::MainContext::default();
     while result.borrow().is_none() {
         ctx.iteration(true);
@@ -300,28 +307,9 @@ fn hig_button_order(buttons: &[MessageDialogButton]) -> Vec<usize> {
     order
 }
 
-/// RAII bump/decrement for the shared pump-depth counter. A counter
-/// (rather than a bool) so a dialog opened re-entrantly from inside
-/// another dialog's pump (see the re-entrancy note above) doesn't have
-/// its `Drop` clear the guard out from under the still-running outer
-/// pump — the flag only reads "clear" once every nested pump has
-/// unwound.
-struct PumpGuard<'a> {
-    depth: &'a Rc<Cell<u32>>,
-}
-
-impl<'a> PumpGuard<'a> {
-    fn new(depth: &'a Rc<Cell<u32>>) -> Self {
-        depth.set(depth.get() + 1);
-        Self { depth }
-    }
-}
-
-impl Drop for PumpGuard<'_> {
-    fn drop(&mut self) {
-        self.depth.set(self.depth.get() - 1);
-    }
-}
+// The RAII bump/decrement for the shared pump-depth counter used to be
+// defined here as `PumpGuard`; extracted to the backend-neutral
+// `crate::desktop::ModalPumpGuard` by #498 — see that module's doc.
 
 /// In-memory stand-in for the two OS selections, installed by
 /// [`GtkClipboard::install_test_contents`] so unit tests can exercise the
@@ -570,54 +558,26 @@ mod tests {
         assert!(services.window.borrow().is_none());
     }
 
-    /// Regression test for #427: the idle-drain timer (and every input
-    /// event controller) in `quadraui::gtk::run` reads this depth counter
-    /// before touching the backend's `RefCell`, to detect "a dialog's
-    /// nested-mainloop pump is in flight further up the call stack" and
-    /// no-op instead of double-borrowing (which used to abort the
-    /// process — see `pump_until_ready`'s doc comment). Exercises the
-    /// counter directly, including the re-entrant-dialog case (the
-    /// documented reason it's a depth counter and not a bool): the
-    /// counter must stay `> 0` for the whole time *any* pump is live, not
-    /// drop to zero the moment the innermost one finishes. No GTK object
-    /// construction here, so — unlike the `require_gtk()`-gated tests
-    /// above — this runs safely on any thread.
-    #[test]
-    fn pump_guard_depth_stays_positive_until_outermost_pump_unwinds() {
-        let depth: Rc<Cell<u32>> = Rc::new(Cell::new(0));
-        assert_eq!(depth.get(), 0, "no pump in flight initially");
-        {
-            let _outer = PumpGuard::new(&depth);
-            assert_eq!(depth.get(), 1);
-            {
-                // A dialog opened re-entrantly from inside another
-                // dialog's pump (see `pump_until_ready`'s re-entrancy
-                // note).
-                let _inner = PumpGuard::new(&depth);
-                assert_eq!(depth.get(), 2);
-            }
-            // Inner guard dropped, but the outer pump is still running —
-            // callers must keep seeing "a pump is in flight".
-            assert_eq!(
-                depth.get(),
-                1,
-                "outer pump must still read as in-flight after inner unwinds"
-            );
-        }
-        assert_eq!(depth.get(), 0, "cleared once every pump has unwound");
-    }
+    // Regression test for #427 ("depth counter stays positive until the
+    // outermost re-entrant pump unwinds") used to live here directly
+    // against a local `PumpGuard`; that behavior is now covered once,
+    // backend-neutrally, by `crate::desktop`'s own `modal_pump_tests`
+    // (#498). The test below stays GTK-specific: it pins that
+    // `GtkPlatformServices::pump_depth()`'s returned handle really does
+    // share state with the services' own counter (same `Rc`, not an
+    // independent clone).
 
     /// `GtkPlatformServices::pump_depth()` — the handle
     /// `quadraui::gtk::run::activate` clones into its event
     /// controllers — must observe mutations `pump_until_ready` makes
-    /// through the services' own copy (same underlying `Cell` via `Rc`,
-    /// not an independent one).
+    /// through the services' own copy (same underlying counter via
+    /// `ModalPumpDepth`'s `Rc`, not an independent one).
     #[test]
     fn pump_depth_handle_observes_guard_mutations_on_the_services_copy() {
         let services = GtkPlatformServices::new();
         let handle = services.pump_depth();
         assert_eq!(handle.get(), 0);
-        let _guard = PumpGuard::new(&services.pumping);
+        let _guard = ModalPumpGuard::new(&services.pumping);
         assert_eq!(
             handle.get(),
             1,

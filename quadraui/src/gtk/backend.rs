@@ -47,6 +47,7 @@ use gtk4::pango;
 use gtk4::prelude::*;
 
 use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
+use crate::desktop::WindowDragArm;
 use crate::dispatch::TextRegion;
 use crate::event::Point;
 use crate::testing::ZoneRec;
@@ -231,11 +232,13 @@ pub struct GtkBackend {
     /// values on some compositors.
     pending_window_press: Option<(gdk::Device, i32, f64, f64, u32)>,
     /// Armed-but-not-yet-started window-drag request (#400 double-click
-    /// fix). Set by [`Backend::begin_window_drag`] from
+    /// fix; extracted to the backend-neutral [`WindowDragArm`] by #498).
+    /// Set by [`Backend::begin_window_drag`] from
     /// [`Self::pending_window_press`]; consumed by
-    /// [`Self::commit_armed_window_drag`], which `gtk/run.rs`'s motion
-    /// controller calls only once the pointer has moved past the drag
-    /// threshold since the arming press.
+    /// [`Self::try_commit_window_drag`], which `gtk/run.rs`'s motion
+    /// controller calls on every pointer move — it only actually commits
+    /// (and calls the native `begin_move`) once the pointer has moved
+    /// past the drag threshold since the arming press.
     ///
     /// This split exists because calling `gdk4::Toplevel::begin_move`
     /// synchronously on the very first press — before it's known whether
@@ -245,8 +248,9 @@ pub struct GtkBackend {
     /// `gtk4::WindowHandle` avoids this by deferring its own move-start
     /// to `GestureDrag`'s `drag-begin` signal, which itself only fires
     /// past the drag threshold — this mirrors that behaviour instead of
-    /// starting the grab on the raw press.
-    armed_window_drag: Option<(gdk::Device, i32, f64, f64, u32)>,
+    /// starting the grab on the raw press. See [`WindowDragArm`]'s doc
+    /// for the generalised rationale.
+    armed_window_drag: WindowDragArm<(gdk::Device, i32, f64, f64, u32)>,
     /// Clone of the Pango layout `draw_menu_bar` actually painted with,
     /// stashed at the end of the frame's `enter_frame_scope` call.
     /// `menu_bar_layout` (#407) is invoked from click-time hit-testing
@@ -387,7 +391,7 @@ impl GtkBackend {
             focused_activity_bar: None,
             window: None,
             pending_window_press: None,
-            armed_window_drag: None,
+            armed_window_drag: WindowDragArm::new(),
             last_menu_bar_pango_layout: None,
             last_editor_pango_layout: None,
             tab_bar_layouts: HashMap::new(),
@@ -414,7 +418,7 @@ impl GtkBackend {
     /// so those closures can no-op instead of double-borrowing the
     /// backend while `AppLogic::handle` (further up the call stack) is
     /// blocked inside the dialog pump (#427).
-    pub(crate) fn pump_depth(&self) -> Rc<Cell<u32>> {
+    pub(crate) fn pump_depth(&self) -> crate::desktop::ModalPumpDepth {
         self.services.pump_depth()
     }
 
@@ -450,14 +454,14 @@ impl GtkBackend {
     }
 
     /// Screen-space origin `(x, y)` of the press that armed the current
-    /// window-drag request, if one is armed. `gtk/run.rs`'s motion
-    /// controller uses this to measure how far the pointer has moved
-    /// since the press, so it can decide when to call
-    /// [`Self::commit_armed_window_drag`] (#400).
+    /// window-drag request, if one is armed. Test-only: `gtk/run.rs`'s
+    /// motion controller no longer measures the distance itself (#498)
+    /// — it just calls [`Self::try_commit_window_drag`] every move and
+    /// lets [`WindowDragArm::commit_if_past_threshold`] do the threshold
+    /// check.
+    #[cfg(test)]
     pub(crate) fn armed_window_drag_origin(&self) -> Option<(f64, f64)> {
-        self.armed_window_drag
-            .as_ref()
-            .map(|(_, _, x, y, _)| (*x, *y))
+        self.armed_window_drag.origin()
     }
 
     /// Discard an armed-but-uncommitted window-drag request without
@@ -468,24 +472,35 @@ impl GtkBackend {
     /// accidentally committed by an unrelated later hover-motion event
     /// (#400).
     pub(crate) fn discard_armed_window_drag(&mut self) {
-        self.armed_window_drag = None;
+        self.armed_window_drag.discard();
     }
 
-    /// Commit an armed window-drag request by calling
-    /// `gdk4::Toplevel::begin_move` with the originating press's
-    /// device/button/timestamp (#400). Called by `gtk/run.rs`'s motion
-    /// controller once the pointer has moved past the drag threshold
-    /// since the arming press — see [`Self::armed_window_drag`] for why
-    /// this is deferred instead of running synchronously from
+    /// Threshold-gated commit of an armed window-drag request (#400;
+    /// threshold check extracted to [`WindowDragArm::commit_if_past_threshold`]
+    /// by #498). Called by `gtk/run.rs`'s motion controller on every
+    /// pointer move while a request is armed; `WindowDragArm` handles
+    /// "still under threshold, stay armed" internally, so this is a
+    /// plain no-op (returns `false`) on every call until the pointer
+    /// actually crosses [`Self::window_drag_threshold_px`] from the
+    /// arming press — see [`Self::armed_window_drag`] for why the commit
+    /// is deferred at all instead of running synchronously from
     /// `Backend::begin_window_drag`.
     ///
-    /// Returns `false` (no-op) if no window is set or nothing is armed.
-    pub(crate) fn commit_armed_window_drag(&mut self) -> bool {
+    /// On a successful threshold-cross, calls `gdk4::Toplevel::begin_move`
+    /// with the *originating* press's device/button/timestamp (GDK
+    /// ignores synthesized values on some compositors) and returns
+    /// `true`. Returns `false` (no-op) if no window is set, nothing is
+    /// armed, or the armed request is still under threshold.
+    pub(crate) fn try_commit_window_drag(&mut self, x: f64, y: f64) -> bool {
         let Some(window) = self.window.as_ref() else {
-            self.armed_window_drag = None;
+            self.armed_window_drag.discard();
             return false;
         };
-        let Some((device, button, x, y, time)) = self.armed_window_drag.take() else {
+        let threshold = self.window_drag_threshold_px();
+        let Some((device, button, press_x, press_y, time)) = self
+            .armed_window_drag
+            .commit_if_past_threshold(x, y, threshold)
+        else {
             return false;
         };
         // `ApplicationWindow` implements `Native` directly (gtk4-rs
@@ -495,7 +510,7 @@ impl GtkBackend {
         // lives on — downcast can fail if the surface isn't realized yet.
         match window.surface().downcast::<gdk::Toplevel>() {
             Ok(toplevel) => {
-                toplevel.begin_move(&device, button, x, y, time);
+                toplevel.begin_move(&device, button, press_x, press_y, time);
                 true
             }
             Err(_) => false,
@@ -1473,7 +1488,7 @@ impl Backend for GtkBackend {
         // that swallows the second press, so a double-click on a CSD titlebar
         // never reaches the app. Instead this arms `Self::armed_window_drag`;
         // `gtk/run.rs`'s motion controller commits it (via
-        // `commit_armed_window_drag`, which does the actual `begin_move` —
+        // `try_commit_window_drag`, which does the actual `begin_move` —
         // see there for the downcast rationale) once the pointer has moved
         // past the drag threshold, mirroring how native `gtk4::WindowHandle`
         // defers its own move-start to `GestureDrag`'s threshold-gated
@@ -1481,10 +1496,11 @@ impl Backend for GtkBackend {
         if self.window.is_none() {
             return false;
         }
-        let Some(press) = self.pending_window_press.take() else {
+        let Some((device, button, x, y, time)) = self.pending_window_press.take() else {
             return false;
         };
-        self.armed_window_drag = Some(press);
+        self.armed_window_drag
+            .arm((device, button, x, y, time), x, y);
         true
     }
 
@@ -1507,7 +1523,7 @@ impl Backend for GtkBackend {
         // double-click gesture to protect against (double-click-to-
         // maximize only applies to the empty titlebar band), so there's no
         // need to defer past a movement threshold the way
-        // `commit_armed_window_drag` does for the move gesture.
+        // `try_commit_window_drag` does for the move gesture.
         let Some(window) = self.window.as_ref() else {
             return false;
         };
@@ -3905,23 +3921,23 @@ mod tests {
         assert!(backend.armed_window_drag_origin().is_none());
     }
 
-    /// #400 double-click fix: `commit_armed_window_drag` must no-op
+    /// #400 double-click fix: `try_commit_window_drag` must no-op
     /// (rather than panic) with no window set, mirroring
     /// `begin_window_drag`'s no-window no-op.
     #[test]
-    fn gtk_backend_commit_armed_window_drag_false_without_window() {
+    fn gtk_backend_try_commit_window_drag_false_without_window() {
         let mut backend = GtkBackend::new();
-        assert!(!backend.commit_armed_window_drag());
+        assert!(!backend.try_commit_window_drag(0.0, 0.0));
     }
 
-    /// #400 double-click fix: `commit_armed_window_drag` must no-op when
+    /// #400 double-click fix: `try_commit_window_drag` must no-op when
     /// a window is present but nothing is armed (e.g. `connect_motion`
     /// fires before any title-bar press ever called `begin_window_drag`).
     #[test]
-    fn gtk_backend_commit_armed_window_drag_false_without_armed_request() {
+    fn gtk_backend_try_commit_window_drag_false_without_armed_request() {
         let mut backend = GtkBackend::new();
-        assert!(backend.armed_window_drag.is_none());
-        assert!(!backend.commit_armed_window_drag());
+        assert!(!backend.armed_window_drag.is_armed());
+        assert!(!backend.try_commit_window_drag(0.0, 0.0));
     }
 
     /// #400 double-click fix: `window_drag_threshold_px` must fall back
@@ -3983,77 +3999,48 @@ mod tests {
     /// corner on a real compositor.
     #[test]
     fn resize_edge_to_surface_edge_maps_every_variant() {
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::North),
-            gdk::SurfaceEdge::North
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::South),
-            gdk::SurfaceEdge::South
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::East),
-            gdk::SurfaceEdge::East
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::West),
-            gdk::SurfaceEdge::West
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::NorthEast),
-            gdk::SurfaceEdge::NorthEast
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::NorthWest),
-            gdk::SurfaceEdge::NorthWest
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::SouthEast),
-            gdk::SurfaceEdge::SouthEast
-        );
-        assert_eq!(
-            resize_edge_to_surface_edge(ResizeEdge::SouthWest),
-            gdk::SurfaceEdge::SouthWest
-        );
+        // Iterates the shared enum-walk scaffold (`desktop::ALL_RESIZE_EDGES`,
+        // #498) instead of hand-listing all 8 variants, so a 9th
+        // `ResizeEdge` variant added there is automatically exercised
+        // here too.
+        let expected = [
+            gdk::SurfaceEdge::North,
+            gdk::SurfaceEdge::South,
+            gdk::SurfaceEdge::East,
+            gdk::SurfaceEdge::West,
+            gdk::SurfaceEdge::NorthEast,
+            gdk::SurfaceEdge::NorthWest,
+            gdk::SurfaceEdge::SouthEast,
+            gdk::SurfaceEdge::SouthWest,
+        ];
+        for (edge, expected) in crate::desktop::ALL_RESIZE_EDGES.iter().zip(expected.iter()) {
+            assert_eq!(resize_edge_to_surface_edge(*edge), *expected);
+        }
     }
 
     /// #406: `PointerShape` -> GTK cursor-name mapping covers every
     /// variant with the expected CSS Basic UI keyword.
     #[test]
     fn pointer_shape_cursor_name_maps_every_variant() {
-        assert_eq!(pointer_shape_cursor_name(PointerShape::Default), "default");
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::North)),
-            "n-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::South)),
-            "s-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::East)),
-            "e-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::West)),
-            "w-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::NorthEast)),
-            "ne-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::NorthWest)),
-            "nw-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::SouthEast)),
-            "se-resize"
-        );
-        assert_eq!(
-            pointer_shape_cursor_name(PointerShape::Resize(ResizeEdge::SouthWest)),
-            "sw-resize"
-        );
+        // Iterates `desktop::all_pointer_shapes()` (#498) instead of
+        // hand-listing all 9 `Default` + `Resize(edge)` combinations.
+        let expected = [
+            "default",
+            "n-resize",
+            "s-resize",
+            "e-resize",
+            "w-resize",
+            "ne-resize",
+            "nw-resize",
+            "se-resize",
+            "sw-resize",
+        ];
+        for (shape, expected) in crate::desktop::all_pointer_shapes()
+            .iter()
+            .zip(expected.iter())
+        {
+            assert_eq!(pointer_shape_cursor_name(*shape), *expected);
+        }
     }
 
     #[test]
