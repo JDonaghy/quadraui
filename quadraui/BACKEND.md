@@ -586,6 +586,28 @@ patterns are stable; copy them when standing up a new backend.
 
 [vimcode]: https://github.com/JDonaghy/vimcode
 
+## 10. Desktop-interaction plumbing you get for free (`crate::desktop`)
+
+A handful of interaction patterns are genuinely windowing-generic — the
+same state machine or hazard shows up on every real desktop toolkit,
+not just the one that first implemented it. quadraui factors those into
+`src/desktop.rs` (`pub(crate)`, in-tree only) so a new backend doesn't
+have to reinvent them from a GTK or AppKit source read. None of it
+depends on `gtk4`, `objc2`, `windows`, or any other toolkit crate —
+it's plain Rust, generic over whatever payload your backend's native
+events carry, and gated with `#[cfg(feature = "your-backend")]` the same
+way every item in the module already is (see its module doc for why the
+`cfg`s exist despite there being no toolkit dependency to gate).
+
+| What | Type | Extracted from | The hazard it solves |
+|---|---|---|---|
+| CSD titlebar drag-to-move (and, by the same shape, edge-resize) arm/threshold/commit state machine | `desktop::WindowDragArm<P>` | `gtk::backend::GtkBackend::armed_window_drag` (#400) | Calling a native "begin move" synchronously on the raw press starts an interactive grab that swallows a following double-click. `WindowDragArm` owns the arm/discard/threshold-check/commit *sequencing*; your backend still makes the actual native call (`gdk4::Toplevel::begin_move`, `NSWindow::performWindowDragWithEvent:`, …) once `commit_if_past_threshold` hands the press back — or, if your platform's own API already disambiguates drag-vs-click internally (AppKit's does), just call `.take()` unconditionally instead and skip the threshold step entirely. `macos::backend::MacBackend::begin_window_drag` (#498) is the worked example of that second shape. |
+| Nested-modal-loop re-entrancy guard | `desktop::ModalPumpDepth` + `desktop::ModalPumpGuard` | `gtk::services::GtkPlatformServices`'s `pumping` field + `PumpGuard` (#427) | A synchronous file-dialog/message-box call that internally pumps the native event loop (GTK's async `FileDialog` awaited via `MainContext::iteration`, AppKit's `runModal`, Win32's `IFileOpenDialog::Show`) lets *every other* pending event-loop source run too — including your own idle-drain timer and input controllers, which may try to mutably borrow the same `Rc<RefCell<Backend>>` the dialog call is already holding borrowed. Unguarded, that second borrow panics inside a non-unwindable native callback frame and aborts the process. Clone a `ModalPumpDepth` into every runner closure that touches the backend; each checks `is_pumping()` and no-ops instead. Wrap the nested-loop call itself in a `ModalPumpGuard` (a depth counter, not a bool, so a dialog opened re-entrantly from inside another dialog's pump stays guarded until the *outermost* one unwinds). |
+| Headless smoke-mode config + pass/fail predicates | `desktop::SmokeConfig`, `desktop::smoke_size_ok`, `desktop::smoke_clipboard_round_trip_ok` | `gtk::run` (#450, GD-5) | The "does the live window actually look sane" class of bug (quadraui#437: a tiny/garbled window) only reproduces against a real, running window — a headless in-process driver structurally can't catch it. `SmokeConfig::from_env(ms_var, paste_var)` reads your backend's own env-var names (so `QUADRAUI_GTK_SMOKE_MS` and a future `QUADRAUI_WIN_SMOKE_MS` don't collide) and the two predicates are pure size/round-trip comparisons your runner's one-shot timer calls after presenting the window — see `gtk::run::schedule_smoke_check` for the full wiring (present → wait `after_ms` → assert → close, so an unattended `xvfb-run`-style invocation exits deterministically instead of hanging). |
+| `PointerShape`/`ResizeEdge` enum-walk scaffold | `desktop::ALL_RESIZE_EDGES`, `desktop::all_pointer_shapes()` | `gtk::backend`'s cursor-name match (#406) | Every backend still owns its own `PointerShape` → native-cursor table — cursor names/objects are inherently native, and some platforms (AppKit) don't even have a public cursor for every `ResizeEdge`. What was missing was a canonical list of every variant to build and *test* that table against, instead of each backend hand-listing all 9 combinations (and silently under-covering a future 10th). Iterate `all_pointer_shapes()` in your own mapping test the way `gtk::backend::pointer_shape_cursor_name_maps_every_variant` and `macos::backend`'s equivalent do. |
+
+None of this is optional plumbing you can skip past — `Backend::begin_window_drag` / `toggle_window_maximize` / `begin_window_resize` / `set_cursor` all default to a `false`-returning no-op (§7's checklist covers declaring `BackendCaps::window_chrome`/`pointer_cursor` honestly once you override any of them), so a backend that never touches `crate::desktop` still compiles and runs — it just doesn't support a client-side-decoration titlebar. Wire it in once your backend has a real window handle to drive; `gtk::backend::GtkBackend` and `macos::backend::MacBackend` are both worked examples to copy from, and between them cover both the "needs a threshold" and "native API already disambiguates" shapes of `WindowDragArm`.
+
 ## See also
 
 - [`docs/UI_CRATE_DESIGN.md`](docs/UI_CRATE_DESIGN.md) — full design

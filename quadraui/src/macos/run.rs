@@ -296,6 +296,12 @@ pub(crate) fn render_frame<A: AppLogic>(
 /// are the AppLogic bridge.
 pub(crate) struct QuadraViewIvars {
     last_viewport: Cell<Viewport>,
+    /// Concrete (not type-erased) — unlike `paint`/`handle`, `MacBackend`
+    /// doesn't depend on the app's `A: AppLogic`, so responder methods
+    /// can reach it directly. Used by `mouseDown:` (#498) to stash the
+    /// raw press `NSEvent` for `Backend::begin_window_drag` before the
+    /// press is translated to a portable `UiEvent`.
+    backend: Rc<RefCell<MacBackend>>,
     paint: PaintFn,
     handle: HandleFn,
 }
@@ -400,6 +406,21 @@ declare_class!(
 
         #[method(mouseDown:)]
         fn objc_mouse_down(&self, event: &NSEvent) {
+            // #498: stash the raw press before it's translated to a
+            // portable `UiEvent`, so `Backend::begin_window_drag` (called
+            // later, from `AppLogic::handle`, if the app decides this
+            // press landed in its CSD titlebar band) has the
+            // *originating* `NSEvent` `performWindowDragWithEvent:`
+            // requires — mirrors `gtk::run`'s `GestureClick::connect_pressed`
+            // stashing the raw GDK press context the same way.
+            //
+            // `ClassType::retain` (safe: `NSEvent` is immutable, so it
+            // satisfies `IsRetainable`) bumps the refcount and hands back
+            // an owned `Retained<NSEvent>` that can outlive this call,
+            // unlike the borrowed `event: &NSEvent` parameter.
+            let retained: Retained<NSEvent> = event.retain();
+            self.ivars().backend.borrow_mut().stash_window_press(retained);
+
             let (x, y, flags) = self.locate(event);
             let button = unsafe { event.buttonNumber() } as i64;
             self.dispatch(ns_mouse_down(button, x, y, flags));
@@ -542,10 +563,16 @@ declare_class!(
 );
 
 impl QuadraView {
-    fn new(mtm: MainThreadMarker, paint: PaintFn, handle: HandleFn) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        backend: Rc<RefCell<MacBackend>>,
+        paint: PaintFn,
+        handle: HandleFn,
+    ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(QuadraViewIvars {
             last_viewport: Cell::new(Viewport::default()),
+            backend,
             paint,
             handle,
         });
@@ -754,7 +781,14 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     };
     window.setTitle(&NSString::from_str("quadraui (macos)"));
 
-    let view = QuadraView::new(mtm, paint, handle);
+    // #498: stash the window handle so `Backend::begin_window_drag` /
+    // `Backend::toggle_window_maximize` / `Backend::set_cursor` have
+    // something to drive. Harmless for apps that never call them
+    // (default no-op on every other backend, and macOS apps that don't
+    // opt into a CSD titlebar).
+    backend.borrow_mut().set_window(window.clone());
+
+    let view = QuadraView::new(mtm, backend.clone(), paint, handle);
     window.setContentView(Some(&view));
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));

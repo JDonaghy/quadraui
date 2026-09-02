@@ -103,7 +103,6 @@
 //! module doc carries the consumer-facing version of this note.
 
 use std::cell::{Cell, RefCell};
-use std::env;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -122,6 +121,7 @@ use super::events::{
     gdk_scroll_to_uievent_with_direction,
 };
 use crate::backend::Backend;
+use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
@@ -152,47 +152,18 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 600;
 const SMOKE_MIN_WIDTH: i32 = 200;
 const SMOKE_MIN_HEIGHT: i32 = 150;
 
-/// Headless smoke-mode config (quadraui#450, GD-5) — see the module doc's
-/// "Headless smoke mode" section. `None` unless `QUADRAUI_GTK_SMOKE_MS` is
-/// set.
-#[derive(Clone)]
-struct SmokeConfig {
-    /// Delay after `window.present()` before the one-shot check fires and
-    /// the window is closed.
-    after_ms: u64,
-    /// `QUADRAUI_GTK_SMOKE_PASTE`, if set — round-tripped through the real
-    /// OS clipboard and then replayed as a synthetic Ctrl-V.
-    paste_text: Option<String>,
-}
+/// Env var enabling headless smoke mode (quadraui#450, GD-5) — see the
+/// module doc's "Headless smoke mode" section. Fed to
+/// [`crate::desktop::SmokeConfig::from_env`] below.
+const SMOKE_MS_VAR: &str = "QUADRAUI_GTK_SMOKE_MS";
+/// Env var carrying the optional smoke-mode paste round-trip text — see
+/// [`SMOKE_MS_VAR`].
+const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 
-impl SmokeConfig {
-    /// Reads the smoke-mode env vars once. Returns `None` (the default —
-    /// zero behavioral change) unless `QUADRAUI_GTK_SMOKE_MS` parses as a
-    /// `u64`.
-    fn from_env() -> Option<Self> {
-        let after_ms = env::var("QUADRAUI_GTK_SMOKE_MS").ok()?.parse().ok()?;
-        let paste_text = env::var("QUADRAUI_GTK_SMOKE_PASTE").ok();
-        Some(Self {
-            after_ms,
-            paste_text,
-        })
-    }
-}
-
-/// Is `width`x`height` a plausible, non-broken `DrawingArea` allocation?
-/// The direct regression check for the quadraui#437 tiny/wrapped-window
-/// bug class. Pure and display-free so it's covered by an ordinary unit
-/// test (see `tests` below) with no Xvfb required.
-fn smoke_size_ok(width: i32, height: i32) -> bool {
-    width >= SMOKE_MIN_WIDTH && height >= SMOKE_MIN_HEIGHT
-}
-
-/// Did the OS clipboard round-trip `written` back byte-for-byte? Pure
-/// comparison, factored out so the pass/fail rule is unit-testable
-/// without a real clipboard.
-fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&str>) -> bool {
-    read_back == Some(written)
-}
+// `SmokeConfig` + the size/clipboard pass-fail predicates used to be
+// defined here; extracted to the backend-neutral `desktop` module (#498)
+// — see that module's doc for why (and `smoke_tests` below, which now
+// covers `SmokeConfig::from_env` itself in addition to the predicates).
 
 /// Configuration for [`run_with`] — the GTK application id and window
 /// title that [`run`] hardcodes to generic defaults (`"org.quadraui.app"`
@@ -294,7 +265,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let backend = Rc::new(RefCell::new(GtkBackend::new()));
     // quadraui#450 (GD-5): `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
     // see the module doc's "Headless smoke mode" section.
-    let smoke = SmokeConfig::from_env();
+    let smoke = SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR);
     let smoke_failed = Rc::new(Cell::new(false));
     let title = config.title;
     let icon_name = config.icon_name;
@@ -430,7 +401,7 @@ fn activate<A: AppLogic + 'static>(
             // pump (further up the call stack) already holds it. Worst
             // case this frame stays stale until the dialog closes and a
             // normal redraw fires; that beats aborting the process.
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return;
             }
             let mut backend_mut = backend.borrow_mut();
@@ -456,7 +427,7 @@ fn activate<A: AppLogic + 'static>(
             // stack already holds `backend` mutably borrowed — don't
             // re-enter it (and don't dispatch input to the app while a
             // modal-ish dialog is up).
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return glib::Propagation::Proceed;
             }
             let Some(ev) = gdk_key_to_uievent(key, modifier, false) else {
@@ -495,7 +466,7 @@ fn activate<A: AppLogic + 'static>(
         let pump_depth = pump_depth.clone();
         click.connect_pressed(move |gesture, n_press, x, y| {
             // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return;
             }
             let gdk_button = gesture.current_button();
@@ -606,7 +577,7 @@ fn activate<A: AppLogic + 'static>(
         let pump_depth = pump_depth.clone();
         click.connect_released(move |gesture, _n_press, x, y| {
             // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return;
             }
             let mut backend_mut = backend.borrow_mut();
@@ -661,7 +632,7 @@ fn activate<A: AppLogic + 'static>(
             cursor_pos.set((x, y));
 
             // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return;
             }
 
@@ -673,21 +644,18 @@ fn activate<A: AppLogic + 'static>(
             // than the raw button press — this is what keeps a press
             // that turns into a double-click from starting an
             // interactive move grab that would swallow the second press.
-            // Only returns early when a drag is actually committed
+            // The threshold check itself lives in the backend-neutral
+            // `desktop::WindowDragArm` (#498) —
+            // `GtkBackend::try_commit_window_drag` is a no-op on every
+            // call until the pointer actually crosses it (whether
+            // because nothing is armed or the request is still under
+            // threshold), so this can call it unconditionally on every
+            // move. Only returns early when a drag is actually committed
             // (control passes to the compositor's native move at that
             // point); otherwise falls through to the normal motion
             // handling below unaffected.
-            {
-                let mut backend_mut = backend.borrow_mut();
-                if let Some((origin_x, origin_y)) = backend_mut.armed_window_drag_origin() {
-                    let dx = x - origin_x;
-                    let dy = y - origin_y;
-                    let threshold = backend_mut.window_drag_threshold_px();
-                    if (dx * dx + dy * dy).sqrt() >= threshold {
-                        backend_mut.commit_armed_window_drag();
-                        return;
-                    }
-                }
+            if backend.borrow_mut().try_commit_window_drag(x, y) {
+                return;
             }
 
             let modifier = ctrl.current_event_state();
@@ -739,7 +707,7 @@ fn activate<A: AppLogic + 'static>(
         let pump_depth = pump_depth.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
             // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return glib::Propagation::Proceed;
             }
             let (x, y) = cursor_pos.get();
@@ -793,7 +761,7 @@ fn activate<A: AppLogic + 'static>(
         let resize_timer = resize_timer.clone();
         da.connect_resize(move |da, _width, _height| {
             // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.get() > 0 {
+            if pump_depth.is_pumping() {
                 return;
             }
             // Force a FULL-widget invalidation on every resize edge, not
@@ -835,7 +803,7 @@ fn activate<A: AppLogic + 'static>(
                 // #427 re-entrancy guard, re-checked at fire time —
                 // a dialog pump may have started after this timer was
                 // scheduled.
-                if pump_depth.get() > 0 {
+                if pump_depth.is_pumping() {
                     return;
                 }
                 // Query the DA's *current* (settled) allocated size
@@ -881,7 +849,7 @@ fn activate<A: AppLogic + 'static>(
         // double-borrows and panics inside a non-unwindable GLib callback
         // frame, aborting the process. Skip this tick entirely and let the
         // next one (after the dialog closes) pick up any pending events.
-        if pump_depth.get() > 0 {
+        if pump_depth.is_pumping() {
             return glib::ControlFlow::Continue;
         }
         let events = drain_backend.borrow_mut().poll_events();
@@ -943,7 +911,7 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
     glib::source::timeout_add_local_once(Duration::from_millis(cfg.after_ms), move || {
         let width = da.width();
         let height = da.height();
-        if !smoke_size_ok(width, height) {
+        if !smoke_size_ok(width, height, SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT) {
             eprintln!(
                 "quadraui smoke: DrawingArea size looks broken ({width}x{height}px, \
                  expected at least {SMOKE_MIN_WIDTH}x{SMOKE_MIN_HEIGHT}px) — \
@@ -1359,35 +1327,71 @@ mod run_config_tests {
 
 #[cfg(test)]
 mod smoke_tests {
-    //! Unit tests for the headless smoke-mode helpers (quadraui#450,
-    //! GD-5). These are pure/display-free by design — the live
-    //! Xvfb/Broadway run itself is an operator-run tier documented in
-    //! `quadraui/docs/TESTING.md`, not something CI (no Xvfb — see
-    //! `ci.yml`) or this in-process test can exercise.
+    //! Unit tests for GTK's use of the headless smoke-mode helpers
+    //! (quadraui#450, GD-5). The predicates themselves (`smoke_size_ok`,
+    //! `smoke_clipboard_round_trip_ok`) and `SmokeConfig::from_env`'s
+    //! generic parsing are covered once, backend-neutrally, in
+    //! `crate::desktop`'s own tests (#498) — these pin GTK's specific
+    //! wiring on top: the real `DEFAULT_WINDOW_WIDTH`/`HEIGHT` and
+    //! `SMOKE_MIN_WIDTH`/`HEIGHT` floor values, and the real
+    //! `QUADRAUI_GTK_SMOKE_MS`/`_PASTE` env var names. Pure/display-free
+    //! by design — the live Xvfb/Broadway run itself is an operator-run
+    //! tier documented in `quadraui/docs/TESTING.md`, not something CI
+    //! (no Xvfb — see `ci.yml`) or this in-process test can exercise.
     use super::*;
 
     #[test]
     fn smoke_size_ok_accepts_the_default_window_size() {
-        assert!(smoke_size_ok(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
+        assert!(smoke_size_ok(
+            DEFAULT_WINDOW_WIDTH,
+            DEFAULT_WINDOW_HEIGHT,
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT
+        ));
     }
 
     #[test]
     fn smoke_size_ok_accepts_exactly_the_floor() {
-        assert!(smoke_size_ok(SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT));
+        assert!(smoke_size_ok(
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT,
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT
+        ));
     }
 
     #[test]
     fn smoke_size_ok_rejects_the_437_tiny_window_class() {
         // quadraui#437: content wrapped into an ~8px-wide column.
-        assert!(!smoke_size_ok(8, DEFAULT_WINDOW_HEIGHT));
-        assert!(!smoke_size_ok(DEFAULT_WINDOW_WIDTH, 8));
-        assert!(!smoke_size_ok(8, 8));
+        assert!(!smoke_size_ok(
+            8,
+            DEFAULT_WINDOW_HEIGHT,
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT
+        ));
+        assert!(!smoke_size_ok(
+            DEFAULT_WINDOW_WIDTH,
+            8,
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT
+        ));
+        assert!(!smoke_size_ok(8, 8, SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT));
     }
 
     #[test]
     fn smoke_size_ok_rejects_just_under_the_floor() {
-        assert!(!smoke_size_ok(SMOKE_MIN_WIDTH - 1, SMOKE_MIN_HEIGHT));
-        assert!(!smoke_size_ok(SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT - 1));
+        assert!(!smoke_size_ok(
+            SMOKE_MIN_WIDTH - 1,
+            SMOKE_MIN_HEIGHT,
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT
+        ));
+        assert!(!smoke_size_ok(
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT - 1,
+            SMOKE_MIN_WIDTH,
+            SMOKE_MIN_HEIGHT
+        ));
     }
 
     #[test]
@@ -1399,18 +1403,35 @@ mod smoke_tests {
     }
 
     #[test]
-    fn clipboard_round_trip_rejects_a_missing_read() {
-        // The failure mode a headless box with no OS clipboard access
-        // actually produces (e.g. Broadway, no real `DISPLAY`).
+    fn clipboard_round_trip_rejects_a_missing_or_mismatched_read() {
+        // The missing-read failure mode a headless box with no OS
+        // clipboard access actually produces (e.g. Broadway, no real
+        // `DISPLAY`); the mismatched-read case rounds out the branch.
         assert!(!smoke_clipboard_round_trip_ok("quadraui smoke", None));
-    }
-
-    #[test]
-    fn clipboard_round_trip_rejects_a_mismatched_read() {
         assert!(!smoke_clipboard_round_trip_ok(
             "quadraui smoke",
             Some("something else")
         ));
+    }
+
+    /// #498: GTK's real env-var names still enable smoke mode through
+    /// the now-shared `SmokeConfig::from_env` — a rename regression here
+    /// would silently disable the `xvfb-run`/CI-adjacent smoke wrapper
+    /// (`quadraui/scripts/gtk_smoke.sh`) without any test going red.
+    #[test]
+    fn smoke_config_from_env_reads_gtks_own_var_names() {
+        // Isolated from other env-touching tests only by using var names
+        // no other test in this crate reads or writes.
+        std::env::remove_var(SMOKE_MS_VAR);
+        std::env::remove_var(SMOKE_PASTE_VAR);
+        assert_eq!(SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR), None);
+
+        std::env::set_var(SMOKE_MS_VAR, "500");
+        let cfg = SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR)
+            .expect("QUADRAUI_GTK_SMOKE_MS set and parseable");
+        assert_eq!(cfg.after_ms, 500);
+        assert_eq!(cfg.paste_text, None);
+        std::env::remove_var(SMOKE_MS_VAR);
     }
 }
 
