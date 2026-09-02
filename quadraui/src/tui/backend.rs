@@ -46,7 +46,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
+use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
@@ -1408,7 +1408,7 @@ impl Backend for TuiBackend {
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
 
-        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        let mut hits = tab_bar_hits_from_layout(&layout, bar);
         // `TabBarHits` are target-surface (absolute) coordinates per the
         // trait doc — the same space `draw_tab_bar` returns. Without this
         // the no-paint path returned bar-relative x, off by `rect.x`
@@ -1484,7 +1484,7 @@ impl Backend for TuiBackend {
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
 
-        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        let mut hits = tab_bar_hits_from_layout(&layout, bar);
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
 
         let active_idx = bar.tabs.iter().position(|t| t.is_active);
@@ -1724,12 +1724,17 @@ impl Backend for TuiBackend {
         // `Frame::set_cursor_position` itself. See
         // `last_cursor_position`'s field doc for the full handoff.
         self.last_cursor_position = tui_result.cursor_position;
+        #[allow(deprecated)] // issue #504: populate the deprecated cell-tuple
+        // field too, until vimcode's `render_impl.rs` call site migrates to
+        // `cursor_position_native` — see `EditorPaintResult::cursor_position`'s
+        // doc for the full deprecation contract.
         crate::backend::EditorPaintResult {
+            cursor_position: tui_result.cursor_position,
             // `tui_result.cursor_position` is the TUI-internal, already
             // cell-rounded `(u16, u16)` shape `Frame::set_cursor_position`
             // needs (see `last_cursor_position`'s doc); widen to the
             // portable `Point` (issue #504) for the trait's return value.
-            cursor_position: tui_result
+            cursor_position_native: tui_result
                 .cursor_position
                 .map(|(x, y)| crate::event::Point::new(x as f32, y as f32)),
         }
@@ -3781,7 +3786,7 @@ mod tests {
     // which is bar-relative. `draw_tab_bar` honoured that on both TUI and
     // GTK by shifting the primitive's bar-relative output by the bar's
     // origin. `Backend::tab_bar_layout` honoured it on neither: it
-    // returned `tab_bar_layout_to_hits` verbatim, so the no-paint path
+    // returned `tab_bar_hits_from_layout` verbatim, so the no-paint path
     // was off by `rect.x` — nonzero for any tab bar sitting right of a
     // sidebar, which is every AppShell layout.
     //

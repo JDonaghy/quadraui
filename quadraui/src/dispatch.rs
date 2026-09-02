@@ -467,6 +467,17 @@ pub struct TextRegion {
 /// [`crate::event::Rect`]) — callers still pass pre-quantized
 /// cell-space coordinates (the "+1" below is one *unit*, i.e. one
 /// character cell, not one pixel), just without the lossy truncation.
+///
+/// # Downstream impact
+///
+/// This function (and its crate-root re-export,
+/// `quadraui::text_selection_line_range`) is `pub`, so its
+/// `Vec<(u16, u16, u16)>` → `Vec<(u16, f32, f32)>` return-type change is
+/// technically a breaking `pub` API change too. `grep -rn
+/// text_selection_line_range ~/src/coord-tui/src ~/src/vimcode/src`
+/// found no direct call sites — vimcode's `core/engine/terminal_ops.rs`
+/// even documents explicitly why it deliberately avoids this function —
+/// so no consumer migration is needed.
 pub fn text_selection_line_range(
     anchor: Point,
     focus: Point,

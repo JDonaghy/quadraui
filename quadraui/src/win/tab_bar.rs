@@ -3,7 +3,7 @@
 //! Calls [`TabBar::layout`] (the D6 layout API) with DirectWrite pixel
 //! measurers, then paints from the resolved `visible_tabs` /
 //! `visible_segments`. Converts to [`TabBarHits`] via the shared
-//! [`crate::backend::tab_bar_layout_to_hits`] / `shift_tab_bar_hits`
+//! [`crate::backend::tab_bar_hits_from_layout`] / `shift_tab_bar_hits`
 //! helpers, the same ones the TUI and GTK backends use — see
 //! `Backend::tab_bar_layout`'s doc for why that shift matters (issue
 //! #552).
@@ -24,7 +24,7 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, DWrite};
-use crate::backend::{shift_tab_bar_hits, tab_bar_layout_to_hits};
+use crate::backend::{shift_tab_bar_hits, tab_bar_hits_from_layout};
 use crate::event::Rect;
 use crate::theme::Theme;
 use crate::{tab_icon_at, SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabIcon, TabMeasure};
@@ -147,7 +147,7 @@ fn hits_from_layout(
     icons: &[Option<TabIcon>],
     layout: &TabBarLayout,
 ) -> TabBarHits {
-    let mut hits = tab_bar_layout_to_hits(layout, bar);
+    let mut hits = tab_bar_hits_from_layout(layout, bar);
     shift_tab_bar_hits(&mut hits, rect.x as f64);
     let seg_reserved: f32 = layout
         .visible_segments

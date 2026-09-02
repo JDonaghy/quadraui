@@ -445,7 +445,7 @@ mod tests {
     /// (4 label + 2 padding/close), maximise segment = 3 cells. Converted to
     /// `TabBarHits` exactly as a backend's `draw_tab_bar` would return them.
     fn prime_layout(ctrl: &mut BottomPanelController, strip_x: f32, strip_y: f32, bar_w: f32) {
-        use crate::backend::tab_bar_layout_to_hits;
+        use crate::backend::tab_bar_hits_from_layout;
         use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
 
         let tab_bar = ctrl.build_tab_bar();
@@ -465,7 +465,7 @@ mod tests {
         );
         // Mirror the backends: `TabBarHits` are returned in target-surface
         // (absolute) coordinates, i.e. offset by the strip's x origin.
-        let mut hits = tab_bar_layout_to_hits(&layout, &tab_bar);
+        let mut hits = tab_bar_hits_from_layout(&layout, &tab_bar);
         let ox = strip_x as f64;
         for sp in &mut hits.slot_positions {
             if *sp != (0.0, 0.0) {
