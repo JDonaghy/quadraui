@@ -181,13 +181,13 @@ mod ms11_542_structural_parity {
                     vec![
                         PanelDefinition {
                             id: WidgetId::new("panel:explorer"),
-                            icon: "E".to_string().into(),
+                            icon: "E".to_string(),
                             tooltip: "Explorer".to_string(),
                             title: "EXPLORER".to_string(),
                         },
                         PanelDefinition {
                             id: WidgetId::new("panel:search"),
-                            icon: "S".to_string().into(),
+                            icon: "S".to_string(),
                             tooltip: "Search".to_string(),
                             title: "SEARCH".to_string(),
                         },
