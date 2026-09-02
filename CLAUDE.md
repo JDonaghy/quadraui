@@ -154,7 +154,11 @@ cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
 
 # win leg — no GTK, no Windows host required. `src/win/` is compiled on
 # every platform (only its WinAPI calls are `cfg(target_os = "windows")`),
-# so both of these run anywhere; the real Windows build is CI-only.
+# so both of these run anywhere. They are a TYPE-CHECK of the
+# `cfg(target_os = "windows")` arms, not a test of them: on Linux every
+# real WinAPI call compiles to its `todo!()` fallback body. If your diff
+# touches `src/win/`, these two passing means nothing about whether your
+# rasteriser works — see "Win-GUI: building and testing for real" below.
 cargo check -p quadraui --features win
 cargo test  -p quadraui --features win
 
@@ -168,6 +172,56 @@ packages it fails in a build script before compiling a single line of
 quadraui — a failure that says nothing whatsoever about your diff. That
 is why CI spells out `--workspace --exclude kubeui-gtk`, and why you
 should too.
+
+## Win-GUI: building and testing for real
+
+**The Windows build is no longer CI-only.** `dell64` (WSL2 on a Windows 11 host)
+cross-compiles `x86_64-pc-windows-msvc` from the Linux side via `cargo-xwin` and
+**runs the resulting `.exe` on its own Windows host** through WSL interop — against
+a live Direct2D stack, not a stub. If your issue is in the Win-GUI milestone you are
+dispatched there specifically so you can run your own code; do not settle for
+`cargo check`.
+
+```bash
+# build
+RUSTFLAGS="-C target-feature=+crt-static" \
+  cargo xwin build --target x86_64-pc-windows-msvc -p quadraui --features win
+
+# test — real execution on the Windows host, driven from this Linux shell
+RUSTFLAGS="-C target-feature=+crt-static" \
+CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
+  cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
+```
+
+Both env vars are mandatory, and every one of these traps has already cost real
+time — none of them produces an error that points at its own cause:
+
+1. **`-C target-feature=+crt-static`.** The host has no `vcruntime140.dll` (no VC++
+   redistributable; installing one needs a UAC click at the console). Without it the
+   `.exe` exits **53 with completely empty output** — indistinguishable from a
+   program that ran and printed nothing.
+2. **`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env`.** `cargo xwin test` silently
+   injects a `wine` runner and dies with `could not execute process 'wine ...'`.
+   Override it and `binfmt_misc` (registered for the PE `MZ` magic) does the exec
+   directly; wine is never needed. stdout and exit codes round-trip intact.
+3. **CWD becomes `C:\Windows`.** Launching a PE from a WSL path prints `UNC paths
+   are not supported. Defaulting to Windows directory.`, so relative paths in tests
+   resolve there. Use `CARGO_MANIFEST_DIR` or absolute paths.
+4. **`WNDCLASSW` / `RegisterClassW` need the `Win32_Graphics_Gdi` feature**, not just
+   `Win32_UI_WindowsAndMessaging` — the struct carries `HBRUSH`/`HICON`. The error is
+   a bare "cannot find struct ... in this scope", which does not name the feature.
+
+**No interactive Windows desktop is required** for rasteriser work. `src/win/testing.rs`
+`HeadlessSurface` is `ID2D1DCRenderTarget` + `CreateDIBSection` with
+`D2D1_RENDER_TARGET_TYPE_SOFTWARE` (WARP): real Direct2D, no HWND, no GPU, no session.
+That is what the milestone's paint↔click round-trip tests run against, and it works
+from a headless shell. Only a live-HWND GUI smoke needs a desktop, and that tier is
+operator-run.
+
+**Scope warning for every rasteriser issue in this milestone.** They all replace
+`todo!()` stubs in the *same* file, `quadraui/src/win/backend.rs`. Touch only the
+`draw_*` methods your issue names — a drive-by fix to a neighbouring stub is what
+turns a serialized lane into a rebase conflict.
 
 ## Code Style
 
