@@ -195,14 +195,24 @@ pub fn form_row_height(line_height: f64) -> f32 {
 
 /// X offset where row items (`ToggleGroup` / `ButtonRow` /
 /// `SegmentedControl` / `Toolbar`) start: 6px row inset + label width
-/// + 12px gap (0px gap when the label is empty, for `Toolbar`).
-fn items_start_x(label: &str, measure: &dyn TextMeasure) -> f32 {
-    let label_w = measure.width_of(label);
-    if label_w > 0.0 {
-        6.0 + label_w + 12.0
-    } else {
-        6.0
+/// + 12px gap.
+///
+/// `for_toolbar` selects `Toolbar`'s pre-#499 behaviour: when its
+/// label is empty, skip the `+ label_w + 12` entirely and start at
+/// the 6px inset. `ToggleGroup` / `ButtonRow` / `SegmentedControl`
+/// never had that special case — pre-#499 macOS computed the
+/// unconditional `6.0 + label_w + 12.0` for all three even with an
+/// empty label (GTK's still-unmigrated inline copy in
+/// `gtk/backend.rs` does the same) — so `for_toolbar` must be `false`
+/// for those three to keep this shared fn from silently changing
+/// their output. See `quadraui/docs/PRIMITIVE_RULES.md`'s "Shared
+/// pixel-layout math" section.
+fn items_start_x(label: &str, measure: &dyn TextMeasure, for_toolbar: bool) -> f32 {
+    if for_toolbar && label.is_empty() {
+        return 6.0;
     }
+    let label_w = measure.width_of(label);
+    6.0 + label_w + 12.0
 }
 
 fn label_text(field: &FormField) -> String {
@@ -227,7 +237,7 @@ pub fn form_field_measure(
 ) -> FormFieldMeasure {
     match &field.kind {
         FieldKind::ToggleGroup { toggles } => {
-            let start_x = items_start_x(&label_text(field), measure);
+            let start_x = items_start_x(&label_text(field), measure, false);
             let items = toggles
                 .iter()
                 .map(|t| FormItemMeasure {
@@ -238,7 +248,7 @@ pub fn form_field_measure(
             FormFieldMeasure::with_items(row_h, start_x, 8.0, items)
         }
         FieldKind::ButtonRow { buttons } => {
-            let start_x = items_start_x(&label_text(field), measure);
+            let start_x = items_start_x(&label_text(field), measure, false);
             let items = buttons
                 .iter()
                 .map(|b| FormItemMeasure {
@@ -249,7 +259,7 @@ pub fn form_field_measure(
             FormFieldMeasure::with_items(row_h, start_x, 8.0, items)
         }
         FieldKind::SegmentedControl { options, .. } => {
-            let start_x = items_start_x(&label_text(field), measure);
+            let start_x = items_start_x(&label_text(field), measure, false);
             let items = options
                 .iter()
                 .enumerate()
@@ -264,7 +274,7 @@ pub fn form_field_measure(
         FieldKind::Toolbar(toolbar) => {
             use crate::primitives::toolbar::ToolbarButton;
             let label = label_text(field);
-            let start_x = items_start_x(&label, measure);
+            let start_x = items_start_x(&label, measure, true);
             let items = toolbar
                 .buttons
                 .iter()
@@ -400,11 +410,40 @@ mod tests {
             },
         );
         let m = form_field_measure(&field, 20.0, &FakeMeasure);
-        // Empty label -> 6px inset, no +label_w+12 addition.
-        assert_eq!(m.items_start_x, 6.0);
+        // `SegmentedControl` (unlike `Toolbar`) has no empty-label
+        // special case: pre-#499 macOS and GTK's still-unmigrated
+        // inline copy both compute the unconditional
+        // `6.0 + label_w + 12.0` even when the label is empty.
+        // Regression guard for the #499 review finding: this used to
+        // silently drop to `6.0`.
+        assert_eq!(m.items_start_x, 6.0 + 0.0 + 12.0);
         assert_eq!(m.item_gap, 0.0);
         assert_eq!(m.item_measures[0].id, WidgetId::new("scope__seg_0"));
         assert_eq!(m.item_measures[1].id, WidgetId::new("scope__seg_1"));
+    }
+
+    #[test]
+    fn form_field_measure_toolbar_start_x_skips_gap_only_when_label_empty() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let toolbar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Separator],
+            bg: None,
+            focused_index: None,
+        };
+
+        // Empty label -> Toolbar's pre-#499 special case: 6px inset,
+        // no +label_w+12 addition.
+        let empty_label = field_with("tb", "", FieldKind::Toolbar(toolbar.clone()));
+        let m = form_field_measure(&empty_label, 20.0, &FakeMeasure);
+        assert_eq!(m.items_start_x, 6.0);
+
+        // Non-empty label -> unconditional 6 + label_w + 12, same as
+        // the other row-item kinds.
+        let with_label = field_with("tb", "Go", FieldKind::Toolbar(toolbar)); // 2 chars * 6.0 = 12.0
+        let m = form_field_measure(&with_label, 20.0, &FakeMeasure);
+        assert_eq!(m.items_start_x, 6.0 + 12.0 + 12.0);
     }
 
     #[test]

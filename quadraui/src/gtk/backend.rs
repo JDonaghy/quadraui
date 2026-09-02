@@ -2833,6 +2833,13 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
     }
 
+    // NOT migrated to `primitives::layout_metrics::form_field_measure`
+    // (#499): this file is fenced by concurrent #683 work, so per
+    // PRIMITIVE_RULES.md's "Shared pixel-layout math" rule ("leave the
+    // blocked one's duplication in place with a comment pointing at
+    // the tracking issue"), the duplication below is intentional and
+    // temporary. macOS's `mac_form_layout` already delegates to the
+    // shared fn; migrate this one once #683 lands. Tracking: #499.
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let row_h = (self.current_line_height * 1.4).round() as f32;
         let char_w = self.current_char_width as f32;
