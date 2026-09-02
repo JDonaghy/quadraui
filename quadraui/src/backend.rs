@@ -7,6 +7,21 @@
 //!
 //! See `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §4 for design rationale.
 //!
+//! ## `draw_*` here vs. `Surface` in `frame.rs` (issue #456)
+//!
+//! Every `draw_<name>` method below is the low-level rasteriser entry
+//! point for its primitive — always public, never deprecated. A
+//! consumer assembling a top-level screen from multiple primitives
+//! should reach for [`crate::frame::ScreenLayout`] + [`crate::frame::Surface`]
+//! instead of calling `draw_*` methods directly: it routes every
+//! backend through the same call site, so two backends of one app
+//! cannot silently paint the same primitive two different ways (the
+//! drift #456 documents). `ScreenLayout::draw` calls these `draw_*`
+//! methods internally — see `frame.rs`'s module doc and
+//! `quadraui/docs/DECISIONS.md` D-006 for the full picture, including
+//! the primitives that have no `Surface` variant yet and must still be
+//! painted via `draw_*` directly.
+//!
 //! ## Coordinate frames for `*_layout` methods (issue #505)
 //!
 //! Every `Backend::<name>_layout` method (and its `draw_<name>` twin,

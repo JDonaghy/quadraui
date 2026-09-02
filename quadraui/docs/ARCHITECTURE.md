@@ -48,3 +48,17 @@ quadraui_win::draw_tree(...) } }`); the trait itself has no free-standing
 
 **`set_cell` / `cairo_rgb` / `ratatui_color` / etc.** are private
 backend helpers — never call them from primitives.
+
+**Frame composition** in `quadraui/src/frame.rs` sits above `Backend`:
+`ScreenLayout` + `Surface` is the canonical way for a consumer to
+assemble a top-level screen from multiple primitives — pushing
+`Surface` entries and calling `ScreenLayout::draw` routes every backend
+through one call site (rather than each backend calling
+`Backend::draw_<name>` at its own, potentially divergent, call site)
+and derives the click hit-map from the same data that was painted.
+`Backend::draw_*` methods remain the public, low-level rasteriser entry
+point underneath — `ScreenLayout::draw` calls them internally, and
+they're the only path for primitives that don't have a `Surface`
+variant yet. See `docs/DECISIONS.md` D-006 and
+`docs/PRIMITIVE_RULES.md` "One primitive, one canonical paint path"
+(issue #456).

@@ -548,3 +548,95 @@ Instead:
 
 Future primitive decisions should cite this file when they hit the
 same fork.
+
+## D-006 — `Surface`/`ScreenLayout` is canonical; `Backend::draw_*` is the low-level entry point (issue #456)
+
+### Question
+
+`quadraui` exposes two independent ways to paint the same primitive:
+`backend.draw_<name>(rect, &data)` directly, or
+`layout.push(Surface::<Name> { rect, .. })` followed by `layout.draw(backend)`.
+Nothing steers a consumer toward one, and nothing keeps a call site that
+picks one in sync with a sibling call site (same app, other backend)
+that picks the other. #456 found exactly that in vimcode: the TUI
+palette painted via `b.draw_palette(...)`, the GTK palette via
+`frame.push(Surface::Palette { .. })` — five of six surrounding lines
+identical, only the paint call differing for no reason but that both
+APIs exist. That drift contributed to vimcode#587 (a GTK paint function
+with zero live callers going unnoticed).
+
+### Audit
+
+`SMELL_AUDIT_2026-07.md` §4 quantified the gap: `frame.rs`'s `Surface`
+enum covers 25 primitives. 11 primitives that already have a
+`Backend::draw_<name>` trait method have **no** `Surface` variant:
+Board, DiffView, PipelineView, Toolbar, SidebarPanel, TextInput,
+Spinner, Progress, CommandCenter, DropOverlay, MessageList. `Surface`
+also only ever wraps primitive paints, not the helper draws that exist
+alongside a primitive's main one (`draw_terminal_divider`,
+`draw_settings_chrome`, `draw_tab_bar_with_chrome`,
+`draw_activity_bar_with_style`, `draw_tooltip_with_chrome`), which have
+no z-order slot of their own by design — they're always painted
+adjacent to a primitive that does.
+
+### Decision
+
+**`ScreenLayout` + `Surface` is the canonical path for a consumer
+assembling a top-level screen out of multiple primitives.** Pushing
+`Surface` entries and calling `.draw(backend)` forces both backends'
+call sites through the same list, and `zone_for` (shared by `draw` and
+`hit_map`, see the doc comment on `ScreenLayout::zone_for`) guarantees
+the hit-map matches what was painted — the class of "two backends, two
+different paint calls, silently different behavior" bug #456 describes
+becomes a compile-time non-option for anything routed through
+`Surface`, because there's only one call site to route through.
+
+**`Backend::draw_<name>` is not deprecated, hidden, or downgraded — it
+stays public, documented API**, because:
+
+1. `ScreenLayout::draw` calls it internally. `Surface` is sugar over
+   `Backend::draw_*`, not a replacement for it; the trait method has to
+   stay exactly as public as it is today or the "canonical" path has
+   nothing to delegate to.
+2. The 11 primitives listed above have no `Surface` variant yet, so
+   `Backend::draw_*` is the *only* path available for them. A consumer
+   painting `Toolbar` or `Progress` today is not taking a shortcut —
+   there is no `Surface::Toolbar` to take instead.
+3. Rasteriser tests (`PRIMITIVE_RULES.md` rule 4's paint/click
+   round-trip harness) and compose helpers legitimately call
+   `Backend::draw_*` directly — they're testing or composing the
+   primitive itself, not assembling an app screen, and have no reason
+   to go through `ScreenLayout`.
+
+**Going forward: rule 7 in `PRIMITIVE_RULES.md` ("every primitive gets
+a `Backend::draw_<name>` trait method") is extended one hop.** A new
+primitive that participates in top-level screen composition (i.e. gets
+a `draw_<name>` trait method that a consumer calls directly to paint
+part of a frame) gets its `Surface::<Name>` / `FrameZone::<Name>` /
+`zone_for` arm added in the *same PR* — see the new "One primitive, one
+canonical paint path" section in `PRIMITIVE_RULES.md`. This stops new
+drift; it does not retroactively backfill the 11-primitive gap above,
+which is `SMELL_AUDIT_2026-07.md` §7 Epic D's `D4` ("trait symmetry"),
+scoped separately because it touches 11 primitives' worth of
+`Surface`/`FrameZone` plumbing rather than a single decision.
+
+### What this does NOT mean
+
+- It does not mean `Backend::draw_*` should get `#[doc(hidden)]` or
+  `#[deprecated]`. vimcode's TUI palette call site
+  (`b.draw_palette(...)`, the #456 evidence) is exactly the kind of
+  call a primitive with no `Surface` variant, a rasteriser test, or a
+  compose helper legitimately makes — hiding or deprecating the whole
+  trait surface over an 11-primitive coverage gap would force a worse
+  workaround than the drift it's meant to fix, and would breach rule
+  8's downstream-impact bar for no compensating benefit (both
+  consumers call `Backend::draw_*` methods directly today).
+- It does not retroactively fix vimcode's existing palette divergence
+  — that's vimcode's own migration (tracked as vimcode#587's
+  follow-up). This decision fixes which API a *new* call site should
+  reach for; it doesn't rewrite call sites in other repos.
+- It does not block a primitive that is legitimately never composed
+  into a multi-primitive frame (none identified so far) from staying
+  `Backend::draw_*`-only indefinitely — the rule is "if it's composed
+  into a `ScreenLayout` frame, it needs a `Surface` variant," not
+  "every primitive must have one."
