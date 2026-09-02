@@ -14,8 +14,13 @@
 //! `super::menu_bar`) — each wired into its `Backend` trait method below,
 //! falling back to the `todo!()` stub only for a `WinBackend` no window
 //! has ever attached a surface to (see [`WinBackend::draw_status_bar`]'s
-//! doc). Every other `draw_*`/`*_layout` rasteriser method is still a
-//! `todo!()` stub — later issues implement each one against Direct2D /
+//! doc). #26 landed the six content-area rasterisers (`tree`/`list`/
+//! `form`/`data_table`/`editor`/`chart`), #27 the multi-section view +
+//! standalone scrollbar, and #28 the seven overlay rasterisers —
+//! `tooltip`/`context_menu`/`dialog`/`palette`/`completions`/
+//! `find_replace`/`rich_text_popup` (see `super::tooltip` etc.). Every
+//! other `draw_*`/`*_layout` rasteriser method is still a `todo!()`
+//! stub — later issues implement each one against Direct2D /
 //! DirectWrite, same as the GTK backend did one primitive at a time.
 //!
 //! # Implementation notes
@@ -87,7 +92,7 @@ use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, ListView, Palette, StatusBar, TabBar, Terminal,
-    TextDisplay, TreeView,
+    TextDisplay, TooltipChrome, TreeView,
 };
 
 use super::services::WinPlatformServices;
@@ -712,8 +717,27 @@ impl Backend for WinBackend {
         todo!("Direct2D form rasteriser (no surface attached yet)")
     }
 
-    fn draw_palette(&mut self, _rect: Rect, _palette: &Palette) {
-        todo!("Direct2D palette rasteriser")
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::palette` once a
+    /// surface is attached — `Palette` has no layout-passthrough trait
+    /// method (unlike `ContextMenu`/`Dialog`), so `win::win_palette_layout`
+    /// is computed internally by the rasteriser itself. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
+    fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::palette::draw_palette(
+                &surface.target,
+                dwrite,
+                rect,
+                palette,
+                self.current_line_height,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, palette);
+        todo!("Direct2D palette rasteriser (no surface attached yet)")
     }
 
     fn draw_settings_chrome(
@@ -933,20 +957,84 @@ impl Backend for WinBackend {
         todo!("Direct2D text input layout")
     }
 
-    fn draw_tooltip(&mut self, _tooltip: &Tooltip, _layout: &TooltipLayout) {
-        todo!("Direct2D tooltip rasteriser")
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
+    /// surface is attached. Renders `TooltipChrome::default()` — see
+    /// [`Self::draw_tooltip_with_chrome`] for the full-chrome entry point.
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture.
+    fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
+        self.draw_tooltip_with_chrome(tooltip, layout, &TooltipChrome::default());
     }
 
+    /// #28: see [`Self::draw_tooltip`]'s doc. Overridden (rather than
+    /// relying on the trait's default delegate-to-`draw_tooltip` body) so
+    /// a `Sides`/`None`/title chrome request is honoured, matching the
+    /// TUI, GTK and macOS backends (see `Backend::draw_tooltip_with_chrome`'s
+    /// doc).
+    fn draw_tooltip_with_chrome(
+        &mut self,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::tooltip::draw_tooltip_with_chrome(
+                &surface.target,
+                dwrite,
+                tooltip,
+                layout,
+                chrome,
+                self.current_line_height,
+                self.current_char_width,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (tooltip, layout, chrome);
+        todo!("Direct2D tooltip rasteriser (no surface attached yet)")
+    }
+
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::context_menu`
+    /// once a surface is attached. `layout` is fully resolved upstream
+    /// (see `crate::compose::menu_system`) — this only paints it and
+    /// collects the per-clickable-item hit rectangles. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
     fn draw_context_menu(
         &mut self,
-        _menu: &ContextMenu,
-        _layout: &ContextMenuLayout,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)> {
-        todo!("Direct2D context menu rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::context_menu::draw_context_menu(&surface.target, dwrite, menu, layout);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (menu, layout);
+        todo!("Direct2D context menu rasteriser (no surface attached yet)")
     }
 
-    fn draw_dialog(&mut self, _dialog: &Dialog, _layout: &DialogLayout) -> Vec<Rect> {
-        todo!("Direct2D dialog rasteriser")
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::dialog` once a
+    /// surface is attached. `layout` is fully resolved upstream (see
+    /// [`crate::primitives::dialog::Dialog::layout`]) — this only paints
+    /// it and returns the per-button hit rectangles in
+    /// `layout.visible_buttons` order. See [`Self::draw_status_bar`]'s
+    /// doc for the "surface not attached yet" fallback posture.
+    fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::dialog::draw_dialog(
+                &surface.target,
+                dwrite,
+                dialog,
+                layout,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (dialog, layout);
+        todo!("Direct2D dialog rasteriser (no surface attached yet)")
     }
 
     /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
@@ -1067,16 +1155,62 @@ impl Backend for WinBackend {
         todo!("Direct2D message list rasteriser")
     }
 
-    fn draw_rich_text_popup(&mut self, _popup: &RichTextPopup, _layout: &RichTextPopupLayout) {
-        todo!("Direct2D rich text popup rasteriser")
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::rich_text_popup`
+    /// once a surface is attached. The rasteriser returns per-link hit
+    /// regions for its own tests; the trait signature discards them (same
+    /// posture as `GtkBackend::draw_rich_text_popup` — hosts that need
+    /// link hit-testing query `popup.layout(...).hit_test(...)` directly).
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture.
+    fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let _ = super::rich_text_popup::draw_rich_text_popup(
+                &surface.target,
+                dwrite,
+                popup,
+                layout,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (popup, layout);
+        todo!("Direct2D rich text popup rasteriser (no surface attached yet)")
     }
 
-    fn draw_find_replace(&mut self, _rect: Rect, _panel: &FindReplacePanel) {
-        todo!("Direct2D find/replace rasteriser")
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::find_replace`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// for the "surface not attached yet" fallback posture.
+    fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let _ = rect;
+            super::find_replace::draw_find_replace(
+                &surface.target,
+                dwrite,
+                panel,
+                self.current_line_height,
+                self.current_char_width,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, panel);
+        todo!("Direct2D find/replace rasteriser (no surface attached yet)")
     }
 
-    fn draw_completions(&mut self, _completions: &Completions, _layout: &CompletionsLayout) {
-        todo!("Direct2D completions rasteriser")
+    /// #28: real Direct2D/DirectWrite rasteriser via `win::completions`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// for the "surface not attached yet" fallback posture.
+    fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::completions::draw_completions(&surface.target, dwrite, completions, layout);
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (completions, layout);
+        todo!("Direct2D completions rasteriser (no surface attached yet)")
     }
 
     /// #27: real Direct2D rasteriser via `win::scrollbar` once a surface
