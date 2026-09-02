@@ -47,6 +47,11 @@ pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 /// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
 /// function for the full visual contract and #658's reasoning for why the
 /// fill lives in a separate style value rather than a field here.
+///
+/// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
+/// paints — `glyph` when `true`, `fallback` when `false` (issue #683).
+/// Pass the backend's own flag (`Backend::set_nerd_fonts`).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -55,6 +60,7 @@ pub fn draw_activity_bar(
     bar: &ActivityBar,
     theme: &Theme,
     hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     draw_activity_bar_with_style(
         cr,
@@ -65,6 +71,7 @@ pub fn draw_activity_bar(
         &ActivityBarStyle::default(),
         theme,
         hovered_idx,
+        nerd_fonts_enabled,
     )
 }
 
@@ -101,6 +108,7 @@ pub fn draw_activity_bar_with_style(
     style: &ActivityBarStyle,
     theme: &Theme,
     hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     // Background.
     let (br, bgc, bb) = (
@@ -211,7 +219,12 @@ pub fn draw_activity_bar_with_style(
             }
         }
 
-        pango_layout.set_text(&item.icon);
+        let icon_str = if nerd_fonts_enabled {
+            item.icon.glyph.as_str()
+        } else {
+            item.icon.fallback.as_str()
+        };
+        pango_layout.set_text(icon_str);
         let (iw, ih) = pango_layout.pixel_size();
         let fg = if item.is_active || is_hovered || item.is_keyboard_selected {
             active_fg
@@ -337,6 +350,7 @@ mod tests {
                 style,
                 &Theme::default(),
                 None,
+                false,
             );
         }
         surface.flush();
@@ -423,5 +437,80 @@ mod tests {
                  active_accent is set"
             );
         }
+    }
+
+    /// #683: `nerd_fonts_enabled` selects `Icon::glyph` vs `Icon::fallback`.
+    /// Uses two ASCII strings of clearly different width (`"WWWW"` vs
+    /// `"E"`) rather than a real Nerd Font codepoint, so the assertion
+    /// holds headless even without the Symbols Nerd Font installed —
+    /// same reasoning as `icon_glyph_shrinks_while_row_height_is_unchanged`
+    /// above. Measures the painted glyph's pixel bounding-box width via
+    /// foreground-vs-background scanning: whichever half of the `Icon`
+    /// paints, a wider string produces a wider non-background run.
+    #[test]
+    fn nerd_fonts_flag_selects_glyph_or_fallback() {
+        use crate::types::Icon;
+
+        let bar = ActivityBar {
+            id: WidgetId::new("bar"),
+            top_items: vec![ActivityItem {
+                id: WidgetId::new("activity:explorer"),
+                icon: Icon::new("WWWW", "E"),
+                tooltip: String::new(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+
+        let painted_width = |nerd_fonts_enabled: bool| -> i32 {
+            let mut surface =
+                ImageSurface::create(Format::ARgb32, ROW_W, ACTIVITY_ROW_PX as i32).unwrap();
+            {
+                let cr = Context::new(&surface).unwrap();
+                let pango_layout = pangocairo::functions::create_layout(&cr);
+                draw_activity_bar_with_style(
+                    &cr,
+                    &pango_layout,
+                    ROW_W as f64,
+                    ACTIVITY_ROW_PX,
+                    &bar,
+                    &ActivityBarStyle::default(),
+                    &Theme::default(),
+                    None,
+                    nerd_fonts_enabled,
+                );
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().unwrap();
+            let theme = Theme::default();
+            let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+            let mid_y = (ACTIVITY_ROW_PX as i32) / 2;
+            let mut left = None;
+            let mut right = None;
+            for x in 0..ROW_W {
+                if pixel(&data, stride, x, mid_y) != bg {
+                    left.get_or_insert(x);
+                    right = Some(x);
+                }
+            }
+            match (left, right) {
+                (Some(l), Some(r)) => r - l + 1,
+                _ => 0,
+            }
+        };
+
+        let glyph_width = painted_width(true);
+        let fallback_width = painted_width(false);
+        assert!(
+            glyph_width > fallback_width,
+            "nerd_fonts_enabled: true should paint the wider glyph half \
+             (\"WWWW\", measured {glyph_width}px) vs the narrower fallback \
+             half (\"E\", measured {fallback_width}px) painted when false"
+        );
     }
 }

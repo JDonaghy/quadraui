@@ -334,8 +334,21 @@ pub trait Backend {
     fn set_theme(&mut self, _theme: crate::Theme) {}
 
     /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
-    /// `draw_multi_section_view`, etc.) render `Icon::glyph` when `true`
-    /// and `Icon::fallback` when `false`.
+    /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
+    /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
+    ///
+    /// **Default value, and why every backend now agrees on it (issue
+    /// #683):** every backend that owns this flag (`TuiBackend`,
+    /// `GtkBackend`, `MacBackend`) starts it at `false` — fallback, not
+    /// glyph. Before #683 the TUI defaulted to `true` and GTK to `false`,
+    /// so identical `ShellConfig` produced a different icon variant
+    /// depending only on which backend launched the app. `false` is the
+    /// safer default of the two failure modes: a wrong `false` shows a
+    /// plain-but-correct ASCII/Unicode glyph, while a wrong `true` shows
+    /// tofu — particularly for the TUI, where Nerd Font availability is a
+    /// property of the user's terminal that the app cannot see or
+    /// control. Hosts that know their environment has Nerd Fonts (or that
+    /// probe for it) call this explicitly to opt in.
     ///
     /// Call at the start of `render_content()` if the setting can change
     /// at runtime (a settings toggle, a config file reload), or once from

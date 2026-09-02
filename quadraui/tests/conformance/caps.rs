@@ -393,11 +393,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // which is its own follow-up, not this list's job.
     (
         "macos",
-        "set_nerd_fonts",
-        "icon-form selection not wired to the CoreText renderer yet",
-    ),
-    (
-        "macos",
         "set_editor_font",
         "editor font override not wired to CoreText yet",
     ),

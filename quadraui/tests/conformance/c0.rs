@@ -556,7 +556,7 @@ pub const CASES: &[Case] = &[
                 id: id("activity-bar"),
                 top_items: vec![ActivityItem {
                     id: id("activity-item"),
-                    icon: "c0acty".to_string(),
+                    icon: "c0acty".into(),
                     tooltip: String::new(),
                     is_active: true,
                     is_keyboard_selected: false,
@@ -583,7 +583,7 @@ pub const CASES: &[Case] = &[
                 id: id("activity-bar-style"),
                 top_items: vec![ActivityItem {
                     id: id("activity-item-style"),
-                    icon: "c0actystyle".to_string(),
+                    icon: "c0actystyle".into(),
                     tooltip: String::new(),
                     is_active: true,
                     is_keyboard_selected: false,

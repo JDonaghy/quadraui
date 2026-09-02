@@ -180,6 +180,24 @@ impl Icon {
     }
 }
 
+/// Collapse a bare string into an [`Icon`] with `glyph == fallback` — the
+/// common case for a caller that has one glyph and doesn't distinguish a
+/// Nerd Font variant from its plain-text fallback (issue #683). Keeps the
+/// `.into()` idiom working at call sites that previously produced a
+/// `String` for an icon field.
+impl From<&str> for Icon {
+    fn from(s: &str) -> Self {
+        Self::new(s, s)
+    }
+}
+
+/// See [`impl From<&str> for Icon`] — same collapse, owned-`String` input.
+impl From<String> for Icon {
+    fn from(s: String) -> Self {
+        Self::new(s.clone(), s)
+    }
+}
+
 /// Stable identifier for a widget across frames.
 ///
 /// Owned `String` so plugins can generate IDs at runtime. Apps should

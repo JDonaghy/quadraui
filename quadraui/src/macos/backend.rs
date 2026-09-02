@@ -200,6 +200,12 @@ pub struct MacBackend {
     /// type's doc comment) — so the `origin_x`/`origin_y` `arm()`
     /// arguments are always `0.0` and go unread.
     pending_window_press: WindowDragArm<Retained<NSEvent>>,
+    /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
+    /// (issue #683). Picks `Icon::glyph` vs `Icon::fallback` in
+    /// `draw_activity_bar`. Set via [`Backend::set_nerd_fonts`]; defaults
+    /// to `false` — see that method's doc for why every backend now
+    /// agrees on this default.
+    nerd_fonts_enabled: bool,
 }
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -347,6 +353,7 @@ impl MacBackend {
             focused_activity_bar: None,
             window: None,
             pending_window_press: WindowDragArm::new(),
+            nerd_fonts_enabled: false,
         }
     }
 
@@ -583,6 +590,10 @@ impl Backend for MacBackend {
 
     fn set_theme(&mut self, theme: Theme) {
         self.set_current_theme(theme);
+    }
+
+    fn set_nerd_fonts(&mut self, enabled: bool) {
+        self.nerd_fonts_enabled = enabled;
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
@@ -1143,6 +1154,7 @@ impl Backend for MacBackend {
                 bar,
                 &theme,
                 hovered_idx,
+                self.nerd_fonts_enabled,
             )
         }
     }
@@ -1179,6 +1191,7 @@ impl Backend for MacBackend {
                 style,
                 &theme,
                 hovered_idx,
+                self.nerd_fonts_enabled,
             )
         }
     }

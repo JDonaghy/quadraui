@@ -101,10 +101,19 @@ pub fn mac_activity_bar_layout(
 /// function for the full behaviour and #658's reasoning for why the fill
 /// lives in a separate style value rather than a field on [`ActivityBar`].
 ///
+/// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
+/// paints — `glyph` when `true`, `fallback` when `false` (issue #683).
+/// Unlike GTK's hardcoded "Symbols Nerd Font", macOS paints with whatever
+/// font `set_current_font` installed (see this module's header), so a
+/// caller that hasn't installed a glyph-bearing font should pass `false`
+/// — a wrong `false` shows a plain-but-correct glyph, a wrong `true` shows
+/// tofu.
+///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_activity_bar(
     ctx: CGContextRef,
     font: &CTFont,
@@ -113,6 +122,7 @@ pub unsafe fn draw_activity_bar(
     bar: &ActivityBar,
     theme: &Theme,
     hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     draw_activity_bar_with_style(
         ctx,
@@ -123,6 +133,7 @@ pub unsafe fn draw_activity_bar(
         &ActivityBarStyle::default(),
         theme,
         hovered_idx,
+        nerd_fonts_enabled,
     )
 }
 
@@ -144,6 +155,7 @@ pub unsafe fn draw_activity_bar_with_style(
     style: &ActivityBarStyle,
     theme: &Theme,
     hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     CGContextSaveGState(ctx);
 
@@ -184,7 +196,12 @@ pub unsafe fn draw_activity_bar_with_style(
             }
         }
 
-        let (iw, ih) = measure_text(font, &item.icon);
+        let icon_str = if nerd_fonts_enabled {
+            item.icon.glyph.as_str()
+        } else {
+            item.icon.fallback.as_str()
+        };
+        let (iw, ih) = measure_text(font, icon_str);
         let fg = if item.is_active || is_hovered {
             active_fg
         } else {
@@ -193,7 +210,7 @@ pub unsafe fn draw_activity_bar_with_style(
         draw_text(
             ctx,
             font,
-            &item.icon,
+            icon_str,
             (width - iw) / 2.0,
             y + (ACTIVITY_ROW_PX - ih) / 2.0,
             color_to_cg(fg),

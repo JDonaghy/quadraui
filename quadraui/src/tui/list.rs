@@ -36,8 +36,11 @@ use crate::types::{Decoration, StyledText};
 ///   when there isn't room past the main text.
 ///
 /// `nerd_fonts_enabled` controls which icon variant gets painted —
-/// pass `crate::icons::nerd_fonts_enabled()` from the consumer's icon
-/// registry, or `false` to always use ASCII fallbacks.
+/// pass the consumer's own Nerd Font resolver (there is no `icons`
+/// module in this crate; `crate::icons` is `vimcode`'s own capability
+/// probe, not something quadraui ships), or forward the value most
+/// recently given to [`crate::Backend::set_nerd_fonts`], or `false` to
+/// always use ASCII fallbacks.
 pub fn draw_list(
     buf: &mut Buffer,
     area: Rect,

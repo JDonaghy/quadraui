@@ -16,7 +16,7 @@ use std::cell::RefCell;
 
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
-use crate::types::{Color, WidgetId};
+use crate::types::{Color, Icon, WidgetId};
 use crate::{Backend, ButtonMask, MouseButton, Point, Rect, UiEvent};
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -25,7 +25,12 @@ use crate::{Backend, ButtonMask, MouseButton, Point, Rect, UiEvent};
 #[derive(Debug, Clone)]
 pub struct PanelDefinition {
     pub id: WidgetId,
-    pub icon: String,
+    /// Icon painted on the panel's activity-bar row — `glyph` for a Nerd
+    /// Font / icon-font variant, `fallback` for ASCII/basic-Unicode. Which
+    /// one paints is decided by the backend's `nerd_fonts_enabled` flag
+    /// (issue #683), not by this type. Forwarded verbatim into the built
+    /// [`ActivityItem::icon`] by [`AppShell::build_activity_bar`].
+    pub icon: Icon,
     pub tooltip: String,
     pub title: String,
 }
@@ -1335,6 +1340,45 @@ mod tests {
         let bar = s.build_activity_bar();
         assert_eq!(bar.bottom_items.len(), 1);
         assert_eq!(bar.bottom_items[0].id, WidgetId::new("panel:settings"));
+    }
+
+    /// #683 acceptance: `PanelDefinition::icon` (now `Icon`, not `String`)
+    /// survives `AppShell::build_activity_bar` unchanged into
+    /// `ActivityItem::icon`, and the TUI rasteriser picks the right half —
+    /// `glyph` when `nerd_fonts_enabled`, `fallback` otherwise. A rendered-
+    /// output assertion, not just a type-level check on `PanelDefinition`
+    /// / `ActivityItem` in isolation, per this issue's Tests section.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn build_activity_bar_icon_reaches_the_painted_column_via_the_nerd_fonts_flag() {
+        let panels = vec![PanelDefinition {
+            id: WidgetId::new("panel:explorer"),
+            icon: Icon::new("\u{f07c}", "E"),
+            tooltip: "Explorer".into(),
+            title: "EXPLORER".into(),
+        }];
+        let s = AppShell::new(panels, 3.0);
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.top_items[0].icon, Icon::new("\u{f07c}", "E"));
+
+        let theme = crate::theme::Theme::default();
+        let paint = |nerd_fonts_enabled: bool| -> String {
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
+            let area = ratatui::layout::Rect::new(0, 0, 4, 10);
+            crate::tui::draw_activity_bar(&mut buf, area, &bar, &theme, None, nerd_fonts_enabled);
+            (area.x..area.x + area.width)
+                .map(|x| buf[(x, area.y)].symbol().to_string())
+                .collect::<String>()
+        };
+
+        assert!(
+            paint(true).contains('\u{f07c}'),
+            "nerd_fonts_enabled: true should paint the PanelDefinition's glyph"
+        );
+        assert!(
+            paint(false).contains('E'),
+            "nerd_fonts_enabled: false should paint the PanelDefinition's fallback"
+        );
     }
 
     // ── Keyboard navigation ─────────────────────────────────────────
