@@ -70,7 +70,7 @@ use crate::types::{Color, StyledText};
 /// convention exactly.
 pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> LayoutMetrics {
     LayoutMetrics {
-        header_size: (line_height * 1.4).round(),
+        header_size: line_height * 1.4,
         divider_size: if allow_resize { 1.0 } else { 0.0 },
         // Matches GTK/macOS: 8 DIPs gives a visible track against dark
         // sidebars.
