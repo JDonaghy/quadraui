@@ -171,12 +171,29 @@ jobs:
       # `windows-latest` runner's `x86_64-pc-windows-msvc` toolchain — the
       # only place that can happen, since `ubuntu-latest` never has
       # `target_os = "windows"` regardless of which `--target` you pass.
-      # `continue-on-error: true`: same phased-rollout posture the
-      # `tui`-feature windows-latest leg started with above (see that
-      # comment) — this is the first PR to land real Win32/Direct2D calls,
-      # so there's no prior green run to trust yet. Flip to blocking once
-      # it's proven stable across a few `develop` runs, same exit condition
-      # as that leg.
+      # Blocking (no continue-on-error): #674 is the flip. These two steps
+      # (and `Test (win feature, real Windows)` below) started with
+      # `continue-on-error: true` in #581/#589 as a phased-rollout device —
+      # the first PR to land real Win32/Direct2D calls had no prior green
+      # `develop` run to trust, and a red first run would have blocked
+      # coord-tui and vimcode (both gated by the `downstream` job below) on
+      # something neither of them touched.
+      #
+      # The condition was met: checked via the Actions API against
+      # `JDonaghy/quadraui`'s `ci.yml` runs on `develop`, every run from #24
+      # (`04213ae`, the commit that gave `Test (win feature, real Windows)`
+      # something real to exercise) through the tip at flip time
+      # (`dfe0223f`) — 30 runs, 2026-08-30 through 2026-09-02, including #23
+      # (`ede7a75`, `win_platform_services`'s 8 service tests) — concluded
+      # `success` on `Build (win feature)`, `Clippy (win feature)`, and
+      # `Test (win feature, real Windows)` with zero failures. `HeadlessSurface`
+      # needs no `HWND`, GPU, or desktop session (`ID2D1DCRenderTarget` +
+      # `CreateDIBSection` on WARP), so there is no display-server reason for
+      # this leg to be flaky — same read as the `tui`-feature windows-latest
+      # leg's own flip above. If a Windows-specific flake ever wedges
+      # unrelated work, reverting is these three `continue-on-error: true`
+      # lines back — but prefer fixing the flake, same rationale as that leg.
+      #
       # #23 added `win_platform_services` alongside `win_demo` — same
       # bootstrap posture (draws nothing, `cfg`-split `main()`), now
       # exercising `WinPlatformServices` instead of just the window/
@@ -185,28 +202,22 @@ jobs:
       # to these `--example` lists, not a new step pair.
       - name: Build (win feature)
         if: matrix.os == 'windows-latest'
-        continue-on-error: true
         run: cargo build -p quadraui --example win_demo --example win_platform_services --features win
       - name: Clippy (win feature)
         if: matrix.os == 'windows-latest'
-        continue-on-error: true
         run: cargo clippy -p quadraui --example win_demo --example win_platform_services --features win -- -D warnings
       # Headless Direct2D test surface (#24, `src/win/testing.rs`'s
       # `HeadlessSurface`: an `ID2D1DCRenderTarget` bound to an in-memory
       # DIB section — no `HWND`, display, or GPU). The two steps above
-      # only *build* `win_demo`; nothing under `--features win` has ever
-      # been `cargo test`-ed against a real Windows host before this,
-      # since every prior `cfg(target_os = "windows")` arm needed either a
+      # only *build* `win_demo`; this is the step that actually `cargo
+      # test`s under `--features win` against a real Windows host, since
+      # every prior `cfg(target_os = "windows")` arm needed either a
       # live `HWND` (#19's render-target bootstrap) or a real font
       # collection (#21's DirectWrite metrics) — neither headless.
-      # `continue-on-error: true`: same phased-rollout posture as the two
-      # steps above — this is the first PR exercising real Direct2D calls
-      # from inside a test, so there's no prior green `develop` run to
-      # trust yet. Flip to blocking once proven stable, same exit
-      # condition as those steps and the `tui`-feature windows-latest leg.
+      # Blocking (no continue-on-error): see the flip rationale and evidence
+      # in the comment above `Build (win feature)`.
       - name: Test (win feature, real Windows)
         if: matrix.os == 'windows-latest'
-        continue-on-error: true
         run: cargo test -p quadraui --features win
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
