@@ -25,7 +25,8 @@
 //! // …host paints the active document's body into `layout.body_bounds`.
 //!
 //! // In AppLogic::handle:
-//! for ev in ws.handle_click(pos.x, pos.y) {
+//! # let button = quadraui::MouseButton::Left;
+//! for ev in ws.handle_click(pos.x, pos.y, button) {
 //!     if let WorkspaceEvent::Closed { id, .. } = ev { /* drop the buffer */ }
 //! }
 //! ```
@@ -91,8 +92,57 @@
 //! document's tab is visible on the *same* frame it becomes active — not
 //! one frame later. See [`WorkspaceController::render`] for the two-pass
 //! detail.
+//!
+//! # Preview tabs (quadraui#597)
+//!
+//! Ported from vimcode's working implementation (`preview_buffer_id`,
+//! `promote_preview`, the find-existing-else-replace `open_file_preview`)
+//! rather than designed fresh, because claude-coordinator needs the
+//! identical policy for its per-panel document tabs and the two apps are
+//! meant to stay in lock-step — see the issue for the "one implementation"
+//! rationale.
+//!
+//! At most **one** document per workspace is the preview — the
+//! replaceable slot VS Code shows italic and reuses for the next
+//! single-click navigation instead of accumulating a tab per click.
+//! [`Self::open_preview`] is the entry point:
+//!
+//! 1. `id` already open (permanent, or the current preview) → activate it.
+//!    No new tab, no replace, no promotion.
+//! 2. Otherwise, a preview tab already exists → replace its contents **in
+//!    that tab's slot** (same index), discarding the old preview.
+//! 3. Otherwise → append a new tab flagged preview.
+//!
+//! [`Self::promote`] drops the preview flag, turning it into an ordinary
+//! permanent tab, and is the one primitive every promotion trigger below
+//! reduces to.
+//!
+//! ## The six promotion triggers
+//!
+//! Ported verbatim — this is the behaviour to preserve, not to improve.
+//! Note the second row **deliberately diverges from VS Code** (which keeps
+//! a tab in preview when clicked in the tab bar): vimcode promotes on
+//! select, and that is the contract both consumers are written against.
+//!
+//! | Trigger | How | vimcode reference |
+//! |---|---|---|
+//! | Re-opening it as permanent (incl. a double click on the source row, which just calls the permanent open instead of the preview one) | [`Self::open`] promotes when `id` is already the preview | `engine/windows.rs:2297-2299`, `engine/tests.rs::test_double_click_promotes_preview` |
+//! | Selecting the preview tab | [`Self::activate`] / [`Self::activate_index`] / a left click on the tab body (via [`Self::handle_click`]) promote when the newly-selected tab is the preview | `engine/windows.rs:1757-1761` (`goto_tab`) |
+//! | Editing the document | [`Self::set_dirty`]`(id, true)` promotes when `id` is the preview | `engine/keys.rs:427-430` |
+//! | Saving | the host calls [`Self::promote`] from its save handler | `engine/tests.rs::test_save_promotes_preview` |
+//! | Explicit pin | the host calls [`Self::promote`] from a pin action | — |
+//!
+//! Sequential keyboard cycling ([`Self::cycle`] / `Ctrl+Tab`) deliberately
+//! does **not** promote — only an explicit jump to a specific tab
+//! (`activate`/`activate_index`/a click) does, matching `goto_tab` rather
+//! than vimcode's separate tab-cycling path.
+//!
+//! [`WorkspaceEvent::Promoted`] is emitted exactly once per promotion,
+//! whichever trigger caused it. [`Self::is_preview`] feeds
+//! [`TabItem::is_preview`], which every backend already renders italic
+//! (`quadraui/src/tui/tab_bar.rs`).
 
-use crate::event::{Key, NamedKey, Rect};
+use crate::event::{Key, MouseButton, NamedKey, Rect};
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabItem};
 use crate::text_util::display_width;
 use crate::types::{Modifiers, WidgetId};
@@ -201,6 +251,14 @@ pub enum WorkspaceEvent {
         /// Its index after the move.
         to: usize,
     },
+    /// The preview document became permanent — see the module doc's
+    /// *Preview tabs* section for the six triggers that cause this.
+    /// Emitted exactly once per promotion, never for a document that
+    /// wasn't the preview.
+    Promoted {
+        /// The promoted document's opaque id.
+        id: String,
+    },
 }
 
 /// Resolved rects from one [`WorkspaceController::render`] call.
@@ -228,6 +286,10 @@ pub struct WorkspaceController {
     bar_id: WidgetId,
     docs: Vec<WorkspaceDoc>,
     active: Option<usize>,
+    /// Opaque id of the current preview document, if any. See the module
+    /// doc's *Preview tabs* section. Tracked by id rather than index so
+    /// `close`/`reorder` don't have to keep it in sync by hand.
+    preview: Option<String>,
     scroll_offset: usize,
     last_strip: Option<Rect>,
     last_hits: Option<TabBarHits>,
@@ -244,6 +306,7 @@ impl WorkspaceController {
             bar_id: WidgetId::new(bar_id),
             docs: Vec::new(),
             active: None,
+            preview: None,
             scroll_offset: 0,
             last_strip: None,
             last_hits: None,
@@ -299,6 +362,13 @@ impl WorkspaceController {
         self.index_of(id).is_some()
     }
 
+    /// Whether `id` is the workspace's single preview document. See the
+    /// module doc's *Preview tabs* section. `false` for an unknown id and
+    /// for a permanent (promoted or never-preview) document.
+    pub fn is_preview(&self, id: &str) -> bool {
+        self.preview.as_deref() == Some(id)
+    }
+
     /// Scroll offset the last [`Self::render`] resolved — the index of
     /// the leftmost visible tab. Exposed for tests and for hosts that
     /// mirror the strip elsewhere.
@@ -308,36 +378,131 @@ impl WorkspaceController {
 
     // ── Mutation ────────────────────────────────────────────────────
 
-    /// Append `doc` to the strip and make it active.
+    /// Append `doc` to the strip as a **permanent** tab and make it
+    /// active.
     ///
     /// Re-opening an already-open id does **not** duplicate the tab: the
-    /// existing document is activated instead, and the returned event is
-    /// [`WorkspaceEvent::Activated`] rather than
+    /// existing document is activated instead, and the returned events
+    /// contain [`WorkspaceEvent::Activated`] rather than
     /// [`WorkspaceEvent::Opened`]. (Its label is left alone — the host
-    /// owns labels; use [`Self::set_label`] to change one.) Re-opening
-    /// the document that is *already* active returns `None`, since
-    /// nothing changed.
-    pub fn open(&mut self, doc: WorkspaceDoc) -> Option<WorkspaceEvent> {
+    /// owns labels; use [`Self::set_label`] to change one.)
+    ///
+    /// When `doc.id` is currently the **preview** document, this also
+    /// promotes it — "re-opening it as permanent" is one of the module
+    /// doc's six promotion triggers, and this is the one primitive it
+    /// reduces to (a double click on a source row that already opened its
+    /// preview is just this same call). The returned `Vec` then carries
+    /// both the activation (if the document wasn't already active) and
+    /// [`WorkspaceEvent::Promoted`], in that order. Use [`Self::open_preview`]
+    /// instead when the caller wants the replaceable preview slot, not a
+    /// permanent tab.
+    ///
+    /// Returns an empty `Vec` when nothing changed at all — the document
+    /// was already open, already active, and already permanent.
+    pub fn open(&mut self, doc: WorkspaceDoc) -> Vec<WorkspaceEvent> {
         if let Some(existing) = self.index_of(&doc.id) {
-            return self.activate_index(existing);
+            let mut events: Vec<WorkspaceEvent> =
+                self.set_active_index(existing).into_iter().collect();
+            let id = self.docs[existing].id.clone();
+            events.extend(self.promote(&id));
+            return events;
         }
         let index = self.docs.len();
         let id = doc.id.clone();
         self.docs.push(doc);
         self.active = Some(index);
-        Some(WorkspaceEvent::Opened { id, index })
+        vec![WorkspaceEvent::Opened { id, index }]
     }
 
-    /// Activate the document with `id`. Returns `None` when `id` isn't
-    /// open or is already active.
-    pub fn activate(&mut self, id: &str) -> Option<WorkspaceEvent> {
-        let index = self.index_of(id)?;
-        self.activate_index(index)
+    /// Open `doc` as the workspace's single **preview** document — see the
+    /// module doc's *Preview tabs* section for the full open-semantics
+    /// table. Never promotes: re-opening the current preview through this
+    /// entry point (branch 1) leaves it exactly as previewed, which is
+    /// what lets a host click through a list of documents without pinning
+    /// each one. Use [`Self::open`] for a permanent tab, and
+    /// [`Self::promote`] to pin the current preview explicitly.
+    pub fn open_preview(&mut self, doc: WorkspaceDoc) -> Vec<WorkspaceEvent> {
+        // 1. Already open — permanent, or the current preview — just
+        //    activate it. No new tab, no replace, no promotion.
+        if let Some(existing) = self.index_of(&doc.id) {
+            return self.set_active_index(existing).into_iter().collect();
+        }
+        // 2. A preview tab exists for a different document → replace its
+        //    contents in that tab's slot.
+        if let Some(preview_id) = self.preview.clone() {
+            if let Some(index) = self.index_of(&preview_id) {
+                let new_id = doc.id.clone();
+                self.docs[index] = doc;
+                self.preview = Some(new_id.clone());
+                self.active = Some(index);
+                self.clamp_scroll_offset();
+                return vec![
+                    WorkspaceEvent::Closed {
+                        id: preview_id,
+                        index,
+                    },
+                    WorkspaceEvent::Opened { id: new_id, index },
+                ];
+            }
+        }
+        // 3. Otherwise append a new tab flagged preview.
+        let index = self.docs.len();
+        let id = doc.id.clone();
+        self.docs.push(doc);
+        self.active = Some(index);
+        self.preview = Some(id.clone());
+        vec![WorkspaceEvent::Opened { id, index }]
     }
 
-    /// Activate the document at `index`. Returns `None` when `index` is
-    /// out of range or already active.
-    pub fn activate_index(&mut self, index: usize) -> Option<WorkspaceEvent> {
+    /// Drop `id`'s preview flag, turning it into an ordinary permanent
+    /// tab. Returns [`WorkspaceEvent::Promoted`] when `id` was in fact the
+    /// preview; `None` (a no-op) for an unknown id, or a document that was
+    /// already permanent.
+    ///
+    /// This is the primitive every one of the module doc's six promotion
+    /// triggers reduces to — most of them (saving, an explicit pin) have
+    /// no other `WorkspaceController` hook and call this directly from
+    /// the host's own event handling.
+    pub fn promote(&mut self, id: &str) -> Option<WorkspaceEvent> {
+        if !self.is_preview(id) {
+            return None;
+        }
+        self.preview = None;
+        Some(WorkspaceEvent::Promoted { id: id.to_string() })
+    }
+
+    /// Activate the document with `id`. Returns an empty `Vec` when `id`
+    /// isn't open or is already active. Promotes when `id` is the
+    /// preview — "selecting the preview tab" (see the module doc).
+    pub fn activate(&mut self, id: &str) -> Vec<WorkspaceEvent> {
+        match self.index_of(id) {
+            Some(index) => self.activate_index(index),
+            None => Vec::new(),
+        }
+    }
+
+    /// Activate the document at `index`. Returns an empty `Vec` when
+    /// `index` is out of range. Promotes when the target document is the
+    /// preview — "selecting the preview tab" (see the module doc); this
+    /// runs even when the tab was already active, since selecting an
+    /// already-active preview tab still promotes it. [`Self::cycle`]
+    /// deliberately does **not** go through this — sequential keyboard
+    /// cycling doesn't promote, only an explicit jump to a tab does.
+    pub fn activate_index(&mut self, index: usize) -> Vec<WorkspaceEvent> {
+        let mut events: Vec<WorkspaceEvent> = self.set_active_index(index).into_iter().collect();
+        if let Some(doc) = self.docs.get(index) {
+            let id = doc.id.clone();
+            events.extend(self.promote(&id));
+        }
+        events
+    }
+
+    /// Low-level activation with **no** promotion side effect. Shared by
+    /// [`Self::open`]/[`Self::open_preview`] (which apply their own,
+    /// narrower promotion rules) and [`Self::cycle`] (sequential cycling
+    /// never promotes). Returns `None` when `index` is out of range or
+    /// already active.
+    fn set_active_index(&mut self, index: usize) -> Option<WorkspaceEvent> {
         if index >= self.docs.len() || self.active == Some(index) {
             return None;
         }
@@ -366,6 +531,9 @@ impl WorkspaceController {
             return Vec::new();
         };
         let removed = self.docs.remove(index);
+        if self.preview.as_deref() == Some(removed.id.as_str()) {
+            self.preview = None;
+        }
         let mut events = vec![WorkspaceEvent::Closed {
             id: removed.id,
             index,
@@ -420,6 +588,9 @@ impl WorkspaceController {
     /// wrapping at both ends. `cycle(1)` is Ctrl+Tab, `cycle(-1)` is
     /// Ctrl+Shift+Tab. Returns `None` for an empty workspace or when the
     /// step lands back on the already-active document.
+    ///
+    /// Deliberately does not promote even when it lands on the preview
+    /// tab — see [`Self::activate_index`]'s doc.
     pub fn cycle(&mut self, delta: isize) -> Option<WorkspaceEvent> {
         let n = self.docs.len();
         if n == 0 {
@@ -428,7 +599,7 @@ impl WorkspaceController {
         let active = self.active.unwrap_or(0) as isize;
         let n_i = n as isize;
         let next = (active + delta).rem_euclid(n_i) as usize;
-        self.activate_index(next)
+        self.set_active_index(next)
     }
 
     /// Replace `id`'s tab label. Returns `false` when `id` isn't open.
@@ -442,15 +613,28 @@ impl WorkspaceController {
         }
     }
 
-    /// Set `id`'s unsaved-changes marker. Returns `false` when `id` isn't
-    /// open.
-    pub fn set_dirty(&mut self, id: &str, dirty: bool) -> bool {
-        match self.index_of(id) {
-            Some(i) => {
-                self.docs[i].dirty = dirty;
-                true
-            }
-            None => false,
+    /// Set `id`'s unsaved-changes marker.
+    ///
+    /// Setting `dirty: true` also promotes `id` when it is the preview
+    /// document — "editing the document" is one of the module doc's six
+    /// promotion triggers, since a host only marks a document dirty in
+    /// response to the user changing it. `dirty: false` (e.g. after a
+    /// save that doesn't also pin) never promotes on its own; a save that
+    /// should promote calls [`Self::promote`] separately.
+    ///
+    /// Returns the events produced — `[Promoted]`, when this promoted;
+    /// otherwise empty, whether or not `id` was found. Use
+    /// [`Self::contains`] first if the caller needs to distinguish
+    /// "unknown id" from "known id, nothing to report".
+    pub fn set_dirty(&mut self, id: &str, dirty: bool) -> Vec<WorkspaceEvent> {
+        let Some(i) = self.index_of(id) else {
+            return Vec::new();
+        };
+        self.docs[i].dirty = dirty;
+        if dirty {
+            self.promote(id).into_iter().collect()
+        } else {
+            Vec::new()
         }
     }
 
@@ -469,7 +653,7 @@ impl WorkspaceController {
                     label: d.label.clone(),
                     is_active: self.active == Some(i),
                     is_dirty: d.dirty,
-                    is_preview: false,
+                    is_preview: self.is_preview(&d.id),
                     is_closable: d.closable,
                 })
                 .collect(),
@@ -536,13 +720,21 @@ impl WorkspaceController {
 
     /// Route a mouse click at `(x, y)` in surface coordinates.
     ///
-    /// A click on a tab's close button closes it (close buttons win over
-    /// tab bodies, matching
-    /// [`TabGroupController::handle_click`](crate::compose::tab_group::TabGroupController::handle_click));
-    /// a click on a tab body activates it. Anything else — the body area,
-    /// dead space in the strip, a click before the first
-    /// [`Self::render`] — returns an empty `Vec`.
-    pub fn handle_click(&mut self, x: f32, y: f32) -> Vec<WorkspaceEvent> {
+    /// - [`MouseButton::Middle`] anywhere on a tab (body *or* close
+    ///   button) closes it — VS Code's middle-click-to-close, and the
+    ///   module doc's "middle-click closes a tab" contract. Every other
+    ///   button falls through to the existing left-click behaviour: a
+    ///   click on a tab's close button closes it (close buttons win over
+    ///   tab bodies, matching
+    ///   [`TabGroupController::handle_click`](crate::compose::tab_group::TabGroupController::handle_click));
+    ///   a click on a tab body activates it, promoting it when it's the
+    ///   preview (see [`Self::activate_index`]).
+    ///
+    /// Both close paths ignore [`WorkspaceDoc::closable`]: a `false` tab
+    /// closes for neither the close button nor a middle click. Anything
+    /// else — the body area, dead space in the strip, a click before the
+    /// first [`Self::render`] — returns an empty `Vec`.
+    pub fn handle_click(&mut self, x: f32, y: f32, button: MouseButton) -> Vec<WorkspaceEvent> {
         let (Some(strip), Some(hits)) = (self.last_strip, self.last_hits.as_ref()) else {
             return Vec::new();
         };
@@ -551,6 +743,30 @@ impl WorkspaceController {
         }
         let click_x = x as f64;
         let in_range = |(start, end): (f64, f64)| end > start && click_x >= start && click_x < end;
+
+        let body_hit = hits
+            .slot_positions
+            .iter()
+            .enumerate()
+            .find(|(_, range)| in_range(**range))
+            .map(|(i, _)| i);
+
+        if button == MouseButton::Middle {
+            // Middle-click closes whatever tab is under the pointer,
+            // anywhere on its span — unlike the close button, it doesn't
+            // require landing on the × glyph specifically.
+            let Some(i) = body_hit else {
+                return Vec::new();
+            };
+            let Some(doc) = self.docs.get(i) else {
+                return Vec::new();
+            };
+            if !doc.closable {
+                return Vec::new();
+            }
+            let id = doc.id.clone();
+            return self.close(&id);
+        }
 
         // Close buttons take precedence over the tab bodies that contain
         // them.
@@ -571,14 +787,8 @@ impl WorkspaceController {
             return self.close(&id);
         }
 
-        let body_hit = hits
-            .slot_positions
-            .iter()
-            .enumerate()
-            .find(|(_, range)| in_range(**range))
-            .map(|(i, _)| i);
-        match body_hit.and_then(|i| self.activate_index(i)) {
-            Some(event) => vec![event],
+        match body_hit {
+            Some(i) => self.activate_index(i),
             None => Vec::new(),
         }
     }
@@ -662,18 +872,18 @@ mod tests {
         let ev = ws.open(WorkspaceDoc::new("a", "alpha"));
         assert_eq!(
             ev,
-            Some(WorkspaceEvent::Opened {
+            vec![WorkspaceEvent::Opened {
                 id: "a".into(),
                 index: 0
-            })
+            }]
         );
         let ev = ws.open(WorkspaceDoc::new("b", "beta"));
         assert_eq!(
             ev,
-            Some(WorkspaceEvent::Opened {
+            vec![WorkspaceEvent::Opened {
                 id: "b".into(),
                 index: 1
-            })
+            }]
         );
         assert_eq!(ids(&ws), ["a", "b"]);
         assert_eq!(ws.active_id(), Some("b"));
@@ -686,10 +896,10 @@ mod tests {
         let ev = ws.open(WorkspaceDoc::new("a", "alpha (again)"));
         assert_eq!(
             ev,
-            Some(WorkspaceEvent::Activated {
+            vec![WorkspaceEvent::Activated {
                 id: "a".into(),
                 index: 0
-            })
+            }]
         );
         assert_eq!(ids(&ws), ["a", "b", "c"], "no duplicate tab");
         assert_eq!(
@@ -697,22 +907,23 @@ mod tests {
             "a",
             "re-open must not silently relabel an existing document"
         );
-        // Re-opening the already-active one is a no-op.
-        assert_eq!(ws.open(WorkspaceDoc::new("a", "alpha")), None);
+        // Re-opening the already-active one is a no-op — it's permanent,
+        // not the preview, so there's nothing to promote either.
+        assert_eq!(ws.open(WorkspaceDoc::new("a", "alpha")), vec![]);
     }
 
     #[test]
     fn activate_reports_only_real_changes() {
         let mut ws = ws(&["a", "b"]);
         assert_eq!(ws.active_id(), Some("b"));
-        assert_eq!(ws.activate("b"), None, "already active");
-        assert_eq!(ws.activate("nope"), None, "unknown id");
+        assert_eq!(ws.activate("b"), vec![], "already active");
+        assert_eq!(ws.activate("nope"), vec![], "unknown id");
         assert_eq!(
             ws.activate("a"),
-            Some(WorkspaceEvent::Activated {
+            vec![WorkspaceEvent::Activated {
                 id: "a".into(),
                 index: 0
-            })
+            }]
         );
     }
 
@@ -854,7 +1065,8 @@ mod tests {
             WorkspaceEvent::Opened { id, .. }
             | WorkspaceEvent::Activated { id, .. }
             | WorkspaceEvent::Closed { id, .. }
-            | WorkspaceEvent::Reordered { id, .. } => id,
+            | WorkspaceEvent::Reordered { id, .. }
+            | WorkspaceEvent::Promoted { id } => id,
         }
     }
 
@@ -983,13 +1195,24 @@ mod tests {
     }
 
     #[test]
-    fn set_label_and_set_dirty_report_unknown_ids() {
+    fn set_label_reports_unknown_ids() {
         let mut ws = ws(&["a"]);
         assert!(ws.set_label("a", "renamed"));
         assert!(!ws.set_label("ghost", "x"));
-        assert!(ws.set_dirty("a", true));
-        assert!(!ws.set_dirty("ghost", true));
         assert_eq!(ws.docs()[0].label, "renamed");
+    }
+
+    #[test]
+    fn set_dirty_sets_the_flag_regardless_of_preview_state() {
+        let mut ws = ws(&["a"]);
+        // "a" is an ordinary permanent tab — not the preview — so marking
+        // it dirty has no events to report. `set_dirty` doesn't return
+        // whether the id was known (see its doc); use `contains` for
+        // that.
+        assert!(ws.contains("a"));
+        assert_eq!(ws.set_dirty("a", true), vec![]);
+        assert!(!ws.contains("ghost"));
+        assert_eq!(ws.set_dirty("ghost", true), vec![], "unknown id is a no-op");
         assert!(ws.docs()[0].dirty);
     }
 
@@ -1048,7 +1271,7 @@ mod tests {
     fn click_before_the_first_render_is_ignored() {
         let mut ws = ws(&["a", "b"]);
         assert_eq!(
-            ws.handle_click(3.0, 0.0),
+            ws.handle_click(3.0, 0.0, MouseButton::Left),
             vec![],
             "no cached strip geometry yet"
         );
@@ -1062,5 +1285,324 @@ mod tests {
     #[test]
     fn close_cols_estimate_matches_tui_rasteriser() {
         assert_eq!(CLOSE_COLS_ESTIMATE, crate::tui::TAB_CLOSE_COLS as usize);
+    }
+
+    // ── Preview tabs (quadraui#597) ─────────────────────────────────
+
+    #[test]
+    fn is_preview_is_false_for_unknown_and_permanent_docs() {
+        let ws = ws(&["a"]);
+        assert!(!ws.is_preview("a"), "a plain open() never sets preview");
+        assert!(!ws.is_preview("ghost"));
+    }
+
+    #[test]
+    fn open_preview_appends_a_flagged_tab_and_activates_it() {
+        let mut ws = WorkspaceController::new("w");
+        let events = ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        assert_eq!(
+            events,
+            vec![WorkspaceEvent::Opened {
+                id: "a".into(),
+                index: 0
+            }]
+        );
+        assert!(ws.is_preview("a"));
+        assert_eq!(ws.active_id(), Some("a"));
+        assert!(
+            ws.tab_bar().tabs[0].is_preview,
+            "must feed TabItem::is_preview"
+        );
+    }
+
+    #[test]
+    fn open_preview_of_a_second_doc_replaces_the_first_in_place() {
+        // Acceptance: opening doc A as preview, then doc B as preview,
+        // leaves one tab, showing B.
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        let events = ws.open_preview(WorkspaceDoc::new("b", "beta"));
+        assert_eq!(
+            events,
+            vec![
+                WorkspaceEvent::Closed {
+                    id: "a".into(),
+                    index: 0
+                },
+                WorkspaceEvent::Opened {
+                    id: "b".into(),
+                    index: 0
+                },
+            ]
+        );
+        assert_eq!(ids(&ws), ["b"], "one tab, not two");
+        assert_eq!(ws.active_id(), Some("b"));
+        assert!(ws.is_preview("b"));
+        assert!(
+            !ws.is_preview("a"),
+            "a's slot was taken over, not preserved"
+        );
+    }
+
+    #[test]
+    fn promoting_then_opening_another_preview_yields_two_tabs() {
+        // Acceptance: after promote(A), opening B as preview yields two
+        // tabs — A permanent, B preview.
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        assert_eq!(
+            ws.promote("a"),
+            Some(WorkspaceEvent::Promoted { id: "a".into() })
+        );
+        let events = ws.open_preview(WorkspaceDoc::new("b", "beta"));
+        assert_eq!(
+            events,
+            vec![WorkspaceEvent::Opened {
+                id: "b".into(),
+                index: 1
+            }]
+        );
+        assert_eq!(ids(&ws), ["a", "b"]);
+        assert!(!ws.is_preview("a"), "a was promoted, so it keeps its slot");
+        assert!(ws.is_preview("b"));
+    }
+
+    #[test]
+    fn open_preview_of_an_already_permanent_doc_activates_without_touching_the_preview_slot() {
+        // Acceptance: opening a document already present as a permanent
+        // tab activates it and does not disturb the preview slot.
+        let mut ws = WorkspaceController::new("w");
+        ws.open(WorkspaceDoc::new("a", "alpha")); // permanent
+        ws.open_preview(WorkspaceDoc::new("b", "beta")); // preview, active
+        assert_eq!(ws.active_id(), Some("b"));
+
+        let events = ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        assert_eq!(
+            events,
+            vec![WorkspaceEvent::Activated {
+                id: "a".into(),
+                index: 0
+            }]
+        );
+        assert_eq!(ids(&ws), ["a", "b"], "no new tab, no replace");
+        assert_eq!(ws.active_id(), Some("a"));
+        assert!(ws.is_preview("b"), "b's preview slot is untouched");
+    }
+
+    #[test]
+    fn open_preview_of_the_current_preview_reactivates_without_promoting() {
+        // Re-navigating to the document that's already the preview must
+        // not promote it — otherwise clicking through a list of files
+        // would pin the first one on the second glance.
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        ws.activate_index(1_000_000); // no-op, keeps "a" active for clarity
+        let events = ws.open_preview(WorkspaceDoc::new("a", "alpha again"));
+        assert_eq!(events, vec![], "already open and already active");
+        assert!(ws.is_preview("a"), "must stay preview");
+        assert_eq!(
+            ws.docs()[0].label,
+            "alpha",
+            "re-open via open_preview doesn't relabel either"
+        );
+    }
+
+    #[test]
+    fn promote_is_a_noop_for_unknown_or_non_preview_ids() {
+        let mut ws = ws(&["a"]);
+        assert_eq!(ws.promote("a"), None, "a is permanent, not preview");
+        assert_eq!(ws.promote("ghost"), None);
+    }
+
+    #[test]
+    fn promote_is_idempotent_emitting_the_event_exactly_once() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        assert_eq!(
+            ws.promote("a"),
+            Some(WorkspaceEvent::Promoted { id: "a".into() })
+        );
+        assert!(!ws.is_preview("a"));
+        assert_eq!(ws.promote("a"), None, "already permanent — no second event");
+    }
+
+    #[test]
+    fn closing_the_preview_tab_clears_the_preview_slot() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        ws.close("a");
+        // A later doc reusing a similar id must not inherit a dangling
+        // preview flag from the closed tab.
+        ws.open(WorkspaceDoc::new("b", "beta"));
+        assert!(!ws.is_preview("b"));
+    }
+
+    // ── The six promotion triggers (module doc) ─────────────────────
+
+    #[test]
+    fn trigger_reopening_the_preview_as_permanent_promotes_it() {
+        // Covers both "re-opening it as permanent" and, since vimcode's
+        // double-click-on-the-source-row handler is just this same call,
+        // "double click on the source row": both reduce to `open()` on an
+        // id that's currently the preview.
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        assert!(ws.is_preview("a"));
+
+        let events = ws.open(WorkspaceDoc::new("a", "alpha"));
+        assert_eq!(events, vec![WorkspaceEvent::Promoted { id: "a".into() }]);
+        assert!(!ws.is_preview("a"));
+    }
+
+    #[test]
+    fn trigger_selecting_the_preview_tab_via_activate_promotes_it() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        ws.open(WorkspaceDoc::new("b", "beta")); // active moves off "a"
+        assert!(ws.is_preview("a"));
+
+        let events = ws.activate("a");
+        assert_eq!(
+            events,
+            vec![
+                WorkspaceEvent::Activated {
+                    id: "a".into(),
+                    index: 0
+                },
+                WorkspaceEvent::Promoted { id: "a".into() },
+            ],
+            "selecting the preview tab promotes it — the deliberate VS Code divergence"
+        );
+        assert!(!ws.is_preview("a"));
+    }
+
+    #[test]
+    fn trigger_clicking_the_preview_tab_promotes_it() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        ws.open(WorkspaceDoc::new("b", "beta"));
+        assert!(ws.is_preview("a"));
+
+        seed_click_geometry(
+            &mut ws,
+            Rect::new(0.0, 0.0, 80.0, 1.0),
+            &[(0.0, 10.0), (10.0, 20.0)],
+        );
+        let events = ws.handle_click(5.0, 0.5, MouseButton::Left);
+        assert!(
+            events.contains(&WorkspaceEvent::Promoted { id: "a".into() }),
+            "left click on the preview tab must promote it: {events:?}"
+        );
+        assert!(!ws.is_preview("a"));
+    }
+
+    #[test]
+    fn trigger_editing_the_preview_document_promotes_it() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        let events = ws.set_dirty("a", true);
+        assert_eq!(events, vec![WorkspaceEvent::Promoted { id: "a".into() }]);
+        assert!(!ws.is_preview("a"));
+        assert!(ws.docs()[0].dirty, "the dirty flag itself is still set");
+    }
+
+    #[test]
+    fn trigger_saving_promotes_the_preview_document() {
+        // WorkspaceController owns no persistence (module doc's
+        // non-goals), so "on save" is the host calling `promote`
+        // directly from its save handler.
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        ws.set_dirty("a", true); // already promotes via the edit trigger…
+        assert!(!ws.is_preview("a"));
+        // …so re-preview it to exercise "saving" as its own trigger.
+        ws.open_preview(WorkspaceDoc::new("c", "gamma"));
+        ws.promote("c").expect("save handler promotes the preview");
+        assert!(!ws.is_preview("c"));
+    }
+
+    #[test]
+    fn trigger_explicit_pin_promotes_the_preview_document() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open_preview(WorkspaceDoc::new("a", "alpha"));
+        assert!(ws.is_preview("a"));
+        // A pin button in the host's chrome calls the same primitive.
+        let event = ws.promote("a");
+        assert_eq!(event, Some(WorkspaceEvent::Promoted { id: "a".into() }));
+        assert!(!ws.is_preview("a"));
+    }
+
+    #[test]
+    fn cycle_does_not_promote_even_when_it_lands_on_the_preview_tab() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open(WorkspaceDoc::new("a", "alpha"));
+        ws.open_preview(WorkspaceDoc::new("b", "beta"));
+        ws.activate("a");
+        assert!(ws.is_preview("b"));
+
+        let ev = ws.cycle(1); // a -> b
+        assert_eq!(ev.map(event_id), Some("b".to_string()));
+        assert!(
+            ws.is_preview("b"),
+            "sequential cycling must not promote — only an explicit jump does"
+        );
+    }
+
+    #[test]
+    fn middle_click_closes_a_tab_left_click_activates() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open(WorkspaceDoc::new("a", "alpha"));
+        ws.open(WorkspaceDoc::new("b", "beta"));
+        ws.activate("a");
+
+        seed_click_geometry(
+            &mut ws,
+            Rect::new(0.0, 0.0, 80.0, 1.0),
+            &[(0.0, 10.0), (10.0, 20.0)],
+        );
+
+        let events = ws.handle_click(15.0, 0.5, MouseButton::Middle);
+        assert_eq!(
+            events,
+            vec![WorkspaceEvent::Closed {
+                id: "b".into(),
+                index: 1
+            }],
+            "middle click closes, it does not activate first"
+        );
+        assert_eq!(ids(&ws), ["a"]);
+        assert_eq!(
+            ws.active_id(),
+            Some("a"),
+            "middle-closing a non-active tab must not disturb the active one"
+        );
+    }
+
+    #[test]
+    fn middle_click_respects_the_closable_flag() {
+        let mut ws = WorkspaceController::new("w");
+        ws.open(WorkspaceDoc::new("a", "alpha").with_closable(false));
+
+        seed_click_geometry(&mut ws, Rect::new(0.0, 0.0, 80.0, 1.0), &[(0.0, 10.0)]);
+
+        assert_eq!(ws.handle_click(5.0, 0.5, MouseButton::Middle), vec![]);
+        assert_eq!(ws.len(), 1, "non-closable tab survives a middle click");
+    }
+
+    /// Test-only: seed the controller's cached click geometry as if
+    /// [`WorkspaceController::render`] had just painted `bounds`, tab `i`
+    /// spanning `tabs[i]`. Exercises `handle_click`'s real hit-testing and
+    /// event logic without a `Backend`; the rasteriser step itself
+    /// (actually painting a `TabBar` into those bounds) is covered
+    /// end-to-end by the driver tests in `tests/tui_example_driver.rs`.
+    fn seed_click_geometry(ws: &mut WorkspaceController, bounds: Rect, tabs: &[(f64, f64)]) {
+        ws.last_strip = Some(bounds);
+        ws.last_hits = Some(TabBarHits {
+            slot_positions: tabs.to_vec(),
+            close_bounds: vec![None; tabs.len()],
+            right_segment_bounds: Vec::new(),
+            available_cols: bounds.width as usize,
+            correct_scroll_offset: 0,
+        });
     }
 }
