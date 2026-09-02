@@ -260,20 +260,39 @@ mod tests {
         assert_ne!(buf[(0u16, 1u16)].bg, ratatui_color(theme.accent_bg));
     }
 
-    #[test]
-    fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction() {
+    /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
+    /// — see `docs/PRIMITIVE_RULES.md`'s "Coordinate frames for
+    /// `*_layout` methods" (issue #505): `minimap_layout` is documented
+    /// **ABSOLUTE**, so `hit_test` must be called with coordinates
+    /// shifted by the same `origin_x`/`origin_y` the minimap was
+    /// painted at, not with area-local coordinates.
+    fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let mm = minimap_from(vec!["x"; 8], 8);
-        let area = Rect::new(0, 0, 4, 8); // 2 rows of 4 lines each -> track height 8
+        let area = Rect::new(origin_x, origin_y, 4, 8); // 2 rows of 4 lines each -> track height 8
         let mut buf = Buffer::empty(area);
         let layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
         assert_eq!(
-            layout.hit_test(2.0, 4.0),
+            layout.hit_test(origin_x as f32 + 2.0, origin_y as f32 + 4.0),
             MinimapHit::Seek { fraction: 0.5 }
         );
         assert_eq!(
-            layout.hit_test(2.0, 0.0),
+            layout.hit_test(origin_x as f32 + 2.0, origin_y as f32),
             MinimapHit::Seek { fraction: 0.0 }
         );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction() {
+        paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"): `area = (0, 0)` is exactly the case where a
+    /// LOCAL/ABSOLUTE mixup in `tui_minimap_layout` would be invisible.
+    #[test]
+    fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7, 13);
     }
 
     #[test]

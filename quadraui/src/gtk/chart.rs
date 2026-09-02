@@ -661,4 +661,37 @@ mod tests {
             "rightmost sub-bar should be series 2"
         );
     }
+
+    /// `chart_layout` is documented **ABSOLUTE** (issue #505):
+    /// `plot_area` / `data_point_positions` must be shifted by the
+    /// chart's own origin, not left at (0, 0) — the case that hides a
+    /// LOCAL/ABSOLUTE mixup.
+    fn layout_round_trip_at(x: f64, y: f64) {
+        let chart = bar_chart(
+            ChartKind::Bar,
+            vec![series("a", vec![1.0, 2.0])],
+            (0.0, 2.0),
+        );
+        let layout = gtk_chart_layout(&chart, x, y, 100.0, 40.0, 12.0, 6.0);
+
+        assert_eq!(layout.plot_area.x as f64, x);
+        assert!(!layout.data_point_positions.is_empty());
+        for &(_, _, px, py) in &layout.data_point_positions {
+            assert!(
+                px as f64 >= x && py as f64 >= y,
+                "data point ({px}, {py}) must not fall left of/above the chart's own origin ({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_round_trip() {
+        layout_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn layout_round_trip_at_nonzero_origin() {
+        layout_round_trip_at(7.0, 13.0);
+    }
 }

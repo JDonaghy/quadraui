@@ -5283,6 +5283,87 @@ mod tests {
         );
     }
 
+    /// `data_table_layout` is documented **LOCAL** (issue #505):
+    /// `GtkBackend`'s impl never reads `rect.x`/`rect.y` at all — it
+    /// only forwards `rect.width`/`rect.height` to `DataTable::layout`
+    /// — so a non-zero origin must produce byte-identical column/row
+    /// geometry to the zero-origin case. This guards against a future
+    /// edit that starts folding `rect.x`/`rect.y` in (an accidental
+    /// switch to ABSOLUTE, the exact bug class `LESSONS.md`'s
+    /// `mac_tree_layout` postmortem describes).
+    #[test]
+    fn gtk_backend_data_table_layout_ignores_rect_origin() {
+        use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
+        use crate::types::StyledText;
+
+        let table = crate::DataTable {
+            id: WidgetId::new("dt"),
+            columns: vec![Column {
+                title: "Name".into(),
+                width: ColumnWidth::Fixed(40.0),
+                align: Default::default(),
+            }],
+            rows: vec![DataRow {
+                cells: vec![StyledText::plain("a")],
+                decoration: Default::default(),
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+
+        let backend = GtkBackend::new();
+        let at_origin =
+            Backend::data_table_layout(&backend, QRect::new(0.0, 0.0, 100.0, 50.0), &table);
+        let shifted =
+            Backend::data_table_layout(&backend, QRect::new(7.0, 13.0, 100.0, 50.0), &table);
+
+        assert_eq!(
+            at_origin.columns, shifted.columns,
+            "LOCAL data_table_layout must not shift column bounds by rect.x/rect.y"
+        );
+    }
+
+    /// `form_layout` is documented **LOCAL** (issue #505): `GtkBackend`'s
+    /// impl calls `form.layout(rect.width, rect.height, ..)` — `rect.x`/
+    /// `rect.y` are never read — so a non-zero origin must produce
+    /// byte-identical hit-region geometry to the zero-origin case.
+    #[test]
+    fn gtk_backend_form_layout_ignores_rect_origin() {
+        use crate::primitives::form::{FieldKind, FormField};
+        use crate::types::StyledText;
+
+        let form = crate::primitives::form::Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("f1"),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::Label,
+                hint: StyledText::plain(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+
+        let backend = GtkBackend::new();
+        let at_origin = Backend::form_layout(&backend, QRect::new(0.0, 0.0, 100.0, 50.0), &form);
+        let shifted = Backend::form_layout(&backend, QRect::new(7.0, 13.0, 100.0, 50.0), &form);
+
+        assert_eq!(
+            at_origin.hit_regions, shifted.hit_regions,
+            "LOCAL form_layout must not shift hit regions by rect.x/rect.y"
+        );
+    }
+
     /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
     /// internally (`gtk::sidebar_panel::draw_sidebar_panel` calls
     /// `gtk::toolbar::draw_toolbar` directly, bypassing

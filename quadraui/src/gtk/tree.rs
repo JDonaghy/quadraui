@@ -905,4 +905,40 @@ mod tests {
             }
         }
     }
+
+    /// `tree_layout` is documented **LOCAL** (issue #505): `bounds` must
+    /// stay relative to `area`'s origin regardless of where `area`
+    /// itself lives — the same contract `mac_tree_layout`'s
+    /// `layout_returns_local_coords_when_area_offset` guards (#44
+    /// postmortem, `docs/LESSONS.md`). Since #499, `gtk_tree_layout` and
+    /// `mac_tree_layout` share one implementation
+    /// (`layout_metrics::tree_layout`), but this repo's own GTK test
+    /// suite had no non-zero-origin coverage of its own until now.
+    #[test]
+    fn layout_returns_local_coords_when_area_offset() {
+        let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let area = QRect::new(0.0, 60.0, 240.0, 180.0);
+        let layout = gtk_tree_layout(&tree, area, 16.0);
+
+        let first = &layout.visible_rows[0];
+        assert_eq!(
+            first.bounds.y, 0.0,
+            "visible_rows.bounds.y must be local (0.0), got {}",
+            first.bounds.y,
+        );
+
+        for vr in &layout.visible_rows {
+            let abs_x = area.x + vr.bounds.x + vr.bounds.width * 0.5;
+            let abs_y = area.y + vr.bounds.y + vr.bounds.height * 0.5;
+            // Localise the way a host must (subtract area.x/area.y)
+            // before calling hit_test, per the documented contract.
+            let hit = layout.hit_test(abs_x - area.x, abs_y - area.y);
+            assert!(
+                matches!(hit, TreeViewHit::Row(idx) if idx == vr.row_idx),
+                "row {} at local bounds {:?} did not round-trip through localised hit_test",
+                vr.row_idx,
+                vr.bounds,
+            );
+        }
+    }
 }

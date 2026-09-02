@@ -6,6 +6,40 @@
 //! with platform-native drawing + input.
 //!
 //! See `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §4 for design rationale.
+//!
+//! ## Coordinate frames for `*_layout` methods (issue #505)
+//!
+//! Every `Backend::<name>_layout` method (and its `draw_<name>` twin,
+//! where one returns hit-region data) documents **which** of two frames
+//! its `hit_regions` / `bounds` fields are in — there is no third option
+//! and no undocumented exception:
+//!
+//! - **LOCAL** — relative to `rect`'s origin; `(0, 0)` is `rect`'s
+//!   top-left corner. Used by primitives a parent composer paints
+//!   *inline* and localises clicks for before calling `hit_test`
+//!   (`tree_layout`, `form_layout`, `data_table_layout`,
+//!   `text_display_layout`, `status_bar_layout`, `activity_bar_layout`).
+//! - **ABSOLUTE** — shifted by `rect.x` / `rect.y`, i.e. target-surface
+//!   coordinates a caller can compare directly against raw click
+//!   coordinates with no further adjustment. Used by primitives that are
+//!   painted as a freestanding widget at their own screen rect and whose
+//!   callers don't otherwise track that rect (`tab_bar_layout`,
+//!   `menu_bar_layout`, `split_layout`, `split_tree_layout`,
+//!   `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`,
+//!   `progress_layout`, `spinner_layout`, `command_center_layout`,
+//!   `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`,
+//!   `minimap_layout`, `msv_layout`, `text_input_layout`).
+//!
+//! Both frames are legitimate — the rule this file enforces is that the
+//! frame is *stated on the method's doc comment* and *matches what every
+//! backend implementation actually returns* (see
+//! `quadraui/docs/DECISIONS.md` D-005 for why the split exists and why
+//! it isn't collapsed to one frame; `quadraui/docs/PRIMITIVE_RULES.md`
+//! "Coordinate frames for `*_layout` methods" for the authoring rule).
+//! `quadraui/docs/LESSONS.md` "Layout helpers must return coords in the
+//! same frame across backends" records the bug class this convention
+//! guards against: a `*_layout` twin that silently disagrees with its
+//! own TUI/GTK siblings about which frame it returns.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -766,12 +800,21 @@ pub trait Backend {
     /// (a terminal cell can't be subdivided).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
+    /// Draw `table` into `rect` and return its layout for hit-testing.
+    /// Coordinate frame: **LOCAL** — `hit_regions` / row bounds are
+    /// relative to `rect`'s origin, matching [`Self::data_table_layout`]
+    /// (issue #505).
     fn draw_data_table(
         &mut self,
         rect: Rect,
         table: &DataTable,
         hovered_idx: Option<usize>,
     ) -> DataTableLayout;
+    /// Compute the data-table layout without painting. Coordinate frame:
+    /// **LOCAL** — relative to `rect`'s origin, `(0, 0)` at `rect`'s
+    /// top-left; callers subtract `rect.x` / `rect.y` from absolute
+    /// click coordinates before calling `hit_test` (issue #505; see the
+    /// module doc's *Coordinate frames* section).
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
@@ -1107,15 +1150,26 @@ pub trait Backend {
     /// this to drive hit-testing for scrollbar drag interaction without
     /// re-deriving metrics — paint and click consume one layout per
     /// frame, the source-of-truth contract.
+    ///
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin
+    /// (issue #505).
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout;
 
     /// Draw a [`TextInput`] (multi-line text entry) and return the
     /// resolved layout for hit-testing. Backends paint the border,
     /// text lines, cursor, and placeholder (when active).
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `content_bounds` / hit regions
+    /// are shifted by `rect.x` / `rect.y`, matching [`Self::text_input_layout`]
+    /// (issue #505).
     fn draw_text_input(&mut self, rect: Rect, ti: &TextInput) -> TextInputLayout;
 
     /// Compute the layout `draw_text_input` would produce. Used by
     /// hosts to route clicks without re-rendering.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
+    /// callers compare directly against raw click coordinates
+    /// (issue #505).
     fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
@@ -1184,6 +1238,10 @@ pub trait Backend {
     /// to drive hit-testing without re-deriving metrics — paint and
     /// click consume one layout per frame, the source-of-truth
     /// contract `MultiSectionView` exists to enforce.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `hit_regions` / body bounds are
+    /// shifted by `rect.x` / `rect.y`; callers compare them directly
+    /// against raw click coordinates (issue #505).
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout;
 
     /// Return the layout metrics this backend uses for MSV layout.
@@ -1196,6 +1254,14 @@ pub trait Backend {
     /// to row indices without re-deriving the row pitch (1 cell
     /// uniform on TUI; `1.0×`/`1.4×` line_height by `Decoration` on
     /// GTK).
+    ///
+    /// Coordinate frame: **LOCAL** — `visible_rows.bounds` / `hit_regions`
+    /// are relative to `rect`'s origin (`(0, 0)` at `rect`'s top-left);
+    /// callers subtract `rect.x` / `rect.y` from absolute click
+    /// coordinates before calling `hit_test` (issue #505; see
+    /// `primitives::layout_metrics::tree_layout`'s doc, and
+    /// `docs/LESSONS.md`'s `mac_tree_layout` postmortem for why this
+    /// frame is load-bearing).
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
 
     /// Compute the form layout the rasteriser would produce for `form`
@@ -1203,6 +1269,9 @@ pub trait Backend {
     /// to drive hit-testing — especially for `ToggleGroup` and
     /// `ButtonRow` fields where per-item hit regions depend on
     /// backend-specific text measurement.
+    ///
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin
+    /// (issue #505).
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout;
 
     /// Draw an [`Editor`]. Returns paint-side data the host needs
@@ -1298,7 +1367,8 @@ pub trait Backend {
     /// Draw a [`MenuBar`]. The backend computes the layout internally
     /// with native metrics (cells for TUI, Pango pixels for GTK) and
     /// returns the [`MenuBarLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics.
+    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
+    /// coordinate frame as [`Self::menu_bar_layout`] (ABSOLUTE).
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
 
     /// Compute the menu-bar layout the rasteriser would produce for
@@ -1306,17 +1376,24 @@ pub trait Backend {
     /// call this in click handlers to resolve hits against the same
     /// layout that was painted — never re-derive with a hand-rolled
     /// measurer.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
 
     /// Draw a [`Split`] divider. The backend computes the layout with
     /// its native divider thickness (1 cell for TUI, ~4px for GTK)
     /// and returns the [`SplitLayout`] so hosts can route clicks and
     /// drive drag operations. Pane content is NOT drawn — hosts paint
-    /// into `layout.first_bounds` / `layout.second_bounds`.
+    /// into `layout.first_bounds` / `layout.second_bounds`. Same
+    /// coordinate frame as [`Self::split_layout`] (ABSOLUTE).
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout;
 
     /// Compute the split layout without painting. Hosts call this in
     /// drag handlers to recompute the ratio from cursor position.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `first_bounds` / `divider_bounds`
+    /// / `second_bounds` are shifted by `rect.x` / `rect.y` (issue #505).
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout;
 
     /// Draw a [`SplitTree`]'s dividers. The backend computes the
@@ -1326,12 +1403,16 @@ pub trait Backend {
     /// [`SplitTreeLayout::hit_test_divider_cell`] /
     /// [`SplitTreeLayout::hit_test_leaf`]) and drive drag operations
     /// via [`crate::DragTarget::SplitDivider`]. Leaf content is NOT
-    /// drawn — hosts paint into each `layout.leaves[i].1` rect.
+    /// drawn — hosts paint into each `layout.leaves[i].1` rect. Same
+    /// coordinate frame as [`Self::split_tree_layout`] (ABSOLUTE).
     fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
 
     /// Compute the split-tree layout without painting. Hosts call this
     /// in drag handlers to recompute a divider's ratio from cursor
     /// position without re-painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — leaf / divider bounds are
+    /// shifted by `rect.x` / `rect.y` (issue #505).
     fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
 
     /// Draw a [`Panel`] chrome (title bar + action buttons). The
@@ -1339,33 +1420,45 @@ pub trait Backend {
     /// (1 cell for TUI, line_height for GTK) and returns the
     /// [`PanelLayout`] so hosts can route clicks to actions, title
     /// bar, or content. Content is NOT drawn — hosts paint into
-    /// `layout.content_bounds`.
+    /// `layout.content_bounds`. Same coordinate frame as
+    /// [`Self::panel_layout`] (ABSOLUTE).
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Compute the panel layout without painting. Hosts call this in
     /// click handlers to resolve hits without re-deriving metrics.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `title_bar_bounds` / action /
+    /// `content_bounds` are shifted by `rect.x` / `rect.y` (issue #505).
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Draw a [`ToastStack`] overlay. The backend computes the layout
     /// with its native toast dimensions (cell-width boxes for TUI,
     /// pixel boxes for GTK) and returns the [`ToastStackLayout`] so
-    /// hosts can route clicks to dismiss, action, or body.
+    /// hosts can route clicks to dismiss, action, or body. Same
+    /// coordinate frame as [`Self::toast_stack_layout`] (ABSOLUTE).
     fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
 
     /// Compute the toast-stack layout without painting. Hosts call
     /// this in click handlers to resolve hits.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
 
     /// Draw a [`PipelineView`] (horizontal multi-stage workflow widget).
     /// The backend paints stage boxes, status icons, labels, optional
     /// action buttons, and arrow connectors. Returns the
     /// [`PipelineViewLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics.
+    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
+    /// coordinate frame as [`Self::pipeline_view_layout`] (ABSOLUTE).
     fn draw_pipeline_view(&mut self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
 
     /// Compute pipeline-view layout without painting. Hosts call this in
     /// click handlers to resolve hits against the same layout that was
     /// painted — never re-derive with a hand-rolled measurer.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn pipeline_view_layout(&self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
 
     /// Draw a [`DiffView`] (two-pane side-by-side or unified diff viewer).
@@ -1375,24 +1468,38 @@ pub trait Backend {
 
     /// Draw a [`ProgressBar`]. The backend paints the track, fill,
     /// optional label, and optional cancel affordance. Returns the
-    /// [`ProgressBarLayout`] so hosts can route clicks.
+    /// [`ProgressBarLayout`] so hosts can route clicks. Same
+    /// coordinate frame as [`Self::progress_layout`] (ABSOLUTE).
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
 
     /// Compute progress-bar layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
 
     /// Draw a [`Spinner`] (indeterminate activity indicator). Returns
-    /// the [`SpinnerLayout`] for host hit-testing.
+    /// the [`SpinnerLayout`] for host hit-testing. Same coordinate
+    /// frame as [`Self::spinner_layout`] (ABSOLUTE).
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
 
     /// Compute spinner layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
 
     /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
-    /// [`CommandCenterLayout`] so hosts can route clicks.
+    /// [`CommandCenterLayout`] so hosts can route clicks. Same
+    /// coordinate frame as [`Self::command_center_layout`] (ABSOLUTE).
     fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 
     /// Compute command-center layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505; regression-tested against `LESSONS.md`'s "same
+    /// frame across backends" rule by `mac_command_center_layout`'s
+    /// non-zero-origin test).
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 
     /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
@@ -1401,7 +1508,8 @@ pub trait Backend {
     /// rasteriser can tint the matching button's background (same
     /// pattern as `StatusBar`). Returns the [`ToolbarLayout`] so hosts
     /// can route clicks via `layout.hit_test(x, y)` without re-deriving
-    /// metrics.
+    /// metrics. Same coordinate frame as [`Self::toolbar_layout`]
+    /// (ABSOLUTE).
     fn draw_toolbar(
         &mut self,
         rect: Rect,
@@ -1412,6 +1520,9 @@ pub trait Backend {
 
     /// Compute toolbar layout without painting. Hosts call this after
     /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
 
     /// Draw a [`SidebarPanel`] — optional header toolbar + content
@@ -1421,7 +1532,8 @@ pub trait Backend {
     /// `Panel` rasteriser contract.
     ///
     /// `hovered_toolbar_id` / `pressed_toolbar_id` are forwarded to
-    /// the nested toolbar paint for hover / pressed tints.
+    /// the nested toolbar paint for hover / pressed tints. Same
+    /// coordinate frame as [`Self::sidebar_panel_layout`] (ABSOLUTE).
     fn draw_sidebar_panel(
         &mut self,
         rect: Rect,
@@ -1433,13 +1545,17 @@ pub trait Backend {
     /// Compute sidebar-panel layout without painting. Hosts call this
     /// in click handlers to resolve hits to the toolbar / content /
     /// outside without re-deriving metrics.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `content_bounds` / toolbar
+    /// bounds are shifted by `rect.x` / `rect.y` (issue #505).
     fn sidebar_panel_layout(&self, rect: Rect, panel: &SidebarPanel) -> SidebarPanelLayout;
 
     /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
     /// carries per-frame hover state (series_idx, data_idx) so the
     /// rasteriser can highlight the data point under the cursor.
     /// Returns the [`ChartLayout`] so hosts can route clicks and
-    /// resolve nearest-point from mouse position.
+    /// resolve nearest-point from mouse position. Same coordinate
+    /// frame as [`Self::chart_layout`] (ABSOLUTE).
     fn draw_chart(
         &mut self,
         rect: Rect,
@@ -1449,6 +1565,10 @@ pub trait Backend {
     ) -> ChartLayout;
 
     /// Compute chart layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `bounds` / `hit_regions` /
+    /// `data_point_positions` are shifted by `rect.x` / `rect.y`
+    /// (issue #505).
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;
 
     /// Draw a [`BoardModel`] (kanban/pipeline board widget).
@@ -1481,6 +1601,7 @@ pub trait Backend {
     /// Returns [`MinimapPaintResult`] carrying the resolved
     /// [`MinimapLayout`] so hosts can route clicks via
     /// `result.layout.hit_test(x, y)` without re-deriving geometry.
+    /// Same coordinate frame as [`Self::minimap_layout`] (ABSOLUTE).
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
@@ -1492,6 +1613,10 @@ pub trait Backend {
     /// this from `AppLogic::handle` (which only has `&mut self`, not the
     /// `MinimapPaintResult` `render` produced) to hit-test a click
     /// against the same geometry the last paint used.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
+    /// (issue #505). Not implemented on macOS (`todo!()`, out of scope
+    /// per #382) — do not call on that backend.
     fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
 
     /// Paint `image` within `rect`, honoring `image.fit` (see

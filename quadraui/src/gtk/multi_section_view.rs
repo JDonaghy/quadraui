@@ -1090,4 +1090,42 @@ mod tests {
             item_h
         );
     }
+
+    /// `msv_layout` is documented **ABSOLUTE** (issue #505): section
+    /// header/body bounds must start at the view's own origin, not
+    /// (0, 0) — the case that hides a LOCAL/ABSOLUTE mixup.
+    fn header_hit_round_trip_at(x: f32, y: f32) {
+        let view = view_with(vec![tree_section("alpha", &["a1", "a2"])]);
+        let bounds = QRect::new(x, y, 100.0, 60.0);
+        let layout = gtk_msv_layout(&view, bounds, LINE_HEIGHT);
+
+        let sl = &layout.sections[0];
+        assert_eq!(sl.header_bounds.x, x);
+        assert_eq!(sl.header_bounds.y, y);
+
+        let hx = sl.header_bounds.x + 5.0;
+        let hy = sl.header_bounds.y + sl.header_bounds.height / 2.0;
+        match layout.hit_test(hx, hy) {
+            MultiSectionViewHit::Header { section, .. } => assert_eq!(section, 0),
+            other => panic!("expected Header hit at ({hx}, {hy}), got {other:?}"),
+        }
+
+        let bx = sl.body_bounds.x + 1.0;
+        let by = sl.body_bounds.y + 1.0;
+        match layout.hit_test(bx, by) {
+            MultiSectionViewHit::Body { section } => assert_eq!(section, 0),
+            other => panic!("expected Body hit at ({bx}, {by}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn header_hit_round_trip() {
+        header_hit_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn header_hit_round_trip_at_nonzero_origin() {
+        header_hit_round_trip_at(7.0, 13.0);
+    }
 }
