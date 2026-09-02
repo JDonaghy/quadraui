@@ -8,10 +8,15 @@
 //! the DirectWrite text infrastructure — [`super::text::DWrite`],
 //! [`WinBackend::measure_text`], [`WinBackend::draw_text`] — so
 //! `line_height()`/`char_width()` return real font metrics instead of
-//! the `16.0`/`8.0` placeholder defaults. Every other `draw_*`/`*_layout`
-//! rasteriser method is still a `todo!()` stub — later issues implement
-//! each one against Direct2D / DirectWrite, same as the GTK backend did
-//! one primitive at a time.
+//! the `16.0`/`8.0` placeholder defaults. #25 landed the four chrome-strip
+//! rasterisers — `status_bar`, `tab_bar`, `activity_bar`, `menu_bar` (see
+//! `super::status_bar`/`super::tab_bar`/`super::activity_bar`/
+//! `super::menu_bar`) — each wired into its `Backend` trait method below,
+//! falling back to the `todo!()` stub only for a `WinBackend` no window
+//! has ever attached a surface to (see [`WinBackend::draw_status_bar`]'s
+//! doc). Every other `draw_*`/`*_layout` rasteriser method is still a
+//! `todo!()` stub — later issues implement each one against Direct2D /
+//! DirectWrite, same as the GTK backend did one primitive at a time.
 //!
 //! # Implementation notes
 //!
@@ -608,63 +613,165 @@ impl Backend for WinBackend {
         todo!("Direct2D settings chrome rasteriser")
     }
 
+    /// #25: real Direct2D/DirectWrite rasteriser via `win::status_bar`
+    /// once a surface is attached. Falls through to the `todo!()` stub
+    /// otherwise — `self.surface`/`self.dwrite` are always populated
+    /// together by [`Self::attach_surface`], so that only happens for a
+    /// standalone `WinBackend` no window has ever attached to yet, the
+    /// same "not wired up" posture every other still-`todo!()` method
+    /// here has.
     fn draw_status_bar(
         &mut self,
-        _rect: Rect,
-        _bar: &StatusBar,
-        _hovered_id: Option<&crate::types::WidgetId>,
-        _pressed_id: Option<&crate::types::WidgetId>,
+        rect: Rect,
+        bar: &StatusBar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
     ) -> StatusBarLayout {
-        todo!("Direct2D status bar rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::status_bar::draw_status_bar(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                hovered_id,
+                pressed_id,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, hovered_id, pressed_id);
+        todo!("Direct2D status bar rasteriser (no surface attached yet)")
     }
 
     fn draw_tab_bar(
         &mut self,
-        _rect: Rect,
-        _bar: &TabBar,
-        _hovered_close_tab: Option<usize>,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
     ) -> TabBarHits {
-        todo!("Direct2D tab bar rasteriser")
+        // Icon-less bars are the empty-sidecar case of the icon path (see
+        // `crate::Backend::draw_tab_bar_icons`'s doc) — one paint loop to
+        // keep in sync, same as `GtkBackend`/`TuiBackend`.
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
+    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
     fn draw_tab_bar_icons(
         &mut self,
-        _rect: Rect,
-        _bar: &TabBar,
-        _icons: &[Option<crate::TabIcon>],
-        _hovered_close_tab: Option<usize>,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+        hovered_close_tab: Option<usize>,
     ) -> TabBarHits {
-        todo!("Direct2D tab bar rasteriser (with per-tab icons)")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::tab_bar::draw_tab_bar_icons(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                icons,
+                hovered_close_tab,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, icons, hovered_close_tab);
+        todo!("Direct2D tab bar rasteriser (with per-tab icons) — no surface attached yet")
     }
 
+    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
     fn draw_activity_bar(
         &mut self,
-        _rect: Rect,
-        _bar: &ActivityBar,
-        _hovered_idx: Option<usize>,
+        rect: Rect,
+        bar: &ActivityBar,
+        hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
-        todo!("Direct2D activity bar rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::activity_bar::draw_activity_bar(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                hovered_idx,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, hovered_idx);
+        todo!("Direct2D activity bar rasteriser (no surface attached yet)")
     }
 
-    fn status_bar_layout(&self, _rect: Rect, _bar: &StatusBar) -> StatusBarLayout {
-        todo!("DirectWrite status bar layout")
+    /// #25: pure measurement — only needs `self.dwrite`, not a live
+    /// render target, so this works as soon as a surface has ever been
+    /// attached (DirectWrite handles outlive device loss; see
+    /// `Self::ensure_surface`'s docs).
+    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::status_bar::win_status_bar_layout(dwrite, rect, bar);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar);
+        todo!("DirectWrite status bar layout (no surface attached yet)")
     }
 
-    fn tab_bar_layout(&self, _rect: Rect, _bar: &TabBar) -> TabBarHits {
-        todo!("DirectWrite tab bar layout")
+    fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
+        self.tab_bar_layout_icons(rect, bar, &[])
     }
 
+    /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
+    /// `self.dwrite`.
     fn tab_bar_layout_icons(
         &self,
-        _rect: Rect,
-        _bar: &TabBar,
-        _icons: &[Option<crate::TabIcon>],
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
     ) -> TabBarHits {
-        todo!("DirectWrite tab bar layout (with per-tab icons)")
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::tab_bar::win_tab_bar_layout_icons(dwrite, rect, bar, icons);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, icons);
+        todo!("DirectWrite tab bar layout (with per-tab icons) — no surface attached yet")
     }
 
-    fn activity_bar_layout(&self, _rect: Rect, _bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
-        todo!("DirectWrite activity bar layout")
+    /// #25: activity-bar layout needs no measurer at all (uniform
+    /// `ACTIVITY_ROW_DIP` row height), so unlike its siblings this
+    /// doesn't even need `self.dwrite` — only kept behind the
+    /// `target_os = "windows"` gate for consistency with every other
+    /// method in this file.
+    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
+        #[cfg(target_os = "windows")]
+        {
+            return super::activity_bar::win_activity_bar_layout(rect, bar)
+                .visible_items
+                .into_iter()
+                .map(|vi| {
+                    let item = match vi.side {
+                        crate::primitives::activity_bar::ActivitySide::Top => {
+                            &bar.top_items[vi.item_idx]
+                        }
+                        crate::primitives::activity_bar::ActivitySide::Bottom => {
+                            &bar.bottom_items[vi.item_idx]
+                        }
+                    };
+                    ActivityBarRowHit {
+                        y_start: vi.bounds.y as f64,
+                        y_end: (vi.bounds.y + vi.bounds.height) as f64,
+                        id: item.id.clone(),
+                        tooltip: item.tooltip.clone(),
+                    }
+                })
+                .collect();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, bar);
+            todo!("DirectWrite activity bar layout")
+        }
     }
 
     fn draw_terminal(&mut self, _rect: Rect, _term: &Terminal) {
@@ -771,12 +878,28 @@ impl Backend for WinBackend {
         todo!("Direct2D drop overlay rasteriser")
     }
 
-    fn draw_menu_bar(&mut self, _rect: Rect, _bar: &MenuBar) -> MenuBarLayout {
-        todo!("Direct2D menu bar rasteriser")
+    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
+    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::menu_bar::draw_menu_bar(&surface.target, dwrite, rect, bar);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar);
+        todo!("Direct2D menu bar rasteriser (no surface attached yet)")
     }
 
-    fn menu_bar_layout(&self, _rect: Rect, _bar: &MenuBar) -> MenuBarLayout {
-        todo!("DirectWrite menu bar layout")
+    /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
+    /// `self.dwrite`.
+    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::menu_bar::win_menu_bar_layout(dwrite, rect, bar);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar);
+        todo!("DirectWrite menu bar layout (no surface attached yet)")
     }
 
     fn draw_split(&mut self, _rect: Rect, _split: &Split) -> SplitLayout {
