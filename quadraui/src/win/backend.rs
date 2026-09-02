@@ -744,9 +744,14 @@ impl Backend for WinBackend {
     /// `target_os = "windows"` gate for consistency with every other
     /// method in this file.
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
+        // No `return` here (unlike the `if let Some(dwrite)` early-returns
+        // above): on `target_os = "windows"` the `not(windows)` block below
+        // is stripped, so this block *is* the tail expression and an
+        // explicit `return` trips `clippy::needless_return` — an error under
+        // CI's `-D warnings`, and only on the windows-latest leg.
         #[cfg(target_os = "windows")]
         {
-            return super::activity_bar::win_activity_bar_layout(rect, bar)
+            super::activity_bar::win_activity_bar_layout(rect, bar)
                 .visible_items
                 .into_iter()
                 .map(|vi| {
@@ -765,7 +770,7 @@ impl Backend for WinBackend {
                         tooltip: item.tooltip.clone(),
                     }
                 })
-                .collect();
+                .collect()
         }
         #[cfg(not(target_os = "windows"))]
         {

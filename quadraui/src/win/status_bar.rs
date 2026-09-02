@@ -150,8 +150,30 @@ mod tests {
         }
     }
 
-    /// Paint↔click round trip: the segment's painted background pixel and
-    /// the layout's own `hit_test` at that same point must agree on which
+    /// Does `color` appear anywhere on row `y` between `x0` and `x1`
+    /// (bar-local DIPs, half-open)?
+    ///
+    /// A *scan* rather than a single `pixel_at` probe: `draw_status_bar`
+    /// paints each segment's label with `DrawText` into the segment's own
+    /// rect, left- and top-aligned with no padding (the primitive's layout
+    /// adds none), so the exact pixel at a segment's left edge or centre
+    /// may well land on a glyph stem. Which pixels the glyphs cover is a
+    /// DirectWrite font-rasterisation detail (hinting, ClearType fringes,
+    /// whichever `Segoe UI` version the host ships) and is *not* what these
+    /// assertions are about — the claim under test is "this segment's `bg`
+    /// was filled across this segment's own bounds", and inter-glyph gaps
+    /// make that observable no matter where the ink lands. See
+    /// `tab_bar`'s sibling test, which dodges the same hazard by sampling
+    /// below the glyph band.
+    fn row_contains(surface: &HeadlessSurface, x0: f32, x1: f32, y: u32, color: Color) -> bool {
+        (x0.max(0.0) as u32..x1.max(0.0) as u32).any(|x| {
+            let px = surface.pixel_at(x, y);
+            (px.r, px.g, px.b) == (color.r, color.g, color.b)
+        })
+    }
+
+    /// Paint↔click round trip: the segment's painted background and the
+    /// layout's own `hit_test` over those same bounds must agree on which
     /// (if any) `WidgetId` was clicked.
     #[test]
     fn paint_and_hit_test_round_trip() {
@@ -168,12 +190,21 @@ mod tests {
             .expect("paint status bar");
 
         // The left segment starts at bar-local x=0 — its fill colour must
-        // be visible at (1, mid_y).
+        // be visible somewhere across its own bounds.
         let mid_y = (H / 2.0) as u32;
-        let left_px = surface.pixel_at(1, mid_y);
-        assert_eq!(
-            (left_px.r, left_px.g, left_px.b),
-            (10, 20, 30),
+        let left_vs = layout
+            .visible_segments
+            .iter()
+            .find(|vs| vs.side == StatusSegmentSide::Left)
+            .expect("left segment is visible");
+        assert!(
+            row_contains(
+                &surface,
+                left_vs.bounds.x,
+                left_vs.bounds.x + left_vs.bounds.width,
+                mid_y,
+                Color::rgb(10, 20, 30),
+            ),
             "left segment's bg should be painted at its own bounds"
         );
 
@@ -197,10 +228,14 @@ mod tests {
             right_hit,
             StatusBarHit::Segment(WidgetId::new("status:cursor"))
         );
-        let right_px = surface.pixel_at(cx as u32, mid_y);
-        assert_eq!(
-            (right_px.r, right_px.g, right_px.b),
-            (40, 50, 60),
+        assert!(
+            row_contains(
+                &surface,
+                right_vs.bounds.x,
+                right_vs.bounds.x + right_vs.bounds.width,
+                mid_y,
+                Color::rgb(40, 50, 60),
+            ),
             "right segment's bg should be painted at its own hit-tested bounds"
         );
     }
