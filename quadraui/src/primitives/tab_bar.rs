@@ -587,6 +587,36 @@ impl TabChrome {
 /// Apps consume this to dispatch clicks. Tabs before the
 /// scroll offset get sentinel entries so indices in `slot_positions`
 /// / `close_bounds` line up with `bar.tabs`.
+///
+/// # Legacy `f64` coordinates (issue #504)
+///
+/// Every other hit/layout struct in this crate (`TabBarLayout`,
+/// `ActivityBarRowHit`, `StatusBarLayout`, …) uses `f32` — the crate's
+/// native-unit convention (`Point`, `Rect`). This one still uses `f64`
+/// pairs and `available_cols: usize` in **character columns** (a TUI-only
+/// concept even GTK/macOS fake by measuring a Pango sample string),
+/// because it predates that convention and [`TabBarLayout`] — the
+/// intended f32-native replacement — didn't exist yet.
+///
+/// It stays this way rather than being fixed in place because `vimcode`
+/// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
+/// `src/gtk/mod.rs`) destructures these fields directly as `f64`, and
+/// CLAUDE.md's downstream-consumers policy forbids a hard break — a type
+/// change here needs the same two-PR deprecate-then-remove protocol as
+/// [`crate::backend::EditorPaintResult::cursor_position`], except across
+/// six `Backend` trait methods (`draw_tab_bar`, `draw_tab_bar_icons`,
+/// `draw_tab_bar_with_chrome`, `tab_bar_layout`, `tab_bar_layout_icons`,
+/// `tab_bar_layout_with_chrome`) and four backends, two of which
+/// (`macos::tab_bar`, `win::tab_bar`) construct this struct directly with
+/// no intermediate `TabBarLayout` to source native `f32` coordinates
+/// from. That is real, separate follow-up work, not something this PR's
+/// pass over `EditorPaintResult`/`ActivityBarRowHit` could fold in.
+///
+/// The one piece of this struct's *legacy-ness* this crate can and does
+/// fix without breaking anyone: the converter that constructs it,
+/// [`crate::backend::tab_bar_layout_to_hits`], is deprecated in favour of
+/// [`crate::backend::tab_bar_hits_from_layout`] (same body, new name, zero
+/// remaining in-repo callers of the old one).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TabBarHits {
     /// `[(start_x, end_x)]` per tab index. Tabs before

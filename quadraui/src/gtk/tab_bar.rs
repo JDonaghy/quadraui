@@ -15,7 +15,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
-use crate::backend::tab_bar_layout_to_hits;
+use crate::backend::tab_bar_hits_from_layout;
 use crate::primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame, TabMeasure,
 };
@@ -662,8 +662,8 @@ pub fn draw_tab_bar_icons_with_chrome(
     // Restore caller's font.
     pango_layout.set_font_description(Some(&saved_font));
 
-    let mut hits = tab_bar_layout_to_hits(&layout, bar);
-    // `tab_bar_layout_to_hits` yields bar-relative positions, but the
+    let mut hits = tab_bar_hits_from_layout(&layout, bar);
+    // `tab_bar_hits_from_layout` yields bar-relative positions, but the
     // `TabBarHits` contract is target-surface coordinates (matching the TUI
     // rasteriser and the painted glyphs above, which all add `x_offset`).
     // Shift every hit range so consumers can hit-test against raw click x.
@@ -1292,7 +1292,7 @@ mod tests {
         }
     }
 
-    /// #646 "not in scope: the hit rect" — `tab_bar_layout_to_hits` (via
+    /// #646 "not in scope: the hit rect" — `tab_bar_hits_from_layout` (via
     /// `TabBarLayout::hit_test`) must keep reporting the tab's hit region
     /// at the full `row_height`, even though the visible chip is now inset.
     /// A click 1px into the strip's top margin — above the chip's

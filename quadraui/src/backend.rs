@@ -1674,7 +1674,7 @@ pub enum ImagePaintResult {
 
 /// Shift every x-span in `hits` right by `dx`.
 ///
-/// [`tab_bar_layout_to_hits`] yields **bar-relative** x (the primitive
+/// [`tab_bar_hits_from_layout`] yields **bar-relative** x (the primitive
 /// measures from `0.0`), but the [`TabBarHits`] contract is
 /// target-surface (absolute) coordinates. Rasterisers and the no-paint
 /// `tab_bar_layout` variants both call this with `rect.x` so the two
@@ -1712,7 +1712,36 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 /// Spans are **bar-relative** on return; callers that owe the
 /// [`TabBarHits`] absolute contract must follow up with
 /// [`shift_tab_bar_hits`] using `rect.x`.
+///
+/// # Deprecated (issue #504)
+///
+/// Renamed to [`tab_bar_hits_from_layout`] — same body, same contract.
+/// `TabBarHits`'s `f64` coordinate fields predate the crate's f32-native
+/// convention (`Point`/`Rect`), and this converter is the thing that
+/// keeps constructing them; every in-repo caller now goes through the
+/// new name so this deprecated one has **zero in-repo callers**, per
+/// CLAUDE.md's two-PR deprecate-then-remove protocol. Full retirement of
+/// `TabBarHits` itself (the `f64` fields, and the six `Backend` trait
+/// methods that return it) is a separate, much larger follow-up: `vimcode`
+/// holds a real, non-doc-only dependency on `TabBarHits`'s field types
+/// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
+/// `src/gtk/mod.rs`), and two of the four backends (`macos::tab_bar`,
+/// `win::tab_bar`) construct `TabBarHits` directly without ever computing
+/// an intermediate `TabBarLayout`, so a safe migration needs new native
+/// per-backend rasterisers, not just a signature change.
+#[deprecated(since = "0.0.1", note = "renamed to `tab_bar_hits_from_layout`")]
 pub fn tab_bar_layout_to_hits(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
+    tab_bar_hits_from_layout(layout, bar)
+}
+
+/// Convert a `TabBarLayout` to the legacy `TabBarHits` struct.
+///
+/// Spans are **bar-relative** on return; callers that owe the
+/// [`TabBarHits`] absolute contract must follow up with
+/// [`shift_tab_bar_hits`] using `rect.x`. See
+/// [`tab_bar_layout_to_hits`]'s doc for why `TabBarHits` itself — not
+/// just this converter's name — is still legacy (issue #504).
+pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];
     let mut right_segment_bounds = Vec::new();
@@ -1777,15 +1806,42 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
 /// terminal cursor) populate the actual cursor cell.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EditorPaintResult {
+    /// Terminal-cell `(x, y)` cursor position, if the host is responsible
+    /// for terminal-cursor positioning. `None` when the backend painted
+    /// its own caret OR when the cursor is outside the viewport.
+    ///
+    /// # Deprecated (issue #504)
+    ///
+    /// This field leaked a TUI-only representation — `ratatui::Frame::
+    /// set_cursor_position` wants a `(u16, u16)` cell pair — into a
+    /// portable trait return type every other backend had to fake with
+    /// `None`. [`Self::cursor_position_native`] replaces it with a
+    /// [`Point`] in each backend's own native unit (TUI still rounds to
+    /// the nearest cell internally before widening).
+    ///
+    /// Kept alive, and still populated by the TUI backend, because
+    /// `vimcode` (`src/tui_main/render_impl.rs`) reads this field
+    /// directly and passes it straight into `Frame::set_cursor_position`,
+    /// which only has `impl From<(u16, u16)> for Position` — there is no
+    /// `From<Point>` quadraui could add (orphan rule). Per CLAUDE.md's
+    /// two-PR deprecate-then-remove protocol, removing this field is a
+    /// separate follow-up PR, gated on that vimcode call site migrating
+    /// to `cursor_position_native` first.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `cursor_position_native` (`Point`, native units) instead; kept populated by the TUI backend until vimcode's `Frame::set_cursor_position(result.cursor_position)` call site migrates (issue #504)"
+    )]
+    pub cursor_position: Option<(u16, u16)>,
+
     /// Cursor's painted position in backend-native units (issue #504 —
-    /// this used to be a terminal-cell `(u16, u16)` pair leaked from the
-    /// TUI backend's `ratatui::Frame::set_cursor_position` plumbing; every
-    /// other backend just wants a [`Point`] in its own native unit), if
-    /// the host is responsible for terminal-cursor positioning. `None`
-    /// when the backend painted its own caret OR when the cursor is
-    /// outside the viewport. TUI rounds to the nearest cell internally
-    /// before returning.
-    pub cursor_position: Option<Point>,
+    /// the forward-looking replacement for the deprecated
+    /// [`Self::cursor_position`]; every backend but TUI just wants a
+    /// [`Point`] in its own native unit), if the host is responsible for
+    /// terminal-cursor positioning. `None` when the backend painted its
+    /// own caret OR when the cursor is outside the viewport. TUI rounds
+    /// to the nearest cell internally before returning, then widens the
+    /// cell coordinates back into this field's `f32` unit.
+    pub cursor_position_native: Option<Point>,
 }
 
 /// Trait for content that can render itself into a rect using any backend.

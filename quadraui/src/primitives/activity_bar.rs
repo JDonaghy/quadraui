@@ -239,6 +239,20 @@ pub enum ActivityBarHit {
 ///
 /// [`Backend::draw_activity_bar`]: crate::Backend::draw_activity_bar
 /// [`TabBarHits`]: crate::TabBarHits
+///
+/// # `f32`, not `f64` (issue #504)
+///
+/// `y_start` / `y_end` are `f32`, matching every other native-unit span
+/// in the crate (`Point`, `Rect`, `TabBarLayout`'s bounds) — this used to
+/// be `f64`, a mismatch with the all-`f32` [`ActivityBarLayout`] sitting
+/// right next to it. Free change: no downstream (`coord-tui`, `vimcode`)
+/// call site reads these fields (only an unrelated doc comment in
+/// vimcode's `shell_app.rs`), confirmed via `grep -rn ActivityBarRowHit
+/// ~/src/coord-tui/src ~/src/vimcode/src`. GTK/macOS/Win rasterisers
+/// narrow their internal `f64` pixel math to this field's `f32` on
+/// return — consistent with how every other native-unit field in this
+/// crate is produced, and not a new precision concern this change
+/// introduced.
 #[derive(Debug, Clone)]
 pub struct ActivityBarRowHit {
     /// Top edge of the row, **relative to the bar's `rect.y`** (first

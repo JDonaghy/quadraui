@@ -46,7 +46,7 @@ use gtk4::gdk;
 use gtk4::pango;
 use gtk4::prelude::*;
 
-use crate::backend::{activity_bar_hits, tab_bar_layout_to_hits};
+use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::TextRegion;
 use crate::event::Point;
@@ -787,7 +787,7 @@ impl GtkBackend {
         {
             return None;
         }
-        let mut hits = crate::backend::tab_bar_layout_to_hits(layout, bar);
+        let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
         // `TabBarLayout` is bar-relative; `TabBarHits` are target-surface
         // coordinates (issue #552), exactly as the measured path below.
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -2262,7 +2262,7 @@ impl Backend for GtkBackend {
             },
         );
 
-        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        let mut hits = tab_bar_hits_from_layout(&layout, bar);
         // Match `draw_tab_bar` (gtk/tab_bar.rs), which shifts by the same
         // origin: `TabBarHits` are target-surface coordinates. Issue #552.
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -2400,7 +2400,7 @@ impl Backend for GtkBackend {
             crate::SegmentMeasure::new(text_w)
         });
 
-        let mut hits = tab_bar_layout_to_hits(&layout, bar);
+        let mut hits = tab_bar_hits_from_layout(&layout, bar);
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
 
         let active_idx = bar.tabs.iter().position(|t| t.is_active);

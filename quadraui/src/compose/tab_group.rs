@@ -1794,7 +1794,7 @@ fn update_split_ratio_inorder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::tab_bar_layout_to_hits;
+    use crate::backend::tab_bar_hits_from_layout;
     use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
 
     // ── Minimal BackendWidget for tests ──────────────────────────────────────
@@ -1854,7 +1854,7 @@ mod tests {
             },
             |_| SegmentMeasure::new(3.0),
         );
-        let mut hits = tab_bar_layout_to_hits(&layout, &bar);
+        let mut hits = tab_bar_hits_from_layout(&layout, &bar);
         // Shift hits to absolute coords (mirror what backends do).
         let ox = strip_x as f64;
         for sp in &mut hits.slot_positions {
