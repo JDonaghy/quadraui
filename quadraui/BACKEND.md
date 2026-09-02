@@ -595,9 +595,12 @@ not just the one that first implemented it. quadraui factors those into
 have to reinvent them from a GTK or AppKit source read. None of it
 depends on `gtk4`, `objc2`, `windows`, or any other toolkit crate —
 it's plain Rust, generic over whatever payload your backend's native
-events carry, and gated with `#[cfg(feature = "your-backend")]` the same
-way every item in the module already is (see its module doc for why the
-`cfg`s exist despite there being no toolkit dependency to gate).
+events carry, and gated with a compound `#[cfg(any(feature = "gtk", …))]`
+condition, the same way every item in the module already is: adding a
+new backend means adding your backend's own feature to that `any(...)`
+list, not introducing a standalone `your-backend` feature gate (see the
+module doc for why the `cfg`s exist despite there being no toolkit
+dependency to gate).
 
 | What | Type | Extracted from | The hazard it solves |
 |---|---|---|---|
