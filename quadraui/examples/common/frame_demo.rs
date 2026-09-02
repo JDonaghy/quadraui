@@ -341,10 +341,8 @@ impl AppLogic for FrameDemo {
                     return Reaction::Redraw;
                 }
             }
-            UiEvent::MouseUp { .. } => {
-                if self.h_sb_drag.take().is_some() {
-                    return Reaction::Redraw;
-                }
+            UiEvent::MouseUp { .. } if self.h_sb_drag.take().is_some() => {
+                return Reaction::Redraw;
             }
             _ => {}
         }

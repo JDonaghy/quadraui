@@ -197,15 +197,21 @@ jobs:
       # #23 added `win_platform_services` alongside `win_demo` — same
       # bootstrap posture (draws nothing, `cfg`-split `main()`), now
       # exercising `WinPlatformServices` instead of just the window/
-      # render-target lifecycle. Built in the same two steps rather than
-      # new ones so a future example added here only needs a name added
-      # to these `--example` lists, not a new step pair.
+      # render-target lifecycle. #31 added every remaining paired example
+      # (`win_app`, `win_multi_tree`, `win_split`, `win_panel`,
+      # `win_toast`, `win_indicators`, `win_search_panel`,
+      # `win_sidebar_search`, `win_menu_bar`, `win_data_table`,
+      # `win_chart`, `win_form_groups`, `win_hscroll`) now that #25–#30
+      # landed the rasterisers each one needs. Built in the same two
+      # steps rather than new ones so a future example added here only
+      # needs a name added to these `--example` lists, not a new step
+      # pair.
       - name: Build (win feature)
         if: matrix.os == 'windows-latest'
-        run: cargo build -p quadraui --example win_demo --example win_platform_services --features win
+        run: cargo build -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --features win
       - name: Clippy (win feature)
         if: matrix.os == 'windows-latest'
-        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --features win -- -D warnings
+        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --features win -- -D warnings
       # Headless Direct2D test surface (#24, `src/win/testing.rs`'s
       # `HeadlessSurface`: an `ID2D1DCRenderTarget` bound to an in-memory
       # DIB section — no `HWND`, display, or GPU). The two steps above

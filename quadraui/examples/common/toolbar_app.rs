@@ -243,13 +243,11 @@ impl ToolbarApp {
             None => return false,
         };
         let bar = self.toolbar();
-        if let Some(btn) = bar.buttons.get(idx) {
-            if let ToolbarButton::Action { id, enabled, .. } = btn {
-                if *enabled {
-                    let id = id.clone();
-                    self.dispatch(&id);
-                    return true;
-                }
+        if let Some(ToolbarButton::Action { id, enabled, .. }) = bar.buttons.get(idx) {
+            if *enabled {
+                let id = id.clone();
+                self.dispatch(&id);
+                return true;
             }
         }
         false

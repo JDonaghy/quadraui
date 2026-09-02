@@ -22,8 +22,7 @@
 //! Controls:
 //! - click "File" (or Alt+F)    opens the dropdown over the activity bar
 //! - click a dropdown item      activates it, even items drawn over the
-//!                               activity bar strip — this is the #411
-//!                               regression check
+//!   activity bar strip — this is the #411 regression check
 //! - click an activity bar icon  switches panels (when no dropdown is open)
 //! - q / Esc                     quit (when no dropdown is open)
 

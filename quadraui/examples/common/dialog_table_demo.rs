@@ -129,10 +129,10 @@ impl AppLogic for DialogTableDemo {
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
-            UiEvent::KeyPressed { key, .. } => match key {
-                Key::Named(NamedKey::Escape) | Key::Char('q') => Reaction::Exit,
-                _ => Reaction::Continue,
-            },
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Escape) | Key::Char('q'),
+                ..
+            } => Reaction::Exit,
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }

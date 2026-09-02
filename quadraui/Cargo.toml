@@ -784,11 +784,14 @@ name = "gtk_sidebar_reveal"
 path = "examples/gtk_sidebar_reveal.rs"
 required-features = ["gtk"]
 
-# #19 — Win32 + Direct2D window bootstrap smoke test. Windows-only at
-# runtime (see the example's module docs), but its `main()` is itself
-# `cfg`-split so `cargo build --example win_demo --features win` also
-# compiles cleanly on Linux — same "compiles everywhere, only *works*
-# on Windows" posture as the rest of `src/win/`.
+# #19 / #31 — Win32 + Direct2D window bootstrap smoke test, now painting
+# the same `AppState` (`TabBar` + `StatusBar`) as `tui_demo`/`gtk_demo`/
+# `macos_demo` now that #25–#30 landed the chrome-strip rasterisers.
+# Windows-only at runtime, but `quadraui::win::run` stays available on
+# every host (`src/win/mod.rs` keeps `mod win` un-target-gated, unlike
+# `macos`), so this compiles on Linux too under plain
+# `cargo build --example win_demo --features win` — same "compiles
+# everywhere, only *works* on Windows" posture as the rest of `src/win/`.
 [[example]]
 name = "win_demo"
 path = "examples/win_demo.rs"
@@ -797,10 +800,83 @@ required-features = ["win"]
 # #23 — Win-GUI platform services smoke test (clipboard, native file
 # dialogs, a `Shell_NotifyIconW` notification, `open_url`). Same
 # Windows-only-at-runtime / `cfg`-split-`main()` posture as `win_demo`
-# above.
+# had pre-#31.
 [[example]]
 name = "win_platform_services"
 path = "examples/win_platform_services.rs"
+required-features = ["win"]
+
+# #31 — port every remaining paired example to Win-GUI now that #25–#30
+# landed the rasterisers each one needs. Each is a ~10-line runner
+# sharing the same backend-agnostic `AppLogic` impl in `examples/common/`
+# that `tui_*`/`gtk_*`/`macos_*` already use — see each file's module
+# doc for its specific twin. All Windows-only at runtime; all compile on
+# every host the same "compiles everywhere, only *works* on Windows" way
+# as `win_demo` above, since `quadraui::win::run` is never target-gated
+# away (unlike `quadraui::macos::run`).
+[[example]]
+name = "win_app"
+path = "examples/win_app.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_multi_tree"
+path = "examples/win_multi_tree.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_split"
+path = "examples/win_split.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_panel"
+path = "examples/win_panel.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_toast"
+path = "examples/win_toast.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_indicators"
+path = "examples/win_indicators.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_search_panel"
+path = "examples/win_search_panel.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_sidebar_search"
+path = "examples/win_sidebar_search.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_menu_bar"
+path = "examples/win_menu_bar.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_data_table"
+path = "examples/win_data_table.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_chart"
+path = "examples/win_chart.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_form_groups"
+path = "examples/win_form_groups.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_hscroll"
+path = "examples/win_hscroll.rs"
 required-features = ["win"]
 
 # #662 — `Image` primitive + `MenuBar` leading-icon slot. Both entries are
