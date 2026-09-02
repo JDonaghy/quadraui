@@ -210,10 +210,25 @@ mod tests {
         let inner = surface.pixel_at((b.x + b.width - 4.0) as u32, (b.y + b.height - 4.0) as u32);
         assert_eq!((inner.r, inner.g, inner.b), (bg.r, bg.g, bg.b));
 
+        // `win::text::stroke_rect` insets the stroke by half its width,
+        // so a 1-DIP border on integer bounds covers exactly the
+        // boundary row — probing `bounds.y` returns the border colour at
+        // full strength rather than a half-coverage blend of border over
+        // background.
         let top_edge = surface.pixel_at((b.x + b.width / 2.0) as u32, b.y as u32);
         assert_eq!(
             (top_edge.r, top_edge.g, top_edge.b),
             (border.r, border.g, border.b)
+        );
+
+        // The stroke stays inside `bounds`: the row above the tooltip is
+        // untouched by it (an overlay must not paint over its
+        // neighbours' pixels).
+        let above = surface.pixel_at((b.x + b.width / 2.0) as u32, (b.y - 1.0) as u32);
+        assert_ne!(
+            (above.r, above.g, above.b),
+            (border.r, border.g, border.b),
+            "the border must not bleed above the tooltip's own bounds"
         );
     }
 

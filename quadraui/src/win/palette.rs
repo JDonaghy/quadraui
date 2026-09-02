@@ -361,14 +361,29 @@ mod tests {
         let layout = win_palette_layout(rect, &p, line_height);
         let first_item = layout.visible_items[0].bounds;
 
-        let match_fg = Theme::default().match_fg;
-        // Scan the first item's row for the match-highlighted colour —
+        let theme = Theme::default();
+        // Scan the whole first-item row box for match-highlighted ink —
         // matched runs ('o', 'p' at byte offsets 0, 1 of "open file")
-        // paint in `match_fg`, distinct from the row's normal foreground.
-        let y = (first_item.y + first_item.height / 2.0) as u32;
-        let found = (first_item.x as u32..(first_item.x + first_item.width) as u32).any(|x| {
-            let px = surface.pixel_at(x, y);
-            (px.r, px.g, px.b) == (match_fg.r, match_fg.g, match_fg.b)
+        // paint in `match_fg`, warm and far from every other colour on
+        // that row. Two deliberate weakenings versus an exact-equality
+        // probe at a guessed coordinate: the scan covers the row's full
+        // height (real DirectWrite glyph placement inside the row box
+        // isn't predictable ahead of a live Windows font pass), and a
+        // pixel counts when it is *nearer* `match_fg` than the row's
+        // other two colours rather than exactly equal to it, since
+        // glyph edges are antialiased blends over the selection fill.
+        let dist2 = |px: Color, c: Color| {
+            let dr = px.r as i32 - c.r as i32;
+            let dg = px.g as i32 - c.g as i32;
+            let db = px.b as i32 - c.b as i32;
+            dr * dr + dg * dg + db * db
+        };
+        let found = (first_item.y as u32..(first_item.y + first_item.height) as u32).any(|y| {
+            (first_item.x as u32..(first_item.x + first_item.width) as u32).any(|x| {
+                let px = surface.pixel_at(x, y);
+                let d_match = dist2(px, theme.match_fg);
+                d_match < dist2(px, theme.surface_fg) && d_match < dist2(px, theme.selected_bg)
+            })
         });
         assert!(
             found,

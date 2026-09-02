@@ -305,6 +305,25 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
 /// completions / find-replace / rich-text-popup) that all draw a
 /// bordered box, mirroring GTK/Cairo's `cr.rectangle(..).stroke()`
 /// idiom used throughout `crate::gtk`.
+///
+/// # The stroke lands *inside* `rect`
+///
+/// Direct2D centres a stroke on the geometry it is handed, so passing
+/// `rect` through verbatim would put half of `stroke_width` outside the
+/// caller's own bounds — over whatever the host painted beside the
+/// popup, which for an overlay is somebody else's pixels — and leave
+/// the border straddling two device-pixel rows, each antialiased to
+/// roughly half coverage instead of one crisp line. This helper insets
+/// the geometry by `stroke_width / 2` so the whole border sits within
+/// `rect`: at scale 1, a 1-DIP stroke on integer bounds then covers
+/// exactly the boundary pixel row/column, and `rect`'s neighbours are
+/// left untouched. Cairo has the same centred-stroke rule, which is why
+/// `crate::gtk`'s rasterisers offset their 1 px rules by half a pixel
+/// for the same reason.
+///
+/// The inset is clamped to half the rect's own extent (and to `>= 0`)
+/// so a stroke wider than the box it outlines degenerates to a filled
+/// sliver rather than an inverted rectangle.
 pub(crate) fn stroke_rect(
     target: &ID2D1RenderTarget,
     rect: Rect,
@@ -312,11 +331,15 @@ pub(crate) fn stroke_rect(
     stroke_width: f32,
 ) -> WinResult<()> {
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let inset = (stroke_width / 2.0)
+        .min(rect.width / 2.0)
+        .min(rect.height / 2.0)
+        .max(0.0);
     let rect_f = D2D_RECT_F {
-        left: rect.x,
-        top: rect.y,
-        right: rect.x + rect.width,
-        bottom: rect.y + rect.height,
+        left: rect.x + inset,
+        top: rect.y + inset,
+        right: rect.x + rect.width - inset,
+        bottom: rect.y + rect.height - inset,
     };
     unsafe { target.DrawRectangle(&rect_f, &brush, stroke_width, None) };
     Ok(())
@@ -411,4 +434,53 @@ pub(crate) fn fill_circle(
     };
     unsafe { target.FillEllipse(&ellipse, &brush) };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::win::testing::HeadlessSurface;
+
+    /// [`stroke_rect`] must keep the whole stroke inside the rect it is
+    /// given: the boundary pixel row/column carries the border colour at
+    /// full strength, and neither the pixel just outside the bounds nor
+    /// the one just inside is touched. Without the half-stroke inset,
+    /// Direct2D centres the stroke on the geometry and *both* of those
+    /// probes come back as a half-coverage blend instead.
+    #[test]
+    fn stroke_rect_paints_a_crisp_border_inside_the_bounds() {
+        const BG: Color = Color::rgb(10, 20, 30);
+        const BORDER: Color = Color::rgb(200, 100, 50);
+
+        let surface = HeadlessSurface::new(32, 32).expect("create surface");
+        surface
+            .paint(|target| {
+                let _ = fill_rect(target, Rect::new(0.0, 0.0, 32.0, 32.0), BG);
+                let _ = stroke_rect(target, Rect::new(8.0, 8.0, 16.0, 16.0), BORDER, 1.0);
+            })
+            .expect("paint");
+
+        let rgb = |x: u32, y: u32| {
+            let c = surface.pixel_at(x, y);
+            (c.r, c.g, c.b)
+        };
+        let border = (BORDER.r, BORDER.g, BORDER.b);
+        let bg = (BG.r, BG.g, BG.b);
+
+        // Each of the four boundary lines is fully covered.
+        assert_eq!(rgb(16, 8), border, "top edge");
+        assert_eq!(rgb(16, 23), border, "bottom edge");
+        assert_eq!(rgb(8, 16), border, "left edge");
+        assert_eq!(rgb(23, 16), border, "right edge");
+
+        // Nothing bleeds outside the bounds…
+        assert_eq!(rgb(16, 7), bg, "one row above the top edge");
+        assert_eq!(rgb(7, 16), bg, "one column left of the left edge");
+        assert_eq!(rgb(24, 16), bg, "one column right of the right edge");
+        assert_eq!(rgb(16, 24), bg, "one row below the bottom edge");
+
+        // …and the interior is left to whatever was painted underneath.
+        assert_eq!(rgb(16, 9), bg, "one row inside the top edge");
+        assert_eq!(rgb(9, 16), bg, "one column inside the left edge");
+    }
 }

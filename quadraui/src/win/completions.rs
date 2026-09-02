@@ -118,9 +118,18 @@ mod tests {
         let px = surface.pixel_at((first.x + 2.0) as u32, (first.y + 1.0) as u32);
         assert_eq!((px.r, px.g, px.b), (sel_bg.r, sel_bg.g, sel_bg.b));
 
+        // Probe the *bottom* edge, not the top one: the selected row's
+        // fill spans the popup's full width and is painted after the
+        // border stroke, so it legitimately covers the top border line
+        // (identical paint order to `gtk::draw_completions`, which this
+        // rasteriser mirrors). The bottom edge sits under the second,
+        // unselected item, where the stroke survives — and
+        // `win::text::stroke_rect` insets the stroke so that last row
+        // inside `bounds` is fully covered rather than antialiased
+        // across the boundary.
         let border = theme.completion_border;
         let b = layout.bounds;
-        let edge = surface.pixel_at((b.x + b.width / 2.0) as u32, b.y as u32);
+        let edge = surface.pixel_at((b.x + b.width / 2.0) as u32, (b.y + b.height - 1.0) as u32);
         assert_eq!((edge.r, edge.g, edge.b), (border.r, border.g, border.b));
     }
 }
