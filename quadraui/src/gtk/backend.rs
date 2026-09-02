@@ -2078,6 +2078,7 @@ impl Backend for GtkBackend {
             bar,
             &self.current_theme,
             hovered_idx,
+            self.nerd_fonts_enabled,
         );
         cr.restore().ok();
         hits
@@ -2109,6 +2110,7 @@ impl Backend for GtkBackend {
             style,
             &self.current_theme,
             hovered_idx,
+            self.nerd_fonts_enabled,
         );
         cr.restore().ok();
         hits

@@ -114,7 +114,11 @@ pub struct TuiBackend {
     current_theme: crate::Theme,
     /// Whether the rasterisers should use Nerd Font glyphs (`true`)
     /// or ASCII fallbacks (`false`). Apps set this from their own
-    /// settings via [`Self::set_nerd_fonts`]; defaults to `true`.
+    /// settings via [`Self::set_nerd_fonts`]; defaults to `false` —
+    /// see that trait method's doc for why every backend now agrees
+    /// on this default (issue #683; was `true` here and `false` on
+    /// GTK, so the same app showed a different icon variant depending
+    /// on which backend it launched under).
     nerd_fonts_enabled: bool,
     double_click: super::events::DoubleClickDetector,
     /// Whether [`Self::translate_injected`] should run raw `MouseDown`
@@ -221,7 +225,7 @@ impl TuiBackend {
             services: TuiPlatformServices::new(),
             current_frame_ptr: Cell::new(std::ptr::null_mut()),
             current_theme: crate::Theme::default(),
-            nerd_fonts_enabled: true,
+            nerd_fonts_enabled: false,
             double_click: super::events::DoubleClickDetector::new(),
             double_click_folding: true,
             text_regions: Vec::new(),
@@ -1301,10 +1305,18 @@ impl Backend for TuiBackend {
         }
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_activity_bar called outside enter_frame_scope");
-        crate::tui::draw_activity_bar(frame.buffer_mut(), area, bar, &theme, hovered_idx)
+        crate::tui::draw_activity_bar(
+            frame.buffer_mut(),
+            area,
+            bar,
+            &theme,
+            hovered_idx,
+            nerd_fonts,
+        )
     }
 
     fn draw_activity_bar_with_style(
@@ -1322,6 +1334,7 @@ impl Backend for TuiBackend {
         }
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope");
@@ -1332,6 +1345,7 @@ impl Backend for TuiBackend {
             style,
             &theme,
             hovered_idx,
+            nerd_fonts,
         )
     }
 

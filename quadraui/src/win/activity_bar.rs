@@ -101,14 +101,20 @@ pub fn draw_activity_bar(
         } else {
             theme.inactive_fg
         };
-        let (iw, ih) = dwrite.measure_text(&item.icon).unwrap_or((0.0, 0.0));
+        // Uses the ASCII `fallback` — this rasteriser doesn't take a
+        // per-frame `nerd_fonts_enabled` toggle yet (issue #683 scoped
+        // TUI/GTK/macOS only; Win-GUI has no Nerd Font wiring at all,
+        // matching `macos::tree`/`macos::form`'s same fallback-only
+        // posture until #25's icon-font plumbing lands here too).
+        let icon_str = item.icon.fallback.as_str();
+        let (iw, ih) = dwrite.measure_text(icon_str).unwrap_or((0.0, 0.0));
         let icon_rect = Rect::new(
             row_rect.x + (row_rect.width - iw) / 2.0,
             row_rect.y + (row_rect.height - ih) / 2.0,
             iw.max(1.0),
             ih.max(1.0),
         );
-        let _ = dwrite.draw_text(target, &item.icon, icon_rect, fg);
+        let _ = dwrite.draw_text(target, icon_str, icon_rect, fg);
 
         regions.push(ActivityBarRowHit {
             y_start: vi.bounds.y as f64,

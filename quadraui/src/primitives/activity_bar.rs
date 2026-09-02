@@ -29,7 +29,7 @@
 //! beside the primitive, not inside it.**
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of an activity bar.
@@ -82,9 +82,13 @@ pub struct ActivityItem {
     /// Opaque widget id for click routing. The adapter picks a meaningful
     /// namespaced string (e.g. `"activity:explorer"`, `"activity:ext:foo"`).
     pub id: WidgetId,
-    /// Glyph to render — single character for the TUI cell-based layout;
-    /// GTK backend can render wider strings when font supports them.
-    pub icon: String,
+    /// Icon to render — `glyph` for a Nerd Font / icon-font variant,
+    /// `fallback` for ASCII/basic-Unicode. Which one paints is decided by
+    /// the backend's `nerd_fonts_enabled` flag (issue #683), not by this
+    /// primitive. TUI paints a single cell (`glyph.chars().next()` /
+    /// `fallback.chars().next()`); GTK can render wider strings when the
+    /// font supports them.
+    pub icon: Icon,
     /// Hover tooltip text. TUI ignores (no hover UI); GTK uses as a native
     /// `set_tooltip_text`.
     #[serde(default)]

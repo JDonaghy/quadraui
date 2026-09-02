@@ -46,7 +46,7 @@ impl ActivityStyleDemo {
             .enumerate()
             .map(|(i, icon)| ActivityItem {
                 id: item_id(i),
-                icon: (*icon).to_string(),
+                icon: (*icon).into(),
                 tooltip: LABELS[i].to_string(),
                 is_active: i == self.active,
                 is_keyboard_selected: false,

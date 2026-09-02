@@ -19,12 +19,19 @@ use crate::theme::Theme;
 /// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
 /// function for the full behaviour and #658's reasoning for why the fill
 /// lives in a separate style value rather than a field on [`ActivityBar`].
+///
+/// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
+/// paints — `glyph` when `true`, `fallback` when `false` (issue #683).
+/// Pass the backend's own flag (`Backend::set_nerd_fonts`), same as
+/// [`super::list::draw_list`].
+#[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar(
     buf: &mut Buffer,
     area: Rect,
     bar: &ActivityBar,
     theme: &Theme,
     hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     draw_activity_bar_with_style(
         buf,
@@ -33,12 +40,14 @@ pub fn draw_activity_bar(
         &ActivityBarStyle::default(),
         theme,
         hovered_idx,
+        nerd_fonts_enabled,
     )
 }
 
 /// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
 /// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
-/// cell for cell.
+/// cell for cell. See [`draw_activity_bar`] for `nerd_fonts_enabled`.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar_with_style(
     buf: &mut Buffer,
     area: Rect,
@@ -46,6 +55,7 @@ pub fn draw_activity_bar_with_style(
     style: &ActivityBarStyle,
     theme: &Theme,
     hovered_idx: Option<usize>,
+    nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
@@ -136,8 +146,15 @@ pub fn draw_activity_bar_with_style(
         }
 
         // Icon glyph — centered in the available width (excluding accent
-        // column and separator column).
-        let icon_ch = item.icon.chars().next().unwrap_or(' ');
+        // column and separator column). Picks `Icon::glyph` /
+        // `Icon::fallback` per `nerd_fonts_enabled` (#683); TUI paints
+        // only the resolved string's first character.
+        let icon_str = if nerd_fonts_enabled {
+            item.icon.glyph.as_str()
+        } else {
+            item.icon.fallback.as_str()
+        };
+        let icon_ch = icon_str.chars().next().unwrap_or(' ');
         let content_start = area.x + 1; // after accent column
         let content_end = sep_col; // before separator
         let content_w = content_end.saturating_sub(content_start);
@@ -187,7 +204,7 @@ pub fn draw_activity_bar_with_style(
 mod tests {
     use super::*;
     use crate::primitives::activity_bar::ActivityItem;
-    use crate::types::{Color, WidgetId};
+    use crate::types::{Color, Icon, WidgetId};
 
     fn item(id: &str, icon: &str) -> ActivityItem {
         ActivityItem {
@@ -229,7 +246,7 @@ mod tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 3, 10);
-        let hits = draw_activity_bar(&mut buf, area, &b, &theme, None);
+        let hits = draw_activity_bar(&mut buf, area, &b, &theme, None, false);
 
         let span = |id: &str| {
             let h = hits
@@ -266,7 +283,7 @@ mod tests {
 
         let spans = |y: u16| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 30));
-            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, None);
+            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, None, false);
             hits.iter()
                 .map(|h| (h.y_start, h.y_end))
                 .collect::<Vec<_>>()
@@ -294,7 +311,7 @@ mod tests {
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 4, 10);
-        draw_activity_bar(&mut buf, area, &b, &theme, None);
+        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
 
         let row_text = |y: u16| {
             (area.x..area.x + area.width)
@@ -311,6 +328,35 @@ mod tests {
             row_text(4).contains('S'),
             "second icon on screen row 4, got {:?}",
             row_text(4)
+        );
+    }
+
+    /// #683: `nerd_fonts_enabled` picks `Icon::glyph` when `true` and
+    /// `Icon::fallback` when `false` — the activity bar had no fallback
+    /// path at all before this issue, painting whatever bare string it
+    /// was handed on every backend regardless of Nerd Font availability.
+    #[test]
+    fn nerd_fonts_flag_selects_glyph_or_fallback() {
+        let mut b = bar();
+        b.top_items[0].icon = Icon::new("\u{f07c}", "E");
+        let theme = Theme::default();
+
+        let row_text = |nerd_fonts_enabled: bool| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+            let area = Rect::new(0, 0, 4, 10);
+            draw_activity_bar(&mut buf, area, &b, &theme, None, nerd_fonts_enabled);
+            (area.x..area.x + area.width)
+                .map(|x| buf[(x, area.y)].symbol().to_string())
+                .collect::<String>()
+        };
+
+        assert!(
+            row_text(true).contains('\u{f07c}'),
+            "nerd_fonts_enabled: true should paint the glyph half of the Icon"
+        );
+        assert!(
+            row_text(false).contains('E'),
+            "nerd_fonts_enabled: false should paint the fallback half of the Icon"
         );
     }
 
@@ -331,7 +377,7 @@ mod tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
-        draw_activity_bar_with_style(&mut buf, area, &b, &style, &theme, None);
+        draw_activity_bar_with_style(&mut buf, area, &b, &style, &theme, None, false);
 
         let fill = qc(fill_color);
         assert_ne!(
@@ -372,6 +418,7 @@ mod tests {
             &ActivityBarStyle::default(),
             &theme,
             None,
+            false,
         );
 
         assert_eq!(

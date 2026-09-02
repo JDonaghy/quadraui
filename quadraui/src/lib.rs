@@ -1115,14 +1115,14 @@ mod tests {
             top_items: vec![
                 ActivityItem {
                     id: WidgetId::new("activity:explorer"),
-                    icon: "\u{f07c}".to_string(),
+                    icon: "\u{f07c}".into(),
                     tooltip: "Explorer".to_string(),
                     is_active: true,
                     is_keyboard_selected: false,
                 },
                 ActivityItem {
                     id: WidgetId::new("activity:search"),
-                    icon: "\u{f422}".to_string(),
+                    icon: "\u{f422}".into(),
                     tooltip: "Search".to_string(),
                     is_active: false,
                     is_keyboard_selected: true,
@@ -1130,7 +1130,7 @@ mod tests {
             ],
             bottom_items: vec![ActivityItem {
                 id: WidgetId::new("activity:settings"),
-                icon: "\u{f013}".to_string(),
+                icon: "\u{f013}".into(),
                 tooltip: "Settings".to_string(),
                 is_active: false,
                 is_keyboard_selected: false,
@@ -3479,7 +3479,7 @@ mod tests {
     fn make_activity_item(id: &str, icon: char) -> primitives::activity_bar::ActivityItem {
         primitives::activity_bar::ActivityItem {
             id: WidgetId::new(id),
-            icon: icon.to_string(),
+            icon: icon.to_string().into(),
             tooltip: String::new(),
             is_active: false,
             is_keyboard_selected: false,
