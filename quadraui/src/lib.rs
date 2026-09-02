@@ -336,8 +336,8 @@ pub use backend::{
     MessageDialogOptions, Notification, PlatformServices, PointerShape, ResizeEdge,
 };
 pub use event::{
-    BackendNativeEvent, ButtonMask, Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent,
-    Viewport,
+    mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
+    MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, Viewport,
 };
 pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
 pub use shell::{ShellApp, ShellConfig, ShellContext};

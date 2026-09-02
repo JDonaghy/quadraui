@@ -35,9 +35,7 @@
 //!   trait-side dispatch fills that in via the modal stack and per-
 //!   primitive layout hit_test.
 
-use crate::{
-    ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, ScrollDelta, UiEvent, Viewport,
-};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, UiEvent};
 use ratatui::crossterm::event::{
     Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton as CtMouseButton,
     MouseEvent, MouseEventKind,
@@ -54,9 +52,7 @@ pub fn crossterm_to_uievents(event: CtEvent) -> Vec<UiEvent> {
     match event {
         CtEvent::Key(k) => crossterm_key_to_uievent(k).into_iter().collect(),
         CtEvent::Mouse(m) => crossterm_mouse_to_uievent(m).into_iter().collect(),
-        CtEvent::Resize(w, h) => vec![UiEvent::WindowResized {
-            viewport: Viewport::new(w as f32, h as f32, 1.0),
-        }],
+        CtEvent::Resize(w, h) => vec![crate::event::window_resized(w as f32, h as f32, 1.0)],
         CtEvent::Paste(text) => vec![UiEvent::ClipboardPaste(text)],
         CtEvent::FocusGained => vec![UiEvent::WindowFocused(true)],
         CtEvent::FocusLost => vec![UiEvent::WindowFocused(false)],
@@ -82,48 +78,33 @@ pub fn crossterm_key_to_uievent(event: KeyEvent) -> Option<UiEvent> {
 
 /// Translate one crossterm mouse event.
 pub fn crossterm_mouse_to_uievent(event: MouseEvent) -> Option<UiEvent> {
-    let position = Point::new(event.column as f32, event.row as f32);
+    let x = event.column as f32;
+    let y = event.row as f32;
     let modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
     match event.kind {
-        MouseEventKind::Down(b) => Some(UiEvent::MouseDown {
-            widget: None,
-            button: crossterm_mouse_button_to_quadraui(b),
-            position,
+        MouseEventKind::Down(b) => Some(crate::event::mouse_down(
+            crossterm_mouse_button_to_quadraui(b),
+            x,
+            y,
             modifiers,
-        }),
-        MouseEventKind::Up(b) => Some(UiEvent::MouseUp {
-            widget: None,
-            button: crossterm_mouse_button_to_quadraui(b),
-            position,
-        }),
-        MouseEventKind::Drag(b) => Some(UiEvent::MouseMoved {
-            position,
-            buttons: button_mask_with_held(b),
-        }),
-        MouseEventKind::Moved => Some(UiEvent::MouseMoved {
-            position,
-            buttons: ButtonMask::default(),
-        }),
-        MouseEventKind::ScrollUp => Some(UiEvent::Scroll {
-            widget: None,
-            delta: ScrollDelta { x: 0.0, y: 1.0 },
-            position,
-        }),
-        MouseEventKind::ScrollDown => Some(UiEvent::Scroll {
-            widget: None,
-            delta: ScrollDelta { x: 0.0, y: -1.0 },
-            position,
-        }),
-        MouseEventKind::ScrollLeft => Some(UiEvent::Scroll {
-            widget: None,
-            delta: ScrollDelta { x: -1.0, y: 0.0 },
-            position,
-        }),
-        MouseEventKind::ScrollRight => Some(UiEvent::Scroll {
-            widget: None,
-            delta: ScrollDelta { x: 1.0, y: 0.0 },
-            position,
-        }),
+        )),
+        MouseEventKind::Up(b) => Some(crate::event::mouse_up(
+            crossterm_mouse_button_to_quadraui(b),
+            x,
+            y,
+        )),
+        MouseEventKind::Drag(b) => Some(crate::event::mouse_moved(x, y, button_mask_with_held(b))),
+        MouseEventKind::Moved => Some(crate::event::mouse_moved(x, y, ButtonMask::default())),
+        // crossterm reports discrete scroll "notches" rather than a
+        // continuous native delta; each direction maps to the raw
+        // native-down-positive value `crate::event::scroll` expects a
+        // continuous GTK/Cocoa wheel delta to carry, so up/down = ∓1.0
+        // and left/right pass straight through as `dx` (unflipped, same
+        // as every other backend).
+        MouseEventKind::ScrollUp => Some(crate::event::scroll(0.0, -1.0, x, y)),
+        MouseEventKind::ScrollDown => Some(crate::event::scroll(0.0, 1.0, x, y)),
+        MouseEventKind::ScrollLeft => Some(crate::event::scroll(-1.0, 0.0, x, y)),
+        MouseEventKind::ScrollRight => Some(crate::event::scroll(1.0, 0.0, x, y)),
     }
 }
 

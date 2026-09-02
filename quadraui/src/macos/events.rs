@@ -32,7 +32,7 @@
 //! the backend queue land with `MacBackend` in #35. For now the
 //! translators are reachable only from tests.
 
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, ScrollDelta, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, UiEvent};
 
 // ─── NSEventModifierFlags bits ──────────────────────────────────────────────
 //
@@ -81,21 +81,17 @@ pub fn ns_button_number_to_quadraui(n: i64) -> MouseButton {
 /// Build a [`UiEvent::MouseDown`] from a translated `NSEvent`.
 /// `x`, `y` are view-local points; `flags` is `NSEvent.modifierFlags()`.
 pub fn ns_mouse_down(button: i64, x: f64, y: f64, flags: usize) -> UiEvent {
-    UiEvent::MouseDown {
-        widget: None,
-        button: ns_button_number_to_quadraui(button),
-        position: Point::new(x as f32, y as f32),
-        modifiers: ns_modifier_flags_to_quadraui(flags),
-    }
+    crate::event::mouse_down(
+        ns_button_number_to_quadraui(button),
+        x as f32,
+        y as f32,
+        ns_modifier_flags_to_quadraui(flags),
+    )
 }
 
 /// Build a [`UiEvent::MouseUp`] from a translated `NSEvent`.
 pub fn ns_mouse_up(button: i64, x: f64, y: f64) -> UiEvent {
-    UiEvent::MouseUp {
-        widget: None,
-        button: ns_button_number_to_quadraui(button),
-        position: Point::new(x as f32, y as f32),
-    }
+    crate::event::mouse_up(ns_button_number_to_quadraui(button), x as f32, y as f32)
 }
 
 /// Build a [`UiEvent::MouseMoved`] from `mouseMoved:` / `mouseDragged:`.
@@ -103,20 +99,13 @@ pub fn ns_mouse_up(button: i64, x: f64, y: f64) -> UiEvent {
 /// the event type (`mouseMoved:` → all-false; `mouseDragged:` → the dragged
 /// button bit set).
 pub fn ns_mouse_moved(x: f64, y: f64, buttons: ButtonMask) -> UiEvent {
-    UiEvent::MouseMoved {
-        position: Point::new(x as f32, y as f32),
-        buttons,
-    }
+    crate::event::mouse_moved(x as f32, y as f32, buttons)
 }
 
 /// Build a [`UiEvent::Scroll`] from `scrollWheel:` deltas. Negates
 /// `dy` so the result follows quadraui's "positive y = up" convention.
 pub fn ns_scroll(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
-    UiEvent::Scroll {
-        widget: None,
-        delta: ScrollDelta::new(dx as f32, -dy as f32),
-        position: Point::new(x as f32, y as f32),
-    }
+    crate::event::scroll(dx as f32, dy as f32, x as f32, y as f32)
 }
 
 /// Translate `keyDown:` into a [`UiEvent::KeyPressed`].
@@ -250,9 +239,7 @@ pub fn ns_keycode_to_named_key(key_code: u16) -> Option<NamedKey> {
 /// `viewFrameDidChange:` observer (#486), which dispatches the result
 /// synchronously alongside mouse/keyboard events.
 pub fn ns_resize_to_uievent(width: f64, height: f64, scale: f32) -> UiEvent {
-    UiEvent::WindowResized {
-        viewport: crate::Viewport::new(width as f32, height as f32, scale),
-    }
+    crate::event::window_resized(width as f32, height as f32, scale)
 }
 
 /// Build a [`UiEvent::WindowFocused`] from `windowDidBecomeKey:` /

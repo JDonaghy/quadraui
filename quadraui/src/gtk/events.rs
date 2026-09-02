@@ -64,21 +64,17 @@ pub fn gdk_button_to_mouse_down(
     y: f64,
     modifiers: gdk::ModifierType,
 ) -> UiEvent {
-    UiEvent::MouseDown {
-        widget: None,
-        button: gdk_button_to_quadraui(button),
-        position: Point::new(x as f32, y as f32),
-        modifiers: gdk_modifiers_to_quadraui(modifiers),
-    }
+    crate::event::mouse_down(
+        gdk_button_to_quadraui(button),
+        x as f32,
+        y as f32,
+        gdk_modifiers_to_quadraui(modifiers),
+    )
 }
 
 /// Translate a GDK button release into [`UiEvent::MouseUp`].
 pub fn gdk_button_to_mouse_up(button: u32, x: f64, y: f64) -> UiEvent {
-    UiEvent::MouseUp {
-        widget: None,
-        button: gdk_button_to_quadraui(button),
-        position: Point::new(x as f32, y as f32),
-    }
+    crate::event::mouse_up(gdk_button_to_quadraui(button), x as f32, y as f32)
 }
 
 /// Translate a GDK motion event into [`UiEvent::MouseMoved`]. GTK
@@ -86,10 +82,7 @@ pub fn gdk_button_to_mouse_up(button: u32, x: f64, y: f64) -> UiEvent {
 /// signal — callers tracking drag state pass an explicit `buttons`
 /// mask (today: filled by `GestureDrag` consumers from gesture state).
 pub fn gdk_motion_to_uievent(x: f64, y: f64, buttons: crate::ButtonMask) -> UiEvent {
-    UiEvent::MouseMoved {
-        position: Point::new(x as f32, y as f32),
-        buttons,
-    }
+    crate::event::mouse_moved(x as f32, y as f32, buttons)
 }
 
 /// Translate a GDK scroll event into [`UiEvent::Scroll`]. `dx`/`dy`
@@ -135,12 +128,17 @@ pub fn gdk_scroll_to_uievent_with_direction(
     y: f64,
     natural_scroll: bool,
 ) -> UiEvent {
-    let sign: f32 = if natural_scroll { 1.0 } else { -1.0 };
-    UiEvent::Scroll {
-        widget: None,
-        delta: crate::ScrollDelta::new(dx as f32, sign * dy as f32),
-        position: Point::new(x as f32, y as f32),
-    }
+    // `crate::event::scroll` always negates its `dy_native_down_positive`
+    // argument to reach quadraui's convention. The natural-scroll flag
+    // needs the *opposite* of that negation, so feed it `-dy` — the
+    // shared constructor's negation then cancels back out to `+dy`.
+    let dy_native_down_positive = if natural_scroll { -dy } else { dy };
+    crate::event::scroll(
+        dx as f32,
+        dy_native_down_positive as f32,
+        x as f32,
+        y as f32,
+    )
 }
 
 /// Translate a `GtkDrawingArea` resize into [`UiEvent::WindowResized`].
@@ -156,9 +154,7 @@ pub fn gdk_scroll_to_uievent_with_direction(
 /// translator so GTK delivers `WindowResized` the same way TUI does via
 /// crossterm's `Resize` event.
 pub fn gdk_resize_to_uievent(width: i32, height: i32, scale: f32) -> UiEvent {
-    UiEvent::WindowResized {
-        viewport: crate::Viewport::new(width as f32, height as f32, scale),
-    }
+    crate::event::window_resized(width as f32, height as f32, scale)
 }
 
 /// Translate `gdk::ModifierType` to `quadraui::Modifiers`. Maps the
