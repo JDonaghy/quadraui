@@ -18,13 +18,16 @@
 use windows::core::{Error as WinError, Result as WinResult, BOOL, HSTRING};
 use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
-use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, D2D1_DRAW_TEXT_OPTIONS_CLIP};
+use windows::Win32::Graphics::Direct2D::{
+    ID2D1RenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
+};
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
 };
+use windows_numerics::Vector2;
 
 use crate::event::Rect;
 use crate::win::msg::pt_to_dip;
@@ -293,5 +296,96 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
         bottom: rect.y + rect.height,
     };
     unsafe { target.FillRectangle(&rect_f, &brush) };
+    Ok(())
+}
+
+/// Push an axis-aligned clip rect (DIPs, target-relative) onto `target`.
+/// Every push must be balanced by a [`pop_clip`] — content rasterisers
+/// that paint per-row / per-cell text wider than their own bounds (e.g.
+/// a horizontally-scrolled `ListView`/`DataTable` row) use this pair to
+/// keep scrolled-off glyphs from bleeding into neighbouring rows or
+/// columns, mirroring `cr.save()` / `cr.rectangle(..).clip()` /
+/// `cr.restore()` on the GTK/Cairo backend. Infallible on
+/// `ID2D1RenderTarget` (same posture as `BeginDraw`/`Clear` — see
+/// `WinBackend::begin_frame`'s doc), so this and [`pop_clip`] return
+/// nothing to propagate.
+pub(crate) fn push_clip(target: &ID2D1RenderTarget, rect: Rect) {
+    let rect_f = D2D_RECT_F {
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.width,
+        bottom: rect.y + rect.height,
+    };
+    unsafe { target.PushAxisAlignedClip(&rect_f, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
+}
+
+/// Blend `over` on top of `base` at `alpha` (`0.0` = all `base`, `1.0`
+/// = all `over`) — the CPU-side stand-in for Cairo's `set_source_rgba`
+/// alpha-blended fills (`gtk::data_table`'s selection/hover tint,
+/// `gtk::editor`'s cursor/selection overlays), since [`fill_rect`] only
+/// takes an opaque colour: the render target here is created with
+/// `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN` and every rasteriser in this
+/// module paints with plain solid-colour fills, so pre-mixing the
+/// colour on the CPU is simpler than adding a second, alpha-aware fill
+/// path solely for a handful of tint overlays.
+pub(crate) fn blend(base: Color, over: Color, alpha: f32) -> Color {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let mix = |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
+    Color::rgb(
+        mix(base.r, over.r),
+        mix(base.g, over.g),
+        mix(base.b, over.b),
+    )
+}
+
+/// Pop the clip most recently pushed by [`push_clip`].
+pub(crate) fn pop_clip(target: &ID2D1RenderTarget) {
+    unsafe { target.PopAxisAlignedClip() };
+}
+
+/// Stroke a line from `(x0, y0)` to `(x1, y1)` (DIPs, target-relative)
+/// in `color` at `stroke_width` — [`crate::win::chart`]'s line paths /
+/// axis rules / crosshair, the one shape none of this module's other
+/// helpers cover (they're all rectangle-based). `strokestyle: None`
+/// gives Direct2D's default (solid) stroke.
+pub(crate) fn draw_line(
+    target: &ID2D1RenderTarget,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    color: Color,
+    stroke_width: f32,
+) -> WinResult<()> {
+    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    unsafe {
+        target.DrawLine(
+            Vector2 { X: x0, Y: y0 },
+            Vector2 { X: x1, Y: y1 },
+            &brush,
+            stroke_width,
+            None,
+        );
+    }
+    Ok(())
+}
+
+/// Fill a circle centred at `(cx, cy)` (DIPs, target-relative) with
+/// radius `r` in `color` — [`crate::win::chart`]'s data-point hover
+/// marker.
+pub(crate) fn fill_circle(
+    target: &ID2D1RenderTarget,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    color: Color,
+) -> WinResult<()> {
+    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let ellipse = D2D1_ELLIPSE {
+        point: Vector2 { X: cx, Y: cy },
+        radiusX: r,
+        radiusY: r,
+    };
+    unsafe { target.FillEllipse(&ellipse, &brush) };
     Ok(())
 }

@@ -5,8 +5,11 @@
 //! — real WinAPI calls gated on `cfg(target_os = "windows")` so `cargo
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
-//! `win` feature comment). Every `draw_*`/`*_layout` rasteriser is still
-//! a `todo!()` stub — implement each one against Direct2D / DirectWrite
+//! `win` feature comment). #25 landed the four chrome-strip rasterisers
+//! (`status_bar`/`tab_bar`/`activity_bar`/`menu_bar`) and #26 the six
+//! content-area rasterisers (`tree`/`list`/`form`/`data_table`/`editor`/
+//! `chart`) — every other `draw_*`/`*_layout` rasteriser is still a
+//! `todo!()` stub; implement each one against Direct2D / DirectWrite
 //! and the compiler will tell you when you're done.
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
@@ -18,12 +21,32 @@
 #[cfg(target_os = "windows")]
 mod activity_bar;
 pub mod backend;
+/// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`]
+/// (#26). Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod chart;
+/// Direct2D / DirectWrite rasteriser for [`crate::DataTable`] (#26).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod data_table;
+/// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`]
+/// (#26). Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod editor;
 /// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
 /// focus). Pure free functions, host-independent and unit-tested off
 /// Windows — mirrors `crate::gtk::events` / `crate::macos::events`. See
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// landed in #19 via `msg` + `run` instead — see this module's docs.
 pub mod events;
+/// Direct2D / DirectWrite rasteriser for [`crate::Form`] (#26).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod form;
+/// Direct2D / DirectWrite rasteriser for [`crate::ListView`] (#26).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod list;
 /// Direct2D / DirectWrite rasteriser for [`crate::MenuBar`] (#25).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -69,10 +92,24 @@ pub mod testing;
 /// and `DWrite`'s public surface in step with the rasterisers that take it.
 #[cfg(target_os = "windows")]
 pub mod text;
+/// Direct2D / DirectWrite rasteriser for [`crate::TreeView`] (#26).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod tree;
 
 #[cfg(target_os = "windows")]
 pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};
 pub use backend::WinBackend;
+#[cfg(target_os = "windows")]
+pub use chart::{draw_chart, win_chart_layout};
+#[cfg(target_os = "windows")]
+pub use data_table::{draw_data_table, win_data_table_layout};
+#[cfg(target_os = "windows")]
+pub use editor::draw_editor;
+#[cfg(target_os = "windows")]
+pub use form::{draw_form, win_form_layout};
+#[cfg(target_os = "windows")]
+pub use list::{draw_list, win_list_layout};
 #[cfg(target_os = "windows")]
 pub use menu_bar::{draw_menu_bar, win_menu_bar_layout};
 pub use run::run;
@@ -81,3 +118,5 @@ pub use services::WinPlatformServices;
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
+#[cfg(target_os = "windows")]
+pub use tree::{draw_tree, win_tree_layout};
