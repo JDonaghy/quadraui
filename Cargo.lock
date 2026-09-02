@@ -2388,6 +2388,7 @@ dependencies = [
  "unicode-width",
  "vt100",
  "windows",
+ "windows-numerics",
 ]
 
 [[package]]

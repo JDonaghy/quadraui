@@ -565,37 +565,151 @@ impl Backend for WinBackend {
 
     // ─── Drawing ──────────────────────────────────────────────────────
 
-    fn draw_tree(&mut self, _rect: Rect, _tree: &TreeView) {
-        todo!("Direct2D tree rasteriser")
+    /// #26: real Direct2D/DirectWrite rasteriser via `win::tree` once a
+    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
+    /// "surface not attached yet" fallback posture. `draw_tree` returns
+    /// `()` per the trait (unlike the chrome rasterisers) — hosts get
+    /// hit-test data from [`Self::tree_layout`] instead.
+    fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::tree::draw_tree(
+                &surface.target,
+                dwrite,
+                rect,
+                tree,
+                self.current_line_height,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, tree);
+        todo!("Direct2D tree rasteriser (no surface attached yet)")
     }
 
-    fn draw_list(&mut self, _rect: Rect, _list: &ListView) {
-        todo!("Direct2D list rasteriser")
+    /// #26: see [`Self::draw_tree`]'s doc.
+    fn draw_list(&mut self, rect: Rect, list: &ListView) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::list::draw_list(
+                &surface.target,
+                dwrite,
+                rect,
+                list,
+                self.current_line_height,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, list);
+        todo!("Direct2D list rasteriser (no surface attached yet)")
     }
 
+    /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
     fn draw_data_table(
         &mut self,
-        _rect: Rect,
-        _table: &crate::DataTable,
-        _hovered_idx: Option<usize>,
+        rect: Rect,
+        table: &crate::DataTable,
+        hovered_idx: Option<usize>,
     ) -> crate::DataTableLayout {
-        todo!("Direct2D data table rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::data_table::draw_data_table(
+                &surface.target,
+                dwrite,
+                rect,
+                table,
+                self.current_line_height,
+                hovered_idx,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, table, hovered_idx);
+        todo!("Direct2D data table rasteriser (no surface attached yet)")
     }
 
-    fn data_table_layout(&self, _rect: Rect, _table: &crate::DataTable) -> crate::DataTableLayout {
-        todo!("Direct2D data table layout")
+    /// #26: pure measurement — only needs `self.dwrite`, not a live
+    /// render target. See [`Self::status_bar_layout`]'s doc.
+    fn data_table_layout(&self, rect: Rect, table: &crate::DataTable) -> crate::DataTableLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::data_table::win_data_table_layout(
+                dwrite,
+                rect,
+                table,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, table);
+        todo!("DirectWrite data table layout (no surface attached yet)")
     }
 
-    fn list_hscrollbar(&self, _rect: Rect, _list: &ListView) -> Option<crate::Scrollbar> {
-        todo!("Direct2D list hscrollbar geometry")
+    /// #26: GTK's twin (`GtkBackend::list_hscrollbar`) builds the
+    /// `Scrollbar` directly from `self.current_char_width` rather than
+    /// delegating to [`ListView::hscrollbar`] — that primitive method
+    /// treats `max_content_width` as already being in the caller's
+    /// native unit (correct for TUI's 1-char-per-cell grid, wrong for a
+    /// pixel backend where chars must first be scaled by char width).
+    /// Cross-platform: no Direct2D/DirectWrite call needed, so this
+    /// compiles (and is exercised by `cargo check --features win`) on
+    /// every host, not just `target_os = "windows"`.
+    fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
+        let char_w = self.current_char_width;
+        let max_w_chars = list.max_content_width? as f32;
+        let content_px = max_w_chars * char_w;
+        let border_inset = if list.bordered { char_w } else { 0.0 };
+        let visible_px = (rect.width - 2.0 * border_inset).max(0.0);
+        if content_px <= visible_px {
+            return None;
+        }
+        let row_h = self.current_line_height;
+        let (track_x, track_w, track_y) = if list.bordered {
+            (
+                rect.x + char_w,
+                (rect.width - 2.0 * char_w).max(0.0),
+                rect.y + (rect.height - 2.0 * row_h).max(0.0),
+            )
+        } else {
+            (rect.x, rect.width, rect.y + (rect.height - row_h).max(0.0))
+        };
+        let track = Rect::new(track_x, track_y, track_w, row_h);
+        Some(crate::Scrollbar::horizontal(
+            list.id.clone(),
+            track,
+            list.h_scroll as f32 * char_w,
+            content_px,
+            visible_px,
+            row_h,
+        ))
     }
 
-    fn list_vscrollbar(&self, _rect: Rect, _list: &ListView) -> Option<crate::Scrollbar> {
-        todo!("Direct2D list vscrollbar geometry")
+    /// #26: `vscrollbar` deals purely in row counts/row-height, so
+    /// unlike [`Self::list_hscrollbar`] the primitive's own geometry
+    /// method is unit-correct for every backend — see
+    /// [`ListView::vscrollbar`]. Cross-platform, same reasoning as
+    /// `list_hscrollbar`.
+    fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
+        list.vscrollbar(rect, self.current_line_height)
     }
 
-    fn draw_form(&mut self, _rect: Rect, _form: &Form) {
-        todo!("Direct2D form rasteriser")
+    /// #26: see [`Self::draw_tree`]'s doc.
+    fn draw_form(&mut self, rect: Rect, form: &Form) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::form::draw_form(
+                &surface.target,
+                dwrite,
+                rect,
+                form,
+                self.current_line_height,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, form);
+        todo!("Direct2D form rasteriser (no surface attached yet)")
     }
 
     fn draw_palette(&mut self, _rect: Rect, _palette: &Palette) {
@@ -847,16 +961,55 @@ impl Backend for WinBackend {
         todo!("DirectWrite MSV metrics")
     }
 
-    fn tree_layout(&self, _rect: Rect, _tree: &TreeView) -> TreeViewLayout {
-        todo!("DirectWrite tree layout")
+    /// #26: like [`Self::activity_bar_layout`], this needs no measurer
+    /// at all — chevron width is a `line_height`-derived estimate (see
+    /// `win::tree::win_tree_layout`'s doc), not a real DirectWrite
+    /// measurement — so this doesn't even need `self.dwrite`, only the
+    /// `target_os = "windows"` gate every method in this file shares
+    /// (the callee lives in a Windows-only module).
+    fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
+        #[cfg(target_os = "windows")]
+        {
+            super::tree::win_tree_layout(tree, rect, self.current_line_height)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, tree);
+            todo!("DirectWrite tree layout")
+        }
     }
 
-    fn form_layout(&self, _rect: Rect, _form: &Form) -> FormLayout {
-        todo!("DirectWrite form layout")
+    /// #26: pure measurement — only needs `self.dwrite`, not a live
+    /// render target. See [`Self::status_bar_layout`]'s doc.
+    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, form);
+        todo!("DirectWrite form layout (no surface attached yet)")
     }
 
-    fn draw_editor(&mut self, _rect: Rect, _editor: &Editor) -> EditorPaintResult {
-        todo!("Direct2D editor rasteriser")
+    /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. `rect` is unused on the painted
+    /// path — `editor.rect` is authoritative (mirrors
+    /// `GtkBackend::draw_editor`, which does the same).
+    fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let _ = rect;
+            return super::editor::draw_editor(
+                &surface.target,
+                dwrite,
+                editor,
+                self.current_char_width,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, editor);
+        todo!("Direct2D editor rasteriser (no surface attached yet)")
     }
 
     fn draw_message_list(&mut self, _rect: Rect, _list: &MessageList) {
@@ -1059,21 +1212,57 @@ impl Backend for WinBackend {
         todo!("Direct2D DiffView rasteriser")
     }
 
+    /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
     fn draw_chart(
         &mut self,
-        _rect: Rect,
-        _chart: &crate::primitives::chart::Chart,
-        _hovered_point: Option<(usize, usize)>,
-        _crosshair_x: Option<f64>,
+        rect: Rect,
+        chart: &crate::primitives::chart::Chart,
+        hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
     ) -> crate::primitives::chart::ChartLayout {
-        todo!("Direct2D chart rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::chart::draw_chart(
+                &surface.target,
+                dwrite,
+                rect,
+                chart,
+                self.current_char_width,
+                self.current_line_height,
+                hovered_point,
+                crosshair_x,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, chart, hovered_point, crosshair_x);
+        todo!("Direct2D chart rasteriser (no surface attached yet)")
     }
 
+    /// #26: like [`Self::tree_layout`], no measurer is needed — chart
+    /// tick-label sizing only uses `char_width`/`line_height`, both
+    /// already cross-platform fields — so this doesn't need
+    /// `self.dwrite`, only the `target_os = "windows"` gate every
+    /// method in this file shares (the callee lives in a Windows-only
+    /// module).
     fn chart_layout(
         &self,
-        _rect: Rect,
-        _chart: &crate::primitives::chart::Chart,
+        rect: Rect,
+        chart: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
-        todo!("DirectWrite chart layout")
+        #[cfg(target_os = "windows")]
+        {
+            super::chart::win_chart_layout(
+                chart,
+                rect,
+                self.current_char_width,
+                self.current_line_height,
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, chart);
+            todo!("DirectWrite chart layout")
+        }
     }
 }

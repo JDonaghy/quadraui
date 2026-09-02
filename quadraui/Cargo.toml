@@ -32,7 +32,7 @@ gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard"]
 # point of the ubuntu "win compile gate" in ci.yml — see its comment)
 # without needing a real WinAPI. Most `Backend::draw_*` methods are
 # still `todo!()` stubs — later issues implement each rasteriser.
-win = ["dep:windows"]
+win = ["dep:windows", "dep:windows-numerics"]
 
 # Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
 # keeps working as a deprecated spelling. Prefer `--features gtk` going
@@ -156,6 +156,19 @@ windows = { version = "0.62", optional = true, features = [
     # `COMDLG_FILTERSPEC` (file-type filters for `IFileDialog::SetFileTypes`).
     "Win32_UI_Shell_Common",
 ] }
+# `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
+# `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover
+# marker). `windows` 0.62 moved these off its own `D2D_POINT_2F` onto this
+# separate crate (see its own `Cargo.toml`'s `[dependencies.windows-numerics]`,
+# a *mandatory*, not optional, dependency of `windows` itself) but does not
+# re-export the type publicly, so a caller constructing one needs its own
+# dependency on the same version rather than reaching through `windows::`.
+# Already resolved transitively by `windows` itself (see Cargo.lock), so this
+# adds no new version to the dependency graph — only a direct name for
+# `src/win/chart.rs`/`src/win/text.rs` to spell the type with. `optional`
+# + bundled into the `win` feature (see this crate's `[features]` block),
+# matching `windows` itself: a no-op on non-Windows hosts.
+windows-numerics = { version = "0.3", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
