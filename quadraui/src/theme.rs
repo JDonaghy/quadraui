@@ -326,6 +326,42 @@ impl Theme {
     pub fn tab_active_border_top(&self) -> Color {
         self.accent_fg
     }
+
+    // ── Terminal find-highlight lift (#500) ─────────────────────────────
+    //
+    // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs` each
+    // hardcoded the same two RGB literals for the find-match overlay
+    // (`rgb(255, 165, 0)` active, `rgb(100, 80, 20)` dim) — see #500. The
+    // shared ladder in `crate::terminal_style::resolve_cell_style` reads
+    // them from here instead.
+    //
+    // **These are methods, not `Theme` fields, on purpose** — same
+    // reasoning as [`Self::tab_active_border_top`] above. Unlike that
+    // method, these don't derive from an existing field (there's no
+    // "find highlight" colour anywhere else in `Theme` to reuse), but a
+    // method with a hardcoded literal is still purely additive: it adds
+    // no new field for `coord-tui`'s exhaustive palette literals
+    // (`tui/src/settings.rs`) to miss, so it costs nothing downstream.
+    // Promote to a real field only if a consumer asks to theme these
+    // independently — that's rule 8's "if it must break" path, one field
+    // per PR with a `## Downstream impact` section.
+
+    /// Background painted over the currently-active find match —
+    /// terminal find-highlight convention (bright orange).
+    pub fn find_active_bg(&self) -> Color {
+        Color::rgb(255, 165, 0)
+    }
+
+    /// Foreground painted over [`Self::find_active_bg`] (black, for
+    /// contrast against the bright orange).
+    pub fn find_active_fg(&self) -> Color {
+        Color::rgb(0, 0, 0)
+    }
+
+    /// Background painted over non-active find matches (dim highlight).
+    pub fn find_match_bg(&self) -> Color {
+        Color::rgb(100, 80, 20)
+    }
 }
 
 impl Default for Theme {
@@ -444,6 +480,21 @@ mod tests {
             Color::rgb(140, 200, 240),
             "default accent must match the value #620 originally shipped as a field"
         );
+    }
+
+    /// #500: the terminal find-highlight colours are exposed as
+    /// *methods*, not `Theme` fields, for the same reason as
+    /// `tab_active_border_top` above — see
+    /// `exhaustive_theme_literal_still_compiles` below.
+    #[test]
+    fn terminal_find_highlight_colours_match_the_pre_shared_literals() {
+        let theme = Theme::default();
+        // Same RGB literals `tui`/`gtk`/`macos::terminal` each hardcoded
+        // independently before #500 — the shared ladder must not change
+        // the shipped colours, only where they're defined.
+        assert_eq!(theme.find_active_bg(), Color::rgb(255, 165, 0));
+        assert_eq!(theme.find_active_fg(), Color::rgb(0, 0, 0));
+        assert_eq!(theme.find_match_bg(), Color::rgb(100, 80, 20));
     }
 
     /// The accent stays *themeable* despite not having its own field: an

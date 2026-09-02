@@ -142,6 +142,17 @@ pub fn display_width(s: &str) -> usize {
     s.chars().map(|c| char_cell_width(c) as usize).sum()
 }
 
+/// Whether `c` is a double-width glyph (CJK, emoji, ...) per
+/// [`char_cell_width`] — i.e. `char_cell_width(c) == 2`.
+///
+/// Named for callers that only need the wide/narrow classification, not
+/// the numeric width: pixel-based terminal rasterisers (`gtk`, `macos`)
+/// use this to decide whether a cell claims one grid column or two — see
+/// [`crate::terminal_style::wide_cell_advance`], issue #500.
+pub fn is_wide_char(c: char) -> bool {
+    char_cell_width(c) == 2
+}
+
 /// Case-sensitive subsequence fuzzy match with a relevance score and
 /// per-match byte positions.
 ///
@@ -446,6 +457,15 @@ mod tests {
         assert_eq!(display_width("ab日本"), 2 + 2 + 2);
         assert_eq!(display_width(""), 0);
         assert_eq!(display_width("hello"), 5);
+    }
+
+    #[test]
+    fn is_wide_char_classifies_cjk_and_ascii() {
+        assert!(is_wide_char('日'));
+        assert!(is_wide_char('中'));
+        assert!(!is_wide_char('a'));
+        assert!(!is_wide_char(' '));
+        assert!(!is_wide_char('\u{0301}'));
     }
 
     // ── fuzzy_score ─────────────────────────────────────────────────────
