@@ -413,3 +413,176 @@ pub enum UiEvent {
     /// unless they want to special-case a platform.
     BackendNative(BackendNativeEvent),
 }
+
+// ─── Shared constructors (issue #495) ───────────────────────────────────────
+//
+// Every backend's `events.rs` (`gtk::events`, `macos::events`, `tui::events`)
+// translates native input into `UiEvent`. Only three things are genuinely
+// backend-native: the keysym/keycode → `Key` table, the button-number →
+// `MouseButton` map, and the modifier-mask → `Modifiers` map. The event
+// *shape* — which fields `MouseDown` carries, that `widget` starts `None`
+// pending hit-test, the scroll sign-flip convention — was previously
+// re-typed identically in each translator. These free functions are the
+// single place that shape lives; backends call them instead of writing the
+// `UiEvent::MouseDown { .. }` struct literal themselves.
+//
+// A new backend's event translation (see `BACKEND.md`'s worked estimate)
+// only needs to supply the three native-mapping tables and call these —
+// roughly 40 lines, not the 150+ each of `gtk::events` / `macos::events`
+// carried before this module existed.
+
+/// Build a [`UiEvent::MouseDown`]. `widget` always starts `None` — hit-test
+/// resolution happens downstream in [`crate::dispatch`], not in the
+/// translator.
+pub fn mouse_down(button: MouseButton, x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+    UiEvent::MouseDown {
+        widget: None,
+        button,
+        position: Point::new(x, y),
+        modifiers,
+    }
+}
+
+/// Build a [`UiEvent::MouseUp`].
+pub fn mouse_up(button: MouseButton, x: f32, y: f32) -> UiEvent {
+    UiEvent::MouseUp {
+        widget: None,
+        button,
+        position: Point::new(x, y),
+    }
+}
+
+/// Build a [`UiEvent::MouseMoved`].
+pub fn mouse_moved(x: f32, y: f32, buttons: ButtonMask) -> UiEvent {
+    UiEvent::MouseMoved {
+        position: Point::new(x, y),
+        buttons,
+    }
+}
+
+/// Build a [`UiEvent::Scroll`], owning the native-to-quadraui sign flip
+/// once instead of every backend re-deriving (and re-commenting) it.
+///
+/// `dy_native_down_positive` is the backend's raw vertical delta using the
+/// convention where **positive means scroll-down / content-forward** — GTK
+/// `EventControllerScroll`'s `dy`, Cocoa `NSEvent.scrollingDeltaY`, and
+/// crossterm's `ScrollUp`/`ScrollDown` (translated to the equivalent -1.0 /
+/// +1.0 notch) all use this convention natively. `UiEvent::Scroll::delta`'s
+/// convention is the opposite — **positive `y` = up, toward the top of
+/// content** — so this negates once, here, rather than in each caller.
+///
+/// `dx` is passed straight through unnegated: every native backend
+/// quadraui supports already agrees with quadraui's positive-x-is-right
+/// convention, so there is no flip to own.
+///
+/// Win-GUI is the one native backend that does *not* follow the
+/// positive-down convention on its raw delta (`win::events::win_wheel_to_uievent`'s
+/// doc explains why) — its translator does not call this constructor.
+pub fn scroll(dx: f32, dy_native_down_positive: f32, x: f32, y: f32) -> UiEvent {
+    UiEvent::Scroll {
+        widget: None,
+        delta: ScrollDelta::new(dx, -dy_native_down_positive),
+        position: Point::new(x, y),
+    }
+}
+
+/// Build a [`UiEvent::WindowResized`].
+pub fn window_resized(width: f32, height: f32, scale: f32) -> UiEvent {
+    UiEvent::WindowResized {
+        viewport: Viewport::new(width, height, scale),
+    }
+}
+
+#[cfg(test)]
+mod shared_constructor_tests {
+    use super::*;
+
+    #[test]
+    fn mouse_down_builds_expected_shape() {
+        let mods = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let ev = mouse_down(MouseButton::Left, 1.0, 2.0, mods);
+        match ev {
+            UiEvent::MouseDown {
+                widget,
+                button,
+                position,
+                modifiers,
+            } => {
+                assert!(widget.is_none());
+                assert_eq!(button, MouseButton::Left);
+                assert_eq!(position, Point::new(1.0, 2.0));
+                assert!(modifiers.ctrl);
+            }
+            other => panic!("expected MouseDown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mouse_up_builds_expected_shape() {
+        let ev = mouse_up(MouseButton::Right, 3.0, 4.0);
+        assert_eq!(
+            ev,
+            UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Right,
+                position: Point::new(3.0, 4.0),
+            }
+        );
+    }
+
+    #[test]
+    fn mouse_moved_builds_expected_shape() {
+        let buttons = ButtonMask {
+            left: true,
+            ..Default::default()
+        };
+        let ev = mouse_moved(5.0, 6.0, buttons);
+        assert_eq!(
+            ev,
+            UiEvent::MouseMoved {
+                position: Point::new(5.0, 6.0),
+                buttons,
+            }
+        );
+    }
+
+    #[test]
+    fn scroll_negates_native_down_positive_dy() {
+        // Native wheel-down (dy = +1) becomes quadraui's "not up" (-1).
+        let ev = scroll(0.0, 1.0, 10.0, 20.0);
+        assert_eq!(
+            ev,
+            UiEvent::Scroll {
+                widget: None,
+                delta: ScrollDelta::new(0.0, -1.0),
+                position: Point::new(10.0, 20.0),
+            }
+        );
+    }
+
+    #[test]
+    fn scroll_leaves_dx_unflipped() {
+        let ev = scroll(2.5, 0.0, 0.0, 0.0);
+        match ev {
+            UiEvent::Scroll { delta, .. } => {
+                assert_eq!(delta.x, 2.5);
+                assert_eq!(delta.y, 0.0);
+            }
+            other => panic!("expected Scroll, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_resized_builds_expected_shape() {
+        let ev = window_resized(1920.0, 1080.0, 2.0);
+        assert_eq!(
+            ev,
+            UiEvent::WindowResized {
+                viewport: Viewport::new(1920.0, 1080.0, 2.0),
+            }
+        );
+    }
+}

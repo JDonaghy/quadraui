@@ -333,6 +333,36 @@ context menu) — without it, long text bleeds past popup borders.
   calls; isolate them in narrow helpers and the surface that touches
   quadraui primitives stays safe.
 
+### Don't re-type `UiEvent` construction — call the shared constructors
+
+Every backend's translator (`gtk::events`, `macos::events`, `tui::events`)
+used to hand-write the same `UiEvent::MouseDown { widget: None, button,
+position, modifiers }`-shaped struct literal, with only the button-number
+and modifier-mask *values* differing per platform (issue #495). That
+duplication is gone: `crate::event` exports free-function constructors —
+[`mouse_down`], [`mouse_up`], [`mouse_moved`], [`scroll`], and
+[`window_resized`] — that own the event shape, including the mouse-wheel
+sign flip (`scroll`'s `dy_native_down_positive` parameter negates once,
+here, instead of every backend re-deriving and re-commenting the same
+negation).
+
+A new backend's event translator is genuinely small once you use these.
+It needs exactly three backend-native pieces:
+
+1. A keysym/keycode → [`Key`] table (see `gdk_key_to_quadraui_key`,
+   `ns_keycode_to_named_key`, `vk_to_named_key` for the existing shapes).
+2. A button-number → [`MouseButton`] map (`gdk_button_to_quadraui`,
+   `ns_button_number_to_quadraui`).
+3. A modifier-bitmask → [`Modifiers`] map (`gdk_modifiers_to_quadraui`,
+   `ns_modifier_flags_to_quadraui`).
+
+...plus one-line wrappers that call the shared constructors with those
+three tables' output. `gtk::events`'s and `macos::events`'s `MouseDown`/
+`MouseUp`/`MouseMoved`/`Scroll`/`WindowResized` translators are ~40 lines
+combined post-#495 — down from each backend independently re-typing the
+five `UiEvent` variant shapes. Grep either module for `UiEvent::Mouse` or
+`UiEvent::Scroll`: there should be none outside `crate::event` itself.
+
 ## 5. Click intercept hierarchy
 
 When the user clicks anywhere, your backend must check potential
