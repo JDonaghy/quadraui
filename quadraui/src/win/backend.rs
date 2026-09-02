@@ -18,9 +18,13 @@
 //! `form`/`data_table`/`editor`/`chart`), #27 the multi-section view +
 //! standalone scrollbar, and #28 the seven overlay rasterisers —
 //! `tooltip`/`context_menu`/`dialog`/`palette`/`completions`/
-//! `find_replace`/`rich_text_popup` (see `super::tooltip` etc.). Every
-//! other `draw_*`/`*_layout` rasteriser method is still a `todo!()`
-//! stub — later issues implement each one against Direct2D /
+//! `find_replace`/`rich_text_popup` (see `super::tooltip` etc.). #29
+//! landed the five container/indicator rasterisers — `panel`/`split`/
+//! `toast`/`progress`/`spinner`. #30 landed the three text-heavy
+//! rasterisers — `terminal`/`text_display`/`message_list` (see
+//! `super::terminal`/`super::text_display`/`super::message_list`).
+//! Every other `draw_*`/`*_layout` rasteriser method is still a
+//! `todo!()` stub — later issues implement each one against Direct2D /
 //! DirectWrite, same as the GTK backend did one primitive at a time.
 //!
 //! # Implementation notes
@@ -917,16 +921,96 @@ impl Backend for WinBackend {
         }
     }
 
-    fn draw_terminal(&mut self, _rect: Rect, _term: &Terminal) {
-        todo!("Direct2D terminal cell grid rasteriser")
+    /// #30: real Direct2D/DirectWrite rasteriser via `win::terminal` once
+    /// a surface is attached. Mirrors `GtkBackend::draw_terminal`'s
+    /// scrollbar handling (subtract the gutter from the cell area, paint
+    /// cells, then paint the scrollbar over the freed strip) but skips
+    /// the #417 dirty-row cache — see `win::terminal`'s module doc for
+    /// why that's a deliberate, follow-up-sized scope cut. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
+    fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let lh = self.current_line_height;
+            let cw = self.current_char_width;
+            let theme = crate::theme::Theme::default();
+
+            let sb_width = match &term.scrollbar {
+                Some(sb) => sb.width.map(|w| w as f32).unwrap_or(8.0),
+                None => 0.0,
+            };
+            let cell_area_w = (rect.width - sb_width).max(0.0);
+
+            super::terminal::draw_terminal_cells(
+                &surface.target,
+                dwrite,
+                term,
+                rect.x,
+                rect.y,
+                cell_area_w,
+                rect.height,
+                lh,
+                cw,
+                &theme,
+            );
+
+            if let Some(ref sb_state) = term.scrollbar {
+                let sb = crate::primitives::scrollbar::Scrollbar::vertical(
+                    term.id.clone(),
+                    Rect::new(rect.x + cell_area_w, rect.y, sb_width, rect.height),
+                    sb_state.effective_scroll_offset() as f32,
+                    sb_state.total_lines as f32,
+                    sb_state.visible_lines as f32,
+                    lh,
+                );
+                super::scrollbar::draw_scrollbar(&surface.target, &sb, &theme);
+            }
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, term);
+        todo!("Direct2D terminal cell grid rasteriser (no surface attached yet)")
     }
 
-    fn draw_terminal_divider(&mut self, _rect: Rect) {
-        todo!("Direct2D terminal split divider rasteriser")
+    /// #30: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. `Terminal` paints no text, so
+    /// unlike most of that method's siblings this doesn't need
+    /// `self.dwrite`.
+    fn draw_terminal_divider(&mut self, rect: Rect) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            super::terminal::draw_terminal_divider(
+                &surface.target,
+                rect,
+                &crate::theme::Theme::default(),
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = rect;
+        todo!("Direct2D terminal split divider rasteriser (no surface attached yet)")
     }
 
-    fn draw_text_display(&mut self, _rect: Rect, _td: &TextDisplay) {
-        todo!("Direct2D text display rasteriser")
+    /// #30: real Direct2D/DirectWrite rasteriser via `win::text_display`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// for the "surface not attached yet" fallback posture.
+    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::text_display::draw_text_display(
+                &surface.target,
+                dwrite,
+                rect,
+                td,
+                &crate::theme::Theme::default(),
+                self.current_line_height,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, td);
+        todo!("Direct2D text display rasteriser (no surface attached yet)")
     }
 
     fn draw_command_line(
@@ -937,8 +1021,23 @@ impl Backend for WinBackend {
         todo!("Direct2D command line rasteriser")
     }
 
-    fn text_display_layout(&self, _rect: Rect, _td: &TextDisplay) -> TextDisplayLayout {
-        todo!("DirectWrite text display layout")
+    /// #30: pure measurement — only needs `line_height`, not a live
+    /// render target or `self.dwrite` (mirrors `MacBackend::text_display_layout`
+    /// / `GtkBackend::text_display_layout`, both row-count-based rather
+    /// than real text measurement) — but still lives in a Windows-only
+    /// module, so this only needs the `target_os = "windows"` gate every
+    /// method in this file shares. No `return` in the `windows` arm —
+    /// see [`Self::activity_bar_layout`]'s doc for why.
+    fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
+        #[cfg(target_os = "windows")]
+        {
+            super::text_display::win_text_display_layout(td, rect, self.current_line_height)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, td);
+            todo!("DirectWrite text display layout")
+        }
     }
 
     fn draw_text_input(
@@ -1151,8 +1250,29 @@ impl Backend for WinBackend {
         todo!("Direct2D editor rasteriser (no surface attached yet)")
     }
 
-    fn draw_message_list(&mut self, _rect: Rect, _list: &MessageList) {
-        todo!("Direct2D message list rasteriser")
+    /// #30: real Direct2D/DirectWrite rasteriser via `win::message_list`
+    /// once a surface is attached. Mirrors `GtkBackend::draw_message_list`
+    /// / `MacBackend::draw_message_list` — no panel-background fill here;
+    /// hosts that want one paint it before calling (see
+    /// `win::message_list`'s module doc). See [`Self::draw_status_bar`]'s
+    /// doc for the "surface not attached yet" fallback posture.
+    fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::message_list::draw_message_list(
+                &surface.target,
+                dwrite,
+                list,
+                rect.x,
+                rect.y,
+                rect.y + rect.height,
+                self.current_line_height,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, list);
+        todo!("Direct2D message list rasteriser (no surface attached yet)")
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::rich_text_popup`
