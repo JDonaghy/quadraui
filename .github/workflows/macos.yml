@@ -27,6 +27,22 @@ name: macOS
 # proving nothing, and the old header's "move onto push/pull_request once
 # #484 lands" was circular — #484 cannot land without this signal.
 #
+# One correction to the paragraph above, learned the expensive way in #498
+# (two merge-gate round trips on compile errors nothing local caught): the
+# "Linux can't see `src/macos/`" part is only true of a *host-triple*
+# check. `cargo check` never links, so it needs the target's `rust-std`
+# and no Apple SDK — `rustup target add aarch64-apple-darwin` once, then
+#
+#   RUSTFLAGS="-D warnings" cargo check -p quadraui --features macos \
+#       --target aarch64-apple-darwin --all-targets
+#
+# compiles every line of `src/macos/` (and its `#[cfg(test)]` blocks, which
+# is where `-D warnings` `dead_code` gate failures surface) on any Linux
+# box in ~15s. Workers touching `src/macos/` should run that before pushing.
+# What it still cannot do is *run* anything — `macos-latest` remains the
+# only place `cargo test` executes, so an AppKit call in a `#[test]` is
+# still invisible until this job runs it (see `BACKEND.md` §7).
+#
 # The path filter resolves both at once, and is load-bearing:
 #
 #   * A PR touching nothing under `quadraui/src/macos/**` gets NO macOS

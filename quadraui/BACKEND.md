@@ -531,6 +531,42 @@ for a smoke test.
       the default CI legs catches this; `quadraui/tests/macos_appkit_features.rs`
       is the portable guard, and adding an import means registering it
       there too (#498).
+- [ ] **Type-check your backend's target from wherever you are, before
+      pushing.** `cargo check --features <backend>` on the *host* triple
+      compiles none of a `target_os`-gated module (`lib.rs` gates
+      `mod macos` on `target_os = "macos"`), so it exits 0 having proved
+      nothing. `cargo check` never links, so it does not need that
+      platform's SDK — only its `rust-std`. From a Linux box:
+
+      ```bash
+      rustup target add aarch64-apple-darwin   # once
+      RUSTFLAGS="-D warnings" cargo check -p quadraui --features macos \
+          --target aarch64-apple-darwin --all-targets
+      ```
+
+      `--all-targets` matters: it compiles the `#[cfg(test)]` blocks too,
+      which is where the `-D warnings` `dead_code` failures from a
+      too-narrow `crate::desktop` gate show up. `--target
+      aarch64-apple-darwin` matters because `macos-latest` is Apple
+      silicon. This turns the macOS workflow's slow
+      once-per-macOS-touching-PR compile signal into a ~15s local one
+      (#498 burned two merge-gate round trips before anyone tried it).
+      **It still does not run anything** — see the AppKit-at-runtime
+      caveat under *Recommended testing* below.
+- [ ] **Don't call the native toolkit from a plain `#[test]`.** libtest
+      runs every test on a spawned worker thread, in a process that never
+      created an `NSApplication` / GTK `Application` / message loop.
+      Vending an AppKit object there (`+[NSCursor arrowCursor]`,
+      `NSWindow`, `NSMenu`) is a hazard no Linux leg can see, and it fails
+      only on the one runner that matters. Two ways out, and prefer the
+      first: **split the mapping decision out as a pure value** (see
+      `macos::backend`'s `MacCursorKind` / `mac_cursor_kind`, which made
+      the `PointerShape` → cursor table assertable on any thread and any
+      OS), or **gate on `MainThreadMarker::new()`** and accept that the
+      test no-ops in CI (see `macos::menu_bar_install`'s tests). A test
+      that asserts the toolkit's own invariant ("these factory methods
+      return a shared instance") buys nothing either way — assert *your*
+      mapping, not Apple's.
 
 ### Recommended testing
 
