@@ -57,8 +57,18 @@ pub mod testing;
 /// `msg`, this isn't pure arithmetic), so the module itself only exists on
 /// `target_os = "windows"` rather than being internally `cfg`-gated
 /// line-by-line like `backend.rs`.
+///
+/// `pub` rather than `pub(crate)` (#25): the chrome rasterisers re-exported
+/// below (`draw_status_bar`, `draw_tab_bar`, …) take a `&DWrite` measurer in
+/// their signatures, exactly as [`crate::macos`]'s take a `&CTFont` from its
+/// own `pub mod text`. A `pub` function whose parameter type is `pub(crate)`
+/// is a `private_interfaces` warning — and this repo's CI runs with
+/// `RUSTFLAGS: "-D warnings"`, so it is a *build failure* on the
+/// windows-latest leg (nothing in this module compiles on Linux, so the
+/// ubuntu `cargo check --features win` leg cannot see it). Keep this module
+/// and `DWrite`'s public surface in step with the rasterisers that take it.
 #[cfg(target_os = "windows")]
-pub(crate) mod text;
+pub mod text;
 
 #[cfg(target_os = "windows")]
 pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};

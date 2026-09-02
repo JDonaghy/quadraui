@@ -11,7 +11,7 @@
 //! approximate char width.
 //!
 //! This whole module only exists on `target_os = "windows"` — see
-//! `super::mod`'s `mod text;` declaration and `backend.rs`'s module docs
+//! `super::mod`'s `pub mod text;` declaration and `backend.rs`'s module docs
 //! for why the rest of this repo's `--features win` compile gate stays
 //! meaningful without a Windows host.
 
@@ -39,7 +39,16 @@ use crate::Color;
 /// resources aren't GPU-device-bound), but keeping every per-window
 /// resource on one struct with one recreate-on-device-loss path avoids a
 /// second "is it attached yet" check.
-pub(crate) struct DWrite {
+///
+/// `pub` (with a `pub` constructor and measure/draw methods) rather than
+/// `pub(crate)`: it appears by reference in the signatures of the chrome
+/// rasterisers `super::mod` re-exports (`draw_status_bar`, `draw_tab_bar`,
+/// `draw_activity_bar`, `draw_menu_bar`, and their `*_layout` twins), so a
+/// crate-private type here is a `private_interfaces` warning — i.e. a build
+/// failure under CI's `-D warnings`. Same posture as
+/// [`crate::macos::text`]'s `pub fn make_font` / `pub fn measure_text`,
+/// which the macOS rasterisers take the same way.
+pub struct DWrite {
     factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
     /// Bold variant of `text_format`, same family/size — built alongside
@@ -64,7 +73,7 @@ impl DWrite {
     /// ([`super::backend::WinBackend::attach_surface`]) can feed them
     /// straight into `set_current_line_height`/`set_current_char_width`
     /// without a second round-trip through this module.
-    pub(crate) fn new(family: &str, size_pt: f32) -> WinResult<(Self, f32, f32)> {
+    pub fn new(family: &str, size_pt: f32) -> WinResult<(Self, f32, f32)> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let size_dip = pt_to_dip(size_pt);
         let text_format =
@@ -94,7 +103,7 @@ impl DWrite {
     /// `(width, height)` DIPs of `text` laid out against this format —
     /// the `measure_text(text) -> (width_dips, height_dips)` helper
     /// issue #21 asks for, scoped to the current editor font.
-    pub(crate) fn measure_text(&self, text: &str) -> WinResult<(f32, f32)> {
+    pub fn measure_text(&self, text: &str) -> WinResult<(f32, f32)> {
         measure_text(&self.factory, &self.text_format, text)
     }
 
@@ -102,13 +111,13 @@ impl DWrite {
     /// `bold` is `true` — chrome rasterisers (e.g. [`crate::StatusBar`]'s
     /// per-segment `bold` flag, #25) use this so the fit/paint widths
     /// agree regardless of weight.
-    pub(crate) fn measure_text_styled(&self, text: &str, bold: bool) -> WinResult<(f32, f32)> {
+    pub fn measure_text_styled(&self, text: &str, bold: bool) -> WinResult<(f32, f32)> {
         measure_text(&self.factory, self.format_for(bold), text)
     }
 
     /// Paint `text` inside `rect` (DIPs, target-relative) in `color`,
     /// clipped to the rect, using this format against `target`.
-    pub(crate) fn draw_text(
+    pub fn draw_text(
         &self,
         target: &ID2D1RenderTarget,
         text: &str,
@@ -120,7 +129,7 @@ impl DWrite {
 
     /// Like [`Self::draw_text`], but against the bold variant when `bold`
     /// is `true`. See [`Self::measure_text_styled`].
-    pub(crate) fn draw_text_styled(
+    pub fn draw_text_styled(
         &self,
         target: &ID2D1RenderTarget,
         text: &str,
