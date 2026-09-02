@@ -56,7 +56,15 @@ mod menu_bar;
 /// backend that is pure arithmetic, so it is the one part that can be
 /// unit-tested off Windows. See its module docs.
 pub(crate) mod msg;
+/// Direct2D / DirectWrite rasteriser for [`crate::MultiSectionView`] (#27).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod multi_section_view;
 pub mod run;
+/// Direct2D rasteriser for [`crate::Scrollbar`] (#27). Windows-only in
+/// full — see its module docs.
+#[cfg(target_os = "windows")]
+mod scrollbar;
 pub mod services;
 /// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`] (#25).
 /// Windows-only in full — see its module docs.
@@ -112,7 +120,11 @@ pub use form::{draw_form, win_form_layout};
 pub use list::{draw_list, win_list_layout};
 #[cfg(target_os = "windows")]
 pub use menu_bar::{draw_menu_bar, win_menu_bar_layout};
+#[cfg(target_os = "windows")]
+pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
 pub use run::run;
+#[cfg(target_os = "windows")]
+pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
