@@ -146,3 +146,62 @@ pub fn draw_command_center(
 
     layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::command_center::CommandCenterHit;
+    use crate::types::WidgetId;
+    use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
+
+    fn headless_pango_layout() -> (ImageSurface, pango::Layout) {
+        let surface = ImageSurface::create(Format::ARgb32, 400, 100).expect("create ImageSurface");
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let layout = pangocairo::functions::create_layout(&cr);
+        (surface, layout)
+    }
+
+    /// `command_center_layout` is documented **ABSOLUTE** (issue #505):
+    /// `back_bounds` / `search_bounds` must be shifted by the strip's
+    /// own origin, not left at (0, 0) — the case that hides a
+    /// LOCAL/ABSOLUTE mixup (also regression-tested for macOS as
+    /// `mac_command_center_layout`'s non-zero-origin test, cited from
+    /// this method's trait doc comment).
+    fn round_trip_at(x: f64, y: f64) {
+        let (_surface, pango_layout) = headless_pango_layout();
+        let cc = CommandCenter {
+            id: WidgetId::new("cc"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "project".into(),
+        };
+        let layout = gtk_command_center_layout(&cc, &pango_layout, x, y, 400.0, 24.0);
+
+        let back = layout.back_bounds.expect("back bounds present");
+        assert!(
+            back.x as f64 >= x,
+            "back.x={} must not fall left of the strip's own origin {x}",
+            back.x
+        );
+
+        let search = layout.search_bounds.expect("search bounds present");
+        let scx = search.x + 1.0;
+        let scy = search.y + 1.0;
+        assert_eq!(layout.hit_test(scx, scy), CommandCenterHit::SearchBox);
+
+        let bcx = back.x + back.width / 2.0;
+        let bcy = back.y + back.height / 2.0;
+        assert_eq!(layout.hit_test(bcx, bcy), CommandCenterHit::Back);
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}

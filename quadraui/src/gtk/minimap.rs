@@ -699,28 +699,47 @@ mod tests {
 
     // ── paint/click round trip ────────────────────────────────────────
 
-    #[test]
-    fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction() {
+    /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
+    /// — `minimap_layout` is documented **ABSOLUTE**
+    /// (`docs/PRIMITIVE_RULES.md` "Coordinate frames for `*_layout`
+    /// methods", issue #505), so `hit_test` must be called with
+    /// coordinates shifted by the same `x`/`y` origin the strip was
+    /// painted at.
+    fn paint_and_click_round_trip_at(x: f64, y: f64) {
         let mm = minimap_from(vec!["x"; 8], 8);
         let (cr, pango_layout) = surface_and_layout();
         let layout = draw_minimap(
             &cr,
             &pango_layout,
-            0.0,
-            0.0,
+            x,
+            y,
             40.0,
             100.0,
             &mm,
             &Theme::default(),
         );
         assert_eq!(
-            layout.hit_test(20.0, 50.0),
+            layout.hit_test((x + 20.0) as f32, (y + 50.0) as f32),
             MinimapHit::Seek { fraction: 0.5 }
         );
         assert_eq!(
-            layout.hit_test(20.0, 0.0),
+            layout.hit_test((x + 20.0) as f32, y as f32),
             MinimapHit::Seek { fraction: 0.0 }
         );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction() {
+        paint_and_click_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md
+    /// "Layout helpers must return coords in the same frame across
+    /// backends"): `(x, y) = (0, 0)` is exactly the case where a
+    /// LOCAL/ABSOLUTE mixup in `gtk_minimap_layout` would be invisible.
+    #[test]
+    fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7.0, 13.0);
     }
 
     #[test]

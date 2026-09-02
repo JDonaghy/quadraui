@@ -164,3 +164,56 @@ pub fn draw_text_input(
 
     li
 }
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::event::Point;
+    use crate::primitives::text_input::TextInputHit;
+    use crate::types::WidgetId;
+
+    /// `text_input_layout` is documented **ABSOLUTE** (issue #505):
+    /// `content_bounds` / hit regions must be shifted by `rect.x`/
+    /// `rect.y`, not left at (0, 0) — the case that hides a
+    /// LOCAL/ABSOLUTE mixup.
+    fn round_trip_at(x: f32, y: f32) {
+        let ti = TextInput {
+            id: WidgetId::new("ti"),
+            lines: vec!["hello".into()],
+            cursor_line: 0,
+            cursor_col: 0,
+            placeholder: None,
+            scroll_offset: 0,
+            scroll_col: 0,
+            has_focus: true,
+        };
+        let rect = crate::event::Rect::new(x, y, 40.0, 20.0);
+        let layout = gtk_text_input_layout(&ti, rect, 10.0, 8.0);
+
+        // Content sits inset by a fixed border + padding from `rect`'s
+        // own origin (1px border + 1 char-width horizontal padding, 1px
+        // vertical) — ABSOLUTE means that inset tracks `rect.x`/`rect.y`
+        // exactly, not a fixed (0, 0)-relative offset.
+        assert_eq!(layout.content_bounds.x, x + 1.0 + 8.0);
+        assert_eq!(layout.content_bounds.y, y + 1.0);
+
+        let p = Point::new(layout.content_bounds.x + 0.5, layout.content_bounds.y + 0.5);
+        let hit = layout
+            .hit_regions
+            .iter()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, h)| h.clone());
+        assert_eq!(hit, Some(TextInputHit::Line { line_idx: 0 }));
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}

@@ -129,3 +129,44 @@ pub fn draw_sidebar_panel(
 
     layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::sidebar_panel::SidebarPanelHit;
+
+    /// `sidebar_panel_layout` is documented **ABSOLUTE** (issue #505):
+    /// `content_bounds` must start at the panel's own origin, not
+    /// (0, 0) — the case that hides a LOCAL/ABSOLUTE mixup.
+    fn round_trip_at(x: f64, y: f64) {
+        let panel = SidebarPanel {
+            id: WidgetId::new("sp"),
+            toolbar: None,
+            toolbar_height: None,
+        };
+        let layout = gtk_sidebar_panel_layout(&panel, None, 6.0, 14.0, x, y, 100.0, 60.0);
+
+        assert_eq!(layout.content_bounds.x as f64, x);
+        assert_eq!(layout.content_bounds.y as f64, y);
+
+        let cx = layout.content_bounds.x + 1.0;
+        let cy = layout.content_bounds.y + 1.0;
+        match layout.hit_test(cx, cy) {
+            SidebarPanelHit::Content { x: rel_x, y: rel_y } => {
+                assert!((rel_x - 1.0).abs() < 0.01 && (rel_y - 1.0).abs() < 0.01);
+            }
+            other => panic!("expected Content hit at ({cx}, {cy}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}

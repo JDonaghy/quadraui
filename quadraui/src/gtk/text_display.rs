@@ -186,3 +186,64 @@ pub fn gtk_text_display_layout(
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::text_display::{TextDisplayHit, TextDisplayLine};
+    use crate::types::{Decoration, StyledSpan, WidgetId};
+
+    fn display(show_scrollbar: bool) -> TextDisplay {
+        TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..20)
+                .map(|i| TextDisplayLine {
+                    spans: vec![StyledSpan::plain(format!("line{i}"))],
+                    decoration: Decoration::Normal,
+                    timestamp: None,
+                })
+                .collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar,
+        }
+    }
+
+    /// `text_display_layout` is documented **LOCAL** (issue #505):
+    /// `gtk_text_display_layout` never reads `rect.x`/`rect.y`, so the
+    /// returned `scrollbar_bounds` / `hit_test` results must be
+    /// identical regardless of where `rect` is positioned — the
+    /// opposite regression from the ABSOLUTE methods (a LOCAL method
+    /// that accidentally starts folding in the origin), but the same
+    /// "must agree across origins" contract.
+    fn scrollbar_thumb_round_trip_at(x: f32, y: f32) {
+        let rect = crate::event::Rect::new(x, y, 20.0, 5.0);
+        let d = display(true);
+        let layout = gtk_text_display_layout(&d, rect, 1.0);
+
+        let thumb = layout.thumb_bounds.expect("thumb bounds present");
+        // LOCAL frame: thumb bounds must not have absorbed rect.x/rect.y.
+        assert!(
+            thumb.x < rect.width,
+            "thumb.x={} must stay inside the local frame",
+            thumb.x
+        );
+
+        let hit = layout.hit_test(thumb.x + 0.5, thumb.y + 0.5);
+        assert_eq!(hit, TextDisplayHit::ScrollbarThumb);
+    }
+
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip() {
+        scrollbar_thumb_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn scrollbar_thumb_paint_and_click_round_trip_at_nonzero_origin() {
+        scrollbar_thumb_round_trip_at(7.0, 13.0);
+    }
+}

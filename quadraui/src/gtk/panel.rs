@@ -97,3 +97,55 @@ pub fn draw_panel(
 
     layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::panel::{Panel, PanelAction, PanelHit};
+    use crate::types::{StyledText, WidgetId};
+
+    /// `panel_layout` is documented **ABSOLUTE** (issue #505):
+    /// `title_bar_bounds` / `content_bounds` must start at the panel's
+    /// own origin, not at (0, 0) — the case that would hide a
+    /// LOCAL/ABSOLUTE mixup.
+    fn round_trip_at(x: f64, y: f64) {
+        let panel = Panel {
+            id: WidgetId::new("p"),
+            title: Some(StyledText::plain("Title")),
+            actions: vec![PanelAction {
+                id: WidgetId::new("close"),
+                icon: "×".into(),
+                tooltip: String::new(),
+                is_active: false,
+            }],
+            accent: None,
+            collapsed: false,
+        };
+        let layout = gtk_panel_layout(&panel, x, y, 200.0, 100.0, 20.0);
+
+        let tb = layout.title_bar_bounds.expect("title bar present");
+        assert_eq!(tb.x as f64, x);
+        assert_eq!(tb.y as f64, y);
+        assert_eq!(layout.content_bounds.x as f64, x);
+
+        let va = &layout.visible_actions[0];
+        let acx = va.bounds.x + va.bounds.width / 2.0;
+        let acy = va.bounds.y + va.bounds.height / 2.0;
+        assert_eq!(layout.hit_test(acx, acy), PanelHit::Action(va.id.clone()));
+
+        let ccx = layout.content_bounds.x + 1.0;
+        let ccy = layout.content_bounds.y + 1.0;
+        assert_eq!(layout.hit_test(ccx, ccy), PanelHit::Content(panel.id));
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}

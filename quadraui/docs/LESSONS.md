@@ -175,10 +175,25 @@ first non-zero-offset consumer of `mac_tree_layout`. Existing tests
 all used `area=(0, 0)` so the shift was a no-op and the bug
 invisible.
 
-Rule: layout helpers return local-frame coords. Paint loops shift
-inline (`bounds.x + area.x`). Every layout helper needs at least
-one regression test using non-zero `area.y` — `area=(0, 0)` is the
-case where the bug doesn't manifest.
+Rule (superseded — see below): layout helpers return local-frame
+coords. Paint loops shift inline (`bounds.x + area.x`). Every layout
+helper needs at least one regression test using non-zero `area.y` —
+`area=(0, 0)` is the case where the bug doesn't manifest.
+
+**Update (issue #505):** the #505 audit of every `Backend::*_layout`
+trait method found that "always local" was never actually the norm —
+of 19 audited methods, only 5 are LOCAL (including `mac_tree_layout`'s
+fixed frame); the other 14 are deliberately **ABSOLUTE** (shifted by
+`rect.x`/`rect.y`), and every backend agrees with its own siblings on
+which one, with no live cross-backend mismatch found. The part of this
+rule that still holds, unconditionally: **a `*_layout` method and its
+TUI/GTK/macOS twins must agree on frame with each other**, that
+agreement must be stated on the trait doc comment (not just implied),
+and every `*_layout` method needs a non-zero-origin regression test —
+`area=(0, 0)` is exactly the case that hides a mixup, as it did here.
+The "which frame" decision itself now lives in
+`PRIMITIVE_RULES.md`'s "Coordinate frames for `*_layout` methods" and
+`DECISIONS.md` D-005, not in a blanket "local by default" claim.
 
 ## Dropdown item sizing must use backend-native units
 

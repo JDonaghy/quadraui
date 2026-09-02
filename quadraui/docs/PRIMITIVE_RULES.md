@@ -140,6 +140,51 @@ section** naming each consumer file that must move, or stating "no
 consumer hits" with the grep. A public-API PR without one should be sent
 back at review.
 
+## Coordinate frames for `*_layout` methods (issue #505)
+
+Every `Backend::<name>_layout` method — and its `draw_<name>` twin, where
+one returns hit-region data — returns its `hit_regions` / `bounds` in
+one of exactly two frames, and its doc comment states which one:
+
+- **LOCAL** — relative to the `rect` passed in; `(0, 0)` is `rect`'s
+  top-left corner. The caller subtracts `rect.x` / `rect.y` from an
+  absolute click coordinate before calling `hit_test`.
+- **ABSOLUTE** — shifted by `rect.x` / `rect.y` (target-surface
+  coordinates). The caller compares raw click coordinates against the
+  returned bounds with no further adjustment.
+
+**Which one a given primitive uses is a design choice made once, not a
+per-backend one.** In practice: primitives a parent composer paints
+*inline* and already tracks the origin for (`tree_layout`,
+`form_layout`, `data_table_layout`, `text_display_layout`,
+`status_bar_layout`, `activity_bar_layout`) are LOCAL. Primitives
+painted as a freestanding widget at their own screen rect, where the
+caller has no other reason to track that rect, are ABSOLUTE
+(`tab_bar_layout`, `menu_bar_layout`, `split_layout`,
+`split_tree_layout`, `panel_layout`, `toast_stack_layout`,
+`pipeline_view_layout`, `progress_layout`, `spinner_layout`,
+`command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`,
+`chart_layout`, `minimap_layout`, `msv_layout`, `text_input_layout`).
+See `quadraui/docs/DECISIONS.md` D-005 for the full audit and why the
+split isn't collapsed to one frame everywhere.
+
+**The rule this enforces is not "always LOCAL" — `docs/LESSONS.md`'s
+"Layout helpers must return coords in the same frame across backends"
+predates this audit and reads that way; treat this section as its
+successor.** The rule is: (1) the method's doc comment states its frame
+explicitly — **LOCAL** or **ABSOLUTE**, in those words, so grep finds
+every one — and (2) every backend implementation actually agrees with
+that statement and with its TUI/GTK/macOS siblings. A `*_layout` doc
+comment with neither word is an #505 regression.
+
+**Every `*_layout` method needs a non-zero-origin regression test** on
+every backend it ships on (TUI + GTK always; macOS per #483
+availability) — `rect.x != 0` or `rect.y != 0`. `area = (0, 0)` is
+exactly the case where a LOCAL/ABSOLUTE mixup is invisible (adding or
+skipping `rect.x` is a no-op when `rect.x == 0`), which is why the
+historical `mac_tree_layout` bug (`docs/LESSONS.md`) shipped past
+tests that all used the origin.
+
 ## Shared pixel-layout math (#499)
 
 `gtk::tree::gtk_tree_layout` and `macos::tree::mac_tree_layout` used to

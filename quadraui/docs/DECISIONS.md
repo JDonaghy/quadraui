@@ -463,4 +463,87 @@ payoff is discoverability, honest APIs, and a plugin-friendly serde
 surface that holds up as the crate grows.
 
 Future primitive decisions should cite this file when they hit the
+similar tension between "share the algorithm" and "keep the concept
+distinct."
+
+---
+
+## D-005 — `*_layout` coordinate-frame convention (issue #505)
+
+### Question
+
+`LESSONS.md` records a rule from a shipped bug (`mac_tree_layout` /
+`mac_form_layout` silently returning absolute coords while their
+TUI/GTK twins returned local, drifting clicks by `area.y` on macOS):
+*"layout helpers return local-frame coords."* Issue #505 asked whether
+that rule is actually followed trait-wide, or whether — as
+`tab_bar_layout`'s already-documented absolute-coordinate exception
+(#552) suggested — the real picture is more mixed and the doc comments
+just don't say so.
+
+### Audit
+
+Every `Backend::<name>_layout` trait method in `quadraui/src/backend.rs`
+was read against its TUI, GTK, and (where implemented) macOS
+implementation, tracing whether the returned `hit_regions` / `bounds`
+are shifted by `rect.x`/`rect.y` (**ABSOLUTE**) or left relative to
+`rect`'s origin (**LOCAL**). Result, 19 methods audited (excludes
+`tab_bar_layout*` and `activity_bar_layout`, already resolved by #552):
+
+| Frame | Methods |
+|---|---|
+| **LOCAL** | `data_table_layout`, `status_bar_layout`, `text_display_layout`, `tree_layout`, `form_layout` |
+| **ABSOLUTE** | `text_input_layout`, `msv_layout`, `menu_bar_layout`, `split_layout`, `split_tree_layout`, `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`, `progress_layout`, `spinner_layout`, `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`, `minimap_layout` |
+
+**No live cross-backend mismatch was found.** For every method, every
+backend that implements it agrees with its siblings on which frame it
+uses — unlike the historical `mac_tree_layout` bug, nothing here
+silently drifts between backends today. What *was* missing: 16 of the
+19 methods' trait doc comments said nothing at all about coordinate
+frame, so the agreement was accidental (preserved by copy-paste and
+`#499`'s later unification into shared `layout_metrics` helpers) rather
+than contracted.
+
+### Decision
+
+**Keep both frames — do not collapse everything to LOCAL.** Converting
+the 14 ABSOLUTE methods to LOCAL would be a breaking change to every
+caller of every one of them (both in-tree composers and, per
+`CLAUDE.md`'s downstream-consumers policy, `coord-tui` and `vimcode` if
+either calls them directly) for a purely cosmetic uniformity gain — the
+audit found no bug the conversion would fix, only a documentation gap.
+Instead:
+
+1. Each method's doc comment now states its frame explicitly, in the
+   words **LOCAL** or **ABSOLUTE** (grep-able), matching the audited
+   reality above. Landed in the same PR as this decision — see
+   `quadraui/src/backend.rs`'s module doc "Coordinate frames for
+   `*_layout` methods" and each method's doc comment.
+2. `PRIMITIVE_RULES.md` gained a "Coordinate frames for `*_layout`
+   methods" section stating the convention going forward: a new
+   primitive's layout method picks LOCAL if a parent composer paints it
+   inline and already tracks the origin, ABSOLUTE if it's painted as a
+   freestanding widget at its own screen rect. `LESSONS.md`'s original
+   rule is marked superseded and points here instead of re-asserting
+   "always local."
+3. `tab_bar_layout`'s ABSOLUTE convention (audited and fixed under
+   #552, opposite of `activity_bar_layout`'s LOCAL one) is ratified by
+   this decision, not treated as an outstanding exception to resolve —
+   it's simply one more ABSOLUTE-frame method in the table above.
+
+### What this does NOT mean
+
+- It does not mean "frame doesn't matter." The rule that *does* still
+  bind unconditionally: whichever frame a method picks, every backend
+  implementing it must agree with its siblings, that agreement is
+  stated on the doc comment, and it is regression-tested at a non-zero
+  `rect.x`/`rect.y` (the case that hides a LOCAL/ABSOLUTE mixup, per
+  the `mac_tree_layout` postmortem). A future primitive that lets its
+  backends silently disagree on frame is still a bug of exactly this
+  kind.
+- It does not block deprecating an individual method's frame later —
+  `PRIMITIVE_RULES.md` rule 8's two-PR deprecation protocol applies if
+  a specific method's frame ever needs to change.
+
+Future primitive decisions should cite this file when they hit the
 same fork.

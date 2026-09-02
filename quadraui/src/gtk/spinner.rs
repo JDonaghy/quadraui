@@ -64,3 +64,53 @@ pub fn draw_spinner(
 
     layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::spinner::SpinnerHit;
+    use crate::types::WidgetId;
+    use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
+
+    fn headless_pango_layout() -> (ImageSurface, pango::Layout) {
+        let surface = ImageSurface::create(Format::ARgb32, 200, 200).expect("create ImageSurface");
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let layout = pangocairo::functions::create_layout(&cr);
+        (surface, layout)
+    }
+
+    /// `spinner_layout` is documented **ABSOLUTE** (issue #505):
+    /// `bounds` must start at the spinner's own origin, not (0, 0) —
+    /// the case that hides a LOCAL/ABSOLUTE mixup.
+    fn round_trip_at(x: f64, y: f64) {
+        let (_surface, pango_layout) = headless_pango_layout();
+        let spinner = Spinner {
+            id: WidgetId::new("spin"),
+            label: "Indexing".into(),
+            frame_idx: 0,
+            accent: None,
+        };
+        let layout = gtk_spinner_layout(&spinner, &pango_layout, x, y);
+
+        assert_eq!(layout.bounds.x as f64, x);
+        assert_eq!(layout.bounds.y as f64, y);
+
+        let cx = layout.bounds.x + 1.0;
+        let cy = layout.bounds.y + 1.0;
+        assert_eq!(
+            layout.hit_test(cx, cy, &spinner.id),
+            SpinnerHit::Body(spinner.id.clone())
+        );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}

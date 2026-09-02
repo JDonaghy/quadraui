@@ -61,11 +61,72 @@ pub fn draw_split_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Point;
     use crate::primitives::split_tree::SplitDirection;
     use crate::types::WidgetId;
 
     fn wid(s: &str) -> WidgetId {
         WidgetId::new(s)
+    }
+
+    /// `split_tree_layout` is documented **ABSOLUTE** (issue #505):
+    /// leaf/divider bounds are shifted by the origin, so `(x, y) = (0, 0)`
+    /// is exactly the case where a LOCAL/ABSOLUTE mixup is invisible.
+    fn round_trip_at(x: f64, y: f64) {
+        let tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.5,
+            SplitTree::leaf(wid("a")),
+            SplitTree::leaf(wid("b")),
+        );
+        let layout = gtk_split_tree_layout(&tree, x, y, 100.0, 40.0);
+
+        assert_eq!(
+            layout.leaves[0].1.x as f64, x,
+            "first leaf must start at the split's own x"
+        );
+        assert_eq!(
+            layout.leaves[0].1.y as f64, y,
+            "first leaf must start at the split's own y"
+        );
+
+        let d = &layout.dividers[0];
+        let cross_mid = y as f32 + 20.0;
+        assert_eq!(
+            layout.hit_test_divider(
+                Point {
+                    x: d.position,
+                    y: cross_mid
+                },
+                1.0
+            ),
+            Some(d.split_index)
+        );
+        assert_eq!(
+            layout.hit_test_leaf(Point {
+                x: x as f32 + 1.0,
+                y: cross_mid
+            }),
+            Some(&wid("a"))
+        );
+        assert_eq!(
+            layout.hit_test_leaf(Point {
+                x: d.position + 10.0,
+                y: cross_mid
+            }),
+            Some(&wid("b"))
+        );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
     }
 
     #[test]

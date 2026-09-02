@@ -422,4 +422,39 @@ mod tests {
             "no focus → reserved strip above the box must stay background white, got {px:?}"
         );
     }
+
+    /// `pipeline_view_layout` is documented **ABSOLUTE** (issue #505):
+    /// `box_bounds` / `action_bounds` must be shifted by the widget's
+    /// own origin, not left at (0, 0) — the case that hides a
+    /// LOCAL/ABSOLUTE mixup.
+    fn hit_test_round_trip_at(x: f64, y: f64) {
+        use crate::primitives::pipeline_view::PipelineHit;
+
+        let mut view = make_view();
+        view.stages[0].action = Some("Retry".into());
+        let layout = gtk_pipeline_view_layout(&view, x, y, 200.0, 50.0);
+
+        let stage = &layout.stages[0];
+        assert_eq!(stage.box_bounds.x as f64, x);
+
+        let action = stage.action_bounds.expect("action bounds present");
+        let acx = action.x + action.width / 2.0;
+        let acy = action.y + action.height / 2.0;
+        assert_eq!(layout.hit_test(acx, acy), PipelineHit::Action(0));
+
+        let bcx = stage.box_bounds.x + 2.0;
+        let bcy = stage.box_bounds.y + 2.0;
+        assert_eq!(layout.hit_test(bcx, bcy), PipelineHit::Body(0));
+    }
+
+    #[test]
+    fn hit_test_round_trip() {
+        hit_test_round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn hit_test_round_trip_at_nonzero_origin() {
+        hit_test_round_trip_at(7.0, 13.0);
+    }
 }
