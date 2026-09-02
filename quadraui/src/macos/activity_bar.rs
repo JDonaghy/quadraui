@@ -86,8 +86,8 @@ pub fn mac_activity_bar_layout(
     row_plan(height, bar)
         .into_iter()
         .map(|(y, item)| ActivityBarRowHit {
-            y_start: y,
-            y_end: y + ACTIVITY_ROW_PX,
+            y_start: y as f32,
+            y_end: (y + ACTIVITY_ROW_PX) as f32,
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
         })
@@ -217,8 +217,8 @@ pub unsafe fn draw_activity_bar_with_style(
         );
 
         regions.push(ActivityBarRowHit {
-            y_start: y,
-            y_end: y + ACTIVITY_ROW_PX,
+            y_start: y as f32,
+            y_end: (y + ACTIVITY_ROW_PX) as f32,
             id: item.id.clone(),
             tooltip: item.tooltip.clone(),
         });
@@ -434,16 +434,16 @@ mod tests {
         // 2 top + 1 bottom = 3 visible rows.
         assert_eq!(regions.len(), 3);
         assert_eq!(regions[0].y_start, 0.0);
-        assert_eq!(regions[0].y_end, ACTIVITY_ROW_PX);
+        assert_eq!(regions[0].y_end, ACTIVITY_ROW_PX as f32);
         assert_eq!(regions[0].id, WidgetId::new("activity:explorer"));
 
-        assert_eq!(regions[1].y_start, ACTIVITY_ROW_PX);
-        assert_eq!(regions[1].y_end, 2.0 * ACTIVITY_ROW_PX);
+        assert_eq!(regions[1].y_start, ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[1].y_end, 2.0 * ACTIVITY_ROW_PX as f32);
         assert_eq!(regions[1].id, WidgetId::new("activity:search"));
 
         // Bottom-pinned item.
-        assert_eq!(regions[2].y_start, H as f64 - ACTIVITY_ROW_PX);
-        assert_eq!(regions[2].y_end, H as f64);
+        assert_eq!(regions[2].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[2].y_end, H as f32);
         assert_eq!(regions[2].id, WidgetId::new("activity:settings"));
     }
 

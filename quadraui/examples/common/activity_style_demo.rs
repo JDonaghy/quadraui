@@ -146,7 +146,7 @@ impl AppLogic for ActivityStyleDemo {
                 let hits = backend.activity_bar_layout(bar_rect, &self.bar());
                 let rel_y = position.y - bar_rect.y;
                 for hit in &hits {
-                    if (rel_y as f64) >= hit.y_start && (rel_y as f64) < hit.y_end {
+                    if rel_y >= hit.y_start && rel_y < hit.y_end {
                         if let Some(idx) = (0..LABELS.len()).find(|&i| hit.id == item_id(i)) {
                             self.activate(idx);
                             return Reaction::Redraw;
