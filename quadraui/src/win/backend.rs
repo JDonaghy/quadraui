@@ -949,16 +949,67 @@ impl Backend for WinBackend {
         todo!("Direct2D dialog rasteriser")
     }
 
-    fn draw_multi_section_view(&mut self, _rect: Rect, _view: &MultiSectionView) {
-        todo!("Direct2D MSV rasteriser")
+    /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
+    /// the "surface not attached yet" fallback posture.
+    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::multi_section_view::draw_multi_section_view(
+                &surface.target,
+                dwrite,
+                rect,
+                view,
+                self.current_line_height,
+                self.current_char_width,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, view);
+        todo!("Direct2D MSV rasteriser (no surface attached yet)")
     }
 
-    fn msv_layout(&self, _rect: Rect, _view: &MultiSectionView) -> MultiSectionViewLayout {
-        todo!("DirectWrite MSV layout")
+    /// #27: like [`Self::tree_layout`], this is pure measurement — only
+    /// needs `line_height`, not a live render target or `self.dwrite`
+    /// (`win_msv_layout`'s `body_measure` is row-count-based, not real
+    /// text measurement, mirroring `MacBackend::msv_layout`/
+    /// `GtkBackend::msv_layout`) — but still lives in a Windows-only
+    /// module, so this only needs the `target_os = "windows"` gate every
+    /// method in this file shares. No `return` in the `windows` arm
+    /// (unlike [`Self::draw_multi_section_view`] above): on
+    /// `target_os = "windows"` the `not(windows)` block below is
+    /// stripped, so this block *is* the tail expression and an explicit
+    /// `return` trips `clippy::needless_return` under CI's `-D warnings`
+    /// — see [`Self::activity_bar_layout`]'s doc for the same pattern.
+    fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
+        #[cfg(target_os = "windows")]
+        {
+            super::multi_section_view::win_msv_layout(view, rect, self.current_line_height)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, view);
+            todo!("DirectWrite MSV layout")
+        }
     }
 
+    /// #27: see [`Self::msv_layout`]'s doc for both the "no measurer
+    /// needed, but still Windows-only" posture and the no-`return`
+    /// pattern. `allow_resize` is hardcoded `false` here (no `view` to
+    /// read it from), matching `MacBackend::msv_metrics`/
+    /// `GtkBackend::msv_metrics`'s identical shortcut. Callers that need
+    /// the resize-aware divider size should go through
+    /// [`Self::msv_layout`] instead.
     fn msv_metrics(&self) -> LayoutMetrics {
-        todo!("DirectWrite MSV metrics")
+        #[cfg(target_os = "windows")]
+        {
+            super::multi_section_view::win_msv_metrics(self.current_line_height, false)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            todo!("DirectWrite MSV metrics")
+        }
     }
 
     /// #26: like [`Self::activity_bar_layout`], this needs no measurer
@@ -1028,8 +1079,25 @@ impl Backend for WinBackend {
         todo!("Direct2D completions rasteriser")
     }
 
-    fn draw_scrollbar(&mut self, _rect: Rect, _scrollbar: &Scrollbar) {
-        todo!("Direct2D scrollbar rasteriser")
+    /// #27: real Direct2D rasteriser via `win::scrollbar` once a surface
+    /// is attached. See [`Self::draw_status_bar`]'s doc for the "surface
+    /// not attached yet" fallback posture. `rect` is unused on the
+    /// painted path — `scrollbar.track` is authoritative, mirroring
+    /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`.
+    fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = rect;
+            super::scrollbar::draw_scrollbar(
+                &surface.target,
+                scrollbar,
+                &crate::theme::Theme::default(),
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, scrollbar);
+        todo!("Direct2D scrollbar rasteriser (no surface attached yet)")
     }
 
     fn draw_drop_overlay(&mut self, _overlay: &crate::primitives::drop_zone::DropOverlay) {
