@@ -3,9 +3,9 @@
 //! Iterates rows then per-cell, painting cell background then per-cell
 //! glyph (skipped for spaces and `\0`). Overlay flags
 //! (`is_cursor`, `is_find_active`, `is_find_match`, `selected`)
-//! override the cell's `bg`/`fg` to match the legacy bespoke
-//! renderer's behaviour. Bold / italic / underline applied via Pango
-//! `AttrList` per cell.
+//! override the cell's `bg`/`fg` via [`crate::terminal_style::resolve_cell_style`]
+//! — the ladder shared with the TUI and macOS rasterisers (#500). Bold /
+//! italic / underline applied via Pango `AttrList` per cell.
 //!
 //! # Wide characters (#439)
 //!
@@ -18,7 +18,8 @@
 //! double-width glyph — which Pango draws at roughly double the
 //! advance width — got its right half painted over by the
 //! continuation column's background fill. [`draw_terminal_cells`] now
-//! detects wide glyphs with `unicode-width`, paints their background
+//! detects wide glyphs via [`crate::terminal_style::wide_cell_advance`]
+//! (shared with `macos::terminal`, #500), paints their background
 //! across two columns, and skips the continuation column so it's
 //! never independently painted on top of the glyph.
 //!
@@ -34,9 +35,9 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 use gtk4::pango::AttrList;
-use unicode_width::UnicodeWidthChar;
 
 use crate::primitives::terminal::Terminal;
+use crate::terminal_style::{resolve_cell_style, wide_cell_advance};
 use crate::theme::Theme;
 
 /// Draw `term`'s cell grid into the rectangular region starting at
@@ -100,53 +101,26 @@ pub fn draw_terminal_cells(
             // empty continuation placeholder, so claim it here rather
             // than letting it paint its own (mismatched) background over
             // the glyph's right half.
-            let is_wide = matches!(UnicodeWidthChar::width(cell.ch), Some(2));
-            let cell_w = if is_wide {
-                char_width * 2.0
-            } else {
-                char_width
-            };
+            let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width);
+            let is_wide = cols_advanced == 2;
 
             if cell_x + cell_w > x + cell_area_w {
                 break;
             }
-            let (br, bg, bb) = (cell.bg.r, cell.bg.g, cell.bg.b);
-            let (fr, fg2, fb) = (cell.fg.r, cell.fg.g, cell.fg.b);
-            let (draw_br, draw_bg, draw_bb) = if cell.is_cursor {
-                (fr, fg2, fb)
-            } else if cell.is_find_active {
-                (255u8, 165u8, 0u8)
-            } else if cell.is_find_match {
-                (100u8, 80u8, 20u8)
-            } else if cell.selected {
-                (
-                    theme.selection_bg.r,
-                    theme.selection_bg.g,
-                    theme.selection_bg.b,
-                )
-            } else {
-                (br, bg, bb)
-            };
+            let (draw_bg, draw_fg) = resolve_cell_style(cell, theme);
             cr.set_source_rgb(
-                draw_br as f64 / 255.0,
-                draw_bg as f64 / 255.0,
-                draw_bb as f64 / 255.0,
+                draw_bg.r as f64 / 255.0,
+                draw_bg.g as f64 / 255.0,
+                draw_bg.b as f64 / 255.0,
             );
             cr.rectangle(cell_x, row_y, cell_w, line_height);
             cr.fill().ok();
 
             if cell.ch != ' ' && cell.ch != '\0' {
-                let (draw_fr, draw_fg, draw_fb) = if cell.is_cursor {
-                    (br, bg, bb)
-                } else if cell.is_find_active {
-                    (0u8, 0u8, 0u8)
-                } else {
-                    (fr, fg2, fb)
-                };
                 cr.set_source_rgb(
-                    draw_fr as f64 / 255.0,
-                    draw_fg as f64 / 255.0,
-                    draw_fb as f64 / 255.0,
+                    draw_fg.r as f64 / 255.0,
+                    draw_fg.g as f64 / 255.0,
+                    draw_fg.b as f64 / 255.0,
                 );
 
                 let attrs = AttrList::new();
@@ -199,7 +173,7 @@ pub fn draw_terminal_cells(
             }
 
             cell_x += cell_w;
-            col += if is_wide { 2 } else { 1 };
+            col += cols_advanced;
         }
     }
 }

@@ -1,9 +1,10 @@
 //! TUI rasteriser for [`crate::Terminal`] cell grids.
 //!
 //! Iterates `cells[row][col]`, writing styled characters into the
-//! ratatui buffer with overlay colour logic matching the GTK rasteriser:
+//! ratatui buffer using [`crate::terminal_style::resolve_cell_style`] —
+//! the overlay ladder shared with the GTK and macOS rasterisers (#500):
 //! cursor inverts fg/bg, selection uses `theme.selection_bg`, find-match
-//! and find-active use fixed highlight colours.
+//! and find-active use the highlight colours on [`Theme`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -11,6 +12,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::terminal::Terminal;
+use crate::terminal_style::resolve_cell_style;
 use crate::theme::Theme;
 
 use super::{draw_scrollbar, ratatui_color};
@@ -39,7 +41,8 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             }
             let x = area.x + col_idx as u16;
 
-            let (draw_bg, draw_fg) = resolve_cell_colors(cell, theme);
+            let (bg, fg) = resolve_cell_style(cell, theme);
+            let (draw_bg, draw_fg) = (ratatui_color(bg), ratatui_color(fg));
 
             let buf_cell = &mut buf[(x, y)];
             // ratatui ≥ 0.30 debug_asserts on ASCII control chars in cell symbols.
@@ -81,26 +84,6 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             1.0,
         );
         draw_scrollbar(buf, &sb, theme, theme.background);
-    }
-}
-
-fn resolve_cell_colors(
-    cell: &crate::primitives::terminal::TerminalCell,
-    theme: &Theme,
-) -> (RatatuiColor, RatatuiColor) {
-    let bg = ratatui_color(cell.bg);
-    let fg = ratatui_color(cell.fg);
-
-    if cell.is_cursor {
-        (fg, bg)
-    } else if cell.is_find_active {
-        (RatatuiColor::Rgb(255, 165, 0), RatatuiColor::Rgb(0, 0, 0))
-    } else if cell.is_find_match {
-        (RatatuiColor::Rgb(100, 80, 20), fg)
-    } else if cell.selected {
-        (ratatui_color(theme.selection_bg), fg)
-    } else {
-        (bg, fg)
     }
 }
 

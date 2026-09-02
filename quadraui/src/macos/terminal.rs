@@ -4,7 +4,26 @@
 //! `term.cells[row][col]`, fills each cell's background, then paints
 //! the glyph (skipped for `' '` and `'\0'`). Overlay flags
 //! (`is_cursor`, `is_find_active`, `is_find_match`, `selected`)
-//! override the cell's `bg` / `fg` to match the GTK contract.
+//! override the cell's `bg` / `fg` via
+//! [`crate::terminal_style::resolve_cell_style`] — the ladder shared
+//! with the TUI and GTK rasterisers (#500).
+//!
+//! # Wide characters (#440, fixed by #500's shared helper)
+//!
+//! Before #500, this rasteriser advanced a flat `char_width` per grid
+//! column regardless of glyph width, so a double-width character (CJK,
+//! emoji, ...) — which vt100 represents as the glyph's own column plus
+//! a trailing blank "continuation" column, see
+//! [`crate::terminal_engine::TerminalSession::to_terminal`] — got its
+//! right half painted over by the continuation column's own background.
+//! This mirrors the bug GTK fixed in #439. [`draw_terminal_cells`] now
+//! uses [`crate::terminal_style::wide_cell_advance`] (shared with
+//! `gtk::terminal`) to paint the wide glyph's background across both
+//! columns and skip the continuation column, matching the GTK fix.
+//! Unlike GTK's follow-up glyph-scaling (`wide_glyph_x_scale`), the
+//! glyph itself is still drawn at its natural Core Text advance — the
+//! ragged-packing follow-up is out of scope here; #500's acceptance bar
+//! is "paints without clipping," not pixel-tight packing.
 //!
 //! Bold / italic / underline attributes are **not** rendered yet —
 //! Core Text would need a per-cell `CTFont` (or attributed-string
@@ -22,6 +41,7 @@ use core_text::font::CTFont;
 
 use super::text::draw_text;
 use crate::primitives::terminal::Terminal;
+use crate::terminal_style::{resolve_cell_style, wide_cell_advance};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -85,36 +105,29 @@ pub unsafe fn draw_terminal_cells(
             break;
         }
         let mut cell_x = x;
-        for cell in row {
-            if cell_x + char_width > x + cell_area_w {
+        let mut col = 0usize;
+        while col < row.len() {
+            let cell = &row[col];
+            // Double-width glyphs (CJK, emoji, ...) get a two-column cell:
+            // the vt100 grid already reserves the following column as an
+            // empty continuation placeholder, so claim it here rather
+            // than letting it paint its own (mismatched) background over
+            // the glyph's right half — mirrors `gtk::terminal`'s #439 fix.
+            let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width);
+
+            if cell_x + cell_w > x + cell_area_w {
                 break;
             }
-            let cell_bg = if cell.is_cursor {
-                cell.fg
-            } else if cell.is_find_active {
-                Color::rgb(255, 165, 0)
-            } else if cell.is_find_match {
-                Color::rgb(100, 80, 20)
-            } else if cell.selected {
-                theme.selection_bg
-            } else {
-                cell.bg
-            };
-            fill_rect(ctx, cell_x, row_y, char_width, line_height, cell_bg);
+            let (cell_bg, cell_fg) = resolve_cell_style(cell, theme);
+            fill_rect(ctx, cell_x, row_y, cell_w, line_height, cell_bg);
 
             if cell.ch != ' ' && cell.ch != '\0' {
-                let cell_fg = if cell.is_cursor {
-                    cell.bg
-                } else if cell.is_find_active {
-                    Color::rgb(0, 0, 0)
-                } else {
-                    cell.fg
-                };
                 let s = cell.ch.to_string();
                 draw_text(ctx, font, &s, cell_x, row_y, color_to_cg(cell_fg));
             }
 
-            cell_x += char_width;
+            cell_x += cell_w;
+            col += cols_advanced;
         }
     }
 }
@@ -219,6 +232,122 @@ mod tests {
         // background.
         let (r, g, b, _) = s.pixel(0, 0);
         assert_eq!((r, g, b), (magenta.r, magenta.g, magenta.b));
+    }
+
+    /// #440 / #500 regression, mirroring `gtk::terminal`'s
+    /// `wide_cell_background_spans_two_columns` test: a double-width
+    /// glyph (CJK) followed by vt100's blank continuation cell must have
+    /// its background span both columns — the continuation cell's own
+    /// (different) background must NOT paint over the second half of the
+    /// wide glyph's cell. Calls [`draw_terminal_cells`] directly (rather
+    /// than through `MacBackend::draw_terminal`) so the test controls
+    /// `char_width` explicitly instead of depending on Menlo's measured
+    /// advance.
+    #[test]
+    fn wide_cell_background_spans_two_columns() {
+        const CHAR_W: f64 = 10.0;
+        const LINE_H: f64 = 20.0;
+
+        let magenta = Color::rgb(200, 30, 200);
+        let cyan = Color::rgb(30, 200, 200);
+        // The wide glyph's foreground is set equal to its background
+        // (magenta on magenta) so any antialiased glyph ink can't shift
+        // the probed colour — same trick as the GTK twin test, and for
+        // the same reason (font-fallback ink at the probe point would
+        // otherwise vary by host).
+        let row = vec![cell('日', magenta, magenta), cell(' ', magenta, cyan)];
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![row],
+            scrollbar: None,
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let theme = Theme::default();
+        let f = font();
+        // SAFETY: `surface.context_ptr()` is valid for the surface's
+        // lifetime, which outlives this call.
+        unsafe {
+            draw_terminal_cells(
+                surface.context_ptr(),
+                &f,
+                &term,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                LINE_H,
+                CHAR_W,
+                &theme,
+            );
+        }
+
+        // Probe just past the first single-cell-width boundary, still
+        // within the wide glyph's two-column span: must be magenta, not
+        // cyan.
+        let probe_x = (CHAR_W * 1.5) as u32;
+        let (r, g, b, _) = surface.pixel(probe_x, 5);
+        assert_eq!(
+            (r, g, b),
+            (magenta.r, magenta.g, magenta.b),
+            "wide cell's background should span both columns, not be \
+             overpainted by the continuation cell's background"
+        );
+    }
+
+    /// Companion regression: ordinary narrow (single-width) cells must
+    /// still advance by exactly `char_width` — the wide-cell fix must
+    /// not widen unrelated cells. Mirrors `gtk::terminal`'s
+    /// `narrow_cells_advance_by_single_char_width`.
+    #[test]
+    fn narrow_cells_advance_by_single_char_width() {
+        const CHAR_W: f64 = 10.0;
+        const LINE_H: f64 = 20.0;
+
+        let magenta = Color::rgb(200, 30, 200);
+        let cyan = Color::rgb(30, 200, 200);
+        let white = Color::rgb(255, 255, 255);
+        // 'B' (the probed cell) paints its glyph in its own background
+        // colour so antialiased glyph ink can't corrupt the background
+        // probe.
+        let row = vec![cell('A', white, magenta), cell('B', cyan, cyan)];
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![row],
+            scrollbar: None,
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let theme = Theme::default();
+        let f = font();
+        // SAFETY: `surface.context_ptr()` is valid for the surface's
+        // lifetime, which outlives this call.
+        unsafe {
+            draw_terminal_cells(
+                surface.context_ptr(),
+                &f,
+                &term,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                LINE_H,
+                CHAR_W,
+                &theme,
+            );
+        }
+
+        // Just past the single-cell-width boundary: second cell's own
+        // background (cyan) should already be showing.
+        let probe_x = (CHAR_W * 1.5) as u32;
+        let (r, g, b, _) = surface.pixel(probe_x, 5);
+        assert_eq!(
+            (r, g, b),
+            (cyan.r, cyan.g, cyan.b),
+            "narrow cells must still advance by exactly char_width"
+        );
     }
 
     #[test]
