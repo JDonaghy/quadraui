@@ -340,8 +340,13 @@ fn paint_line_text(
         *cursor_x += w;
     };
 
-    for i in (scroll_left + 1)..end {
-        let s = style_at(chars[i].0);
+    // Iterate the slice rather than the index range (`clippy::
+    // needless_range_loop`, an error under CI's `-D warnings` and only
+    // visible on the windows-latest leg): `skip`/`take` reproduce the
+    // half-open `(scroll_left + 1)..end` window, and `enumerate` still
+    // yields the absolute index the run bookkeeping needs.
+    for (i, (byte_off, _)) in chars.iter().enumerate().take(end).skip(scroll_left + 1) {
+        let s = style_at(*byte_off);
         if s != run_style {
             flush(run_start, i, run_style, &mut cursor_x);
             run_start = i;
