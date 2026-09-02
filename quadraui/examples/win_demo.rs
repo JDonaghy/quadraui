@@ -1,63 +1,29 @@
 //! `cargo run --example win_demo --features win` (Windows only)
 //!
-//! Smoke-test for the Win32 + Direct2D window bootstrap (issue #19).
-//! Opens a native window with a cleared Direct2D surface, responds to
-//! resize (recreating the render target) and DPI changes, and closes
-//! cleanly via the title bar's close button.
+//! Win-GUI port of `tui_demo.rs` / `gtk_demo.rs` / `macos_demo.rs`. Same
+//! `AppState` `AppLogic` impl in `examples/common/demo.rs`; only the
+//! runner call differs. Paints both a `TabBar` (top) and a `StatusBar`
+//! (bottom) and exercises tab navigation + status-segment focus cycling.
 //!
-//! Draws nothing yet — every `WinBackend::draw_*` rasteriser is still a
-//! `todo!()` stub (later issues implement each one, mirroring how the
-//! GTK backend shipped its rasterisers one primitive at a time). This
-//! example only exercises the bootstrap itself: window creation, the
-//! message loop, and the Direct2D render-target lifecycle. Once a later
-//! issue wires real widgets into `WinBackend`, this can be rewritten to
-//! share `examples/common`'s `AppState` the way `tui_demo`/`gtk_demo`
-//! already do.
+//! Controls:
+//! - `←` / `→`           switch active tab
+//! - `n`                 open a new tab
+//! - `x`                 close the active tab
+//! - `Tab` / `Shift-Tab` focus next / previous status segment
+//! - `Return`            activate the focused status segment
+//! - `q` / `Esc`         quit
 //!
-//! `quadraui::win::run` only exists when compiled for `target_os =
-//! "windows"` (see `src/win/mod.rs`/`Cargo.toml`'s `win` feature
-//! comment) — this example is Windows-only, verified by `cargo check
-//! --target x86_64-pc-windows-msvc --features win` and the
-//! `windows-latest` CI leg, not by ordinary Linux CI.
+//! Supersedes the #19 window-bootstrap-only version of this example now
+//! that #25–#30 have landed the chrome-strip rasterisers this app
+//! actually paints with (`TabBar`, `StatusBar`). `quadraui::win::run`
+//! stays available on every host (`src/win/mod.rs` keeps `mod win`
+//! un-target-gated, unlike `macos` — see that module's doc), so this
+//! compiles on Linux too under plain `cargo check --features win`; it
+//! only opens a real window and *runs* on Windows.
 
-// `cfg`-gated alongside `main()`'s Windows arm below — on any other host
-// nothing ever constructs this, and an unconditional definition would
-// just be a `dead_code` warning for no benefit.
-#[cfg(target_os = "windows")]
-struct BootstrapDemo;
+#[path = "common/mod.rs"]
+mod common;
 
-#[cfg(target_os = "windows")]
-impl quadraui::AppLogic for BootstrapDemo {
-    type AreaId = ();
-
-    fn render(&self, _backend: &mut dyn quadraui::Backend, _area: ()) {
-        // Nothing to paint yet (see module docs above) — `begin_frame`'s
-        // `Clear` is the entire visible content of this bootstrap demo.
-    }
-
-    fn handle(
-        &mut self,
-        event: quadraui::UiEvent,
-        _backend: &mut dyn quadraui::Backend,
-    ) -> quadraui::Reaction {
-        match event {
-            // #20 wired mouse/keyboard/focus translation into `win::run`'s
-            // `wndproc`, but this bootstrap demo still draws nothing (see
-            // module docs above) and has no widgets to route input to —
-            // the only event it needs to honour is the window chrome's
-            // own close button, which arrives as `WindowClose`.
-            quadraui::UiEvent::WindowClose => quadraui::Reaction::Exit,
-            _ => quadraui::Reaction::Continue,
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn main() -> std::process::ExitCode {
-    quadraui::win::run(BootstrapDemo)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn main() {
-    eprintln!("win_demo only runs on Windows — see this file's module docs.");
+    quadraui::win::run(common::AppState::new())
 }

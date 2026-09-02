@@ -18,9 +18,9 @@
 //! - `↑` / `↓`     move selection (interactive nav — already scrolls)
 //! - `z`           toggle collapse of the section
 //! - `g`           reveal (#595): select + expand + scroll the
-//!                 section's last row into view, without going through
-//!                 interactive nav — simulates a caller restoring a
-//!                 saved selection or jumping to a search hit
+//!   section's last row into view, without going through interactive
+//!   nav — simulates a caller restoring a saved selection or jumping
+//!   to a search hit
 //! - `q` / `Esc`   quit
 
 use quadraui::{

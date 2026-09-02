@@ -619,12 +619,10 @@ impl AppLogic for SidebarSearchApp {
                                 self.update_form();
                                 return Reaction::Redraw;
                             }
-                            Some("password") => {
-                                if !ch.is_control() {
-                                    self.password.insert_char(ch);
-                                    self.update_form();
-                                    return Reaction::Redraw;
-                                }
+                            Some("password") if !ch.is_control() => {
+                                self.password.insert_char(ch);
+                                self.update_form();
+                                return Reaction::Redraw;
                             }
                             _ => {}
                         }
@@ -643,12 +641,10 @@ impl AppLogic for SidebarSearchApp {
                                 self.update_form();
                                 return Reaction::Redraw;
                             }
-                            Some("password") => {
-                                if !ch.is_control() {
-                                    self.password.insert_char(ch);
-                                    self.update_form();
-                                    return Reaction::Redraw;
-                                }
+                            Some("password") if !ch.is_control() => {
+                                self.password.insert_char(ch);
+                                self.update_form();
+                                return Reaction::Redraw;
                             }
                             _ => {}
                         }
