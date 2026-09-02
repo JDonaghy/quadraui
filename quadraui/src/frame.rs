@@ -12,6 +12,23 @@
 //! instead push the same [`Surface`] entries into a `ScreenLayout`
 //! purely for hit-testing and call [`ScreenLayout::hit_map`], which
 //! registers every zone without invoking any `backend.draw_*()` call.
+//!
+//! ## `Surface` vs. calling `Backend::draw_*` directly (issue #456)
+//!
+//! `ScreenLayout` + [`Surface`] is the **canonical path for a consumer
+//! assembling a top-level screen out of multiple primitives**: pushing
+//! `Surface` entries and calling [`ScreenLayout::draw`] routes both
+//! backends through the same call site, so they cannot each paint the
+//! identical primitive a different way — the drift #456 found in
+//! vimcode, where the TUI palette painted via `backend.draw_palette(..)`
+//! and GTK's identical call site instead pushed a `Surface::Palette`,
+//! for no reason but that both APIs existed. `Backend::draw_<name>`
+//! remains public, low-level API — `ScreenLayout::draw` calls it
+//! internally, some primitives have no `Surface` variant yet, and
+//! rasteriser tests / compose helpers call it directly by design. See
+//! `quadraui/docs/DECISIONS.md` D-006 for the full decision and
+//! `quadraui/docs/PRIMITIVE_RULES.md` "One primitive, one canonical
+//! paint path" for the authoring rule this implies for new primitives.
 
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;

@@ -50,7 +50,10 @@ Read this when adding or changing a primitive.
    rasterisers but no trait coverage.** That's how the
    *Cross-backend portability commitment* stays load-bearing —
    if a primitive isn't on the trait, downstream consumer code has to
-   pick a backend explicitly.
+   pick a backend explicitly. **If the new primitive is composed into
+   top-level screens (most are), add its `Surface`/`FrameZone` variant
+   in the same PR** — see "One primitive, one canonical paint path"
+   below (issue #456).
 8. **Public API changes are versioned by deprecation, not by
    announcement.** See rule 8 in full below — it is the one rule whose
    failure mode lands in *other repos*.
@@ -184,6 +187,52 @@ exactly the case where a LOCAL/ABSOLUTE mixup is invisible (adding or
 skipping `rect.x` is a no-op when `rect.x == 0`), which is why the
 historical `mac_tree_layout` bug (`docs/LESSONS.md`) shipped past
 tests that all used the origin.
+
+## One primitive, one canonical paint path (issue #456)
+
+`quadraui` has two ways to paint a primitive: `backend.draw_<name>(rect,
+&data)` directly, or `layout.push(Surface::<Name> { rect, .. })` +
+`layout.draw(backend)` via `quadraui::frame::ScreenLayout`. Nothing
+stops two backends of the same consumer app from picking different
+ones for the identical call site — and when they do, the two paint
+paths silently drift, because the compiler can't see across the split.
+That's exactly what happened in vimcode: the TUI palette painted via
+`b.draw_palette(...)`, the GTK palette via `Surface::Palette`, with
+every other line at both call sites identical (#456; contributed to
+vimcode#587).
+
+**`ScreenLayout` + `Surface` is the canonical path for a consumer
+assembling a top-level screen from multiple primitives** — it forces
+both backends through the same call site and its `zone_for` helper
+keeps the hit-map in lock-step with what was painted by construction
+(see `quadraui/src/frame.rs`'s module doc). `Backend::draw_<name>`
+stays public, non-deprecated, low-level API — `ScreenLayout::draw`
+calls it internally, and it's the *only* path for any primitive that
+has no `Surface` variant yet. See `DECISIONS.md` D-006 for the full
+audit and why `Backend::draw_*` isn't hidden or deprecated over that
+gap.
+
+**Going forward:** when rule 7 above has you adding a `Backend::draw_<name>`
+method for a primitive that's composed into top-level screens (i.e. a
+consumer will paint it as one layer of a multi-primitive frame, not
+just as the sole content of its own pane), add its `Surface::<Name>` /
+`FrameZone::<Name>` variant and `ScreenLayout::zone_for` arm in the
+**same PR**. Skipping this is how the trait and `Surface` started drifting apart in
+the first place (11 primitives have a trait
+method but no `Surface` variant as of the #456 audit — Board,
+DiffView, PipelineView, Toolbar, SidebarPanel, TextInput, Spinner,
+Progress, CommandCenter, DropOverlay, MessageList). Backfilling that
+existing gap is tracked separately (`SMELL_AUDIT_2026-07.md` §7 Epic D,
+`D4`) — this rule stops it from growing, it doesn't retroactively close
+it.
+
+**When `Backend::draw_*` direct calls are still the right choice**, even
+for a primitive that does have a `Surface` variant: a rasteriser's own
+paint/click round-trip test (rule 4), a compose helper painting a
+primitive it fully owns, or any call site that has no need for the
+frame-level hit-map `ScreenLayout` produces. The rule is "assembling a
+multi-primitive screen goes through `Surface`," not "never call
+`Backend::draw_*` directly."
 
 ## Shared pixel-layout math (#499)
 
