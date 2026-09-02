@@ -174,6 +174,18 @@ pub mod runner;
 ))]
 pub mod shell_adapter;
 
+// Shared runner plumbing (`EventOutcome`, `ReactionSink` + `apply_outcome`,
+// `ResizeDebouncer`) used by `tui::run`, `gtk::run`, and `macos::run`
+// (quadraui#496). Same consumer set as `shell_adapter` above, gated the
+// same way so `win`-only builds don't carry unused, `-D warnings`-tripping
+// code.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos")
+))]
+mod runtime;
+
 pub use diff::compute_hunks;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,

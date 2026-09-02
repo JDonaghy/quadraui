@@ -124,6 +124,12 @@ use super::events::{
 use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
+use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
+// Re-exported (not just imported) so `gtk::testing` — and any other
+// in-crate caller that historically reached `EventOutcome` through this
+// module — keeps working unchanged after the type moved to
+// `crate::runtime` (quadraui#496).
+pub(crate) use crate::runtime::EventOutcome;
 use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
 
 /// Default window size, in DIPs. Matches the `ApplicationWindow`
@@ -764,22 +770,19 @@ fn activate<A: AppLogic + 'static>(
     // runner delivers `WindowResized` from crossterm's `Resize` event.
     //
     // The dispatch of `UiEvent::WindowResized` itself is **debounced**
-    // (quadraui#437 follow-up): a live edge-drag fires `connect_resize`
-    // dozens of times per second, and apps with PTY-backed side effects
-    // (`TerminalApp::handle` → `TerminalSession::resize` → SIGWINCH) were
-    // resizing the child shell on every single intermediate frame. A
-    // shell's line-editor (readline/zle) redraws its prompt on SIGWINCH;
-    // firing another SIGWINCH before that redraw finishes interleaves two
-    // half-written escape sequences and leaves the display permanently
-    // garbled — no amount of further resizing, scrolling, or typing
-    // recovers it, because the line-editor's internal notion of the
-    // screen is now out of sync with what's actually on screen. Real
-    // terminal emulators avoid this by resizing the PTY only once the
-    // drag settles, not on every intermediate frame; `resize_timer` below
-    // does the same via a short trailing-edge debounce. Painting itself
-    // is unaffected and stays perfectly live — `set_draw_func` re-reads
-    // the DA's actual allocated size every frame regardless of whether
-    // the debounced event has fired yet.
+    // (quadraui#437 follow-up) using the same `RESIZE_SETTLE` window the
+    // TUI runner's poll-loop debounce uses — see
+    // `crate::runtime::RESIZE_SETTLE`'s doc for the full rationale
+    // (PTY/SIGWINCH corruption from resizing on every intermediate
+    // frame of a drag). `resize_timer` below is GTK's own mechanism for
+    // it: cancel-and-reschedule a `glib::SourceId` per `connect_resize`
+    // signal, rather than TUI's `ResizeDebouncer` + `Instant`-poll (GTK's
+    // timer already gives exactly-once-after-settle semantics natively,
+    // and re-reads the DA's live size at fire time instead of storing a
+    // pending value). Painting itself is unaffected and stays perfectly
+    // live — `set_draw_func` re-reads the DA's actual allocated size
+    // every frame regardless of whether the debounced event has fired
+    // yet.
     let resize_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
     {
         let backend = backend.clone();
@@ -825,7 +828,7 @@ fn activate<A: AppLogic + 'static>(
             let window_for_close = window_for_close.clone();
             let pump_depth = pump_depth.clone();
             let resize_timer_inner = resize_timer.clone();
-            let id = glib::source::timeout_add_local_once(Duration::from_millis(120), move || {
+            let id = glib::source::timeout_add_local_once(RESIZE_SETTLE, move || {
                 // The fired timer is no longer "pending" — clear so a
                 // future resize doesn't try to cancel a dead source.
                 resize_timer_inner.set(None);
@@ -988,22 +991,33 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
     });
 }
 
-fn apply_reaction(reaction: Reaction, da: &DrawingArea, window: &ApplicationWindow) {
-    match reaction {
-        Reaction::Continue => {}
-        Reaction::Redraw => da.queue_draw(),
-        Reaction::Exit => window.close(),
+/// [`ReactionSink`] over a borrowed `DrawingArea` + `ApplicationWindow`
+/// pair — the redraw/exit target every GTK signal closure in this module
+/// applies its [`EventOutcome`] (or raw [`Reaction`]) to, via
+/// [`runtime::apply_outcome`]. Replaces what used to be two near-
+/// identical hand-rolled `match` functions (quadraui#496).
+struct GtkSink<'a> {
+    da: &'a DrawingArea,
+    window: &'a ApplicationWindow,
+}
+
+impl ReactionSink for GtkSink<'_> {
+    fn request_redraw(&self) {
+        self.da.queue_draw();
     }
+    fn request_exit(&self) {
+        self.window.close();
+    }
+}
+
+fn apply_reaction(reaction: Reaction, da: &DrawingArea, window: &ApplicationWindow) {
+    runtime::apply_outcome(reaction, &GtkSink { da, window });
 }
 
 /// Same as [`apply_reaction`] but for the [`EventOutcome`] that
 /// [`dispatch_event`] returns.
 fn apply_event_outcome(outcome: EventOutcome, da: &DrawingArea, window: &ApplicationWindow) {
-    match outcome {
-        EventOutcome::Continue => {}
-        EventOutcome::Redraw => da.queue_draw(),
-        EventOutcome::Exit => window.close(),
-    }
+    runtime::apply_outcome(outcome, &GtkSink { da, window });
 }
 
 /// Render one frame into `cr` at `width`×`height` pixels.
@@ -1103,16 +1117,9 @@ fn is_paste_keypress(key: &Key, modifiers: &Modifiers) -> bool {
         && !modifiers.cmd
 }
 
-/// What the caller should do after [`dispatch_event`] handles one event.
-/// Mirrors [`crate::tui::run::EventOutcome`].
-pub(crate) enum EventOutcome {
-    /// No redraw needed; keep going.
-    Continue,
-    /// State changed; schedule a redraw.
-    Redraw,
-    /// The app requested exit.
-    Exit,
-}
+// `EventOutcome` — what the caller should do after [`dispatch_event`]
+// handles one event — is defined once in `crate::runtime` and shared by
+// every backend runner (quadraui#496); imported at the top of this file.
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the runner's built-in pre-processing first. This is the single funnel

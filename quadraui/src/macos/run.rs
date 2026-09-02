@@ -62,6 +62,12 @@ use super::text::make_font;
 use crate::backend::Backend;
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
+use crate::runtime::{self, ReactionSink};
+// Re-exported (not just imported) so `macos::testing` — and any other
+// in-crate caller that historically reached `EventOutcome` through this
+// module — keeps working unchanged after the type moved to
+// `crate::runtime` (quadraui#496).
+pub(crate) use crate::runtime::EventOutcome;
 use crate::{ButtonMask, Key, Modifiers, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
@@ -102,26 +108,10 @@ extern "C" {
 type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
 type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 
-/// What the caller should do after [`dispatch_event`] handles one event.
-/// Mirrors [`crate::gtk::run::EventOutcome`] / [`crate::tui::run::EventOutcome`].
-pub(crate) enum EventOutcome {
-    /// No redraw needed; keep going.
-    Continue,
-    /// State changed; schedule a redraw.
-    Redraw,
-    /// The app requested exit.
-    Exit,
-}
-
-impl From<Reaction> for EventOutcome {
-    fn from(r: Reaction) -> Self {
-        match r {
-            Reaction::Continue => EventOutcome::Continue,
-            Reaction::Redraw => EventOutcome::Redraw,
-            Reaction::Exit => EventOutcome::Exit,
-        }
-    }
-}
+// `EventOutcome` — what the caller should do after [`dispatch_event`]
+// handles one event — is defined once in `crate::runtime` and shared by
+// every backend runner (quadraui#496); imported at the top of this file
+// (re-exported so `macos::testing` keeps reaching it through this path).
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the runner's built-in pre-processing first — same funnel both the live
@@ -581,18 +571,27 @@ impl QuadraView {
         self.apply_reaction(reaction);
     }
 
+    /// Apply a [`Reaction`] — delegates to the shared
+    /// [`runtime::apply_outcome`] (quadraui#496) via this view's
+    /// [`ReactionSink`] impl below.
     fn apply_reaction(&self, reaction: Reaction) {
-        match reaction {
-            Reaction::Continue => {}
-            Reaction::Redraw => unsafe { self.setNeedsDisplay(true) },
-            Reaction::Exit => {
-                let mtm = MainThreadMarker::from(self);
-                let app = NSApplication::sharedApplication(mtm);
-                // SAFETY: `terminate:` on NSApp on the main thread is
-                // the documented exit path.
-                unsafe { app.terminate(None) };
-            }
-        }
+        runtime::apply_outcome(reaction, self);
+    }
+}
+
+impl ReactionSink for QuadraView {
+    fn request_redraw(&self) {
+        // SAFETY: `setNeedsDisplay:` on the main thread is the documented
+        // way to schedule a repaint.
+        unsafe { self.setNeedsDisplay(true) }
+    }
+
+    fn request_exit(&self) {
+        let mtm = MainThreadMarker::from(self);
+        let app = NSApplication::sharedApplication(mtm);
+        // SAFETY: `terminate:` on NSApp on the main thread is the
+        // documented exit path.
+        unsafe { app.terminate(None) };
     }
 }
 
