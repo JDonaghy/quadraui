@@ -262,3 +262,63 @@ pub fn draw_toolbar(
     cr.restore().ok();
     toolbar_layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::toolbar::ToolbarHit;
+    use crate::types::WidgetId;
+
+    fn test_toolbar() -> Toolbar {
+        Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:action"),
+                label: "Refine".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    /// `toolbar_layout` is documented **ABSOLUTE** (issue #505):
+    /// `gtk_toolbar_layout` forwards `x`/`y` straight through to
+    /// `Toolbar::layout` as `origin_x`/`origin_y`, which folds them into
+    /// every visible item's `bounds` — so a non-zero origin must shift
+    /// bounds by exactly `(x, y)`, unlike the LOCAL primitives
+    /// (`status_bar_layout`, `data_table_layout`, `form_layout`) that
+    /// ignore it entirely. `pango_layout: None` exercises the
+    /// `char_width` fallback measurer, the same path a click-time
+    /// (outside-frame) hit test uses.
+    fn round_trip_at(x: f64, y: f64) {
+        let bar = test_toolbar();
+        let layout = gtk_toolbar_layout(&bar, None, 8.0, x, y, 100.0, 20.0);
+
+        let vis = &layout.visible_items[0];
+        assert_eq!(vis.bounds.x as f64, x);
+        assert_eq!(vis.bounds.y as f64, y);
+
+        let ccx = vis.bounds.x + 1.0;
+        let ccy = vis.bounds.y + 1.0;
+        assert_eq!(
+            layout.hit_test(ccx, ccy),
+            ToolbarHit::Button(WidgetId::new("tb:action"))
+        );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}

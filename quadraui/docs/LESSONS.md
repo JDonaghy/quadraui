@@ -182,8 +182,8 @@ helper needs at least one regression test using non-zero `area.y` —
 
 **Update (issue #505):** the #505 audit of every `Backend::*_layout`
 trait method found that "always local" was never actually the norm —
-of 19 audited methods, only 5 are LOCAL (including `mac_tree_layout`'s
-fixed frame); the other 14 are deliberately **ABSOLUTE** (shifted by
+of 20 audited methods, only 5 are LOCAL (including `mac_tree_layout`'s
+fixed frame); the other 15 are deliberately **ABSOLUTE** (shifted by
 `rect.x`/`rect.y`), and every backend agrees with its own siblings on
 which one, with no live cross-backend mismatch found. The part of this
 rule that still holds, unconditionally: **a `*_layout` method and its
