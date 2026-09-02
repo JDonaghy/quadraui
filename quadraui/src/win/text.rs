@@ -22,7 +22,8 @@ use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, D2D1_DRAW_TEXT_OPTIO
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
 };
 
 use crate::event::Rect;
@@ -41,6 +42,11 @@ use crate::Color;
 pub(crate) struct DWrite {
     factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
+    /// Bold variant of `text_format`, same family/size — built alongside
+    /// it so chrome rasterisers (`StatusBar` segment `bold`, #25) can
+    /// request bold-weight measurement/painting without constructing a
+    /// throwaway `IDWriteTextFormat` per call.
+    bold_text_format: IDWriteTextFormat,
 }
 
 impl DWrite {
@@ -61,7 +67,10 @@ impl DWrite {
     pub(crate) fn new(family: &str, size_pt: f32) -> WinResult<(Self, f32, f32)> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let size_dip = pt_to_dip(size_pt);
-        let text_format = create_text_format(&factory, family, size_dip)?;
+        let text_format =
+            create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let bold_text_format =
+            create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_BOLD)?;
 
         let font_metrics = font_face_metrics(&factory, family)?;
         let units_per_em = (font_metrics.designUnitsPerEm as f32).max(1.0);
@@ -75,6 +84,7 @@ impl DWrite {
             Self {
                 factory,
                 text_format,
+                bold_text_format,
             },
             line_height,
             char_width,
@@ -88,6 +98,14 @@ impl DWrite {
         measure_text(&self.factory, &self.text_format, text)
     }
 
+    /// Like [`Self::measure_text`], but against the bold variant when
+    /// `bold` is `true` — chrome rasterisers (e.g. [`crate::StatusBar`]'s
+    /// per-segment `bold` flag, #25) use this so the fit/paint widths
+    /// agree regardless of weight.
+    pub(crate) fn measure_text_styled(&self, text: &str, bold: bool) -> WinResult<(f32, f32)> {
+        measure_text(&self.factory, self.format_for(bold), text)
+    }
+
     /// Paint `text` inside `rect` (DIPs, target-relative) in `color`,
     /// clipped to the rect, using this format against `target`.
     pub(crate) fn draw_text(
@@ -98,6 +116,27 @@ impl DWrite {
         color: Color,
     ) -> WinResult<()> {
         draw_text(target, &self.text_format, text, rect, color)
+    }
+
+    /// Like [`Self::draw_text`], but against the bold variant when `bold`
+    /// is `true`. See [`Self::measure_text_styled`].
+    pub(crate) fn draw_text_styled(
+        &self,
+        target: &ID2D1RenderTarget,
+        text: &str,
+        rect: Rect,
+        color: Color,
+        bold: bool,
+    ) -> WinResult<()> {
+        draw_text(target, self.format_for(bold), text, rect, color)
+    }
+
+    fn format_for(&self, bold: bool) -> &IDWriteTextFormat {
+        if bold {
+            &self.bold_text_format
+        } else {
+            &self.text_format
+        }
     }
 }
 
@@ -112,12 +151,13 @@ fn create_text_format(
     factory: &IDWriteFactory,
     family: &str,
     size_dip: f32,
+    weight: DWRITE_FONT_WEIGHT,
 ) -> WinResult<IDWriteTextFormat> {
     unsafe {
         factory.CreateTextFormat(
             &HSTRING::from(family),
             None,
-            DWRITE_FONT_WEIGHT_NORMAL,
+            weight,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
             size_dip,
@@ -216,11 +256,33 @@ fn draw_text(
     Ok(())
 }
 
-fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
+pub(crate) fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
         r: color.r as f32 / 255.0,
         g: color.g as f32 / 255.0,
         b: color.b as f32 / 255.0,
         a: color.a as f32 / 255.0,
     }
+}
+
+/// Fill `rect` (DIPs, target-relative) with a solid `color` on `target`.
+///
+/// Shared by every chrome rasteriser in `crate::win` (status bar, tab bar,
+/// activity bar, menu bar — #25) for background fills, active/hover tints,
+/// and accent lines, so each one doesn't hand-roll its own
+/// `CreateSolidColorBrush` + `FillRectangle` pair. Mirrors
+/// [`super::testing::HeadlessSurface::fill_rect`], which exists
+/// separately because it also owns the `BeginDraw`/`EndDraw` bracket for
+/// the headless test surface; this version assumes the caller is already
+/// inside a frame (or a `HeadlessSurface::paint` closure).
+pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) -> WinResult<()> {
+    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let rect_f = D2D_RECT_F {
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.width,
+        bottom: rect.y + rect.height,
+    };
+    unsafe { target.FillRectangle(&rect_f, &brush) };
+    Ok(())
 }
