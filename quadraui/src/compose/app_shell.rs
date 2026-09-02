@@ -13,6 +13,7 @@
 //! responsibility — the shell returns [`AppShellLayout`] with the bounds.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
@@ -25,12 +26,25 @@ use crate::{Backend, ButtonMask, MouseButton, Point, Rect, UiEvent};
 #[derive(Debug, Clone)]
 pub struct PanelDefinition {
     pub id: WidgetId,
-    /// Icon painted on the panel's activity-bar row — `glyph` for a Nerd
-    /// Font / icon-font variant, `fallback` for ASCII/basic-Unicode. Which
-    /// one paints is decided by the backend's `nerd_fonts_enabled` flag
-    /// (issue #683), not by this type. Forwarded verbatim into the built
-    /// [`ActivityItem::icon`] by [`AppShell::build_activity_bar`].
-    pub icon: Icon,
+    /// Single icon string painted on the panel's activity-bar row.
+    ///
+    /// [`AppShell::build_activity_bar`] widens this into the built
+    /// [`ActivityItem::icon`] as `Icon { glyph: icon, fallback: icon }` —
+    /// i.e. the same string paints whether or not the backend's
+    /// `nerd_fonts_enabled` flag is set. A panel that wants a *distinct*
+    /// Nerd-Font glyph and ASCII fallback attaches the pair with
+    /// [`AppShell::with_panel_icon`] instead of widening this field
+    /// (issue #683).
+    ///
+    /// **This stays a `String` on purpose.** A Rust struct literal pins
+    /// its field's type exactly, and every construction site of this type
+    /// is a literal: fourteen in `coord-tui`'s `shell_config()`, one in
+    /// `vimcode`'s `ext_activity_panels()`, and two in the sealed
+    /// `tests/acceptance/ms-11/structural_parity.rs` fixture that workers
+    /// may not edit. Retyping the field to [`Icon`] breaks all of them at
+    /// once with no deprecation shim available (CLAUDE.md rules 2–3), so
+    /// the glyph/fallback pair rides alongside it instead.
+    pub icon: String,
     pub tooltip: String,
     pub title: String,
 }
@@ -135,6 +149,12 @@ pub struct AppShell {
     /// (indices `panels.len()..panels.len()+bottom_items.len()`).
     /// Saturates at the ends; does not wrap.
     activity_cursor: usize,
+    /// Per-panel Nerd-Font glyph + ASCII fallback pairs, keyed by
+    /// [`WidgetId`], registered via [`Self::with_panel_icon`]. Consulted by
+    /// [`Self::build_activity_bar`] in preference to widening the panel's
+    /// single [`PanelDefinition::icon`] string (issue #683). Covers both
+    /// top panels and bottom items.
+    icon_overrides: HashMap<WidgetId, Icon>,
 }
 
 impl AppShell {
@@ -167,12 +187,59 @@ impl AppShell {
             cached_activity_bar_bounds: RefCell::new(None),
             activity_keyboard_focused: false,
             activity_cursor: 0,
+            icon_overrides: HashMap::new(),
         }
     }
 
     pub fn with_bottom_items(mut self, items: Vec<PanelDefinition>) -> Self {
         self.bottom_items = items;
         self
+    }
+
+    /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
+    /// activity-bar row, overriding the single-string
+    /// [`PanelDefinition::icon`] that panel was registered with (#683).
+    ///
+    /// `id` may name a top panel or a bottom item; unknown ids are stored
+    /// but never consulted, so registration order relative to
+    /// [`Self::with_bottom_items`] / [`Self::register_panel`] does not
+    /// matter. Calling this twice for the same id keeps the last pair.
+    ///
+    /// Which half actually paints is the backend's decision, driven by its
+    /// `nerd_fonts_enabled` flag — `glyph` when the icon font is available,
+    /// `fallback` otherwise. Panels that never call this get
+    /// `glyph == fallback == PanelDefinition::icon`, i.e. exactly the
+    /// pre-#683 behaviour.
+    ///
+    /// ```
+    /// # use quadraui::compose::app_shell::{AppShell, PanelDefinition};
+    /// # use quadraui::types::{Icon, WidgetId};
+    /// let shell = AppShell::new(
+    ///     vec![PanelDefinition {
+    ///         id: WidgetId::new("panel:explorer"),
+    ///         icon: "E".to_string(),
+    ///         tooltip: "Explorer".to_string(),
+    ///         title: "EXPLORER".to_string(),
+    ///     }],
+    ///     20.0,
+    /// )
+    /// .with_panel_icon(WidgetId::new("panel:explorer"), Icon::new("\u{f07c}", "E"));
+    /// assert_eq!(shell.build_activity_bar().top_items[0].icon.glyph, "\u{f07c}");
+    /// ```
+    #[must_use]
+    pub fn with_panel_icon(mut self, id: WidgetId, icon: Icon) -> Self {
+        self.icon_overrides.insert(id, icon);
+        self
+    }
+
+    /// The [`Icon`] an activity-bar row paints: the pair registered via
+    /// [`Self::with_panel_icon`] when there is one, otherwise the panel's
+    /// single icon string widened to `glyph == fallback`.
+    fn resolved_icon(&self, def: &PanelDefinition) -> Icon {
+        self.icon_overrides
+            .get(&def.id)
+            .cloned()
+            .unwrap_or_else(|| Icon::from(def.icon.clone()))
     }
 
     pub fn with_min_width(mut self, min: f32) -> Self {
@@ -564,7 +631,7 @@ impl AppShell {
             .enumerate()
             .map(|(i, p)| ActivityItem {
                 id: p.id.clone(),
-                icon: p.icon.clone(),
+                icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
                 is_active: self.active_panel == Some(i) && self.sidebar_visible,
                 is_keyboard_selected: focused && self.activity_cursor == i,
@@ -577,7 +644,7 @@ impl AppShell {
             .enumerate()
             .map(|(j, p)| ActivityItem {
                 id: p.id.clone(),
-                icon: p.icon.clone(),
+                icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
                 is_active: false,
                 is_keyboard_selected: focused && self.activity_cursor == np + j,
@@ -1342,43 +1409,80 @@ mod tests {
         assert_eq!(bar.bottom_items[0].id, WidgetId::new("panel:settings"));
     }
 
-    /// #683 acceptance: `PanelDefinition::icon` (now `Icon`, not `String`)
-    /// survives `AppShell::build_activity_bar` unchanged into
+    /// #683 acceptance: the `Icon` pair registered with
+    /// `AppShell::with_panel_icon` survives `build_activity_bar` into
     /// `ActivityItem::icon`, and the TUI rasteriser picks the right half —
     /// `glyph` when `nerd_fonts_enabled`, `fallback` otherwise. A rendered-
     /// output assertion, not just a type-level check on `PanelDefinition`
     /// / `ActivityItem` in isolation, per this issue's Tests section.
     #[test]
     #[cfg(feature = "tui")]
-    fn build_activity_bar_icon_reaches_the_painted_column_via_the_nerd_fonts_flag() {
+    fn with_panel_icon_reaches_the_painted_column_via_the_nerd_fonts_flag() {
         let panels = vec![PanelDefinition {
             id: WidgetId::new("panel:explorer"),
-            icon: Icon::new("\u{f07c}", "E"),
+            icon: "E".to_string(),
             tooltip: "Explorer".into(),
             title: "EXPLORER".into(),
         }];
-        let s = AppShell::new(panels, 3.0);
+        let s = AppShell::new(panels, 3.0)
+            .with_panel_icon(WidgetId::new("panel:explorer"), Icon::new("\u{f07c}", "E"));
         let bar = s.build_activity_bar();
         assert_eq!(bar.top_items[0].icon, Icon::new("\u{f07c}", "E"));
 
-        let theme = crate::theme::Theme::default();
-        let paint = |nerd_fonts_enabled: bool| -> String {
-            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
-            let area = ratatui::layout::Rect::new(0, 0, 4, 10);
-            crate::tui::draw_activity_bar(&mut buf, area, &bar, &theme, None, nerd_fonts_enabled);
-            (area.x..area.x + area.width)
-                .map(|x| buf[(x, area.y)].symbol().to_string())
-                .collect::<String>()
-        };
+        assert!(
+            paint_first_row(&bar, true).contains('\u{f07c}'),
+            "nerd_fonts_enabled: true should paint the override's glyph"
+        );
+        assert!(
+            paint_first_row(&bar, false).contains('E'),
+            "nerd_fonts_enabled: false should paint the override's fallback"
+        );
+    }
 
-        assert!(
-            paint(true).contains('\u{f07c}'),
-            "nerd_fonts_enabled: true should paint the PanelDefinition's glyph"
-        );
-        assert!(
-            paint(false).contains('E'),
-            "nerd_fonts_enabled: false should paint the PanelDefinition's fallback"
-        );
+    /// #683: a panel with no `with_panel_icon` override paints its single
+    /// `PanelDefinition::icon` string under *both* settings of the
+    /// `nerd_fonts_enabled` flag — the pre-#683 behaviour, preserved so
+    /// that leaving the field a `String` is not a silent downgrade.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn panel_without_icon_override_paints_its_string_under_either_nerd_font_setting() {
+        let panels = vec![PanelDefinition {
+            id: WidgetId::new("panel:explorer"),
+            icon: "E".to_string(),
+            tooltip: "Explorer".into(),
+            title: "EXPLORER".into(),
+        }];
+        let bar = AppShell::new(panels, 3.0).build_activity_bar();
+        assert_eq!(bar.top_items[0].icon, Icon::new("E", "E"));
+
+        assert!(paint_first_row(&bar, true).contains('E'));
+        assert!(paint_first_row(&bar, false).contains('E'));
+    }
+
+    /// #683: `with_panel_icon` reaches bottom items too, not just top
+    /// panels — both go through the same `resolved_icon` seam.
+    #[test]
+    fn with_panel_icon_applies_to_bottom_items() {
+        let s =
+            shell().with_panel_icon(WidgetId::new("panel:settings"), Icon::new("\u{f013}", "*"));
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.bottom_items[0].icon, Icon::new("\u{f013}", "*"));
+        // Untouched top panels keep the widened single-string form.
+        assert_eq!(bar.top_items[0].icon, Icon::new("E", "E"));
+    }
+
+    /// Paints `bar` into a 4-cell-wide activity column and returns row 0's
+    /// symbols concatenated, so a test can assert on what actually landed
+    /// in the buffer rather than on the model.
+    #[cfg(feature = "tui")]
+    fn paint_first_row(bar: &ActivityBar, nerd_fonts_enabled: bool) -> String {
+        let theme = crate::theme::Theme::default();
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
+        let area = ratatui::layout::Rect::new(0, 0, 4, 10);
+        crate::tui::draw_activity_bar(&mut buf, area, bar, &theme, None, nerd_fonts_enabled);
+        (area.x..area.x + area.width)
+            .map(|x| buf[(x, area.y)].symbol().to_string())
+            .collect::<String>()
     }
 
     // ── Keyboard navigation ─────────────────────────────────────────
