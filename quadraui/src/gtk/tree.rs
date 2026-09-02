@@ -15,7 +15,7 @@ use gtk4::pango;
 
 use super::cairo_rgb;
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::primitives::tree::{TreeRowEditState, TreeView, TreeViewLayout};
 use crate::text_util::{safe_prefix, snap_to_char_boundary};
 use crate::theme::Theme;
 use crate::types::Decoration;
@@ -31,39 +31,12 @@ use crate::types::Decoration;
 ///
 /// Mirrors TUI's [`crate::tui::tui_tree_layout`] in spirit; differs
 /// in row pitch (TUI = 1 cell uniform; GTK = mixed via decoration).
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
+/// (#499) — the row-pitch/chevron math is identical across every pixel
+/// backend, so it lives there once instead of once per backend.
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
-    let header_height = (line_height * 1.2).round();
-    let item_height = tree
-        .style
-        .row_height
-        .map(|h| h as f64)
-        .unwrap_or(line_height * 1.4)
-        .round();
-    let indent_px = (line_height * 0.9).round();
-    let show_chevrons = tree.style.show_chevrons;
-    tree.layout(area.width, area.height, |i| {
-        let row = &tree.rows[i];
-        let is_header = matches!(row.decoration, Decoration::Header);
-        let row_h = if is_header {
-            header_height as f32
-        } else {
-            item_height as f32
-        };
-        // Approximate chevron end x in tree-local pixels:
-        //   2px left margin + indent levels + estimated chevron glyph width + 4px gap.
-        // Exact Pango metrics are not available here; 0.65×line_height is a
-        // reasonable estimate for a single Unicode chevron glyph at typical font sizes.
-        let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
-            let est_glyph_w = line_height * 0.65;
-            Some((2.0 + row.indent as f64 * indent_px + est_glyph_w + 4.0) as f32)
-        } else {
-            None
-        };
-        TreeRowMeasure {
-            height: row_h,
-            chevron_end_x,
-        }
-    })
+    crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`

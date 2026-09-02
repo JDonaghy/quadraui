@@ -140,6 +140,57 @@ section** naming each consumer file that must move, or stating "no
 consumer hits" with the grep. A public-API PR without one should be sent
 back at review.
 
+## Shared pixel-layout math (#499)
+
+`gtk::tree::gtk_tree_layout` and `macos::tree::mac_tree_layout` used to
+be byte-identical apart from the function name and one comment — same
+magic constants (`line_height * 1.2` header pitch, `* 1.4` item pitch,
+`* 0.9` indent, `* 0.65` chevron glyph estimate), same body. The
+`MultiSectionView` body-measure match arms were the same story, and had
+already **drifted**: GTK measured real `MessageList` content height,
+macOS's copy returned `0.0` — a live macOS layout bug born of
+copy-paste, not a deliberate backend difference.
+
+**Rule: pixel-backend layout math that doesn't touch a native drawing
+handle belongs in `quadraui/src/primitives/layout_metrics.rs`, not in
+`gtk::<name>` / `macos::<name>` / `win::<name>`.** A function belongs
+there if it can be written as `(primitive, rect, line_height, ..) ->
+*Layout` / `*Measure` with no `cairo::Context`, `CGContextRef`,
+`pango::Layout`, `CTFont`, or `ID2D1RenderTarget` in its signature.
+Each backend's `<name>.rs` then keeps only:
+
+- a thin wrapper (`gtk_tree_layout`, `mac_tree_layout`, …) that calls
+  the shared fn — kept per-backend only so each rasteriser's public
+  layout-helper name matches rule 5 above, not because the body
+  differs;
+- the native paint code, which consumes the same `*Layout` /
+  `*Measure` the shared fn produced.
+
+**When a shared fn needs a real glyph width** (Form's per-item hit
+regions can't use a fixed-ratio estimate the way tree/MSV do), it takes
+`&dyn primitives::layout_metrics::TextMeasure` instead of a native font
+handle. Each backend supplies a private one-method adapter over its own
+live font/context — see `macos::form::CtFontMeasure` wrapping `CTFont` +
+`measure_text`. The shared fn never learns a native type exists.
+
+**Migrating a primitive's layout math is not the same PR as fixing a
+drift it exposes**, unless the drift *is* the primitive's whole reason
+for migrating (as MSV's `MessageList` fix was for #499) — see rule 8's
+"one breaking change per PR" discipline; the same "don't batch" logic
+applies to behavior changes uncovered mid-refactor. If sharing a
+function would change one backend's *current* output (see
+`layout_metrics::form_field_measure`'s doc on `FieldKind::TextArea` for
+a case where sharing was deliberately **not** done for this reason),
+leave that backend's existing behavior in place and note the gap in the
+shared fn's doc comment rather than silently changing it.
+
+**A file-overlap conflict on a fenced backend file (e.g. concurrent
+work on `gtk/backend.rs`) blocks that backend's migration, not the
+others.** Migrate every backend whose files are free; leave the
+blocked one's duplication in place with a comment pointing at the
+tracking issue, and land what's clean rather than waiting on the whole
+set.
+
 ## Native-vs-painted menu convention
 
 `ContextMenu` has two display paths and apps pick by trigger, not by

@@ -19,6 +19,7 @@ pub mod editor;
 pub mod find_replace;
 pub mod form;
 pub mod image;
+pub mod layout_metrics;
 pub mod list;
 pub mod menu_bar;
 pub mod message_list;

@@ -26,7 +26,7 @@ use super::{cairo_rgb, draw_form, draw_list, draw_message_list, draw_tree};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
-    SectionBody, SectionHeader, SectionMeasure,
+    SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
 use crate::types::StyledText;
@@ -34,17 +34,11 @@ use crate::types::StyledText;
 /// Compute the GTK metrics for a `MultiSectionView` from a
 /// `line_height`. Backends call this AND the primitive's `layout()`
 /// with the same metrics so paint and click resolve to the same bounds.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
+/// (#499) — identical math across every pixel backend.
 pub fn metrics_for(line_height: f64, allow_resize: bool) -> LayoutMetrics {
-    LayoutMetrics {
-        header_size: (line_height * 1.4) as f32,
-        divider_size: if allow_resize { 1.0 } else { 0.0 },
-        // 8px gives a visible scrollbar against typical dark sidebar
-        // backgrounds; the previous 4px was easy to miss. Hosts that
-        // want a thinner scrollbar can compose `Scrollbar` directly.
-        scrollbar_size: 8.0,
-        // GTK paints at sub-pixel precision via Cairo; no quantization.
-        cell_quantum: 0.0,
-    }
+    crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
 }
 
 /// Compute the layout for a `MultiSectionView` using the GTK metrics
@@ -53,65 +47,15 @@ pub fn metrics_for(line_height: f64, allow_resize: bool) -> LayoutMetrics {
 /// share this single layout per frame. Mirrors TUI's [`crate::tui::tui_msv_layout`]
 /// in spirit: one source-of-truth layout produced by one set of
 /// metrics, consumed by both paint and hit-test.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
+/// (#499).
 pub fn gtk_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
     line_height: f64,
 ) -> MultiSectionViewLayout {
-    let metrics = metrics_for(line_height, view.allow_resize);
-    view.layout(bounds, metrics, |i| {
-        body_measure(&view.sections[i].body, &view.sections[i].aux, line_height)
-    })
-}
-
-fn body_measure(body: &SectionBody, aux: &Option<SectionAux>, line_height: f64) -> SectionMeasure {
-    let item_h = (line_height * 1.4).round() as f32;
-    let aux_size = if aux.is_some() { item_h } else { 0.0 };
-    let content_size = match body {
-        SectionBody::Tree(t) => {
-            let header_h = (line_height * 1.2).round() as f32;
-            let mut total = 0.0_f32;
-            for row in &t.rows {
-                let is_header = matches!(row.decoration, crate::types::Decoration::Header);
-                total += if is_header { header_h } else { item_h };
-            }
-            total
-        }
-        SectionBody::List(l) => {
-            let title_h = if l.title.is_some() {
-                line_height as f32
-            } else {
-                0.0
-            };
-            title_h + l.items.len() as f32 * item_h
-        }
-        SectionBody::Form(f) => f.fields.len() as f32 * item_h,
-        SectionBody::Chart(c) => {
-            if matches!(c.kind, crate::primitives::chart::ChartKind::Sparkline) {
-                line_height as f32
-            } else {
-                item_h * 8.0
-            }
-        }
-        SectionBody::MessageList(m) => {
-            // 1 header row + body lines per message.
-            m.rows
-                .iter()
-                .map(|r| {
-                    let lines = r.text.lines().count().max(1) as f32;
-                    line_height as f32 + lines * line_height as f32
-                })
-                .sum()
-        }
-        SectionBody::Terminal(_) => 0.0,
-        SectionBody::Text(lines) => lines.len() as f32 * line_height as f32,
-        SectionBody::Empty(_) => item_h * 4.0, // icon + text + hint + action
-        SectionBody::Custom(_) => 0.0,
-    };
-    SectionMeasure {
-        content_size,
-        aux_size,
-    }
+    crate::primitives::layout_metrics::msv_layout(view, bounds, line_height)
 }
 
 /// Draw a [`MultiSectionView`] into `(x, y, w, h)` on `cr`.
@@ -652,7 +596,7 @@ mod tests {
 
     /// Standard line-height the GTK rasteriser is parameterised by.
     /// Header rows render at `line_height * 1.4`; body rows at the
-    /// same (per `body_measure`).
+    /// same (per `crate::primitives::layout_metrics::msv_body_measure`).
     const LINE_HEIGHT: f64 = 14.0;
 
     /// Build a [`Theme`] where the canonical background is pure white
@@ -1130,13 +1074,16 @@ mod tests {
             ),
         }
 
-        // Verify body_measure content_size matches the tree's total row heights.
+        // Verify msv_body_measure content_size matches the tree's total row heights.
         let expected_content = header_h as f32 + 2.0 * item_h as f32;
-        let actual_content =
-            body_measure(&view.sections[0].body, &view.sections[0].aux, LINE_HEIGHT);
+        let actual_content = crate::primitives::layout_metrics::msv_body_measure(
+            &view.sections[0].body,
+            &view.sections[0].aux,
+            LINE_HEIGHT,
+        );
         assert!(
             (actual_content.content_size - expected_content).abs() < 0.01,
-            "body_measure content_size {}, expected {} (header_h={}, item_h={})",
+            "msv_body_measure content_size {}, expected {} (header_h={}, item_h={})",
             actual_content.content_size,
             expected_content,
             header_h,
