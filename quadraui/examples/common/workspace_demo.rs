@@ -17,13 +17,22 @@
 //! `Box<dyn BackendWidget>` (`Send + 'static`) content could not do.
 //!
 //! Controls:
-//! - click a tab            activate that document
+//! - click a tab            activate that document (and promote it, if preview)
+//! - middle-click a tab     close that document (quadraui#597)
 //! - click a tab's `×`      close that document
-//! - `Ctrl+Tab`             next document (wraps)
+//! - `Ctrl+Tab`             next document (wraps, never promotes)
 //! - `Ctrl+Shift+Tab`       previous document (wraps)
 //! - `Ctrl+PageDown/PageUp` same, VS Code's other spelling
-//! - `o`                    open the next document from the backlog
+//! - `o`                    open the next document from the backlog, permanent
+//! - `p`                    open the next document from the backlog, as **preview**
+//! - `m`                    promote ("mark permanent"/pin) the active document
 //! - `q` / `Esc`            quit
+//!
+//! `p` demonstrates the preview tier (quadraui#597): each press replaces
+//! the previous preview tab in place rather than accumulating tabs, and
+//! the preview tab paints italic (`TabItem::is_preview`). `m` and
+//! clicking the preview tab both promote it — the six-trigger table lives
+//! on [`quadraui::compose::workspace`]'s module doc.
 
 use std::cell::RefCell;
 
@@ -62,6 +71,10 @@ pub struct WorkspaceDemo {
     workspace: RefCell<WorkspaceController>,
     /// Index of the next [`BACKLOG`] entry `o` will open.
     next_backlog: usize,
+    /// Index of the next [`BACKLOG`] entry `p` will open as preview —
+    /// tracked separately from `next_backlog` so the two keys don't
+    /// fight over the same cursor.
+    next_preview_backlog: usize,
     last_event: String,
 }
 
@@ -77,6 +90,7 @@ impl WorkspaceDemo {
         Self {
             workspace: RefCell::new(workspace),
             next_backlog: 0,
+            next_preview_backlog: 0,
             last_event: "ready".to_string(),
         }
     }
@@ -104,6 +118,7 @@ impl WorkspaceDemo {
             WorkspaceEvent::Reordered { id, from, to } => {
                 format!("reordered {id} {from}->{to}")
             }
+            WorkspaceEvent::Promoted { id } => format!("promoted {id}"),
             _ => "unknown workspace event".to_string(),
         }
     }
@@ -126,13 +141,43 @@ impl WorkspaceDemo {
             return Reaction::Redraw;
         };
         self.next_backlog += 1;
-        let event = self
+        let events = self
             .workspace
             .borrow_mut()
             .open(WorkspaceDoc::new(id, label));
-        match event {
-            Some(ev) => self.record(&[ev]),
-            None => Reaction::Redraw,
+        self.record(&events)
+    }
+
+    /// `p`: open the next backlog document as the workspace's single
+    /// **preview** — each press replaces whatever was previewed before,
+    /// so the tab count only grows the first time (quadraui#597).
+    fn open_next_preview_doc(&mut self) -> Reaction {
+        let Some((id, label)) = BACKLOG.get(self.next_preview_backlog).copied() else {
+            self.last_event = "preview backlog exhausted".to_string();
+            return Reaction::Redraw;
+        };
+        self.next_preview_backlog += 1;
+        let events = self
+            .workspace
+            .borrow_mut()
+            .open_preview(WorkspaceDoc::new(id, label));
+        self.record(&events)
+    }
+
+    /// `m`: promote ("mark permanent") the active document — the
+    /// explicit-pin trigger from the module doc's promotion table. A
+    /// no-op when the active document isn't the preview.
+    fn promote_active(&mut self) -> Reaction {
+        let mut ws = self.workspace.borrow_mut();
+        let Some(id) = ws.active_id().map(str::to_string) else {
+            return Reaction::Continue;
+        };
+        match ws.promote(&id) {
+            Some(ev) => {
+                drop(ws);
+                self.record(&[ev])
+            }
+            None => Reaction::Continue,
         }
     }
 
@@ -172,6 +217,7 @@ impl ShellApp for WorkspaceDemo {
         let main = layout.main_content_bounds;
         let ws = self.workspace.borrow();
         let body = match ws.active_id() {
+            Some(id) if ws.is_preview(id) => format!(" viewing: {id} (preview) "),
             Some(id) => format!(" viewing: {id} "),
             None => " viewing: (no documents open) ".to_string(),
         };
@@ -208,6 +254,14 @@ impl ShellApp for WorkspaceDemo {
                 key: Key::Char('o'),
                 ..
             } => self.open_next_backlog_doc(),
+            UiEvent::KeyPressed {
+                key: Key::Char('p'),
+                ..
+            } => self.open_next_preview_doc(),
+            UiEvent::KeyPressed {
+                key: Key::Char('m'),
+                ..
+            } => self.promote_active(),
             UiEvent::KeyPressed { key, modifiers, .. } => {
                 // The controller owns its own key table (Ctrl+Tab,
                 // Ctrl+PageUp/PageDown); anything it declines falls
@@ -218,11 +272,13 @@ impl ShellApp for WorkspaceDemo {
                     None => Reaction::Continue,
                 }
             }
-            UiEvent::MouseDown { position, .. } => {
+            UiEvent::MouseDown {
+                position, button, ..
+            } => {
                 let events = self
                     .workspace
                     .borrow_mut()
-                    .handle_click(position.x, position.y);
+                    .handle_click(position.x, position.y, button);
                 self.record(&events)
             }
             _ => Reaction::Continue,

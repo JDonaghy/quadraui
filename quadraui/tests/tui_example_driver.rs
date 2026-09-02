@@ -5202,3 +5202,172 @@ fn workspace_demo_q_exits() {
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the workspace demo");
 }
+
+// ─── Preview tabs (quadraui#597) ────────────────────────────────────────
+//
+// `p` opens the next backlog document as the workspace's single preview;
+// `m` promotes the active document explicitly. These drive the same
+// `WorkspaceController` through the shipping example, end to end.
+
+#[test]
+fn workspace_demo_p_opens_a_preview_tab_that_paints_italic() {
+    use quadraui::tui::testing::Modifier;
+
+    let mut driver = workspace_driver();
+    driver.type_char('p');
+
+    assert!(
+        driver.screen_contains("opened doc:delta"),
+        "p opens the next backlog document:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:delta (preview)"),
+        "the new tab is active and the demo's own state agrees it's the \
+         preview:\n{}",
+        driver.screen()
+    );
+
+    let label = driver
+        .find_bounds("delta-doc")
+        .expect("the preview tab's label should be painted");
+    let style = driver
+        .style_at(label.x as u16, label.y as u16)
+        .expect("label cell should be inside the screen");
+    assert!(
+        style.modifiers.contains(Modifier::ITALIC),
+        "TabItem::is_preview must paint italic — a driver style read, not \
+         controller-state inspection: {style:?}"
+    );
+}
+
+#[test]
+fn workspace_demo_p_twice_replaces_the_preview_instead_of_accumulating() {
+    let mut driver = workspace_driver();
+    let before = workspace_demo::INITIAL.len();
+
+    driver.type_char('p'); // preview doc:delta
+    driver.type_char('p'); // preview doc:epsilon, replacing delta in place
+
+    assert!(
+        driver.screen_contains("closed doc:delta"),
+        "the second p must replace, not append — the old preview closes:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:epsilon (preview)"),
+        "{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("delta-doc"),
+        "the first preview's tab is gone entirely, not just inactive:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.tab_center(&workspace_bar_id(), before).is_some(),
+        "exactly one extra tab beyond the original {before}, not two:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.tab_center(&workspace_bar_id(), before + 1).is_none(),
+        "…and no third tab:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_clicking_the_preview_tab_promotes_it() {
+    use quadraui::tui::testing::Modifier;
+
+    let mut driver = workspace_driver();
+    driver.type_char('p'); // preview doc:delta, at the strip's tail end
+    let preview_idx = workspace_demo::INITIAL.len();
+
+    let label_before = driver
+        .find_bounds("delta-doc")
+        .expect("preview tab label painted");
+    assert!(
+        driver
+            .style_at(label_before.x as u16, label_before.y as u16)
+            .unwrap()
+            .modifiers
+            .contains(Modifier::ITALIC),
+        "starts italic (preview)"
+    );
+
+    let (x, y) = driver
+        .tab_center(&workspace_bar_id(), preview_idx)
+        .expect("preview tab should have painted geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("promoted doc:delta"),
+        "selecting the preview tab promotes it — the deliberate VS Code \
+         divergence documented on WorkspaceController:\n{}",
+        driver.screen()
+    );
+    let label_after = driver
+        .find_bounds("delta-doc")
+        .expect("tab still painted after promotion");
+    assert!(
+        !driver
+            .style_at(label_after.x as u16, label_after.y as u16)
+            .unwrap()
+            .modifiers
+            .contains(Modifier::ITALIC),
+        "promoted tab must stop painting italic — driver style read, not \
+         controller-state inspection"
+    );
+}
+
+#[test]
+fn workspace_demo_m_promotes_the_active_document_explicitly() {
+    let mut driver = workspace_driver();
+    driver.type_char('p'); // active document is now the preview
+
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("promoted doc:delta"),
+        "m is the explicit-pin trigger:\n{}",
+        driver.screen()
+    );
+
+    // A second 'm' is a no-op — already permanent, nothing to promote —
+    // so the hint bar keeps the first promotion's text rather than
+    // silently repeating an event that didn't happen.
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("promoted doc:delta"),
+        "no new event overwrote the hint on a no-op promote:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn workspace_demo_middle_click_closes_a_tab_without_activating_it() {
+    let mut driver = workspace_driver();
+    assert!(driver.screen_contains("viewing: doc:alpha"));
+
+    let (x, y) = driver
+        .tab_center(&workspace_bar_id(), 1)
+        .expect("tab 1 (doc:beta) should have painted geometry");
+    driver.middle_click(x, y);
+
+    assert!(
+        driver.screen_contains("closed doc:beta"),
+        "middle click closes the tab under the pointer:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("viewing: doc:alpha"),
+        "middle-closing a non-active tab must not disturb the active one:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("beta×"),
+        "the closed document's tab is gone from the strip (the hint bar's \
+         \"closed doc:beta\" text still legitimately contains \"beta\"):\n{}",
+        driver.screen()
+    );
+}
