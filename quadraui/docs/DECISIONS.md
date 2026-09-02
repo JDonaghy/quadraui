@@ -487,7 +487,7 @@ Every `Backend::<name>_layout` trait method in `quadraui/src/backend.rs`
 was read against its TUI, GTK, and (where implemented) macOS
 implementation, tracing whether the returned `hit_regions` / `bounds`
 are shifted by `rect.x`/`rect.y` (**ABSOLUTE**) or left relative to
-`rect`'s origin (**LOCAL**). Result, 19 methods audited (excludes
+`rect`'s origin (**LOCAL**). Result, 20 methods audited (excludes
 `tab_bar_layout*` and `activity_bar_layout`, already resolved by #552):
 
 | Frame | Methods |
@@ -498,16 +498,17 @@ are shifted by `rect.x`/`rect.y` (**ABSOLUTE**) or left relative to
 **No live cross-backend mismatch was found.** For every method, every
 backend that implements it agrees with its siblings on which frame it
 uses — unlike the historical `mac_tree_layout` bug, nothing here
-silently drifts between backends today. What *was* missing: 16 of the
-19 methods' trait doc comments said nothing at all about coordinate
-frame, so the agreement was accidental (preserved by copy-paste and
-`#499`'s later unification into shared `layout_metrics` helpers) rather
-than contracted.
+silently drifts between backends today. What *was* missing: 19 of the
+20 methods' trait doc comments said nothing at all about coordinate
+frame (the sole exception, `status_bar_layout`, already had its
+bar-local frame stated from #552), so the agreement was accidental
+(preserved by copy-paste and `#499`'s later unification into shared
+`layout_metrics` helpers) rather than contracted.
 
 ### Decision
 
 **Keep both frames — do not collapse everything to LOCAL.** Converting
-the 14 ABSOLUTE methods to LOCAL would be a breaking change to every
+the 15 ABSOLUTE methods to LOCAL would be a breaking change to every
 caller of every one of them (both in-tree composers and, per
 `CLAUDE.md`'s downstream-consumers policy, `coord-tui` and `vimcode` if
 either calls them directly) for a purely cosmetic uniformity gain — the

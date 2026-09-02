@@ -149,3 +149,98 @@ pub fn draw_status_bar(
 
     bar_layout
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::status_bar::StatusBarHit;
+    use crate::types::Color;
+    use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
+
+    fn headless_cairo_and_pango() -> (ImageSurface, pango::Layout) {
+        let surface = ImageSurface::create(Format::ARgb32, 200, 200).expect("create ImageSurface");
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let layout = pangocairo::functions::create_layout(&cr);
+        (surface, layout)
+    }
+
+    fn test_bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("sb"),
+            left_segments: vec![StatusBarSegment {
+                text: "Ready".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: Some(WidgetId::new("sb:action")),
+            }],
+            right_segments: vec![],
+        }
+    }
+
+    /// `status_bar_layout` is documented **LOCAL** (issue #505):
+    /// `StatusBar::layout` (called by `draw_status_bar` internally) only
+    /// ever receives `width`/`line_height` — the `x`/`y` this function
+    /// paints at are used purely to offset the Cairo drawing calls, never
+    /// folded into the returned `StatusBarLayout`. Painting at a
+    /// non-zero origin must therefore produce byte-identical segment
+    /// bounds / hit regions to painting at the origin — the same
+    /// "ignores origin" shape `data_table_layout`/`form_layout` already
+    /// guard on GTK (`gtk::backend` tests), which `status_bar_layout`
+    /// had no equivalent for.
+    fn round_trip_at(x: f64, y: f64) {
+        let (surface, pango_layout) = headless_cairo_and_pango();
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let theme = Theme::default();
+        let bar = test_bar();
+
+        let at_origin = draw_status_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            0.0,
+            100.0,
+            20.0,
+            &bar,
+            &theme,
+            None,
+            None,
+        );
+        let shifted = draw_status_bar(
+            &cr,
+            &pango_layout,
+            x,
+            y,
+            100.0,
+            20.0,
+            &bar,
+            &theme,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            at_origin, shifted,
+            "LOCAL status_bar_layout must not shift segment bounds by x/y"
+        );
+
+        let seg = shifted.visible_segments[0];
+        let cx = seg.bounds.x + 1.0;
+        let cy = seg.bounds.y + 1.0;
+        assert_eq!(
+            shifted.hit_test(cx, cy),
+            StatusBarHit::Segment(bar.left_segments[0].action_id.clone().unwrap())
+        );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
+    }
+}
