@@ -11,11 +11,12 @@
 //! `chart`), #27 the multi-section view + standalone scrollbar, and #28
 //! the seven overlay/popup rasterisers (`tooltip`/`context_menu`/
 //! `dialog`/`palette`/`completions`/`find_replace`/`rich_text_popup`),
-//! and #29 the five container/indicator rasterisers (`panel`/`split`/
-//! `toast`/`progress`/`spinner`) — every other `draw_*`/`*_layout`
-//! rasteriser is still a `todo!()` stub; implement each one against
-//! Direct2D / DirectWrite and the compiler will tell you when you're
-//! done.
+//! #29 the five container/indicator rasterisers (`panel`/`split`/
+//! `toast`/`progress`/`spinner`), and #30 the three text-heavy
+//! rasterisers (`terminal`/`text_display`/`message_list`) — every other
+//! `draw_*`/`*_layout` rasteriser is still a `todo!()` stub; implement
+//! each one against Direct2D / DirectWrite and the compiler will tell
+//! you when you're done.
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
 //! during earlier Win-GUI work. See the GTK backend (`quadraui/src/gtk/`)
@@ -72,6 +73,10 @@ mod list;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod menu_bar;
+/// Direct2D / DirectWrite rasteriser for [`crate::MessageList`] (#30).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod message_list;
 /// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
 /// ratio). Crate-private and host-independent — it is the one part of this
 /// backend that is pure arithmetic, so it is the one part that can be
@@ -119,6 +124,10 @@ mod status_bar;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod tab_bar;
+/// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids
+/// (#30). Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod terminal;
 /// Headless Direct2D test surface (#24): an offscreen `ID2D1DCRenderTarget`
 /// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
 /// a primitive and read pixels back with no `HWND`, display, or GPU.
@@ -145,6 +154,10 @@ pub mod testing;
 /// and `DWrite`'s public surface in step with the rasterisers that take it.
 #[cfg(target_os = "windows")]
 pub mod text;
+/// Direct2D / DirectWrite rasteriser for [`crate::TextDisplay`] (#30).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod text_display;
 /// Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (#29).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -182,6 +195,8 @@ pub use list::{draw_list, win_list_layout};
 #[cfg(target_os = "windows")]
 pub use menu_bar::{draw_menu_bar, win_menu_bar_layout};
 #[cfg(target_os = "windows")]
+pub use message_list::draw_message_list;
+#[cfg(target_os = "windows")]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
 #[cfg(target_os = "windows")]
 pub use palette::{draw_palette, win_palette_layout};
@@ -203,6 +218,10 @@ pub use split::{draw_split, win_split_layout, DIVIDER_DIP};
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
+#[cfg(target_os = "windows")]
+pub use terminal::{draw_terminal_cells, draw_terminal_divider};
+#[cfg(target_os = "windows")]
+pub use text_display::{draw_text_display, win_text_display_layout};
 #[cfg(target_os = "windows")]
 pub use toast::{draw_toast_stack, win_toast_stack_layout};
 #[cfg(target_os = "windows")]
