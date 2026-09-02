@@ -35,7 +35,7 @@ use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
-    SectionBody, SectionHeader, SectionMeasure,
+    SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
 use crate::types::{Color, StyledText};
@@ -43,70 +43,31 @@ use crate::types::{Color, StyledText};
 /// Compute the macOS metrics for a `MultiSectionView` from a
 /// `line_height`. Hosts call this and the primitive's `layout()`
 /// with the same metrics so paint and click resolve to the same bounds.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
+/// (#499) — identical math across every pixel backend.
 pub fn mac_msv_metrics(line_height: f64, allow_resize: bool) -> LayoutMetrics {
-    LayoutMetrics {
-        header_size: (line_height * 1.4) as f32,
-        divider_size: if allow_resize { 1.0 } else { 0.0 },
-        // Matches GTK: 8 px gives a visible track against dark sidebars.
-        scrollbar_size: 8.0,
-        // CG paints at sub-pixel precision; no quantization.
-        cell_quantum: 0.0,
-    }
+    crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
 }
 
 /// Compute the layout for a `MultiSectionView` using the macOS metrics
 /// the rasteriser would use itself. Hosts call this to drive hit-
 /// testing without re-computing — paint and click share this single
 /// layout per frame.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
+/// (#499). Before #499 this backend's own `body_measure` returned
+/// `0.0` for `SectionBody::MessageList` (a copy-paste drift from GTK's
+/// version, which measured real content height) — sharing one
+/// function fixes it: MessageList sections now measure correctly on
+/// macOS too. See `crate::primitives::layout_metrics::msv_body_measure`'s
+/// doc and its regression test.
 pub fn mac_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
     line_height: f64,
 ) -> MultiSectionViewLayout {
-    let metrics = mac_msv_metrics(line_height, view.allow_resize);
-    view.layout(bounds, metrics, |i| {
-        body_measure(&view.sections[i].body, &view.sections[i].aux, line_height)
-    })
-}
-
-fn body_measure(body: &SectionBody, aux: &Option<SectionAux>, line_height: f64) -> SectionMeasure {
-    let item_h = (line_height * 1.4).round() as f32;
-    let aux_size = if aux.is_some() { item_h } else { 0.0 };
-    let content_size = match body {
-        SectionBody::Tree(t) => {
-            let header_h = (line_height * 1.2).round() as f32;
-            let mut total = 0.0_f32;
-            for row in &t.rows {
-                let is_header = matches!(row.decoration, crate::types::Decoration::Header);
-                total += if is_header { header_h } else { item_h };
-            }
-            total
-        }
-        SectionBody::List(l) => {
-            let title_h = if l.title.is_some() {
-                line_height as f32
-            } else {
-                0.0
-            };
-            title_h + l.items.len() as f32 * item_h
-        }
-        SectionBody::Form(f) => f.fields.len() as f32 * item_h,
-        SectionBody::Chart(c) => {
-            if matches!(c.kind, crate::primitives::chart::ChartKind::Sparkline) {
-                line_height as f32
-            } else {
-                item_h * 8.0
-            }
-        }
-        SectionBody::MessageList(_) | SectionBody::Terminal(_) => 0.0,
-        SectionBody::Text(lines) => lines.len() as f32 * line_height as f32,
-        SectionBody::Empty(_) => item_h * 4.0,
-        SectionBody::Custom(_) => 0.0,
-    };
-    SectionMeasure {
-        content_size,
-        aux_size,
-    }
+    crate::primitives::layout_metrics::msv_layout(view, bounds, line_height)
 }
 
 /// Paint `view` into `(x, y, w, h)` on `ctx`.

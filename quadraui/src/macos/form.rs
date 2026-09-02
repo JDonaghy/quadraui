@@ -26,12 +26,22 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
-use crate::primitives::form::{
-    FieldKind, Form, FormFieldMeasure, FormItemMeasure, FormLayout, ValidationState,
-};
+use crate::primitives::form::{FieldKind, Form, FormLayout, ValidationState};
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::text_util::safe_prefix;
 use crate::theme::Theme;
-use crate::types::{Color, WidgetId};
+use crate::types::Color;
+
+/// Adapts a live `CTFont` to the shared [`TextMeasure`] trait so
+/// [`crate::primitives::layout_metrics::form_field_measure`] never has
+/// to name a Core Text type.
+struct CtFontMeasure<'a>(&'a CTFont);
+
+impl TextMeasure for CtFontMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        measure_text(self.0, text).0 as f32
+    }
+}
 
 /// Compute the layout the macOS rasteriser would produce for `form`
 /// in `area` at `line_height`. Rows are `(line_height * 1.4).round()`
@@ -49,105 +59,11 @@ use crate::types::{Color, WidgetId};
 /// from absolute click coords before calling
 /// [`FormLayout::hit_test`].
 pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont) -> FormLayout {
-    let row_h = (line_height * 1.4).round() as f32;
-    let gap = 8.0_f32;
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
+    let measure = CtFontMeasure(font);
     form.layout(area.width, area.height, |i| {
-        let field = &form.fields[i];
-        match &field.kind {
-            FieldKind::ToggleGroup { toggles } => {
-                let start_x = items_start_x(font, field);
-                let items = toggles
-                    .iter()
-                    .map(|t| FormItemMeasure {
-                        id: t.id.clone(),
-                        width: measure_text(font, &t.label).0 as f32,
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, start_x, gap, items)
-            }
-            FieldKind::ButtonRow { buttons } => {
-                let start_x = items_start_x(font, field);
-                let items = buttons
-                    .iter()
-                    .map(|b| FormItemMeasure {
-                        id: b.id.clone(),
-                        width: measure_text(font, &format!("[{}]", b.label)).0 as f32,
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, start_x, gap, items)
-            }
-            FieldKind::SegmentedControl { options, .. } => {
-                let start_x = items_start_x(font, field);
-                let items = options
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, opt)| FormItemMeasure {
-                        id: WidgetId::new(format!("{}__seg_{idx}", field.id.as_str())),
-                        width: measure_text(font, &format!("[{opt}]")).0 as f32,
-                    })
-                    .collect();
-                // Segments butt up against each other — no inter-item gap.
-                FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
-            }
-            FieldKind::Toolbar(toolbar) => {
-                use crate::primitives::toolbar::ToolbarButton;
-                let start_x = {
-                    let label_text: String =
-                        field.label.spans.iter().map(|s| s.text.as_str()).collect();
-                    if label_text.is_empty() {
-                        6.0_f32
-                    } else {
-                        let (lw, _) = measure_text(font, &label_text);
-                        6.0 + lw as f32 + 12.0
-                    }
-                };
-                let items = toolbar
-                    .buttons
-                    .iter()
-                    .map(|btn| {
-                        let id = match btn {
-                            ToolbarButton::Action { id, .. } => id.clone(),
-                            _ => field.id.clone(),
-                        };
-                        let width = match btn {
-                            ToolbarButton::Action {
-                                label,
-                                icon,
-                                key_hint,
-                                ..
-                            } => {
-                                let mut text = String::new();
-                                if let Some(ic) = icon {
-                                    text.push_str(ic);
-                                    text.push(' ');
-                                }
-                                text.push_str(label);
-                                if let Some(hint) = key_hint {
-                                    text.push_str(" (");
-                                    text.push_str(hint);
-                                    text.push(')');
-                                }
-                                (measure_text(font, &text).0 as f32) + 16.0
-                            }
-                            ToolbarButton::Separator => 12.0,
-                            ToolbarButton::Label { text, .. } => measure_text(font, text).0 as f32,
-                        };
-                        FormItemMeasure { id, width }
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
-            }
-            _ => FormFieldMeasure::new(row_h),
-        }
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
     })
-}
-
-/// X offset where row items (ToggleGroup / SegmentedControl /
-/// ButtonRow) start: 6px row inset + label width + 12px gap.
-fn items_start_x(font: &CTFont, field: &crate::primitives::form::FormField) -> f32 {
-    let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-    let (label_w, _) = measure_text(font, &label_text);
-    6.0 + label_w as f32 + 12.0
 }
 
 /// Draw a [`Form`] into `(x, y, w, h)` on `ctx`. Returns the same
