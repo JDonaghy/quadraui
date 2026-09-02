@@ -40,6 +40,12 @@ use ratatui::Terminal;
 
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
+use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
+// Re-exported (not just imported) so `tui::testing` — and any other
+// in-crate caller that historically reached `EventOutcome` through this
+// module — keeps working unchanged after the type moved to
+// `crate::runtime` (quadraui#496).
+pub(crate) use crate::runtime::EventOutcome;
 use crate::tui::backend::TuiBackend;
 use crate::{Key, UiEvent};
 
@@ -48,26 +54,6 @@ use crate::{Key, UiEvent};
 /// continues which gives the app a chance to redraw if its state
 /// advanced asynchronously.
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
-
-/// Trailing-edge debounce for `WindowResized` dispatch (quadraui#437).
-///
-/// A live terminal edge-drag delivers a burst of crossterm `Resize`
-/// events (tens per second). Apps with PTY-backed side effects
-/// (`TerminalApp::handle` → `TerminalSession::resize` → SIGWINCH) were
-/// resizing the child shell on *every* intermediate size. A shell's
-/// line-editor (readline/zle) redraws its prompt for the width it was
-/// SIGWINCH'd with; if the grid is reflowed to a *different* width before
-/// that redraw is parsed, the cursor-relative bytes land in the wrong
-/// columns and scatter duplicated prompt fragments that stick until the
-/// next resize — the exact TUI corruption reported in round #209.
-///
-/// The GTK runner already debounces `connect_resize` (6816b62); this is
-/// the poll-loop equivalent for the TUI runner. We coalesce the burst and
-/// dispatch a single `WindowResized` at the final settled size once no new
-/// resize has arrived for this interval. Painting stays live throughout —
-/// [`render_frame`] re-reads the real terminal size every frame regardless
-/// of whether the debounced event has fired yet.
-const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
 /// Drive `app` to completion in a TUI environment.
 ///
@@ -162,11 +148,14 @@ fn run_inner<A: AppLogic>(
 
     // ── Frame loop ─────────────────────────────────────────────
     let mut needs_redraw = true;
-    // Trailing-edge resize debounce state (quadraui#437). We hold the
-    // most recent viewport from a burst of `WindowResized` events and
-    // dispatch a single settled resize once `RESIZE_SETTLE` elapses with
-    // no newer one — see `RESIZE_SETTLE`.
-    let mut pending_resize: Option<crate::Viewport> = None;
+    // Trailing-edge resize debounce state (quadraui#437, shared utility
+    // extracted in #496 — see `crate::runtime::ResizeDebouncer`). We hold
+    // the most recent viewport from a burst of `WindowResized` events in
+    // `resize_debouncer` and dispatch a single settled resize once
+    // `RESIZE_SETTLE` elapses with no newer one — the deadline itself is
+    // TUI's own `Instant`-poll mechanism (see `ResizeDebouncer`'s doc for
+    // why the timing stays per-backend).
+    let mut resize_debouncer = ResizeDebouncer::new();
     let mut resize_deadline: Option<Instant> = None;
     loop {
         if needs_redraw {
@@ -182,7 +171,7 @@ fn run_inner<A: AppLogic>(
             // Painting stays live because `render_frame` re-reads the real
             // terminal size every frame.
             if let UiEvent::WindowResized { viewport } = event {
-                pending_resize = Some(viewport);
+                resize_debouncer.note(viewport);
                 resize_deadline = Some(Instant::now() + RESIZE_SETTLE);
                 needs_redraw = true;
                 continue;
@@ -197,7 +186,7 @@ fn run_inner<A: AppLogic>(
         // Fire the debounced resize once the drag has settled.
         if resize_deadline.is_some_and(|d| Instant::now() >= d) {
             resize_deadline = None;
-            if let Some(viewport) = pending_resize.take() {
+            if let Some(viewport) = resize_debouncer.take() {
                 match dispatch_event(UiEvent::WindowResized { viewport }, backend, app) {
                     EventOutcome::Continue => {}
                     EventOutcome::Redraw => needs_redraw = true,
@@ -303,16 +292,9 @@ where
     paint_frame(terminal, backend, app, size)
 }
 
-/// What the frame loop should do after [`dispatch_event`] handles one
-/// event.
-pub(crate) enum EventOutcome {
-    /// No redraw needed; keep looping.
-    Continue,
-    /// State changed; schedule a redraw before the next event drain.
-    Redraw,
-    /// The app requested exit.
-    Exit,
-}
+// `EventOutcome` — what the frame loop should do after [`dispatch_event`]
+// handles one event — is defined once in `crate::runtime` and shared by
+// every backend runner (quadraui#496); imported at the top of this file.
 
 /// Dispatch one [`UiEvent`] through the app, applying the runner's
 /// built-in pre-processing first.
