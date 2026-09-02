@@ -707,6 +707,20 @@ impl Backend for MacBackend {
         true
     }
 
+    /// Sets the cursor via `NSCursor::set()`, not the `push`/`pop`
+    /// pairing AppKit's own `cursorUpdate:`/tracking-area handlers
+    /// conventionally use. That pairing exists to *restore* whatever
+    /// cursor was showing before a transient region was entered; this
+    /// backend has no such transient-region concept — `Backend::set_cursor`
+    /// is called once per frame with the pointer shape the app wants
+    /// showing *now* (mirroring GTK's equally stateless `set_cursor`
+    /// override), and there is no "previous" cursor context to pop back
+    /// to when that ends. A `push`/`pop` implementation here would leak
+    /// stack depth with no matching `pop` call to balance it. If a
+    /// future caller needs scoped push/pop semantics (e.g. a transient
+    /// hover cursor that must restore the ambient one), that's a new,
+    /// deliberately-scoped API on top of this one — not a reason to
+    /// replace this plain `.set()`.
     fn set_cursor(&mut self, shape: PointerShape) -> bool {
         if self.window.is_none() {
             return false;
@@ -2590,6 +2604,53 @@ mod tests {
             &mut b,
             PointerShape::Resize(ResizeEdge::North)
         ));
+    }
+
+    /// Regression test for the blocking review finding on this PR:
+    /// `mac_cursor_for_shape` (the `PointerShape` → `NSCursor` mapping
+    /// this backend introduced) had zero test coverage, despite
+    /// `desktop::all_pointer_shapes()` existing specifically to make an
+    /// exhaustive mapping test trivial — mirrors
+    /// `gtk::backend::pointer_shape_cursor_name_maps_every_variant`
+    /// (`gtk::backend`'s "equivalent" `BACKEND.md` §10 already claimed
+    /// existed). `NSCursor::arrowCursor()` / `resizeUpDownCursor()` /
+    /// `resizeLeftRightCursor()` are documented AppKit factory methods
+    /// that always hand back the *same shared instance*, so comparing
+    /// `Retained::as_ptr` identity is a real assertion, not a
+    /// happens-to-pass coincidence — unlike GTK's cursor-*name* string
+    /// comparison, there's no string form of an `NSCursor` to compare
+    /// instead.
+    #[test]
+    fn mac_cursor_for_shape_maps_every_variant() {
+        // One expected cursor per `desktop::all_pointer_shapes()` entry,
+        // in the same order (`Default`, then one `Resize(edge)` per
+        // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW). The
+        // four corner edges fall back to the plain arrow — see
+        // `mac_cursor_for_shape`'s doc for why there's no public
+        // diagonal-resize `NSCursor` to use instead.
+        let expected: [Retained<NSCursor>; 9] = [
+            NSCursor::arrowCursor(),
+            NSCursor::resizeUpDownCursor(),
+            NSCursor::resizeUpDownCursor(),
+            NSCursor::resizeLeftRightCursor(),
+            NSCursor::resizeLeftRightCursor(),
+            NSCursor::arrowCursor(),
+            NSCursor::arrowCursor(),
+            NSCursor::arrowCursor(),
+            NSCursor::arrowCursor(),
+        ];
+
+        for (shape, expected) in crate::desktop::all_pointer_shapes()
+            .iter()
+            .zip(expected.iter())
+        {
+            let actual = mac_cursor_for_shape(*shape);
+            assert_eq!(
+                Retained::as_ptr(&actual),
+                Retained::as_ptr(expected),
+                "PointerShape {shape:?} did not map to the expected NSCursor singleton",
+            );
+        }
     }
 
     /// #498: `backend_caps` must stay honest — declaring `window_chrome`
