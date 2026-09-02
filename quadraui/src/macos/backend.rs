@@ -248,32 +248,71 @@ fn macos_universal_binding_modifiers(
     parsed
 }
 
-/// Map a [`PointerShape`] to a native `NSCursor` (#498). Mirrors
-/// `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s public
-/// API (`objc2-app-kit`'s binding of it — see `Self::set_cursor`) only
-/// exposes horizontal (`resizeLeftRightCursor`) and vertical
-/// (`resizeUpDownCursor`) resize glyphs, unlike GTK's CSS cursor-name
-/// space which has all 8 directional keywords. There is no public
-/// diagonal-resize `NSCursor` to fall back to (`_windowResize*Cursor`
-/// selectors are private API), so the 4 corner edges fall back to the
-/// plain arrow — honest about the gap (see `crate::desktop`'s
-/// pointer-shape-scaffold doc) rather than pointing a horizontal or
-/// vertical glyph in a direction the user isn't actually dragging.
-fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
+/// Which of AppKit's three usable public cursor singletons a
+/// [`PointerShape`] resolves to (#498).
+///
+/// This exists so the *mapping decision* — the part with an opinion in
+/// it, and the part a regression can silently change — is a plain Rust
+/// value that can be asserted anywhere, on any thread, on any OS.
+/// Turning a variant into the actual `Retained<NSCursor>` is a separate,
+/// trivial step ([`mac_cursor_for_shape`]) that has to call AppKit and
+/// therefore can only be exercised on a real macOS main thread.
+///
+/// Splitting the two is not cosmetic: `cargo test`'s libtest harness
+/// runs each `#[test]` on a spawned worker thread, and AppKit object
+/// vending off the main thread (in a process that never created an
+/// `NSApplication`) is exactly the class of call `macos::menu_bar_install`'s
+/// tests already gate behind `MainThreadMarker::new()`. A mapping test
+/// written directly against `NSCursor` singletons inherits that hazard
+/// while proving nothing AppKit-specific — the singleton identity is
+/// Apple's invariant, not ours. Ours is *which* singleton each shape
+/// picks, and that is what [`mac_cursor_kind`] makes testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacCursorKind {
+    /// `NSCursor::arrowCursor` — the plain pointer.
+    Arrow,
+    /// `NSCursor::resizeUpDownCursor` — vertical resize glyph.
+    ResizeUpDown,
+    /// `NSCursor::resizeLeftRightCursor` — horizontal resize glyph.
+    ResizeLeftRight,
+}
+
+/// Map a [`PointerShape`] to the [`MacCursorKind`] it should show (#498).
+/// Mirrors `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s
+/// public API (`objc2-app-kit`'s binding of it — see
+/// `MacBackend::set_cursor`) only exposes horizontal
+/// (`resizeLeftRightCursor`) and vertical (`resizeUpDownCursor`) resize
+/// glyphs, unlike GTK's CSS cursor-name space which has all 8 directional
+/// keywords. There is no public diagonal-resize `NSCursor` to fall back to
+/// (`_windowResize*Cursor` selectors are private API), so the 4 corner
+/// edges fall back to the plain arrow — honest about the gap (see
+/// `crate::desktop`'s pointer-shape-scaffold doc) rather than pointing a
+/// horizontal or vertical glyph in a direction the user isn't actually
+/// dragging.
+///
+/// Pure and AppKit-free on purpose — see [`MacCursorKind`].
+fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
     match shape {
-        PointerShape::Default => NSCursor::arrowCursor(),
-        PointerShape::Resize(ResizeEdge::North | ResizeEdge::South) => {
-            NSCursor::resizeUpDownCursor()
-        }
-        PointerShape::Resize(ResizeEdge::East | ResizeEdge::West) => {
-            NSCursor::resizeLeftRightCursor()
-        }
+        PointerShape::Default => MacCursorKind::Arrow,
+        PointerShape::Resize(ResizeEdge::North | ResizeEdge::South) => MacCursorKind::ResizeUpDown,
+        PointerShape::Resize(ResizeEdge::East | ResizeEdge::West) => MacCursorKind::ResizeLeftRight,
         PointerShape::Resize(
             ResizeEdge::NorthEast
             | ResizeEdge::NorthWest
             | ResizeEdge::SouthEast
             | ResizeEdge::SouthWest,
-        ) => NSCursor::arrowCursor(),
+        ) => MacCursorKind::Arrow,
+    }
+}
+
+/// Vend the shared `NSCursor` singleton for a [`PointerShape`], via
+/// [`mac_cursor_kind`] (#498). The only AppKit-touching half of the
+/// mapping; see [`MacCursorKind`] for why the two halves are separate.
+fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
+    match mac_cursor_kind(shape) {
+        MacCursorKind::Arrow => NSCursor::arrowCursor(),
+        MacCursorKind::ResizeUpDown => NSCursor::resizeUpDownCursor(),
+        MacCursorKind::ResizeLeftRight => NSCursor::resizeLeftRightCursor(),
     }
 }
 
@@ -2606,51 +2645,103 @@ mod tests {
         ));
     }
 
-    /// Regression test for the blocking review finding on this PR:
-    /// `mac_cursor_for_shape` (the `PointerShape` → `NSCursor` mapping
-    /// this backend introduced) had zero test coverage, despite
-    /// `desktop::all_pointer_shapes()` existing specifically to make an
-    /// exhaustive mapping test trivial — mirrors
-    /// `gtk::backend::pointer_shape_cursor_name_maps_every_variant`
-    /// (`gtk::backend`'s "equivalent" `BACKEND.md` §10 already claimed
-    /// existed). `NSCursor::arrowCursor()` / `resizeUpDownCursor()` /
-    /// `resizeLeftRightCursor()` are documented AppKit factory methods
-    /// that always hand back the *same shared instance*, so comparing
-    /// `Retained::as_ptr` identity is a real assertion, not a
-    /// happens-to-pass coincidence — unlike GTK's cursor-*name* string
-    /// comparison, there's no string form of an `NSCursor` to compare
-    /// instead.
+    /// Regression test for the blocking review finding on this PR: the
+    /// `PointerShape` → cursor mapping this backend introduced had zero
+    /// test coverage, despite `desktop::all_pointer_shapes()` existing
+    /// specifically to make an exhaustive mapping test trivial — mirrors
+    /// `gtk::backend::pointer_shape_cursor_name_maps_every_variant`.
+    ///
+    /// Asserts against [`MacCursorKind`], **not** against vended
+    /// `NSCursor` singletons. The first cut of this test built a
+    /// `[Retained<NSCursor>; 9]` expectation array and compared
+    /// `Retained::as_ptr` identity; that reds the `macos (build, test)`
+    /// check, because libtest runs every `#[test]` on a spawned worker
+    /// thread and `+[NSCursor arrowCursor]` is an AppKit call in a
+    /// process that never created an `NSApplication` — the same hazard
+    /// `macos::menu_bar_install`'s tests already gate behind
+    /// `MainThreadMarker::new()`. It also asserted the wrong thing:
+    /// "these factory methods return a shared instance" is Apple's
+    /// invariant, not quadraui's. quadraui's invariant is *which* cursor
+    /// each shape picks, which is exactly what `mac_cursor_kind` returns
+    /// — so this version covers strictly more of what can regress here,
+    /// deterministically, on every platform and every thread.
+    /// [`mac_cursor_for_shape`]'s one-line kind → singleton dispatch is
+    /// covered by `mac_cursor_for_shape_vends_the_kind_it_maps_to` below,
+    /// on the one thread where it can run at all.
     #[test]
-    fn mac_cursor_for_shape_maps_every_variant() {
-        // One expected cursor per `desktop::all_pointer_shapes()` entry,
-        // in the same order (`Default`, then one `Resize(edge)` per
+    fn mac_cursor_kind_maps_every_variant() {
+        // One expected kind per `desktop::all_pointer_shapes()` entry, in
+        // the same order (`Default`, then one `Resize(edge)` per
         // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW). The
         // four corner edges fall back to the plain arrow — see
-        // `mac_cursor_for_shape`'s doc for why there's no public
+        // `mac_cursor_kind`'s doc for why there's no public
         // diagonal-resize `NSCursor` to use instead.
-        let expected: [Retained<NSCursor>; 9] = [
-            NSCursor::arrowCursor(),
-            NSCursor::resizeUpDownCursor(),
-            NSCursor::resizeUpDownCursor(),
-            NSCursor::resizeLeftRightCursor(),
-            NSCursor::resizeLeftRightCursor(),
-            NSCursor::arrowCursor(),
-            NSCursor::arrowCursor(),
-            NSCursor::arrowCursor(),
-            NSCursor::arrowCursor(),
+        let expected = [
+            MacCursorKind::Arrow,
+            MacCursorKind::ResizeUpDown,
+            MacCursorKind::ResizeUpDown,
+            MacCursorKind::ResizeLeftRight,
+            MacCursorKind::ResizeLeftRight,
+            MacCursorKind::Arrow,
+            MacCursorKind::Arrow,
+            MacCursorKind::Arrow,
+            MacCursorKind::Arrow,
         ];
+        let shapes = crate::desktop::all_pointer_shapes();
+        assert_eq!(
+            shapes.len(),
+            expected.len(),
+            "every PointerShape must have an expected cursor kind — a new variant means a new \
+             row here, not a silently-truncated zip"
+        );
 
-        for (shape, expected) in crate::desktop::all_pointer_shapes()
-            .iter()
-            .zip(expected.iter())
-        {
-            let actual = mac_cursor_for_shape(*shape);
+        for (shape, expected) in shapes.iter().zip(expected.iter()) {
             assert_eq!(
-                Retained::as_ptr(&actual),
-                Retained::as_ptr(expected),
-                "PointerShape {shape:?} did not map to the expected NSCursor singleton",
+                mac_cursor_kind(*shape),
+                *expected,
+                "PointerShape {shape:?} did not map to the expected cursor kind",
             );
         }
+    }
+
+    /// The AppKit half of the mapping: each [`MacCursorKind`] vends the
+    /// `NSCursor` singleton it names, and distinct kinds are distinct
+    /// cursors (so a copy-paste slip in `mac_cursor_for_shape`'s dispatch
+    /// — every arm returning `arrowCursor()` — is caught).
+    ///
+    /// Main-thread-gated, and therefore a no-op under a default
+    /// `cargo test` run (libtest hands each test to a worker thread):
+    /// vending AppKit objects off the main thread in a process with no
+    /// `NSApplication` is the hazard this whole split exists to keep out
+    /// of CI. Same guard, same reason, as
+    /// `macos::menu_bar_install`'s `install_then_simulate_activation_pushes_event`.
+    /// Runs for real under `cargo test -- --test-threads=1` on a macOS
+    /// host; the mapping itself is covered unconditionally by
+    /// `mac_cursor_kind_maps_every_variant` above.
+    #[test]
+    fn mac_cursor_for_shape_vends_the_kind_it_maps_to() {
+        if objc2_foundation::MainThreadMarker::new().is_none() {
+            return;
+        }
+        let arrow = mac_cursor_for_shape(PointerShape::Default);
+        let up_down = mac_cursor_for_shape(PointerShape::Resize(ResizeEdge::North));
+        let left_right = mac_cursor_for_shape(PointerShape::Resize(ResizeEdge::East));
+
+        assert_eq!(
+            Retained::as_ptr(&arrow),
+            Retained::as_ptr(&NSCursor::arrowCursor())
+        );
+        assert_eq!(
+            Retained::as_ptr(&up_down),
+            Retained::as_ptr(&NSCursor::resizeUpDownCursor())
+        );
+        assert_eq!(
+            Retained::as_ptr(&left_right),
+            Retained::as_ptr(&NSCursor::resizeLeftRightCursor())
+        );
+        assert_ne!(Retained::as_ptr(&arrow), Retained::as_ptr(&up_down));
+        assert_ne!(Retained::as_ptr(&arrow), Retained::as_ptr(&left_right));
+        assert_ne!(Retained::as_ptr(&up_down), Retained::as_ptr(&left_right));
     }
 
     /// #498: `backend_caps` must stay honest — declaring `window_chrome`
