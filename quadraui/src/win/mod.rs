@@ -10,10 +10,12 @@
 //! content-area rasterisers (`tree`/`list`/`form`/`data_table`/`editor`/
 //! `chart`), #27 the multi-section view + standalone scrollbar, and #28
 //! the seven overlay/popup rasterisers (`tooltip`/`context_menu`/
-//! `dialog`/`palette`/`completions`/`find_replace`/`rich_text_popup`) —
-//! every other `draw_*`/`*_layout` rasteriser is still a `todo!()` stub;
-//! implement each one against Direct2D / DirectWrite and the compiler
-//! will tell you when you're done.
+//! `dialog`/`palette`/`completions`/`find_replace`/`rich_text_popup`),
+//! and #29 the five container/indicator rasterisers (`panel`/`split`/
+//! `toast`/`progress`/`spinner`) — every other `draw_*`/`*_layout`
+//! rasteriser is still a `todo!()` stub; implement each one against
+//! Direct2D / DirectWrite and the compiler will tell you when you're
+//! done.
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
 //! during earlier Win-GUI work. See the GTK backend (`quadraui/src/gtk/`)
@@ -83,6 +85,14 @@ mod multi_section_view;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod palette;
+/// Direct2D / DirectWrite rasteriser for [`crate::Panel`] (#29).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod panel;
+/// Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`] (#29).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod progress;
 /// Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`] (#28).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -93,6 +103,14 @@ pub mod run;
 #[cfg(target_os = "windows")]
 mod scrollbar;
 pub mod services;
+/// Direct2D / DirectWrite rasteriser for [`crate::Spinner`] (#29).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod spinner;
+/// Direct2D rasteriser for [`crate::Split`] (#29). Windows-only in
+/// full — see its module docs.
+#[cfg(target_os = "windows")]
+mod split;
 /// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`] (#25).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -127,6 +145,10 @@ pub mod testing;
 /// and `DWrite`'s public surface in step with the rasterisers that take it.
 #[cfg(target_os = "windows")]
 pub mod text;
+/// Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (#29).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod toast;
 /// Direct2D / DirectWrite rasteriser for [`crate::Tooltip`] (#28).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -164,15 +186,25 @@ pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_me
 #[cfg(target_os = "windows")]
 pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
+pub use panel::{draw_panel, win_panel_layout, ACTION_BUTTON_DIP};
+#[cfg(target_os = "windows")]
+pub use progress::{draw_progress, win_progress_layout, CANCEL_WIDTH_DIP};
+#[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::run;
 #[cfg(target_os = "windows")]
 pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
+pub use spinner::{draw_spinner, win_spinner_layout};
+#[cfg(target_os = "windows")]
+pub use split::{draw_split, win_split_layout, DIVIDER_DIP};
+#[cfg(target_os = "windows")]
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
+#[cfg(target_os = "windows")]
+pub use toast::{draw_toast_stack, win_toast_stack_layout};
 #[cfg(target_os = "windows")]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]
