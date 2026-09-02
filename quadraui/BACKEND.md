@@ -519,6 +519,18 @@ for a smoke test.
 - [ ] **Focus flags cleared on every competing click** — clicking
       the editor must clear sidebar/terminal focus, etc. (See
       vimcode's `NATIVE_GUI_LESSONS.md` §7 for the patterns.)
+- [ ] **Every new toolkit-crate import has its Cargo feature enabled.**
+      Some bindings gate *per class*: `objc2-app-kit` ships every class,
+      enum and constant behind a feature named after its originating
+      header, so `use objc2_app_kit::NSCursor` without
+      `features = ["NSCursor"]` is an `unresolved import`, not a warning
+      — and the feature is not reliably the symbol's own name
+      (`NSApplicationActivationPolicy` is in `NSRunningApplication`,
+      `NSBackingStoreType` in `NSGraphics`). Because `src/macos` only
+      compiles on `target_os = "macos"`, nothing on a Linux dev box or
+      the default CI legs catches this; `quadraui/tests/macos_appkit_features.rs`
+      is the portable guard, and adding an import means registering it
+      there too (#498).
 
 ### Recommended testing
 
@@ -595,12 +607,29 @@ not just the one that first implemented it. quadraui factors those into
 have to reinvent them from a GTK or AppKit source read. None of it
 depends on `gtk4`, `objc2`, `windows`, or any other toolkit crate —
 it's plain Rust, generic over whatever payload your backend's native
-events carry, and gated with a compound `#[cfg(any(feature = "gtk", …))]`
-condition, the same way every item in the module already is: adding a
-new backend means adding your backend's own feature to that `any(...)`
-list, not introducing a standalone `your-backend` feature gate (see the
-module doc for why the `cfg`s exist despite there being no toolkit
-dependency to gate).
+events carry.
+
+Each item is nonetheless `#[cfg]`-gated — **on the feature(s) of the
+backends that actually call it today, nothing wider** (see the module doc
+for why the `cfg`s exist at all despite there being no toolkit dependency
+to gate). So the gates are not uniform: `WindowDragArm` is
+`any(feature = "gtk", all(feature = "macos", target_os = "macos"))`
+because both backends use it, while `ModalPumpDepth`/`ModalPumpGuard` are
+plain `feature = "gtk"` — GTK's file-dialog pump is their only adopter so
+far — and `WindowDragArm::{discard, commit_if_past_threshold}` are
+`any(feature = "gtk", test)`, since macOS's `.take()`-only usage never
+calls them.
+
+Adopting a piece therefore means **widening that piece's own gate with
+your backend's feature, in the same commit as the call** — not
+introducing a standalone `your-backend` feature gate, and not leaving the
+gate alone. Skipping the widen is not a warning: with `ci.yml`'s
+workspace-wide `RUSTFLAGS: "-D warnings"`, a `pub(crate)` item with no
+caller under some compiled feature set is a hard `dead_code` **build
+failure** — and one that only appears on a build with *your* feature and
+not `gtk`, which is exactly the combination your own backend's CI job
+runs and the default Linux legs never do (#498 shipped this bug to
+`macos-latest`).
 
 | What | Type | Extracted from | The hazard it solves |
 |---|---|---|---|
