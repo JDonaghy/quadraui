@@ -1095,3 +1095,277 @@ unchanged against the new implementation.
   should sweep them next. They're recorded here as intentionally kept;
   removing them later needs its own issue and its own justification,
   not a re-read of this one.
+
+## D-009 — Minimal error channel for backend authors: `Unsupported` vs `PlatformFailure` vs `SurfaceLost` at frame/event/services seams (issue #507)
+
+### Question
+
+The crate has no error type anywhere in its public API — fallible
+operations use `Option` (`show_file_open_dialog`, `Clipboard::read_text`,
+`Color::from_hex`), `bool` (the four CSD window-chrome methods, "false
+means no-op, not an error" by documented design), or `()` with a silent
+no-op (every `draw_*`; `win/backend.rs`'s still-`todo!()` rasterisers
+abort where a real backend would need to report a device-lost error). A
+Direct2D backend must be able to surface device-lost / swapchain-recreate
+somewhere; today the trait has structurally nowhere for it to go. Does
+quadraui need an error type, and if so, at which trait seams, and what
+does it cost existing call sites?
+
+### Decision
+
+**Yes, a minimal three-variant `BackendError`, added at exactly two
+seams — a polled frame/event error and `PlatformServices`' three
+dialog-ish methods — both additive, neither breaking.** Draw methods
+(`draw_*`) and the four CSD window-chrome `bool` methods stay exactly as
+they are; #492's `BackendCaps` already resolved the "is this a real gap
+or a genuine no-op" question those two areas raise, and re-litigating
+them into `Result` would spend a breaking change on a distinction the
+crate already has a non-breaking answer for. See "Why not
+Result-ify draw_* / the CSD bools" below.
+
+```rust
+/// A backend-reported failure at a frame, event-loop, or
+/// PlatformServices seam. Not used by draw_* (see D-009) or by the
+/// four CSD bool methods (BackendCaps already disambiguates their
+/// N/A case). `Clone`, not `std::error::Error` — `context` is a
+/// short, ungrepped human string for logs/error UI, not a machine-
+/// matched code; backend authors compose it from whatever the native
+/// API gave them (`HRESULT`, `GError`, `errno`) with `format!`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendError {
+    /// This backend has no implementation of the surface being asked
+    /// for. Prefer a `BackendCaps` field where the gap is a whole
+    /// method; reach for this only where the gap is data-dependent
+    /// within a method BackendCaps already declares supported (e.g. a
+    /// `MessageDialogOptions` shape this backend's native dialog API
+    /// can't represent, even though `native_dialogs` is `true`).
+    Unsupported,
+    /// A native call failed for a reason this backend cannot recover
+    /// from inside the current call. `context` names the failing
+    /// native call/API, e.g. `"IDXGISwapChain::Present"`,
+    /// `"GtkFileChooserNative"`, `"CreateNotifyIcon"`.
+    PlatformFailure { context: String },
+    /// The render surface/device was lost mid-frame (D3D
+    /// `DXGI_ERROR_DEVICE_REMOVED`, a destroyed GTK `GdkSurface`, …)
+    /// and must be recreated before the next `begin_frame`. Distinct
+    /// from `PlatformFailure` because callers handle it differently —
+    /// recreate-and-retry, not log-and-continue.
+    SurfaceLost,
+}
+```
+
+**Seam 1 — frame + event loop: a polled `last_error()`, not a
+`Result`-returning `begin_frame`/`end_frame`/`wait_events`.** The
+candidate signatures named in #507 were rejected for cost:
+`begin_frame(&mut self, viewport: Viewport) -> Result<(), BackendError>`
+and `end_frame(&mut self) -> Result<(), BackendError>` would force every
+caller of both (the runtime loop in every one of the four backends, plus
+`vimcode`'s own GTK/TUI draw-cycle call sites) to add `?`/`match`
+handling immediately, for a class of failure
+(`SurfaceLost`) that only Win-GUI can produce today and that the other
+three backends would have to `Ok(())` around forever. `wait_events` is
+worse: it's documented to "never block" beyond `timeout` and return an
+empty `Vec` on timeout — folding "no events" and "the event source
+itself failed" into one `Result<Vec<UiEvent>, BackendError>` return
+means every call site's existing `for event in backend.wait_events(t)`
+loop has to become a `match` before it compiles, for a failure mode
+(TUI: crossterm's terminal FD closing; GTK: none, callback-driven) that
+is vanishingly rare. Instead:
+
+```rust
+/// The most recent BackendError this backend recorded, if any, since
+/// the last time this method was called. Default: always None — a
+/// backend that never sets an internal error field (TUI, GTK today)
+/// answers this exactly like it doesn't exist, at zero cost to
+/// existing callers. A backend that can hit SurfaceLost/PlatformFailure
+/// (Win-GUI, once #21's device-lost recovery lands) sets an internal
+/// field from begin_frame/end_frame/poll_events/wait_events and clears
+/// it here — clear-on-read, matching every other "drain and reset"
+/// method already on this trait (poll_events itself).
+fn last_error(&mut self) -> Option<BackendError> {
+    None
+}
+```
+
+One method, not "a frame one and a separate events one" — `begin_frame`,
+`end_frame`, `poll_events`, and `wait_events` all funnel into the same
+field, because a caller that wants to notice backend trouble at all
+polls once per loop iteration (after `end_frame`, conventionally) and
+doesn't need to know which of the four calls produced it; the `context`
+string inside `PlatformFailure` carries that detail when it matters. A
+default-provided method with a trivial always-`None` body costs existing
+implementors nothing (rule 7's "no default" stance is for primitives
+with real per-backend behavior — this is closer to `read_primary_selection`'s
+already-precedented "most backends have nothing to say here" default).
+Win-GUI is the only backend with a concrete near-term producer
+(`end_frame`'s already-planned device-lost recovery, `backend.rs:179`'s
+"can still be re-created" comment) and overrides it when #507's
+follow-up issue lands that recovery for real.
+
+**Seam 2 — `PlatformServices`: additive `_result` twins, not
+signature changes.** `show_file_open_dialog`, `show_file_save_dialog`,
+and `show_message_dialog` keep their existing `Option<...>` signatures
+(cancel and "no native facility" stay merged there, as documented, and
+`BackendCaps::file_dialogs`/`native_dialogs` remain the way a caller
+tells them apart *before* calling). Each gets a new sibling method with
+a default body that just wraps the old one, so no implementor (in-tree:
+`Tui`/`Gtk`/`Win`/`MacPlatformServices`; out-of-tree: none —
+`PlatformServices` is implemented only by this crate's own backends, per
+`PRIMITIVE_RULES.md` rule 8's consumer table) has to change to keep
+compiling:
+
+```rust
+type ServiceResult<T> = Result<T, BackendError>;
+
+fn show_file_open_dialog_result(&self, opts: FileDialogOptions) -> ServiceResult<Option<PathBuf>> {
+    Ok(self.show_file_open_dialog(opts))
+}
+fn show_file_save_dialog_result(&self, opts: FileDialogOptions) -> ServiceResult<Option<PathBuf>> {
+    Ok(self.show_file_save_dialog(opts))
+}
+fn show_message_dialog_result(&self, opts: MessageDialogOptions) -> ServiceResult<Option<MessageDialogChoice>> {
+    Ok(self.show_message_dialog(opts))
+}
+```
+
+`Ok(None)` is "the user cancelled" (unchanged meaning); `Err(..)` is new
+information no caller could get before. A backend that can tell
+cancel apart from a native API failure (Win-GUI's `IFileOpenDialog::Show`
+returning an `HRESULT` that isn't the user-cancelled code; GTK's
+`GtkFileChooserNative` response codes) overrides the `_result` method
+directly instead of the old one, and now has somewhere to put that
+information. This is rule 2's "new function alongside the old one
+instead of a rename" — the cheapest non-breaking shape on
+`PRIMITIVE_RULES.md`'s list — chosen over rule 3's deprecate-then-remove
+two-PR protocol because there is no removal end-state in view: the
+`Option`-returning methods stay useful for every caller (both
+consumers, today) that only cares about cancel-vs-picked and has no use
+for a failure reason. `Clipboard::read_text` is explicitly **not**
+given this treatment: its `None` already means one thing only ("empty
+or non-text clipboard"; "platform error" was never a real, distinguished
+case any backend actually reports today), so adding a fallible twin
+here would create a channel with nothing to say. Revisit only if a
+backend author hits a concrete clipboard failure that needs surfacing.
+
+### Capability vs. error — the split, made explicit
+
+#492's `BackendCaps` and this decision answer two different questions
+and must not collapse into one:
+
+| Question | Answered by |
+|---|---|
+| "Can this backend do X *at all*, structurally?" (known ahead of the call, doesn't change frame to frame) | `BackendCaps` — `window_chrome`, `pointer_cursor`, `file_dialogs`, `native_dialogs`, `native_menu`, `ime`, `notifications`, `text_selection` |
+| "Did *this specific call* fail, and can I tell why?" (only knowable at call time) | `BackendError` via `last_error()` / the `*_result` `PlatformServices` twins |
+
+`BackendError::Unsupported` exists for the narrow gap between these two
+— a method `BackendCaps` says is supported in general but that can't
+service one particular request (a dialog shape the native API has no
+representation for) — not as a second way to spell "this backend never
+implements X," which is what a `BackendCaps` field of `false` already
+says, mechanically checked by `tests/conformance/caps.rs`. A design
+that reached for `Unsupported` as the general answer would have built a
+second, unchecked capability vocabulary next to the checked one #492
+just finished consolidating from two into one (`BackendCaps`'s own doc
+comment, "This is the *only* capability vocabulary") — the same mistake
+in a new location.
+
+### Why not Result-ify `draw_*` / the CSD `bool` methods
+
+**`draw_*` stays infallible, by the issue's own scoping** ("Draw methods
+stay infallible (record-and-report via `end_frame`/log hook instead)")
+— `last_error()` *is* that log hook: a `draw_*` implementation that hits
+a native failure mid-paint (a Cairo `cr.fill()` error, a Direct2D
+`todo!()`'s eventual real body hitting a lost device) records into the
+same internal field `begin_frame`/`end_frame` use and returns normally,
+so the frame finishes painting whatever it can rather than aborting
+partway through — `last_error()` after `end_frame` tells the caller
+something went wrong without deciding mid-frame which primitive gets to
+abort the other nineteen. Wiring every individual `cr.fill().ok()` /
+`cr.stroke().ok()` call site (`gtk/activity_bar.rs`, `chart.rs`,
+`command_center.rs`, `panel.rs`, `status_bar.rs` — ~25 sites) through
+`last_error()` is real per-call-site work, tracked as its own follow-up
+issue (below), not part of this design pass.
+
+**The four CSD `bool` methods (`begin_window_drag`,
+`toggle_window_maximize`, `begin_window_resize`, `set_cursor`) keep
+their `bool` return, unmigrated.** #507 asked for a migration plan
+("tri-state or caps + bool"); the answer is **caps + bool, already
+shipped, no further migration** — not a new decision, a recognition
+that #492 already closed this. `BackendCaps::window_chrome` /
+`::pointer_cursor` answer "does this backend have window chrome /
+cursor hinting at all" ahead of the call; the `bool` return answers "did
+*this specific* drag-start / resize-start / cursor-set happen" — and for
+these four methods that's a legitimate, common `false`, not a failure:
+`begin_window_resize` returns `false` whenever the click wasn't within
+the resize-edge margin, `set_cursor` per its own doc "callers should
+treat false as a no-op, not an error." There is no third state a real
+backend needs here — a `begin_window_drag` that structurally cannot
+start a drag (no window, no OS drag API) is `window_chrome: false`
+territory, already covered; one where the OS drag call itself errors out
+degrades identically to "the drag didn't start" from the caller's
+perspective, and `vimcode/src/gtk/mod.rs:6834-6849` — the only consumer
+that calls any of these four — already discards every one of these
+`bool` returns outright (it decides whether to *call* `begin_window_drag`
+from its own title-bar hit-test, not from the method's answer). A
+tri-state would add a discriminant no caller reads. If a future backend
+author hits a concrete case where "declined" and "the OS call failed"
+must be told apart, that's grounds to reopen this specific sub-decision
+— it is not blocked by anything else here.
+
+### Follow-up implementation issues (design does not implement)
+
+This is a design decision, not an implementation PR — `BackendError`,
+`Backend::last_error`, and the three `PlatformServices` `_result`
+methods described above do not exist in the tree yet. Filed as
+follow-ups, one seam each, so no single PR mixes "add the type" with
+"wire N call sites":
+
+1. **Add `BackendError` + `Backend::last_error` (default `None`) to
+   `backend.rs`.** No behavior change yet — every existing backend
+   compiles unchanged.
+2. **Win-GUI: wire `end_frame`'s device-lost recovery (`backend.rs:179`,
+   `:189`) through `last_error()`.** The one backend with a concrete
+   near-term producer; also the natural place to replace the
+   `begin_frame`/`end_frame` `todo!()`s' eventual real bodies' failure
+   path.
+3. **`PlatformServices`: add the three `_result` twins + `ServiceResult`
+   alias.** Default bodies wrap the existing methods (zero behavior
+   change); Win-GUI's `services.rs` overrides them with real
+   `HRESULT`-derived `Err` values as its dialogs are implemented.
+4. **GTK: wire the ~25 swallowed `cr.fill().ok()`/`cr.stroke().ok()`
+   call sites (`gtk/activity_bar.rs`, `chart.rs`, `command_center.rs`,
+   `panel.rs`, `status_bar.rs`) through `last_error()`** instead of
+   discarding the `cairo::Error`.
+
+### Sign-off: vimcode's usage survives this shape
+
+Checked against `~/src/vimcode/src` (`coord-tui` has none of these call
+sites — grepped separately, zero hits on every symbol below):
+
+- `show_file_open_dialog` / `show_file_save_dialog` / `show_message_dialog`
+  (`gtk/mod.rs:1327,1340,1372`) — all three keep their current
+  `Option`-returning signatures unchanged; vimcode's `run_pending_file_dialog`
+  / `run_pending_native_dialog` need zero edits. Migrating to the
+  `_result` twins to gain failure detail is optional and later.
+- `begin_window_drag` / `toggle_window_maximize` / `begin_window_resize`
+  / `set_cursor` (`gtk/mod.rs:6774,6834,6839,6849`) — signatures
+  unchanged (this decision, above); vimcode already discards every
+  return value, so there is nothing to migrate, now or later.
+- `Clipboard::read_text` (`tui_main/mod.rs:484`) — untouched; explicitly
+  out of scope (above).
+- `Color::from_hex` — the ~680 `Color::from_hex(...)` hits in
+  `render.rs` (e.g. line 9177) are vimcode's **own** local `Color` type
+  (`render.rs:33`), not `quadraui::Color`; `grep -rn
+  'quadraui::Color::from_hex'` against both consumers is zero hits.
+  Nothing to check here even in principle, and it's out of #507's scope
+  either way — it's a pure value parser, not a frame/event/services
+  seam (`Option` there is a separate, already-tracked panic-audit
+  concern, not this decision's).
+- `wait_events`/`poll_events`/`begin_frame`/`end_frame` — vimcode's GTK
+  runtime doesn't call these directly (Relm4 owns its own event loop
+  per `CLAUDE.md`'s GTK-migration note); the one hit (`gtk/mod.rs`, a
+  doc comment) is prose, not a call site. Nothing to break.
+
+No consumer hit requires any call-site change. `last_error()` and the
+`_result` twins are additive and opt-in; a consumer that never calls
+them observes no difference at all.
