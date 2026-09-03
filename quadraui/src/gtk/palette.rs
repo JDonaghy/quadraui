@@ -87,31 +87,14 @@ pub fn draw_palette(
     const SB_W: f64 = 6.0;
     let content_w = if has_scrollbar { list_w - SB_W } else { list_w };
 
-    // Clamp so the selected item stays visible AND the visible window
-    // stays full when there are enough items above to fill it (mirrors
-    // `tui::draw_palette`).
-    let max_offset = total.saturating_sub(visible_rows);
-    let effective_offset = if visible_rows == 0 {
-        0
-    } else if palette.selected_idx < palette.scroll_offset {
-        palette.selected_idx
-    } else if palette.selected_idx >= palette.scroll_offset + visible_rows {
-        palette.selected_idx + 1 - visible_rows
-    } else {
-        palette.scroll_offset
-    };
-    let effective_offset = effective_offset.min(max_offset);
-
-    // Shallow-clone the palette so we can give `scroll_offset` the
-    // visibility-clamped effective value without mutating the caller.
-    let mut palette_local = palette.clone();
-    palette_local.scroll_offset = effective_offset;
+    // `Palette::layout` keeps the selected item visible internally (see
+    // #711) — no backend-side scroll clamp needed here.
     let query_h = if palette.show_query {
         line_height as f32
     } else {
         0.0
     };
-    let palette_layout = palette_local.layout(
+    let palette_layout = palette.layout(
         w as f32,
         (rows_y + rows_h - y) as f32,
         line_height as f32,
@@ -337,7 +320,7 @@ pub fn draw_palette(
         let thumb_h = (sb_track_h * thumb_ratio).max(8.0);
         let max_scroll = total.saturating_sub(visible_rows) as f64;
         let scroll_frac = if max_scroll > 0.0 {
-            effective_offset as f64 / max_scroll
+            palette_layout.resolved_scroll_offset as f64 / max_scroll
         } else {
             0.0
         };
