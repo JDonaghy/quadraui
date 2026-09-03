@@ -50,7 +50,7 @@
 
 use crate::event::Rect;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
-use crate::types::{Modifiers, WidgetId};
+use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 // ── Data model ───────────────────────────────────────────────────────────────
@@ -71,26 +71,6 @@ pub struct SidebarPanel {
     /// `line_height` GTK / macOS).
     #[serde(default)]
     pub toolbar_height: Option<f32>,
-}
-
-/// Events emitted by a [`SidebarPanel`].
-///
-/// Note the name: backends emit `ToolbarButtonClicked` (not just
-/// `ButtonClicked`) so a host that listens to multiple event sources
-/// doesn't accidentally collide with a content-area button event.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SidebarPanelEvent {
-    /// User clicked an enabled toolbar button in the header slot.
-    ToolbarButtonClicked { id: WidgetId, modifiers: Modifiers },
-    /// User clicked inside the content rect. `content_pos` is in
-    /// **content-local coordinates** (relative to `content_bounds.x` /
-    /// `content_bounds.y`) — hosts can pass it directly to their
-    /// child widget's hit-test.
-    ContentClicked {
-        content_x: f32,
-        content_y: f32,
-        modifiers: Modifiers,
-    },
 }
 
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
@@ -409,25 +389,5 @@ mod tests {
         let json = serde_json::to_string(&panel).unwrap();
         let back: SidebarPanel = serde_json::from_str(&json).unwrap();
         assert_eq!(panel, back);
-    }
-
-    #[test]
-    fn serde_event_roundtrip() {
-        let events = vec![
-            SidebarPanelEvent::ToolbarButtonClicked {
-                id: WidgetId::new("x"),
-                modifiers: Modifiers::default(),
-            },
-            SidebarPanelEvent::ContentClicked {
-                content_x: 1.5,
-                content_y: 2.5,
-                modifiers: Modifiers::default(),
-            },
-        ];
-        for ev in &events {
-            let json = serde_json::to_string(ev).unwrap();
-            let back: SidebarPanelEvent = serde_json::from_str(&json).unwrap();
-            assert_eq!(ev, &back);
-        }
     }
 }

@@ -3,9 +3,10 @@
 //! error reports, and anything else that needs the user to
 //! acknowledge / choose before continuing.
 //!
-//! A `Dialog` is structurally a `Modal` with a fixed layout: title
-//! row + body text + bottom-right-aligned button row. Backends render
-//! it as a centered overlay box.
+//! A `Dialog` is a modal overlay with a fixed layout: title row + body
+//! text + bottom-right-aligned button row. Backends render it as a
+//! centered overlay box; modal-vs-base hit precedence is arbitrated by
+//! [`crate::ModalStack`], not by this primitive.
 //!
 //! # Backend contract
 //!
@@ -34,7 +35,7 @@
 use crate::backend::{MessageDialogButton, MessageDialogOptions};
 use crate::event::Rect;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
-use crate::types::{Color, Modifiers, StyledText, WidgetId};
+use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// A 2-D data table embedded inside a [`Dialog`] body.
@@ -158,7 +159,8 @@ pub struct Dialog {
     ///   the dialog wants an inline action bar (e.g. "Preview / Skip /
     ///   Apply") in addition to the modal OK/Cancel buttons.
     ///
-    /// Apps own the value; events come back through [`DialogEvent`].
+    /// Apps own the value; interactions resolve via [`DialogLayout::hit_test`]
+    /// / [`DialogHit`].
     #[serde(default)]
     pub input: Option<DialogInput>,
 }
@@ -169,8 +171,8 @@ pub enum DialogInput {
     /// Single-line text field (rename prompts, input-required confirms).
     TextInput(DialogTextInput),
     /// Inline horizontal action strip. Backends render this by calling their
-    /// `draw_toolbar` equivalent inside the body slot. Click events are
-    /// returned as [`DialogEvent::BodyToolbarClicked`].
+    /// `draw_toolbar` equivalent inside the body slot. Clicks resolve as
+    /// [`DialogHit::BodyToolbarButton`].
     Toolbar(Toolbar),
 }
 
@@ -214,28 +216,6 @@ pub struct DialogButton {
     /// `None` = theme default.
     #[serde(default)]
     pub tint: Option<Color>,
-}
-
-/// Events a `Dialog` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DialogEvent {
-    /// User clicked a button (or activated via Enter / Escape mapping).
-    ButtonClicked { id: WidgetId },
-    /// The input field's value changed. Fires per keystroke.
-    InputChanged { value: String },
-    /// User pressed Enter inside the input field — apps typically
-    /// treat this like clicking the default button.
-    InputCommitted { value: String },
-    /// User clicked an enabled action button inside a
-    /// [`DialogInput::Toolbar`] body slot.
-    BodyToolbarClicked { id: WidgetId },
-    /// Dialog dismissed without a specific button (click-outside
-    /// where the app allows it). Prefer `ButtonClicked` with the
-    /// cancel button when possible.
-    Cancelled,
-    /// Key pressed while the dialog had focus and the primitive didn't
-    /// consume it.
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -661,18 +641,6 @@ mod tests {
         let json = serde_json::to_string(&input).unwrap();
         let back: DialogInput = serde_json::from_str(&json).unwrap();
         assert_eq!(input, back);
-    }
-
-    // ── DialogEvent::BodyToolbarClicked serde round-trip ──────────────────
-
-    #[test]
-    fn serde_dialog_event_body_toolbar_clicked() {
-        let ev = DialogEvent::BodyToolbarClicked {
-            id: WidgetId::new("preview"),
-        };
-        let json = serde_json::to_string(&ev).unwrap();
-        let back: DialogEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(ev, back);
     }
 
     // ── Toolbar variant creates body_toolbar_layout ───────────────────────

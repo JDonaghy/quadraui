@@ -19,17 +19,17 @@
 //!    [`crate::DualModePaletteController`] so they're searchable by label
 //!    *and* description.
 //!
-//! # Why not [`crate::Modal`]?
+//! # Why not the old `Modal` primitive?
 //!
-//! [`Modal`](crate::Modal) describes backdrop + centered-content geometry
-//! only — there is no `Backend::draw_modal` method, and as of this writing
-//! no backend paints one. Building a real, visible overlay on it today
-//! would require adding and implementing a new trait method first (out of
-//! scope here). [`crate::Panel`] already ships a working chrome rasteriser
-//! on every backend, so the overlay is built on that instead — same
-//! "bordered popup framing app-drawn content" shape Modal's own docs
-//! describe for a cheatsheet, just backed by a primitive that actually
-//! renders.
+//! quadraui used to also ship a `Modal` primitive describing backdrop +
+//! centered-content geometry — but it had no `Backend::draw_modal`
+//! method and no backend ever painted one, so this overlay was built on
+//! [`crate::Panel`] instead, which already ships a working chrome
+//! rasteriser on every backend: same "bordered popup framing app-drawn
+//! content" shape, backed by a primitive that actually renders. `Modal`
+//! itself was deleted as dead API in #509 (zero consumers in-repo or in
+//! either downstream consumer, and no rasteriser ever arrived to give
+//! it one) — see `docs/DECISIONS.md`.
 //!
 //! # Cross-backend portability
 //!
@@ -186,7 +186,7 @@ pub enum HelpOverlayEvent {
 
 /// Cross-backend compose controller for a `?`-triggered cheatsheet
 /// overlay. Wraps a [`Panel`] (chrome) + [`TextDisplay`] (content) —
-/// see the module docs for why not [`crate::Modal`].
+/// see the module docs for why not the old `Modal` primitive.
 ///
 /// Purely a display + open/close state machine: it does not own a
 /// [`HelpRegistry`] itself. Callers pass the current view's [`ViewHelp`]

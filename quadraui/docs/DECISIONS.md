@@ -831,3 +831,239 @@ looking for a second gap list here.
 - It does not promote `draw_context_menu_with_submenus` preemptively.
   That waits on #371 (GTK cascading submenus) so the eventual trait
   method is honest on more than one backend out of four.
+
+## D-008 — Dead-API disposition pass: `modal.rs`, per-primitive `*Event` enums, `FocusGroup`/`FocusRing`, `drop_zone` (issue #509)
+
+### Question
+
+`SMELL_AUDIT_2026-07.md`'s in-repo scan flagged `primitives/modal.rs`,
+13(ish) of 27 `primitives::*Event` enums, `drop_zone.rs`'s non-`DropOverlay`
+half, `FocusGroup` vs. `FocusRing`, and the full terminal split-layout /
+`dispatch_scroll` family as zero-consumer. But that scan only grepped
+this repo — quadraui is a library with two out-of-repo consumers
+(`vimcode`, path-dep on `develop`'s tip; `coord-tui`, git-rev-pinned),
+and "zero in-repo consumers" is not "dead": several of these turned out
+to be exactly the load-bearing API a consumer depends on, which an
+in-repo-only grep can't see. #509 is the gate that actually checked
+`~/src/vimcode/src` and `~/src/coord-tui/src` before deleting anything,
+per this repo's downstream-consumer policy (`CLAUDE.md` → *Downstream
+consumers*).
+
+### Method
+
+For every candidate symbol: `grep -rlw '<symbol>' src examples tests`
+in quadraui (word-boundary — the original audit's plain `grep -l` had
+false positives, e.g. `PanelEvent` substring-matching
+`SidebarPanelEvent`), then the same word-boundary grep against
+`~/src/vimcode/src` and `~/src/coord-tui/src`, then manual inspection
+of each hit — several names (`Modal`, `DropZone`) collided with an
+unrelated local identifier in vimcode's own `core::window` module and
+had to be confirmed as *not* `quadraui::` usages by reading the
+surrounding code, not just counting grep hits.
+
+### Disposition table
+
+**DELETE — zero consumers anywhere, no partial wiring found.** All 14
+removed in this PR (`git log` / diff is the source of truth for exact
+edits): `CompletionsEvent`, `ContextMenuEvent`, `DialogEvent`,
+`DiffViewEvent`, `ModalEvent` (via the `modal.rs` deletion below),
+`PanelEvent`, `ProgressBarEvent`, `RichTextPopupEvent`,
+`SidebarPanelEvent`, `SpinnerEvent`, `SplitEvent`, `ToastEvent`,
+`ToolbarEvent`, `TooltipEvent`, and `MenuBarEvent`. That's 14 non-Modal
+enums plus `ModalEvent`, not the audit's "13" — the audit's own count
+was off by one; the true in-repo-only-referenced set includes
+`MenuBarEvent`, which the audit missed because `event.rs` mentions it
+in a doc comment (`grep -l` counted that as a "file reference" even
+though no code ever constructs `MenuBarEvent::` anything). Each of
+these enums duplicated information a real, actively-used `*Hit` +
+`*Layout` pair on the same primitive already exposes (`PanelHit`,
+`DialogHit`, `ToolbarHit`, `MenuBarHit`, …) — the pattern this codebase
+actually shipped is "app calls `<Primitive>Layout::hit_test`, matches
+on `<Primitive>Hit`, decides what to do," not "backend constructs a
+`<Primitive>Event` and hands it back." None of the 14 had a single
+non-definition, non-`lib.rs`-re-export reference anywhere in quadraui,
+and zero hits in either `vimcode/src` or `coord-tui/src`. Deleted
+alongside each: the enum's own serde-roundtrip test where one existed
+(`DialogEvent`, `SidebarPanelEvent`, `ToolbarEvent`), and doc-comment
+prose that named the deleted variant — rewritten to point at the real
+`*Hit` mechanism instead of just deleting the sentence, so each
+primitive's "Backend contract" doc section stays accurate.
+
+**KEEP, documented as unshipped future wiring — do not delete.** Eight
+enums *are* wired into the canonical [`crate::UiEvent`] contract
+(`event.rs` has a real `UiEvent::Tree(WidgetId, TreeEvent)`-shaped
+variant, not just a doc mention) but no backend anywhere in this repo
+ever constructs that variant: `TreeEvent`, `ListViewEvent`,
+`TabBarEvent`, `StatusBarEvent`, `TerminalEvent`, `TextDisplayEvent`,
+`ChartEvent`, `DataTableEvent`. This is the #473-style "unshipped
+design" case the issue asked to be recorded rather than deleted:
+removing the variant would shrink `UiEvent`'s surface (a real breaking
+change for any exhaustive-ish match, `#[non_exhaustive]`
+notwithstanding) for a primitive whose event-bubbling path a future
+backend author is expected to fill in, not one that was never
+designed. Compare the four enums with genuine, exercised consumers —
+`ActivityBarEvent`, `FormEvent`, `PaletteEvent` (constructed in
+`dispatch.rs`), `PipelineEvent` (constructed in
+`examples/common/pipeline_app.rs`) — proving the `UiEvent::Primitive(id,
+PrimitiveEvent)` bubbling shape does work end-to-end once a backend
+actually wires it; these 8 are the same shape with the wiring half
+done. Follow-up: file an issue when a backend needs one of these eight
+primitives to participate in the `UiEvent` bus (tree/list/tab-bar
+click-to-select routed through `AppLogic::handle` instead of the app
+polling `*Layout::hit_test` itself), rather than leaving this paragraph
+as the only record of intent.
+
+**`primitives/modal.rs` — DELETE (whole file).** `Modal` / `ModalHit` /
+`ModalLayout` / `ModalEvent`: zero consumers outside `lib.rs`'s
+re-export and the module's own tests, zero hits in vimcode or
+coord-tui, and — found independently while fixing the resulting doc
+breakage — `compose/help_layer.rs` had *already* documented working
+around `Modal`'s deadness (`# Why not the old Modal primitive?`: "no
+`Backend::draw_modal` method, and no backend ever painted one," built
+its cheatsheet overlay on `Panel` instead). That in-repo doc predates
+this issue and independently reached the same conclusion `modal.rs`
+was never wired past its own struct + tests, which is stronger
+evidence than the grep alone. Not "given rasterisers + trait method"
+(the PRIMITIVE_RULES.md rule 7 alternative the issue offered) because
+nothing in either consumer or this repo has ever wanted a
+backdrop+centered-box overlay through this specific shape — every real
+modal-ish overlay in this repo (`Dialog`, `Palette`, `ContextMenu`,
+`RichTextPopup`) is its own primitive with its own working rasteriser,
+arbitrated for hit-precedence by [`crate::ModalStack`] (which is a
+*different*, actively-used module — see next paragraph). Deleted the
+`pub mod modal;` declaration, the `lib.rs` re-export, and the
+`lib.rs`-resident `modal_layout_*` / `modal_hit_test_*` tests.
+
+**`modal_stack.rs` (`ModalStack`, `ModalEntry`) — KEEP, not part of the
+above.** The issue's problem statement flagged `ModalEntry` itself as
+zero-external-refs, distinct from the (used) `ModalStack`. Confirmed:
+`ModalEntry` never appears by name in either consumer. But it's the
+return type of `ModalStack::pop_top()`, a real method on a heavily-used
+type (`~/src/vimcode/src/tui_main/mouse.rs`,
+`~/src/vimcode/src/tui_main/render_impl.rs`,
+`~/src/vimcode/src/gtk/mod.rs` all construct/consult
+`quadraui::ModalStack` directly) — a consumer calling `.pop_top()` and
+projecting `.id` / `.bounds` off the result touches `ModalEntry`'s
+fields without ever needing to spell the type name. Same reasoning as
+`TerminalCellSize` below: a struct that's the necessary field/return
+type of a used API isn't dead just because grep can't see a textual
+match for it downstream.
+
+**`primitives/terminal.rs` (`TerminalHit`, `TerminalLayout`,
+`TerminalCellSize`) — KEEP; audit was stale.** These three were flagged
+zero-consumer, but by the time #509 ran, #506 (the immediately prior
+issue on this branch) had already given `Backend::terminal_layout` a
+default trait body that calls `TerminalLayout`/`TerminalHit` for real,
+with both TUI and GTK backends now exercising it
+(`{tui,gtk}::backend.rs`, see D-007's terminal-layout paragraphs above)
+— that's genuine, current in-repo usage, not a doc mention. Zero
+external hits in either consumer, but `TerminalCellSize` is also the
+field type of `TerminalLayout::cell_size`, so it's structurally
+required regardless.
+
+**`TerminalSplitHit` / `TerminalSplitLayout` — KEEP; audit was simply
+wrong for these.** Heavily used in vimcode: `quadraui::TerminalSplitHit`
+appears in `~/src/vimcode/src/render.rs` and
+`~/src/vimcode/src/tui_main/mouse.rs` (bottom-panel split-pane hit
+routing), `quadraui::TerminalSplitLayout` is a field type on vimcode's
+own engine state (`core/engine/mod.rs`) and gets constructed in
+`render.rs`. This is the clearest example in this pass of why the
+external-consumer gate exists: an in-repo-only audit would have deleted
+a type a consumer's core rendering path depends on.
+
+**`dispatch_scroll` / `ScrollSurface` / `SurfaceScrollbar` — KEEP;
+audit was wrong for these too.** All three are constructed extensively
+in vimcode (`tui_main/mouse.rs`, `tui_main/panels.rs`,
+`tui_main/render_impl.rs`, `tui_main/shell_app.rs`, `gtk/mod.rs`,
+`core/engine/mod.rs` all reference `quadraui::{dispatch_scroll,
+ScrollSurface, SurfaceScrollbar}`) as vimcode's primary scroll-dispatch
+mechanism. Zero hits in coord-tui (which doesn't do scroll-surface
+registration at all yet), but one real consumer with heavy production
+use is enough.
+
+**`primitives/drop_zone.rs` — KEEP everything, not just `DropOverlay`.**
+The issue flagged `compute_drop_zone` / `drop_zone_overlay` /
+`DropZone` / `DropZoneKind` / `DropEdge` / `DropGroupRect` as having
+"exactly one internal consumer" (`compose/tab_group.rs`) and zero
+external. Confirmed — but that one internal consumer is
+`TabGroupController`, a real, fully-tested, actively-maintained compose
+helper whose own public methods (`handle_tab_drag_move`,
+`handle_tab_drag_drop`, `drop_zone_at`, `drop_group_rects`) return or
+consume these types directly. `DropOverlay` additionally has a genuine
+external consumer (`quadraui::DropOverlay { .. }` constructed directly
+in `~/src/vimcode/src/tui_main/render_impl.rs` and
+`~/src/vimcode/src/gtk/mod.rs`) but *not* via `drop_zone_overlay()` —
+vimcode builds `DropOverlay` values itself rather than calling the
+helper. None of this is "dead": it's a working internal composition
+layer with one adopted piece (`DropOverlay`) and the rest not yet
+adopted externally, which is a different disposition than "nothing
+anywhere ever calls this." "Zero *external* consumers" is not the bar
+this repo's own downstream policy sets for in-repo library code with a
+real in-repo caller — see `CLAUDE.md`'s distinction between "no
+in-tree use" (free to remove) and everything else (breaking-change
+rules apply). `TabGroupController` itself isn't referenced by name in
+either consumer yet (both have their own hand-rolled tab-drag/drop
+logic — vimcode's is `core::window::DropZone`, a same-named but
+*unrelated* local type, confirmed by reading the call sites, not just
+counting grep hits), so this composition is prototyped-but-not-adopted
+rather than proven-in-production; nothing here changes as a result of
+this pass.
+
+**`compose::focus_group::FocusGroup` vs. `compose::focus_ring::FocusRing`
+— reduced to one cycling implementation, both public types kept.** The
+issue's acceptance bar is "reduced to one implementation." Both types
+have real, distinct in-repo call sites with real, distinct
+requirements: `FocusGroup` backs `sidebar_system.rs` and `tab_group.rs`,
+both of which need index-based cycling over a **dynamically-resized**
+run of anonymous regions (`FocusGroup::set_count` gets called at
+runtime as tab-group panes are added/removed —
+`compose/tab_group.rs`'s `self.focus.set_count(new_n)` call sites are
+not incidental, they're load-bearing) with no natural `WidgetId` to key
+by. `FocusRing` backs `examples/common/form_groups.rs`, which needs
+exactly the opposite: a fixed list of named fields, looked up by the
+`WidgetId` a form hit-test already returns
+(`self.focus.set(id)`/`self.focus.current().cloned()` used directly
+against `Form::focused_field`). Deleting either would force a real
+consumer either to fake `WidgetId`s for anonymous indexed regions, or
+to fake indices for named fields it doesn't have — not a cleanup, a
+regression. Neither type has an external consumer (`FocusGroup`: 0 in
+both; `FocusRing`: 0 in both — `macos/events.rs`'s "SidebarSystem /
+FocusRing" mention is a comment, not a call site), so "merge or delete
+one" from the issue is satisfied by collapsing the *duplicated cycling
+arithmetic* — the actual thing the two module docs admitted was
+duplicated — into one implementation: `FocusRing` is now a thin
+`WidgetId`-keyed wrapper over a `FocusGroup`
+(`compose/focus_ring.rs`), so `FocusGroup::cycle`'s modulo/wrap-around
+logic is the *only* cycling implementation in the crate. `FocusRing`
+preserves its exact prior behaviour — including the one real semantic
+difference from raw `FocusGroup::cycle` (`advance`/`retreat` on a
+*cleared* ring must stay a no-op, whereas `FocusGroup::cycle` on an
+*unfocused* group jumps to the first/last item — `FocusRing`'s wrapper
+guards on `group.active().is_some()` before delegating to preserve
+this) — verified by every pre-existing `focus_ring::tests` case passing
+unchanged against the new implementation.
+
+### What this does NOT mean
+
+- It does not mean "zero in-repo consumers" is a safe signal to delete
+  on by itself, ever again, for this crate. Four separate items in this
+  pass (`TerminalHit`/`TerminalLayout`/`TerminalCellSize`,
+  `TerminalSplitHit`/`TerminalSplitLayout`, `dispatch_scroll` /
+  `ScrollSurface` / `SurfaceScrollbar`, `DropOverlay`) would have been
+  wrongly deleted by the original in-repo-only audit. The gate this
+  issue enforced — grep both `~/src/vimcode/src` and
+  `~/src/coord-tui/src`, then read the surrounding code to rule out
+  same-named-but-unrelated local identifiers — is the actual
+  bar, not a formality.
+- It does not mean every remaining `pub` item with zero external
+  refcount is safe to delete in a future pass without repeating this
+  same two-consumer grep. `~215` other `lib.rs` re-exports the original
+  audit flagged as zero-in-repo-consumer are untouched by #509 — this
+  issue's scope was `modal.rs`, the per-primitive `*Event` enums,
+  `FocusGroup`/`FocusRing`, and `drop_zone.rs` specifically, not the
+  full re-export list.
+- It does not mean the 8 UiEvent-embedded-but-unconstructed enums
+  (`TreeEvent` et al.) are cancelled or that a future cleanup pass
+  should sweep them next. They're recorded here as intentionally kept;
+  removing them later needs its own issue and its own justification,
+  not a re-read of this one.

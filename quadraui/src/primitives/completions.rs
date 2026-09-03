@@ -18,7 +18,7 @@
 //! Tab follow their typical IDE semantics.
 
 use crate::event::Rect;
-use crate::types::{Icon, Modifiers, StyledText, WidgetId};
+use crate::types::{Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a completion popup.
@@ -90,21 +90,6 @@ pub enum CompletionKind {
     Event,
     Operator,
     TypeParameter,
-}
-
-/// Events a `Completions` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CompletionsEvent {
-    /// Selection moved (keyboard or mouse hover).
-    SelectionChanged { idx: usize },
-    /// User confirmed the selected item (Enter, Tab, or click).
-    ItemActivated { idx: usize },
-    /// Popup dismissed (Escape, click outside, typed a character that
-    /// invalidates the list).
-    Cancelled,
-    /// Key passed through — app may use it to filter further or trigger
-    /// signature-help.
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

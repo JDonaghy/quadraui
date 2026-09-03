@@ -13,13 +13,13 @@
 //! # Backend contract
 //!
 //! **Declarative.** Render the menu-bar row with each top-level item
-//! as a clickable label. Click / keyboard-navigation emits
-//! `ItemActivated { idx }`; the app opens a dropdown next to the
-//! item using the returned `hit_regions` position. Keyboard Alt+key
+//! as a clickable label. Click / keyboard-navigation resolves to
+//! [`MenuBarHit::Item`]; the app opens a dropdown next to the item
+//! using the returned `hit_regions` position. Keyboard Alt+key
 //! activates the item whose label starts with that character.
 
 use crate::event::Rect;
-use crate::types::{Modifiers, WidgetId};
+use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a menu bar.
@@ -61,18 +61,6 @@ pub struct MenuBarItem {
     /// helper continue to wire that path independently.
     #[serde(default)]
     pub submenu: Option<Vec<crate::primitives::context_menu::ContextMenuItem>>,
-}
-
-/// Events a `MenuBar` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MenuBarEvent {
-    /// User clicked or Alt-activated a top-level item. App opens the
-    /// corresponding dropdown.
-    ItemActivated { idx: usize },
-    /// User pressed a navigation key while the bar was focused.
-    KeyPressed { key: String, modifiers: Modifiers },
-    /// Menu-bar focus released (Escape or click outside).
-    Cancelled,
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

@@ -14,14 +14,16 @@
 //!
 //! **Modal overlay.** Render as a popup at the computed position;
 //! intercept clicks so they don't fall through to the underlying UI.
-//! Click on action item → `ContextMenuEvent::ItemActivated { id }`;
-//! click outside → `Cancelled`. Keyboard up/down moves `selected_idx`
-//! (skipping separators); Enter activates the selected item; Escape
-//! emits `Cancelled`.
+//! Click on action item activates it (see
+//! [`crate::UiEvent::ContextMenuItemActivated`] for the native-menu
+//! path via [`crate::Backend::show_context_menu`]); click outside
+//! dismisses. Keyboard up/down moves `selected_idx` (skipping
+//! separators); Enter activates the selected item; Escape dismisses
+//! (see [`crate::UiEvent::ContextMenuDismissed`]).
 
 use crate::accelerator::Accelerator;
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, StyledText, WidgetId};
+use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Shared menu-row type, used by both [`ContextMenu`] and (via
@@ -143,25 +145,6 @@ impl ContextMenuItem {
     pub fn is_separator(&self) -> bool {
         self.id.is_none()
     }
-}
-
-/// Events a `ContextMenu` emits.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContextMenuEvent {
-    ItemActivated {
-        id: WidgetId,
-    },
-    SelectionChanged {
-        idx: usize,
-    },
-    /// Menu dismissed by click-outside, Escape, or window change.
-    Cancelled,
-    /// Key pressed while the menu had focus and the primitive didn't
-    /// consume it.
-    KeyPressed {
-        key: String,
-        modifiers: Modifiers,
-    },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

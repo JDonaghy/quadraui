@@ -86,7 +86,7 @@
 //! ```
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, StyledText, WidgetId};
+use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a tooltip.
@@ -168,13 +168,6 @@ pub enum TooltipPlacement {
     Left,
     /// Right of the anchor, vertically centered.
     Right,
-}
-
-/// Events a `Tooltip` emits. Tooltips are non-interactive; events exist
-/// for parity with other primitives but rarely fire.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TooltipEvent {
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

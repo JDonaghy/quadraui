@@ -211,24 +211,23 @@ pub use primitives::command_center::{
 };
 pub use primitives::command_line::CommandLine;
 pub use primitives::completions::{
-    CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsEvent,
-    CompletionsHit, CompletionsLayout, CompletionsPlacement, VisibleCompletion,
+    CompletionItem, CompletionItemMeasure, CompletionKind, Completions, CompletionsHit,
+    CompletionsLayout, CompletionsPlacement, VisibleCompletion,
 };
 pub use primitives::context_menu::{
-    ContextMenu, ContextMenuEvent, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
-    ContextMenuLayout, ContextMenuPlacement, ResolvedContextMenuPlacement, VisibleContextMenuItem,
+    ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
+    ContextMenuPlacement, ResolvedContextMenuPlacement, VisibleContextMenuItem,
 };
 pub use primitives::data_table::{
     Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
     DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
 };
 pub use primitives::dialog::{
-    native_dialog_options, Dialog, DialogButton, DialogEvent, DialogHit, DialogInput, DialogLayout,
+    native_dialog_options, Dialog, DialogButton, DialogHit, DialogInput, DialogLayout,
     DialogMeasure, DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
 };
 pub use primitives::diff_view::{
-    DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewEvent,
-    DiffViewLayout,
+    DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewLayout,
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
@@ -254,15 +253,13 @@ pub use primitives::list::{
     VisibleListItem,
 };
 pub use primitives::menu_bar::{
-    MenuBar, MenuBarEvent, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
-    VisibleMenuBarItem,
+    MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
 };
 pub use primitives::message_list::{MessageList, MessageRow};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_lines, Minimap, MinimapGrid, MinimapHit, MinimapLayout,
     MinimapLine, MinimapSizing, MinimapSpan, SyntaxSpan, VisibleMinimapLine,
 };
-pub use primitives::modal::{Modal, ModalEvent, ModalHit, ModalLayout};
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
     HeaderHit, InlineInput, LayoutMetrics as MsvLayoutMetrics, MultiSectionView,
@@ -274,28 +271,25 @@ pub use primitives::palette::{
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
 pub use primitives::panel::{
-    Panel, PanelAction, PanelEvent, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
+    Panel, PanelAction, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
 };
 pub use primitives::pipeline_view::{
     PipelineEvent, PipelineHit, PipelineStage, PipelineView, PipelineViewLayout,
     PipelineViewMeasure, StageBounds, StageStatus,
 };
 pub use primitives::progress::{
-    ProgressBar, ProgressBarEvent, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
+    ProgressBar, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
 pub use primitives::rich_text_popup::{
-    PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupEvent,
-    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, TextSelection,
-    VisibleRichTextLine,
+    PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupHit,
+    RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
 };
 pub use primitives::scrollbar::{fit_thumb, ScrollAxis, Scrollbar};
 pub use primitives::sidebar_panel::{
-    SidebarPanel, SidebarPanelEvent, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
+    SidebarPanel, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
 };
-pub use primitives::spinner::{Spinner, SpinnerEvent, SpinnerHit, SpinnerLayout, SpinnerMeasure};
-pub use primitives::split::{
-    Split, SplitDirection, SplitEvent, SplitHit, SplitLayout, SplitMeasure,
-};
+pub use primitives::spinner::{Spinner, SpinnerHit, SpinnerLayout, SpinnerMeasure};
+pub use primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};
 pub use primitives::split_tree::{
     SplitTree, SplitTreeDivider, SplitTreeLayout, SplitTreeMeasure,
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
@@ -321,16 +315,16 @@ pub use primitives::text_input::{
     TextInput, TextInputHit, TextInputLayout, TextInputMeasure, VisibleTextInputLine,
 };
 pub use primitives::toast::{
-    ToastAction, ToastCorner, ToastEvent, ToastHit, ToastItem, ToastMeasure, ToastSeverity,
-    ToastStack, ToastStackLayout, VisibleToast,
+    ToastAction, ToastCorner, ToastHit, ToastItem, ToastMeasure, ToastSeverity, ToastStack,
+    ToastStackLayout, VisibleToast,
 };
 pub use primitives::toolbar::{
-    Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarItemKind, ToolbarItemMeasure,
-    ToolbarLayout, VisibleToolbarItem,
+    Toolbar, ToolbarButton, ToolbarHit, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
+    VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
-    ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipEvent, TooltipHit,
-    TooltipLayout, TooltipMeasure, TooltipPlacement,
+    ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,
+    TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
@@ -1368,66 +1362,6 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 200.0, 20.0);
         let layout = bar.layout(bounds, |_| MenuBarItemMeasure::new(50.0));
         assert_eq!(layout.hit_test(100.0, 50.0), MenuBarHit::Outside);
-    }
-
-    // ── Modal primitive tests ─────────────────────────────────────────
-
-    #[test]
-    fn modal_layout_centers_content() {
-        let m = Modal {
-            id: WidgetId::new("m"),
-            content_width: 400,
-            content_height: 300,
-            backdrop_color: None,
-            dismiss_on_backdrop: true,
-        };
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let layout = m.layout(viewport);
-        assert_eq!(layout.backdrop_bounds, viewport);
-        // Centered: x = (800 - 400)/2 = 200; y = (600 - 300)/2 = 150
-        assert_eq!(layout.content_bounds.x, 200.0);
-        assert_eq!(layout.content_bounds.y, 150.0);
-        assert_eq!(layout.content_bounds.width, 400.0);
-        assert_eq!(layout.content_bounds.height, 300.0);
-    }
-
-    #[test]
-    fn modal_hit_test_content_vs_backdrop() {
-        let m = Modal {
-            id: WidgetId::new("m"),
-            content_width: 200,
-            content_height: 100,
-            backdrop_color: None,
-            dismiss_on_backdrop: true,
-        };
-        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
-        let layout = m.layout(viewport);
-        // Click inside content.
-        match layout.hit_test(200.0, 150.0) {
-            ModalHit::Content(id) => assert_eq!(id.as_str(), "m"),
-            _ => panic!("expected Content hit"),
-        }
-        // Click on backdrop.
-        match layout.hit_test(10.0, 10.0) {
-            ModalHit::Backdrop(id) => assert_eq!(id.as_str(), "m"),
-            _ => panic!("expected Backdrop hit"),
-        }
-    }
-
-    #[test]
-    fn modal_content_clamped_to_viewport() {
-        // Requested size bigger than viewport — content should clamp.
-        let m = Modal {
-            id: WidgetId::new("m"),
-            content_width: 2000,
-            content_height: 2000,
-            backdrop_color: None,
-            dismiss_on_backdrop: true,
-        };
-        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
-        let layout = m.layout(viewport);
-        assert_eq!(layout.content_bounds.width, 400.0);
-        assert_eq!(layout.content_bounds.height, 300.0);
     }
 
     // ── Split primitive tests ─────────────────────────────────────────

@@ -11,14 +11,14 @@
 //! # Backend contract
 //!
 //! **Declarative chrome.** Render the title bar (if any) + action
-//! buttons + border; leave `content_bounds` to the app. Clicks on
-//! action buttons emit `PanelEvent::ActionClicked { id }`; clicks on
-//! the title bar emit `TitleBarClicked` (apps may use this for
-//! drag-to-move or focus); clicks on content bounds emit
-//! `ContentClicked` so the app can route further.
+//! buttons + border; leave `content_bounds` to the app. Clicks resolve
+//! via [`PanelLayout::hit_test`] / [`PanelHit`]: action buttons hit
+//! `PanelHit::Action`; the title bar hits `PanelHit::TitleBar` (apps
+//! may use this for drag-to-move or focus); content bounds hit
+//! `PanelHit::Content` so the app can route further.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, StyledText, WidgetId};
+use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a panel's chrome.
@@ -55,21 +55,6 @@ pub struct PanelAction {
     /// True = render as the "active" toggle state (e.g. pinned).
     #[serde(default)]
     pub is_active: bool,
-}
-
-/// Events a `Panel` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PanelEvent {
-    /// User clicked an action button in the title bar.
-    ActionClicked { id: WidgetId },
-    /// User clicked the title bar body (not on an action).
-    TitleBarClicked { id: WidgetId },
-    /// User clicked anywhere in the content area. Apps handle further
-    /// routing.
-    ContentClicked { id: WidgetId },
-    /// Key pressed while the panel had focus and the primitive didn't
-    /// consume it.
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

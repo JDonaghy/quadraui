@@ -20,10 +20,10 @@
 //! `DiffEditability::RightEditable` signals to consumers that the right
 //! pane should accept edits on TUI. Events in this architecture flow
 //! from `AppLogic::handle`, not from rasterisers — the app processes key
-//! input, mutates `DiffView::right`, recomputes hunks, and emits
-//! `DiffViewEvent::RightChanged` itself. Full text-input machinery
-//! (cursor, insertion, deletion) is a follow-up story; on GTK v1 the
-//! right pane remains read-only regardless of this setting.
+//! input, mutates `DiffView::right`, and recomputes hunks itself. Full
+//! text-input machinery (cursor, insertion, deletion) is a follow-up
+//! story; on GTK v1 the right pane remains read-only regardless of this
+//! setting.
 //!
 //! # Distinct from `Editor` with `diff_status`
 //!
@@ -90,20 +90,19 @@ pub enum DiffMode {
 ///
 /// `RightEditable` signals to consumers that the right pane should accept
 /// edits on TUI. Events in this architecture flow from `AppLogic::handle`,
-/// not from rasterisers — the app processes key input and emits
-/// `DiffViewEvent::RightChanged` itself after mutating the right text.
-/// Full text-input machinery (cursor, insertion, deletion) ships in a
-/// follow-up. On GTK v1 this setting is accepted but the right pane
-/// renders read-only.
+/// not from rasterisers — the app processes key input and mutates the
+/// right text itself. Full text-input machinery (cursor, insertion,
+/// deletion) ships in a follow-up. On GTK v1 this setting is accepted but
+/// the right pane renders read-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DiffEditability {
     /// Both panes are read-only (default).
     #[default]
     ReadOnly,
-    /// Right pane accepts edits on TUI; the app emits
-    /// `DiffViewEvent::RightChanged` from `AppLogic::handle` after
-    /// processing each edit key. GTK v1 renders as read-only; full
-    /// editing machinery is a follow-up.
+    /// Right pane accepts edits on TUI; the app mutates
+    /// [`DiffView::right`] from `AppLogic::handle` after processing
+    /// each edit key. GTK v1 renders as read-only; full editing
+    /// machinery is a follow-up.
     RightEditable,
 }
 
@@ -115,27 +114,6 @@ pub enum DiffPane {
     Left,
     /// Right (modified) pane.
     Right,
-}
-
-/// Events emitted by a [`DiffView`] interaction.
-///
-/// Keyboard events are handled by `AppLogic::handle`; these events are
-/// produced when the app logic mutates the view and wants to notify
-/// observers (e.g. a scroll event triggers a parent layout recalculation).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiffViewEvent {
-    /// The scroll position changed.
-    Scrolled { offset: usize },
-    /// The focused pane changed.
-    PaneSwitched { pane: DiffPane },
-    /// Text was copied from the view.
-    Copied { text: String },
-    /// The right pane content changed. The app emits this from
-    /// `AppLogic::handle` after processing an edit key when
-    /// [`DiffEditability::RightEditable`] is set; the payload is the new
-    /// right-pane text (the same value the app should also write back
-    /// into [`DiffView::right`]).
-    RightChanged(String),
 }
 
 /// Layout information returned by `draw_diff_view`.
