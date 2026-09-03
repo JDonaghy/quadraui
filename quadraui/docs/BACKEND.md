@@ -262,7 +262,7 @@ independently of the process).
 | `Scroll` | ✅ | ✅ | ✅ | ✅ | |
 | `DoubleClick` | ✅ | ✅ | ✅ (`MacBackend::fold_double_click`, #486) | ❌ | Win: `WM_*BUTTONDBLCLK` documented as "not dispatched" (`win/events.rs`); Win-GUI milestone in progress, not this issue's scope. |
 | `WindowResized` | ✅ | ✅ | ✅ (`macos/run.rs:560`, #486) | ✅ | |
-| `WindowClose` | N/A (no OS window) | ✅ (this issue — `gtk::run::activate`'s `connect_close_request`) | ❌ | ✅ (`WM_CLOSE`, pre-existing) | Veto mechanism: app returns `Reaction::Exit` to allow, anything else vetoes. macOS wiring is a D-010 follow-up (may fold into #486). |
+| `WindowClose` | N/A (no OS window) | ✅ (this issue — `gtk::run::activate`'s `connect_close_request`) | ❌ | ✅ (`WM_CLOSE`, pre-existing) | Veto mechanism: app returns `Reaction::Exit` to allow, anything else vetoes. macOS wiring is a D-010 follow-up (may fold into #486). The ✅ here is proven end-to-end for `gtk_terminal` only (`examples/common/terminal_app.rs`'s `WindowClose` arm); the rest of `examples/gtk_*` have no opinion on it yet, so their catch-all's `Reaction::Continue` vetoes their own "×" button until D-010 follow-up 5 lands — `gtk::run::window_close_tests` proves the `dispatch_event` funnel itself is correct regardless. |
 | `Accelerator` | ✅ | ✅ | ✅ (`MacBackend::match_keypress`, #486) | ❌ | Win: no accelerator matching wired yet; Win-GUI milestone in progress. |
 | `ClipboardPaste` | ✅ | ✅ | ✅ (`macos/run.rs:266`, #486) | ❌ | Win: not wired yet; Win-GUI milestone in progress. |
 | `TextCopied` | ✅ | ✅ | ❌ | ❌ | Neither macOS nor Win wire a Ctrl-C-with-selection → `TextCopied` path yet. Out of this issue's scope. |

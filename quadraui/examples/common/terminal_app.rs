@@ -270,6 +270,18 @@ impl AppLogic for TerminalApp {
                 ..
             } => return Reaction::Exit,
 
+            // GTK only (quadraui#501): the OS "×" / Alt-F4 / window-manager
+            // close dispatches this before the window is torn down, and an
+            // app that returns anything other than `Exit` implicitly vetoes
+            // it (`gtk::run::activate`'s `connect_close_request`). This demo
+            // has no unsaved-state veto reason, so it just lets the close
+            // proceed — same as pressing Ctrl-Q above. This is also the
+            // default `gtk_smoke.sh` target, but the smoke harness itself
+            // no longer depends on this arm: `schedule_smoke_check` forces
+            // the window shut with `window.destroy()`, which bypasses the
+            // close-request veto entirely.
+            UiEvent::WindowClose => return Reaction::Exit,
+
             // ── Resize ───────────────────────────────────────────────────────
             UiEvent::WindowResized { viewport } => {
                 self.last_viewport = viewport;

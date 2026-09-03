@@ -39,6 +39,14 @@
 pub struct CaseOutcome {
     pub pass: bool,
     pub detail: String,
+    /// Set only by [`CaseOutcome::placeholder`]. A placeholder row
+    /// records a real pass/fail bit like any other row, but the bit
+    /// isn't backed by a native-injection assertion the way every other
+    /// row's is — see `window_close`'s use below. `conformance.rs`'s
+    /// table printer marks these rows distinctly (`pass*` + a footnote)
+    /// so a reader of the matrix can't mistake this cell for a verified
+    /// pass the way a plain `ok()` would otherwise read.
+    pub placeholder: bool,
 }
 
 impl CaseOutcome {
@@ -46,6 +54,20 @@ impl CaseOutcome {
         Self {
             pass: true,
             detail: String::new(),
+            placeholder: false,
+        }
+    }
+
+    /// A row that always reports "pass" because the thing it names
+    /// genuinely can't be asserted at this tier (see call site comment
+    /// for why) — recorded so the row appears in the matrix at all,
+    /// distinctly marked so it isn't read as equivalent to a verified
+    /// `ok()`.
+    fn placeholder(detail: impl Into<String>) -> Self {
+        Self {
+            pass: true,
+            detail: detail.into(),
+            placeholder: true,
         }
     }
 
@@ -53,6 +75,7 @@ impl CaseOutcome {
         Self {
             pass: false,
             detail: detail.into(),
+            placeholder: false,
         }
     }
 }
@@ -114,9 +137,9 @@ pub fn tui_case(row: &str) -> CaseOutcome {
                 key: Key::Named(NamedKey::Enter),
                 ..
             }) => CaseOutcome::ok(),
-            other => {
-                CaseOutcome::fail(format!("expected KeyPressed{{Named(Enter)}}, got {other:?}"))
-            }
+            other => CaseOutcome::fail(format!(
+                "expected KeyPressed{{Named(Enter)}}, got {other:?}"
+            )),
         },
         "mouse_down" => {
             match crossterm_mouse_to_uievent(mouse(MouseEventKind::Down(CtMouseButton::Left), 3, 4))
@@ -130,8 +153,7 @@ pub fn tui_case(row: &str) -> CaseOutcome {
             }
         }
         "mouse_up" => {
-            match crossterm_mouse_to_uievent(mouse(MouseEventKind::Up(CtMouseButton::Left), 3, 4))
-            {
+            match crossterm_mouse_to_uievent(mouse(MouseEventKind::Up(CtMouseButton::Left), 3, 4)) {
                 Some(UiEvent::MouseUp {
                     button: MouseButton::Left,
                     ..
@@ -162,7 +184,9 @@ pub fn tui_case(row: &str) -> CaseOutcome {
                 {
                     CaseOutcome::ok()
                 }
-                other => CaseOutcome::fail(format!("expected [WindowResized{{120x40}}], got {other:?}")),
+                other => {
+                    CaseOutcome::fail(format!("expected [WindowResized{{120x40}}], got {other:?}"))
+                }
             }
         }
         other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
@@ -198,21 +222,19 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
                     key: Key::Named(NamedKey::Enter),
                     ..
                 }) => CaseOutcome::ok(),
-                other => {
-                    CaseOutcome::fail(format!("expected KeyPressed{{Named(Enter)}}, got {other:?}"))
-                }
+                other => CaseOutcome::fail(format!(
+                    "expected KeyPressed{{Named(Enter)}}, got {other:?}"
+                )),
             }
         }
-        "mouse_down" => {
-            match gdk_button_to_mouse_down(1, 3.0, 4.0, gdk::ModifierType::empty()) {
-                UiEvent::MouseDown {
-                    button: MouseButton::Left,
-                    position,
-                    ..
-                } if position.x == 3.0 && position.y == 4.0 => CaseOutcome::ok(),
-                other => CaseOutcome::fail(format!("expected MouseDown at (3,4), got {other:?}")),
-            }
-        }
+        "mouse_down" => match gdk_button_to_mouse_down(1, 3.0, 4.0, gdk::ModifierType::empty()) {
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } if position.x == 3.0 && position.y == 4.0 => CaseOutcome::ok(),
+            other => CaseOutcome::fail(format!("expected MouseDown at (3,4), got {other:?}")),
+        },
         "mouse_up" => match gdk_button_to_mouse_up(1, 3.0, 4.0) {
             UiEvent::MouseUp {
                 button: MouseButton::Left,
@@ -244,7 +266,9 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
             {
                 CaseOutcome::ok()
             }
-            other => CaseOutcome::fail(format!("expected WindowResized{{1920x1080}}, got {other:?}")),
+            other => CaseOutcome::fail(format!(
+                "expected WindowResized{{1920x1080}}, got {other:?}"
+            )),
         },
         "window_close" => {
             // The real `close-request` → `glib::Propagation` signal wiring
@@ -256,9 +280,16 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
             // app's `Reaction` through `EventOutcome` unchanged — that's
             // the veto contract `gtk::run::window_close_tests` (in-crate,
             // `gtk/run.rs`) covers directly with a `GtkDriver`. Recorded
-            // as a pass here so this row appears in the matrix rather than
-            // silently having no C2 entry at all.
-            CaseOutcome::ok()
+            // as a `placeholder()`, not `ok()` (quadraui#501 review), so
+            // this row appears in the matrix rather than silently having
+            // no C2 entry at all, but the printed table still marks it
+            // as unverified-at-this-tier rather than reading identically
+            // to a real assertion.
+            CaseOutcome::placeholder(
+                "no live-window assertion at this tier — see gtk::run::window_close_tests \
+                 (dispatch_event pass-through) and the C4 live-window smoke tier for the \
+                 real close-request/veto coverage",
+            )
         }
         other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
     }

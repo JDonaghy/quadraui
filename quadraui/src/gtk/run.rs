@@ -559,7 +559,17 @@ fn activate<A: AppLogic + 'static>(
                     EventOutcome::Continue => {}
                     EventOutcome::Redraw => needs_redraw = true,
                     EventOutcome::Exit => {
-                        window_for_close.close();
+                        // `destroy()`, not `close()` (quadraui#501
+                        // review — same fix as `GtkSink::request_exit`):
+                        // this `Exit` came from the app's own handling
+                        // of a click/drag event, not from the OS
+                        // close-request signal, so re-routing it through
+                        // `close()` would emit `close-request` and
+                        // re-dispatch a synthetic `WindowClose` the app
+                        // never asked about — vetoing its own exit for
+                        // any app with no `WindowClose` opinion (the
+                        // unhandled catch-all default).
+                        window_for_close.destroy();
                         return;
                     }
                 }
@@ -685,7 +695,17 @@ fn activate<A: AppLogic + 'static>(
                     EventOutcome::Continue => {}
                     EventOutcome::Redraw => needs_redraw = true,
                     EventOutcome::Exit => {
-                        window_for_close.close();
+                        // `destroy()`, not `close()` (quadraui#501
+                        // review — same fix as `GtkSink::request_exit`):
+                        // this `Exit` came from the app's own handling
+                        // of a click/drag event, not from the OS
+                        // close-request signal, so re-routing it through
+                        // `close()` would emit `close-request` and
+                        // re-dispatch a synthetic `WindowClose` the app
+                        // never asked about — vetoing its own exit for
+                        // any app with no `WindowClose` opinion (the
+                        // unhandled catch-all default).
+                        window_for_close.destroy();
                         return;
                     }
                 }
@@ -849,6 +869,23 @@ fn activate<A: AppLogic + 'static>(
     // implicitly vetoes the close. Never route this outcome through
     // `apply_event_outcome`/`request_exit`: that calls `window.close()`,
     // which would re-enter this same `close-request` handler.
+    //
+    // That re-entrancy hazard cuts the other way too, and *did* bite
+    // (quadraui#501 review): `GtkSink::request_exit` — the target of
+    // every *other* `Reaction::Exit`/`EventOutcome::Exit` in this file,
+    // e.g. an app's own "press q to quit" key handler — used to call
+    // `window.close()` as well. Once this handler existed, that
+    // `close()` re-entered it as a *second*, synthetic `WindowClose`
+    // dispatch the app never asked for; an app with no `WindowClose`
+    // opinion (the unhandled-catch-all default, true of every existing
+    // example) would veto its own already-decided exit. Same trap
+    // caught `schedule_smoke_check`'s forced-close-after-timeout, which
+    // needs to close the window unconditionally regardless of what the
+    // app returns. Both now call `window.destroy()` instead of
+    // `window.close()` — `destroy()` tears the window down directly
+    // without emitting `close-request`, so it cannot loop back through
+    // this veto. Only a real external close request (OS "×" / Alt-F4 /
+    // window manager) should ever reach this handler.
     {
         let backend = backend.clone();
         let app = app.clone();
@@ -1003,7 +1040,20 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
             }
         }
 
-        window.close();
+        // `destroy()`, not `close()` (quadraui#501 review): this forced
+        // close must happen unconditionally, regardless of what (if
+        // anything) the app's `WindowClose` handler returns — that's
+        // the whole point of a headless timeout. `close()` would emit
+        // `close-request` and run straight into the veto handler
+        // installed above in `activate`; an unattended `xvfb-run`
+        // invocation against any example with no `WindowClose` opinion
+        // (the unhandled-catch-all default, true of every example in
+        // this repo today) would then hang forever instead of exiting
+        // — exactly the failure mode this smoke check exists to
+        // prevent. `destroy()` tears the window down directly without
+        // emitting `close-request`, so the timeout always actually
+        // fires.
+        window.destroy();
     });
 }
 
@@ -1022,7 +1072,20 @@ impl ReactionSink for GtkSink<'_> {
         self.da.queue_draw();
     }
     fn request_exit(&self) {
-        self.window.close();
+        // `destroy()`, not `close()` (quadraui#501 review): the app has
+        // already decided to exit — via whatever event produced this
+        // `Reaction::Exit`/`EventOutcome::Exit`, e.g. a "press q to
+        // quit" key handler, not necessarily `WindowClose` at all. If
+        // this called `close()` it would emit GTK's `close-request`
+        // signal, re-entering the veto handler installed in `activate`
+        // (see its "Window close" comment block) as a brand-new,
+        // synthetic `WindowClose` dispatch. An app with no opinion on
+        // `WindowClose` — the unhandled catch-all default, true of
+        // every example in this repo — would then veto the exit it
+        // itself just asked for. `destroy()` tears the window down
+        // directly without emitting `close-request`, so a
+        // programmatic exit always actually exits.
+        self.window.destroy();
     }
 }
 
