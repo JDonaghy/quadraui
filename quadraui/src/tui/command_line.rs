@@ -20,7 +20,19 @@ pub fn tui_command_line_layout(cmd: &CommandLine, area: Rect) -> CommandLineLayo
     cmd.layout(rect, CommandLineMeasure::new(1.0))
 }
 
-pub fn draw_command_line(buf: &mut Buffer, area: Rect, cmd: &CommandLine, theme: &Theme) {
+/// Paint `cmd` into `buf` at `area` and return the [`CommandLineLayout`]
+/// used to place its glyphs — the same value `tui_command_line_layout`
+/// would compute, handed back so callers (and tests) never have to
+/// re-derive it and risk it drifting from what was actually painted
+/// (issue #705 review: the paint/click round-trip test below reads this
+/// back instead of asserting a formula in isolation).
+pub fn draw_command_line(
+    buf: &mut Buffer,
+    area: Rect,
+    cmd: &CommandLine,
+    theme: &Theme,
+) -> CommandLineLayout {
+    let layout = tui_command_line_layout(cmd, area);
     let fg = ratatui_color(theme.command_line_fg);
     let bg = ratatui_color(theme.command_line_bg);
 
@@ -29,7 +41,7 @@ pub fn draw_command_line(buf: &mut Buffer, area: Rect, cmd: &CommandLine, theme:
     }
 
     if cmd.text.is_empty() {
-        return;
+        return layout;
     }
 
     if cmd.right_align {
@@ -62,6 +74,8 @@ pub fn draw_command_line(buf: &mut Buffer, area: Rect, cmd: &CommandLine, theme:
             cell.set_fg(old_bg).set_bg(old_fg);
         }
     }
+
+    layout
 }
 
 #[cfg(test)]
@@ -92,24 +106,52 @@ mod tests {
         draw_command_line(&mut buf, Rect::new(0, 0, 20, 1), &cmd, &theme);
     }
 
-    /// #505: a LOCAL/ABSOLUTE mixup is invisible at `area.x == 0`, so
-    /// `tui_command_line_layout`'s hit test must be exercised at a
-    /// nonzero origin too — `hit_test` should ignore clicks left of the
-    /// bar and map columns starting at `area.x`, not `0`.
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    /// Paint/click round-trip (`docs/TESTING.md` coverage-taxonomy row 1):
+    /// paint via the real `draw_command_line` rasteriser, read back the
+    /// actual painted cell character from the `Buffer`, then hit_test
+    /// that exact painted coordinate and assert it resolves to that
+    /// character's byte offset. Unlike a test that calls
+    /// `tui_command_line_layout` in isolation and checks formula-predicted
+    /// x-positions, this catches `draw_command_line`'s glyph placement
+    /// drifting away from `CommandLine::layout`'s column formula (e.g. a
+    /// future prompt gutter added to one but not the other) — see #705
+    /// review.
+    ///
+    /// #505: a LOCAL/ABSOLUTE mixup is invisible at `area.x == 0`, so this
+    /// is exercised at a nonzero origin too — `hit_test` should ignore
+    /// clicks left of the bar and map columns starting at `area.x`, not
+    /// `0`.
     #[test]
-    fn tui_command_line_layout_hit_test_at_nonzero_origin() {
+    fn tui_command_line_paint_and_click_round_trip_at_nonzero_origin() {
+        let area = Rect::new(5, 3, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
         let cmd = CommandLine {
             id: WidgetId::new("cmdline"),
             text: ":wq".into(),
             cursor_offset: None,
             right_align: false,
         };
-        let layout = tui_command_line_layout(&cmd, Rect::new(5, 3, 20, 1));
+
+        let layout = draw_command_line(&mut buf, area, &cmd, &theme);
+
+        // Column 0 (':') is actually painted at the absolute origin.
+        assert_eq!(cell_char(&buf, 5, 3), ':');
+        // Column 1 ('w') is actually painted one cell to the right.
+        assert_eq!(cell_char(&buf, 6, 3), 'w');
+
+        // hit_test at the real painted position of 'w' (a click lands
+        // somewhere inside the cell, not necessarily at its left edge)
+        // must resolve to 'w's byte offset (1) in ":wq".
+        assert_eq!(layout.hit_test(6.5), 1);
+
         // A click left of the bar clamps to the first column's byte offset.
         assert_eq!(layout.hit_test(0.0), 0);
         // Column 0 starts at x == area.x == 5.
         assert_eq!(layout.hit_test(5.0), 0);
-        // Column 1 ('w') starts at x == 6.
-        assert_eq!(layout.hit_test(6.5), 1);
     }
 }
