@@ -15,14 +15,37 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
+use crate::primitives::list::{ListView, ListViewLayout};
 use crate::theme::Theme;
 use crate::types::{Color, Decoration};
 
 /// Compute the layout the macOS rasteriser would produce for `list`
-/// at `(w, h)` and `line_height`. Hosts and tests call this to drive
+/// at `(w, h)` and `line_height`, including the horizontal-scrollbar
+/// row reservation (#712). Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch. Title (if any) takes
 /// one `line_height` strip; items use the same.
+///
+/// The reservation math lives in
+/// [`crate::primitives::layout_metrics::list_layout`] — shared with
+/// `gtk_list_layout` so both backends reserve identically. `draw_list`
+/// calls this exact function (with its own live-measured `char_width`)
+/// instead of recomputing a second layout at paint time, so paint and
+/// no-paint hit-testing can never drift apart (`PRIMITIVE_RULES.md`
+/// rule 5). Before #712, `draw_list` recomputed independently and this
+/// function had no `char_width` parameter at all, so it could not
+/// compute the reservation — `Backend::list_layout` was one row taller
+/// than what was actually painted whenever `max_content_width` forced a
+/// scrollbar.
+///
+/// `char_width` is used only for the h-scrollbar-overflow threshold
+/// check (`ListView::max_content_width` is in character columns); pass
+/// [`crate::Backend::char_width`]'s cached value when no live `CTFont`
+/// measurement is available — the same approximation
+/// `MacBackend::list_hscrollbar` already uses for this exact check.
+///
+/// macOS does not support [`ListView::bordered`] yet (see this module's
+/// "Scope omissions"), so the border inset passed to the shared fn is
+/// always `0.0`.
 ///
 /// Coordinate frame: `visible_items.bounds`, `title_bounds`, and
 /// `hit_regions` are in **list-local** coords (origin at 0, 0),
@@ -38,15 +61,9 @@ pub fn mac_list_layout(
     w: f64,
     h: f64,
     line_height: f64,
+    char_width: f64,
 ) -> ListViewLayout {
-    let title_h = if list.title.is_some() {
-        line_height as f32
-    } else {
-        0.0
-    };
-    list.layout(w as f32, h as f32, title_h, |_| {
-        ListItemMeasure::new(line_height as f32)
-    })
+    crate::primitives::layout_metrics::list_layout(list, w, h, line_height, char_width, 0.0)
 }
 
 /// Draw a [`ListView`] into `(x, y, w, h)` on `ctx`. Returns the same
@@ -70,40 +87,31 @@ pub unsafe fn draw_list(
     theme: &Theme,
     line_height: f64,
 ) -> ListViewLayout {
-    if w <= 0.0 || h <= 0.0 {
-        return mac_list_layout(list, x, y, w.max(0.0), h.max(0.0), line_height);
-    }
-
-    // Measure a reference glyph for char-to-pixel conversion.  `h_scroll` is
-    // expressed in character columns (matching TUI cells); macOS works in
-    // pixels, so we multiply by `char_w` before offsetting cursor positions.
+    // Measure a reference glyph for char-to-pixel conversion up front —
+    // `mac_list_layout` needs it for the h-scrollbar-overflow threshold
+    // check, and `h_off_px` below reuses the same measurement. `h_scroll`
+    // is expressed in character columns (matching TUI cells); macOS
+    // works in pixels, so we multiply by `char_w` before offsetting
+    // cursor positions.
     let (char_w, _) = measure_text(font, "M");
     let char_w = char_w.max(1.0);
+
+    if w <= 0.0 || h <= 0.0 {
+        return mac_list_layout(list, x, y, w.max(0.0), h.max(0.0), line_height, char_w);
+    }
+
     let h_off_px = list.h_scroll as f64 * char_w;
 
-    // Reserve the bottom row for a horizontal scrollbar when content overflows,
-    // matching the TUI rasteriser's `viewport_h` reduction.
+    // #712: `mac_list_layout` is the single source of truth for the
+    // h-scrollbar row reservation — no separate recompute here. Before
+    // #712 this branched on a locally-recomputed `needs_hscrollbar` and
+    // called `list.layout` a second time with a reduced height, which
+    // `Backend::list_layout` (routed through `mac_list_layout` alone)
+    // had no way to reproduce.
     let needs_hscrollbar = list
         .max_content_width
         .is_some_and(|n| n as f64 * char_w > w);
-    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
-
-    // Recompute layout with reduced height when a scrollbar will be shown.
-    let layout = if needs_hscrollbar {
-        let title_h = if list.title.is_some() {
-            line_height as f32
-        } else {
-            0.0
-        };
-        list.layout(
-            w as f32,
-            (h - hscrollbar_h).max(0.0) as f32,
-            title_h,
-            |_| ListItemMeasure::new(line_height as f32),
-        )
-    } else {
-        mac_list_layout(list, x, y, w, h, line_height)
-    };
+    let layout = mac_list_layout(list, x, y, w, h, line_height, char_w);
 
     CGContextSaveGState(ctx);
     // Clip to the list rect so right-aligned detail / scroll-overflow
@@ -367,10 +375,14 @@ mod tests {
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_list(QRect::new(0.0, 0.0, W as f32, H as f32), list);
-            let l =
-                super::mac_list_layout(list, 0.0, 0.0, W as f64, H as f64, b.line_height() as f64);
+            b.draw_list(rect, list);
+            // Go through `Backend::list_layout` — the same no-paint
+            // resolver a click router calls — rather than the raw
+            // `mac_list_layout` free fn, so this fixture doubles as
+            // coverage that the trait method agrees with `draw_list`.
+            let l = b.list_layout(rect, list);
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
@@ -472,7 +484,7 @@ mod tests {
         // a header / search input.
         let area_x: f64 = 0.0;
         let area_y: f64 = 60.0;
-        let layout = mac_list_layout(&list, area_x, area_y, W as f64, H as f64, 16.0);
+        let layout = mac_list_layout(&list, area_x, area_y, W as f64, H as f64, 16.0, 8.0);
         // Locality: title_bounds.y must be 0, not 60.
         let tb = layout.title_bounds.expect("title present");
         assert_eq!(
@@ -513,5 +525,57 @@ mod tests {
         let cx = last.bounds.x + last.bounds.width * 0.5;
         let below_y = last.bounds.y + last.bounds.height + 4.0;
         assert_eq!(layout.hit_test(cx, below_y), ListViewHit::Empty);
+    }
+
+    /// Regression for #712: before this fix, `mac_list_layout` had no
+    /// `char_width` parameter and so could not compute the h-scrollbar
+    /// reservation at all, while `draw_list` recomputed a *second*,
+    /// reduced-height layout only at paint time. That meant
+    /// `Backend::list_layout` (routed through `mac_list_layout` alone)
+    /// was one row taller than what `draw_list` actually painted
+    /// whenever `max_content_width` forced a scrollbar — a click router
+    /// driven purely by `list_layout` would mis-resolve the bottom row.
+    ///
+    /// Force that overflow and assert the no-paint `Backend::list_layout`
+    /// call agrees byte-for-byte with the layout `draw_list` resolved
+    /// internally while painting (`paint_via_backend` itself now goes
+    /// through `Backend::list_layout`, so this also proves the trait
+    /// method and `draw_list` never drift apart), and that the
+    /// reservation actually took effect.
+    #[test]
+    fn hscrollbar_reservation_matches_layout_and_paint() {
+        let mut list = sample_list();
+        // Wide enough (in chars) that, multiplied by any plausible char
+        // width, it overflows the W-px viewport and forces a scrollbar.
+        list.max_content_width = Some(1000);
+
+        let (_surface, painted_layout) = paint_via_backend(&list);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let no_paint_layout =
+            Backend::list_layout(&backend, QRect::new(0.0, 0.0, W as f32, H as f32), &list);
+
+        assert_eq!(
+            no_paint_layout, painted_layout,
+            "Backend::list_layout must equal the layout draw_list actually \
+             painted once an h-scrollbar row is reserved"
+        );
+
+        // Sanity: the scrollbar really was reserved — the last visible
+        // row must stop at or before the reserved bottom row's top edge,
+        // not fill the full H-px viewport as it would if the reservation
+        // were silently dropped.
+        let last = no_paint_layout
+            .visible_items
+            .last()
+            .expect("at least one row visible");
+        assert!(
+            last.bounds.y + last.bounds.height <= H as f32 - backend.line_height(),
+            "content must stop before the reserved h-scrollbar row: \
+             last row bottom = {}, viewport H = {H}, line_height = {}",
+            last.bounds.y + last.bounds.height,
+            backend.line_height(),
+        );
     }
 }

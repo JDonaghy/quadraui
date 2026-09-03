@@ -19,6 +19,20 @@
 //! contract this issue depends on; a follow-up can round the corners.
 //! Nerd-Font icon glyphs are not distinguished from ASCII fallbacks —
 //! see `win::tree`'s module doc for why.
+//!
+//! # Known gap: no horizontal scrollbar (#712)
+//!
+//! Unlike `gtk_list_layout` / `mac_list_layout`, [`win_list_layout`]
+//! takes no `char_width` and never reserves a bottom row for an
+//! h-scrollbar, and [`draw_list`] never paints one — `ListView::h_scroll`
+//! / `max_content_width` are silently ignored for layout purposes on
+//! this backend (only `h_scroll`'s pixel cursor shift is honoured, for
+//! text already scrolled by an app that has no other way to move the
+//! viewport). This is a real feature gap, not the #712 measure-vs-paint
+//! drift GTK and macOS had: there is nothing here to disagree with
+//! itself. Track closing it as its own follow-up rather than folding it
+//! into #712's fix, so a future PR doesn't accidentally claim Windows'
+//! h-scrollbar support already matches the other two backends.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 

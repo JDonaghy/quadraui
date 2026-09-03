@@ -13,7 +13,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, rounded_rect_path};
-use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
+use crate::primitives::list::{ListView, ListViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
@@ -23,6 +23,11 @@ use crate::types::Decoration;
 /// `draw_list` calls this exact function (with its own live-measured
 /// `char_width`) so paint and no-paint hit-testing can never drift apart
 /// (`PRIMITIVE_RULES.md` rule 5).
+///
+/// The reservation math itself lives in
+/// [`crate::primitives::layout_metrics::list_layout`] (#712) — shared
+/// with `mac_list_layout` so both backends reserve the h-scrollbar row
+/// identically instead of each carrying its own copy that can drift.
 ///
 /// `char_width` is used only for the h-scrollbar-overflow threshold check
 /// (`ListView::max_content_width` is in character columns); pass
@@ -43,21 +48,14 @@ pub fn gtk_list_layout(
     char_width: f64,
 ) -> ListViewLayout {
     let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
-    let visible_px = (w - border_inset * 2.0).max(0.0);
-    let needs_hscrollbar = list
-        .max_content_width
-        .is_some_and(|n| n as f64 * char_width > visible_px);
-    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
-    let title_h = if list.title.is_some() {
-        line_height as f32
-    } else {
-        0.0
-    };
-    let layout_w = (w - border_inset * 2.0) as f32;
-    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
-    list.layout(layout_w, layout_h, title_h, |_| {
-        ListItemMeasure::new(line_height as f32)
-    })
+    crate::primitives::layout_metrics::list_layout(
+        list,
+        w,
+        h,
+        line_height,
+        char_width,
+        border_inset,
+    )
 }
 
 /// Draw a [`ListView`] into `(x, y, w, h)` on `cr`.
