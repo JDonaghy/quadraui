@@ -67,7 +67,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{Backend, EditorPaintResult, PlatformServices};
+use crate::backend::{Backend, EditorPaintResult, PlatformServices, PointerShape};
 use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
@@ -133,7 +133,10 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, LoadCursorW, SetCursor, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
+    IDC_SIZEWE,
+};
 
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
@@ -266,6 +269,17 @@ pub struct WinBackend {
     /// Defaults to `11.0`, matching GTK's default.
     #[cfg(target_os = "windows")]
     editor_font_size_pt: f32,
+    /// The `PointerShape` [`Backend::set_cursor`] last applied — read back
+    /// by `win::run`'s `WM_SETCURSOR` handler (#702) so the pointer glyph
+    /// stays put across every `WM_SETCURSOR` Windows sends for the
+    /// client area (on every mouse move, not just the ones that also
+    /// deliver `WM_MOUSEMOVE`), instead of snapping back to the window
+    /// class's `IDC_ARROW` the instant `DefWindowProcW` would otherwise
+    /// handle it. Not `cfg`-gated like `surface`/`dwrite` above: the enum
+    /// itself is a plain, portable value with no WinAPI dependency, and
+    /// [`Backend::set_cursor`] (below) always records it regardless of
+    /// host — only *applying* it via `SetCursor` is Windows-only.
+    current_pointer_shape: PointerShape,
 }
 
 impl WinBackend {
@@ -292,6 +306,7 @@ impl WinBackend {
             editor_font_family: DEFAULT_EDITOR_FONT_FAMILY.to_string(),
             #[cfg(target_os = "windows")]
             editor_font_size_pt: 11.0,
+            current_pointer_shape: PointerShape::Default,
         }
     }
 
@@ -545,6 +560,25 @@ impl WinBackend {
         }
         None
     }
+
+    /// Re-apply `current_pointer_shape` via `SetCursor`/`LoadCursorW`
+    /// (#702). Called both by [`Backend::set_cursor`] (an app-driven
+    /// change) and by `win::run`'s `WM_SETCURSOR` handler (Windows
+    /// re-asking "what cursor belongs here?" on every mouse move over the
+    /// client area) — see `current_pointer_shape`'s field doc for why
+    /// both call sites need to exist.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn apply_current_cursor(&self) {
+        unsafe {
+            let _ = SetCursor(
+                LoadCursorW(
+                    None,
+                    pointer_shape_to_win32_cursor(self.current_pointer_shape),
+                )
+                .ok(),
+            );
+        }
+    }
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
@@ -557,6 +591,42 @@ impl WinBackend {
 #[cfg(target_os = "windows")]
 fn dpi_scale_for_window(hwnd: HWND) -> f32 {
     crate::win::msg::dpi_ratio(unsafe { GetDpiForWindow(hwnd) })
+}
+
+/// Map a [`PointerShape`] to the Win32 `IDC_*` cursor-resource `PCWSTR`
+/// [`LoadCursorW`] expects (#702, adopting `desktop::ALL_RESIZE_EDGES`/
+/// `desktop::all_pointer_shapes` — see
+/// `pointer_shape_to_win32_cursor_maps_every_variant` below).
+///
+/// Win32's stock cursor set has no *separate* NE-only vs. SW-only (resp.
+/// NW-only vs. SE-only) diagonal-resize glyph the way GTK's CSS keyword
+/// set does (`"ne-resize"` and `"sw-resize"` are visually identical but
+/// distinct keywords there) — `IDC_SIZENESW`/`IDC_SIZENWSE` are each a
+/// single double-headed arrow already shared between its two opposite
+/// corners at the OS resource level, unrelated to AppKit's *complete
+/// absence* of a public diagonal-resize cursor (see
+/// `MacBackend::mac_cursor_for_shape`'s doc comment, a different and
+/// more severe gap this backend doesn't have). Every
+/// [`crate::backend::ResizeEdge`] variant below still gets a
+/// direction-correct cursor; only the specific `IDC_*` resource is
+/// shared per diagonal, matching how the double-headed arrow looks
+/// identical from either end.
+#[cfg(target_os = "windows")]
+fn pointer_shape_to_win32_cursor(shape: PointerShape) -> windows::core::PCWSTR {
+    use crate::backend::ResizeEdge;
+    match shape {
+        PointerShape::Default => IDC_ARROW,
+        PointerShape::Resize(ResizeEdge::North) | PointerShape::Resize(ResizeEdge::South) => {
+            IDC_SIZENS
+        }
+        PointerShape::Resize(ResizeEdge::East) | PointerShape::Resize(ResizeEdge::West) => {
+            IDC_SIZEWE
+        }
+        PointerShape::Resize(ResizeEdge::NorthEast)
+        | PointerShape::Resize(ResizeEdge::SouthWest) => IDC_SIZENESW,
+        PointerShape::Resize(ResizeEdge::NorthWest)
+        | PointerShape::Resize(ResizeEdge::SouthEast) => IDC_SIZENWSE,
+    }
 }
 
 impl Default for WinBackend {
@@ -703,6 +773,36 @@ impl Backend for WinBackend {
         &self.services
     }
 
+    // ─── Cursor ───────────────────────────────────────────────────────
+
+    /// #702: maps `shape` onto a `SetCursor(LoadCursorW(..))` call via
+    /// [`pointer_shape_to_win32_cursor`] and records it in
+    /// `current_pointer_shape` so `win::run`'s `WM_SETCURSOR` handler can
+    /// keep re-applying the same shape for as long as the pointer stays
+    /// over the client area — see that field's doc comment for why a
+    /// one-shot `SetCursor` call here isn't enough on its own. Always
+    /// records the shape (portable, no WinAPI dependency); only the
+    /// `SetCursor` call itself is Windows-only, mirroring every other
+    /// `#[cfg(target_os = "windows")]` split in this file.
+    fn set_cursor(&mut self, shape: PointerShape) -> bool {
+        self.current_pointer_shape = shape;
+        #[cfg(target_os = "windows")]
+        {
+            if self.hwnd.is_none() {
+                // No window yet — matches `GtkBackend::set_cursor`'s
+                // and `MacBackend::set_cursor`'s identical no-window
+                // no-op posture.
+                return false;
+            }
+            self.apply_current_cursor();
+            true
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
     // ─── Capability declaration ──────────────────────────────────────────
 
     /// quadraui#492: honest, not aspirational. #19 landed the window +
@@ -725,25 +825,38 @@ impl Backend for WinBackend {
     /// taxonomy). Flip these once the rasterisers they'd actually be
     /// clicking on land.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
-        // Only mutated under `cfg(target_os = "windows")` below — `mut`
-        // would otherwise warn as unused on every other host, same
-        // `cfg_attr` pattern `win::msg` uses for its host-independent
-        // helpers.
-        #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
-        let mut caps = crate::backend::BackendCaps::empty();
-        // #23: file dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
-        // notifications (`Shell_NotifyIconW`) go through COM/Shell APIs
-        // independent of the Direct2D rasteriser work above — unlike
-        // `mouse`/`scroll`/`drag`, there is no unfinished rasteriser
-        // gating these on, so they're honestly `true` on Windows itself.
-        // `native_dialogs` (message/alert dialogs) stays unset — that's
-        // still a `None`-returning stub pending quadraui#666.
+        // A genuine struct literal (not `let mut caps = ...; caps.field =
+        // true;`), matching every other backend's `backend_caps` shape —
+        // `tests/conformance/caps.rs`'s `BackendSource::declared` parses
+        // this method's source for `<field>: true,` lines, so an
+        // assignment-statement form would silently parse as declaring
+        // nothing (#702 review-fix note).
         #[cfg(target_os = "windows")]
         {
-            caps.file_dialogs = true;
-            caps.notifications = true;
+            // #23: file dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
+            // notifications (`Shell_NotifyIconW`) go through COM/Shell
+            // APIs independent of the Direct2D rasteriser work above —
+            // unlike `mouse`/`scroll`/`drag`, there is no unfinished
+            // rasteriser gating these on, so they're honestly `true` on
+            // Windows itself. `native_dialogs` (message/alert dialogs)
+            // stays unset — that's still a `None`-returning stub pending
+            // quadraui#666.
+            //
+            // `pointer_cursor` (#702): `set_cursor` now drives a real
+            // `SetCursor`/`WM_SETCURSOR` round-trip instead of the
+            // trait's no-op default — see `Self::set_cursor` /
+            // `Self::apply_current_cursor`.
+            crate::backend::BackendCaps {
+                file_dialogs: true,
+                notifications: true,
+                pointer_cursor: true,
+                ..crate::backend::BackendCaps::empty()
+            }
         }
-        caps
+        #[cfg(not(target_os = "windows"))]
+        {
+            crate::backend::BackendCaps::empty()
+        }
     }
 
     // ─── Measurement ──────────────────────────────────────────────────
@@ -2154,5 +2267,42 @@ mod tests {
             b.focused_activity_bar_id().is_none(),
             "focused_activity_bar must be cleared by begin_frame"
         );
+    }
+
+    /// #702: `PointerShape` -> Win32 `IDC_*` cursor-resource mapping
+    /// covers every variant, mirroring
+    /// `gtk::backend::tests::pointer_shape_cursor_name_maps_every_variant`.
+    /// Windows-only: unlike GTK's CSS-keyword table, the mapping function
+    /// itself uses real `windows`-crate types (`PCWSTR`), so this only
+    /// compiles (and only runs) once `target_os = "windows"` also
+    /// compiles the rest of this file's real WinAPI calls — see the
+    /// module docs' "on Linux every real WinAPI call compiles to its
+    /// `todo!()` fallback body" note; the `x86_64-pc-windows-msvc`
+    /// cross-target `cargo check`/`clippy` runs in this repo's own dev
+    /// loop (not `ci.yml`, which only runs the real Windows job) type-
+    /// check it without executing it.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pointer_shape_to_win32_cursor_maps_every_variant() {
+        // Iterates the shared `desktop::all_pointer_shapes()` scaffold
+        // (#498, adopted here by #702) instead of hand-listing all 9
+        // `Default` + `Resize(edge)` combinations.
+        let expected = [
+            IDC_ARROW,
+            IDC_SIZENS,   // North
+            IDC_SIZENS,   // South
+            IDC_SIZEWE,   // East
+            IDC_SIZEWE,   // West
+            IDC_SIZENESW, // NorthEast
+            IDC_SIZENWSE, // NorthWest
+            IDC_SIZENWSE, // SouthEast
+            IDC_SIZENESW, // SouthWest
+        ];
+        for (shape, expected) in crate::desktop::all_pointer_shapes()
+            .iter()
+            .zip(expected.iter())
+        {
+            assert_eq!(pointer_shape_to_win32_cursor(*shape), *expected);
+        }
     }
 }

@@ -13,6 +13,22 @@
 //! (the window title) — see `win::shell_runner::run_with_shell` (#707),
 //! mirroring `gtk::run::RunConfig`.
 //!
+//! # Window chrome: standard frame, not CSD — `desktop::WindowDragArm` N/A
+//!
+//! `run_inner` creates its window with `WS_OVERLAPPEDWINDOW` (below) —
+//! the standard Windows title bar, system menu, and non-client resize
+//! border, not a client-side-decorated one quadraui paints itself.
+//! Title-bar drag-to-move and edge-resize are therefore already handled
+//! entirely by Windows' own non-client (`WM_NC*`) message processing
+//! before this `wndproc` ever sees them, the same way GTK's `gtk4::
+//! WindowHandle`/edge-resize gesture needs [`crate::desktop::WindowDragArm`]
+//! specifically *because* GTK's `DrawingArea`-filled window has no native
+//! frame to delegate to. #702's audit considered adopting
+//! `WindowDragArm` here and concluded it doesn't apply for exactly this
+//! reason — see that type's doc comment for the fuller rationale. This
+//! is a deliberate "not applicable", not an unfinished gap: adopt it only
+//! if a future issue gives `win::run` a custom (CSD-style) frame.
+//!
 //! # Scope
 //!
 //! Issue #19 landed the window + render-target *bootstrap* and exactly
@@ -80,6 +96,44 @@
 //! [`guarded_call`] itself has no WinAPI dependency, so it — and the
 //! double-borrow scenario it prevents — are unit-tested off Windows; see
 //! the `tests` module below.
+//!
+//! # Headless smoke mode (#702, adopting `desktop::SmokeConfig`)
+//!
+//! Mirrors `gtk::run`'s "Headless smoke mode" (quadraui#450, GD-5): two
+//! environment variables, read once at startup via
+//! [`crate::desktop::SmokeConfig::from_env`], let any `win_*` example run
+//! unattended and exit with a deterministic, checkable status instead of
+//! sitting in the message loop forever waiting for a user who isn't
+//! there.
+//!
+//! - `QUADRAUI_WIN_SMOKE_MS=<u64>` — enables smoke mode. `after_ms`
+//!   milliseconds after the window is shown, a one-shot `WM_TIMER`
+//!   (`win32::SMOKE_TIMER_ID`) fires `win32::run_smoke_check`, which
+//!   checks the client area's size against a sane floor
+//!   ([`crate::desktop::smoke_size_ok`] — the same #437 tiny-window
+//!   regression class GTK's smoke lane guards against), then closes the
+//!   window.
+//! - `QUADRAUI_WIN_SMOKE_PASTE=<text>` — optional. If set, the same timer
+//!   round-trips `<text>` through the real OS clipboard
+//!   (`WinPlatformServices::clipboard()`, the same object a live Ctrl-V
+//!   handler would read) and checks it byte-for-byte via
+//!   [`crate::desktop::smoke_clipboard_round_trip_ok`].
+//!
+//!   Unlike `gtk::run`'s equivalent check, this does **not** also
+//!   dispatch a synthetic Ctrl-V `UiEvent` through `win32::dispatch` —
+//!   `win::events` has no `WM_CHAR`/`WM_KEYDOWN` → `UiEvent::ClipboardPaste`
+//!   interception path yet (issue #20 wired the raw key events, not a
+//!   paste-specific one), so there is no live interception code for a
+//!   synthetic keypress to exercise. This checks the raw OS clipboard
+//!   round-trip only; widening it to also replay a synthetic paste is
+//!   follow-up work for whichever issue adds that interception.
+//!
+//! Any assertion failure is printed to stderr (`win32::run_smoke_check`
+//! is exempted from the crate-wide `print_stderr` deny for the same
+//! reason `gtk::run`'s equivalent is) and flips [`run`]'s
+//! [`std::process::ExitCode`] to [`std::process::ExitCode::FAILURE`].
+//! Disabled (zero runtime cost — no timer is ever armed) unless
+//! `QUADRAUI_WIN_SMOKE_MS` is set.
 
 use crate::backend::Backend;
 use crate::event::Viewport;
@@ -284,9 +338,10 @@ fn guarded_call<T, R>(
 
 #[cfg(target_os = "windows")]
 mod win32 {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::c_void;
     use std::mem::size_of;
+    use std::rc::Rc;
 
     use windows::core::{Error as WinError, PCWSTR};
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -301,18 +356,21 @@ mod win32 {
         GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        GetWindowLongPtrW, LoadCursorW, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW,
-        SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
-        WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE,
-        WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+        GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage, RegisterClassExW,
+        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, MSG,
+        SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY,
+        WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+        WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_TIMER, WM_XBUTTONDOWN,
+        WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
 
     use crate::backend::Backend;
-    use crate::desktop::ModalPumpDepth;
+    use crate::desktop::{
+        smoke_clipboard_round_trip_ok, smoke_size_ok, ModalPumpDepth, SmokeConfig,
+    };
     use crate::event::UiEvent;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
@@ -346,6 +404,25 @@ mod win32 {
     const DEFAULT_WIDTH: i32 = 800;
     const DEFAULT_HEIGHT: i32 = 600;
 
+    // ─── Headless smoke mode (#702) ─────────────────────────────────────
+    //
+    // See the module doc's "Headless smoke mode" section. Env var names
+    // mirror GTK's `QUADRAUI_GTK_SMOKE_MS`/`_PASTE` with a `WIN` infix —
+    // `SmokeConfig::from_env` is parameterised over the name specifically
+    // so a second backend's adoption never collides with GTK's.
+    const SMOKE_MS_VAR: &str = "QUADRAUI_WIN_SMOKE_MS";
+    const SMOKE_PASTE_VAR: &str = "QUADRAUI_WIN_SMOKE_PASTE";
+    /// Comfortably below [`DEFAULT_WIDTH`]/[`DEFAULT_HEIGHT`] so a normal
+    /// (even heavily letterboxed) window passes, but still catches the
+    /// quadraui#437 tiny/wrapped-window regression class — same floor
+    /// GTK's `SMOKE_MIN_WIDTH`/`SMOKE_MIN_HEIGHT` use.
+    const SMOKE_MIN_WIDTH: i32 = 200;
+    const SMOKE_MIN_HEIGHT: i32 = 150;
+    /// `SetTimer`/`KillTimer`'s `nIDEvent`. Only ever one timer live on a
+    /// given `hwnd` in this runner, so any nonzero id is fine — Win32
+    /// scopes timer ids per-window, not per-process.
+    const SMOKE_TIMER_ID: usize = 1;
+
     /// Everything a live window needs, reachable from `wndproc::<A>` via
     /// `GWLP_USERDATA` (see module docs).
     struct RunState<A: AppLogic> {
@@ -363,6 +440,17 @@ mod win32 {
     struct WindowState<A: AppLogic> {
         state: RefCell<RunState<A>>,
         pump_depth: ModalPumpDepth,
+        /// `Some` only when `QUADRAUI_WIN_SMOKE_MS` is set (#702) — see
+        /// the module doc's "Headless smoke mode" section. Read once by
+        /// the `WM_TIMER` handler in [`wndproc`]; never mutated.
+        smoke: Option<SmokeConfig>,
+        /// `Rc`, not a plain `Cell`, so [`run_inner`] can hold a clone
+        /// that survives past `WindowState` itself being freed (its
+        /// `Box::from_raw` happens right before the message loop's final
+        /// exit-code decision needs this value) — same reason
+        /// `gtk::run::run_with`'s `smoke_failed` is an `Rc<Cell<bool>>`
+        /// shared with the `Application`, not a plain local.
+        smoke_failed: Rc<Cell<bool>>,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -421,7 +509,17 @@ mod win32 {
         }
 
         match unsafe { run_inner(app, &config.title) } {
-            Ok(()) => std::process::ExitCode::SUCCESS,
+            // `Ok(smoke_ok)`: `smoke_ok` is `true` unless
+            // `QUADRAUI_WIN_SMOKE_MS` was set *and* `run_smoke_check`
+            // found a failure (#702) — see the module doc's "Headless
+            // smoke mode" section. Always `true` when smoke mode is off.
+            Ok(smoke_ok) => {
+                if smoke_ok {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                }
+            }
             Err(_) => {
                 // `Backend`'s frame/window lifecycle has no error
                 // channel (docs/SMELL_AUDIT_2026-07.md #93) and this
@@ -440,10 +538,15 @@ mod win32 {
     /// below assumes it's only ever invoked by `DispatchMessageW` on
     /// this same thread (no synchronization guards `RunState`'s
     /// `RefCell`).
+    ///
+    /// Returns `Ok(smoke_ok)` rather than plain `Ok(())` (#702):
+    /// `smoke_ok` is always `true` unless `QUADRAUI_WIN_SMOKE_MS` armed
+    /// the headless smoke check and it found a failure — see the module
+    /// doc's "Headless smoke mode" section and [`run_smoke_check`].
     unsafe fn run_inner<A: AppLogic + 'static>(
         mut app: A,
         title: &str,
-    ) -> windows::core::Result<()> {
+    ) -> windows::core::Result<bool> {
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null())?.into() };
 
         let class_name = wide(CLASS_NAME);
@@ -483,9 +586,17 @@ mod win32 {
         let mut backend = WinBackend::new();
         app.setup(&mut backend);
 
+        // #702: `None` (zero runtime cost — no timer ever armed below)
+        // unless `QUADRAUI_WIN_SMOKE_MS` is set. See the module doc's
+        // "Headless smoke mode" section.
+        let smoke = SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR);
+        let smoke_failed = Rc::new(Cell::new(false));
+
         let state_ptr: *mut WindowState<A> = Box::into_raw(Box::new(WindowState {
             state: RefCell::new(RunState { app, backend }),
             pump_depth: ModalPumpDepth::new(),
+            smoke,
+            smoke_failed: smoke_failed.clone(),
         }));
 
         let hwnd = unsafe {
@@ -559,6 +670,20 @@ mod win32 {
         // eventually.
         let _ = unsafe { UpdateWindow(hwnd) };
 
+        // #702: arm the one-shot smoke-check timer, if enabled. See the
+        // module doc's "Headless smoke mode" section and
+        // `run_smoke_check`'s `WM_TIMER` handler in `wndproc` below.
+        {
+            // SAFETY: same as the `attach_surface` borrow above —
+            // `state_ptr` is valid and not concurrently referenced here.
+            let ws: &WindowState<A> = unsafe { &*state_ptr };
+            if let Some(cfg) = &ws.smoke {
+                unsafe {
+                    SetTimer(Some(hwnd), SMOKE_TIMER_ID, cfg.after_ms as u32, None);
+                }
+            }
+        }
+
         let mut msg = MSG::default();
         loop {
             // `GetMessageW` returns `-1` on error, `0` on `WM_QUIT`,
@@ -580,7 +705,11 @@ mod win32 {
         // already gone, so there is no `wndproc` invocation left that
         // could observe this free.
         drop(unsafe { Box::from_raw(state_ptr) });
-        Ok(())
+        // #702: read *after* freeing `state_ptr` — `smoke_failed` is the
+        // `Rc<Cell<bool>>` clone taken before `Box::into_raw` above, so
+        // it's still valid (the `Rc`'s count just dropped by one, not to
+        // zero) even though `WindowState` itself is gone.
+        Ok(!smoke_failed.get())
     }
 
     /// Dispatch `event` through [`super::dispatch_event`] (the shared
@@ -627,6 +756,60 @@ mod win32 {
             }
         }
         reaction
+    }
+
+    /// #702's headless-smoke check, fired once by [`wndproc`]'s
+    /// `WM_TIMER` handler `cfg.after_ms` after the window is shown — see
+    /// the module doc's "Headless smoke mode" section. No-ops (does
+    /// nothing, sets nothing) if `ws.smoke` is `None`, though in practice
+    /// the `WM_TIMER` handler never fires without it (no timer is ever
+    /// armed unless `ws.smoke.is_some()`).
+    ///
+    /// #619-style exemption (mirrors `gtk::run::schedule_smoke_check`'s
+    /// identical one): this *is* the headless smoke harness's own
+    /// diagnostic output, opt-in via `QUADRAUI_WIN_SMOKE_MS`, never
+    /// reached by a host embedding a live quadraui backend — so printing
+    /// here doesn't fight the crate-wide `print_stderr` deny's actual
+    /// purpose (keeping a *library* silent by default).
+    #[allow(clippy::print_stderr)]
+    fn run_smoke_check<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) {
+        let Some(cfg) = ws.smoke.as_ref() else {
+            return;
+        };
+
+        let mut rect = RECT::default();
+        let (width, height) = unsafe {
+            let _ = GetClientRect(hwnd, &mut rect);
+            (rect.right - rect.left, rect.bottom - rect.top)
+        };
+        if !smoke_size_ok(width, height, SMOKE_MIN_WIDTH, SMOKE_MIN_HEIGHT) {
+            eprintln!(
+                "quadraui smoke: client area size looks broken ({width}x{height}px, expected \
+                 at least {SMOKE_MIN_WIDTH}x{SMOKE_MIN_HEIGHT}px) — this is the quadraui#437 \
+                 tiny-window regression class"
+            );
+            ws.smoke_failed.set(true);
+        }
+
+        if let Some(text) = &cfg.paste_text {
+            let read_back = {
+                let state = ws.state.borrow();
+                let clipboard = state.backend.services().clipboard();
+                clipboard.write_text(text);
+                clipboard.read_text()
+            };
+            if !smoke_clipboard_round_trip_ok(text, read_back.as_deref()) {
+                eprintln!(
+                    "quadraui smoke: OS clipboard round-trip failed — wrote {text:?}, read back \
+                     {read_back:?}"
+                );
+                ws.smoke_failed.set(true);
+            }
+            // Unlike `gtk::run::schedule_smoke_check`, this does not also
+            // dispatch a synthetic Ctrl-V `UiEvent` — see the module
+            // doc's "Headless smoke mode" section for why: there is no
+            // live paste-interception code path here yet to exercise.
+        }
     }
 
     /// The Win32 window procedure. Monomorphized once per concrete `A`
@@ -888,6 +1071,47 @@ mod win32 {
                     let _ = ValidateRect(Some(hwnd), None);
                 }
                 LRESULT(0)
+            }
+            WM_SETCURSOR => {
+                // #702: Windows asks "what cursor belongs here?" via this
+                // message on every mouse move over the window, including
+                // moves that never reach `WM_MOUSEMOVE` (e.g. the pointer
+                // re-entering after a click elsewhere). The low word of
+                // `lparam` is the hit-test code from the preceding
+                // `WM_NCHITTEST`; only handle the client area
+                // (`HTCLIENT`) ourselves and re-apply
+                // `WinBackend::current_pointer_shape` there — everywhere
+                // else (the resize border, titlebar, …) is native
+                // `WS_OVERLAPPEDWINDOW` chrome, so `DefWindowProcW`
+                // already draws the right cursor for it and must stay in
+                // control.
+                let hit_test = (lparam.0 as usize) & 0xFFFF;
+                if hit_test == HTCLIENT as usize {
+                    ws.state.borrow().backend.apply_current_cursor();
+                    LRESULT(1)
+                } else {
+                    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+                }
+            }
+            WM_TIMER => {
+                // #702: the one-shot headless-smoke timer armed by
+                // `run_inner`, if `QUADRAUI_WIN_SMOKE_MS` was set — see
+                // the module doc's "Headless smoke mode" section. Any
+                // other timer id is none of this runner's business (no
+                // `AppLogic` today owns one, but a future one might) and
+                // falls through to `DefWindowProcW` untouched.
+                if wparam.0 == SMOKE_TIMER_ID {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), SMOKE_TIMER_ID);
+                    }
+                    run_smoke_check(ws, hwnd);
+                    unsafe {
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    LRESULT(0)
+                } else {
+                    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+                }
             }
             WM_CLOSE => {
                 if dispatch(ws, hwnd, UiEvent::WindowClose) == Reaction::Exit {

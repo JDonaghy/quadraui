@@ -11,7 +11,17 @@
 //! - [`WindowDragArm`] — the arm/threshold/commit state machine behind
 //!   a CSD titlebar drag-to-move (or edge-resize) gesture. Extracted
 //!   from `gtk/backend.rs`'s `armed_window_drag` field +
-//!   `gtk/run.rs`'s motion-controller threshold check (#400).
+//!   `gtk/run.rs`'s motion-controller threshold check (#400). **Not**
+//!   adopted by `win::run`/`win::backend` (#702 audit): `win::run`
+//!   creates its window with `WS_OVERLAPPEDWINDOW` — the standard native
+//!   title bar and non-client resize border, not a client-side-decorated
+//!   one — so title-bar drag-to-move and edge-resize are already handled
+//!   entirely inside Windows' own non-client (`WM_NC*`) message
+//!   handling; there is no quadraui-drawn titlebar/border for an app to
+//!   press-and-drag on, so there is nothing for this arm/threshold/commit
+//!   sequencing to gate. Revisit only if a future issue gives `win::run`
+//!   a custom (CSD-style) frame — don't invent one just to have a use
+//!   for this type.
 //! - [`ModalPumpDepth`] / [`ModalPumpGuard`] — the re-entrancy guard
 //!   around a nested native modal loop (a GTK async-dialog
 //!   `MainContext::iteration` pump, an AppKit `runModal` /
@@ -27,13 +37,18 @@
 //!   `_SMOKE_PASTE`. Extracted from `gtk/run.rs` (#450, GD-5), renamed
 //!   backend-neutral (no more `Gtk` in the name) and parameterised over
 //!   the env-var names and size floor so a future backend can reuse the
-//!   mechanism under its own env vars and default window size.
+//!   mechanism under its own env vars and default window size. Adopted by
+//!   `win::run`'s `QUADRAUI_WIN_SMOKE_MS`/`_SMOKE_PASTE` one-shot
+//!   `WM_TIMER` check (#702) alongside GTK's `QUADRAUI_GTK_SMOKE_MS`/
+//!   `_SMOKE_PASTE`.
 //! - [`ALL_RESIZE_EDGES`] / [`all_pointer_shapes`] — an enum-walk
 //!   scaffold for a [`PointerShape`] → native-cursor lookup table.
 //!   Every backend still owns its own table (cursor *names*/objects are
 //!   inherently native), but this gives it a canonical, exhaustively-
 //!   maintained list of inputs to build and test that table against
-//!   instead of hand-duplicating the variant list per backend.
+//!   instead of hand-duplicating the variant list per backend. Adopted by
+//!   `win::backend`'s `PointerShape` → `IDC_*` cursor-resource mapping
+//!   (#702), driving `SetCursor`/`WM_SETCURSOR`.
 //!
 //! ## What stays backend-specific
 //!
@@ -317,7 +332,18 @@ impl Drop for ModalPumpGuard<'_> {
 /// `gtk::run`'s module doc's "Headless smoke mode" section for the full
 /// motivating rationale (quadraui#437: a live-window class of bug a
 /// display-free driver test structurally can't catch).
-#[cfg(feature = "gtk")]
+///
+/// `#[cfg(any(feature = "gtk", all(feature = "win", any(target_os =
+/// "windows", test))))]` — same reasoning as [`ModalPumpDepth`]'s gate
+/// note: `win::run`'s real smoke lane (#702) only exists once
+/// `target_os = "windows"` also compiles `mod win32`, but the `test`
+/// alternative keeps this type (and its pure predicates below) a real,
+/// unit-testable consumer under a plain `cargo test --features win` on
+/// any host — see `smoke_config_tests` below.
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SmokeConfig {
     /// Delay after the window is presented before the one-shot check
@@ -328,7 +354,10 @@ pub(crate) struct SmokeConfig {
     pub(crate) paste_text: Option<String>,
 }
 
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 impl SmokeConfig {
     /// Reads the smoke-mode env vars once. `ms_var` is the env var that
     /// enables smoke mode (e.g. `QUADRAUI_GTK_SMOKE_MS`) — returns
@@ -354,7 +383,10 @@ impl SmokeConfig {
 /// supplies its own floor (`min_width`/`min_height`) — its own default
 /// window size and how far below it is still "plausible" — this
 /// function only owns the comparison.
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 pub(crate) fn smoke_size_ok(width: i32, height: i32, min_width: i32, min_height: i32) -> bool {
     width >= min_width && height >= min_height
 }
@@ -362,7 +394,10 @@ pub(crate) fn smoke_size_ok(width: i32, height: i32, min_width: i32, min_height:
 /// Did the OS clipboard round-trip `written` back byte-for-byte? Pure
 /// comparison, factored out so the pass/fail rule is unit-testable
 /// without a real clipboard.
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&str>) -> bool {
     read_back == Some(written)
 }
@@ -382,7 +417,11 @@ pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&st
 /// module-doc note on why every item here is gated.
 #[cfg(all(
     test,
-    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
+    any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        feature = "win"
+    )
 ))]
 pub(crate) const ALL_RESIZE_EDGES: [crate::backend::ResizeEdge; 8] = [
     crate::backend::ResizeEdge::North,
@@ -408,7 +447,11 @@ pub(crate) const ALL_RESIZE_EDGES: [crate::backend::ResizeEdge; 8] = [
 /// against instead of hand-duplicating the variant list per backend.
 #[cfg(all(
     test,
-    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
+    any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        feature = "win"
+    )
 ))]
 pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 9] {
     use crate::backend::PointerShape;
@@ -570,7 +613,7 @@ mod modal_pump_tests {
     }
 }
 
-#[cfg(all(test, feature = "gtk"))]
+#[cfg(all(test, any(feature = "gtk", feature = "win")))]
 mod smoke_config_tests {
     use super::*;
     use std::env;
@@ -580,7 +623,10 @@ mod smoke_config_tests {
     // module's tests against each other so they don't race (matches the
     // pattern `gtk::run`'s own smoke tests didn't need, since those only
     // tested the pure predicates — `from_env` itself is new coverage
-    // here).
+    // here). Shared by both the GTK and `win` (#702) adopters — the env
+    // var names below are test-local sentinels, not either backend's real
+    // `QUADRAUI_*_SMOKE_MS` names, so there's no cross-backend collision
+    // risk running both features' tests in the same process.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -674,7 +720,11 @@ mod smoke_config_tests {
 
 #[cfg(all(
     test,
-    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
+    any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        feature = "win"
+    )
 ))]
 mod pointer_shape_scaffold_tests {
     use super::*;
