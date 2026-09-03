@@ -455,6 +455,82 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pixel backend — DirectWrite paints fractional heights exactly, so the identity default \
          is correct, not unfinished work (quadraui#632); unrelated to the #19 stub gaps above",
     ),
+    // ── issue #506: `terminal_layout` / `editor_layout` / `diff_view_layout`
+    // each ship with a trait default that is a pure function of
+    // `Backend::char_width()` / `Backend::line_height()` (plus, for
+    // `diff_view_layout`, `DiffView::mode`) — the exact same values every
+    // backend's own `draw_terminal` / `draw_editor` / `draw_diff_view`
+    // already resolves them to (see `Backend::editor_layout`'s doc for the
+    // per-backend trace: `GtkBackend`/`WinBackend`/`MacBackend` all pass
+    // `current_char_width` / `current_line_height`, which is exactly what
+    // the two accessor methods return; TUI's fixed `(1.0, 1.0)` matches its
+    // uniform cell grid). There is no backend-specific measurement these
+    // three could add — unlike `board_layout` / `list_layout` (also new in
+    // #506), which route through backend-native constants
+    // (`BoardMeasure`'s column/card sizing, `ListView`'s scrollbar
+    // reservation) and so have no default at all. Declaring all four
+    // backends here for all three methods is the honest statement that the
+    // default *is* the answer, not a stand-in for one.
+    (
+        "tui",
+        "terminal_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "tui",
+        "editor_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "tui",
+        "diff_view_layout",
+        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
+    ),
+    (
+        "gtk",
+        "terminal_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "gtk",
+        "editor_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "gtk",
+        "diff_view_layout",
+        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
+    ),
+    (
+        "macos",
+        "terminal_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "macos",
+        "editor_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "macos",
+        "diff_view_layout",
+        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
+    ),
+    (
+        "win",
+        "terminal_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "win",
+        "editor_layout",
+        "pure fn of char_width()/line_height() — see the block comment above (#506)",
+    ),
+    (
+        "win",
+        "diff_view_layout",
+        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

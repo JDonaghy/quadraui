@@ -89,7 +89,7 @@ pub use editor::{draw_editor, EditorPaintResult};
 pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome, tui_form_layout};
 pub use image::draw_image;
-pub use list::draw_list;
+pub use list::{draw_list, tui_list_layout};
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 pub use message_list::draw_message_list;
 pub use minimap::{draw_minimap, tui_minimap_layout};

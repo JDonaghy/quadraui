@@ -170,6 +170,19 @@ pub fn draw_context_menu(
 /// per level.  This function exists as a lower-level building block used by
 /// the rasteriser unit tests; consumers should use `MenuSystem::render` instead.
 ///
+/// **Not promoted to `Backend::draw_context_menu_with_submenus` (issue
+/// #506 audit).** Doing that today would need a default body for
+/// GTK/Win/macOS, and none of them can honour cascading submenus yet
+/// (GTK's is #371) — a no-op default here wouldn't be a harmless
+/// fallback the way `TabChrome`'s is, it would silently make
+/// multi-level menus not cascade on three of four backends while the
+/// trait claimed the capability existed. This function also has zero
+/// production call sites today (no compose helper or example wires it
+/// up), so there's no live consumer being asked to route around a
+/// missing trait method. Revisit once #371 gives GTK a real cascading
+/// rasteriser to pair it with. See `quadraui/docs/DECISIONS.md` D-007
+/// for the full write-up.
+///
 /// # Arguments
 ///
 /// * `root_menu` / `root_layout` — the top-level menu, as produced by

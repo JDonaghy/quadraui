@@ -54,6 +54,34 @@ Read this when adding or changing a primitive.
    top-level screens (most are), add its `Surface`/`FrameZone` variant
    in the same PR** — see "One primitive, one canonical paint path"
    below (issue #456).
+
+   **Which `<name>_layout` shape to pick (issue #506):**
+
+   | Primitive class | Convention | Examples |
+   |---|---|---|
+   | **Content-in-rect** — backend paints inline inside a caller-supplied `rect` and can compute the same geometry with no live paint context | **Paired**: `draw_<name>(rect, ..)` + `<name>_layout(&self, rect, ..)`, same signature shape, same resolver underneath. | `data_table_layout`, `tree_layout`, `form_layout`, `list_layout`, `board_layout`, `terminal_layout`, `editor_layout` |
+   | **Overlay-with-caller-anchor** — host computes anchor/viewport/measure itself and calls the *primitive's own* `.layout(...)` directly; the backend only paints at the resolved bounds | **Draw-takes-layout**: `draw_<name>(&self, thing, layout)`. No `Backend::<name>_layout` — there's nothing backend-specific left to compute. | `Tooltip`, `ContextMenu`, `Completions`, `RichTextPopup`, `Dialog` |
+   | **Interactive chrome** — freestanding widget at its own screen rect | **Paired**, same as content-in-rect. (Draw-returns-layout-only, with no no-paint twin, is the same convention minus the accessor a host needs to hit-test without a frame in progress — add the twin rather than leaving a primitive as the odd one out.) | `chart_layout`, `toolbar_layout`, `sidebar_panel_layout`, `board_layout`, `diff_view_layout` |
+
+   A `<name>_layout` gets a **default trait body** only when the
+   geometry is a *provably uniform* pure function of
+   `Backend::char_width()` / `Backend::line_height()` (and primitive
+   state) — i.e. every backend's own `draw_<name>` already resolves the
+   same two values into the same formula (`terminal_layout`,
+   `editor_layout`, `diff_view_layout`). If a backend supplies its own
+   sizing constants that aren't derivable from those two accessors
+   (`BoardMeasure`'s per-backend column/card pixel sizes, `ListView`'s
+   scrollbar reservation), there is no default — every backend
+   implements it explicitly, same as `draw_<name>` itself. A default
+   body still needs a from-scratch, per-backend-verified justification
+   in `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` (quadraui#492) —
+   it is exempt from that check's "silently defaulted" failure only
+   because the reason is written down, not because a default exists.
+   See `quadraui/docs/DECISIONS.md` D-007 for the full audit, the
+   off-trait-fn resolutions, and why `Palette` did **not** get a
+   `palette_layout` method despite fitting the content-in-rect row
+   above (a latent paint/layout drift, not a design gap — D-007's
+   "Palette: deferred, not missed").
 8. **Public API changes are versioned by deprecation, not by
    announcement.** See rule 8 in full below — it is the one rule whose
    failure mode lands in *other repos*.

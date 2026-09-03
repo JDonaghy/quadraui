@@ -703,6 +703,18 @@ impl Backend for WinBackend {
         list.vscrollbar(rect, self.current_line_height)
     }
 
+    fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
+        #[cfg(target_os = "windows")]
+        {
+            return super::list::win_list_layout(list, rect, self.current_line_height);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, list);
+            todo!("DirectWrite list layout — src/win/list.rs is target_os=\"windows\"-gated")
+        }
+    }
+
     /// #26: see [`Self::draw_tree`]'s doc.
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         #[cfg(target_os = "windows")]
@@ -1436,6 +1448,10 @@ impl Backend for WinBackend {
 
     fn draw_board(&mut self, _rect: Rect, _model: &crate::BoardModel) -> crate::BoardLayout {
         todo!("Direct2D board rasteriser")
+    }
+
+    fn board_layout(&self, _rect: Rect, _model: &crate::BoardModel) -> crate::BoardLayout {
+        todo!("Direct2D board layout — no rasteriser to keep in sync with yet, see draw_board")
     }
 
     fn draw_minimap(

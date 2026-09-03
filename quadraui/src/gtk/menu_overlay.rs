@@ -29,6 +29,20 @@
 //! // On MenuRedraw:
 //! overlay.sync(menu_system.borrow().is_open());
 //! ```
+//!
+//! ## Not a `Backend` trait gap (issue #506 audit)
+//!
+//! `MenuOverlay` is GTK-hosting/compositing glue — it positions an
+//! already-painted `MenuSystem` popup within GTK's native
+//! overlay-widget model (`gtk4::Overlay` + a second `DrawingArea`). It
+//! implements no primitive's `layout()` / paint contract, so there is
+//! no `draw_<name>` for it to pair with, and no `Surface` variant to
+//! add either. TUI, Win, and macOS have no equivalent concept because
+//! none of them have GTK's overlay-widget model to bridge into — the
+//! same category as `AppShell`'s GTK widget-tree bootstrap. Rule 7
+//! ("every primitive gets a `Backend` trait method") doesn't apply
+//! because this isn't a primitive. See `quadraui/docs/DECISIONS.md`
+//! D-007 for the full write-up.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

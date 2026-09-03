@@ -13,9 +13,52 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, rounded_rect_path};
-use crate::primitives::list::{ListItemMeasure, ListView};
+use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
+
+/// Compute the GTK pixel-unit layout for a [`ListView`] without painting —
+/// the same viewport reservation (border inset, h-scrollbar row)
+/// [`draw_list`] applies internally before calling [`ListView::layout`].
+/// `draw_list` calls this exact function (with its own live-measured
+/// `char_width`) so paint and no-paint hit-testing can never drift apart
+/// (`PRIMITIVE_RULES.md` rule 5).
+///
+/// `char_width` is used only for the h-scrollbar-overflow threshold check
+/// (`ListView::max_content_width` is in character columns); pass
+/// [`crate::Backend::char_width`]'s cached value when no live
+/// `pango::Layout` is available — the same approximation
+/// `GtkBackend::list_hscrollbar` already uses for this exact check.
+///
+/// Coordinate frame: **LOCAL** — relative to `(0, 0)`, matching
+/// `tui_list_layout` / `win_list_layout` / `mac_list_layout`. Does **not**
+/// account for [`ListView::bordered`]'s 1px border inset — same as every
+/// other backend's list-layout helper; a bordered list's caller adds that
+/// inset itself (see `draw_list`'s `item_x_offset` / `item_y_offset`).
+pub fn gtk_list_layout(
+    w: f64,
+    h: f64,
+    list: &ListView,
+    line_height: f64,
+    char_width: f64,
+) -> ListViewLayout {
+    let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
+    let visible_px = (w - border_inset * 2.0).max(0.0);
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_width > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+    let title_h = if list.title.is_some() {
+        line_height as f32
+    } else {
+        0.0
+    };
+    let layout_w = (w - border_inset * 2.0) as f32;
+    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
+    list.layout(layout_w, layout_h, title_h, |_| {
+        ListItemMeasure::new(line_height as f32)
+    })
+}
 
 /// Draw a [`ListView`] into `(x, y, w, h)` on `cr`.
 ///
@@ -100,18 +143,8 @@ pub fn draw_list(
     let needs_hscrollbar = list
         .max_content_width
         .is_some_and(|n| n as f64 * char_w > visible_px);
-    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
 
-    let title_h = if list.title.is_some() {
-        line_height as f32
-    } else {
-        0.0
-    };
-    let layout_w = (w - border_inset * 2.0) as f32;
-    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
-    let list_layout = list.layout(layout_w, layout_h, title_h, |_| {
-        ListItemMeasure::new(line_height as f32)
-    });
+    let list_layout = gtk_list_layout(w, h, list, line_height, char_w);
 
     if list.bordered {
         if let Some(ref title) = list.title {

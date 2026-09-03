@@ -1068,6 +1068,10 @@ impl Backend for TuiBackend {
         )
     }
 
+    fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
+        crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -2152,6 +2156,14 @@ impl Backend for TuiBackend {
         crate::tui::draw_board(frame.buffer_mut(), area, model, &theme)
     }
 
+    fn board_layout(
+        &self,
+        rect: QRect,
+        model: &crate::primitives::board::BoardModel,
+    ) -> crate::primitives::board::BoardLayout {
+        crate::tui::tui_board_layout(model, q_rect_to_ratatui(rect))
+    }
+
     fn draw_minimap(
         &mut self,
         rect: QRect,
@@ -2366,6 +2378,9 @@ mod tests {
         }
         fn list_vscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
             None
+        }
+        fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
+            crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
         }
         fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
             self.calls.push(DrawCall::Palette {
@@ -2890,6 +2905,27 @@ mod tests {
 
         fn draw_board(
             &mut self,
+            r: QRect,
+            model: &crate::primitives::board::BoardModel,
+        ) -> crate::primitives::board::BoardLayout {
+            crate::primitives::board::board_layout(
+                model,
+                r.x,
+                r.y,
+                r.width,
+                r.height,
+                crate::primitives::board::BoardMeasure::new(
+                    crate::tui::board::TUI_BOARD_COL_MIN_CELLS,
+                    1.0,
+                    1.0,
+                    crate::tui::board::TUI_BOARD_CARD_H,
+                    0.0,
+                ),
+            )
+        }
+
+        fn board_layout(
+            &self,
             r: QRect,
             model: &crate::primitives::board::BoardModel,
         ) -> crate::primitives::board::BoardLayout {
@@ -3960,5 +3996,103 @@ mod tests {
             severity: None,
         };
         assert!(backend.services().show_message_dialog(opts).is_none());
+    }
+
+    /// Issue #506: `list_layout` is documented **LOCAL** — a caller
+    /// subtracts `rect.x`/`rect.y` itself before hit-testing — so a
+    /// non-zero origin must not change the returned geometry at all
+    /// (same regression shape as `gtk_backend_data_table_layout_ignores_rect_origin`).
+    #[test]
+    fn list_layout_ignores_rect_origin() {
+        let backend = TuiBackend::new();
+        let list = sample_list();
+
+        let at_origin = backend.list_layout(QRect::new(0.0, 0.0, 20.0, 5.0), &list);
+        let shifted = backend.list_layout(QRect::new(7.0, 3.0, 20.0, 5.0), &list);
+
+        assert_eq!(
+            at_origin, shifted,
+            "list_layout must ignore rect.x/rect.y (LOCAL frame, issue #505)"
+        );
+        assert!(
+            !at_origin.visible_items.is_empty(),
+            "sanity: the sample list has an item to lay out"
+        );
+    }
+
+    /// `list_layout` must be the exact resolver `draw_list` uses
+    /// internally, not a parallel reimplementation that can drift from
+    /// it (`PRIMITIVE_RULES.md` rule 5) — paint into a real `Buffer` (the
+    /// same free-fn path `crate::tui::draw_list` uses) and compare the
+    /// helper both paths share.
+    #[test]
+    fn list_layout_matches_draw_list_resolver() {
+        let backend = TuiBackend::new();
+        let list = sample_list();
+        let rect = QRect::new(3.0, 1.0, 20.0, 5.0);
+        let area = q_rect_to_ratatui(rect);
+
+        let no_paint = backend.list_layout(rect, &list);
+
+        // `draw_list` returns `()`, but it computes its geometry by
+        // calling `tui_list_layout(area, list)` internally (see
+        // `tui/list.rs::draw_list`) — the same helper `list_layout`
+        // calls. Paint into a real buffer (proving it doesn't panic on
+        // the shared geometry) and assert the helper output directly.
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::tui::draw_list(&mut buf, area, &list, &backend.current_theme, false);
+        let via_paint_helper = crate::tui::tui_list_layout(area, &list);
+
+        assert_eq!(
+            no_paint, via_paint_helper,
+            "list_layout must equal the exact helper draw_list uses internally"
+        );
+        assert!(
+            !no_paint.visible_items.is_empty(),
+            "sanity: the sample list has an item to lay out"
+        );
+    }
+
+    /// Issue #506: `board_layout` is documented **ABSOLUTE** — bounds
+    /// are shifted by `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s
+    /// contract that a caller compares it directly against raw click
+    /// coordinates. Also proves `board_layout` and `draw_board` agree
+    /// byte-for-byte, since both route through `tui_board_layout`.
+    #[test]
+    fn board_layout_is_absolute_and_matches_draw_board() {
+        let backend = TuiBackend::new();
+        let model = crate::primitives::board::BoardModel {
+            id: WidgetId::new("test:board"),
+            columns: vec![crate::primitives::board::BoardColumn {
+                id: WidgetId::new("col:a"),
+                title: "Backlog".into(),
+                cards: vec![crate::primitives::board::BoardCard {
+                    id: WidgetId::new("card:1"),
+                    title: "Do the thing".into(),
+                    labels: vec![],
+                    badges: vec![],
+                    hint: None,
+                }],
+                scroll_offset: 0,
+            }],
+            selected_card_id: None,
+            col_scroll_offset: 0,
+        };
+        let rect = QRect::new(5.0, 2.0, 40.0, 12.0);
+        let area = q_rect_to_ratatui(rect);
+
+        let no_paint = backend.board_layout(rect, &model);
+        assert_eq!(
+            no_paint.bounds,
+            crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
+            "board_layout must fold rect's origin into `bounds` (ABSOLUTE, issue #505)"
+        );
+
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let painted = crate::tui::draw_board(&mut buf, area, &model, &backend.current_theme);
+        assert_eq!(
+            no_paint, painted,
+            "board_layout must equal the exact layout draw_board painted with"
+        );
     }
 }

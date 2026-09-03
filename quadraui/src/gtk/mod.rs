@@ -89,7 +89,7 @@ pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
 pub use find_replace::draw_find_replace;
 pub use form::{draw_form, draw_settings_chrome};
 pub use image::draw_image;
-pub use list::draw_list;
+pub use list::{draw_list, gtk_list_layout};
 pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use menu_overlay::MenuOverlay;
 pub use message_list::draw_message_list;
