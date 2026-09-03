@@ -441,6 +441,33 @@ dialog.blocks_click_through         1  pass  pass
 ...
 ```
 
+### Burn-down columns: registered, reported, not gating (quadraui#708)
+
+A backend whose rasterisers are still landing needs a column *before* it
+can pass one — otherwise "the artifact is the implementation checklist"
+is impossible to satisfy, because adding the column would red every PR on
+that platform's CI leg. `runner::Gating` separates the two decisions:
+
+- `BackendReg::register::<F>(name)` — **blocking.** A `FAIL` cell fails
+  `conformance_matrix`. The normal posture (`tui`, `tui-vt100`, `gtk`,
+  `macos`).
+- `BackendReg::register_burn_down::<F>(name)` — **reported, not gating.**
+  Cells render identically in the matrix and the detail block, the
+  artifact still carries them, and a legend under the table names every
+  non-gating column so a reader can never mistake one for a regression.
+  Today only `win`, which has no painted-text-run recording yet
+  (`WinDriver::find`/`find_bounds` are honest `None` stubs), so every
+  text-locating step reports "not painted".
+
+Burn-down is self-expiring, not a permanent exemption: if a burn-down
+column runs at least one scenario and fails *none* of them,
+`conformance_matrix` fails with "promote it to `BackendReg::register`".
+An all-`skip` column doesn't count as having run — a backend that
+declares no capabilities can't earn promotion by never attempting
+anything. `every_asserted_zone_is_registered_by_every_backend` skips
+burn-down columns for the same reason: a backend with no shell chrome yet
+registers no zones, and that gap is already visible as its `FAIL` rows.
+
 ### TUI: two observers, one row each (quadraui#555)
 
 Every tier above — including the conformance suite's own `"tui"`
