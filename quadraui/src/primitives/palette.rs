@@ -255,6 +255,40 @@ impl PaletteLayout {
 }
 
 impl Palette {
+    /// Resolve `scroll_offset` against a viewport that can show
+    /// `visible_rows` items at once, keeping `selected_idx` inside the
+    /// visible window: scrolls forward when the selection runs past the
+    /// bottom of the window, backward when it runs past the top, and
+    /// never leaves empty rows at the bottom when enough items exist
+    /// above to fill the viewport.
+    ///
+    /// This is selection-visibility *policy*, not rendering — pure
+    /// arithmetic over `scroll_offset` / `selected_idx` / `items.len()`
+    /// with no native dependency. It used to be copy-pasted verbatim
+    /// into `gtk`, `tui`, and `win`'s palette rasterisers (each computing
+    /// its own `visible_rows` from backend-native metrics and calling
+    /// this same four-branch clamp); `macos` had no copy at all, so
+    /// moving the selection past the bottom of the window scrolled it
+    /// out of view instead of following it. See #711. [`Palette::layout`]
+    /// now calls this internally so every backend gets it for free;
+    /// backends that don't (yet) route through `layout` — like `tui`,
+    /// see its `draw_palette` doc — can call it directly with their own
+    /// `visible_rows`.
+    pub fn resolved_scroll_offset(&self, visible_rows: usize) -> usize {
+        let total = self.items.len();
+        let max_offset = total.saturating_sub(visible_rows);
+        let effective = if visible_rows == 0 {
+            0
+        } else if self.selected_idx < self.scroll_offset {
+            self.selected_idx
+        } else if self.selected_idx >= self.scroll_offset + visible_rows {
+            self.selected_idx + 1 - visible_rows
+        } else {
+            self.scroll_offset
+        };
+        effective.min(max_offset)
+    }
+
     /// Compute the full rendering + hit-test layout.
     ///
     /// # Arguments
@@ -324,8 +358,22 @@ impl Palette {
         };
         let items_bottom = viewport_height - create_row_h;
 
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
+        // Estimate how many item rows fit in the available space so the
+        // selection-visibility guard below has a row count to work
+        // with. Every current caller measures a uniform row height, so
+        // item 0 is representative; a future variable-height caller
+        // would need a real fit-as-many-as-possible pass here instead.
+        let item_height = if self.items.is_empty() {
+            0.0
+        } else {
+            measure_item(0).height
+        };
+        let estimated_visible_rows = if item_height > 0.0 {
+            ((items_bottom - items_top).max(0.0) / item_height) as usize
+        } else {
+            0
+        };
+        let resolved_scroll_offset = self.resolved_scroll_offset(estimated_visible_rows);
 
         for i in resolved_scroll_offset..self.items.len() {
             if y >= items_bottom {
@@ -596,21 +644,87 @@ mod tests {
 
     #[test]
     fn palette_layout_scroll_offset_skips_items() {
+        // 20 items, a 4-row visible window (viewport_height 5, query_h
+        // 1 → items area is 4 rows), selected_idx sitting inside the
+        // requested scroll window so the guard passes `scroll_offset`
+        // through unchanged.
         let p = make_palette(
             "",
             "",
-            (0..5)
+            (0..20)
                 .map(|i| make_palette_item(&format!("i{i}")))
                 .collect(),
-            0,
+            2,
             2,
         );
-        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 0.0, 1.0, |_| {
+        let layout = p.layout(40.0, 5.0, 0.0, 1.0, 0.0, 1.0, |_| {
             PaletteItemMeasure::new(1.0)
         });
         // Query at y=0, items from offset 2.
         assert_eq!(layout.visible_items[0].item_idx, 2);
         assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+
+    // ── #711: selection-visibility guard lives in the primitive ─────────
+
+    #[test]
+    fn resolved_scroll_offset_scrolls_forward_past_bottom() {
+        // selected_idx (15) is past the bottom of a 9-row window that
+        // starts at the stale scroll_offset (0) — must scroll forward
+        // just enough to bring it into the last visible row.
+        let p = make_palette(
+            "",
+            "",
+            (0..20)
+                .map(|i| make_palette_item(&format!("i{i}")))
+                .collect(),
+            15,
+            0,
+        );
+        assert_eq!(p.resolved_scroll_offset(9), 7);
+    }
+
+    #[test]
+    fn resolved_scroll_offset_scrolls_backward_past_top() {
+        // selected_idx (1) sits above the stale scroll_offset (10) —
+        // must scroll back to make it the top visible row.
+        let p = make_palette(
+            "",
+            "",
+            (0..20)
+                .map(|i| make_palette_item(&format!("i{i}")))
+                .collect(),
+            1,
+            10,
+        );
+        assert_eq!(p.resolved_scroll_offset(9), 1);
+    }
+
+    #[test]
+    fn palette_layout_keeps_selection_visible_past_bottom() {
+        // Regression for #711: `mac_palette_layout` fed `scroll_offset`
+        // straight into `Palette::layout` with no visibility guard, so
+        // moving the selection past the bottom of the window scrolled
+        // it out of view instead of following it. The guard now lives
+        // in `Palette::layout` itself, so every backend that calls it
+        // (gtk, win, macos) gets correct behaviour with no backend-side
+        // code — this test exercises the primitive directly, once, for
+        // all of them.
+        let items: Vec<_> = (0..20)
+            .map(|i| make_palette_item(&format!("i{i}")))
+            .collect();
+        // scroll_offset stale at 0, but selected_idx (15) is past the
+        // bottom of the 9-row visible window (viewport_height 10,
+        // query_h 1 → items area is 9 rows of height 1.0 each).
+        let p = make_palette("", "", items, 15, 0);
+        let layout = p.layout(40.0, 10.0, 0.0, 1.0, 0.0, 1.0, |_| {
+            PaletteItemMeasure::new(1.0)
+        });
+        assert_eq!(layout.resolved_scroll_offset, 7);
+        assert!(
+            layout.visible_items.iter().any(|vi| vi.item_idx == 15),
+            "selected item 15 should be visible in the resolved window"
+        );
     }
 
     #[test]

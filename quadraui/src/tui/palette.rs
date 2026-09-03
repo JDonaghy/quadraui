@@ -241,32 +241,25 @@ pub fn draw_palette(
         w - 1
     };
 
-    // Clamp scroll_offset so the selected item is always visible AND
-    // the visible window stays full when there are enough items to
-    // fill it. The engine updates scroll_top with a conservative
-    // heuristic that doesn't know the actual renderer row count, so
-    // the renderer is authoritative here.
-    let max_offset = total.saturating_sub(visible_rows);
-    let effective_offset = if visible_rows == 0 {
-        0
-    } else if palette.selected_idx < palette.scroll_offset {
-        palette.selected_idx
-    } else if palette.selected_idx >= palette.scroll_offset + visible_rows {
-        palette.selected_idx + 1 - visible_rows
-    } else {
-        palette.scroll_offset
-    };
-    // Don't leave empty rows when there are items above we could show.
-    let effective_offset = effective_offset.min(max_offset);
+    // The engine updates scroll_top with a conservative heuristic that
+    // doesn't know the actual renderer row count, so the renderer is
+    // authoritative here: resolve scroll_offset against the row count
+    // it just computed, keeping the selected item visible and never
+    // leaving empty rows when there are items above we could show.
+    // `draw_palette` predates `Palette::layout` and lays out its own
+    // cell grid rather than calling it, so it calls the shared
+    // selection-visibility policy directly instead of through
+    // `layout()` (see `Palette::resolved_scroll_offset`, #711).
+    let resolved_offset = palette.resolved_scroll_offset(visible_rows);
 
     for (vis_i, item) in palette
         .items
         .iter()
         .enumerate()
-        .skip(effective_offset)
+        .skip(resolved_offset)
         .take(visible_rows)
     {
-        let row = items_row0 + (vis_i - effective_offset) as u16;
+        let row = items_row0 + (vis_i - resolved_offset) as u16;
         if row >= items_row_end {
             break;
         }
@@ -349,8 +342,8 @@ pub fn draw_palette(
             let sb_col = list_w - 1;
             let track_len = visible_rows;
             let thumb_len = (visible_rows * visible_rows / total.max(1)).max(1);
-            let thumb_start = effective_offset * track_len / total.max(1);
-            let vi_off = vis_i - effective_offset;
+            let thumb_start = resolved_offset * track_len / total.max(1);
+            let vi_off = vis_i - resolved_offset;
             let in_thumb = vi_off >= thumb_start && vi_off < thumb_start + thumb_len;
             let ch = if in_thumb { '█' } else { '░' };
             set_cell(buf, x0 + sb_col, row, ch, border_fg, bg);
@@ -358,7 +351,7 @@ pub fn draw_palette(
     }
 
     // Empty rows between last item and bottom border.
-    let drawn = total.saturating_sub(effective_offset).min(visible_rows) as u16;
+    let drawn = total.saturating_sub(resolved_offset).min(visible_rows) as u16;
     for row in items_row0 + drawn..items_row_end {
         set_cell(buf, x0, row, '│', border_fg, bg);
         if !has_preview && w >= 2 {

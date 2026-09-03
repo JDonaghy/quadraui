@@ -30,31 +30,9 @@ use crate::theme::Theme;
 use crate::types::Color;
 
 /// Compute a [`Palette`]'s layout at `(rect.x, rect.y)` without
-/// painting, clamping `scroll_offset` so the selected row stays visible
-/// (same visibility clamp `gtk::draw_palette` applies to its local
-/// clone before calling `Palette::layout`).
+/// painting. `Palette::layout` keeps the selected row visible
+/// internally (see #711) — no backend-side scroll clamp needed here.
 pub fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> PaletteLayout {
-    let visible_rows = if line_height > 0.0 {
-        (rect.height / line_height) as usize
-    } else {
-        0
-    };
-    let total = palette.items.len();
-    let max_offset = total.saturating_sub(visible_rows);
-    let effective_offset = if visible_rows == 0 {
-        0
-    } else if palette.selected_idx < palette.scroll_offset {
-        palette.selected_idx
-    } else if palette.selected_idx >= palette.scroll_offset + visible_rows {
-        palette.selected_idx + 1 - visible_rows
-    } else {
-        palette.scroll_offset
-    };
-    let effective_offset = effective_offset.min(max_offset);
-
-    let mut local = palette.clone();
-    local.scroll_offset = effective_offset;
-
     let title_h = if !palette.title.is_empty() {
         line_height
     } else {
@@ -62,7 +40,7 @@ pub fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> Pa
     };
     let query_h = if palette.show_query { line_height } else { 0.0 };
 
-    local.layout(rect.width, rect.height, title_h, query_h, 6.0, 8.0, |_| {
+    palette.layout(rect.width, rect.height, title_h, query_h, 6.0, 8.0, |_| {
         PaletteItemMeasure::new(line_height)
     })
 }
