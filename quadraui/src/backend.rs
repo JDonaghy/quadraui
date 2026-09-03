@@ -240,9 +240,12 @@ pub struct BackendCaps {
     pub pointer_cursor: bool,
     /// This backend positions a native IME composition window (preedit)
     /// at the caret. `false` on every backend today — quadraui has no
-    /// backend-level IME method yet (see `crate::event::UiEvent::Text`'s
-    /// docs); composed text arrives pre-resolved from the OS either way,
-    /// so this tracks *positioning* the IME candidate window, not
+    /// backend-level IME method yet. See `docs/IME_INPUT_PROPOSAL.md`
+    /// (issue #502) for the proposed `Backend::set_ime_cursor_area`
+    /// method this flag is reserved for, and [`crate::event::UiEvent`]'s
+    /// `CharTyped` doc comment for the current (pre-#502) composed-text
+    /// contract; composed text arrives pre-resolved from the OS either
+    /// way, so this tracks *positioning* the IME candidate window, not
     /// whether typing composed characters works at all.
     pub ime: bool,
     /// [`PlatformServices::show_file_open_dialog`] /
