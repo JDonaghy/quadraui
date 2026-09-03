@@ -119,6 +119,11 @@ Current set (declarative descriptions + layout + dual rasterisers):
 - [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) —
   pitfalls discovered while building the Win-GUI backend; apply when
   building macOS or any future native backend.
+- [`quadraui/docs/IME_INPUT_PROPOSAL.md`](quadraui/docs/IME_INPUT_PROPOSAL.md) —
+  IME/composition input model proposal (issue #502): `UiEvent` preedit
+  contract, GTK `IMContext` / macOS `NSTextInputClient` / Windows TSF
+  mapping, caret-rect feedback channel. Design phase, not yet wired to
+  any backend.
 
 ## Examples
 
