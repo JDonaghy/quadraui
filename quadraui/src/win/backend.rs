@@ -704,9 +704,15 @@ impl Backend for WinBackend {
     }
 
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
+        // Same two-block shape as `tree_layout` below (and deliberately
+        // NOT `return … ;` inside the windows arm): on a Windows host the
+        // `not(windows)` block is cfg'd away, so the `return` would be the
+        // function's own tail expression and `clippy::needless_return`
+        // fires — a lint only the windows-latest CI leg can see, since on
+        // Linux the second block follows and the `return` is load-bearing.
         #[cfg(target_os = "windows")]
         {
-            return super::list::win_list_layout(list, rect, self.current_line_height);
+            super::list::win_list_layout(list, rect, self.current_line_height)
         }
         #[cfg(not(target_os = "windows"))]
         {
