@@ -436,6 +436,51 @@ pub(crate) fn fill_circle(
     Ok(())
 }
 
+/// Run `f` with `target`'s transform temporarily set to a horizontal
+/// scale of `scale_x`, anchored at `anchor_x` (DIPs) so content at that
+/// x-coordinate doesn't shift — only stretches/shrinks to either side of
+/// it — then restore the identity transform.
+///
+/// Direct2D has no per-draw-call scale parameter (unlike Cairo's
+/// `cr.scale` or Core Text's text-matrix `a` component, see
+/// [`crate::macos::text::draw_text_scaled_x`]) — only a render-target-wide
+/// transform via `SetTransform`. [`crate::win::terminal::draw_terminal_cells`]
+/// uses this to stretch or shrink a double-width glyph (CJK / emoji) so it
+/// fills its two-column cell box exactly, using the scale factor from
+/// [`crate::terminal_style::wide_glyph_x_scale`] — the same decision GTK
+/// and macOS apply (#500, #703).
+///
+/// Restoring identity unconditionally (rather than the transform that was
+/// active before this call) matches every other rasteriser in this crate,
+/// which never leaves a non-identity transform set on the target between
+/// draw calls.
+pub(crate) fn with_horizontal_scale<F: FnOnce()>(
+    target: &ID2D1RenderTarget,
+    scale_x: f32,
+    anchor_x: f32,
+    f: F,
+) {
+    let scaled = windows_numerics::Matrix3x2 {
+        M11: scale_x,
+        M12: 0.0,
+        M21: 0.0,
+        M22: 1.0,
+        M31: anchor_x * (1.0 - scale_x),
+        M32: 0.0,
+    };
+    unsafe { target.SetTransform(&scaled) };
+    f();
+    let identity = windows_numerics::Matrix3x2 {
+        M11: 1.0,
+        M12: 0.0,
+        M21: 0.0,
+        M22: 1.0,
+        M31: 0.0,
+        M32: 0.0,
+    };
+    unsafe { target.SetTransform(&identity) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,5 +527,72 @@ mod tests {
         // …and the interior is left to whatever was painted underneath.
         assert_eq!(rgb(16, 9), bg, "one row inside the top edge");
         assert_eq!(rgb(9, 16), bg, "one column inside the left edge");
+    }
+
+    /// [`with_horizontal_scale`] must restore the identity transform once
+    /// its closure returns — every other rasteriser in this crate assumes
+    /// the target's transform is always identity when it starts drawing,
+    /// so a leaked scale would silently distort every draw call after it
+    /// for the rest of the frame.
+    #[test]
+    fn with_horizontal_scale_restores_identity_transform_after() {
+        let surface = HeadlessSurface::new(50, 50).expect("create surface");
+        surface
+            .paint(|target| {
+                with_horizontal_scale(target, 1.5, 10.0, || {
+                    // Closure body intentionally does nothing — this test
+                    // only checks the transform bracket, not a paint
+                    // result.
+                });
+                let mut m = windows_numerics::Matrix3x2 {
+                    M11: 0.0,
+                    M12: 0.0,
+                    M21: 0.0,
+                    M22: 0.0,
+                    M31: 0.0,
+                    M32: 0.0,
+                };
+                unsafe { target.GetTransform(&mut m) };
+                assert_eq!(
+                    (m.M11, m.M12, m.M21, m.M22, m.M31, m.M32),
+                    (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                    "transform must be identity after with_horizontal_scale returns"
+                );
+            })
+            .expect("paint");
+    }
+
+    /// The scale is anchored at `anchor_x`: a point exactly at the anchor
+    /// must map to itself, while a point one DIP to the right of it moves
+    /// by `scale_x` DIPs — confirms the `M31` offset term, not just that
+    /// `M11` carries the scale factor.
+    #[test]
+    fn with_horizontal_scale_anchors_at_the_given_x() {
+        let surface = HeadlessSurface::new(50, 50).expect("create surface");
+        surface
+            .paint(|target| {
+                with_horizontal_scale(target, 2.0, 10.0, || {
+                    let mut m = windows_numerics::Matrix3x2 {
+                        M11: 0.0,
+                        M12: 0.0,
+                        M21: 0.0,
+                        M22: 0.0,
+                        M31: 0.0,
+                        M32: 0.0,
+                    };
+                    unsafe { target.GetTransform(&mut m) };
+                    // x' = x * M11 + M31
+                    let map_x = |x: f32| x * m.M11 + m.M31;
+                    assert!(
+                        (map_x(10.0) - 10.0).abs() < 1e-6,
+                        "anchor point must map to itself"
+                    );
+                    assert!(
+                        (map_x(11.0) - 12.0).abs() < 1e-6,
+                        "one DIP right of the anchor must move by scale_x DIPs"
+                    );
+                });
+            })
+            .expect("paint");
     }
 }

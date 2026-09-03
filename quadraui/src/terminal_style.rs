@@ -47,6 +47,36 @@
 //! diff/render logic understands multi-width symbols from the glyph's
 //! own `cell_width()` and skips re-emitting a blank continuation column
 //! it didn't ask for.
+//!
+//! # Wide-glyph scale (#500 GTK-only → shared by #703)
+//!
+//! [`wide_cell_advance`] settles the *box* a double-width glyph gets;
+//! it says nothing about how well the glyph fills it. A pixel-based
+//! rasteriser's fallback font for CJK / emoji typically lays the glyph
+//! out at its own natural advance, which is rarely exactly two cells —
+//! a CJK glyph might measure 15px in an 18px (2 × 9px) box, some
+//! colour-emoji fonts overshoot it. [`wide_glyph_x_scale`] is the
+//! horizontal scale factor that stretches or shrinks the glyph to fill
+//! the box exactly, so consecutive wide glyphs pack tightly with no
+//! ragged inter-glyph gap. GTK's `wide_glyph_x_scale` (#439 follow-up)
+//! was the first and, until #703, only implementation; this is that
+//! same function, lifted rather than re-described so `macos` and `win`
+//! stop needing their own copy of the decision. Each backend still owns
+//! *applying* the scale (Cairo's `cr.scale`, Core Text's text-matrix `a`
+//! component via `macos::text::draw_text_scaled_x`, Direct2D's
+//! render-target transform via `win::text::with_horizontal_scale`) —
+//! that part is unavoidably native-handle-shaped and stays put.
+//!
+//! # Divider geometry (#703)
+//!
+//! `gtk`, `macos`, and `win` each painted a terminal-split divider as a
+//! hardcoded "1 unit wide, from `(x, y)` down to `y + height`"
+//! rectangle — the same three magic numbers typed three times, and
+//! `win`'s free function additionally diverged in signature (`rect:
+//! Rect` instead of `x, y, height`). [`divider_geometry`] is the single
+//! definition of that rectangle; each backend's `draw_terminal_divider`
+//! now only computes it and hands the four numbers to its own paint
+//! primitive (`cr.rectangle` / `CGContextFillRect` / `FillRectangle`).
 
 use crate::primitives::terminal::TerminalCell;
 use crate::text_util::is_wide_char;
@@ -100,6 +130,58 @@ pub fn wide_cell_advance(ch: char, char_width: f64) -> (f64, usize) {
         (char_width * 2.0, 2)
     } else {
         (char_width, 1)
+    }
+}
+
+/// Horizontal scale factor to draw a double-width glyph so it fills its
+/// two-column (`cell_w`) box exactly.
+///
+/// `natural_w` is the glyph's laid-out width in the caller's native unit
+/// (Pango pixels, Core Text points, DirectWrite DIPs — all `f64` here,
+/// callers cast as needed). Returns `cell_w / natural_w` so the rendered
+/// glyph spans exactly two cells — stretching a narrow CJK glyph out to
+/// the full box and shrinking an over-wide emoji back into it. Returns
+/// `1.0` (no scaling) when `natural_w` is non-positive (empty /
+/// zero-advance layout) so callers never divide by zero or blow a
+/// degenerate glyph up to infinity.
+///
+/// Originally GTK-only (`gtk::terminal`'s private `wide_glyph_x_scale`,
+/// #439 follow-up); lifted here unchanged so `macos` and `win` can apply
+/// the same decision instead of leaving wide glyphs unscaled (#703).
+pub fn wide_glyph_x_scale(natural_w: f64, cell_w: f64) -> f64 {
+    if natural_w <= 0.0 {
+        1.0
+    } else {
+        cell_w / natural_w
+    }
+}
+
+/// Geometry for a terminal-split divider line: a hairline rectangle
+/// exactly one native unit wide (1 px for GTK/Direct2D DIPs, 1pt for
+/// Core Text), spanning from `(x, y)` down to `y + height`.
+///
+/// Shared by every pixel-based rasteriser's `draw_terminal_divider` free
+/// function (`gtk::terminal`, `macos::terminal`, `win::terminal`) so the
+/// "1 unit wide" invariant is defined once instead of copied into three
+/// near-identical `rectangle` calls (#703). Not used by
+/// `tui::terminal::draw_terminal_divider`, which draws a themed `'│'`
+/// character cell rather than pixel geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DividerGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Compute the [`DividerGeometry`] for a divider starting at `(x, y)`
+/// with the given `height`. Width is always `1.0`.
+pub fn divider_geometry(x: f64, y: f64, height: f64) -> DividerGeometry {
+    DividerGeometry {
+        x,
+        y,
+        width: 1.0,
+        height,
     }
 }
 
@@ -212,5 +294,62 @@ mod tests {
     fn wide_char_advances_two_columns_at_double_width() {
         assert_eq!(wide_cell_advance('日', 10.0), (20.0, 2));
         assert_eq!(wide_cell_advance('中', 9.0), (18.0, 2));
+    }
+
+    // ── wide_glyph_x_scale (#500, lifted from GTK by #703) ─────────────
+
+    /// A CJK glyph measuring 15px inside an 18px (2 × 9px) box → 1.2×.
+    #[test]
+    fn narrow_wide_glyph_is_stretched_to_fill_two_cells() {
+        let cell_w = 18.0;
+        let scale = wide_glyph_x_scale(15.0, cell_w);
+        assert!(
+            (scale - 1.2).abs() < 1e-9,
+            "15px glyph in an 18px box should scale 1.2x, got {scale}"
+        );
+        assert!((15.0 * scale - cell_w).abs() < 1e-9);
+    }
+
+    /// A wide glyph that already fills its box (emoji measuring exactly
+    /// two cells) is left untouched — scale factor 1.0.
+    #[test]
+    fn exact_fit_wide_glyph_is_not_scaled() {
+        assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
+    }
+
+    /// A wide glyph *wider* than two cells (some colour-emoji fonts) is
+    /// shrunk back into the box so it can't overlap the next glyph.
+    #[test]
+    fn over_wide_glyph_is_shrunk_into_box() {
+        let scale = wide_glyph_x_scale(24.0, 18.0);
+        assert!(
+            scale < 1.0,
+            "24px glyph in 18px box should shrink, got {scale}"
+        );
+        assert!((24.0 * scale - 18.0).abs() < 1e-9);
+    }
+
+    /// A zero / negative advance (empty or degenerate layout) must not
+    /// divide by zero or explode — it falls back to no scaling.
+    #[test]
+    fn degenerate_glyph_width_falls_back_to_no_scale() {
+        assert_eq!(wide_glyph_x_scale(0.0, 18.0), 1.0);
+        assert_eq!(wide_glyph_x_scale(-3.0, 18.0), 1.0);
+    }
+
+    // ── divider_geometry (#703) ─────────────────────────────────────────
+
+    #[test]
+    fn divider_geometry_is_one_unit_wide() {
+        let g = divider_geometry(50.0, 5.0, 24.0);
+        assert_eq!(
+            g,
+            DividerGeometry {
+                x: 50.0,
+                y: 5.0,
+                width: 1.0,
+                height: 24.0,
+            }
+        );
     }
 }

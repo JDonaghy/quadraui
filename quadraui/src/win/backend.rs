@@ -1328,7 +1328,9 @@ impl Backend for WinBackend {
         if let Some(surface) = &self.surface {
             super::terminal::draw_terminal_divider(
                 &surface.target,
-                rect,
+                rect.x,
+                rect.y,
+                rect.height,
                 &crate::theme::Theme::default(),
             );
             return;
