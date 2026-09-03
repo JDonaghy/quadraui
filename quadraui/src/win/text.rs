@@ -240,6 +240,21 @@ fn measure_text(
 /// runs per frame should hoist brush creation once real callers land
 /// (same "seam, not yet wired" posture as every other `todo!()` in
 /// `backend.rs`).
+///
+/// This is the single choke point every Win-GUI chrome rasteriser paints
+/// text through (`win::status_bar`, `win::tab_bar`, `win::activity_bar`,
+/// …, via [`DWrite::draw_text`]/[`DWrite::draw_text_styled`]), so it's
+/// also where paint-time text-run recording hooks in for
+/// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`
+/// (quadraui#721) — the Win-GUI counterpart of `gtk::painted_text::show_layout`
+/// / `macos::text::draw_text`'s recording, sharing the same thread-local
+/// sink (`crate::testing::record_text_run`). Unlike those two, Win-GUI
+/// doesn't need the `text_run_sink_active()` pre-check to skip expensive
+/// measurement work — `rect` is already the caller's own layout box (e.g.
+/// a `StatusBar` segment's hit-testable bounds), nothing left to measure —
+/// but it's checked anyway so this function's reachability (and therefore
+/// its `cfg`) matches `record_text_run`'s exactly; see that function's doc
+/// in `crate::testing` for why the two must move together.
 fn draw_text(
     target: &ID2D1RenderTarget,
     format: &IDWriteTextFormat,
@@ -247,6 +262,9 @@ fn draw_text(
     rect: Rect,
     color: Color,
 ) -> WinResult<()> {
+    if crate::testing::text_run_sink_active() {
+        crate::testing::record_text_run(text, rect);
+    }
     let wide: Vec<u16> = text.encode_utf16().collect();
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
     let layout_rect = D2D_RECT_F {

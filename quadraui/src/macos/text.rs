@@ -24,8 +24,6 @@
 //! construction and drop to `extern "C"` for `CTLineDraw` +
 //! `CGContextSetTextPosition` + matrix manipulation.
 
-use std::cell::RefCell;
-
 use core_foundation::attributed_string::{CFAttributedString, CFAttributedStringRef};
 use core_foundation::base::{CFAllocatorRef, TCFType};
 use core_foundation::boolean::CFBoolean;
@@ -208,16 +206,13 @@ unsafe fn draw_text_impl(
 // `data_table.rs`, `form.rs`, `dialog.rs`, … — so recording *here*, rather
 // than threading a recorder through every one of them, is what lets
 // `MacDriver`'s `FrameInventory::text_runs` (quadraui#488/#490/#493) exist
-// without touching any of those call sites. Thread-local rather than a
-// parameter: `draw_text` only ever has a borrowed `CGContextRef` in scope
-// (see this module's "Why direct CoreGraphics FFI" note above), no
-// `&mut MacBackend` to stash a `Vec` on, and per-test-thread isolation is
-// exactly what `cargo test`'s one-OS-thread-per-test model already gives
-// every `thread_local!`.
-
-thread_local! {
-    static TEXT_RECORDING: RefCell<Option<Vec<TextRun>>> = RefCell::new(None);
-}
+// without touching any of those call sites. `draw_text` only ever has a
+// borrowed `CGContextRef` in scope (see this module's "Why direct
+// CoreGraphics FFI" note above), no `&mut MacBackend` to stash a `Vec`
+// on — so recording goes through the thread-local sink shared by every
+// backend ([`crate::testing`], lifted here by quadraui#721 from a private
+// `thread_local!` this module used to own; see that module's doc for why
+// it's shared now).
 
 /// Start recording every subsequent [`draw_text`] call as a [`TextRun`]
 /// until [`stop_recording_text`] is called.
@@ -225,7 +220,11 @@ thread_local! {
 /// this pair when
 /// [`super::backend::MacBackend::set_painted_text_recording`] is on.
 pub(crate) fn start_recording_text() {
-    TEXT_RECORDING.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
+    // `MacBackend::enter_frame_scope` calls don't nest, so the previous
+    // sink (always `None` in practice) is discarded rather than threaded
+    // through — mirrors this function's pre-#721 behaviour, which
+    // unconditionally replaced whatever was there.
+    let _ = crate::testing::install_text_run_sink();
 }
 
 /// Stop recording and return everything captured since the matching
@@ -233,7 +232,7 @@ pub(crate) fn start_recording_text() {
 /// never started — defensive; callers only invoke this when they know
 /// they started it.
 pub(crate) fn stop_recording_text() -> Vec<TextRun> {
-    TEXT_RECORDING.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+    crate::testing::take_text_run_sink(None)
 }
 
 /// Push a [`TextRun`] for `text` at `(x, y)` — view-local points,
@@ -241,16 +240,10 @@ pub(crate) fn stop_recording_text() -> Vec<TextRun> {
 /// if recording is active. A no-op (and no [`measure_text`] call, so no
 /// extra `CTLine` layout cost) when it isn't.
 fn record_if_active(font: &CTFont, text: &str, x: f64, y: f64) {
-    TEXT_RECORDING.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        if let Some(runs) = guard.as_mut() {
-            let (w, h) = measure_text(font, text);
-            runs.push(TextRun {
-                text: text.to_string(),
-                bounds: Rect::new(x as f32, y as f32, w as f32, h as f32),
-            });
-        }
-    });
+    if crate::testing::text_run_sink_active() {
+        let (w, h) = measure_text(font, text);
+        crate::testing::record_text_run(text, Rect::new(x as f32, y as f32, w as f32, h as f32));
+    }
 }
 
 /// Build a `CTLine` carrying just the font attribute. Foreground

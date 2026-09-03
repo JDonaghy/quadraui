@@ -29,7 +29,10 @@
 //! `pangocairo`'s `show_layout`. [`show_layout`] is a drop-in replacement
 //! that reads the text and extents straight off the `pango::Layout` about
 //! to be painted, converts the Cairo current point to device (surface)
-//! coordinates, and appends the run to a thread-local sink. No rasteriser
+//! coordinates, and appends the run to the thread-local sink shared by
+//! every backend ([`crate::testing::record_text_run`], lifted here by
+//! quadraui#721 — this module used to own a private copy of the sink
+//! itself; see that module's doc for why it's shared now). No rasteriser
 //! signature changes, and the recorded bounds cannot drift from the
 //! painted glyphs because they *are* the painted glyphs' bounds.
 //!
@@ -48,59 +51,11 @@
 //! `find_bounds` still resolves those primitives to their hit-testable
 //! label rect rather than to a vertically-centred glyph run inside it.
 
-use std::cell::RefCell;
-
 use gtk4::cairo::Context;
 use gtk4::pango;
 use pangocairo::functions as pcfn;
 
 use crate::Rect;
-
-/// One recorded text run: the exact string handed to Pango and its
-/// on-surface bounds in device (pixel) coordinates.
-pub(crate) type TextRun = (String, Rect);
-
-thread_local! {
-    /// Active sink, or `None` when recording is off. Thread-local rather
-    /// than backend-owned because the rasterisers are free functions with
-    /// no backend handle; GTK painting is single-threaded, and one sink
-    /// per thread is exactly right for `cargo test`'s parallel test
-    /// threads (each `GtkDriver` lives on its own thread).
-    static SINK: RefCell<Option<Vec<TextRun>>> = const { RefCell::new(None) };
-}
-
-/// Install a fresh recording sink, returning the previous one so a
-/// (theoretically) nested paint scope can restore it. Pair with
-/// [`take_sink`].
-pub(crate) fn install_sink() -> Option<Vec<TextRun>> {
-    SINK.with(|s| s.borrow_mut().replace(Vec::new()))
-}
-
-/// Take everything recorded since [`install_sink`] and restore
-/// `previous` as the active sink (`None` = recording off again).
-pub(crate) fn take_sink(previous: Option<Vec<TextRun>>) -> Vec<TextRun> {
-    SINK.with(|s| {
-        let mut slot = s.borrow_mut();
-        let recorded = slot.take().unwrap_or_default();
-        *slot = previous;
-        recorded
-    })
-}
-
-/// Whether a sink is currently installed. Checked before doing any of
-/// the (otherwise wasted) measurement work in [`show_layout`].
-fn is_active() -> bool {
-    SINK.with(|s| s.borrow().is_some())
-}
-
-/// Append one run to the active sink. No-op when recording is off.
-fn record(text: &str, bounds: Rect) {
-    SINK.with(|s| {
-        if let Some(sink) = s.borrow_mut().as_mut() {
-            sink.push((text.to_string(), bounds));
-        }
-    });
-}
 
 /// Paint `layout` at the Cairo current point, recording the text run
 /// into the active sink first.
@@ -116,12 +71,9 @@ fn record(text: &str, bounds: Rect) {
 /// before delegating) still records absolute surface coordinates — the
 /// space `GtkDriver::click` takes.
 pub(crate) fn show_layout(cr: &Context, layout: &pango::Layout) {
-    if is_active() {
+    if crate::testing::text_run_sink_active() {
         if let Ok((ux, uy)) = cr.current_point() {
             let text = layout.text();
-            // Whitespace-only runs (selection prefixes, alignment pads,
-            // blank rows) can never be a useful `find` needle and would
-            // bury the real labels in `painted_texts()` output.
             if !text.trim().is_empty() {
                 let (w_px, h_px) = layout.pixel_size();
                 let (dx, dy) = cr.user_to_device(ux, uy);
@@ -132,7 +84,7 @@ pub(crate) fn show_layout(cr: &Context, layout: &pango::Layout) {
                 let (dw, dh) = cr
                     .user_to_device_distance(w_px as f64, h_px as f64)
                     .unwrap_or((w_px as f64, h_px as f64));
-                record(
+                crate::testing::record_text_run(
                     text.as_str(),
                     Rect::new(dx as f32, dy as f32, dw as f32, dh as f32),
                 );
@@ -268,23 +220,23 @@ mod tests {
         let layout = pangocairo::functions::create_layout(&cr);
         layout.set_text("shifted");
 
-        let prev = super::install_sink();
+        let prev = crate::testing::install_text_run_sink();
         cr.save().ok();
         cr.translate(30.0, 12.0);
         cr.move_to(5.0, 3.0);
         super::show_layout(&cr, &layout);
         cr.restore().ok();
-        let runs = super::take_sink(prev);
+        let runs = crate::testing::take_text_run_sink(prev);
 
         assert_eq!(runs.len(), 1, "one run should have been recorded");
-        let (text, bounds) = &runs[0];
-        assert_eq!(text, "shifted");
+        let run = &runs[0];
+        assert_eq!(run.text, "shifted");
         assert_eq!(
-            (bounds.x, bounds.y),
+            (run.bounds.x, run.bounds.y),
             (35.0, 15.0),
             "translate must be folded into the recorded origin"
         );
-        assert!(bounds.width > 0.0 && bounds.height > 0.0);
+        assert!(run.bounds.width > 0.0 && run.bounds.height > 0.0);
     }
 
     /// Whitespace-only runs (alignment pads, blank rows, selection
@@ -296,16 +248,16 @@ mod tests {
         let cr = Context::new(&surface).expect("context");
         let layout = pangocairo::functions::create_layout(&cr);
 
-        let prev = super::install_sink();
+        let prev = crate::testing::install_text_run_sink();
         for text in ["", "   ", "real"] {
             layout.set_text(text);
             cr.move_to(0.0, 0.0);
             super::show_layout(&cr, &layout);
         }
-        let runs = super::take_sink(prev);
+        let runs = crate::testing::take_text_run_sink(prev);
 
         assert_eq!(runs.len(), 1, "only the non-blank run should record");
-        assert_eq!(runs[0].0, "real");
+        assert_eq!(runs[0].text, "real");
     }
 
     /// Painting outside an installed sink must not record — and must
@@ -319,8 +271,8 @@ mod tests {
         cr.move_to(0.0, 0.0);
         super::show_layout(&cr, &layout);
 
-        let prev = super::install_sink();
-        let runs = super::take_sink(prev);
+        let prev = crate::testing::install_text_run_sink();
+        let runs = crate::testing::take_text_run_sink(prev);
         assert!(
             runs.is_empty(),
             "a run painted before the sink existed must not leak into it: {runs:?}"

@@ -35,6 +35,15 @@
 //! 2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
 //!    works identically on every backend.
 
+// Only pulled in by the paint-time text-run recording sink below, which
+// is itself gated to the pixel backends that need it (`gtk`/`win`/`macos`
+// — see that section's doc) — TUI has no analogous need (its `find` scans
+// a character grid instead), so this import must be gated in lock-step or
+// a `--features tui` build (no pixel backend) flags it unused under
+// `-D warnings`.
+#[cfg(any(feature = "gtk", feature = "win", feature = "macos"))]
+use std::cell::RefCell;
+
 use crate::runner::{AppLogic, Reaction};
 use crate::{Key, Modifiers, NamedKey, Point, Rect, ScrollDelta, UiEvent, WidgetId};
 
@@ -77,6 +86,134 @@ pub enum Anchor {
 pub struct TextRun {
     pub text: String,
     pub bounds: Rect,
+}
+
+// ── Shared paint-time text-run recording sink (quadraui#721) ───────────
+//
+// GTK (`gtk::painted_text::show_layout`, quadraui#489) and macOS
+// (`macos::text::draw_text`, quadraui#493) each need to record a
+// `(text, bounds)` run at the exact point their backend paints text, so
+// `find`/`find_bounds`/`inventory`/`screen_has` can locate any
+// text-bearing primitive without a per-primitive opt-in. Neither call
+// site has a `&mut Backend` in scope to push the run onto — GTK's
+// rasterisers are free functions handed only a `&cairo::Context`,
+// macOS's `draw_text` is handed only a borrowed `CGContextRef` (see that
+// module's "Why direct CoreGraphics FFI" doc) — so both back onto a
+// thread-local sink instead. Win-GUI's `DWrite::draw_text` (win/text.rs)
+// is the same shape: a `&ID2D1RenderTarget`, no backend handle.
+//
+// This was a thread-local *duplicated* in `gtk::painted_text` and
+// `macos::text` until quadraui#721 lifted it here — the one shared
+// implementation every backend's paint-time recorder now wraps, per
+// `docs/PRIMITIVE_RULES.md`'s primitive-first rule (#713): a shared
+// concern gets one implementation with per-backend adapters over it, not
+// N independent copies.
+//
+// Thread-local rather than a static: GTK painting is single-threaded and
+// this pairs with `cargo test`'s one-thread-per-test model exactly as
+// `gtk::painted_text`'s original doc explained — each headless driver
+// (`GtkDriver`/`MacDriver`/`WinDriver`) lives on its own test thread, so
+// one sink per thread is exactly right and needs no locking.
+//
+// Two distinct cfg predicates gate this section, not one, because the
+// three backends reach it through call sites with different OS gating:
+//
+// - `WinBackend::begin_frame`/`end_frame` (`win/backend.rs`) call
+//   `install_text_run_sink`/`take_text_run_sink` unconditionally under
+//   `feature = "win"` — those two methods are never `cfg(target_os)`-gated
+//   themselves (only the real Direct2D calls inside their bodies are), so
+//   `--features win` alone reaches them on *any* host, Linux included
+//   (`ci.yml`'s ubuntu-only "Compile check (win feature)" step).
+// - `gtk::painted_text::show_layout` / `macos::text::draw_text` /
+//   `win::text::draw_text` call `text_run_sink_active`/`record_text_run`
+//   — but `win::text` is itself `cfg(target_os = "windows")`-gated (see
+//   its module doc), so under `--features win` on a non-Windows host
+//   those two calls don't exist anywhere in the crate.
+//
+// A single shared predicate would therefore leave `text_run_sink_active`/
+// `record_text_run` `dead_code` (→ build failure under this crate's
+// workflow-wide `-D warnings`) on that ubuntu leg specifically, even
+// though `install_text_run_sink`/`take_text_run_sink` are genuinely used
+// there. TUI needs neither group at all — its `find` scans a character
+// grid instead of a sink.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+thread_local! {
+    static TEXT_RUN_SINK: RefCell<Option<Vec<TextRun>>> = const { RefCell::new(None) };
+}
+
+/// Install a fresh recording sink, returning the previous one so a
+/// (theoretically) nested paint scope can restore it. Pair with
+/// [`take_text_run_sink`]. `pub(crate)`: each backend's own paint-time
+/// recording module (`gtk::painted_text`, `macos::text`, `win::text`)
+/// wraps this rather than exposing the raw sink outside the crate.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn install_text_run_sink() -> Option<Vec<TextRun>> {
+    TEXT_RUN_SINK.with(|s| s.borrow_mut().replace(Vec::new()))
+}
+
+/// Take everything recorded since [`install_text_run_sink`] and restore
+/// `previous` as the active sink (`None` = recording off again).
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn take_text_run_sink(previous: Option<Vec<TextRun>>) -> Vec<TextRun> {
+    TEXT_RUN_SINK.with(|s| {
+        let mut slot = s.borrow_mut();
+        let recorded = slot.take().unwrap_or_default();
+        *slot = previous;
+        recorded
+    })
+}
+
+/// Whether a sink is currently installed. Backends that would otherwise
+/// do real measurement work before recording a run (GTK: converting
+/// Cairo's current point + Pango pixel size to device coordinates; macOS:
+/// `measure_text`) check this first so that work is skipped entirely
+/// when recording is off — Win-GUI does too (its bounds are already in
+/// hand, but the check keeps this function's reachability, and therefore
+/// its `cfg`, identical to [`record_text_run`]'s — see this section's
+/// top-level comment for why that has to match exactly).
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
+))]
+pub(crate) fn text_run_sink_active() -> bool {
+    TEXT_RUN_SINK.with(|s| s.borrow().is_some())
+}
+
+/// Append one run to the active sink. No-op when recording is off.
+///
+/// Skips whitespace-only `text` (alignment pads, blank rows, selection
+/// prefixes): those can never be a useful `find` needle and would bury
+/// the real labels in `painted_texts()` output.
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
+))]
+pub(crate) fn record_text_run(text: &str, bounds: Rect) {
+    if text.trim().is_empty() {
+        return;
+    }
+    TEXT_RUN_SINK.with(|s| {
+        if let Some(sink) = s.borrow_mut().as_mut() {
+            sink.push(TextRun {
+                text: text.to_string(),
+                bounds,
+            });
+        }
+    });
 }
 
 /// One registered widget zone (a hit-testable region) painted during a
@@ -460,6 +597,116 @@ pub trait ConformanceDriver: Sized {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── Shared text-run recording sink (quadraui#721) ────────────────────
+    //
+    // Gated to match `record_text_run`/`text_run_sink_active`'s own cfg
+    // (the narrower of the sink module's two predicates — see its
+    // top-level comment): every function this sub-module exercises must
+    // actually exist under whichever single-backend feature combination
+    // is compiling it, and `install_text_run_sink`/`take_text_run_sink`
+    // are available under strictly more feature combinations than that
+    // (`--features win` alone on a non-Windows host, in particular) — so
+    // gating on the narrower predicate is what guarantees all four names
+    // resolve together.
+    #[cfg(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    ))]
+    mod text_run_sink {
+        use super::*;
+
+        /// Recording is off by default: [`record_text_run`] must be a
+        /// no-op until [`install_text_run_sink`] has been called — the "a
+        /// live app never pays for this" contract every backend's own
+        /// recording toggle (`GtkBackend::set_painted_text_recording`,
+        /// etc.) relies on.
+        #[test]
+        fn record_is_a_no_op_with_no_sink_installed() {
+            // No `install_text_run_sink()` call — proves recording
+            // doesn't leak across tests via some global default, and
+            // that a run painted with nothing installed is silently
+            // dropped, not buffered somewhere it could resurface later.
+            record_text_run("stray", Rect::new(0.0, 0.0, 1.0, 1.0));
+            let prev = install_text_run_sink();
+            let runs = take_text_run_sink(prev);
+            assert!(
+                runs.is_empty(),
+                "a run recorded before any sink existed must not appear once one is installed: {runs:?}"
+            );
+        }
+
+        #[test]
+        fn install_then_record_then_take_round_trips_one_run() {
+            assert!(!text_run_sink_active());
+            let prev = install_text_run_sink();
+            assert!(text_run_sink_active());
+
+            record_text_run("hello", Rect::new(1.0, 2.0, 3.0, 4.0));
+
+            let runs = take_text_run_sink(prev);
+            assert_eq!(
+                runs,
+                vec![TextRun {
+                    text: "hello".into(),
+                    bounds: Rect::new(1.0, 2.0, 3.0, 4.0),
+                }]
+            );
+            assert!(
+                !text_run_sink_active(),
+                "take_text_run_sink(None) must leave recording off again"
+            );
+        }
+
+        /// Whitespace-only runs (alignment pads, blank rows, selection
+        /// prefixes) are dropped — they can never be a useful `find`
+        /// needle.
+        #[test]
+        fn whitespace_only_runs_are_not_recorded() {
+            let prev = install_text_run_sink();
+            for text in ["", "   ", "real"] {
+                record_text_run(text, Rect::new(0.0, 0.0, 1.0, 1.0));
+            }
+            let runs = take_text_run_sink(prev);
+            assert_eq!(
+                runs.len(),
+                1,
+                "only the non-blank run should record: {runs:?}"
+            );
+            assert_eq!(runs[0].text, "real");
+        }
+
+        /// [`install_text_run_sink`] returns the previous sink so a
+        /// (theoretically) nested paint scope can restore it exactly —
+        /// [`take_text_run_sink`]'s `previous` parameter — rather than
+        /// clobbering an outer scope's in-flight recording.
+        #[test]
+        fn nested_install_restores_the_outer_sink_on_take() {
+            let outer_prev = install_text_run_sink();
+            record_text_run("outer-before", Rect::new(0.0, 0.0, 1.0, 1.0));
+
+            let inner_prev = install_text_run_sink();
+            record_text_run("inner", Rect::new(0.0, 0.0, 1.0, 1.0));
+            let inner_runs = take_text_run_sink(inner_prev);
+            assert_eq!(inner_runs.len(), 1);
+            assert_eq!(inner_runs[0].text, "inner");
+
+            // The outer sink is active again and still carries its own
+            // earlier run — the inner scope's recording didn't bleed
+            // into it.
+            assert!(text_run_sink_active());
+            record_text_run("outer-after", Rect::new(0.0, 0.0, 1.0, 1.0));
+            let outer_runs = take_text_run_sink(outer_prev);
+            assert_eq!(
+                outer_runs
+                    .iter()
+                    .map(|r| r.text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["outer-before", "outer-after"]
+            );
+        }
+    }
 
     /// A small hand-built inventory: an activity-bar-style icon column
     /// (`"E"`, `"S"`, `"G"` stacked at x=0..2) to the left of a sidebar
