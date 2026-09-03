@@ -1369,3 +1369,226 @@ sites — grepped separately, zero hits on every symbol below):
 No consumer hit requires any call-site change. `last_error()` and the
 `_result` twins are additive and opt-in; a consumer that never calls
 them observes no difference at all.
+
+## D-010 — `UiEvent` emission conformance matrix; disposition of the five never-emitted variants; `CharTyped` vs. `KeyPressed{Char}` (issue #501)
+
+### Question
+
+`SMELL_AUDIT_2026-07.md`'s PORT-04 verified-emitter scan found five
+`UiEvent` variants no backend constructed anywhere in-repo —
+`WindowClose`, `MouseEntered`, `MouseLeft`, `FilesDropped`,
+`DpiChanged` — and flagged a sixth problem: GTK's text input arrives
+only as `KeyPressed{Key::Char}`, never `CharTyped`, while TUI/macOS were
+believed to emit both. Issue #501 asked, per variant: wire it, mark it
+an optional capability, or remove it (pre-1.0 allows breaking); and for
+`CharTyped`/`KeyPressed{Char}`, pick one canonical text-input event and
+make backends conform.
+
+Two things had changed by the time this issue ran, both discovered by
+re-verifying rather than trusting the July scan:
+
+1. **`WindowClose` and `DpiChanged` are no longer "never emitted."**
+   `win/run.rs`'s `WM_CLOSE`/`WM_DPICHANGED` handlers construct both
+   (`win/run.rs:466,611`) — real code, not a stub, predating this issue.
+   Only GTK and macOS still had the gap for `WindowClose`; only GTK and
+   macOS still had it for `DpiChanged`. TUI has no OS window at all, so
+   it is correctly exempt from both, not "missing" them.
+2. **The audit's `CharTyped` row (`tui ✅ / gtk ❌ / macos ✅`) doesn't
+   hold today.** Re-checked directly: `tui::events::crossterm_to_uievents`
+   translates every printable keystroke to `KeyPressed{Key::Char}` and
+   has no `CharTyped` arm at all; `macos::events::ns_key_to_uievent`
+   does the same (`Key::Char(base)`/`Key::Char(first)`,
+   `macos/events.rs:162,170`). **No backend constructs `UiEvent::CharTyped`
+   from native input anywhere in this repo.** The only places that
+   construct it are `compose/{sidebar_system,tree_controller,chat_controller}.rs`'s
+   own `handle` methods (as something they'd react to *if* fed one —
+   directly, in tests, or by a future backend) and `folder_picker.rs`'s
+   test suite (which constructs one specifically to prove its handler
+   *ignores* it — see that file's `# Why not CharTyped` doc, added
+   before this issue and already reaching the conclusion this decision
+   formalises).
+
+### Method
+
+Per variant: `grep -rn 'UiEvent::<Variant>' quadraui/src` (excluding
+the definition site) to find every real construction, distinguishing
+translation-layer construction (a native event → this variant, what
+"emits" means) from unrelated matches (`match` arms in app-level
+compose helpers, doc-comment mentions, `#[cfg(test)]` fixtures that
+build one directly to test a *consumer*). Then, per D-008's established
+gate, `grep -rn '<Variant>' ~/src/vimcode/src ~/src/coord-tui/src` —
+this repo's grep alone answers "does any backend emit it," not "does
+any consumer need it," and the July audit's methodology mistake on
+five other symbols (§D-008) was exactly trusting the narrower grep.
+
+### Downstream impact — grep evidence
+
+```
+$ grep -rn '\bWindowClose\b'   ~/src/vimcode/src ~/src/coord-tui/src
+vimcode/src/gtk/mod.rs:7144:            UiEvent::WindowClose => {
+$ grep -rn '\bMouseEntered\b'  ~/src/vimcode/src ~/src/coord-tui/src
+(no hits)
+$ grep -rn '\bMouseLeft\b'     ~/src/vimcode/src ~/src/coord-tui/src
+(no hits)
+$ grep -rn '\bFilesDropped\b'  ~/src/vimcode/src ~/src/coord-tui/src
+(no hits)
+$ grep -rn '\bDpiChanged\b'    ~/src/vimcode/src ~/src/coord-tui/src
+(no hits)
+$ grep -rn '\bCharTyped\b'     ~/src/vimcode/src ~/src/coord-tui/src
+vimcode/src/gtk/mod.rs:6959:            UiEvent::CharTyped(c) => {
+vimcode/src/gtk/mod.rs:6960:                // Ctrl-modified characters arrive via KeyPressed; CharTyped is
+```
+
+Two of the six have a real external consumer, and both are exactly the
+"this repo's own grep would have said DELETE and been wrong" shape
+D-008 warned about:
+
+- **`WindowClose`**: `~/src/vimcode/src/gtk/mod.rs:7144`'s
+  `AppLogic::handle` arm calls `self.show_quit_confirm()` — an
+  unsaved-changes veto prompt. Since GTK never emitted this event
+  before this issue, clicking vimcode's GTK window's "×" went straight
+  to GTK's own default close handling with **no** `UiEvent` in between:
+  `show_quit_confirm` was unreachable dead code on a real click, and a
+  user with unsaved changes lost them silently. `win/run.rs:611-620`'s
+  `WM_CLOSE` handler comment ("matching the GTK runner's
+  `Reaction::Exit => window.close()`") already assumed GTK did this —
+  it didn't.
+- **`CharTyped`**: same file, `:6959`, inside the identical `handle`
+  arm — reserved by vimcode's own comment for "IME-composed printable
+  characters only," explicitly *not* the general typing path (which the
+  adjacent `KeyPressed` arm already covers, `:6910-6949`). Confirms
+  §"CharTyped vs. KeyPressed{Char}" below independently: vimcode's own
+  reference implementation already treats `KeyPressed{Char}` as the
+  live text-input path and reserves `CharTyped` for IME.
+
+`MouseEntered`/`MouseLeft`/`FilesDropped`/`DpiChanged`: zero hits in
+either consumer, and (per the re-verification above) zero real
+constructors in this repo either — genuinely unshipped, not merely
+in-repo-quiet the way D-008's eight kept `*Event` enums were.
+
+### Disposition
+
+**`WindowClose` — WIRE (GTK; issue #501's own scope). Required
+capability on every windowed backend; N/A on TUI.** Fixed in this PR:
+`gtk::run::activate` now calls `window.connect_close_request`, funnels
+the OS close through the same `dispatch_event` every other GTK signal
+uses, and maps the app's outcome the way `win/run.rs` already documented
+wanting — `Reaction::Exit` → `glib::Propagation::Proceed` (let the OS
+proceed), anything else → `glib::Propagation::Stop` (veto, keep the
+window open). `win/run.rs`'s `WM_CLOSE` arm already did this; GTK was
+the one gap. **macOS is not wired by this PR** — `macos::run` has no
+`windowShouldClose:`/`applicationShouldTerminate:` delegate method
+today, and wiring it belongs with #486's window-lifecycle scope, not
+this issue's event-taxonomy scope. Filed as a follow-up (coordinator:
+please open) rather than silently left undocumented — see *Follow-ups*
+below. TUI is correctly exempt: a terminal has no OS window distinct
+from the process, so there is no "close" to observe independent of the
+process exiting (Ctrl-C, `q`, or whatever accelerator the app itself
+defines already covers that via `Reaction::Exit`).
+
+**`MouseEntered` / `MouseLeft` — KEEP, OPTIONAL capability, not wired
+by this PR.** Zero consumers anywhere (in-repo or downstream) and no
+backend emits either today. Not the D-008 DELETE shape: those 14 dead
+`*Event` enums each duplicated a `*Hit`/`*Layout` pair that already
+shipped the same information through a different, working path: no such
+substitute exists for hover enter/leave. Hover state is real,
+plausible near-future work (tooltip auto-show-on-hover, hover
+highlighting on activity-bar/tab items) that both GTK
+(`EventControllerMotion`'s `enter`/`leave` signals) and a future macOS
+backend (`NSTrackingArea`) can wire cheaply once a primitive actually
+needs it — deleting the variant now would just mean re-adding it later
+under time pressure for the same "no present benefit" reason D-008 kept
+`ModalEntry`. Declared, not wired: `BackendCaps` has no field for this
+yet (see *Follow-ups*).
+
+**`FilesDropped` — KEEP, OPTIONAL capability, not wired by this PR.**
+Same reasoning as `MouseEntered`/`MouseLeft`: zero consumers, no
+emitter, no substitute mechanism, real plausible future need
+(drag-a-file-onto-the-explorer-sidebar import). GTK's `Gtk::DropTarget`
+and a future Win `WM_DROPFILES`/`IDropTarget` are both real, just
+unbuilt. Declared, not wired.
+
+**`DpiChanged` — OPTIONAL capability; already wired on Win, not
+extended to GTK by this PR.** Win emits it from `WM_DPICHANGED`
+(`win/run.rs:466`) — real, working code, not a stub. GTK reads
+`scale_factor()` exactly once, at smoke-check time
+(`gtk/run.rs::schedule_smoke_check`), but never on a live runtime DPI
+change (monitor move, external monitor plug/unplug while the window is
+open) — that gap is PORT-12's, a distinct, larger DPI/scaling design
+story this issue doesn't reopen. TUI is always `scale == 1.0` and
+correctly never emits it. Kept required-on-Win/optional-elsewhere
+rather than "required everywhere" because GTK's runtime case is
+unbuilt and TUI's is inapplicable by construction, not by oversight.
+
+**`CharTyped` vs. `KeyPressed{Key::Char}` — not a duality to collapse
+into one; they were never duplicates, the doc comment just described
+them as if they were.** `event.rs`'s prior doc on `CharTyped` ("a
+character was typed, ready for insertion … this is a direct
+keystroke-to-char translation, not the result of IME composition")
+directly contradicted vimcode's own `AppLogic::handle` arm for it
+("IME-composed printable characters only") — and contradicted this
+crate's *own* compose helpers: `folder_picker.rs` deliberately listens
+to `KeyPressed{Char}` **only**, with a doc comment already explaining
+why (avoiding a double-insert "if a future backend emits `CharTyped`
+too"), while `sidebar_system.rs`/`tree_controller.rs` match `CharTyped`
+for their edit-typing path *in addition to* `Key::Char` inside
+`KeyPressed` (`tree_controller.rs:272,506`) — both unconditionally
+calling `edit_insert_char`. That's the exact double-insert hazard
+`folder_picker.rs` was written to dodge, currently latent only because
+no backend emits `CharTyped` yet.
+
+Resolution: **`KeyPressed{Key::Char}` is the canonical, always-on
+text-input event — required on every backend, already emitted by all
+of them.** `CharTyped` is re-scoped, in its doc comment (this PR), to
+mean exclusively "an IME committed composed text for one character" —
+a distinct signal with no `KeyPressed` equivalent, not a second way to
+report an ordinary keystroke. Consequence for a future IME
+implementation (#502): while a composition is in progress, the raw
+keydowns must **not** also reach the app as `KeyPressed` — that's how
+every native IME already behaves (the IME consumes them), so the two
+events are naturally mutually exclusive per keystroke once IME lands
+correctly, and `sidebar_system`/`tree_controller`'s existing
+"listen to both" handlers are correct *as long as that invariant
+holds*. Recorded here explicitly so #502's implementation is measured
+against it rather than rediscovering the hazard.
+
+### What this does NOT mean
+
+- It does not mean `MouseEntered`/`MouseLeft`/`FilesDropped`/GTK's
+  runtime `DpiChanged` are cancelled. They're recorded as intentionally
+  unwired-but-kept, same status as D-008's eight kept `*Event` enums —
+  a future issue that wires one needs its own justification (a
+  primitive that needs hover, a sidebar that needs drop-import), not a
+  re-read of this entry.
+- It does not mean macOS's `WindowClose` gap is resolved. It is
+  explicitly **not** wired by this PR; #486 (or a new follow-up, if
+  #486's scope doesn't cover it) owns that.
+- It does not mean `BackendCaps` gained new fields for the optional
+  variants above. `docs/BACKEND.md`'s emission matrix records the
+  required/optional status in prose; wiring it into `BackendCaps` (so
+  `tests/conformance/caps.rs`'s honesty check and scenario `requires:`
+  can reference it mechanically) is real follow-up work, not done here.
+- It does not mean `CharTyped` is now "IME-only" as an implementation
+  detail nobody else should touch. It's a public, documented contract
+  change for backend authors: **do not emit `CharTyped` for a plain,
+  non-IME keystroke**, full stop, because two real in-tree consumers
+  will double-insert if you do.
+
+### Follow-ups (issues to file — not filed by this PR; workers don't
+have GitHub write access, coordinator: please open against #481)
+
+1. Wire `WindowClose` for macOS (`macos::run`'s window-close delegate
+   methods) — likely folds into #486, confirm scope first.
+2. Wire `DpiChanged` for GTK's live runtime case (`notify::scale-factor`
+   on the surface, debounced like resize) — PORT-12's scope.
+3. Add `BackendCaps` fields for the four optional-capability variants
+   (`MouseEntered`/`MouseLeft` as one flag — they're always emitted or
+   not as a pair — plus `FilesDropped`, plus a GTK-runtime `dpi_live`
+   distinct from Win's already-working case) once a real consumer wants
+   one, so `tests/conformance/caps.rs`'s honesty check and scenario
+   `requires:` can reference them mechanically instead of only in prose.
+4. Build the Tier C2 "native-injection recipe" harness beyond the
+   mouse/key/scroll/resize slice this issue adds
+   (`quadraui/tests/conformance/c2.rs`) — `DoubleClick`, `Accelerator`,
+   `ClipboardPaste`, `TextCopied` still need their own per-backend
+   proof-of-emission rows.
