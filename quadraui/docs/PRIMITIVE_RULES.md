@@ -322,7 +322,98 @@ work on `gtk/backend.rs`) blocks that backend's migration, not the
 others.** Migrate every backend whose files are free; leave the
 blocked one's duplication in place with a comment pointing at the
 tracking issue, and land what's clean rather than waiting on the whole
-set.
+set. **Before using this escape hatch, read "A fence is a debt, and it
+needs an owner" below — it has already produced one shipped bug
+(#710).**
+
+## Primitive-first: a new primitive lands its layout shared, before any backend paints it (#481)
+
+The "Shared pixel-layout math" rule above tells you how to *migrate*
+duplication that already exists. This rule exists because migrating is
+not enough: **the lift rate has been lower than the copy rate.**
+
+### The measurement that produced this rule
+
+A function-level re-audit on 2026-09-03 (`develop` @ `7f00f73`) compared
+`gtk/` and `macos/` against the same measurement taken in July
+(`73172ff`) — contiguous byte-identical production runs of eight
+normalised lines or more:
+
+| | July `73172ff` | 2026-09-03 `7f00f73` |
+|---|---|---|
+| contiguous identical lines, gtk↔macos | 626 | **757** (+21%) |
+| whole functions identical | 113 | **219** |
+
+#498 and #499 **worked where they were applied** — `services.rs` 15→0,
+`backend.rs` 37→0, `tree.rs` 30→19, `multi_section_view.rs` 49→24, and
+every exhibit the July audit named is gone. That is roughly −90 lines.
+
+In the same window roughly **+220 lines of new duplication arrived**:
+`testing.rs` 0→87, `board.rs` 0→44, `diff_view.rs` 0→34,
+`activity_bar.rs` 0→24. macOS had no `board.rs`, `diff_view.rs` or
+`testing.rs` in July — each arrived as a copy of GTK's. The `Toolbar`
+button-measure formula now exists in **five** places and they agree by
+luck, not by construction.
+
+So the per-primitive lifts were correct and effective, and the number
+still went up, because nothing stopped the next primitive arriving as N
+copies.
+
+**Rule: a new primitive's layout, measurement and state-resolution land
+in `quadraui/src/primitives/` in the same PR that introduces it — before
+any backend paints it. A backend file may only add an executor.**
+
+An "executor" is code that takes a `*Layout` / `*Measure` the shared
+code produced and issues native drawing calls. If a backend file
+computes *what* to paint rather than *how* — which theme colour a
+hover/pressed/focused state resolves to, which glyph a status or badge
+maps to, where a row starts, whether a scrollbar is needed — that
+belongs in `primitives/`.
+
+Concretely, these all belong shared and none of them may be written a
+second time in a second backend:
+
+- `status → glyph` and `status → colour` tables (`pipeline_view`'s
+  status icons, `board`'s badges, `toast`'s severity background)
+- geometry constants (`*_BOARD_*_PX`, `TOAST_*`, and the ~40 others
+  currently duplicated with identical values across backends)
+- scroll-offset resolution, including keeping a selection visible
+- `needs_hscrollbar`-style reservations that hit-test and paint must
+  agree on
+
+### Porting a primitive to a new backend
+
+When you add backend N+1's copy of an existing primitive, you are not
+"porting" it — you are **splitting it**. Extract the shared half into
+`primitives/` first, reduce the existing backends to executors in that
+same PR, and then write the new backend's executor. Copying
+`gtk/<name>.rs` to `<newbackend>/<name>.rs` and editing the draw calls
+is how `board.rs`, `diff_view.rs` and `activity_bar.rs` became twins,
+and it is what a Windows or web backend will do to every remaining
+primitive unless this is enforced at review.
+
+### A fence is a debt, and it needs an owner
+
+The "Shared pixel-layout math" rule permits leaving a blocked backend's
+duplication in place behind a comment pointing at a tracking issue.
+**That escape hatch has already failed once.** `GtkBackend::form_layout`
+carried a comment reading *"fenced by concurrent #683 work … migrate
+this one once #683 lands. Tracking: #499."* #683 landed; nobody came
+back; GTK kept measuring `TextArea` as `row_h * visible_rows` while its
+own painter drew one row, so every row below a `TextArea` hit-tested to
+the `TextArea` (#710).
+
+If you fence a file:
+
+- name the issue that **unblocks** it, not just the issue that tracks
+  the migration — a reader needs to know what to watch for;
+- open a follow-up issue *at fence time* to remove the fence, and link
+  it in the comment. A comment is not a work item;
+- state what the duplication currently does differently, so the next
+  reader can tell a deliberate difference from drift.
+
+A fence whose blocker has closed is a bug waiting to be found, not
+technical debt being managed.
 
 ## Native-vs-painted menu convention
 
