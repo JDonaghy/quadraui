@@ -191,6 +191,53 @@ backend uses).
 minimal stub set; real backends will replace each method with a
 platform-native call.
 
+## Error reporting: `Unsupported` vs `PlatformFailure` vs `SurfaceLost`
+
+The trait has no `Result` anywhere by default, and stays that way for
+`draw_*` and the four CSD `bool` methods (`begin_window_drag`,
+`toggle_window_maximize`, `begin_window_resize`, `set_cursor`) — see
+`DECISIONS.md` D-009 for the full reasoning. Two seams do get a minimal
+error channel, both additive (existing implementors compile unchanged
+until they opt in):
+
+**`Backend::last_error(&mut self) -> Option<BackendError>`** — default
+`None`. If your backend can genuinely fail at `begin_frame`, `end_frame`,
+`poll_events`, or `wait_events` (a lost D3D device, a closed terminal
+file descriptor — TUI and GTK today have no such failure mode and can
+leave the default alone), stash a `BackendError` in an internal field
+from whichever of those four calls hit it, and return/clear it from
+`last_error()`. Callers poll this once per loop iteration (conventionally
+right after `end_frame`); don't expect them to `match` on every
+individual call's return, because there isn't one.
+
+**`PlatformServices`'s `show_file_open_dialog_result` /
+`show_file_save_dialog_result` / `show_message_dialog_result`** — each
+defaults to wrapping the existing `Option`-returning method in `Ok(..)`.
+Override the `_result` twin (not the original) once your backend can
+distinguish "user cancelled" (`Ok(None)`, unchanged meaning) from "the
+native call itself failed" (`Err(BackendError::PlatformFailure { context })`)
+— e.g. a non-cancel `HRESULT` from `IFileOpenDialog::Show`, or a
+`GtkFileChooserNative` response your mapping doesn't recognize. Leave
+the original method alone; it stays the simpler path for callers that
+only care about cancel-vs-picked.
+
+`BackendError::Unsupported` is for the narrow case where `BackendCaps`
+says a surface is supported in general but one specific request can't be
+serviced (a dialog shape your native API has no representation for) —
+**not** a second way to say "I don't implement this at all." A whole
+missing surface is a `BackendCaps` field left `false`; reaching for
+`Unsupported` there duplicates a vocabulary `tests/conformance/caps.rs`
+already checks mechanically. See `BackendCaps`'s own doc comment
+("This is the *only* capability vocabulary") and D-009's capability-vs-
+error table.
+
+`draw_*` methods stay infallible. A backend that hits a native paint
+failure mid-frame (a Cairo call erroring, a Direct2D call against a lost
+device) records into the same `last_error()` field `begin_frame`/
+`end_frame` use, and returns normally so the rest of the frame still
+paints — `last_error()` after `end_frame` is where that surfaces, not a
+per-`draw_*` return value.
+
 ## Glossary
 
 - **Accelerator**: a stable `AcceleratorId` + `KeyBinding` registered
