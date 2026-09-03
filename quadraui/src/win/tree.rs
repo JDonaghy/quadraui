@@ -29,7 +29,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
-use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
 
@@ -39,40 +39,16 @@ use crate::types::Decoration;
 /// boundary are derived from it exactly as [`draw_tree`] does, so a
 /// no-paint hit-test call always agrees with what the last paint drew.
 ///
-/// `chevron_end_x` is a **layout estimate** (`line_height * 0.65` for
-/// the glyph width), not a real `DWrite::measure_text` call — mirrors
-/// `gtk::tree::gtk_tree_layout`'s identical shortcut, since exact glyph
-/// metrics aren't available without laying out each chevron per row.
+/// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
+/// (#499, adopted for `win/` by #701) — the row-pitch/chevron math is
+/// identical across every pixel backend, so it lives there once instead
+/// of once per backend. `chevron_end_x` is a **layout estimate**
+/// (`line_height * 0.65` for the glyph width), not a real
+/// `DWrite::measure_text` call — same shortcut `gtk::tree::gtk_tree_layout`
+/// / `macos::tree::mac_tree_layout` take, since exact glyph metrics
+/// aren't available without laying out each chevron per row.
 pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeViewLayout {
-    let header_height = (line_height * 1.2).round();
-    let item_height = tree
-        .style
-        .row_height
-        .map(|h| h as f32)
-        .unwrap_or(line_height * 1.4)
-        .round();
-    let indent_px = (line_height * 0.9).round();
-    let show_chevrons = tree.style.show_chevrons;
-
-    tree.layout(rect.width, rect.height, |i| {
-        let row = &tree.rows[i];
-        let is_header = matches!(row.decoration, Decoration::Header);
-        let row_h = if is_header {
-            header_height
-        } else {
-            item_height
-        };
-        let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
-            let est_glyph_w = line_height * 0.65;
-            Some(2.0 + row.indent as f32 * indent_px + est_glyph_w + 4.0)
-        } else {
-            None
-        };
-        TreeRowMeasure {
-            height: row_h,
-            chevron_end_x,
-        }
-    })
+    crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64)
 }
 
 /// Draw a [`TreeView`] into `rect` (DIPs) on `target`. Returns the

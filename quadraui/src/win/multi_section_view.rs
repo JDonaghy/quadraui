@@ -16,7 +16,10 @@
 //! [`draw_multi_section_view`] consumes the same layout for paint.
 //! `WinBackend::msv_layout` calls [`win_msv_layout`] directly so paint
 //! and click share one source of truth (see `super::backend`'s
-//! `msv_layout`/`msv_metrics` methods).
+//! `msv_layout`/`msv_metrics` methods). Both, and the section
+//! body-measurement they drive, are thin wrappers over
+//! [`crate::primitives::layout_metrics`] (#499, adopted for `win/` by
+//! #701) rather than a third hand-derived copy of the GTK/macOS math.
 //!
 //! Vertical-only in v1 (per #294 / D-003 in
 //! `quadraui/docs/DECISIONS.md`); horizontal sections fall through to a
@@ -58,7 +61,7 @@ use super::text::{blend, fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
-    SectionBody, SectionHeader, SectionMeasure,
+    SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
 use crate::types::{Color, StyledText};
@@ -68,16 +71,11 @@ use crate::types::{Color, StyledText};
 /// the same metrics so paint and click resolve to the same bounds.
 /// Matches `mac_msv_metrics` / `gtk::multi_section_view::metrics_for`'s
 /// convention exactly.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
+/// (#499) — identical math across every pixel backend.
 pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> LayoutMetrics {
-    LayoutMetrics {
-        header_size: line_height * 1.4,
-        divider_size: if allow_resize { 1.0 } else { 0.0 },
-        // Matches GTK/macOS: 8 DIPs gives a visible track against dark
-        // sidebars.
-        scrollbar_size: 8.0,
-        // Direct2D paints at sub-pixel precision; no quantization.
-        cell_quantum: 0.0,
-    }
+    crate::primitives::layout_metrics::msv_metrics(line_height as f64, allow_resize)
 }
 
 /// Compute the layout for a `MultiSectionView` using the Win-GUI
@@ -85,52 +83,19 @@ pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> LayoutMetrics {
 /// hit-testing without re-computing — paint and click share this single
 /// layout per frame. No `DWrite` handle needed: body measurement below
 /// is estimate-based (row counts × `line_height`), not real text
-/// measurement, mirroring `mac_msv_metrics`'s twin `body_measure`.
+/// measurement, mirroring `mac_msv_metrics`'s twin body measure.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
+/// (#499) / [`crate::primitives::layout_metrics::msv_body_measure`],
+/// which is also where the `MessageList` real-content-height fix (a
+/// pre-#499 macOS drift — see `msv_body_measure`'s doc) lives, so `win/`
+/// inherits it automatically instead of re-deriving the old `0.0` stub.
 pub fn win_msv_layout(
     view: &MultiSectionView,
     bounds: Rect,
     line_height: f32,
 ) -> MultiSectionViewLayout {
-    let metrics = win_msv_metrics(line_height, view.allow_resize);
-    view.layout(bounds, metrics, |i| {
-        body_measure(&view.sections[i].body, &view.sections[i].aux, line_height)
-    })
-}
-
-fn body_measure(body: &SectionBody, aux: &Option<SectionAux>, line_height: f32) -> SectionMeasure {
-    let item_h = (line_height * 1.4).round();
-    let aux_size = if aux.is_some() { item_h } else { 0.0 };
-    let content_size = match body {
-        SectionBody::Tree(t) => {
-            let header_h = (line_height * 1.2).round();
-            let mut total = 0.0_f32;
-            for row in &t.rows {
-                let is_header = matches!(row.decoration, crate::types::Decoration::Header);
-                total += if is_header { header_h } else { item_h };
-            }
-            total
-        }
-        SectionBody::List(l) => {
-            let title_h = if l.title.is_some() { line_height } else { 0.0 };
-            title_h + l.items.len() as f32 * item_h
-        }
-        SectionBody::Form(f) => f.fields.len() as f32 * item_h,
-        SectionBody::Chart(c) => {
-            if matches!(c.kind, crate::primitives::chart::ChartKind::Sparkline) {
-                line_height
-            } else {
-                item_h * 8.0
-            }
-        }
-        SectionBody::MessageList(_) | SectionBody::Terminal(_) => 0.0,
-        SectionBody::Text(lines) => lines.len() as f32 * line_height,
-        SectionBody::Empty(_) => item_h * 4.0,
-        SectionBody::Custom(_) => 0.0,
-    };
-    SectionMeasure {
-        content_size,
-        aux_size,
-    }
+    crate::primitives::layout_metrics::msv_layout(view, bounds, line_height as f64)
 }
 
 /// Draw a [`MultiSectionView`] into `rect` (DIPs) on `target`.
@@ -840,6 +805,85 @@ mod tests {
             (c.r, c.g, c.b),
             (theme.foreground.r, theme.foreground.g, theme.foreground.b),
             "focused empty input should paint the caret bar at x=aux.x+4",
+        );
+    }
+
+    /// #701 regression guard: `win_msv_layout`'s body measurement for a
+    /// `MessageList` section must agree with
+    /// [`crate::primitives::layout_metrics::msv_body_measure`] — the
+    /// exact case that drifted pre-#499 (GTK measured real content,
+    /// macOS returned `0.0`). `win/` used to re-derive this match arm by
+    /// hand (and, before #701, returned `0.0` for `MessageList` too); a
+    /// `SectionSize::Content` section's `resolved_size` is
+    /// `header_size + body content_size` (no aux), so comparing it
+    /// against the shared function directly catches a re-introduced
+    /// hand-rolled copy.
+    #[test]
+    fn msv_body_measure_message_list_matches_shared_layout_metrics() {
+        use crate::primitives::message_list::{MessageList, MessageRow};
+        use crate::types::Color;
+
+        let body = SectionBody::MessageList(MessageList {
+            id: WidgetId::new("messages"),
+            rows: vec![
+                MessageRow::new("line one\nline two", Color::rgb(255, 255, 255), 0.0),
+                MessageRow::new("single line", Color::rgb(255, 255, 255), 0.0),
+            ],
+            scroll_top: 0,
+        });
+
+        let view = MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: vec![Section {
+                id: "messages".into(),
+                header: SectionHeader {
+                    icon: None,
+                    title: StyledText::plain("Messages"),
+                    badge: None,
+                    actions: vec![],
+                    show_chevron: true,
+                },
+                body,
+                aux: None,
+                size: SectionSize::Content,
+                collapsed: false,
+                min_size: None,
+                max_size: None,
+            }],
+            active_section: Some(0),
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: true,
+            panel_scroll: 0.0,
+        };
+
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let layout = win_msv_layout(&view, rect, LINE_HEIGHT);
+
+        let shared_measure = crate::primitives::layout_metrics::msv_body_measure(
+            &view.sections[0].body,
+            &view.sections[0].aux,
+            LINE_HEIGHT as f64,
+        );
+        let metrics = win_msv_metrics(LINE_HEIGHT, view.allow_resize);
+        let expected_resolved = metrics.header_size + shared_measure.content_size;
+
+        assert!(
+            shared_measure.content_size > 0.0,
+            "MessageList section must measure non-zero height, got {}",
+            shared_measure.content_size
+        );
+        assert!(
+            (layout.sections[0].resolved_size - expected_resolved).abs() < 0.01,
+            "win_msv_layout resolved_size {} did not match \
+             header_size + layout_metrics::msv_body_measure content_size {} \
+             (header_size={}, content_size={})",
+            layout.sections[0].resolved_size,
+            expected_resolved,
+            metrics.header_size,
+            shared_measure.content_size,
         );
     }
 }
