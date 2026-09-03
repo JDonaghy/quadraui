@@ -854,6 +854,13 @@ mod tests {
         fn draw_terminal_divider(&mut self, _r: Rect) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
+        fn command_line_layout(
+            &self,
+            _r: Rect,
+            _c: &crate::CommandLine,
+        ) -> crate::primitives::command_line::CommandLineLayout {
+            Default::default()
+        }
         fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
             crate::StatusBarLayout {
                 bar_width: 0.0,

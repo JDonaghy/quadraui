@@ -1340,6 +1340,14 @@ impl Backend for WinBackend {
         todo!("Direct2D command line rasteriser")
     }
 
+    fn command_line_layout(
+        &self,
+        _rect: Rect,
+        _cmd: &crate::primitives::command_line::CommandLine,
+    ) -> crate::primitives::command_line::CommandLineLayout {
+        todo!("Direct2D command line layout")
+    }
+
     /// #30: pure measurement — only needs `line_height`, not a live
     /// render target or `self.dwrite` (mirrors `MacBackend::text_display_layout`
     /// / `GtkBackend::text_display_layout`, both row-count-based rather

@@ -2633,6 +2633,21 @@ impl Backend for GtkBackend {
         );
     }
 
+    fn command_line_layout(
+        &self,
+        rect: QRect,
+        cmd: &CommandLine,
+    ) -> crate::primitives::command_line::CommandLineLayout {
+        crate::gtk::command_line::gtk_command_line_layout(
+            cmd,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            self.current_line_height,
+            self.current_char_width as f32,
+        )
+    }
+
     fn text_display_layout(
         &self,
         rect: QRect,

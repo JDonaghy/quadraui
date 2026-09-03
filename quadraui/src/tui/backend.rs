@@ -1565,6 +1565,15 @@ impl Backend for TuiBackend {
         crate::tui::command_line::draw_command_line(frame.buffer_mut(), area, cmd, &theme);
     }
 
+    fn command_line_layout(
+        &self,
+        rect: QRect,
+        cmd: &CommandLine,
+    ) -> crate::primitives::command_line::CommandLineLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::command_line::tui_command_line_layout(cmd, area)
+    }
+
     fn text_display_layout(
         &self,
         rect: QRect,
@@ -2454,6 +2463,13 @@ mod tests {
         fn draw_terminal_divider(&mut self, _r: QRect) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
+        fn command_line_layout(
+            &self,
+            _r: QRect,
+            _c: &CommandLine,
+        ) -> crate::primitives::command_line::CommandLineLayout {
+            Default::default()
+        }
         fn status_bar_layout(&self, _r: QRect, _b: &StatusBar) -> crate::StatusBarLayout {
             crate::StatusBarLayout {
                 bar_width: 0.0,
