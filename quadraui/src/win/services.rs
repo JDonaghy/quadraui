@@ -23,6 +23,31 @@
 //! why that keeps `cargo check --features win` meaningful on Linux.
 //! Everywhere else every method keeps the original graceful-no-op stub
 //! body it shipped with before this issue.
+//!
+//! ## #702 audit note: `IFileOpenDialog`/`IFileSaveDialog::Show` needs no
+//! `ModalPumpGuard` of its own here
+//!
+//! quadraui#702's issue text names `IFileOpenDialog::Show` as this
+//! backend's own instance of the nested-native-modal-loop hazard
+//! [`crate::desktop::ModalPumpDepth`]/[`crate::desktop::ModalPumpGuard`]
+//! exist to guard (mirroring `GtkPlatformServices`'s async-`FileDialog`
+//! pump, #427) — so it's worth being explicit about why
+//! `show_file_open_dialog`/`show_file_save_dialog` below take no new
+//! guard of their own, rather than the omission looking like an
+//! oversight. Both are only ever called from inside `app.handle`
+//! (`Backend::services()` is the only way to reach them), and `win::run`'s
+//! `dispatch` (`src/win/run.rs`) already wraps *all* of `app.handle` in a
+//! `super::guarded_call(&ws.state, &ws.pump_depth, …)` — so
+//! `ws.pump_depth` is already incremented for the *entire* duration of
+//! whatever `app.handle` does, including a synchronous, blocking
+//! `IFileOpenDialog::Show` call made from inside it. Any `wndproc`
+//! message that re-enters during that blocking `Show()` call (a
+//! `WM_PAINT` for an exposed region, say — Win32 still paints disabled
+//! owner windows) already sees `ws.pump_depth.is_pumping()` and cedes to
+//! `DefWindowProcW`, purely as a side effect of `dispatch`'s existing
+//! guard scope. A second, independent guard planted here would be
+//! redundant, not additive — there is only one `WindowState::pump_depth`
+//! counter, and it's already live for this entire call stack.
 
 use std::path::PathBuf;
 
