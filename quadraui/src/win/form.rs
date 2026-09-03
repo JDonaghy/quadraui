@@ -33,19 +33,14 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
-use crate::primitives::form::{
-    FieldKind, Form, FormFieldMeasure, FormItemMeasure, FormLayout, ValidationState,
-};
+use crate::primitives::form::{FieldKind, Form, FormLayout, ValidationState};
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
 fn plain(text: &crate::types::StyledText) -> String {
     text.spans.iter().map(|s| s.text.as_str()).collect()
-}
-
-fn row_height(line_height: f32) -> f32 {
-    (line_height * 1.4).round()
 }
 
 fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(WidgetId, String)> {
@@ -56,85 +51,30 @@ fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(WidgetId, S
     }
 }
 
+/// Adapts a live [`DWrite`] handle to the shared [`TextMeasure`] trait
+/// so [`crate::primitives::layout_metrics::form_field_measure`] never
+/// has to name a DirectWrite type — mirrors `macos::form::CtFontMeasure`,
+/// which exists for exactly this reason.
+struct DWriteMeasure<'a>(&'a DWrite);
+
+impl TextMeasure for DWriteMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        self.0.measure_text(text).map(|(w, _)| w).unwrap_or(0.0)
+    }
+}
+
 /// Compute a [`Form`]'s layout without painting — the DirectWrite twin
 /// of [`draw_form`]'s internal layout call.
+///
+/// Thin wrapper over [`crate::primitives::layout_metrics::form_row_height`]
+/// / [`crate::primitives::layout_metrics::form_field_measure`] (#499,
+/// adopted for `win/` by #701), via [`DWriteMeasure`] — the same
+/// per-field-kind measurement math `macos::form::mac_form_layout` uses.
 pub fn win_form_layout(dwrite: &DWrite, rect: Rect, form: &Form, line_height: f32) -> FormLayout {
-    let row_h = row_height(line_height);
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
+    let measure = DWriteMeasure(dwrite);
     form.layout(rect.width, rect.height, |i| {
-        let field = &form.fields[i];
-        let label_w = dwrite
-            .measure_text(&plain(&field.label))
-            .map(|(w, _)| w)
-            .unwrap_or(0.0);
-        let group_start_x = if label_w > 0.0 {
-            6.0 + label_w + 12.0
-        } else {
-            6.0
-        };
-
-        match &field.kind {
-            FieldKind::ToggleGroup { toggles } => {
-                let items = toggles
-                    .iter()
-                    .map(|t| FormItemMeasure {
-                        id: t.id.clone(),
-                        width: dwrite.measure_text(&t.label).map(|(w, _)| w).unwrap_or(0.0),
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, group_start_x, 12.0, items)
-            }
-            FieldKind::ButtonRow { buttons } => {
-                let items = buttons
-                    .iter()
-                    .map(|b| {
-                        let icon_w = b
-                            .icon
-                            .as_ref()
-                            .map(|i| {
-                                dwrite
-                                    .measure_text(&i.fallback)
-                                    .map(|(w, _)| w)
-                                    .unwrap_or(0.0)
-                                    + 4.0
-                            })
-                            .unwrap_or(0.0);
-                        let label_w = dwrite.measure_text(&b.label).map(|(w, _)| w).unwrap_or(0.0);
-                        FormItemMeasure {
-                            id: b.id.clone(),
-                            width: icon_w + label_w + 16.0,
-                        }
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, group_start_x, 8.0, items)
-            }
-            FieldKind::SegmentedControl { options, .. } => {
-                let items = options
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, opt)| FormItemMeasure {
-                        id: WidgetId::new(format!("{}__seg_{idx}", field.id.as_str())),
-                        width: dwrite.measure_text(opt).map(|(w, _)| w).unwrap_or(0.0) + 16.0,
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, group_start_x, 4.0, items)
-            }
-            FieldKind::TextArea { visible_rows, .. } => {
-                FormFieldMeasure::new(row_h * *visible_rows as f32)
-            }
-            FieldKind::Toolbar(toolbar) => {
-                let items = toolbar
-                    .buttons
-                    .iter()
-                    .filter_map(|btn| toolbar_item(&field.id, btn))
-                    .map(|(id, text)| FormItemMeasure {
-                        id,
-                        width: dwrite.measure_text(&text).map(|(w, _)| w).unwrap_or(0.0) + 16.0,
-                    })
-                    .collect();
-                FormFieldMeasure::with_items(row_h, group_start_x, 8.0, items)
-            }
-            _ => FormFieldMeasure::new(row_h),
-        }
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
     })
 }
 
