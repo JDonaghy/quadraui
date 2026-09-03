@@ -149,6 +149,16 @@ pub type BuildFn = fn(&str, LogicalViewport) -> Option<Box<dyn DynDriver>>;
 /// Same shape (and same exit condition) as `ci.yml`'s phased
 /// `continue-on-error` rollout for the `windows-latest` leg: report loudly,
 /// gate once the column is real.
+///
+/// Reused directly by `c0_paint_smoke` (quadraui#722), not just by
+/// [`BackendReg`]/[`verdict`] here: that test's own local `Column` type
+/// carries a `gating: Gating` field so its per-primitive grid gets the same
+/// blocking/burn-down split as this file's per-scenario matrix, without a
+/// second enum. The doc on each variant below describes the
+/// [`BackendReg`]/[`verdict`] path; `c0_paint_smoke` mirrors the same rule
+/// (print every gap, gate only on `Blocking`, self-expire via a promotable
+/// check) inline rather than through those two types, since its axis is
+/// "primitive" rather than "scenario".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gating {
     /// A `FAIL` cell fails `conformance_matrix`. The normal posture — every

@@ -395,7 +395,10 @@ behind `dialog.blocks_click_through` — ships both: see the
   with a canned descriptor — no panic **and** non-empty `text_runs()` for
   text-bearing primitives. This turns the silent no-op `Backend` defaults
   into visible red/green immediately. *(Auto-generated per primitive —
-  quadraui#492.)*
+  quadraui#492.)* `win` has a column here too (quadraui#722), registered
+  burn-down rather than blocking — see *Burn-down columns* below, which now
+  covers both `c0_paint_smoke`'s per-primitive grid and
+  `conformance_matrix`'s per-scenario rows.
 - **C1 — Interaction core (mandatory for "complete").** The Tier-1
   scenarios: click routing, keyboard focus, modal occlusion,
   scroll-under-cursor, split relayout, text-selection drag + copy, tab
@@ -467,6 +470,21 @@ declares no capabilities can't earn promotion by never attempting
 anything. `every_asserted_zone_is_registered_by_every_backend` skips
 burn-down columns for the same reason: a backend with no shell chrome yet
 registers no zones, and that gap is already visible as its `FAIL` rows.
+
+**`c0_paint_smoke` (quadraui#722) shares the same `runner::Gating` enum**,
+applied to its per-primitive grid instead of `conformance_matrix`'s
+per-scenario rows: each column in that test's local `Column` struct carries
+a `gating` field, `win`'s is `Gating::BurnDown`, and its `PANIC`/`FAIL`
+cells are printed — case names and all, via a "non-gating C0 gap(s)"
+line separate from the blocking gap list — but excluded from the
+assertion that fails the test. The same legend
+(`runner::burn_down_legend`) prints under this tier's table too, and the
+same self-expiring promotion check applies: a burn-down column with zero
+failing cases fails `c0_paint_smoke` until it's moved from
+`Gating::BurnDown` to `Gating::Blocking` in that test's `columns.push`
+calls. Unlike the scenario suite there is no capability-skip concept at
+this tier — every case in `c0::CASES` always runs — so "ran" is not part
+of that check, only "ever failed".
 
 ### TUI: two observers, one row each (quadraui#555)
 
