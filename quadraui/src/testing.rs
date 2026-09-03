@@ -35,8 +35,8 @@
 //! 2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
 //!    works identically on every backend.
 
-use crate::runner::AppLogic;
-use crate::{NamedKey, Rect, WidgetId};
+use crate::runner::{AppLogic, Reaction};
+use crate::{Key, Modifiers, NamedKey, Point, Rect, ScrollDelta, UiEvent, WidgetId};
 
 /// Backend-neutral viewport size for [`ConformanceDriver::new_fixture`].
 ///
@@ -223,6 +223,153 @@ impl FrameInventory {
             }
             _ => false,
         }
+    }
+}
+
+/// Shared "act" surface for headless [`AppLogic`] test drivers
+/// (quadraui#708, issue #708's "Problem 2" — `testing.rs` is a 3-way
+/// copy).
+///
+/// `press`/`type_char`/`press_named`/`ctrl_char`/`click`/`drag` reduce to
+/// the exact same body on every backend driver once [`Self::dispatch`]
+/// and the three raw mouse primitives exist — only the *how* of
+/// `dispatch`/`mouse_down`/`mouse_move`/`mouse_up` differs per backend
+/// (compare `GtkDriver::mouse_down`, which routes through
+/// `crate::dispatch::dispatch_click` and drag-state tracking, against
+/// `TuiDriver::mouse_down`, a bare `UiEvent::MouseDown` dispatch). Before
+/// this trait existed, every method built *on top of* those four
+/// primitives was transcribed byte-for-byte into `GtkDriver`'s,
+/// `MacDriver`'s, and `TuiDriver`'s own inherent impl blocks — the
+/// gtk↔macos overlap alone measured 26 duplicated lines in the
+/// 2026-09-03 function-level duplication re-audit that opened #708.
+///
+/// Each driver keeps its own same-named **inherent** method (so no
+/// caller needs to import this trait to call `driver.press(..)` — see
+/// e.g. `GtkDriver::press`), whose body now just forwards to
+/// `DriverInput::method(self, …)`.
+pub trait DriverInput: Sized {
+    /// Feed one synthetic event through this driver's production
+    /// dispatch path. See the concrete driver's own `dispatch` doc for
+    /// what "production" means there — it's the one genuinely
+    /// per-backend piece (extra macOS caret-blink handles, TUI's
+    /// `translate_injected` preprocessing, …), which is exactly why it's
+    /// `dispatch` itself that's the required method here and not shared.
+    fn dispatch(&mut self, event: UiEvent) -> Reaction;
+
+    /// Press the left mouse button down at `(x, y)`.
+    fn mouse_down(&mut self, x: f32, y: f32) -> Reaction;
+    /// Move the cursor to `(x, y)` with the left button held.
+    fn mouse_move(&mut self, x: f32, y: f32) -> Reaction;
+    /// Release the left mouse button at `(x, y)`.
+    fn mouse_up(&mut self, x: f32, y: f32) -> Reaction;
+
+    /// Press a key (no modifiers).
+    fn press(&mut self, key: Key) -> Reaction {
+        self.dispatch(UiEvent::KeyPressed {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    /// Type a single character key (no modifiers).
+    fn type_char(&mut self, c: char) -> Reaction {
+        self.press(Key::Char(c))
+    }
+
+    /// Press a named (non-printable) key, e.g. [`NamedKey::Enter`].
+    fn press_named(&mut self, key: NamedKey) -> Reaction {
+        self.press(Key::Named(key))
+    }
+
+    /// Press a character key with Ctrl held (e.g. `ctrl_char('c')` to
+    /// trigger the runner's copy-on-selection path).
+    fn ctrl_char(&mut self, c: char) -> Reaction {
+        self.dispatch(UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        })
+    }
+
+    /// Left-click at `(x, y)`. The default is a bare press-down with no
+    /// release — the behaviour `GtkDriver`, `MacDriver`, and `TuiDriver`
+    /// all already shared before this trait existed. Override this (as
+    /// `WinDriver` does) if a backend's real `click` needs a release too.
+    fn click(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_down(x, y)
+    }
+
+    /// Left-button drag from `(x0, y0)` to `(x1, y1)`: down → move → up.
+    fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> Reaction {
+        self.mouse_down(x0, y0);
+        self.mouse_move(x1, y1);
+        self.mouse_up(x1, y1)
+    }
+}
+
+/// Shared [`ConformanceDriver::click_text_at`] /
+/// [`ConformanceDriver::drag_text`] / [`ConformanceDriver::scroll_at`]
+/// bodies for pixel-unit backends (quadraui#708).
+///
+/// GTK, macOS, and Win-GUI all locate a painted run's bounds and click
+/// `bounds.x + 1.0` / `bounds.x + bounds.width - 1.0` for
+/// `LeftEdge`/`RightEdge`; only TUI (cell-unit, `+0.5`/`-0.5`, and a
+/// `self.screen()` dump folded into its panic messages) diverges enough
+/// to keep its own bespoke `ConformanceDriver` impl rather than adopt
+/// this trait. The 2026-09-03 duplication audit measured this block at 8
+/// duplicated lines between `GtkDriver` and `MacDriver` alone.
+pub trait PixelClickConformance: DriverInput {
+    /// This driver's type name, for panic messages (`"GtkDriver"`, …) —
+    /// mirrors what each driver's hand-written panic message used to
+    /// hardcode.
+    const NAME: &'static str;
+
+    /// Pixel bounds of the first painted run containing `needle`.
+    fn find_bounds(&self, needle: &str) -> Option<Rect>;
+    /// Center pixel coordinates of the first painted run containing
+    /// `needle`.
+    fn find(&self, needle: &str) -> Option<(f32, f32)>;
+    /// This backend's current line height, for [`Self::scroll_at`]'s
+    /// `ScrollDelta`.
+    fn conformance_line_height(&self) -> f32;
+
+    fn click_text_at(&mut self, needle: &str, at: Anchor) {
+        let bounds = self
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("{}: {needle:?} not painted", Self::NAME));
+        let y = bounds.y + bounds.height / 2.0;
+        let x = match at {
+            Anchor::Center => bounds.x + bounds.width / 2.0,
+            Anchor::LeftEdge => bounds.x + 1.0,
+            Anchor::RightEdge => bounds.x + bounds.width - 1.0,
+        };
+        self.click(x, y);
+    }
+
+    fn drag_text(&mut self, from: &str, to: &str) {
+        let (x0, y0) = self
+            .find(from)
+            .unwrap_or_else(|| panic!("{}: {from:?} not painted", Self::NAME));
+        let (x1, y1) = self
+            .find(to)
+            .unwrap_or_else(|| panic!("{}: {to:?} not painted", Self::NAME));
+        self.drag(x0, y0, x1, y1);
+    }
+
+    fn scroll_at(&mut self, needle: &str, lines: i32) {
+        let (x, y) = self
+            .find(needle)
+            .unwrap_or_else(|| panic!("{}: {needle:?} not painted", Self::NAME));
+        let line_height = self.conformance_line_height();
+        self.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, lines as f32 * line_height),
+            position: Point::new(x, y),
+        });
     }
 }
 
@@ -421,5 +568,192 @@ mod tests {
         assert!(!inv.above("G", "nope"));
         assert!(!inv.same_row("nope", "G"));
         assert!(!inv.inside("nope", &WidgetId::new("sidebar-content")));
+    }
+
+    // ─── quadraui#708: DriverInput / PixelClickConformance defaults ───────
+    //
+    // Every real backend driver now delegates `press`/`type_char`/
+    // `press_named`/`ctrl_char`/`click`/`drag` (and, for the pixel-unit
+    // backends, `click_text_at`/`drag_text`/`scroll_at`) to these traits'
+    // default method bodies — they're the single source of truth the
+    // gtk/tui/mac/win driver tests exercise indirectly. This fixture
+    // exercises the default bodies *directly*, with no backend feature at
+    // all, so a future edit to a default here has a test right beside it.
+
+    use crate::MouseButton;
+
+    /// Minimal fake driver recording every dispatched [`UiEvent`] plus a
+    /// hand-built `needle -> bounds` map.
+    struct FakeDriver {
+        events: Vec<UiEvent>,
+        painted: Vec<(&'static str, Rect)>,
+        line_height: f32,
+    }
+
+    impl FakeDriver {
+        fn new() -> Self {
+            Self {
+                events: Vec::new(),
+                painted: vec![("Toggle", Rect::new(10.0, 20.0, 40.0, 8.0))],
+                line_height: 16.0,
+            }
+        }
+    }
+
+    impl DriverInput for FakeDriver {
+        fn dispatch(&mut self, event: UiEvent) -> Reaction {
+            self.events.push(event);
+            Reaction::Redraw
+        }
+
+        fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
+            self.dispatch(UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(x, y),
+                modifiers: Modifiers::default(),
+            })
+        }
+
+        fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
+            self.dispatch(UiEvent::MouseMoved {
+                position: Point::new(x, y),
+                buttons: crate::ButtonMask {
+                    left: true,
+                    ..crate::ButtonMask::default()
+                },
+            })
+        }
+
+        fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
+            self.dispatch(UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(x, y),
+            })
+        }
+    }
+
+    impl PixelClickConformance for FakeDriver {
+        const NAME: &'static str = "FakeDriver";
+
+        fn find_bounds(&self, needle: &str) -> Option<Rect> {
+            self.painted
+                .iter()
+                .find(|(t, _)| *t == needle)
+                .map(|(_, b)| *b)
+        }
+
+        fn find(&self, needle: &str) -> Option<(f32, f32)> {
+            self.find_bounds(needle)
+                .map(|b| (b.x + b.width / 2.0, b.y + b.height / 2.0))
+        }
+
+        fn conformance_line_height(&self) -> f32 {
+            self.line_height
+        }
+    }
+
+    #[test]
+    fn driver_input_press_family_dispatches_expected_key_events() {
+        let mut d = FakeDriver::new();
+        d.press(Key::Char('a'));
+        d.type_char('b');
+        d.press_named(NamedKey::Enter);
+        d.ctrl_char('c');
+
+        assert_eq!(
+            d.events,
+            vec![
+                UiEvent::KeyPressed {
+                    key: Key::Char('a'),
+                    modifiers: Modifiers::default(),
+                    repeat: false,
+                },
+                UiEvent::KeyPressed {
+                    key: Key::Char('b'),
+                    modifiers: Modifiers::default(),
+                    repeat: false,
+                },
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Enter),
+                    modifiers: Modifiers::default(),
+                    repeat: false,
+                },
+                UiEvent::KeyPressed {
+                    key: Key::Char('c'),
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Modifiers::default()
+                    },
+                    repeat: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn driver_input_click_is_a_bare_mouse_down_by_default() {
+        let mut d = FakeDriver::new();
+        d.click(3.0, 4.0);
+        assert_eq!(
+            d.events,
+            vec![UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(3.0, 4.0),
+                modifiers: Modifiers::default(),
+            }],
+            "the default `click` is a bare press-down — WinDriver overrides \
+             this to add a release, everyone else keeps the default"
+        );
+    }
+
+    #[test]
+    fn driver_input_drag_is_down_then_move_then_up() {
+        let mut d = FakeDriver::new();
+        d.drag(1.0, 2.0, 5.0, 6.0);
+        assert_eq!(d.events.len(), 3);
+        assert!(matches!(d.events[0], UiEvent::MouseDown { .. }));
+        assert!(matches!(d.events[1], UiEvent::MouseMoved { .. }));
+        assert!(matches!(d.events[2], UiEvent::MouseUp { .. }));
+    }
+
+    #[test]
+    fn pixel_click_conformance_click_text_at_resolves_each_anchor() {
+        // "Toggle" bounds: x=10, y=20, w=40, h=8 → center (30, 24),
+        // left-edge (11, 24), right-edge (49, 24).
+        let mut d = FakeDriver::new();
+        PixelClickConformance::click_text_at(&mut d, "Toggle", Anchor::Center);
+        PixelClickConformance::click_text_at(&mut d, "Toggle", Anchor::LeftEdge);
+        PixelClickConformance::click_text_at(&mut d, "Toggle", Anchor::RightEdge);
+
+        let positions: Vec<(f32, f32)> = d
+            .events
+            .iter()
+            .map(|e| match e {
+                UiEvent::MouseDown { position, .. } => (position.x, position.y),
+                other => panic!("expected MouseDown, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(positions, vec![(30.0, 24.0), (11.0, 24.0), (49.0, 24.0)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "FakeDriver: \"nope\" not painted")]
+    fn pixel_click_conformance_click_text_at_panics_naming_the_driver_when_not_painted() {
+        let mut d = FakeDriver::new();
+        PixelClickConformance::click_text_at(&mut d, "nope", Anchor::Center);
+    }
+
+    #[test]
+    fn pixel_click_conformance_scroll_at_dispatches_scroll_scaled_by_line_height() {
+        let mut d = FakeDriver::new();
+        PixelClickConformance::scroll_at(&mut d, "Toggle", 2);
+        assert_eq!(d.events.len(), 1);
+        match &d.events[0] {
+            UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, 2.0 * 16.0),
+            other => panic!("expected Scroll, got {other:?}"),
+        }
     }
 }

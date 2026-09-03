@@ -21,6 +21,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use quadraui::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::{AppLogic, Backend, BackendCaps, Reaction, UiEvent, WidgetId};
@@ -131,6 +132,40 @@ pub trait DriverFactory {
 /// fixture. Always `fixtures::build::<F>` for some [`DriverFactory`] `F`.
 pub type BuildFn = fn(&str, LogicalViewport) -> Option<Box<dyn DynDriver>>;
 
+/// Whether a registered backend's `FAIL` cells **gate** the suite
+/// (quadraui#708).
+///
+/// Registering a backend and gating on it are two different decisions, and
+/// conflating them is what makes "add the column" impossible for a backend
+/// that is still being built: `WinBackend`'s rasterisers are landing one
+/// issue at a time (#480/#580's burn-down), and its driver has no
+/// painted-text-run recording yet, so *every* text-locating scenario step
+/// reports "not painted". That is the intended checklist signal — but as a
+/// hard assertion it turns the whole Windows CI leg red and blocks
+/// unrelated work, which is exactly the pressure that keeps a
+/// not-yet-finished backend out of the matrix entirely and therefore
+/// invisible.
+///
+/// Same shape (and same exit condition) as `ci.yml`'s phased
+/// `continue-on-error` rollout for the `windows-latest` leg: report loudly,
+/// gate once the column is real.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gating {
+    /// A `FAIL` cell fails `conformance_matrix`. The normal posture — every
+    /// backend whose rasterisers are complete.
+    Blocking,
+    /// A `FAIL` cell is printed in the matrix and the detail block exactly
+    /// as a blocking one, and is *not* silently dropped, but does not fail
+    /// the suite.
+    ///
+    /// Non-gating is not permanent and cannot be forgotten: if a burn-down
+    /// backend stops failing altogether, [`verdict`] reports it as
+    /// `promotable` and the suite fails until the registration is moved to
+    /// [`BackendReg::register`]. A burn-down column can therefore never
+    /// decay into a column nobody gates on.
+    BurnDown,
+}
+
 /// One registered backend: display name, declared capabilities, builder.
 pub struct BackendReg {
     pub name: &'static str,
@@ -144,6 +179,8 @@ pub struct BackendReg {
     /// one source.
     pub caps: BackendCaps,
     pub build: BuildFn,
+    /// Whether this backend's `FAIL` cells fail the suite — see [`Gating`].
+    pub gating: Gating,
 }
 
 impl BackendReg {
@@ -159,6 +196,17 @@ impl BackendReg {
             name,
             caps: F::caps(),
             build: super::fixtures::build::<F>,
+            gating: Gating::Blocking,
+        }
+    }
+
+    /// Like [`Self::register`], but the backend's failures are reported
+    /// without gating the suite — see [`Gating::BurnDown`] for when that is
+    /// the honest registration and why it cannot be forgotten.
+    pub fn register_burn_down<F: DriverFactory>(name: &'static str) -> Self {
+        Self {
+            gating: Gating::BurnDown,
+            ..Self::register::<F>(name)
         }
     }
 
@@ -219,6 +267,88 @@ pub struct MatrixRow {
     pub cells: Vec<(&'static str, Outcome)>,
 }
 
+// ─── Gating verdict ─────────────────────────────────────────────────────
+
+/// How a rendered matrix should be judged — see [`verdict`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct MatrixVerdict {
+    /// Failures from [`Gating::Blocking`] backends. **These fail the
+    /// suite.**
+    pub blocking: Vec<String>,
+    /// Failures from [`Gating::BurnDown`] backends. Reported, not gating.
+    pub burn_down: Vec<String>,
+    /// Burn-down backends that ran at least one scenario (a `pass` or a
+    /// `FAIL` cell — an all-`skip` column has proven nothing) and failed
+    /// none of them. **These also fail the suite**, with the fix being to
+    /// move the registration to [`BackendReg::register`]: a backend that no
+    /// longer fails is a backend nobody has any reason not to gate on, and
+    /// leaving it non-gating is how a green column silently stops
+    /// protecting anything.
+    pub promotable: Vec<&'static str>,
+}
+
+/// Split every `FAIL` cell in `rows` by whether its backend gates, and spot
+/// burn-down backends that have earned promotion (quadraui#708).
+///
+/// Takes the burn-down *names* rather than `&[BackendReg]` so the judgement
+/// is a pure function of the rendered matrix — it is the thing worth unit
+/// testing, and building a `BackendReg` needs a live backend.
+pub fn verdict(rows: &[MatrixRow], burn_down: &BTreeSet<&'static str>) -> MatrixVerdict {
+    let mut out = MatrixVerdict::default();
+    // Only counts a backend as having *run* when a cell actually attempted
+    // the scenario: a column of nothing but capability skips has neither
+    // passed nor failed anything, so it is not evidence of completeness.
+    let mut ran: BTreeSet<&'static str> = BTreeSet::new();
+    let mut failed: BTreeSet<&'static str> = BTreeSet::new();
+
+    for row in rows {
+        for (backend, outcome) in &row.cells {
+            let is_burn_down = burn_down.contains(backend);
+            match outcome {
+                Outcome::Skip { .. } => continue,
+                Outcome::Pass => {
+                    if is_burn_down {
+                        ran.insert(backend);
+                    }
+                }
+                Outcome::Fail { step, reason } => {
+                    let line = format!("{}/{} step {}: {}", row.id, backend, step, reason);
+                    if is_burn_down {
+                        ran.insert(backend);
+                        failed.insert(backend);
+                        out.burn_down.push(line);
+                    } else {
+                        out.blocking.push(line);
+                    }
+                }
+            }
+        }
+    }
+
+    out.promotable = ran.difference(&failed).copied().collect();
+    out
+}
+
+/// The legend printed under the matrix (and written into the CI artifact)
+/// naming every non-gating column, so a reader of the table can never
+/// mistake a `FAIL` nobody gates on for one that blocks the build.
+///
+/// Empty when nothing is registered burn-down, which is the state every
+/// non-Windows CI leg is in today.
+pub fn burn_down_legend(burn_down: &BTreeSet<&'static str>) -> String {
+    if burn_down.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = burn_down.iter().copied().collect();
+    format!(
+        "\nBurn-down column(s), reported but NOT gating: {}\n\
+         Their FAIL rows above are the implementation checklist for that backend, not a\n\
+         regression. The suite still fails if such a column stops failing entirely — that is\n\
+         the signal to promote it to a gating registration (quadraui#708).\n",
+        names.join(", ")
+    )
+}
+
 // ─── Execution ──────────────────────────────────────────────────────────
 
 /// Build a driver for `scenario` on `backend` and replay every step.
@@ -226,25 +356,72 @@ pub struct MatrixRow {
 /// Returns [`Outcome::Skip`] before constructing anything if the backend
 /// lacks a required capability, so a capability gate never pays for a
 /// fixture build.
+///
+/// Both fixture construction and each step run behind [`catch_unwind`]
+/// (quadraui#708). Every backend already wired in here (TUI/GTK/macOS)
+/// happens to have nothing left that panics, so this was previously never
+/// exercised — but it's exactly what "the harness runs and reports" a
+/// `todo!()` stub means for a backend that *isn't* fully implemented yet
+/// (Win-GUI, #480/#580's burn-down target): a scenario step that lands on
+/// a still-`todo!()` rasteriser must come back as one `Outcome::Fail` cell
+/// naming the panic, not abort the whole matrix run before it can print a
+/// single other row. `AssertUnwindSafe` is safe here because a caught
+/// panic makes this function return immediately without touching `driver`
+/// again — there is no possibly-poisoned state a caller could observe.
 pub fn run_scenario(scenario: &Scenario, backend: &BackendReg) -> Outcome {
     if let Some(missing_cap) = backend.missing_cap(&scenario.requires) {
         return Outcome::Skip { missing_cap };
     }
-    let Some(mut driver) = (backend.build)(&scenario.fixture, scenario.viewport.into()) else {
-        return Outcome::Fail {
-            step: 0,
-            reason: format!(
-                "unknown fixture {:?} — add it to tests/conformance/fixtures.rs",
-                scenario.fixture
-            ),
-        };
+    let build = &backend.build;
+    let built = catch_unwind(AssertUnwindSafe(|| {
+        build(&scenario.fixture, scenario.viewport.into())
+    }));
+    let mut driver = match built {
+        Ok(Some(driver)) => driver,
+        Ok(None) => {
+            return Outcome::Fail {
+                step: 0,
+                reason: format!(
+                    "unknown fixture {:?} — add it to tests/conformance/fixtures.rs",
+                    scenario.fixture
+                ),
+            };
+        }
+        Err(payload) => {
+            return Outcome::Fail {
+                step: 0,
+                reason: format!("panicked building the fixture: {}", panic_reason(&payload)),
+            };
+        }
     };
     for (i, step) in scenario.steps.iter().enumerate() {
-        if let Err(reason) = run_step(driver.as_mut(), step) {
-            return Outcome::Fail { step: i, reason };
+        let ran = catch_unwind(AssertUnwindSafe(|| run_step(driver.as_mut(), step)));
+        match ran {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Outcome::Fail { step: i, reason },
+            Err(payload) => {
+                return Outcome::Fail {
+                    step: i,
+                    reason: format!("panicked: {}", panic_reason(&payload)),
+                };
+            }
         }
     }
     Outcome::Pass
+}
+
+/// Best-effort message out of a [`catch_unwind`] payload — `panic!("{s}")`
+/// and `panic!(msg)` land in `&str`, `format!(..)`/`.expect(..)` land in
+/// `String`; anything else (a custom payload type) falls back to a fixed
+/// string rather than losing the cell's reason entirely.
+fn panic_reason(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }
 
 /// Every zone id `backend` registers at any point while replaying
@@ -545,7 +722,27 @@ mod tests {
             name: "stub",
             caps,
             build: never_builds,
+            gating: Gating::Blocking,
         }
+    }
+
+    fn fail(step: usize) -> Outcome {
+        Outcome::Fail {
+            step,
+            reason: "not painted".into(),
+        }
+    }
+
+    fn row(id: &str, cells: Vec<(&'static str, Outcome)>) -> MatrixRow {
+        MatrixRow {
+            id: id.into(),
+            tier: 1,
+            cells,
+        }
+    }
+
+    fn burn_down_of(names: &[&'static str]) -> BTreeSet<&'static str> {
+        names.iter().copied().collect()
     }
 
     fn scenario_requiring(caps: &[&str]) -> Scenario {
@@ -738,5 +935,114 @@ mod tests {
             table.contains("text_selection"),
             "a skip must name its missing capability in the detail block:\n{table}"
         );
+    }
+
+    // ── Gating / burn-down (quadraui#708) ───────────────────────────────
+    //
+    // These run on every platform, including the Linux legs that register
+    // no burn-down backend at all — the whole point is that the *rule* is
+    // covered without needing the one host (`windows-latest`) that
+    // currently exercises it.
+
+    #[test]
+    fn a_failing_gating_backend_still_fails_the_suite() {
+        let rows = vec![row("a.one", vec![("tui", fail(2))])];
+        let v = verdict(&rows, &burn_down_of(&[]));
+        assert_eq!(v.blocking.len(), 1);
+        assert!(
+            v.blocking[0].contains("a.one/tui step 2: not painted"),
+            "a blocking failure must name scenario, backend, step and reason: {:?}",
+            v.blocking
+        );
+        assert!(v.burn_down.is_empty());
+        assert!(v.promotable.is_empty());
+    }
+
+    #[test]
+    fn a_burn_down_backend_reports_its_failures_without_gating() {
+        let rows = vec![
+            row("a.one", vec![("tui", Outcome::Pass), ("win", fail(1))]),
+            row("b.two", vec![("tui", Outcome::Pass), ("win", fail(0))]),
+        ];
+        let v = verdict(&rows, &burn_down_of(&["win"]));
+        assert!(
+            v.blocking.is_empty(),
+            "a burn-down column must not gate: {:?}",
+            v.blocking
+        );
+        assert_eq!(
+            v.burn_down.len(),
+            2,
+            "…but its failures must still be reported, not dropped: {:?}",
+            v.burn_down
+        );
+        assert!(
+            v.promotable.is_empty(),
+            "it is still failing, so not yet promotable"
+        );
+    }
+
+    #[test]
+    fn a_burn_down_backend_that_stops_failing_becomes_promotable() {
+        let rows = vec![row("a.one", vec![("win", Outcome::Pass)])];
+        let v = verdict(&rows, &burn_down_of(&["win"]));
+        assert_eq!(
+            v.promotable,
+            vec!["win"],
+            "a burn-down column with no failures left must be flagged for promotion, \
+             otherwise non-gating silently becomes permanent"
+        );
+    }
+
+    #[test]
+    fn an_all_skip_burn_down_column_is_not_promotable() {
+        // Skips prove nothing about completeness — a backend that declared
+        // no capabilities would otherwise "earn" promotion by never
+        // attempting anything.
+        let rows = vec![row(
+            "a.one",
+            vec![(
+                "win",
+                Outcome::Skip {
+                    missing_cap: "mouse".into(),
+                },
+            )],
+        )];
+        let v = verdict(&rows, &burn_down_of(&["win"]));
+        assert!(v.promotable.is_empty());
+        assert!(v.burn_down.is_empty());
+    }
+
+    #[test]
+    fn gating_and_burn_down_failures_are_reported_separately_in_one_run() {
+        let rows = vec![row("a.one", vec![("tui", fail(0)), ("win", fail(0))])];
+        let v = verdict(&rows, &burn_down_of(&["win"]));
+        assert_eq!(v.blocking.len(), 1, "{:?}", v.blocking);
+        assert!(v.blocking[0].starts_with("a.one/tui"));
+        assert_eq!(v.burn_down.len(), 1, "{:?}", v.burn_down);
+        assert!(v.burn_down[0].starts_with("a.one/win"));
+    }
+
+    #[test]
+    fn the_legend_names_every_non_gating_column_and_is_empty_without_one() {
+        assert_eq!(burn_down_legend(&burn_down_of(&[])), "");
+        let legend = burn_down_legend(&burn_down_of(&["win"]));
+        assert!(
+            legend.contains("win") && legend.contains("NOT gating"),
+            "a reader of the artifact must be able to tell a non-gating FAIL apart: {legend}"
+        );
+    }
+
+    #[test]
+    fn register_burn_down_marks_the_registration_non_gating() {
+        assert_eq!(stub(NO_CAPS).gating, Gating::Blocking);
+        // `register_burn_down` differs from `register` only in this field —
+        // constructed by hand here for the same reason `stub` is (no live
+        // backend to stand up in a unit test).
+        let reg = BackendReg {
+            gating: Gating::BurnDown,
+            ..stub(NO_CAPS)
+        };
+        assert_eq!(reg.gating, Gating::BurnDown);
     }
 }

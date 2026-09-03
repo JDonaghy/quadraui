@@ -59,7 +59,9 @@ pub use ratatui::style::{Color, Modifier};
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
-use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
+use crate::testing::{
+    Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, TextRun,
+};
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, render_frame, EventOutcome};
 use crate::tui::text::char_cell_width;
@@ -211,41 +213,30 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// Press a key (no modifiers).
     pub fn press(&mut self, key: Key) -> Reaction {
-        self.dispatch(UiEvent::KeyPressed {
-            key,
-            modifiers: Modifiers::default(),
-            repeat: false,
-        })
+        DriverInput::press(self, key)
     }
 
     /// Type a single character key (no modifiers).
     pub fn type_char(&mut self, c: char) -> Reaction {
-        self.press(Key::Char(c))
+        DriverInput::type_char(self, c)
     }
 
     /// Press a named (non-printable) key, e.g. [`NamedKey::Enter`].
     pub fn press_named(&mut self, key: NamedKey) -> Reaction {
-        self.press(Key::Named(key))
+        DriverInput::press_named(self, key)
     }
 
     /// Press a character key with Ctrl held (e.g. `ctrl_char('c')` to
     /// trigger the runner's copy-on-selection path).
     pub fn ctrl_char(&mut self, c: char) -> Reaction {
-        self.dispatch(UiEvent::KeyPressed {
-            key: Key::Char(c),
-            modifiers: Modifiers {
-                ctrl: true,
-                ..Modifiers::default()
-            },
-            repeat: false,
-        })
+        DriverInput::ctrl_char(self, c)
     }
 
     /// Left-click at backend coordinates `(x, y)` (cell units for TUI),
     /// delivered as a [`UiEvent::MouseDown`] — the event primitives'
     /// hit-test paths consume.
     pub fn click(&mut self, x: f32, y: f32) -> Reaction {
-        self.mouse_down(x, y)
+        DriverInput::click(self, x, y)
     }
 
     /// Press the left mouse button down at `(x, y)`. Begins a drag if it
@@ -284,9 +275,7 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// Left-button drag from `(x0, y0)` to `(x1, y1)`: down → move → up.
     pub fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> Reaction {
-        self.mouse_down(x0, y0);
-        self.mouse_move(x1, y1);
-        self.mouse_up(x1, y1)
+        DriverInput::drag(self, x0, y0, x1, y1)
     }
 
     /// Deliver a [`UiEvent::DoubleClick`] at `(x, y)` directly — the same
@@ -600,6 +589,33 @@ impl<A: AppLogic> TuiDriver<A> {
         let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
         let (cx, cy) = layout.tab_close_center(tab_idx)?;
         Some((rect.x + cx, rect.y + cy))
+    }
+}
+
+/// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
+/// `press_named`/`ctrl_char`/`click`/`drag` methods build on — see that
+/// trait's doc for why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up`
+/// stay required (genuinely per-backend) rather than shared (quadraui#708).
+/// `TuiDriver` doesn't also adopt [`crate::testing::PixelClickConformance`]
+/// — its `ConformanceDriver::click_text_at`/`drag_text`/`scroll_at` stay
+/// bespoke below, since TUI's cell-unit `+0.5`/`-0.5` edge offsets (vs the
+/// pixel backends' `+1.0`/`-1.0`) and `self.screen()`-dump panic messages
+/// are real, load-bearing divergences, not accidental duplication.
+impl<A: AppLogic> DriverInput for TuiDriver<A> {
+    fn dispatch(&mut self, event: UiEvent) -> Reaction {
+        self.dispatch(event)
+    }
+
+    fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_down(x, y)
+    }
+
+    fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_move(x, y)
+    }
+
+    fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_up(x, y)
     }
 }
 

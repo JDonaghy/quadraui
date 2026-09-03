@@ -58,7 +58,10 @@ use windows::Win32::Graphics::Gdi::{
 use crate::event::{Rect, Viewport};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
-use crate::{Color, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+use crate::testing::{
+    Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
+};
+use crate::{ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 use super::backend::WinBackend;
 use super::run::{dispatch_event, render_frame, EventOutcome};
@@ -332,8 +335,18 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// `set_painted_text_recording`). Assert on [`Self::pixel`] colours
 /// instead until that instrumentation lands — the same gap
 /// `HeadlessSurface`'s own module docs note for `WinBackend` generally.
-/// Also doesn't implement [`crate::testing::ConformanceDriver`] for the
-/// same reason (several of that trait's methods are text-run-based).
+///
+/// It **does** implement [`crate::testing::ConformanceDriver`] (quadraui#708)
+/// so the conformance suite (`tests/conformance.rs`) has a `win` row at
+/// all — every step that needs to locate painted text
+/// (`click_text`/`AssertScreenHas`/…) reports "not painted" and the
+/// scenario fails, honestly, rather than the suite having no Win-GUI
+/// column to report against. That failing matrix *is* the
+/// text-run-recording work's checklist (see `tests/conformance.rs`'s own
+/// module doc: "For a backend that doesn't exist yet … that artifact is
+/// the implementation checklist"). Once `WinBackend` gains painted-text
+/// recording, replace this driver's `find_bounds`/`find` `None` stubs
+/// below with a real scan and this whole class of failure clears at once.
 pub struct WinDriver<A: AppLogic> {
     app: A,
     backend: WinBackend,
@@ -406,27 +419,37 @@ impl<A: AppLogic> WinDriver<A> {
 
     /// Press a key (no modifiers).
     pub fn press(&mut self, key: Key) -> Reaction {
-        self.dispatch(UiEvent::KeyPressed {
-            key,
-            modifiers: Modifiers::default(),
-            repeat: false,
-        })
+        DriverInput::press(self, key)
     }
 
     /// Type a single character key (no modifiers).
     pub fn type_char(&mut self, c: char) -> Reaction {
-        self.press(Key::Char(c))
+        DriverInput::type_char(self, c)
     }
 
     /// Press a named (non-printable) key, e.g. [`NamedKey::Enter`].
     pub fn press_named(&mut self, key: NamedKey) -> Reaction {
-        self.press(Key::Named(key))
+        DriverInput::press_named(self, key)
+    }
+
+    /// Press a character key with Ctrl held.
+    pub fn ctrl_char(&mut self, c: char) -> Reaction {
+        DriverInput::ctrl_char(self, c)
     }
 
     /// Left-click at surface coordinates `(x, y)` (DIPs): down then up.
+    /// Unlike `GtkDriver`/`MacDriver`/`TuiDriver`'s `click` (a bare
+    /// press-down, [`DriverInput::click`]'s default), Win-GUI's has
+    /// always released too — preserved here as an explicit
+    /// [`DriverInput`] override rather than silently homogenised
+    /// (quadraui#708).
     pub fn click(&mut self, x: f32, y: f32) -> Reaction {
-        self.mouse_down(x, y);
-        self.mouse_up(x, y)
+        DriverInput::click(self, x, y)
+    }
+
+    /// Left-button drag from `(x0, y0)` to `(x1, y1)`: down → move → up.
+    pub fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> Reaction {
+        DriverInput::drag(self, x0, y0, x1, y1)
     }
 
     /// Press the left mouse button down at `(x, y)`.
@@ -436,6 +459,17 @@ impl<A: AppLogic> WinDriver<A> {
             button: MouseButton::Left,
             position: Point::new(x, y),
             modifiers: Modifiers::default(),
+        })
+    }
+
+    /// Move the cursor to `(x, y)` with the left button held.
+    pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
+        self.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask {
+                left: true,
+                ..ButtonMask::default()
+            },
         })
     }
 
@@ -478,6 +512,124 @@ impl<A: AppLogic> WinDriver<A> {
     /// coordinate `(x, y)` — see [`HeadlessSurface::pixel_at`].
     pub fn pixel(&self, x: u32, y: u32) -> Color {
         self.surface.pixel_at(x, y)
+    }
+}
+
+/// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
+/// `press_named`/`ctrl_char` methods build on — see that trait's doc for
+/// why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up` stay required
+/// (genuinely per-backend) rather than shared (quadraui#708). `click` is
+/// overridden (not the default bare press-down) to preserve `WinDriver`'s
+/// existing down-then-up behaviour — see [`WinDriver::click`]'s doc.
+impl<A: AppLogic> DriverInput for WinDriver<A> {
+    fn dispatch(&mut self, event: UiEvent) -> Reaction {
+        self.dispatch(event)
+    }
+
+    fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_down(x, y)
+    }
+
+    fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_move(x, y)
+    }
+
+    fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_up(x, y)
+    }
+
+    fn click(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_down(x, y);
+        self.mouse_up(x, y)
+    }
+}
+
+/// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
+/// shared pixel-unit bodies (quadraui#708). `find_bounds`/`find` are
+/// honest `None` stubs — see [`WinDriver`]'s module doc's "Limitations"
+/// section — so any conformance step that reaches
+/// [`PixelClickConformance::click_text_at`]/`drag_text`/`scroll_at`
+/// directly (rather than through the runner's `require_painted` guard,
+/// which turns a `None` into a graceful `Outcome::Fail` first) panics
+/// with a `"WinDriver: … not painted"` message, same as every other
+/// backend's driver does for a genuinely-missing needle.
+impl<A: AppLogic> PixelClickConformance for WinDriver<A> {
+    const NAME: &'static str = "WinDriver";
+
+    fn find_bounds(&self, _needle: &str) -> Option<Rect> {
+        None
+    }
+
+    fn find(&self, _needle: &str) -> Option<(f32, f32)> {
+        None
+    }
+
+    fn conformance_line_height(&self) -> f32 {
+        crate::Backend::line_height(&self.backend)
+    }
+}
+
+impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
+    type App = A;
+
+    fn new_fixture(app: Self::App, viewport: LogicalViewport) -> Self {
+        // Win-GUI's native unit is the DIP (device-independent pixel).
+        // Scale the logical cols/rows by the same nominal
+        // char_width/line_height `GtkDriver::new_fixture` /
+        // `MacDriver::new_fixture` use — the driver's first frame (and
+        // therefore the app's real font metrics) doesn't exist yet to
+        // measure from.
+        const NOMINAL_CHAR_WIDTH: u32 = 8;
+        const NOMINAL_LINE_HEIGHT: u32 = 16;
+        WinDriver::new(
+            app,
+            viewport.cols * NOMINAL_CHAR_WIDTH,
+            viewport.rows * NOMINAL_LINE_HEIGHT,
+        )
+    }
+
+    fn backend_caps(&self) -> crate::BackendCaps {
+        // Straight off the real `WinBackend` this driver wraps — never a
+        // re-statement (quadraui#492).
+        crate::Backend::backend_caps(&self.backend)
+    }
+
+    fn press_named(&mut self, key: NamedKey) {
+        WinDriver::press_named(self, key);
+    }
+
+    fn type_char(&mut self, c: char) {
+        WinDriver::type_char(self, c);
+    }
+
+    fn ctrl_char(&mut self, c: char) {
+        WinDriver::ctrl_char(self, c);
+    }
+
+    fn click_text_at(&mut self, needle: &str, at: Anchor) {
+        PixelClickConformance::click_text_at(self, needle, at)
+    }
+
+    fn drag_text(&mut self, from: &str, to: &str) {
+        PixelClickConformance::drag_text(self, from, to)
+    }
+
+    fn scroll_at(&mut self, needle: &str, lines: i32) {
+        PixelClickConformance::scroll_at(self, needle, lines)
+    }
+
+    fn inventory(&self) -> FrameInventory {
+        // No painted-text-run recording yet (see the module doc) — an
+        // honestly-empty inventory, not a guess.
+        FrameInventory::default()
+    }
+
+    fn screen_has(&self, _needle: &str) -> bool {
+        false
+    }
+
+    fn exited(&self) -> bool {
+        WinDriver::exited(self)
     }
 }
 

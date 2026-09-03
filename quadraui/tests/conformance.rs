@@ -16,6 +16,17 @@
 //! upload it as an artifact. For a backend that doesn't exist yet
 //! (Windows, macOS) that artifact **is** the implementation checklist.
 //!
+//! ## Gating vs. reporting (quadraui#708)
+//!
+//! Those two sentences pull against each other for a backend that is
+//! *half* built: its column has to exist for the checklist to exist, and
+//! its `FAIL` rows would red that platform's CI leg for every unrelated
+//! PR. [`runner::Gating`] splits the decision — `BackendReg::register` is
+//! blocking, `BackendReg::register_burn_down` reports without gating, and
+//! [`runner::verdict`] fails the suite if a burn-down column stops failing
+//! (i.e. has earned promotion). `docs/TESTING.md` → *Burn-down columns*
+//! has the writeup.
+//!
 //! ## Two TUI observers, one row each (quadraui#555)
 //!
 //! `--features tui,terminal` additionally registers `"tui-vt100"`
@@ -106,7 +117,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use runner::{
-    backend_applies_to, render_matrix, run_scenario, zones_seen, BackendReg, MatrixRow, Outcome,
+    backend_applies_to, burn_down_legend, render_matrix, run_scenario, verdict, zones_seen,
+    BackendReg, Gating, MatrixRow,
 };
 use schema::{Scenario, Step};
 
@@ -195,6 +207,39 @@ impl runner::DriverFactory for MacFactory {
     }
 }
 
+// Win-GUI: `feature = "win"` alone compiles `quadraui::win` (its real
+// WinAPI calls internally `cfg(target_os = "windows")`-gate to a `todo!()`
+// fallback elsewhere — see `Cargo.toml`'s `win` feature comment), but
+// `win::testing` — and therefore `WinDriver` — only exists on
+// `target_os = "windows"` itself (real Direct2D/GDI calls with no
+// meaningful non-Windows fallback), so this registration is inert on every
+// leg but `ci.yml`'s `windows-latest` one, where `Test (win feature, real
+// Windows)` runs `cargo test -p quadraui --features win` on a real host.
+//
+// It registers **burn-down, not blocking** (see `runner::Gating`): that
+// Windows leg is blocking since #674, and `WinBackend` has no
+// painted-text-run recording yet, so every text-locating step in the suite
+// honestly reports "not painted". Gating on those would red the Windows
+// column of every unrelated PR while saying nothing new — the matrix rows
+// *are* the burn-down checklist (#480/#580), which is what quadraui#708
+// asks this registration to produce. `verdict`'s `promotable` check flips
+// it back to blocking automatically once the column stops failing.
+#[cfg(all(feature = "win", target_os = "windows"))]
+struct WinFactory;
+
+#[cfg(all(feature = "win", target_os = "windows"))]
+impl runner::DriverFactory for WinFactory {
+    fn make<A: quadraui::AppLogic + 'static>(
+        app: A,
+        viewport: quadraui::testing::LogicalViewport,
+    ) -> Box<dyn runner::DynDriver> {
+        use quadraui::testing::ConformanceDriver;
+        Box::new(quadraui::win::testing::WinDriver::new_fixture(
+            app, viewport,
+        ))
+    }
+}
+
 /// Every backend compiled into this build. **This is the registration
 /// point** — a new backend adds exactly one `push` here.
 ///
@@ -218,7 +263,20 @@ fn backends() -> Vec<BackendReg> {
     regs.push(BackendReg::register::<GtkFactory>("gtk"));
     #[cfg(all(feature = "macos", target_os = "macos"))]
     regs.push(BackendReg::register::<MacFactory>("macos"));
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    regs.push(BackendReg::register_burn_down::<WinFactory>("win"));
     regs
+}
+
+/// The names of every [`Gating::BurnDown`] column in this build — what
+/// [`verdict`] and [`burn_down_legend`] key off. Empty on every leg but
+/// Windows today.
+fn burn_down_backends(backends: &[BackendReg]) -> std::collections::BTreeSet<&'static str> {
+    backends
+        .iter()
+        .filter(|b| b.gating == Gating::BurnDown)
+        .map(|b| b.name)
+        .collect()
 }
 
 // ─── Scenario discovery ─────────────────────────────────────────────────
@@ -288,7 +346,15 @@ fn load_scenarios() -> Vec<Scenario> {
 // ─── The suite ──────────────────────────────────────────────────────────
 
 /// Run every scenario against every registered backend, print the matrix,
-/// and fail if any cell failed.
+/// and fail if any *gating* cell failed.
+///
+/// "Gating" is not "all" (quadraui#708): a [`Gating::BurnDown`] column —
+/// today only `win` — has its failures printed in the matrix, in the detail
+/// block, and in the CI artifact, but doesn't fail the run. See
+/// [`runner::Gating`] for why registering a half-built backend and gating
+/// on it are separate decisions, and note that the burn-down state is
+/// self-expiring: a burn-down column that stops failing fails *this* test
+/// until it is promoted.
 #[test]
 fn conformance_matrix() {
     let scenarios = load_scenarios();
@@ -312,28 +378,31 @@ fn conformance_matrix() {
         .collect();
 
     let names: Vec<&'static str> = backends.iter().map(|b| b.name).collect();
-    let table = render_matrix(&rows, &names);
+    let burn_down = burn_down_backends(&backends);
+    // The legend goes into the printed table *and* the CI artifact, not
+    // just this test's stdout: the artifact is what a reader consults to
+    // decide whether a `FAIL` is a regression or a checklist item.
+    let table = format!(
+        "{}{}",
+        render_matrix(&rows, &names),
+        burn_down_legend(&burn_down)
+    );
     println!("{table}");
     write_artifact(&table);
 
-    let failures: Vec<String> = rows
-        .iter()
-        .flat_map(|r| {
-            r.cells
-                .iter()
-                .filter_map(move |(backend, outcome)| match outcome {
-                    Outcome::Fail { step, reason } => {
-                        Some(format!("{}/{} step {}: {}", r.id, backend, step, reason))
-                    }
-                    _ => None,
-                })
-        })
-        .collect();
+    let judged = verdict(&rows, &burn_down);
     assert!(
-        failures.is_empty(),
+        judged.blocking.is_empty(),
         "{} conformance cell(s) failed:\n{}\n{table}",
-        failures.len(),
-        failures.join("\n")
+        judged.blocking.len(),
+        judged.blocking.join("\n")
+    );
+    assert!(
+        judged.promotable.is_empty(),
+        "burn-down backend(s) {:?} failed no scenario — promote them from \
+         `BackendReg::register_burn_down` to `BackendReg::register` in `backends()` so their \
+         column gates again (quadraui#708).\n{table}",
+        judged.promotable
     );
 }
 
@@ -655,9 +724,19 @@ fn every_advertised_fixture_builds() {
 /// `docs/TESTING.md` → *Zone-backed assertions*), so a scenario reaching
 /// for a not-yet-wired primitive fails here, at the step that reached,
 /// rather than silently.
+///
+/// Burn-down columns (`runner::Gating::BurnDown`, quadraui#708) are exempt
+/// for the same reason their `FAIL` cells don't gate `conformance_matrix`:
+/// a backend whose shell chrome hasn't been written yet registers *no*
+/// zones, so every `assert_inside` step would report here as
+/// "unsatisfiable" — which is true of the backend, not of the scenario,
+/// and this test exists to catch the latter (a typo'd or premature zone id
+/// in a `.scn.json`). Their gap stays visible as the corresponding `FAIL`
+/// row in the matrix.
 #[test]
 fn every_asserted_zone_is_registered_by_every_backend() {
     let backends = backends();
+    let burn_down = burn_down_backends(&backends);
     let mut problems: Vec<String> = Vec::new();
 
     for scenario in load_scenarios() {
@@ -677,6 +756,10 @@ fn every_asserted_zone_is_registered_by_every_backend() {
             // that never runs against `tui-vt100` has nothing to check
             // there either (quadraui#555).
             if !backend_applies_to(backend.name, &scenario) {
+                continue;
+            }
+            // Non-gating column — see this test's doc comment.
+            if burn_down.contains(backend.name) {
                 continue;
             }
             // `None` = this backend skips the scenario (declared capability
