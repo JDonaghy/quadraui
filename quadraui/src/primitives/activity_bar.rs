@@ -472,3 +472,232 @@ pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_bar_roundtrip_serde() {
+        let bar = ActivityBar {
+            id: WidgetId::new("main-activity-bar"),
+            top_items: vec![
+                ActivityItem {
+                    id: WidgetId::new("activity:explorer"),
+                    icon: "\u{f07c}".into(),
+                    tooltip: "Explorer".to_string(),
+                    is_active: true,
+                    is_keyboard_selected: false,
+                },
+                ActivityItem {
+                    id: WidgetId::new("activity:search"),
+                    icon: "\u{f422}".into(),
+                    tooltip: "Search".to_string(),
+                    is_active: false,
+                    is_keyboard_selected: true,
+                },
+            ],
+            bottom_items: vec![ActivityItem {
+                id: WidgetId::new("activity:settings"),
+                icon: "\u{f013}".into(),
+                tooltip: "Settings".to_string(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            active_accent: Some(Color::rgb(120, 180, 255)),
+            selection_bg: Some(Color::rgb(80, 80, 80)),
+            is_keyboard_focused: false,
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: ActivityBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    /// #658: `ActivityBarStyle` round-trips, and a payload with no
+    /// `active_bg` key at all (as if serialized before the type existed)
+    /// still deserializes, defaulting the field to `None`. It's a sidecar
+    /// rather than a field on `ActivityBar` itself specifically so that no
+    /// existing `ActivityBar { .. }` literal — in-tree or downstream — ever
+    /// needs to change; see `ActivityBarStyle`'s doc for the full reasoning.
+    #[test]
+    fn activity_bar_style_roundtrip_and_defaults_to_none_for_pre_658_payloads() {
+        let style = ActivityBarStyle::new().with_active_bg(Color::rgb(49, 50, 51));
+        let json = serde_json::to_string(&style).unwrap();
+        let back: ActivityBarStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(style, back);
+
+        let old_json = "{}";
+        let defaulted: ActivityBarStyle = serde_json::from_str(old_json).unwrap();
+        assert_eq!(defaulted, ActivityBarStyle::default());
+        assert_eq!(defaulted.active_bg, None);
+    }
+
+    #[test]
+    fn activity_bar_event_roundtrip_serde() {
+        let events = vec![
+            ActivityBarEvent::ItemClicked {
+                id: WidgetId::new("activity:git"),
+            },
+            ActivityBarEvent::KeyPressed {
+                key: "Escape".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: ActivityBarEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
+    }
+
+    // ── D6 ActivityBar layout API tests ───────────────────────────────
+
+    fn make_activity_item(id: &str, icon: char) -> ActivityItem {
+        ActivityItem {
+            id: WidgetId::new(id),
+            icon: icon.to_string().into(),
+            tooltip: String::new(),
+            is_active: false,
+            is_keyboard_selected: false,
+        }
+    }
+
+    #[test]
+    fn activity_bar_layout_empty() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 20.0, 1.0);
+        assert_eq!(layout.visible_items.len(), 0);
+        assert_eq!(layout.hit_test(1.0, 5.0), ActivityBarHit::Empty);
+    }
+
+    #[test]
+    fn activity_bar_layout_top_only() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![
+                make_activity_item("activity:explorer", 'E'),
+                make_activity_item("activity:search", 'S'),
+            ],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 10.0, 1.0);
+        assert_eq!(layout.visible_items.len(), 2);
+        assert_eq!(layout.visible_items[0].side, ActivitySide::Top);
+        assert_eq!(layout.visible_items[0].bounds.y, 0.0);
+        assert_eq!(layout.visible_items[1].bounds.y, 1.0);
+        match layout.hit_test(1.0, 0.5) {
+            ActivityBarHit::Item(id) => assert_eq!(id.as_str(), "activity:explorer"),
+            _ => panic!("expected explorer hit"),
+        }
+    }
+
+    #[test]
+    fn activity_bar_layout_bottom_pinned() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        // Viewport 10, items 1 each. Top at y=0, bottom at y=9.
+        let layout = bar.layout(3.0, 10.0, 1.0);
+        assert_eq!(layout.visible_items.len(), 2);
+        let top = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Top)
+            .unwrap();
+        let bot = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Bottom)
+            .unwrap();
+        assert_eq!(top.bounds.y, 0.0);
+        assert_eq!(bot.bounds.y, 9.0);
+        // Click near top → explorer. Click near bottom → settings.
+        match layout.hit_test(1.0, 0.5) {
+            ActivityBarHit::Item(id) => assert_eq!(id.as_str(), "activity:explorer"),
+            _ => panic!(),
+        }
+        match layout.hit_test(1.0, 9.5) {
+            ActivityBarHit::Item(id) => assert_eq!(id.as_str(), "activity:settings"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn activity_bar_layout_bottom_wins_on_collision() {
+        // 5 top items + 3 bottom items, item_height=1, viewport=6.
+        // Bottom reserves [3, 6). Top stops at y=3 → only 3 top items fit.
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: (0..5)
+                .map(|i| make_activity_item(&format!("top:{i}"), 'T'))
+                .collect(),
+            bottom_items: (0..3)
+                .map(|i| make_activity_item(&format!("bot:{i}"), 'B'))
+                .collect(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 6.0, 1.0);
+        let top_count = layout
+            .visible_items
+            .iter()
+            .filter(|v| v.side == ActivitySide::Top)
+            .count();
+        let bot_count = layout
+            .visible_items
+            .iter()
+            .filter(|v| v.side == ActivitySide::Bottom)
+            .count();
+        assert_eq!(bot_count, 3, "all bottom items visible");
+        assert_eq!(
+            top_count, 3,
+            "top truncated to fit above bottom reserved area"
+        );
+    }
+
+    #[test]
+    fn activity_bar_layout_pixel_units() {
+        // GTK-style: 48 px item height, 200 px strip.
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: (0..3)
+                .map(|i| make_activity_item(&format!("top:{i}"), 'T'))
+                .collect(),
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(48.0, 200.0, 48.0);
+        // Top items at y = 0, 48, 96. Settings at y = 200 - 48 = 152.
+        let top0 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Top && v.item_idx == 0)
+            .unwrap();
+        assert_eq!(top0.bounds.y, 0.0);
+        assert_eq!(top0.bounds.height, 48.0);
+        let bot0 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.side == ActivitySide::Bottom)
+            .unwrap();
+        assert_eq!(bot0.bounds.y, 152.0);
+    }
+}

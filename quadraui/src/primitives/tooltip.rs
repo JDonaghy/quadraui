@@ -480,3 +480,171 @@ impl Tooltip {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Tooltip primitive tests (D6 shape) ────────────────────────────
+
+    /// #541: the border/title vocabulary is a separate [`TooltipChrome`]
+    /// value passed alongside the tooltip and its layout — *not* a field
+    /// on `Tooltip` or on `TooltipLayout`, both of which consumers
+    /// construct with exhaustive literals (see `primitives::tooltip`'s
+    /// module doc). `TooltipChrome::default()` matches what every backend
+    /// drew unconditionally before #541 introduced a choice.
+    #[test]
+    fn tooltip_chrome_defaults_to_full_then_builders_override() {
+        let chrome = TooltipChrome::default();
+        assert_eq!(chrome.border, TooltipBorder::Full);
+        assert_eq!(chrome.title, None);
+
+        let chrome = TooltipChrome::new(TooltipBorder::None).with_title("Hi");
+        assert_eq!(chrome.border, TooltipBorder::None);
+        assert_eq!(chrome.title.as_deref(), Some("Hi"));
+
+        let chrome = chrome.with_border(TooltipBorder::Sides);
+        assert_eq!(chrome.border, TooltipBorder::Sides);
+    }
+
+    /// #541 rule-8 guard: `TooltipLayout` must stay constructible from a
+    /// bare exhaustive literal, because downstream consumers that
+    /// position a popup themselves (rather than anchoring it via
+    /// `Tooltip::layout`) build one by hand. If a future change adds a
+    /// required field here, this test stops compiling — which is the
+    /// point: that would be an `E0063` break for every such call site.
+    #[test]
+    fn tooltip_layout_stays_exhaustively_constructible() {
+        let layout = TooltipLayout {
+            bounds: Rect::new(1.0, 2.0, 30.0, 4.0),
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        assert_eq!(layout.bounds.width, 30.0);
+    }
+
+    #[test]
+    fn tooltip_layout_prefers_bottom_when_room() {
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hello".to_string(),
+            placement: TooltipPlacement::Bottom,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(100.0, 50.0, 40.0, 20.0);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(60.0, 16.0), 4.0);
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Bottom);
+        // Bottom placement: y = anchor.y + anchor.height + margin = 50 + 20 + 4 = 74
+        assert_eq!(layout.bounds.y, 74.0);
+        // Centered horizontally on anchor: x = 100 + (40 - 60)/2 = 90
+        assert_eq!(layout.bounds.x, 90.0);
+    }
+
+    #[test]
+    fn tooltip_layout_flips_to_opposite_when_overflow() {
+        // Anchor near bottom of viewport — preferred Bottom would overflow.
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hello".to_string(),
+            placement: TooltipPlacement::Bottom,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 100.0);
+        let anchor = Rect::new(100.0, 80.0, 40.0, 16.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(60.0, 16.0), 4.0);
+        // Bottom would put tooltip at y=80+16+4=100 which exceeds viewport_height 100.
+        // Flip to Top.
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Top);
+        // Top: y = anchor.y - margin - vh = 80 - 4 - 16 = 60
+        assert_eq!(layout.bounds.y, 60.0);
+    }
+
+    #[test]
+    fn tooltip_layout_clamped_when_neither_fits() {
+        // Tiny viewport, anchor in middle — both Top and Bottom overflow
+        // (viewport is shorter than anchor + margin + tooltip).
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "…".to_string(),
+            placement: TooltipPlacement::Bottom,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let anchor = Rect::new(10.0, 10.0, 20.0, 10.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(40.0, 20.0), 4.0);
+        // Preferred (Bottom) clamped: y would be 10+10+4=24; tooltip_h=20 →
+        // bottom edge at 44, > viewport 30. Doesn't fit. Try Top: y = 10-4-20=-14 → doesn't fit.
+        // Clamp preferred (Bottom): y clamped to viewport.height - vh = 30 - 20 = 10.
+        assert_eq!(layout.resolved_placement, ResolvedPlacement::Bottom);
+        assert!(layout.bounds.y <= 10.0);
+    }
+
+    #[test]
+    fn tooltip_layout_does_not_panic_when_wider_than_viewport() {
+        // Regression for #213: when content width exceeds viewport width
+        // the legacy clamp produced max < min and `f32::clamp` panicked.
+        // The fix pins the tooltip to the viewport edge.
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Very wide".to_string(),
+            placement: TooltipPlacement::Top,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
+        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+        // Content much wider than viewport (300 vs 100).
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(300.0, 16.0), 4.0);
+        // Pinned to viewport.x rather than panicking; bounds carries the
+        // requested size so the consumer can see the overflow.
+        assert_eq!(layout.bounds.x, 0.0);
+        assert_eq!(layout.bounds.width, 300.0);
+    }
+
+    #[test]
+    fn tooltip_layout_does_not_panic_when_taller_than_viewport() {
+        // Symmetric case for the y-axis.
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Very tall".to_string(),
+            placement: TooltipPlacement::Left,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
+        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(50.0, 500.0), 4.0);
+        assert_eq!(layout.bounds.y, 0.0);
+        assert_eq!(layout.bounds.height, 500.0);
+    }
+
+    #[test]
+    fn tooltip_layout_hit_test() {
+        let t = Tooltip {
+            id: WidgetId::new("tip"),
+            text: "Hover".to_string(),
+            placement: TooltipPlacement::Right,
+            styled_lines: None,
+            bg: None,
+            fg: None,
+        };
+        let anchor = Rect::new(100.0, 100.0, 20.0, 20.0);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 400.0);
+        let layout = t.layout(anchor, viewport, TooltipMeasure::new(80.0, 16.0), 4.0);
+        let center_x = layout.bounds.x + 10.0;
+        let center_y = layout.bounds.y + 5.0;
+        match layout.hit_test(center_x, center_y, &t.id) {
+            TooltipHit::Body(id) => assert_eq!(id.as_str(), "tip"),
+            _ => panic!(),
+        }
+        assert_eq!(layout.hit_test(0.0, 0.0, &t.id), TooltipHit::Empty);
+    }
+}

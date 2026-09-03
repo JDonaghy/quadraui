@@ -298,3 +298,224 @@ pub enum TreeEvent {
     /// consume it. App may interpret it (e.g. `s` stages a file).
     KeyPressed { key: String, modifiers: Modifiers },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_view_roundtrip_serde() {
+        let tree = TreeView {
+            id: WidgetId::new("sc"),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("Staged Changes"),
+                badge: Some(Badge::plain("3")),
+                is_expanded: Some(true),
+                decoration: Decoration::Normal,
+                edit: None,
+            }],
+            selection_mode: SelectionMode::Single,
+            selected_path: Some(vec![0]),
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        };
+        let json = serde_json::to_string(&tree).unwrap();
+        let back: TreeView = serde_json::from_str(&json).unwrap();
+        assert_eq!(tree, back);
+    }
+
+    /// #623: `TreeStyle::row_height` is additive, not a required field.
+    ///
+    /// A `TreeStyle` serialised before #623 (or hand-written by a Lua
+    /// plugin, per the `types.rs` design invariant that every primitive
+    /// is plugin-constructible from JSON) carries no `row_height` key at
+    /// all. `#[serde(default)]` must decode that as `None` — i.e. "keep
+    /// deriving the row pitch from `line_height`" — rather than failing
+    /// the whole `TreeView` deserialisation with a missing-field error.
+    #[test]
+    fn tree_style_row_height_defaults_to_none_when_absent_from_json() {
+        let legacy = r#"{
+            "indent": 2,
+            "show_chevrons": true,
+            "chevron_expanded": "▾",
+            "chevron_collapsed": "▸"
+        }"#;
+        let style: TreeStyle =
+            serde_json::from_str(legacy).expect("pre-#623 TreeStyle must decode");
+        assert_eq!(
+            style.row_height, None,
+            "absent row_height means 'derive from line_height', not a decode error"
+        );
+        assert_eq!(style, TreeStyle::default());
+    }
+
+    /// #623: an explicit override survives a serde round-trip, so a host
+    /// that pins the row pitch keeps it across a save/restore of its UI
+    /// state (and across the plugin JSON boundary).
+    #[test]
+    fn tree_style_row_height_override_roundtrips_serde() {
+        let style = TreeStyle {
+            row_height: Some(22),
+            ..TreeStyle::default()
+        };
+        let json = serde_json::to_string(&style).unwrap();
+        let back: TreeStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.row_height, Some(22));
+        assert_eq!(style, back);
+    }
+
+    // ── D6 TreeView layout API tests ──────────────────────────────────
+
+    fn make_tree_row(path: &[u16], indent: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: path.to_vec(),
+            indent,
+            icon: None,
+            text: StyledText::plain(label),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn make_tree(rows: Vec<TreeRow>, scroll: usize) -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows,
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: scroll,
+            style: TreeStyle::default(),
+            has_focus: true,
+        }
+    }
+
+    #[test]
+    fn tree_view_layout_empty() {
+        let tree = make_tree(vec![], 0);
+        let layout = tree.layout(40.0, 20.0, |_| TreeRowMeasure::new(1.0));
+        assert_eq!(layout.visible_rows.len(), 0);
+        assert_eq!(layout.hit_regions.len(), 0);
+        assert_eq!(layout.resolved_scroll_offset, 0);
+        assert_eq!(layout.hit_test(5.0, 5.0), TreeViewHit::Empty);
+    }
+
+    #[test]
+    fn tree_view_layout_all_rows_fit() {
+        let tree = make_tree(
+            (0..3)
+                .map(|i| make_tree_row(&[i], 0, &format!("row{i}")))
+                .collect(),
+            0,
+        );
+        let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
+        assert_eq!(layout.visible_rows.len(), 3);
+        assert_eq!(layout.visible_rows[0].bounds.y, 0.0);
+        assert_eq!(layout.visible_rows[1].bounds.y, 1.0);
+        assert_eq!(layout.visible_rows[2].bounds.y, 2.0);
+        // Hit-test each row by y coord.
+        assert_eq!(layout.hit_test(10.0, 0.5), TreeViewHit::Row(0));
+        assert_eq!(layout.hit_test(10.0, 1.5), TreeViewHit::Row(1));
+        assert_eq!(layout.hit_test(10.0, 2.5), TreeViewHit::Row(2));
+        // Below last row → Empty.
+        assert_eq!(layout.hit_test(10.0, 5.0), TreeViewHit::Empty);
+    }
+
+    #[test]
+    fn tree_view_layout_scroll_offset_applies() {
+        let tree = make_tree(
+            (0..5)
+                .map(|i| make_tree_row(&[i], 0, &format!("row{i}")))
+                .collect(),
+            2, // skip first 2
+        );
+        let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 2);
+        assert_eq!(layout.visible_rows.len(), 3);
+        assert_eq!(layout.visible_rows[0].row_idx, 2);
+        assert_eq!(layout.visible_rows[1].row_idx, 3);
+        assert_eq!(layout.visible_rows[2].row_idx, 4);
+    }
+
+    #[test]
+    fn tree_view_layout_viewport_overflow_clips() {
+        // 10 rows of height 2.0 each; viewport 5.0 tall → only 3 rows
+        // fit (one partially clipped).
+        let tree = make_tree(
+            (0..10)
+                .map(|i| make_tree_row(&[i], 0, &format!("row{i}")))
+                .collect(),
+            0,
+        );
+        let layout = tree.layout(40.0, 5.0, |_| TreeRowMeasure::new(2.0));
+        // Rows 0 (y=0..2), 1 (y=2..4), 2 (y=4..5 clipped) — three visible.
+        assert_eq!(layout.visible_rows.len(), 3);
+        // Last row clipped to height 1.0 (remaining = 5 - 4 = 1).
+        assert_eq!(layout.visible_rows[2].bounds.height, 1.0);
+        // A click below all visible rows returns Empty.
+        assert_eq!(layout.hit_test(10.0, 5.0), TreeViewHit::Empty);
+    }
+
+    #[test]
+    fn tree_view_layout_varying_row_heights() {
+        // Branches (is_expanded != None) get height 1.4 * base; leaves get
+        // 1.0. Proves the measurer can consult row state.
+        let mut rows = vec![
+            make_tree_row(&[0], 0, "branch"),
+            make_tree_row(&[0, 0], 1, "leaf0"),
+            make_tree_row(&[0, 1], 1, "leaf1"),
+        ];
+        rows[0].is_expanded = Some(true);
+        let tree = make_tree(rows.clone(), 0);
+        let layout = tree.layout(40.0, 10.0, |i| {
+            let h = if rows[i].is_expanded.is_some() {
+                1.4
+            } else {
+                1.0
+            };
+            TreeRowMeasure::new(h)
+        });
+        assert_eq!(layout.visible_rows.len(), 3);
+        assert_eq!(layout.visible_rows[0].bounds.height, 1.4);
+        assert_eq!(layout.visible_rows[1].bounds.y, 1.4);
+        assert_eq!(layout.visible_rows[1].bounds.height, 1.0);
+        assert!((layout.visible_rows[2].bounds.y - 2.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn tree_view_layout_pixel_units_fractional() {
+        // GTK-style: line_height = 18.5 px leaf, 25.9 px branch. Proves
+        // fractional row heights flow through correctly.
+        let tree = make_tree(
+            (0..5)
+                .map(|i| make_tree_row(&[i], 0, &format!("r{i}")))
+                .collect(),
+            0,
+        );
+        let layout = tree.layout(300.0, 60.0, |_| TreeRowMeasure::new(18.5));
+        // 3 full rows fit (55.5), 4th starts at y=55.5 and gets clipped to 4.5 px.
+        assert_eq!(layout.visible_rows.len(), 4);
+        assert!((layout.visible_rows[3].bounds.height - 4.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn tree_view_layout_scroll_offset_clamped() {
+        // scroll_offset beyond rows.len() — resolved to rows.len()-1 so
+        // the single remaining row is visible.
+        let tree = make_tree(
+            (0..3)
+                .map(|i| make_tree_row(&[i], 0, &format!("r{i}")))
+                .collect(),
+            99,
+        );
+        let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 2);
+        assert_eq!(layout.visible_rows.len(), 1);
+        assert_eq!(layout.visible_rows[0].row_idx, 2);
+    }
+}

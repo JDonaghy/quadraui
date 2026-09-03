@@ -446,4 +446,42 @@ mod tests {
         let text = StyledText::plain("e\u{0301}");
         assert_eq!(text.visible_width(), 1);
     }
+
+    #[test]
+    fn color_from_hex_rgb() {
+        let c = Color::from_hex("#1a2b3c").unwrap();
+        assert_eq!(c, Color::rgb(0x1a, 0x2b, 0x3c));
+    }
+
+    #[test]
+    fn color_from_hex_rgba() {
+        let c = Color::from_hex("#1a2b3c80").unwrap();
+        assert_eq!(c, Color::rgba(0x1a, 0x2b, 0x3c, 0x80));
+    }
+
+    #[test]
+    fn color_from_hex_invalid() {
+        assert!(Color::from_hex("not a hex").is_none());
+        assert!(Color::from_hex("#xyz").is_none());
+        assert!(Color::from_hex("#12345").is_none()); // wrong length
+    }
+
+    #[test]
+    fn widget_id_roundtrip() {
+        let id = WidgetId::new("sc-tree");
+        assert_eq!(id.as_str(), "sc-tree");
+        let id2: WidgetId = "sc-tree".into();
+        assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn styled_text_visible_width() {
+        let text = StyledText {
+            spans: vec![
+                StyledSpan::plain("hello "),
+                StyledSpan::with_fg("world", Color::rgb(255, 0, 0)),
+            ],
+        };
+        assert_eq!(text.visible_width(), 11);
+    }
 }

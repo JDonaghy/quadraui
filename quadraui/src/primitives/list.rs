@@ -606,3 +606,210 @@ pub enum ListViewEvent {
     /// quickfix panel).
     KeyPressed { key: String, modifiers: Modifiers },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_view_roundtrip_serde() {
+        let list = ListView {
+            id: WidgetId::new("quickfix"),
+            title: Some(StyledText::plain("QUICKFIX (3 items)")),
+            items: vec![
+                ListItem {
+                    text: StyledText::plain("src/main.rs:12: unused variable"),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::Warning,
+                },
+                ListItem {
+                    text: StyledText::plain("src/lib.rs:4: missing import"),
+                    icon: None,
+                    detail: Some(StyledText::plain("E0425")),
+                    decoration: Decoration::Error,
+                },
+            ],
+            selected_idx: 1,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let json = serde_json::to_string(&list).unwrap();
+        let back: ListView = serde_json::from_str(&json).unwrap();
+        assert_eq!(list, back);
+    }
+
+    // ── D6 ListView layout API tests ──────────────────────────────────
+
+    fn make_list_item(text: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(text),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn make_list(
+        title: Option<&str>,
+        items: Vec<ListItem>,
+        selected: usize,
+        scroll: usize,
+    ) -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: title.map(StyledText::plain),
+            items,
+            selected_idx: selected,
+            scroll_offset: scroll,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    #[test]
+    fn list_view_layout_empty() {
+        let list = make_list(None, vec![], 0, 0);
+        let layout = list.layout(40.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
+        assert_eq!(layout.visible_items.len(), 0);
+        assert!(layout.title_bounds.is_none());
+        assert_eq!(layout.hit_test(5.0, 5.0), ListViewHit::Empty);
+    }
+
+    #[test]
+    fn list_view_layout_title_reserves_first_row() {
+        let list = make_list(
+            Some("QUICKFIX"),
+            (0..3)
+                .map(|i| make_list_item(&format!("item{i}")))
+                .collect(),
+            0,
+            0,
+        );
+        let layout = list.layout(40.0, 10.0, 1.0, |_| ListItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_some());
+        let tb = layout.title_bounds.unwrap();
+        assert_eq!(tb.y, 0.0);
+        assert_eq!(tb.height, 1.0);
+        // Items start at y=1 (after title).
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+        assert_eq!(layout.visible_items[0].item_idx, 0);
+        // Click on title → ListViewHit::Title.
+        assert_eq!(layout.hit_test(10.0, 0.5), ListViewHit::Title);
+        // Click on first item row.
+        assert_eq!(layout.hit_test(10.0, 1.5), ListViewHit::Item(0));
+    }
+
+    #[test]
+    fn list_view_layout_no_title_starts_at_zero() {
+        let list = make_list(
+            None,
+            (0..2).map(|i| make_list_item(&format!("i{i}"))).collect(),
+            0,
+            0,
+        );
+        let layout = list.layout(40.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_none());
+        assert_eq!(layout.visible_items[0].bounds.y, 0.0);
+        assert_eq!(layout.hit_test(10.0, 0.5), ListViewHit::Item(0));
+    }
+
+    #[test]
+    fn list_view_layout_scroll_offset_skips_items_not_title() {
+        let list = make_list(
+            Some("HEADER"),
+            (0..5).map(|i| make_list_item(&format!("i{i}"))).collect(),
+            0,
+            2, // skip first 2 items
+        );
+        let layout = list.layout(40.0, 10.0, 1.0, |_| ListItemMeasure::new(1.0));
+        // Title still pinned at top.
+        assert_eq!(layout.title_bounds.unwrap().y, 0.0);
+        // First visible item is items[2].
+        assert_eq!(layout.visible_items[0].item_idx, 2);
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+
+    #[test]
+    fn list_view_layout_viewport_overflow_clips_last() {
+        let list = make_list(
+            None,
+            (0..10).map(|i| make_list_item(&format!("i{i}"))).collect(),
+            0,
+            0,
+        );
+        // 10 items × 2.0; viewport 5.0 → 3 rows fit (last clipped to 1.0).
+        let layout = list.layout(40.0, 5.0, 0.0, |_| ListItemMeasure::new(2.0));
+        assert_eq!(layout.visible_items.len(), 3);
+        assert_eq!(layout.visible_items[2].bounds.height, 1.0);
+    }
+
+    #[test]
+    fn list_view_layout_pixel_units_with_title() {
+        // GTK-style: title row 20 px, items 18.5 px each.
+        let list = make_list(
+            Some("DIAGNOSTICS"),
+            (0..5).map(|i| make_list_item(&format!("d{i}"))).collect(),
+            0,
+            0,
+        );
+        let layout = list.layout(300.0, 100.0, 20.0, |_| ListItemMeasure::new(18.5));
+        let tb = layout.title_bounds.unwrap();
+        assert_eq!(tb.height, 20.0);
+        // First item starts at y=20.
+        assert_eq!(layout.visible_items[0].bounds.y, 20.0);
+        assert_eq!(layout.visible_items[0].bounds.height, 18.5);
+        // Hit-test lands on correct row with fractional coords.
+        assert_eq!(layout.hit_test(100.0, 29.0), ListViewHit::Item(0));
+        assert_eq!(layout.hit_test(100.0, 39.0), ListViewHit::Item(1));
+    }
+
+    #[test]
+    fn list_view_layout_bordered_insets_items() {
+        // Bordered: items inset by 1 cell on each side, viewport
+        // height reduced by 2 (top + bottom border rows). Title (when
+        // present) overlays the top border, so item area starts at y=1.
+        let mut list = make_list(
+            Some("Open Tabs"),
+            (0..3).map(|i| make_list_item(&format!("tab{i}"))).collect(),
+            0,
+            0,
+        );
+        list.bordered = true;
+        let layout = list.layout(20.0, 6.0, 1.0, |_| ListItemMeasure::new(1.0));
+        // Title overlay covers the full top border row (y=0).
+        let tb = layout.title_bounds.unwrap();
+        assert_eq!(tb.y, 0.0);
+        assert_eq!(tb.width, 20.0);
+        // Items inset by 1 cell horizontally, start at y=1.
+        let i0 = layout.visible_items[0].bounds;
+        assert_eq!(i0.x, 1.0);
+        assert_eq!(i0.y, 1.0);
+        assert_eq!(i0.width, 18.0);
+        // Bottom row (y=5) is reserved for the border — only 3 item
+        // rows fit between y=1 and y=5 (inclusive of y=4).
+        assert!(layout.visible_items.iter().all(|v| v.bounds.y < 5.0));
+    }
+
+    #[test]
+    fn list_view_layout_bordered_no_title_starts_at_one() {
+        let mut list = make_list(
+            None,
+            (0..3).map(|i| make_list_item(&format!("r{i}"))).collect(),
+            0,
+            0,
+        );
+        list.bordered = true;
+        let layout = list.layout(10.0, 6.0, 0.0, |_| ListItemMeasure::new(1.0));
+        assert!(layout.title_bounds.is_none());
+        // Without title, items still start at y=1 (top border).
+        assert_eq!(layout.visible_items[0].bounds.y, 1.0);
+    }
+}

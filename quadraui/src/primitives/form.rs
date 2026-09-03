@@ -468,3 +468,388 @@ pub enum FormEvent {
     /// not consume it. The app may interpret it (e.g. `?` opens help).
     KeyPressed { key: String, modifiers: Modifiers },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Color;
+
+    #[test]
+    fn form_roundtrip_serde() {
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("header"),
+                    label: StyledText::plain("Editor"),
+                    kind: FieldKind::Label,
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("line-numbers"),
+                    label: StyledText::plain("Show line numbers"),
+                    kind: FieldKind::Toggle { value: true },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("tabstop"),
+                    label: StyledText::plain("Tab width"),
+                    kind: FieldKind::TextInput {
+                        value: "4".to_string(),
+                        placeholder: "2".to_string(),
+                        cursor: Some(1),
+                        selection_anchor: None,
+                    },
+                    hint: StyledText::plain("Number of spaces per tab"),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("save"),
+                    label: StyledText::plain("Save settings"),
+                    kind: FieldKind::Button,
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+            ],
+            focused_field: Some(WidgetId::new("line-numbers")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let json = serde_json::to_string(&form).unwrap();
+        let back: Form = serde_json::from_str(&json).unwrap();
+        assert_eq!(form, back);
+    }
+
+    #[test]
+    fn form_event_roundtrip_serde() {
+        let events = vec![
+            FormEvent::ToggleChanged {
+                id: WidgetId::new("line-numbers"),
+                value: false,
+            },
+            FormEvent::TextInputChanged {
+                id: WidgetId::new("tabstop"),
+                value: "8".to_string(),
+            },
+            FormEvent::TextInputCommitted {
+                id: WidgetId::new("tabstop"),
+                value: "8".to_string(),
+            },
+            FormEvent::FocusChanged {
+                id: WidgetId::new("save"),
+            },
+            FormEvent::ButtonClicked {
+                id: WidgetId::new("save"),
+            },
+            FormEvent::KeyPressed {
+                key: "Escape".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: FormEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
+    }
+
+    // ── Form field primitive tests (#143 Slider/ColorPicker/Dropdown) ─
+
+    #[test]
+    fn form_slider_field_serde() {
+        let field = FormField {
+            id: WidgetId::new("font-size"),
+            label: StyledText::plain("Font size"),
+            kind: FieldKind::Slider {
+                value: 14.0,
+                min: 8.0,
+                max: 32.0,
+                step: 1.0,
+            },
+            hint: StyledText::plain("Editor font size in px"),
+            disabled: false,
+            validation: None,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_color_picker_field_serde() {
+        let field = FormField {
+            id: WidgetId::new("accent"),
+            label: StyledText::plain("Accent colour"),
+            kind: FieldKind::ColorPicker {
+                value: Color::rgb(0x78, 0xb4, 0xff),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_dropdown_field_serde() {
+        let field = FormField {
+            id: WidgetId::new("theme"),
+            label: StyledText::plain("Theme"),
+            kind: FieldKind::Dropdown {
+                options: vec![
+                    StyledText::plain("One Dark"),
+                    StyledText::plain("Solarized Light"),
+                    StyledText::plain("Monokai"),
+                ],
+                selected_idx: 0,
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_slider_legacy_deserialize_with_default_step() {
+        // A client might omit `step` — it defaults to 1.0 via serde.
+        let json = r#"{
+            "id": "x",
+            "label": {"spans":[{"text":"X","fg":null,"bg":null}]},
+            "kind": {"Slider": {"value": 5.0, "min": 0.0, "max": 10.0}},
+            "hint": {"spans":[]}
+        }"#;
+        let field: FormField = serde_json::from_str(json).unwrap();
+        match field.kind {
+            FieldKind::Slider { step, .. } => assert_eq!(step, 1.0),
+            _ => panic!("expected Slider"),
+        }
+    }
+
+    #[test]
+    fn form_toggle_group_serde() {
+        let field = FormField {
+            id: WidgetId::new("opts"),
+            label: StyledText::plain("Options"),
+            kind: FieldKind::ToggleGroup {
+                toggles: vec![
+                    ToggleGroupItem {
+                        id: WidgetId::new("case"),
+                        label: "Aa".into(),
+                        value: true,
+                    },
+                    ToggleGroupItem {
+                        id: WidgetId::new("word"),
+                        label: "Ab|".into(),
+                        value: false,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_button_row_serde() {
+        let field = FormField {
+            id: WidgetId::new("actions"),
+            label: StyledText::default(),
+            kind: FieldKind::ButtonRow {
+                buttons: vec![
+                    ButtonRowItem {
+                        id: WidgetId::new("next"),
+                        label: "Find Next".into(),
+                        disabled: false,
+                        icon: None,
+                    },
+                    ButtonRowItem {
+                        id: WidgetId::new("all"),
+                        label: "Replace All".into(),
+                        disabled: true,
+                        icon: None,
+                    },
+                ],
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+    }
+
+    // ── D6 Form layout API tests ──────────────────────────────────────
+
+    fn make_form_field(id: &str, label: &str, kind: FieldKind) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain(label),
+            kind,
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        }
+    }
+
+    fn make_form(fields: Vec<FormField>, scroll: usize) -> Form {
+        Form {
+            id: WidgetId::new("f"),
+            fields,
+            focused_field: None,
+            scroll_offset: scroll,
+            has_focus: true,
+        }
+    }
+
+    #[test]
+    fn form_layout_empty() {
+        let f = make_form(vec![], 0);
+        let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields.len(), 0);
+        assert_eq!(layout.hit_test(5.0, 5.0), FormHit::Empty);
+    }
+
+    #[test]
+    fn form_layout_stacks_fields() {
+        let f = make_form(
+            vec![
+                make_form_field("header", "Editor", FieldKind::Label),
+                make_form_field("toggle1", "Line numbers", FieldKind::Toggle { value: true }),
+                make_form_field("btn", "Save", FieldKind::Button),
+            ],
+            0,
+        );
+        let layout = f.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields.len(), 3);
+        assert_eq!(layout.visible_fields[0].bounds.y, 0.0);
+        assert_eq!(layout.visible_fields[1].bounds.y, 1.0);
+        assert_eq!(layout.visible_fields[2].bounds.y, 2.0);
+        match layout.hit_test(10.0, 1.5) {
+            FormHit::Field(id) => assert_eq!(id.as_str(), "toggle1"),
+            _ => panic!("expected Field(toggle1)"),
+        }
+    }
+
+    #[test]
+    fn form_layout_hit_carries_widget_id_not_index() {
+        // Adding fields in arbitrary order — hit_test returns the id,
+        // not the flat index, so apps don't care about ordering.
+        let f = make_form(
+            vec![
+                make_form_field("zebra", "Zebra", FieldKind::Button),
+                make_form_field("alpha", "Alpha", FieldKind::Button),
+            ],
+            0,
+        );
+        let layout = f.layout(40.0, 5.0, |_| FormFieldMeasure::new(1.0));
+        match layout.hit_test(10.0, 0.5) {
+            FormHit::Field(id) => assert_eq!(id.as_str(), "zebra"),
+            _ => panic!(),
+        }
+        match layout.hit_test(10.0, 1.5) {
+            FormHit::Field(id) => assert_eq!(id.as_str(), "alpha"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn form_layout_scroll_offset_skips() {
+        let f = make_form(
+            (0..5)
+                .map(|i| make_form_field(&format!("f{i}"), &format!("F{i}"), FieldKind::Button))
+                .collect(),
+            2,
+        );
+        let layout = f.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields[0].field_idx, 2);
+        assert_eq!(layout.visible_fields[0].id.as_str(), "f2");
+    }
+
+    #[test]
+    fn form_layout_varying_heights_by_kind() {
+        // Fields with hints are taller; Label rows can be shorter.
+        let fields = vec![
+            make_form_field("hdr", "Header", FieldKind::Label),
+            make_form_field(
+                "txt",
+                "Name",
+                FieldKind::TextInput {
+                    value: "John".to_string(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    selection_anchor: None,
+                },
+            ),
+        ];
+        let f = make_form(fields.clone(), 0);
+        let layout = f.layout(40.0, 10.0, |i| {
+            // Pretend TextInput fields are 2 rows tall (room for hint), Label is 1.
+            match fields[i].kind {
+                FieldKind::TextInput { .. } => FormFieldMeasure::new(2.0),
+                _ => FormFieldMeasure::new(1.0),
+            }
+        });
+        assert_eq!(layout.visible_fields[0].bounds.height, 1.0);
+        assert_eq!(layout.visible_fields[1].bounds.y, 1.0);
+        assert_eq!(layout.visible_fields[1].bounds.height, 2.0);
+    }
+
+    #[test]
+    fn text_input_cursor_and_selection_serde() {
+        // Round-trip a TextInput variant with explicit cursor + selection state.
+        let field = FormField {
+            id: WidgetId::new("name"),
+            label: StyledText::plain("Name"),
+            kind: FieldKind::TextInput {
+                value: "hello world".to_string(),
+                placeholder: String::new(),
+                cursor: Some(5),
+                selection_anchor: Some(0),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let json = serde_json::to_string(&field).unwrap();
+        let back: FormField = serde_json::from_str(&json).unwrap();
+        assert_eq!(field, back);
+
+        // Legacy shape without cursor/selection_anchor also deserializes
+        // (new fields default to None) — ensures the extension is
+        // backward-compatible with pre-A.3d serialised forms.
+        let legacy = r#"{
+            "id": "legacy",
+            "label": {"spans":[{"text":"Legacy","fg":null,"bg":null}]},
+            "kind": {"TextInput": {"value": "x"}},
+            "hint": {"spans":[]}
+        }"#;
+        let parsed: FormField = serde_json::from_str(legacy).unwrap();
+        match parsed.kind {
+            FieldKind::TextInput {
+                cursor,
+                selection_anchor,
+                ..
+            } => {
+                assert_eq!(cursor, None);
+                assert_eq!(selection_anchor, None);
+            }
+            other => panic!("unexpected kind: {:?}", other),
+        }
+    }
+}

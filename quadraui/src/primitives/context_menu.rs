@@ -562,4 +562,183 @@ mod tests {
         assert_eq!(nested.len(), 1);
         assert_eq!(nested[0].checked, Some(true));
     }
+
+    // ── ContextMenu primitive tests (D6) ──────────────────────────────
+
+    fn cm_action(id: &str, label: &str) -> ContextMenuItem {
+        ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(label),
+            ..Default::default()
+        }
+    }
+
+    fn cm_separator() -> ContextMenuItem {
+        ContextMenuItem::default()
+    }
+
+    #[test]
+    fn context_menu_layout_flat() {
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![
+                cm_action("cut", "Cut"),
+                cm_action("copy", "Copy"),
+                cm_separator(),
+                cm_action("paste", "Paste"),
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::default(),
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(100.0, 100.0, viewport, 160.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 100.0);
+        assert_eq!(layout.bounds.y, 100.0);
+        assert_eq!(layout.bounds.width, 160.0);
+        assert_eq!(layout.bounds.height, 80.0); // 4 × 20
+        assert_eq!(layout.visible_items.len(), 4);
+        // Separator at index 2 is visually present, non-clickable.
+        assert!(layout.visible_items[2].is_separator);
+        assert!(!layout.visible_items[2].clickable);
+        // Hit-test on Copy (2nd item, y=120..140).
+        match layout.hit_test(120.0, 125.0) {
+            ContextMenuHit::Item(id) => assert_eq!(id.as_str(), "copy"),
+            _ => panic!("expected Item(copy)"),
+        }
+        // Hit-test on separator (y=140..160) → Inert.
+        assert_eq!(layout.hit_test(120.0, 150.0), ContextMenuHit::Inert);
+        // Hit-test far outside → Empty.
+        assert_eq!(layout.hit_test(500.0, 500.0), ContextMenuHit::Empty);
+    }
+
+    #[test]
+    fn context_menu_layout_shifts_left_when_overflow() {
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("a", "A")],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::default(),
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        // Anchor at x=180, menu_width=100 → right edge would be 280 > 200.
+        let layout = menu.layout(180.0, 50.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 100.0); // 200 - 100 = 100
+    }
+
+    #[test]
+    fn context_menu_layout_shifts_up_when_overflow() {
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("a", "A"), cm_action("b", "B")],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::default(),
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
+        // Anchor at y=80, 2 items × 20 = 40, bottom would be 120 > 100.
+        let layout = menu.layout(10.0, 80.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.y, 60.0); // 100 - 40
+    }
+
+    #[test]
+    fn context_menu_layout_below_places_at_anchor_bottom() {
+        // Trigger button is anchor (10, 10, 80, 20); menu opens below.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("a", "A"), cm_action("b", "B")],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout_at(Rect::new(10.0, 10.0, 80.0, 20.0), viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        // Menu's y starts at anchor.bottom = 30.
+        assert_eq!(layout.bounds.y, 30.0);
+        assert_eq!(
+            layout.resolved_placement,
+            ResolvedContextMenuPlacement::Below
+        );
+    }
+
+    #[test]
+    fn context_menu_layout_below_flips_above_when_no_room() {
+        // Trigger near bottom edge; below would overflow; more room above.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: (0..6).map(|i| cm_action(&format!("i{i}"), "X")).collect(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        // Trigger at y=180, height=20 → bottom=200. Menu height = 6×20 = 120.
+        // Space below = 0, space above = 180 → flip.
+        let layout = menu.layout_at(Rect::new(10.0, 180.0, 80.0, 20.0), viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(
+            layout.resolved_placement,
+            ResolvedContextMenuPlacement::Above
+        );
+        // Menu's bottom edge sits at the trigger's top edge → y = 180 - 120 = 60.
+        assert_eq!(layout.bounds.y, 60.0);
+    }
+
+    #[test]
+    fn context_menu_layout_above_places_at_anchor_top() {
+        // kubeui's status-bar segment use case: trigger at bottom row,
+        // menu opens upward.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![
+                cm_action("a", "A"),
+                cm_action("b", "B"),
+                cm_action("c", "C"),
+            ],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Above,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
+        // Trigger at y=99 (last row, status bar). Menu height = 60.
+        // Space above = 99 (room for menu); resolves to Above.
+        let layout = menu.layout_at(Rect::new(10.0, 99.0, 80.0, 1.0), viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(
+            layout.resolved_placement,
+            ResolvedContextMenuPlacement::Above
+        );
+        // Menu y = 99 - 60 = 39.
+        assert_eq!(layout.bounds.y, 39.0);
+    }
+
+    #[test]
+    fn context_menu_layout_disabled_items_inert() {
+        let mut menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("delete", "Delete")],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::default(),
+        };
+        menu.items[0].disabled = true;
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = menu.layout(10.0, 10.0, viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert!(!layout.visible_items[0].clickable);
+        // Click on disabled item → Inert, not Item.
+        assert_eq!(layout.hit_test(50.0, 15.0), ContextMenuHit::Inert);
+    }
 }

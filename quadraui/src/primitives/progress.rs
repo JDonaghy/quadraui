@@ -155,3 +155,91 @@ impl ProgressBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_bar_layout_determinate() {
+        let p = ProgressBar {
+            id: WidgetId::new("download"),
+            label: "Downloading…".to_string(),
+            value: Some(0.4),
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        };
+        let layout = p.layout(0.0, 0.0, ProgressBarMeasure::new(200.0, 8.0));
+        assert_eq!(layout.bounds.width, 200.0);
+        let fill = layout.fill_bounds.unwrap();
+        assert_eq!(fill.width, 80.0); // 0.4 * 200
+        assert!(layout.cancel_bounds.is_none());
+    }
+
+    #[test]
+    fn progress_bar_layout_indeterminate() {
+        let p = ProgressBar {
+            id: WidgetId::new("op"),
+            label: String::new(),
+            value: None,
+            frame_idx: 5,
+            cancellable: false,
+            accent: None,
+        };
+        let layout = p.layout(0.0, 0.0, ProgressBarMeasure::new(100.0, 4.0));
+        assert!(layout.fill_bounds.is_none());
+    }
+
+    #[test]
+    fn progress_bar_layout_cancellable() {
+        let p = ProgressBar {
+            id: WidgetId::new("install"),
+            label: "Installing…".to_string(),
+            value: Some(0.5),
+            frame_idx: 0,
+            cancellable: true,
+            accent: None,
+        };
+        let layout = p.layout(
+            0.0,
+            0.0,
+            ProgressBarMeasure {
+                width: 200.0,
+                height: 8.0,
+                cancel_width: 20.0,
+            },
+        );
+        // Fill uses the bar area minus cancel width.
+        let fill = layout.fill_bounds.unwrap();
+        assert_eq!(fill.width, (200.0 - 20.0) * 0.5); // 90
+        let cancel = layout.cancel_bounds.unwrap();
+        assert_eq!(cancel.x, 180.0);
+        assert_eq!(cancel.width, 20.0);
+        // Click on cancel → Cancel(id).
+        match layout.hit_test(190.0, 4.0) {
+            ProgressBarHit::Cancel(id) => assert_eq!(id.as_str(), "install"),
+            _ => panic!("expected Cancel hit"),
+        }
+        // Click on bar body (before cancel) → Body(id).
+        match layout.hit_test(50.0, 4.0) {
+            ProgressBarHit::Body(id) => assert_eq!(id.as_str(), "install"),
+            _ => panic!("expected Body hit"),
+        }
+    }
+
+    #[test]
+    fn progress_bar_value_clamped() {
+        let p = ProgressBar {
+            id: WidgetId::new("overrun"),
+            label: String::new(),
+            value: Some(1.5), // > 1.0
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        };
+        let layout = p.layout(0.0, 0.0, ProgressBarMeasure::new(100.0, 4.0));
+        // Clamped to 1.0 → full width.
+        assert_eq!(layout.fill_bounds.unwrap().width, 100.0);
+    }
+}

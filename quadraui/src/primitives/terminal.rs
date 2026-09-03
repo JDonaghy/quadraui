@@ -635,4 +635,185 @@ mod tests {
         next.cells[0][1].is_cursor = true;
         assert_eq!(next.dirty_rows(&prev), Some(vec![0]));
     }
+
+    #[test]
+    fn terminal_roundtrip_serde() {
+        let term = Terminal {
+            id: WidgetId::new("terminal-0"),
+            cells: vec![
+                vec![
+                    TerminalCell {
+                        ch: '$',
+                        fg: Color::rgb(200, 200, 200),
+                        bg: Color::rgb(20, 20, 20),
+                        bold: true,
+                        italic: false,
+                        underline: false,
+                        selected: false,
+                        is_cursor: false,
+                        is_find_match: false,
+                        is_find_active: false,
+                    },
+                    TerminalCell {
+                        ch: ' ',
+                        fg: Color::rgb(200, 200, 200),
+                        bg: Color::rgb(20, 20, 20),
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        selected: false,
+                        is_cursor: true,
+                        is_find_match: false,
+                        is_find_active: false,
+                    },
+                ],
+                vec![TerminalCell {
+                    ch: 'm',
+                    fg: Color::rgb(255, 100, 50),
+                    bg: Color::rgb(20, 20, 20),
+                    bold: false,
+                    italic: false,
+                    underline: true,
+                    selected: true,
+                    is_cursor: false,
+                    is_find_match: true,
+                    is_find_active: false,
+                }],
+            ],
+            scrollbar: None,
+        };
+        let json = serde_json::to_string(&term).unwrap();
+        let back: Terminal = serde_json::from_str(&json).unwrap();
+        assert_eq!(term, back);
+    }
+
+    #[test]
+    fn terminal_scrollbar_serde_round_trip() {
+        let term = Terminal {
+            id: WidgetId::new("t"),
+            cells: vec![vec![TerminalCell {
+                ch: 'x',
+                fg: Color::rgb(200, 200, 200),
+                bg: Color::rgb(20, 20, 20),
+                bold: false,
+                italic: false,
+                underline: false,
+                selected: false,
+                is_cursor: false,
+                is_find_match: false,
+                is_find_active: false,
+            }]],
+            scrollbar: Some(TerminalScrollbar {
+                total_lines: 500,
+                visible_lines: 24,
+                scroll_offset: 100,
+                inverted: false,
+                width: None,
+            }),
+        };
+        let json = serde_json::to_string(&term).unwrap();
+        let back: Terminal = serde_json::from_str(&json).unwrap();
+        assert_eq!(term, back);
+        let sb = back.scrollbar.unwrap();
+        assert_eq!(sb.total_lines, 500);
+        assert_eq!(sb.visible_lines, 24);
+        assert_eq!(sb.scroll_offset, 100);
+    }
+
+    #[test]
+    fn terminal_event_roundtrip_serde() {
+        let events = vec![
+            TerminalEvent::KeyPressed {
+                key: "a".to_string(),
+                modifiers: Modifiers::default(),
+            },
+            TerminalEvent::SelectStart { row: 5, col: 10 },
+            TerminalEvent::SelectExtend { row: 6, col: 20 },
+            TerminalEvent::SelectEnd,
+            TerminalEvent::Scroll { delta: -3 },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: TerminalEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
+    }
+
+    // ── D6 Terminal layout API tests ──────────────────────────────────
+
+    fn make_term(rows: usize, cols: usize) -> Terminal {
+        let cell = TerminalCell {
+            ch: ' ',
+            fg: Color::rgb(200, 200, 200),
+            bg: Color::rgb(20, 20, 20),
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        };
+        Terminal {
+            id: WidgetId::new("term"),
+            cells: (0..rows).map(|_| vec![cell.clone(); cols]).collect(),
+            scrollbar: None,
+        }
+    }
+
+    #[test]
+    fn terminal_layout_tui_cells() {
+        let term = make_term(24, 80);
+        let layout = term.layout(80.0, 24.0, 1.0, 1.0);
+        assert_eq!(layout.grid_rows, 24);
+        assert_eq!(layout.grid_cols, 80);
+        // Click at (5, 3) → cell (row=3, col=5).
+        match layout.hit_test(5.5, 3.5) {
+            TerminalHit::Cell { row, col } => {
+                assert_eq!(row, 3);
+                assert_eq!(col, 5);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn terminal_layout_pixel_cells() {
+        // Native: 800x600 viewport, 8 px × 16 px cells = 100 cols × 37 rows.
+        let term = make_term(37, 100);
+        let layout = term.layout(800.0, 600.0, 8.0, 16.0);
+        assert_eq!(layout.grid_cols, 100);
+        assert_eq!(layout.grid_rows, 37); // 600/16 = 37.5 → 37
+                                          // Click at (160, 48) → col=20, row=3.
+        match layout.hit_test(160.0, 48.0) {
+            TerminalHit::Cell { row, col } => {
+                assert_eq!(col, 20);
+                assert_eq!(row, 3);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn terminal_layout_hit_test_outside() {
+        let term = make_term(10, 20);
+        let layout = term.layout(20.0, 10.0, 1.0, 1.0);
+        assert_eq!(layout.hit_test(-1.0, 5.0), TerminalHit::Empty);
+        assert_eq!(layout.hit_test(5.0, -1.0), TerminalHit::Empty);
+        assert_eq!(layout.hit_test(100.0, 5.0), TerminalHit::Empty);
+    }
+
+    #[test]
+    fn terminal_layout_cell_bounds() {
+        let term = make_term(10, 20);
+        let layout = term.layout(20.0, 10.0, 1.0, 1.0);
+        let r = layout.cell_bounds(3, 5).unwrap();
+        assert_eq!(r.x, 5.0);
+        assert_eq!(r.y, 3.0);
+        assert_eq!(r.width, 1.0);
+        assert_eq!(r.height, 1.0);
+        // Out of range → None.
+        assert!(layout.cell_bounds(99, 0).is_none());
+        assert!(layout.cell_bounds(0, 99).is_none());
+    }
 }

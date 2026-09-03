@@ -97,3 +97,30 @@ impl Spinner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Spinner + ProgressBar primitive tests (D6, #142) ──────────────
+
+    #[test]
+    fn spinner_layout_bounds() {
+        let s = Spinner {
+            id: WidgetId::new("installing"),
+            label: "Installing rust-analyzer…".to_string(),
+            frame_idx: 42,
+            accent: None,
+        };
+        let layout = s.layout(10.0, 20.0, SpinnerMeasure::new(200.0, 16.0));
+        assert_eq!(layout.bounds.x, 10.0);
+        assert_eq!(layout.bounds.y, 20.0);
+        assert_eq!(layout.bounds.width, 200.0);
+        // Hit-test on bounds returns Body(id).
+        match layout.hit_test(100.0, 28.0, &s.id) {
+            SpinnerHit::Body(id) => assert_eq!(id.as_str(), "installing"),
+            _ => panic!(),
+        }
+        assert_eq!(layout.hit_test(500.0, 28.0, &s.id), SpinnerHit::Empty);
+    }
+}
