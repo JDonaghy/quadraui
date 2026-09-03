@@ -1,8 +1,15 @@
 //! Widget primitives.
 //!
 //! Each primitive module exports a declarative data struct describing the
-//! widget, a companion event enum, and any supporting types. Backends
-//! implement rendering and input handling against these types.
+//! widget, layout/hit-test types, and any supporting types. Backends
+//! implement rendering and input handling against these types. A handful
+//! of primitives also carry a companion `*Event` enum that either bubbles
+//! through [`crate::UiEvent`] (e.g. `TreeEvent`, `FormEvent`) or is
+//! app-constructed from the primitive's own hit-test result (e.g.
+//! `PaletteEvent`) — most primitives resolve interaction purely through
+//! their `*Hit` type instead (see quadraui#509's disposition pass in
+//! `docs/DECISIONS.md` for why the per-primitive `*Event` enums that
+//! nothing ever constructed were removed).
 
 pub mod activity_bar;
 pub mod board;
@@ -24,7 +31,6 @@ pub mod list;
 pub mod menu_bar;
 pub mod message_list;
 pub mod minimap;
-pub mod modal;
 pub mod multi_section_view;
 pub mod palette;
 pub mod panel;

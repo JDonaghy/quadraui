@@ -16,7 +16,7 @@
 //! Backends rasterise the current glyph + label.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of an indeterminate spinner.
@@ -35,15 +35,6 @@ pub struct Spinner {
     /// Optional accent colour for the glyph. `None` = backend decides.
     #[serde(default)]
     pub accent: Option<Color>,
-}
-
-/// Events a `Spinner` emits. Spinners are read-only from the user's
-/// perspective; the only event is `KeyPressed` (which rarely fires —
-/// spinners don't take focus). `Cancelled` is emitted by
-/// [`ProgressBar`](super::progress::ProgressBar), not here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpinnerEvent {
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

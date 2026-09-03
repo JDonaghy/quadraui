@@ -51,7 +51,7 @@
 //! (per D6 contract) so paint and click consume one layout per frame.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 fn default_true() -> bool {
@@ -125,13 +125,6 @@ pub enum ToolbarButton {
         #[serde(default)]
         fg: Option<Color>,
     },
-}
-
-/// Events emitted by a [`Toolbar`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToolbarEvent {
-    /// User clicked (or activated via keyboard) an enabled action button.
-    ButtonClicked { id: WidgetId, modifiers: Modifiers },
 }
 
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
@@ -521,19 +514,6 @@ mod tests {
         let json = serde_json::to_string(&bar).unwrap();
         let back: Toolbar = serde_json::from_str(&json).unwrap();
         assert_eq!(bar, back);
-    }
-
-    #[test]
-    fn serde_roundtrip_event() {
-        let events = vec![ToolbarEvent::ButtonClicked {
-            id: WidgetId::new("debug:continue"),
-            modifiers: Modifiers::default(),
-        }];
-        for ev in &events {
-            let json = serde_json::to_string(ev).unwrap();
-            let back: ToolbarEvent = serde_json::from_str(&json).unwrap();
-            assert_eq!(ev, &back);
-        }
     }
 
     #[test]

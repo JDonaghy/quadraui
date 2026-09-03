@@ -9,11 +9,11 @@
 //! using `frame_idx` the same way `Spinner` does.
 //!
 //! Optional cancel button: when `cancellable = true`, backends render
-//! a trailing cancel affordance and emit
-//! `ProgressBarEvent::CancelClicked` when clicked.
+//! a trailing cancel affordance; clicks resolve as
+//! [`ProgressBarHit::Cancel`].
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a progress bar.
@@ -31,22 +31,13 @@ pub struct ProgressBar {
     /// mode. Ignored when `value.is_some()`.
     #[serde(default)]
     pub frame_idx: usize,
-    /// When true, a cancel affordance is drawn at the trailing edge and
-    /// click emits `CancelClicked`.
+    /// When true, a cancel affordance is drawn at the trailing edge
+    /// (see [`ProgressBarHit::Cancel`]).
     #[serde(default)]
     pub cancellable: bool,
     /// Override the fill colour. `None` = theme default.
     #[serde(default)]
     pub accent: Option<Color>,
-}
-
-/// Events a `ProgressBar` emits.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProgressBarEvent {
-    /// User clicked the cancel affordance.
-    CancelClicked { id: WidgetId },
-    /// Key pressed while focused (uncommon — progress bars rarely take focus).
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

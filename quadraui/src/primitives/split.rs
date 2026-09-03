@@ -10,13 +10,13 @@
 //! # Backend contract
 //!
 //! **Declarative + draggable.** The backend renders the divider at
-//! `divider_bounds` and hit-tests it for drag operations. When the
-//! user drags, the backend emits `DividerDragged { new_ratio }`; the
+//! `divider_bounds` and hit-tests it for drag operations via
+//! [`SplitLayout::hit_test`] / [`SplitHit`]. When the user drags, the
 //! app updates `ratio` on the primitive for the next frame. Clicks on
-//! either pane emit `PaneClicked { idx }`.
+//! either pane resolve as `SplitHit::FirstPane` / `SplitHit::SecondPane`.
 
 use crate::event::Rect;
-use crate::types::{Modifiers, WidgetId};
+use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a split container.
@@ -46,21 +46,6 @@ pub enum SplitDirection {
     /// Divider runs horizontally; panes are stacked (first = top,
     /// second = bottom).
     Vertical,
-}
-
-/// Events a `Split` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SplitEvent {
-    /// User dragged the divider. `new_ratio` is the app-clamped,
-    /// ready-to-store value.
-    DividerDragged { new_ratio: f32 },
-    /// User double-clicked the divider (apps typically reset to 0.5 or
-    /// invoke a smart layout).
-    DividerDoubleClicked,
-    /// User clicked inside one of the panes. `idx` is 0 = first, 1 = second.
-    PaneClicked { idx: u8 },
-    /// Key pressed while the split had focus.
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

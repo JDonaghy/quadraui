@@ -11,17 +11,17 @@
 //!
 //! **Declarative + overlay.** Render toasts stacked in the configured
 //! `corner`, with each toast a box of (title, body, optional action
-//! button). Clicks on the action button emit
-//! `ToastEvent::ActionClicked { id }`; clicks on the dismiss affordance
-//! emit `Dismissed { id }`. Toast boxes don't take keyboard focus —
-//! they're strictly a notification surface.
+//! button). Clicks resolve via [`ToastStackLayout::hit_test`] /
+//! [`ToastHit`]: the action button hits `ToastHit::Action`; the
+//! dismiss affordance hits `ToastHit::Dismiss`. Toast boxes don't take
+//! keyboard focus — they're strictly a notification surface.
 //!
 //! Stacking direction: bottom-corner toasts grow upward (newest nearest
 //! the corner); top-corner toasts grow downward. `Toast::layout()`
 //! handles this based on `corner`.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a toast stack for one corner.
@@ -81,21 +81,6 @@ pub enum ToastSeverity {
 pub struct ToastAction {
     pub id: WidgetId,
     pub label: String,
-}
-
-/// Events a `ToastStack` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToastEvent {
-    /// User clicked a toast's action button.
-    ActionClicked { id: WidgetId },
-    /// User clicked a toast's dismiss affordance (the × or a swipe).
-    Dismissed { id: WidgetId },
-    /// Click landed anywhere on the toast body (not action, not dismiss).
-    /// Apps may interpret this as "focus the originating surface."
-    Clicked { id: WidgetId },
-    /// A key was pressed while a toast notionally had focus. Rare —
-    /// toasts don't normally take keyboard focus.
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────

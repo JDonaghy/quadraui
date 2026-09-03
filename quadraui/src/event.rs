@@ -374,10 +374,10 @@ pub enum UiEvent {
     /// Carries the activated item's `WidgetId` regardless of nesting
     /// depth — submenu structure is transparent to the app.
     ///
-    /// The in-window `MenuBar` primitive emits
-    /// `MenuBarEvent::ItemActivated { idx }` instead; this variant is
-    /// specifically for system-installed menus (macOS NSMenu; future
-    /// Win32 `SetMenu`).
+    /// The in-window `MenuBar` primitive resolves clicks via
+    /// [`crate::MenuBarLayout::hit_test`] / [`crate::MenuBarHit::Item`]
+    /// instead; this variant is specifically for system-installed menus
+    /// (macOS NSMenu; future Win32 `SetMenu`).
     MenuActivated(WidgetId),
 
     /// A native right-click context menu (shown via

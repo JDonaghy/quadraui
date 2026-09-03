@@ -16,14 +16,31 @@
 //! // Query:
 //! assert_eq!(ring.current(), Some(&WidgetId::new("replace")));
 //! ```
+//!
+//! # Relationship to [`FocusGroup`](super::FocusGroup)
+//!
+//! Both types cycle a "current" position with wrap-around, and used to
+//! carry two independent copies of the same modulo arithmetic (#509).
+//! `FocusRing` is now a thin [`WidgetId`]-keyed shim over a
+//! [`FocusGroup`] — the cycling itself has exactly one implementation,
+//! in [`FocusGroup::cycle`]. The two types still exist separately
+//! because their call sites need different keys: `FocusRing` suits a
+//! fixed list of named widgets (form fields looked up by the
+//! [`WidgetId`] a hit-test returns — see `examples/common/form_groups.rs`),
+//! while `FocusGroup` suits a dynamically-resized run of anonymous
+//! regions indexed 0..N (sidebar sections, tab-group panes — see
+//! [`crate::compose::sidebar_system`] / [`crate::compose::tab_group`]),
+//! where there's no natural `WidgetId` to key by and the count changes
+//! at runtime as sections/panes are added or removed.
 
+use super::focus_group::FocusGroup;
 use crate::types::WidgetId;
 
 /// Manages Tab/Shift+Tab cycling through a fixed list of focusable widgets.
 #[derive(Debug, Clone)]
 pub struct FocusRing {
     items: Vec<WidgetId>,
-    current: Option<usize>,
+    group: FocusGroup,
 }
 
 impl FocusRing {
@@ -32,51 +49,56 @@ impl FocusRing {
     /// The first item is focused initially. Pass an empty vec for no focus.
     pub fn new(ids: Vec<impl Into<WidgetId>>) -> Self {
         let items: Vec<WidgetId> = ids.into_iter().map(Into::into).collect();
-        let current = if items.is_empty() { None } else { Some(0) };
-        Self { items, current }
+        let mut group = FocusGroup::new(items.len());
+        if !items.is_empty() {
+            group.set_active(Some(0));
+        }
+        Self { items, group }
     }
 
-    /// Move focus to the next item (wraps around). No-op if empty.
+    /// Move focus to the next item (wraps around). No-op if nothing is
+    /// currently focused (empty ring, or focus was [`Self::clear`]ed).
     pub fn advance(&mut self) {
-        if let Some(cur) = self.current {
-            self.current = Some((cur + 1) % self.items.len());
+        if self.group.active().is_some() {
+            self.group.cycle(1);
         }
     }
 
-    /// Move focus to the previous item (wraps around). No-op if empty.
+    /// Move focus to the previous item (wraps around). No-op if nothing
+    /// is currently focused (empty ring, or focus was [`Self::clear`]ed).
     pub fn retreat(&mut self) {
-        if let Some(cur) = self.current {
-            self.current = Some((cur + self.items.len() - 1) % self.items.len());
+        if self.group.active().is_some() {
+            self.group.cycle(-1);
         }
     }
 
     /// Set focus to a specific widget by ID. No-op if the ID isn't in the ring.
     pub fn set(&mut self, id: &WidgetId) {
         if let Some(idx) = self.items.iter().position(|item| item == id) {
-            self.current = Some(idx);
+            self.group.set_active(Some(idx));
         }
     }
 
     /// Clear focus (nothing focused).
     pub fn clear(&mut self) {
-        self.current = None;
+        self.group.set_active(None);
     }
 
     /// Focus the first item. No-op if empty.
     pub fn focus_first(&mut self) {
         if !self.items.is_empty() {
-            self.current = Some(0);
+            self.group.set_active(Some(0));
         }
     }
 
     /// The currently focused widget ID, or `None` if nothing is focused.
     pub fn current(&self) -> Option<&WidgetId> {
-        self.current.and_then(|i| self.items.get(i))
+        self.group.active().and_then(|i| self.items.get(i))
     }
 
     /// The index of the currently focused item.
     pub fn current_index(&self) -> Option<usize> {
-        self.current
+        self.group.active()
     }
 
     /// Whether the given ID is currently focused.

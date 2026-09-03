@@ -36,7 +36,7 @@
 //! paints what it's given.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, StyledText, WidgetId};
+use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a rich-text popup.
@@ -146,23 +146,6 @@ pub struct RichTextLink {
     pub end_byte: usize,
     /// URL or other target the app opens when the link is clicked.
     pub url: String,
-}
-
-/// Events a `RichTextPopup` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RichTextPopupEvent {
-    /// User clicked a link; app should open `url` (browser, file, etc.).
-    LinkActivated { idx: usize, url: String },
-    /// Selection changed via drag — app stores the new value on
-    /// `RichTextPopup.selection` for next render.
-    SelectionChanged { value: Option<TextSelection> },
-    /// Scroll offset changed (mouse wheel, scrollbar drag, keyboard).
-    ScrollOffsetChanged { new_offset: usize },
-    /// User dismissed the popup (Escape, click outside, blur).
-    Closed,
-    /// Key pressed while popup had focus and the primitive didn't
-    /// consume it. Apps may handle e.g. PageUp/PageDown.
-    KeyPressed { key: String, modifiers: Modifiers },
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
