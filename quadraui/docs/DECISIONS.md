@@ -937,17 +937,21 @@ arbitrated for hit-precedence by [`crate::ModalStack`] (which is a
 **`modal_stack.rs` (`ModalStack`, `ModalEntry`) — KEEP, not part of the
 above.** The issue's problem statement flagged `ModalEntry` itself as
 zero-external-refs, distinct from the (used) `ModalStack`. Confirmed:
-`ModalEntry` never appears by name in either consumer. But it's the
-return type of `ModalStack::pop_top()`, a real method on a heavily-used
-type (`~/src/vimcode/src/tui_main/mouse.rs`,
+`ModalEntry` never appears by name in either consumer, and — checked
+directly, not assumed — neither does `pop_top()`. vimcode's
+`ModalStack` call sites (`~/src/vimcode/src/tui_main/mouse.rs`,
 `~/src/vimcode/src/tui_main/render_impl.rs`,
-`~/src/vimcode/src/gtk/mod.rs` all construct/consult
-`quadraui::ModalStack` directly) — a consumer calling `.pop_top()` and
-projecting `.id` / `.bounds` off the result touches `ModalEntry`'s
-fields without ever needing to spell the type name. Same reasoning as
-`TerminalCellSize` below: a struct that's the necessary field/return
-type of a used API isn't dead just because grep can't see a textual
-match for it downstream.
+`~/src/vimcode/src/gtk/mod.rs`) all construct/consult `ModalStack`
+directly, but only via `.push(id, bounds)`, `.pop(id)` (the
+bool-returning removal-by-id method, *not* `pop_top()`), and
+`.hit_test(point)`; `grep -rn 'pop_top\|ModalEntry'` against both
+`~/src/vimcode/src` and `~/src/coord-tui/src` returns zero hits in
+either. So no consumer touches `ModalEntry` directly *or* indirectly
+today. Kept anyway because it's `ModalStack::pop_top()`'s return
+type — a real, if currently uncalled, method on a heavily-used type —
+and could be needed the moment a consumer starts calling it; deleting
+it would just mean re-adding it under time pressure later for no
+present benefit.
 
 **`primitives/terminal.rs` (`TerminalHit`, `TerminalLayout`,
 `TerminalCellSize`) — KEEP; audit was stale.** These three were flagged
@@ -985,7 +989,28 @@ use is enough.
 The issue flagged `compute_drop_zone` / `drop_zone_overlay` /
 `DropZone` / `DropZoneKind` / `DropEdge` / `DropGroupRect` as having
 "exactly one internal consumer" (`compose/tab_group.rs`) and zero
-external. Confirmed — but that one internal consumer is
+external. That claim does not hold for four of those six symbols:
+`compute_drop_zone`, `DropZoneKind`, `DropEdge`, and `DropGroupRect`
+each have a real, direct external consumer.
+`~/src/vimcode/src/render.rs` calls `quadraui::compute_drop_zone(cursor_x,
+cursor_y, &rects, tab_bar_height)` inside its own
+`compute_tab_drop_zone` helper, matches the result against
+`quadraui::DropZoneKind::{Center, Split, TabReorder}` and
+`quadraui::DropEdge::{Left, Right, Top, Bottom}`, and both constructs
+and stores `quadraui::DropGroupRect` values (as a struct field type and
+via direct construction) — all confirmed by reading the call sites,
+not just counting grep hits. Plain `DropZone` is the one symbol among
+the six where the issue's "one internal consumer" framing is
+accurate as far as *that name* goes: vimcode does have its own
+`core::window::DropZone`, but it's a same-named, unrelated local type,
+not a use of `quadraui::DropZone` — confirmed by reading the call
+sites. So the real picture is: `DropZone` and `drop_zone_overlay` have
+exactly the one internal consumer the issue described; `compute_drop_zone`,
+`DropZoneKind`, `DropEdge`, and `DropGroupRect` additionally have a
+production external consumer and must be treated as breaking-change
+surface, not in-repo-only helpers, if their shape ever changes.
+Regardless of that split, the disposition here is unchanged: keep
+everything in this file. That one internal consumer is
 `TabGroupController`, a real, fully-tested, actively-maintained compose
 helper whose own public methods (`handle_tab_drag_move`,
 `handle_tab_drag_drop`, `drop_zone_at`, `drop_group_rects`) return or
@@ -995,17 +1020,20 @@ in `~/src/vimcode/src/tui_main/render_impl.rs` and
 `~/src/vimcode/src/gtk/mod.rs`) but *not* via `drop_zone_overlay()` —
 vimcode builds `DropOverlay` values itself rather than calling the
 helper. None of this is "dead": it's a working internal composition
-layer with one adopted piece (`DropOverlay`) and the rest not yet
-adopted externally, which is a different disposition than "nothing
-anywhere ever calls this." "Zero *external* consumers" is not the bar
-this repo's own downstream policy sets for in-repo library code with a
-real in-repo caller — see `CLAUDE.md`'s distinction between "no
-in-tree use" (free to remove) and everything else (breaking-change
-rules apply). `TabGroupController` itself isn't referenced by name in
+layer with two adopted pieces (`DropOverlay`, and now the four symbols
+identified above) and the rest not yet adopted externally, which is a
+different disposition than "nothing anywhere ever calls this." "Zero
+*external* consumers" is not the bar this repo's own downstream policy
+sets for in-repo library code with a real in-repo caller — see
+`CLAUDE.md`'s distinction between "no in-tree use" (free to remove) and
+everything else (breaking-change rules apply) — and for
+`compute_drop_zone`/`DropZoneKind`/`DropEdge`/`DropGroupRect` it isn't
+even the right bar to apply, since they clear the *external*-consumer
+bar directly. `TabGroupController` itself isn't referenced by name in
 either consumer yet (both have their own hand-rolled tab-drag/drop
 logic — vimcode's is `core::window::DropZone`, a same-named but
 *unrelated* local type, confirmed by reading the call sites, not just
-counting grep hits), so this composition is prototyped-but-not-adopted
+counting grep hits), so *that* composition is prototyped-but-not-adopted
 rather than proven-in-production; nothing here changes as a result of
 this pass.
 
