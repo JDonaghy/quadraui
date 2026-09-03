@@ -59,7 +59,116 @@
 //! (which needs one concrete function pointer) can register the right
 //! one for whatever app type `run::<A>` was called with.
 
+use crate::backend::Backend;
+use crate::event::Viewport;
 use crate::runner::AppLogic;
+// `EventOutcome` — what the caller should do after `dispatch_event`
+// handles one event — is defined once in `crate::runtime` and shared by
+// every backend runner (quadraui#496); re-exported (not just imported)
+// so `win::testing` reaches it through this path, mirroring
+// `tui::run`/`macos::run`.
+pub(crate) use crate::runtime::EventOutcome;
+use crate::win::backend::WinBackend;
+use crate::{ActivityBarEvent, UiEvent};
+
+/// Dispatch one already-translated [`UiEvent`] through the app, applying
+/// the runner's built-in pre-processing first. This is the funnel both
+/// the live `wndproc`'s `dispatch` helper (`mod win32`, below) and
+/// [`super::testing::WinDriver`] (quadraui#707) route through, so a test
+/// exercises the exact pre-processing a real keypress gets — mirrors
+/// [`crate::gtk::run::dispatch_event`] / [`crate::macos::run::dispatch_event`].
+///
+/// Pre-processing handled here, in priority order:
+/// - `KeyPressed` while an `ActivityBar` declared
+///   `is_keyboard_focused = true` (tracked by
+///   [`WinBackend::draw_activity_bar`] into
+///   `WinBackend::focused_activity_bar_id`): redirect to
+///   `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`
+///   instead of the app's normal `handle`. `ShellAdapter`'s built-in
+///   activity-bar keyboard cursor (#409) depends on this — without it,
+///   every `ShellApp` on Win-GUI would silently lose keyboard navigation
+///   the other three backends already have.
+/// - `KeyPressed` matching a registered `Global`-scope accelerator
+///   ([`WinBackend::match_keypress`]): rewrite to `UiEvent::Accelerator`.
+///   Ordered *after* the activity-bar intercept above (same priority
+///   `gtk::run::dispatch_event` / `macos::run::dispatch_event` use), so a
+///   bound accelerator never steals a navigation key out from under a
+///   keyboard-focused activity bar.
+///
+/// Anything not matched above falls through to `app.handle` unchanged.
+///
+/// Not `target_os`-gated: neither `WinBackend::focused_activity_bar_id`
+/// nor `WinBackend::match_keypress` touch Direct2D/Win32 directly (they
+/// read plain `Option`/`Vec` fields populated by `register_accelerator`
+/// and `draw_activity_bar`), so this compiles and behaves identically on
+/// every host — same "compiles everywhere" posture as [`RunConfig`]
+/// above.
+///
+/// `#[allow(dead_code)]`: this function's only callers — `mod win32`'s
+/// live `wndproc`/`dispatch` and [`super::testing::WinDriver`] — are both
+/// `#[cfg(target_os = "windows")]`-gated (the former directly, the
+/// latter because `mod testing` only exists on Windows — see
+/// `win::mod`'s doc). On a non-Windows host (`cargo check`/`cargo test
+/// --features win` on the `ubuntu-latest` CI leg) neither caller exists,
+/// so without this it — and everything it calls in turn
+/// (`WinBackend::focused_activity_bar_id`/`match_keypress`,
+/// `key_to_activity_bar_string`, `EventOutcome`) — would trip `-D
+/// warnings`' dead-code lint on that leg despite being genuinely used on
+/// the `windows-latest` leg where it matters.
+#[allow(dead_code)]
+pub(crate) fn dispatch_event<A: AppLogic>(
+    event: UiEvent,
+    backend: &mut WinBackend,
+    app: &mut A,
+) -> EventOutcome {
+    // ── ActivityBar keyboard focus intercept (#707) ──────────────────
+    if let UiEvent::KeyPressed {
+        ref key, modifiers, ..
+    } = event
+    {
+        if let Some(bar_id) = backend.focused_activity_bar_id().cloned() {
+            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
+            let bar_ev = UiEvent::ActivityBar(
+                bar_id,
+                ActivityBarEvent::KeyPressed {
+                    key: key_str,
+                    modifiers,
+                },
+            );
+            return app.handle(bar_ev, backend).into();
+        }
+    }
+
+    // ── Global accelerator dispatch (#707) ───────────────────────────
+    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        match backend.match_keypress(key, *modifiers) {
+            Some(id) => UiEvent::Accelerator(id, *modifiers),
+            None => event,
+        }
+    } else {
+        event
+    };
+
+    app.handle(event, backend).into()
+}
+
+/// Render one frame: `begin_frame` + `app.render` + `end_frame` — the
+/// exact body `mod win32`'s `WM_PAINT` handler used to run inline,
+/// extracted so it never depends on a live `HWND`, only a [`WinBackend`]
+/// with *some* surface attached (a real one via
+/// [`WinBackend::attach_surface`], or a headless one via
+/// [`WinBackend::attach_headless`]). Shared by the live runner and
+/// [`super::testing::WinDriver`] (quadraui#707) — mirrors
+/// [`crate::gtk::run::render_frame`] / [`crate::macos::run::render_frame`].
+///
+/// `#[allow(dead_code)]`: same reasoning as [`dispatch_event`]'s doc —
+/// both its callers only exist on `target_os = "windows"`.
+#[allow(dead_code)]
+pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewport: Viewport) {
+    backend.begin_frame(viewport);
+    app.render(backend, Default::default());
+    backend.end_frame();
+}
 
 /// Configuration for [`run_with`]: the window title [`run`] hardcodes to
 /// a generic default (`"quadraui"`).
@@ -78,6 +187,13 @@ use crate::runner::AppLogic;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunConfig {
     /// Window title shown by the title bar, taskbar, and Alt-Tab switcher.
+    ///
+    /// Encoded as a `\0`-terminated wide string before reaching Win32
+    /// (see `run_inner`'s `title_nul`) — an embedded `'\0'` character in
+    /// this string silently truncates the displayed title at that point
+    /// rather than erroring, since Win32 treats the first NUL as the
+    /// terminator. Not a concern for any title a real app would set, but
+    /// worth knowing if this is ever built from untrusted input.
     pub title: String,
 }
 
@@ -387,27 +503,34 @@ mod win32 {
         Ok(())
     }
 
-    /// Dispatch `event` through `app.handle`, then honour the returned
-    /// [`Reaction`]: [`Reaction::Redraw`] invalidates the whole client
-    /// area so the next message-loop iteration repaints via `WM_PAINT`.
-    /// [`Reaction::Exit`] is the caller's responsibility (each call site
+    /// Dispatch `event` through [`super::dispatch_event`] (the shared
+    /// pre-processing funnel — ActivityBar keyboard-focus redirect,
+    /// global accelerator matching, then `app.handle`, quadraui#707),
+    /// then honour the returned outcome: a redraw invalidates the whole
+    /// client area so the next message-loop iteration repaints via
+    /// `WM_PAINT`. Exit is the caller's responsibility (each call site
     /// below decides what "exit" means for its own message: `WM_CLOSE`
     /// destroys the window, letting `WM_DESTROY` post the quit message
     /// that actually ends `run_inner`'s loop).
     ///
-    /// Holds `state.borrow_mut()` for the duration of `app.handle`. No
-    /// bootstrap-era `AppLogic` (#19) does anything that pumps messages
-    /// synchronously, but a future impl that shows a native modal or
-    /// `SendMessage`s its own `hwnd` from inside `handle` would re-enter
-    /// `wndproc` on this same thread while this borrow is still live —
-    /// a `RefCell` double-borrow panic. Worth revisiting once #20 lands
-    /// real input handling and third-party `AppLogic` impls get more
-    /// latitude.
+    /// Holds `state.borrow_mut()` for the duration of
+    /// `super::dispatch_event`. No bootstrap-era `AppLogic` (#19) does
+    /// anything that pumps messages synchronously, but a future impl
+    /// that shows a native modal or `SendMessage`s its own `hwnd` from
+    /// inside `handle` would re-enter `wndproc` on this same thread
+    /// while this borrow is still live — a `RefCell` double-borrow
+    /// panic. Worth revisiting once #20 lands real input handling and
+    /// third-party `AppLogic` impls get more latitude.
     fn dispatch<A: AppLogic>(state: &RefCell<RunState<A>>, hwnd: HWND, event: UiEvent) -> Reaction {
-        let reaction = {
+        let outcome = {
             let mut state = state.borrow_mut();
             let RunState { app, backend } = &mut *state;
-            app.handle(event, backend)
+            super::dispatch_event(event, backend, app)
+        };
+        let reaction = match outcome {
+            super::EventOutcome::Continue => Reaction::Continue,
+            super::EventOutcome::Redraw => Reaction::Redraw,
+            super::EventOutcome::Exit => Reaction::Exit,
         };
         if reaction == Reaction::Redraw {
             unsafe {
@@ -645,10 +768,8 @@ mod win32 {
                     // the next `WM_PAINT`/`WM_SIZE` tries again.
                     let _ = s.backend.ensure_surface();
                     let viewport = s.backend.viewport();
-                    s.backend.begin_frame(viewport);
                     let RunState { app, backend } = &mut *s;
-                    app.render(backend, Default::default());
-                    backend.end_frame();
+                    super::render_frame(backend, app, viewport);
                 }
                 // Direct2D draws straight to the swap chain via the
                 // `ID2D1HwndRenderTarget` — no GDI `HDC`/`PAINTSTRUCT`
