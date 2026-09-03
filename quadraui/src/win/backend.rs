@@ -66,6 +66,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult, PlatformServices};
 use crate::dispatch::DragState;
 use crate::event::{Rect, UiEvent, Viewport};
@@ -97,8 +98,8 @@ use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, ListView, Palette, StatusBar, TabBar, Terminal,
-    TextDisplay, TooltipChrome, TreeView,
+    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Key, ListView, Modifiers, Palette,
+    ParsedBinding, StatusBar, TabBar, Terminal, TextDisplay, TooltipChrome, TreeView,
 };
 
 use super::services::WinPlatformServices;
@@ -123,8 +124,9 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_PROPERTIES,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -142,18 +144,57 @@ use super::text::DWrite;
 #[cfg(target_os = "windows")]
 const DEFAULT_EDITOR_FONT_FAMILY: &str = "Consolas";
 
-/// The live Direct2D handles behind a real Win32 window. Only exists once
-/// [`WinBackend::attach_surface`] has run — a `WinBackend` constructed
-/// standalone (headless, or before `CreateWindowExW` returns a `HWND`)
+/// A live Direct2D render target: either a window-bound
+/// `ID2D1HwndRenderTarget` ([`WinBackend::attach_surface`], a real
+/// window) or an offscreen `ID2D1DCRenderTarget`
+/// ([`WinBackend::attach_headless`], [`super::testing::WinDriver`] —
+/// quadraui#707). Every rasteriser below (`super::activity_bar::draw_activity_bar`
+/// et al.) only ever needs the shared `ID2D1RenderTarget` base interface
+/// (`BeginDraw`/`Clear`/`EndDraw`/`FillRectangle`/`DrawText`/...) — both
+/// D2D interfaces derive from it, and `windows-rs` generates a `Deref`
+/// to the base interface for each, which this enum forwards below — so
+/// none of the `&surface.target` call sites throughout this file need to
+/// know or care which kind of target they're painting onto. The one
+/// exception is [`WinBackend::resize_surface`]'s `Resize` call, which is
+/// declared on `ID2D1HwndRenderTarget` itself (a DC render target has no
+/// live-resize concept: [`super::testing::HeadlessSurface`] is a fixed
+/// size for its whole lifetime) and so matches on the variant directly
+/// instead of going through `Deref`.
+#[cfg(target_os = "windows")]
+enum RenderTarget {
+    Hwnd(ID2D1HwndRenderTarget),
+    Dc(ID2D1DCRenderTarget),
+}
+
+#[cfg(target_os = "windows")]
+impl std::ops::Deref for RenderTarget {
+    type Target = ID2D1RenderTarget;
+
+    fn deref(&self) -> &ID2D1RenderTarget {
+        match self {
+            RenderTarget::Hwnd(target) => target,
+            RenderTarget::Dc(target) => target,
+        }
+    }
+}
+
+/// The live Direct2D handles behind a real Win32 window, or (#707) an
+/// offscreen headless surface. Only exists once
+/// [`WinBackend::attach_surface`] or [`WinBackend::attach_headless`] has
+/// run — a `WinBackend` constructed standalone (before either has run)
 /// has `surface: None` and every draw call keeps hitting the `todo!()`
 /// arm until a later issue implements it.
 #[cfg(target_os = "windows")]
 struct Surface {
     /// Kept alive only because `ID2D1HwndRenderTarget` was created from
     /// it — never called again after `attach_surface` populates `target`.
+    /// `None` for [`WinBackend::attach_headless`]: `ID2D1DCRenderTarget`
+    /// keeps its own creating factory alive internally, and the caller
+    /// (`super::testing::HeadlessSurface`) already owns a reference of
+    /// its own, so there's no second factory to keep alive here.
     #[allow(dead_code)]
-    factory: ID2D1Factory,
-    target: ID2D1HwndRenderTarget,
+    factory: Option<ID2D1Factory>,
+    target: RenderTarget,
 }
 
 pub struct WinBackend {
@@ -166,6 +207,23 @@ pub struct WinBackend {
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
     accelerators: HashMap<AcceleratorId, Accelerator>,
+    /// Parsed form of every registered `Global`-scope-eligible
+    /// accelerator, kept in registration order so [`Self::match_keypress`]
+    /// is a linear scan — same shape as `TuiBackend`/`GtkBackend`/
+    /// `MacBackend`'s `parsed_accelerators` (quadraui#707).
+    parsed_accelerators: Vec<(ParsedBinding, AcceleratorId)>,
+    /// `WidgetId` of the [`ActivityBar`] that declared
+    /// `is_keyboard_focused = true` during the most recent
+    /// [`Backend::draw_activity_bar`] call, or `None` if no bar is
+    /// focused. Read by `win::run::dispatch_event` to decide whether a
+    /// `KeyPressed` should be redirected into
+    /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`
+    /// instead of reaching `AppLogic::handle` as a raw key — the Win-GUI
+    /// twin of `GtkBackend`/`MacBackend`'s `focused_activity_bar`
+    /// (quadraui#707, mirroring #465's macOS wiring). Without it,
+    /// `ShellAdapter`'s built-in activity-bar keyboard navigation (#409)
+    /// is unreachable on this backend.
+    focused_activity_bar: Option<WidgetId>,
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
@@ -217,6 +275,8 @@ impl WinBackend {
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
             accelerators: HashMap::new(),
+            parsed_accelerators: Vec::new(),
+            focused_activity_bar: None,
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -287,7 +347,10 @@ impl WinBackend {
 
         self.dpi_scale = dpi_scale_for_window(hwnd);
         self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
-        self.surface = Some(Surface { factory, target });
+        self.surface = Some(Surface {
+            factory: Some(factory),
+            target: RenderTarget::Hwnd(target),
+        });
         self.hwnd = Some(hwnd);
         // #23: give `WinPlatformServices` the live window so file dialogs
         // open parented to it and notifications have an owning `HWND` —
@@ -303,6 +366,50 @@ impl WinBackend {
         // except here it only needs to happen once per surface, since
         // DirectWrite text formats aren't tied to the Direct2D device the
         // way the render target is.
+        let (dwrite, line_height, char_width) =
+            DWrite::new(&self.editor_font_family, self.editor_font_size_pt)?;
+        self.dwrite = Some(dwrite);
+        self.current_line_height = line_height;
+        self.current_char_width = char_width;
+
+        Ok(())
+    }
+
+    /// Attach an offscreen `ID2D1DCRenderTarget` instead of a live
+    /// window's — the headless twin of [`Self::attach_surface`] (#707),
+    /// used only by [`super::testing::driver_with_shell`] /
+    /// [`super::testing::WinDriver`] so a `WinBackend`'s already-landed
+    /// rasterisers (#25-#30) can paint somewhere a test can read pixels
+    /// back from, without a live `HWND`.
+    ///
+    /// `target` is expected to be [`super::testing::HeadlessSurface::target`]
+    /// cloned (a cheap `AddRef` — Direct2D COM interfaces are reference
+    /// counted, and `HeadlessSurface` keeps the authoritative reference
+    /// plus the backing DIB section alive for as long as it lives). This
+    /// method deliberately skips everything HWND-specific that
+    /// [`Self::attach_surface`] does: `GetClientRect`,
+    /// `dpi_scale_for_window`, and `WinPlatformServices::set_window`.
+    /// `self.hwnd` stays `None`, so [`Self::ensure_surface`]'s
+    /// device-lost recovery (which only knows how to reattach to a
+    /// `hwnd`) correctly stays a no-op for a headless surface — a
+    /// `HeadlessSurface` doesn't hit device loss the way a live
+    /// compositor can.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn attach_headless(
+        &mut self,
+        target: ID2D1DCRenderTarget,
+        width: u32,
+        height: u32,
+    ) -> WinResult<()> {
+        self.dpi_scale = 1.0;
+        self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
+        self.surface = Some(Surface {
+            factory: None,
+            target: RenderTarget::Dc(target),
+        });
+
+        // Same DirectWrite bootstrap as `attach_surface` — text formats
+        // aren't tied to which kind of render target they paint onto.
         let (dwrite, line_height, char_width) =
             DWrite::new(&self.editor_font_family, self.editor_font_size_pt)?;
         self.dwrite = Some(dwrite);
@@ -370,13 +477,23 @@ impl WinBackend {
     /// to [`Self::attach_surface`]. The viewport is still updated so
     /// `Backend::viewport()` reflects the window's real size as soon as
     /// it's known, even before there's a surface to paint onto.
+    ///
+    /// Also a no-op on the render-target side for a
+    /// [`RenderTarget::Dc`] surface ([`Self::attach_headless`]):
+    /// `ID2D1HwndRenderTarget::Resize` has no `ID2D1DCRenderTarget`
+    /// counterpart — a DC render target is bound once to a fixed-size
+    /// DIB section ([`super::testing::HeadlessSurface::new`]) and never
+    /// resized, so `win::run`'s `WM_SIZE` handler (the only caller) never
+    /// reaches this arm for a headless driver in the first place.
     #[cfg(target_os = "windows")]
     pub(crate) fn resize_surface(&mut self, width: u32, height: u32) -> WinResult<()> {
         let width = width.max(1);
         let height = height.max(1);
         if let Some(surface) = &self.surface {
-            let size = D2D_SIZE_U { width, height };
-            unsafe { surface.target.Resize(&size)? };
+            if let RenderTarget::Hwnd(target) = &surface.target {
+                let size = D2D_SIZE_U { width, height };
+                unsafe { target.Resize(&size)? };
+            }
         }
         self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
         Ok(())
@@ -390,6 +507,43 @@ impl WinBackend {
     pub(crate) fn set_dpi_scale(&mut self, scale: f32) {
         self.dpi_scale = scale;
         self.viewport.scale = scale;
+    }
+
+    // ── ActivityBar keyboard focus (#707) ─────────────────────────────
+
+    /// `WidgetId` of the [`ActivityBar`] that declared
+    /// `is_keyboard_focused = true` during the most recent
+    /// [`Backend::draw_activity_bar`] call, or `None` if no bar is
+    /// focused. Read by `win::run::dispatch_event` — see
+    /// `focused_activity_bar`'s field doc for the full contract. Not
+    /// `target_os`-gated: the field itself is a plain `Option<WidgetId>`
+    /// with no Direct2D dependency, so this reads correctly even before
+    /// any surface has attached.
+    pub(crate) fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar.as_ref()
+    }
+
+    // ── Accelerator matching (#707) ───────────────────────────────────
+
+    /// Look up a registered `Global`-scope accelerator for a
+    /// `(key, modifiers)` pair. Mirrors `TuiBackend::match_keypress` /
+    /// `GtkBackend::match_keypress` / `MacBackend::match_keypress` —
+    /// non-Global entries are skipped because this backend doesn't own
+    /// focus/mode context the way a scoped `KeyMap` resolver does. Not
+    /// `target_os`-gated for the same reason as `focused_activity_bar_id`
+    /// above.
+    pub(crate) fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
+        let key_name = key_to_binding_name(key);
+        for (parsed, id) in &self.parsed_accelerators {
+            if parsed.modifiers == modifiers && parsed.key == key_name {
+                if let Some(acc) = self.accelerators.get(id) {
+                    if matches!(acc.scope, AcceleratorScope::Global) {
+                        return Some(id.clone());
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -420,6 +574,11 @@ impl Backend for WinBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        // Clear the focused activity bar — re-set by `draw_activity_bar`
+        // during this frame's render pass if still focused. Same
+        // lifecycle as `GtkBackend`/`MacBackend`'s `focused_activity_bar`
+        // (quadraui#707).
+        self.focused_activity_bar = None;
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             // `BeginDraw`/`Clear` are infallible on `ID2D1RenderTarget`
@@ -482,10 +641,21 @@ impl Backend for WinBackend {
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
         self.accelerators.insert(acc.id.clone(), acc.clone());
+        // Keep `parsed_accelerators` in sync so `Self::match_keypress`
+        // (read by `win::run::dispatch_event`, quadraui#707) actually
+        // sees this registration — mirrors `GtkBackend`/`TuiBackend`/
+        // `MacBackend::register_accelerator`. Before this, an entry only
+        // ever landed in `self.accelerators`, which nothing in `win/`
+        // read back.
+        self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
+        if let Some(parsed) = parse_binding(&acc.binding) {
+            self.parsed_accelerators.push((parsed, acc.id.clone()));
+        }
     }
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
         self.accelerators.remove(id);
+        self.parsed_accelerators.retain(|(_, eid)| eid != id);
     }
 
     // ─── Modal-overlay tracking ───────────────────────────────────────
@@ -884,6 +1054,15 @@ impl Backend for WinBackend {
         bar: &ActivityBar,
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
+        // Track keyboard focus so `win::run::dispatch_event` can redirect
+        // the next `KeyPressed` into this bar (#707) — same contract
+        // `GtkBackend`/`MacBackend::draw_activity_bar` implement. Runs
+        // regardless of whether a surface is attached yet, so a headless
+        // `WinDriver` sees focus tracking even before #707's rasteriser
+        // dependencies land a surface.
+        if bar.is_keyboard_focused {
+            self.focused_activity_bar = Some(bar.id.clone());
+        }
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             return super::activity_bar::draw_activity_bar(
@@ -1821,5 +2000,159 @@ mod tests {
                 anchor: crate::event::Point::new(0.0, 0.0),
             });
         assert!(h2.borrow().is_active());
+    }
+
+    // ── Accelerator matching + ActivityBar keyboard focus (#707) ───────
+    //
+    // Pure `HashMap`/`Vec`/`Option<WidgetId>` logic, no Direct2D — runs
+    // on every host, same as the handle-sharing tests above. Mirrors
+    // `macos::backend::tests`' `match_keypress_*` suite (Ctrl instead of
+    // Cmd, since Win-GUI has no macOS-style universal-binding modifier
+    // translation).
+
+    fn acc(id: &str, key: &str) -> Accelerator {
+        Accelerator {
+            id: AcceleratorId::new(id),
+            binding: crate::KeyBinding::Literal(key.to_string()),
+            scope: AcceleratorScope::Global,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn register_and_unregister_accelerator_round_trip() {
+        let mut b = WinBackend::new();
+        let a = acc("save", "<C-s>");
+        b.register_accelerator(&a);
+        assert!(b.accelerators.contains_key(&AcceleratorId::new("save")));
+        assert_eq!(b.parsed_accelerators.len(), 1);
+        b.unregister_accelerator(&AcceleratorId::new("save"));
+        assert!(!b.accelerators.contains_key(&AcceleratorId::new("save")));
+        assert!(b.parsed_accelerators.is_empty());
+    }
+
+    #[test]
+    fn match_keypress_finds_registered_global_binding() {
+        let mut b = WinBackend::new();
+        b.register_accelerator(&acc("save", "<C-s>"));
+        let id = b.match_keypress(
+            &Key::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, Some(AcceleratorId::new("save")));
+    }
+
+    #[test]
+    fn match_keypress_modifier_mismatch_no_match() {
+        let mut b = WinBackend::new();
+        b.register_accelerator(&acc("save", "<C-s>"));
+        // Same key, wrong modifiers (Alt instead of Ctrl).
+        let id = b.match_keypress(
+            &Key::Char('s'),
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, None);
+    }
+
+    #[test]
+    fn match_keypress_skips_non_global_scope() {
+        let mut b = WinBackend::new();
+        b.register_accelerator(&Accelerator {
+            id: AcceleratorId::new("find-in-tree"),
+            binding: crate::KeyBinding::Literal("<C-f>".to_string()),
+            scope: AcceleratorScope::Widget(WidgetId::new("tree")),
+            label: None,
+        });
+        let id = b.match_keypress(
+            &Key::Char('f'),
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(id, None);
+    }
+
+    #[test]
+    fn match_keypress_re_register_replaces_binding() {
+        let mut b = WinBackend::new();
+        b.register_accelerator(&acc("save", "<C-s>"));
+        b.register_accelerator(&acc("save", "<C-S-s>"));
+        assert_eq!(b.parsed_accelerators.len(), 1);
+        assert_eq!(
+            b.match_keypress(
+                &Key::Char('s'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                }
+            ),
+            None,
+            "old binding must no longer match after re-registration",
+        );
+        assert_eq!(
+            b.match_keypress(
+                &Key::Char('s'),
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                }
+            ),
+            Some(AcceleratorId::new("save")),
+        );
+    }
+
+    #[test]
+    fn focused_activity_bar_id_starts_none() {
+        let b = WinBackend::new();
+        assert!(b.focused_activity_bar_id().is_none());
+    }
+
+    #[test]
+    fn draw_activity_bar_tracks_keyboard_focus() {
+        let mut b = WinBackend::new();
+        let bar = ActivityBar {
+            id: WidgetId::new("demo:bar"),
+            top_items: Vec::new(),
+            bottom_items: Vec::new(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: true,
+        };
+        // No surface attached — every real Direct2D call in
+        // `draw_activity_bar` is behind `#[cfg(target_os = "windows")]`
+        // and this test isn't, so on a non-Windows host it falls to the
+        // `todo!()` stub *after* the focus-tracking below has already
+        // run (see that method's doc). Catch the panic so this test
+        // proves the tracking half of the contract everywhere, while
+        // `win::testing`'s headless-surface driver tests prove the paint
+        // half for real on Windows.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            b.draw_activity_bar(Rect::new(0.0, 0.0, 40.0, 200.0), &bar, None);
+        }));
+        assert_eq!(
+            b.focused_activity_bar_id(),
+            Some(&WidgetId::new("demo:bar"))
+        );
+    }
+
+    #[test]
+    fn begin_frame_clears_focused_activity_bar() {
+        let mut b = WinBackend::new();
+        b.focused_activity_bar = Some(WidgetId::new("demo:bar"));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            b.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        }));
+        assert!(
+            b.focused_activity_bar_id().is_none(),
+            "focused_activity_bar must be cleared by begin_frame"
+        );
     }
 }

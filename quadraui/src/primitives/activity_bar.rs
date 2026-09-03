@@ -421,13 +421,17 @@ pub enum ActivityBarEvent {
 /// string from [`ActivityBarEvent::KeyPressed::key`] — they have no reason to call
 /// the conversion helper directly.
 ///
-/// `cfg`-gated: only `crate::tui::backend`, `crate::gtk::run` and
-/// `crate::macos::run` (#465) call this today. Under `win` alone (no
-/// consumer yet) it goes dead-code under `-D warnings` (#540).
+/// `cfg`-gated: `crate::tui::backend`, `crate::gtk::run`, `crate::macos::run`
+/// (#465), and `crate::win::run` (#707) call this. #540 originally left `win`
+/// out of this gate because nothing under it called this helper yet — #707's
+/// `win::run::dispatch_event` is that first caller, so `win` joins the list
+/// here too (otherwise a `win`-only build would trip `-D warnings`' dead-code
+/// lint the same way #540 describes for the other three).
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
-    all(feature = "macos", target_os = "macos")
+    all(feature = "macos", target_os = "macos"),
+    feature = "win"
 ))]
 pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     use crate::event::{Key, NamedKey};

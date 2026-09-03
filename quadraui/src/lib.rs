@@ -178,14 +178,18 @@ pub mod runner;
 pub mod shell_adapter;
 
 // Shared runner plumbing (`EventOutcome`, `ReactionSink` + `apply_outcome`,
-// `ResizeDebouncer`) used by `tui::run`, `gtk::run`, and `macos::run`
-// (quadraui#496). Same consumer set as `shell_adapter` above, gated the
-// same way so `win`-only builds don't carry unused, `-D warnings`-tripping
-// code.
+// `ResizeDebouncer`) used by `tui::run`, `gtk::run`, `macos::run`
+// (quadraui#496), and `win::run` (#707 — `EventOutcome` only; `win` has no
+// `ReactionSink`/GTK-or-macOS-style window handle to apply an outcome to,
+// so `ReactionSink`/`apply_outcome` stay cfg'd to their original three).
+// `win` joins this gate (unlike `shell_adapter` above, whose consumer set
+// this comment used to claim was identical) so a `win`-only build doesn't
+// trip `-D warnings`' dead-code lint on `EventOutcome`.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
-    all(feature = "macos", target_os = "macos")
+    all(feature = "macos", target_os = "macos"),
+    feature = "win"
 ))]
 mod runtime;
 
