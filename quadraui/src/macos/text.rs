@@ -120,6 +120,45 @@ pub unsafe fn draw_text(
     y: f64,
     color: (f64, f64, f64, f64),
 ) {
+    draw_text_impl(ctx, font, text, x, y, 1.0, color)
+}
+
+/// Like [`draw_text`], but additionally scales the glyph run horizontally
+/// by `scale_x` around its own origin `(x, y)`.
+///
+/// Used by [`crate::macos::terminal::draw_terminal_cells`] to stretch or
+/// shrink a double-width glyph (CJK / emoji) so it fills its two-column
+/// cell box exactly — the scale factor comes from
+/// [`crate::terminal_style::wide_glyph_x_scale`], the same decision GTK's
+/// `cr.scale(scale_x, 1.0)` applies via Cairo's CTM (#500, #703). Core
+/// Text has no per-draw scale parameter, but the text matrix's `a`
+/// component scales every glyph outline in the run horizontally with no
+/// extra CG calls — `scale_x == 1.0` renders identically to [`draw_text`].
+///
+/// # Safety
+///
+/// Same contract as [`draw_text`].
+pub unsafe fn draw_text_scaled_x(
+    ctx: CGContextRef,
+    font: &CTFont,
+    text: &str,
+    x: f64,
+    y: f64,
+    scale_x: f64,
+    color: (f64, f64, f64, f64),
+) {
+    draw_text_impl(ctx, font, text, x, y, scale_x, color)
+}
+
+unsafe fn draw_text_impl(
+    ctx: CGContextRef,
+    font: &CTFont,
+    text: &str,
+    x: f64,
+    y: f64,
+    scale_x: f64,
+    color: (f64, f64, f64, f64),
+) {
     if text.is_empty() {
         return;
     }
@@ -137,9 +176,11 @@ pub unsafe fn draw_text(
     // QuadraView (which has `isFlipped = YES`). Without this the
     // glyphs would draw upside-down because CG's intrinsic text
     // origin is at the baseline with ascent rising in +y, but our
-    // view's +y points downward.
+    // view's +y points downward. `a: scale_x` additionally stretches or
+    // shrinks the glyph run horizontally for [`draw_text_scaled_x`];
+    // [`draw_text`] always passes `scale_x == 1.0`, i.e. no change here.
     let flip = CGAffineTransform {
-        a: 1.0,
+        a: scale_x,
         b: 0.0,
         c: 0.0,
         d: -1.0,

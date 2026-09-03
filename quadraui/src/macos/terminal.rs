@@ -8,7 +8,7 @@
 //! [`crate::terminal_style::resolve_cell_style`] — the ladder shared
 //! with the TUI and GTK rasterisers (#500).
 //!
-//! # Wide characters (#440, fixed by #500's shared helper)
+//! # Wide characters (#440, #500's shared box fix, #703's shared scale)
 //!
 //! Before #500, this rasteriser advanced a flat `char_width` per grid
 //! column regardless of glyph width, so a double-width character (CJK,
@@ -16,14 +16,23 @@
 //! a trailing blank "continuation" column, see
 //! [`crate::terminal_engine::TerminalSession::to_terminal`] — got its
 //! right half painted over by the continuation column's own background.
-//! This mirrors the bug GTK fixed in #439. [`draw_terminal_cells`] now
-//! uses [`crate::terminal_style::wide_cell_advance`] (shared with
+//! This mirrors the bug GTK fixed in #439. [`draw_terminal_cells`] uses
+//! [`crate::terminal_style::wide_cell_advance`] (shared with
 //! `gtk::terminal`) to paint the wide glyph's background across both
 //! columns and skip the continuation column, matching the GTK fix.
-//! Unlike GTK's follow-up glyph-scaling (`wide_glyph_x_scale`), the
-//! glyph itself is still drawn at its natural Core Text advance — the
-//! ragged-packing follow-up is out of scope here; #500's acceptance bar
-//! is "paints without clipping," not pixel-tight packing.
+//!
+//! #500 shipped that box fix but deliberately left the glyph itself
+//! drawn at its natural Core Text advance — narrower or wider than the
+//! two-cell box, same ragged-packing gap GTK fixed in its #439
+//! follow-up. #703 closes that gap here too: [`draw_terminal_cells`]
+//! measures the glyph via [`super::text::measure_text`] and scales it
+//! with [`super::text::draw_text_scaled_x`] using
+//! [`crate::terminal_style::wide_glyph_x_scale`] — the same decision
+//! GTK's `wide_glyph_x_scale` makes, lifted to a shared helper rather
+//! than re-implemented here. This closes the *shared math* half of
+//! #440; live verification on real macOS hardware remains blocked (no
+//! macOS runner on this fleet) and is unaffected by this change — see
+//! this module's headless tests for what *is* verified here.
 //!
 //! Bold / italic / underline attributes are **not** rendered yet —
 //! Core Text would need a per-cell `CTFont` (or attributed-string
@@ -39,9 +48,11 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::draw_text;
+use super::text::{draw_text, draw_text_scaled_x, measure_text};
 use crate::primitives::terminal::Terminal;
-use crate::terminal_style::{resolve_cell_style, wide_cell_advance};
+use crate::terminal_style::{
+    divider_geometry, resolve_cell_style, wide_cell_advance, wide_glyph_x_scale,
+};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -114,6 +125,7 @@ pub unsafe fn draw_terminal_cells(
             // than letting it paint its own (mismatched) background over
             // the glyph's right half — mirrors `gtk::terminal`'s #439 fix.
             let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width);
+            let is_wide = cols_advanced == 2;
 
             if cell_x + cell_w > x + cell_area_w {
                 break;
@@ -123,7 +135,23 @@ pub unsafe fn draw_terminal_cells(
 
             if cell.ch != ' ' && cell.ch != '\0' {
                 let s = cell.ch.to_string();
-                draw_text(ctx, font, &s, cell_x, row_y, color_to_cg(cell_fg));
+                let color = color_to_cg(cell_fg);
+                if is_wide {
+                    // Mirrors `gtk::terminal`'s glyph-scaling follow-up
+                    // (#439 / #500 / #703): the font Core Text falls back
+                    // to for CJK / emoji rarely lays the glyph out at
+                    // exactly two cells, so scale it to fill `cell_w`
+                    // instead of leaving a ragged gap or overlap.
+                    let (natural_w, _) = measure_text(font, &s);
+                    let scale_x = wide_glyph_x_scale(natural_w, cell_w);
+                    if (scale_x - 1.0).abs() > f64::EPSILON {
+                        draw_text_scaled_x(ctx, font, &s, cell_x, row_y, scale_x, color);
+                    } else {
+                        draw_text(ctx, font, &s, cell_x, row_y, color);
+                    }
+                } else {
+                    draw_text(ctx, font, &s, cell_x, row_y, color);
+                }
             }
 
             cell_x += cell_w;
@@ -134,14 +162,17 @@ pub unsafe fn draw_terminal_cells(
 
 /// Draw a vertical divider line for a terminal split pane. Paints a
 /// 1-pt-wide line at `x` from `y` to `y + height` using
-/// `theme.separator`.
+/// `theme.separator`. Geometry comes from
+/// [`crate::terminal_style::divider_geometry`], shared with the
+/// `gtk`/`win` twins (#703).
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call. Calling with a freed or null pointer is UB.
 pub unsafe fn draw_terminal_divider(ctx: CGContextRef, x: f64, y: f64, height: f64, theme: &Theme) {
-    fill_rect(ctx, x, y, 1.0, height, theme.separator);
+    let g = divider_geometry(x, y, height);
+    fill_rect(ctx, g.x, g.y, g.width, g.height, theme.separator);
 }
 
 fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
@@ -348,6 +379,37 @@ mod tests {
             (cyan.r, cyan.g, cyan.b),
             "narrow cells must still advance by exactly char_width"
         );
+    }
+
+    /// #703: mirrors `gtk::terminal`'s `narrow_wide_glyph_is_stretched_to_fill_two_cells`
+    /// — both backends now share `wide_glyph_x_scale`, so a CJK glyph
+    /// measuring 15px in an 18px (2 × 9px) box scales 1.2x on macOS too.
+    #[test]
+    fn narrow_wide_glyph_is_stretched_to_fill_two_cells() {
+        let cell_w = 18.0;
+        let scale = wide_glyph_x_scale(15.0, cell_w);
+        assert!(
+            (scale - 1.2).abs() < 1e-9,
+            "15px glyph in an 18px box should scale 1.2x, got {scale}"
+        );
+        assert!((15.0 * scale - cell_w).abs() < 1e-9);
+    }
+
+    /// #703: mirrors `gtk::terminal`'s `exact_fit_wide_glyph_is_not_scaled`.
+    #[test]
+    fn exact_fit_wide_glyph_is_not_scaled() {
+        assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
+    }
+
+    /// #703: mirrors `gtk::terminal`'s `over_wide_glyph_is_shrunk_into_box`.
+    #[test]
+    fn over_wide_glyph_is_shrunk_into_box() {
+        let scale = wide_glyph_x_scale(24.0, 18.0);
+        assert!(
+            scale < 1.0,
+            "24px glyph in 18px box should shrink, got {scale}"
+        );
+        assert!((24.0 * scale - 18.0).abs() < 1e-9);
     }
 
     #[test]

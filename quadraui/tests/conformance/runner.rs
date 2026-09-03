@@ -713,6 +713,34 @@ mod tests {
         None
     }
 
+    /// A [`DriverFactory`] that registers a backend without standing one up.
+    ///
+    /// [`BackendReg::register`] and [`BackendReg::register_burn_down`] need
+    /// only `F::caps()` and the `fixtures::build::<F>` *fn pointer* — neither
+    /// calls through that pointer — so `make` is never reached. That is what
+    /// lets the two constructors be exercised on every build rather than
+    /// only on the one leg whose `backends()` happens to `#[cfg]` them in:
+    /// `register_burn_down` is registered solely under
+    /// `all(feature = "win", target_os = "windows")` (see `conformance.rs`),
+    /// and without a call site here it is dead code — a hard error under
+    /// CI's workspace-wide `-D warnings` — on the ubuntu tui and gtk legs.
+    ///
+    /// Overriding the defaulted `caps()`, which the trait tells real backend
+    /// authors not to do, is exactly why this stub can exist at all: the
+    /// default body builds a driver to read `Backend::backend_caps` off, and
+    /// there is no backend here to read.
+    struct StubFactory;
+
+    impl DriverFactory for StubFactory {
+        fn make<A: AppLogic + 'static>(_app: A, _viewport: LogicalViewport) -> Box<dyn DynDriver> {
+            unreachable!("StubFactory registers a backend; it never builds one")
+        }
+
+        fn caps() -> BackendCaps {
+            NO_CAPS
+        }
+    }
+
     /// A `BackendReg` built by hand rather than through
     /// [`BackendReg::register`]: these tests are about `missing_cap`'s
     /// gate, so they need to pin an arbitrary capability set without
@@ -1034,15 +1062,26 @@ mod tests {
     }
 
     #[test]
+    fn register_marks_the_registration_gating() {
+        let reg = BackendReg::register::<StubFactory>("stub");
+        assert_eq!(reg.name, "stub");
+        assert_eq!(reg.gating, Gating::Blocking);
+    }
+
+    #[test]
     fn register_burn_down_marks_the_registration_non_gating() {
-        assert_eq!(stub(NO_CAPS).gating, Gating::Blocking);
-        // `register_burn_down` differs from `register` only in this field —
-        // constructed by hand here for the same reason `stub` is (no live
-        // backend to stand up in a unit test).
-        let reg = BackendReg {
-            gating: Gating::BurnDown,
-            ..stub(NO_CAPS)
-        };
-        assert_eq!(reg.gating, Gating::BurnDown);
+        // Both constructors are called for real (through `StubFactory`)
+        // rather than hand-building a `BackendReg`: `register_burn_down`'s
+        // only production call site is `#[cfg]`'d to the Windows leg, so a
+        // hand-built struct leaves it uncompiled *and* uncalled everywhere
+        // else — which is how it became dead code under `-D warnings`.
+        let blocking = BackendReg::register::<StubFactory>("stub");
+        let burn_down = BackendReg::register_burn_down::<StubFactory>("stub");
+        assert_eq!(blocking.gating, Gating::Blocking);
+        assert_eq!(burn_down.gating, Gating::BurnDown);
+        // `gating` is the *only* difference — the name and the capability
+        // set both still come from the same registration inputs.
+        assert_eq!(burn_down.name, blocking.name);
+        assert!(!burn_down.caps.has("text_selection"));
     }
 }

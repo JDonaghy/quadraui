@@ -29,15 +29,19 @@
 //! terminal cells (a CJK glyph measuring 15px inside an 18px box), which
 //! left a ragged gap before the next wide glyph. [`draw_terminal_cells`]
 //! therefore scales each wide glyph horizontally (see
-//! [`wide_glyph_x_scale`]) so it spans exactly `cell_w`, giving the tight,
-//! even two-cell packing a normal terminal produces.
+//! [`crate::terminal_style::wide_glyph_x_scale`], lifted from this
+//! module's original private copy by #703 so `macos` and `win` apply the
+//! same decision) so it spans exactly `cell_w`, giving the tight, even
+//! two-cell packing a normal terminal produces.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 use gtk4::pango::AttrList;
 
 use crate::primitives::terminal::Terminal;
-use crate::terminal_style::{resolve_cell_style, wide_cell_advance};
+use crate::terminal_style::{
+    divider_geometry, resolve_cell_style, wide_cell_advance, wide_glyph_x_scale,
+};
 use crate::theme::Theme;
 
 /// Draw `term`'s cell grid into the rectangular region starting at
@@ -153,7 +157,7 @@ pub fn draw_terminal_cells(
                     // (measured from the same monospace font), so only wide
                     // cells need this.
                     let (natural_w, _) = layout.pixel_size();
-                    let scale_x = wide_glyph_x_scale(natural_w, cell_w);
+                    let scale_x = wide_glyph_x_scale(natural_w as f64, cell_w);
                     if (scale_x - 1.0).abs() > f64::EPSILON {
                         cr.save().ok();
                         cr.translate(cell_x, row_y);
@@ -178,34 +182,20 @@ pub fn draw_terminal_cells(
     }
 }
 
-/// Horizontal scale factor to draw a double-width glyph so it fills its
-/// two-column (`cell_w`) box exactly.
-///
-/// `natural_w` is the glyph's laid-out pixel width as reported by Pango.
-/// Returns `cell_w / natural_w` so the rendered glyph spans exactly two
-/// cells — stretching a narrow CJK glyph out to the full box and shrinking
-/// an over-wide emoji back into it. Returns `1.0` (no scaling) when
-/// `natural_w` is non-positive (empty / zero-advance layout) so we never
-/// divide by zero or blow a degenerate glyph up to infinity.
-fn wide_glyph_x_scale(natural_w: i32, cell_w: f64) -> f64 {
-    if natural_w <= 0 {
-        1.0
-    } else {
-        cell_w / natural_w as f64
-    }
-}
-
 /// Draw a vertical divider line for a terminal split pane.
 /// Paints a 1-pixel-wide line at `x` from `y` to `y + height`
-/// using `theme.separator` colour.
+/// using `theme.separator` colour. Geometry comes from
+/// [`crate::terminal_style::divider_geometry`], shared with the
+/// `macos`/`win` twins (#703).
 pub fn draw_terminal_divider(cr: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
-    let (r, g, b) = (
+    let g = divider_geometry(x, y, height);
+    let (r, gg, b) = (
         theme.separator.r as f64 / 255.0,
         theme.separator.g as f64 / 255.0,
         theme.separator.b as f64 / 255.0,
     );
-    cr.set_source_rgb(r, g, b);
-    cr.rectangle(x, y, 1.0, height);
+    cr.set_source_rgb(r, gg, b);
+    cr.rectangle(g.x, g.y, g.width, g.height);
     cr.fill().ok();
 }
 
@@ -365,7 +355,7 @@ mod tests {
     #[test]
     fn narrow_wide_glyph_is_stretched_to_fill_two_cells() {
         let cell_w = 18.0;
-        let scale = wide_glyph_x_scale(15, cell_w);
+        let scale = wide_glyph_x_scale(15.0, cell_w);
         assert!(
             (scale - 1.2).abs() < 1e-9,
             "15px glyph in an 18px box should scale 1.2×, got {scale}"
@@ -378,14 +368,14 @@ mod tests {
     /// cells) is left untouched — scale factor 1.0.
     #[test]
     fn exact_fit_wide_glyph_is_not_scaled() {
-        assert_eq!(wide_glyph_x_scale(18, 18.0), 1.0);
+        assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
     }
 
     /// A wide glyph *wider* than two cells (some colour-emoji fonts) is
     /// shrunk back into the box so it can't overlap the next glyph.
     #[test]
     fn over_wide_glyph_is_shrunk_into_box() {
-        let scale = wide_glyph_x_scale(24, 18.0);
+        let scale = wide_glyph_x_scale(24.0, 18.0);
         assert!(
             scale < 1.0,
             "24px glyph in 18px box should shrink, got {scale}"
@@ -397,8 +387,8 @@ mod tests {
     /// divide by zero or explode — it falls back to no scaling.
     #[test]
     fn degenerate_glyph_width_falls_back_to_no_scale() {
-        assert_eq!(wide_glyph_x_scale(0, 18.0), 1.0);
-        assert_eq!(wide_glyph_x_scale(-3, 18.0), 1.0);
+        assert_eq!(wide_glyph_x_scale(0.0, 18.0), 1.0);
+        assert_eq!(wide_glyph_x_scale(-3.0, 18.0), 1.0);
     }
 
     /// #417: passing `Some(dirty_rows)` must paint only the listed rows
