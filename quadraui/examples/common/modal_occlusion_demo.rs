@@ -296,12 +296,16 @@ impl ModalOcclusionDemo {
         self.dialog_open = true;
         let bounds = self.dialog_layout(backend).bounds;
         backend
-            .modal_stack_mut()
+            .modal_stack_handle()
+            .borrow_mut()
             .push(WidgetId::new(DIALOG_ID), bounds);
     }
 
     fn close_dialog(&mut self, backend: &mut dyn Backend) {
         self.dialog_open = false;
-        backend.modal_stack_mut().pop(&WidgetId::new(DIALOG_ID));
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .pop(&WidgetId::new(DIALOG_ID));
     }
 }

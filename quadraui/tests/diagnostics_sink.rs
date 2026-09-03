@@ -38,7 +38,7 @@ impl AppLogic for UnpaintedModalApp {
         // Register a modal so it's hit-testable — but never call any
         // `draw_*` for it, so `ModalStack::mark_painted` is never reached.
         // This is the exact "registered but invisible" shape #455 detects.
-        backend.modal_stack_mut().push(
+        backend.modal_stack_handle().borrow_mut().push(
             WidgetId::new("unpainted_modal"),
             Rect {
                 x: 2.0,

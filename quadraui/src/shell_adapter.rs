@@ -292,7 +292,12 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // base layer", see `crate::dispatch` module docs) for shell chrome
         // too, not just base-layer widgets.
         if let Some(position) = mouse_event_position(&event) {
-            if backend.modal_stack_mut().hit_test(position).is_some() {
+            let modal_hit = {
+                let stack_rc = backend.modal_stack_handle();
+                let stack = stack_rc.borrow();
+                stack.hit_test(position).is_some()
+            };
+            if modal_hit {
                 let layout = self.shell.layout(area, backend.line_height());
                 let sidebar_visible = self.shell.sidebar_visible();
                 let ctx = ShellContext::new(

@@ -183,12 +183,15 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     {
         let (button, position, modifiers) = (*button, *position, *modifiers);
         let dispatched = {
-            let (drag_state, modal_stack) = backend.drag_and_modal_mut();
+            let stack_rc = backend.modal_stack_handle();
+            let drag_rc = backend.drag_state_handle();
+            let stack = stack_rc.borrow();
+            let mut drag = drag_rc.borrow_mut();
             crate::dispatch::dispatch_click(
-                modal_stack,
+                &stack,
                 &[], // scroll surfaces not tracked by MacBackend yet
                 &[], // text regions not tracked by MacBackend yet
-                drag_state,
+                &mut drag,
                 position,
                 button,
                 modifiers,

@@ -617,8 +617,8 @@ mod tests {
         // Manually start a TextSelection drag (simulates what apply_dispatch
         // does on MouseDown inside a text region).
         backend
-            .drag_and_modal_mut()
-            .0
+            .drag_state_handle()
+            .borrow_mut()
             .begin(DragTarget::TextSelection {
                 region: WidgetId::new("r"),
                 anchor: Point::new(0.0, 0.0),
@@ -636,7 +636,7 @@ mod tests {
 
         // Drag state should be cleared.
         assert!(
-            !backend.drag_and_modal_mut().0.is_active(),
+            !backend.drag_state_handle().borrow().is_active(),
             "cancel_text_selection_drag must end the active drag"
         );
 

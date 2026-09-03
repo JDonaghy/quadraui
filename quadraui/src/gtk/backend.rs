@@ -555,8 +555,8 @@ impl GtkBackend {
 
     /// Shared handle to the modal stack. The App and widget callbacks
     /// clone this to push/pop modals and to feed
-    /// `dispatch::dispatch_mouse_down`. The trait's `modal_stack_mut`
-    /// borrows through this same handle.
+    /// `dispatch::dispatch_mouse_down`. The trait's `modal_stack_handle`
+    /// hands back the same handle.
     pub fn modal_stack_handle(&self) -> Rc<std::cell::RefCell<ModalStack>> {
         self.modal_stack.clone()
     }
@@ -1386,54 +1386,6 @@ impl Backend for GtkBackend {
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
         self.accelerators.remove(id);
         self.parsed_accelerators.retain(|(_, eid)| eid != id);
-    }
-
-    fn modal_stack_mut(&mut self) -> &mut ModalStack {
-        // The trait wants `&mut ModalStack`. The backend's modal
-        // stack lives behind `Rc<RefCell<>>` because GTK callbacks
-        // need shared access. This call leaks a `RefMut<'_>` for
-        // the duration of the trait method; the trait method bodies
-        // (e.g. modal-aware drawing) read the stack and return —
-        // they don't hold the borrow across other calls.
-        //
-        // SAFETY: `Rc::as_ptr` returns a stable pointer to the
-        // `RefCell`'s inner; the `RefCell::borrow_mut` would
-        // dynamically check borrow rules, but we know the trait's
-        // contract: callers don't reentrantly call into the same
-        // backend during a `modal_stack_mut()` borrow. If they did,
-        // the panic-on-double-borrow inside `RefCell` would fire.
-        //
-        // The simpler alternative — making `modal_stack` a plain
-        // `ModalStack` field — fails because GTK signal callbacks
-        // already need `Rc<RefCell<>>` access; we'd duplicate the
-        // state.
-        unsafe {
-            let cell_ptr = Rc::as_ptr(&self.modal_stack);
-            // Leak a `RefMut`'s deref by constructing one and
-            // forgetting it. This is wrong for production — Stage 5
-            // restructures dispatch so callers go through
-            // `modal_stack_handle()` directly and this trait method
-            // becomes vestigial. Today it exists to satisfy the
-            // trait signature; nothing in the GTK path actually
-            // calls it.
-            &mut *(*cell_ptr).as_ptr()
-        }
-    }
-
-    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        // Same `Rc<RefCell<>>`-leak rationale as `modal_stack_mut`
-        // above, applied to both fields. `drag_state` and
-        // `modal_stack` are separate `Rc<RefCell<>>`s, so the two
-        // leaked derefs never alias — this is just two independent
-        // instances of the same escape hatch, not a new hazard.
-        //
-        // SAFETY: see `modal_stack_mut`'s SAFETY comment; the same
-        // no-reentrancy contract applies to `drag_state` here.
-        unsafe {
-            let drag_ptr = Rc::as_ptr(&self.drag_state);
-            let modal_ptr = Rc::as_ptr(&self.modal_stack);
-            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
-        }
     }
 
     fn modal_stack_handle(&self) -> Rc<std::cell::RefCell<ModalStack>> {

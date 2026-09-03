@@ -686,45 +686,16 @@ pub trait Backend {
     }
 
     // ─── Modal-overlay tracking ────────────────────────────────────────
-    /// Mutable handle to the backend's modal stack. Apps push when a
-    /// palette / dialog / context-menu opens and pop when it closes;
-    /// quadraui's dispatcher consults the stack so events inside an
-    /// open modal can't fall through to widgets behind it.
+    /// Shared handle to the backend's modal stack, usable across
+    /// unrelated `&mut dyn Backend` (or `&dyn Backend`) borrows. Apps
+    /// push when a palette / dialog / context-menu opens and pop when
+    /// it closes; quadraui's dispatcher consults the stack so events
+    /// inside an open modal can't fall through to widgets behind it.
     ///
-    /// See [`ModalStack`] and [`crate::dispatch::dispatch_mouse_down`]
-    /// for the routing contract.
-    fn modal_stack_mut(&mut self) -> &mut ModalStack;
-
-    // ─── Drag-state tracking ─────────────────────────────────────────
-    /// Disjoint mutable borrows of the backend's drag state and modal
-    /// stack, in one call.
-    ///
-    /// `ShellApp` mouse-dispatch consumers (see
-    /// `crate::dispatch::dispatch_mouse_down` / `_drag` / `_up`) often
-    /// need `&mut DragState` and `&mut ModalStack` *at the same time* —
-    /// e.g. to read the in-progress drag target while also consulting
-    /// (or updating) the modal stack for click routing. Two separate
-    /// `&mut self` accessors can't do that through `&mut dyn Backend`:
-    /// the first call's borrow would still be live when the second is
-    /// made, which the borrow checker rejects. This method exists
-    /// purely to hand back both borrows split from a single `&mut
-    /// self` call, the same way `TuiBackend::drag_and_modal_mut`
-    /// (pre-trait, #467) split its own fields.
-    ///
-    /// Backends that don't otherwise expose drag state on the trait
-    /// (it's normally a backend implementation detail — only the
-    /// dispatch helpers in `crate::dispatch::*` need to observe it)
-    /// implement this solely so `&mut dyn Backend` consumers can reach
-    /// it. Use [`Self::modal_stack_mut`] instead when only the modal
-    /// stack is needed.
-    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack);
-
-    /// Shared handle to the modal stack that outlives any single
-    /// `&mut dyn Backend` (or `&dyn Backend`) borrow.
-    ///
-    /// [`Self::modal_stack_mut`] ties its `&mut ModalStack` to the
-    /// lifetime of the borrow that produced it, so it cannot be stashed
-    /// and used again later from an unrelated borrow scope — exactly the
+    /// This is a shared `Rc<RefCell<ModalStack>>` rather than a plain
+    /// `&mut ModalStack`, because the latter ties its lifetime to the
+    /// borrow that produced it and so cannot be stashed and used again
+    /// later from an unrelated borrow scope — exactly the
     /// stash-then-reuse pattern GTK hosts (and quadraui's own
     /// `gtk::run`) depend on:
     ///
@@ -742,6 +713,16 @@ pub trait Backend {
     /// backend, including a future macOS/Win-GUI host, so a backend
     /// that forgets to wire it up should fail to compile rather than
     /// silently hand back a handle to a stack nobody else observes.
+    ///
+    /// Reentrant mutation goes through `RefCell`'s normal runtime
+    /// borrow check (a stale `borrow_mut()` still alive when another
+    /// call tries to borrow again panics loudly) — quadraui#704 removed
+    /// the earlier `modal_stack_mut()` / `drag_and_modal_mut()` bridges,
+    /// which synthesized a `&mut` via `unsafe { Rc::as_ptr(..) }` and so
+    /// bypassed that check instead of enforcing it.
+    ///
+    /// See [`ModalStack`] and [`crate::dispatch::dispatch_mouse_down`]
+    /// for the routing contract.
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>>;
 
     /// Shared handle to the drag state, with the same stash-then-reuse

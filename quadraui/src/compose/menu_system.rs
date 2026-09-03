@@ -90,7 +90,10 @@ impl MenuSystem {
         self.focused_item = None;
         self.submenu_path.clear();
         self.submenu_selected.clear();
-        backend.modal_stack_mut().pop(&self.dropdown_id);
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .pop(&self.dropdown_id);
     }
 
     /// Return the current `MenuBar` descriptor without rendering.
@@ -629,7 +632,8 @@ impl MenuSystem {
         self.dropdown_selected = self.build_dropdown(idx).first_selectable();
         if let Some((_, layout)) = self.dropdown_layout(backend, bar_rect) {
             backend
-                .modal_stack_mut()
+                .modal_stack_handle()
+                .borrow_mut()
                 .push(self.dropdown_id.clone(), layout.bounds);
         }
     }
@@ -753,23 +757,6 @@ mod tests {
         }
         fn register_accelerator(&mut self, _: &crate::accelerator::Accelerator) {}
         fn unregister_accelerator(&mut self, _: &crate::accelerator::AcceleratorId) {}
-        fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
-            // SAFETY: same leak-via-`Rc::as_ptr` pattern as
-            // `GtkBackend::modal_stack_mut` — this mock is
-            // single-threaded test code that never reentrantly calls
-            // back into itself mid-borrow.
-            unsafe {
-                let cell_ptr = std::rc::Rc::as_ptr(&self.modal_stack);
-                &mut *(*cell_ptr).as_ptr()
-            }
-        }
-        fn drag_and_modal_mut(&mut self) -> (&mut crate::DragState, &mut crate::ModalStack) {
-            unsafe {
-                let drag_ptr = std::rc::Rc::as_ptr(&self.drag_state);
-                let modal_ptr = std::rc::Rc::as_ptr(&self.modal_stack);
-                (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
-            }
-        }
         fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
             self.modal_stack.clone()
         }
