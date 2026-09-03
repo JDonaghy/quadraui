@@ -455,4 +455,151 @@ mod tests {
         assert_eq!(m.items_start_x, 0.0);
         assert_eq!(m.item_gap, 0.0);
     }
+
+    /// Parity guard for issue #710: `GtkBackend::form_layout`,
+    /// `macos::form::mac_form_layout`, and `win::form::win_form_layout`
+    /// all measure every `FieldKind` by calling this one function —
+    /// so this test is the single place that proves the invariant
+    /// their painters rely on: `FormFieldMeasure::height` is always
+    /// exactly one `row_h`, for *every* `FieldKind`, regardless of any
+    /// field-specific content (multiple toggles, a long `TextArea`
+    /// value, a large `visible_rows`).
+    ///
+    /// #710 was exactly a violation of this on GTK: before that fix,
+    /// `GtkBackend::form_layout` had its own inline measurer (not this
+    /// fn) that sized `FieldKind::TextArea` as `row_h * visible_rows`,
+    /// while `gtk::form::draw_form` only ever painted one row per
+    /// field — so the `visible_rows - 1` rows the layout believed
+    /// belonged to the `TextArea` were actually painted with the
+    /// *following* fields, and still hit-tested to the `TextArea`.
+    /// Now that GTK measures via this shared fn too (matching macOS
+    /// and Windows), a future regression that special-cases `TextArea`
+    /// (or any other kind) back to a multi-row height here would be
+    /// caught by every backend at once, instead of silently
+    /// reappearing on just one of them.
+    #[test]
+    fn form_field_measure_height_is_one_row_for_every_field_kind() {
+        use crate::primitives::form::{ButtonRowItem, ToggleGroupItem};
+        use crate::primitives::toolbar::Toolbar;
+        use crate::types::{Color, StyledText};
+
+        const ROW_H: f32 = 20.0;
+
+        let kinds = vec![
+            ("label", FieldKind::Label),
+            ("toggle", FieldKind::Toggle { value: true }),
+            (
+                "text-input",
+                FieldKind::TextInput {
+                    value: "hello".into(),
+                    placeholder: String::new(),
+                    cursor: Some(2),
+                    selection_anchor: None,
+                },
+            ),
+            ("button", FieldKind::Button),
+            (
+                "read-only",
+                FieldKind::ReadOnly {
+                    value: StyledText::plain("v1.0"),
+                },
+            ),
+            (
+                "slider",
+                FieldKind::Slider {
+                    value: 5.0,
+                    min: 0.0,
+                    max: 10.0,
+                    step: 1.0,
+                },
+            ),
+            (
+                "color-picker",
+                FieldKind::ColorPicker {
+                    value: Color::rgb(255, 0, 0),
+                },
+            ),
+            (
+                "dropdown",
+                FieldKind::Dropdown {
+                    options: vec![StyledText::plain("a"), StyledText::plain("b")],
+                    selected_idx: 0,
+                },
+            ),
+            (
+                // The regression case: a large `visible_rows` must NOT
+                // scale `height` — see this test's own doc comment.
+                "text-area",
+                FieldKind::TextArea {
+                    value: "line one\nline two\nline three".into(),
+                    placeholder: String::new(),
+                    cursor: Some(3),
+                    visible_rows: 6,
+                },
+            ),
+            (
+                "password",
+                FieldKind::PasswordInput {
+                    value: "hunter2".into(),
+                    placeholder: String::new(),
+                    cursor: Some(3),
+                    mask_char: '•',
+                },
+            ),
+            (
+                "segmented",
+                FieldKind::SegmentedControl {
+                    options: vec!["File".into(), "Folder".into()],
+                    selected_idx: 0,
+                },
+            ),
+            (
+                "toggle-group",
+                FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("a"),
+                            label: "Aa".into(),
+                            value: false,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("b"),
+                            label: "Bb".into(),
+                            value: true,
+                        },
+                    ],
+                },
+            ),
+            (
+                "button-row",
+                FieldKind::ButtonRow {
+                    buttons: vec![ButtonRowItem {
+                        id: WidgetId::new("find"),
+                        label: "Find".into(),
+                        disabled: false,
+                        icon: None,
+                    }],
+                },
+            ),
+            (
+                "toolbar",
+                FieldKind::Toolbar(Toolbar {
+                    id: WidgetId::new("tb"),
+                    buttons: vec![],
+                    bg: None,
+                    focused_index: None,
+                }),
+            ),
+        ];
+
+        for (name, kind) in kinds {
+            let field = field_with(name, "Label", kind);
+            let m = form_field_measure(&field, ROW_H, &FakeMeasure);
+            assert_eq!(
+                m.height, ROW_H,
+                "FieldKind::{name} must measure exactly one row_h ({ROW_H}), got {}",
+                m.height,
+            );
+        }
+    }
 }

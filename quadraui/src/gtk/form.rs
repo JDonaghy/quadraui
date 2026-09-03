@@ -58,7 +58,16 @@ pub fn draw_form(
     let mut y_off = y.round();
     let y_end = y + h;
 
-    for field in form.fields.iter().skip(form.scroll_offset) {
+    // Clamp the same way `Form::layout` does (see
+    // `crate::primitives::scrollbar::clamp_scroll_offset`) so a
+    // `scroll_offset` past the end of `fields` still paints the last
+    // page instead of an empty body — otherwise this raw `.skip()`
+    // and `GtkBackend::form_layout`'s hit regions can disagree on
+    // which field occupies a given row (issue #710).
+    let resolved_scroll_offset =
+        crate::primitives::scrollbar::clamp_scroll_offset(form.scroll_offset, form.fields.len());
+
+    for field in form.fields.iter().skip(resolved_scroll_offset) {
         if y_off + row_h > y_end {
             break;
         }
@@ -671,6 +680,91 @@ mod tests {
             form,
             &theme,
             14.0,
+        );
+    }
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    /// Cairo's `ARgb32` stores each pixel as four bytes in native
+    /// (little-endian) byte order: [B, G, R, A] — mirrors
+    /// `gtk::terminal`/`gtk::activity_bar`'s test-local helper of the
+    /// same name.
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// Regression for issue #710's secondary finding: `draw_form` used
+    /// to iterate `form.fields.iter().skip(form.scroll_offset)` on the
+    /// **raw** `scroll_offset`, while `Form::layout` (the hit-test path
+    /// `GtkBackend::form_layout` drives) clamps it via
+    /// `clamp_scroll_offset`. At an out-of-range offset the two
+    /// disagreed about which field (if any) occupies row 0: the raw
+    /// `.skip()` walked past every field and painted nothing, while the
+    /// clamped layout still resolved row 0 to the last field.
+    #[test]
+    fn draw_form_clamps_out_of_range_scroll_offset_like_form_layout() {
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("hdr"),
+                    label: StyledText::plain("Header"),
+                    kind: FieldKind::Label,
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("enabled"),
+                    label: StyledText::plain("Enabled"),
+                    kind: FieldKind::Toggle { value: true },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+            ],
+            // Focused so the resolved field paints `selected_bg` —
+            // distinct from both the plain background and the header's
+            // `header_bg`, so row 0's colour unambiguously identifies
+            // which field (if any) painted there.
+            focused_field: Some(WidgetId::new("enabled")),
+            scroll_offset: 50, // far past `fields.len()` == 2
+            has_focus: true,
+        };
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 320, 160).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let theme = Theme::default();
+            draw_form(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                320.0,
+                160.0,
+                &form,
+                &theme,
+                14.0,
+            );
+        }
+
+        let theme = Theme::default();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, g, b) = pixel(&data, stride, 4, 4);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "row 0 should paint the focused 'enabled' field (the field \
+             `clamp_scroll_offset` resolves to), not leave the background \
+             untouched the way the pre-fix raw `.skip()` did",
         );
     }
 
