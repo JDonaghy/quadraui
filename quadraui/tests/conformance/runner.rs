@@ -21,6 +21,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use quadraui::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::{AppLogic, Backend, BackendCaps, Reaction, UiEvent, WidgetId};
@@ -226,25 +227,72 @@ pub struct MatrixRow {
 /// Returns [`Outcome::Skip`] before constructing anything if the backend
 /// lacks a required capability, so a capability gate never pays for a
 /// fixture build.
+///
+/// Both fixture construction and each step run behind [`catch_unwind`]
+/// (quadraui#708). Every backend already wired in here (TUI/GTK/macOS)
+/// happens to have nothing left that panics, so this was previously never
+/// exercised — but it's exactly what "the harness runs and reports" a
+/// `todo!()` stub means for a backend that *isn't* fully implemented yet
+/// (Win-GUI, #480/#580's burn-down target): a scenario step that lands on
+/// a still-`todo!()` rasteriser must come back as one `Outcome::Fail` cell
+/// naming the panic, not abort the whole matrix run before it can print a
+/// single other row. `AssertUnwindSafe` is safe here because a caught
+/// panic makes this function return immediately without touching `driver`
+/// again — there is no possibly-poisoned state a caller could observe.
 pub fn run_scenario(scenario: &Scenario, backend: &BackendReg) -> Outcome {
     if let Some(missing_cap) = backend.missing_cap(&scenario.requires) {
         return Outcome::Skip { missing_cap };
     }
-    let Some(mut driver) = (backend.build)(&scenario.fixture, scenario.viewport.into()) else {
-        return Outcome::Fail {
-            step: 0,
-            reason: format!(
-                "unknown fixture {:?} — add it to tests/conformance/fixtures.rs",
-                scenario.fixture
-            ),
-        };
+    let build = &backend.build;
+    let built = catch_unwind(AssertUnwindSafe(|| {
+        build(&scenario.fixture, scenario.viewport.into())
+    }));
+    let mut driver = match built {
+        Ok(Some(driver)) => driver,
+        Ok(None) => {
+            return Outcome::Fail {
+                step: 0,
+                reason: format!(
+                    "unknown fixture {:?} — add it to tests/conformance/fixtures.rs",
+                    scenario.fixture
+                ),
+            };
+        }
+        Err(payload) => {
+            return Outcome::Fail {
+                step: 0,
+                reason: format!("panicked building the fixture: {}", panic_reason(&payload)),
+            };
+        }
     };
     for (i, step) in scenario.steps.iter().enumerate() {
-        if let Err(reason) = run_step(driver.as_mut(), step) {
-            return Outcome::Fail { step: i, reason };
+        let ran = catch_unwind(AssertUnwindSafe(|| run_step(driver.as_mut(), step)));
+        match ran {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Outcome::Fail { step: i, reason },
+            Err(payload) => {
+                return Outcome::Fail {
+                    step: i,
+                    reason: format!("panicked: {}", panic_reason(&payload)),
+                };
+            }
         }
     }
     Outcome::Pass
+}
+
+/// Best-effort message out of a [`catch_unwind`] payload — `panic!("{s}")`
+/// and `panic!(msg)` land in `&str`, `format!(..)`/`.expect(..)` land in
+/// `String`; anything else (a custom payload type) falls back to a fixed
+/// string rather than losing the cell's reason entirely.
+fn panic_reason(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }
 
 /// Every zone id `backend` registers at any point while replaying
