@@ -319,4 +319,76 @@ mod tests {
             "a zero-width command line should paint nothing at all",
         );
     }
+
+    /// Paint/click round-trip (`docs/TESTING.md` coverage-taxonomy row 1,
+    /// #705 review): paint through the real `Backend::draw_command_line`
+    /// path (same infra as `paint_via_backend` above), find the actual
+    /// painted (non-background) pixel for two different characters, then
+    /// `hit_test` those exact pixels via `Backend::command_line_layout`
+    /// and assert they resolve to the right byte offsets. `MacBackend`
+    /// derives `current_char_width` from the same Menlo font metrics
+    /// `draw_text` paints with (`set_current_font` -> `font_metrics` ->
+    /// `measure_text(font, "M")`), so — unlike the GTK twin's
+    /// fixed-advance approximation — paint and layout share one
+    /// ground-truth measurement here, and no separate font-width probe
+    /// is needed.
+    ///
+    /// Non-zero-origin per LESSONS.md:159-181 (a LOCAL/ABSOLUTE mixup is
+    /// invisible at `rect.x == 0`).
+    #[test]
+    fn command_line_layout_hit_test_matches_painted_glyph_at_nonzero_origin() {
+        let origin_x = 24.0_f32;
+        let origin_y = 30.0_f32;
+        let rect = QRect::new(origin_x, origin_y, W as f32 - origin_x, 20.0);
+        let cmd = sample(":wq", None, false);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_command_line(rect, &cmd);
+        });
+        backend.end_frame();
+
+        let layout = backend.command_line_layout(rect, &cmd);
+        let char_width = backend.char_width();
+        assert!(char_width > 1.0, "Menlo char_width should be several px");
+
+        let y0 = origin_y as u32;
+        let y1 = (origin_y + rect.height).min(H as f32) as u32;
+
+        let find_painted = |x0: u32, x1: u32| -> Option<u32> {
+            for x in x0..x1.min(W) {
+                for y in y0..y1 {
+                    let (r, g, b, _) = surface.pixel(x, y);
+                    if (r, g, b) != (255, 255, 255) {
+                        return Some(x);
+                    }
+                }
+            }
+            None
+        };
+
+        // Column 0 (':') interior — inset 1px from the left cell edge to
+        // dodge antialiasing at the boundary (mirrors the GTK twin's
+        // round-trip test).
+        let col0_x0 = origin_x as u32 + 1;
+        let col0_x1 = (origin_x + char_width).floor() as u32;
+        let px0 = find_painted(col0_x0, col0_x1)
+            .unwrap_or_else(|| panic!("column 0 (':') painted no pixel in {col0_x0}..{col0_x1}"));
+        assert_eq!(layout.hit_test(px0 as f32), 0);
+
+        // Column 1 ('w').
+        let col1_x0 = (origin_x + char_width).ceil() as u32 + 1;
+        let col1_x1 = (origin_x + 2.0 * char_width).floor() as u32;
+        let px1 = find_painted(col1_x0, col1_x1)
+            .unwrap_or_else(|| panic!("column 1 ('w') painted no pixel in {col1_x0}..{col1_x1}"));
+        assert_eq!(layout.hit_test(px1 as f32), 1);
+
+        // A click left of the bar clamps to the first column's byte offset.
+        assert_eq!(layout.hit_test(0.0), 0);
+        assert_eq!(layout.hit_test(origin_x), 0);
+    }
 }

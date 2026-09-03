@@ -493,7 +493,7 @@ are shifted by `rect.x`/`rect.y` (**ABSOLUTE**) or left relative to
 | Frame | Methods |
 |---|---|
 | **LOCAL** | `data_table_layout`, `status_bar_layout`, `text_display_layout`, `tree_layout`, `form_layout` |
-| **ABSOLUTE** | `text_input_layout`, `msv_layout`, `menu_bar_layout`, `split_layout`, `split_tree_layout`, `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`, `progress_layout`, `spinner_layout`, `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`, `minimap_layout` |
+| **ABSOLUTE** | `text_input_layout`, `msv_layout`, `menu_bar_layout`, `split_layout`, `split_tree_layout`, `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`, `progress_layout`, `spinner_layout`, `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`, `minimap_layout`, `command_line_layout` (added by #705, after this audit; `CommandLineLayout::text_origin_x` carries `rect.x`/`bounds.x`, same convention as `text_input_layout`) |
 
 **No live cross-backend mismatch was found.** For every method, every
 backend that implements it agrees with its siblings on which frame it
