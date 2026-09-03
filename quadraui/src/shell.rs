@@ -259,10 +259,12 @@ impl<'a> ShellContext<'a> {
     /// Only called by [`crate::shell_adapter::ShellAdapter`]; downstream
     /// consumers receive an already-built context, they don't build one.
     ///
-    /// `cfg`-gated with `ShellAdapter` itself (#540): under `win` alone
-    /// there is no caller, so this and `take_activity_focus_requested`
-    /// below go dead-code under `-D warnings`. `macos` joined the gate in
-    /// #465 alongside `crate::macos::shell_runner`.
+    /// `cfg`-gated with `ShellAdapter` itself (#540): under a feature set
+    /// with no shell runner there is no caller, so this and
+    /// `take_activity_focus_requested` below go dead-code under
+    /// `-D warnings`. `macos` joined the gate in #465 alongside
+    /// `crate::macos::shell_runner`; `win` joined in #707 alongside
+    /// `crate::win::shell_runner`.
     ///
     /// `test` is in the gate too (#484): this module's own tests build a
     /// `ShellContext` through it, and without `test` here
@@ -274,6 +276,7 @@ impl<'a> ShellContext<'a> {
         feature = "tui",
         feature = "gtk",
         all(feature = "macos", target_os = "macos"),
+        feature = "win",
         test
     ))]
     pub(crate) fn new(
@@ -351,7 +354,8 @@ impl<'a> ShellContext<'a> {
     #[cfg(any(
         feature = "tui",
         feature = "gtk",
-        all(feature = "macos", target_os = "macos")
+        all(feature = "macos", target_os = "macos"),
+        feature = "win"
     ))]
     pub(crate) fn take_activity_focus_requested(&self) -> bool {
         self.activity_focus_requested.replace(false)

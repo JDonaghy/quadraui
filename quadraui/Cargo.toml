@@ -886,6 +886,16 @@ name = "win_hscroll"
 path = "examples/win_hscroll.rs"
 required-features = ["win"]
 
+# #707 — Win-GUI shell runner (`win::shell_runner::run_with_shell`), the
+# Windows analogue of #465. Same `AppShellDemo` `ShellApp` impl
+# `tui_appshell_demo`/`gtk_appshell_demo`/`macos_appshell_demo` already
+# share; only the runner call differs. Same "compiles everywhere, only
+# *works* on Windows" posture as the rest of `src/win/`.
+[[example]]
+name = "win_appshell_demo"
+path = "examples/win_appshell_demo.rs"
+required-features = ["win"]
+
 # #662 — `Image` primitive + `MenuBar` leading-icon slot. Both entries are
 # mandatory (see #595's note above this same manifest for why): without an
 # explicit `[[example]]`, `gtk_image.rs` gets picked up by autodiscovery
