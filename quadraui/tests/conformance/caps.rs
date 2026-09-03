@@ -471,6 +471,34 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // reservation) and so have no default at all. Declaring all four
     // backends here for all three methods is the honest statement that the
     // default *is* the answer, not a stand-in for one.
+    // ── issue #506 review fix: `terminal_scrollbar_default_width` backs
+    // `terminal_layout`'s scrollbar-gutter reservation (a `Terminal` with
+    // `scrollbar: Some(TerminalScrollbar { width: None, .. })` needs a
+    // fallback gutter width before it can compute `grid_cols`). GTK,
+    // macOS, and Win all default a `None` `TerminalScrollbar::width` to
+    // 8px (`sb_width: … .unwrap_or(8.0)` in each backend's own
+    // `draw_terminal`) — exactly the trait default — so the three take it
+    // as the honest answer, not a stand-in for one. TUI overrides it to
+    // `1.0` (one cell), matching `src/tui/terminal.rs`'s
+    // `sb_cols: … .unwrap_or(1)`.
+    (
+        "gtk",
+        "terminal_scrollbar_default_width",
+        "pixel backend default (8px) matches draw_terminal's own `unwrap_or(8.0)` fallback \
+         (issue #506 review fix)",
+    ),
+    (
+        "macos",
+        "terminal_scrollbar_default_width",
+        "pixel backend default (8px) matches draw_terminal's own `unwrap_or(8.0)` fallback \
+         (issue #506 review fix)",
+    ),
+    (
+        "win",
+        "terminal_scrollbar_default_width",
+        "pixel backend default (8px) matches draw_terminal's own `unwrap_or(8.0)` fallback \
+         (issue #506 review fix)",
+    ),
     (
         "tui",
         "terminal_layout",

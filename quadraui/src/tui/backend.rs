@@ -976,6 +976,13 @@ impl Backend for TuiBackend {
         1.0
     }
 
+    /// TUI's terminal scrollbar gutter is one character cell, not GTK's
+    /// 8px default — matching `src/tui/terminal.rs`'s
+    /// `sb_cols: … .unwrap_or(1)` (issue #506 review fix).
+    fn terminal_scrollbar_default_width(&self) -> f32 {
+        1.0
+    }
+
     fn snap_height(&self, h: f32) -> f32 {
         // Mirrors the height component of `q_rect_to_ratatui` exactly —
         // same `.max(0.0).round()` — so a height computed via this method
@@ -4093,6 +4100,253 @@ mod tests {
         assert_eq!(
             no_paint, painted,
             "board_layout must equal the exact layout draw_board painted with"
+        );
+    }
+
+    /// Issue #506 review fix: `terminal_layout`'s default body must
+    /// reserve the same scrollbar gutter width `draw_terminal` reserves
+    /// before iterating cells (`cell_area_w =
+    /// area.width.saturating_sub(sb_cols)`, `src/tui/terminal.rs`), or a
+    /// click on the gutter resolves to `TerminalHit::Cell` when the
+    /// paint path shows a scrollbar there, not a cell — "paint and
+    /// no-paint silently disagree" (rule 5).
+    #[test]
+    fn terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal() {
+        let backend = TuiBackend::new();
+        let cell = crate::TerminalCell {
+            ch: 'x',
+            fg: crate::Color::rgb(200, 200, 200),
+            bg: crate::Color::rgb(20, 20, 20),
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        };
+        let term = TerminalPrim {
+            id: WidgetId::new("t"),
+            cells: vec![vec![cell; 20]; 5],
+            scrollbar: Some(crate::TerminalScrollbar {
+                total_lines: 100,
+                visible_lines: 5,
+                scroll_offset: 0,
+                inverted: false,
+                // `None` — draw_terminal's `sb_cols: … .unwrap_or(1)` fallback,
+                // which `terminal_scrollbar_default_width` must reproduce.
+                width: None,
+            }),
+        };
+        let rect = QRect::new(0.0, 0.0, 10.0, 5.0);
+        let area = q_rect_to_ratatui(rect);
+
+        let layout = backend.terminal_layout(rect, &term);
+        assert_eq!(
+            layout.grid_cols, 9,
+            "terminal_layout must reserve the 1-column scrollbar gutter (TUI's \
+             terminal_scrollbar_default_width), not the full unreduced rect.width"
+        );
+        assert_eq!(
+            layout.hit_test(9.0, 0.0),
+            crate::primitives::terminal::TerminalHit::Empty,
+            "a click at x=9 (the scrollbar gutter column) must not resolve to a grid cell"
+        );
+
+        // Confirm against the real paint path: column 9 is where
+        // draw_terminal paints the scrollbar track, not cell glyphs.
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::tui::draw_terminal(&mut buf, area, &term, &backend.current_theme);
+        assert_ne!(
+            buf[(area.x + 9, area.y)].symbol(),
+            "x",
+            "column 9 is draw_terminal's scrollbar gutter — it must not show painted cell \
+             content, matching terminal_layout's grid_cols=9 exclusion of that column"
+        );
+    }
+
+    /// Minimal two-row-hunk `DiffView` fixture for `diff_view_layout`
+    /// parity tests below.
+    fn sample_diff_view(mode: crate::DiffMode, left_label: Option<String>) -> crate::DiffView {
+        crate::DiffView {
+            id: WidgetId::new("diff"),
+            left: String::new(),
+            right: String::new(),
+            left_label,
+            right_label: None,
+            hunks: vec![crate::DiffHunk {
+                left_start: 1,
+                right_start: 1,
+                rows: vec![
+                    crate::DiffRow {
+                        left: Some("alpha".into()),
+                        right: Some("ALPHA".into()),
+                        kind: crate::DiffRowKind::Changed,
+                    },
+                    crate::DiffRow {
+                        left: Some("beta".into()),
+                        right: Some("beta".into()),
+                        kind: crate::DiffRowKind::Same,
+                    },
+                ],
+            }],
+            mode,
+            editability: crate::DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: crate::DiffPane::Left,
+            has_focus: false,
+        }
+    }
+
+    /// Issue #506 review fix: `diff_view_layout` is claimed to be
+    /// "verified byte-for-byte against each backend's real paint
+    /// formula" — this is the test that makes that claim true rather
+    /// than aspirational. `draw_diff_view` returns its `DiffViewLayout`
+    /// directly, so this compares the no-paint default body against the
+    /// exact value the real paint path produced, in `SideBySide` mode
+    /// with a header row reserved.
+    #[test]
+    fn diff_view_layout_matches_draw_diff_view_side_by_side_with_header() {
+        let backend = TuiBackend::new();
+        let view = sample_diff_view(crate::DiffMode::SideBySide, Some("left.txt".into()));
+        let rect = QRect::new(0.0, 0.0, 40.0, 5.0);
+        let area = q_rect_to_ratatui(rect);
+
+        let no_paint = backend.diff_view_layout(rect, &view);
+
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let painted = crate::tui::draw_diff_view(&mut buf, area, &view, &backend.current_theme);
+
+        assert_eq!(
+            no_paint, painted,
+            "diff_view_layout must equal the exact layout draw_diff_view painted with"
+        );
+        assert_eq!(
+            no_paint.visible_rows, 4,
+            "a 5-row rect minus a 1-row header (left_label is set) leaves 4 content rows"
+        );
+    }
+
+    /// Same parity check in `Unified` mode, where no header row is
+    /// reserved and `total_rows` folds in one synthesized `@@` header
+    /// line per hunk.
+    #[test]
+    fn diff_view_layout_matches_draw_diff_view_unified() {
+        let backend = TuiBackend::new();
+        let view = sample_diff_view(crate::DiffMode::Unified, None);
+        let rect = QRect::new(0.0, 0.0, 40.0, 5.0);
+        let area = q_rect_to_ratatui(rect);
+
+        let no_paint = backend.diff_view_layout(rect, &view);
+
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let painted = crate::tui::draw_diff_view(&mut buf, area, &view, &backend.current_theme);
+
+        assert_eq!(
+            no_paint, painted,
+            "diff_view_layout must equal the exact layout draw_diff_view painted with (unified \
+             mode reserves no header band)"
+        );
+    }
+
+    /// Minimal blank `EditorLine` for `editor_layout` parity tests below
+    /// — content doesn't matter, only that `lines.len()` matches the
+    /// viewport row count so `draw_editor` doesn't early-`break`.
+    fn blank_editor_line(idx: usize) -> crate::EditorLine {
+        crate::EditorLine {
+            raw_text: String::new(),
+            gutter_text: String::new(),
+            spans: Vec::new(),
+            line_idx: idx,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: Vec::new(),
+            spell_errors: Vec::new(),
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: false,
+            segment_col_offset: 0,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: Vec::new(),
+            colorcolumns: Vec::new(),
+        }
+    }
+
+    /// Issue #506 review fix: `editor_layout` is claimed to be
+    /// "verified byte-for-byte against each backend's real paint
+    /// formula" — this test makes that claim true for TUI. TUI's
+    /// `draw_editor` re-derives its own scrollbar-presence formula by
+    /// hand rather than calling `Editor::layout` (`src/tui/editor.rs`:
+    /// `has_scrollbar = total_lines > viewport_lines && area.width >
+    /// gutter_w + 1`, v-scrollbar track at `(area.x + area.width - 1,
+    /// area.y, 1, track_h)`); this test pins `editor_layout`'s
+    /// `v_scrollbar_bounds` against that exact independently-derived
+    /// track, so the two can't silently drift apart.
+    #[test]
+    fn editor_layout_matches_draw_editor_scrollbar_track() {
+        let backend = TuiBackend::new();
+        let rect = QRect::new(2.0, 1.0, 20.0, 5.0);
+        let editor = crate::Editor {
+            id: WidgetId::new("ed"),
+            rect,
+            lines: (0..5).map(blank_editor_line).collect(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            // > viewport_lines (5) so a v-scrollbar is present.
+            total_lines: 100,
+            // Small enough that no h-scrollbar is triggered, keeping
+            // TUI's two-pass visible_lines/text_h resolution collapsed
+            // to a single pass (see `Editor::layout`'s doc).
+            max_col: 4,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '!',
+        };
+
+        let layout = backend.editor_layout(rect, &editor);
+        let vsb = layout
+            .v_scrollbar_bounds
+            .expect("100 lines in a 5-row viewport must trigger a v-scrollbar");
+        assert_eq!(
+            vsb,
+            crate::event::Rect::new(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height),
+            "editor_layout's v_scrollbar_bounds must match draw_editor's own track formula \
+             `(area.x + area.width - 1, area.y, 1, track_h)` (src/tui/editor.rs)"
+        );
+
+        // Paint via the exact free fn TuiBackend::draw_editor calls —
+        // proves the shared scrollbar-presence formula doesn't panic
+        // against this geometry, and that the hit-test the layout
+        // exposes resolves at the painted track's own origin.
+        let area = q_rect_to_ratatui(rect);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme);
+
+        assert_eq!(
+            layout.hit_test(vsb.x, vsb.y),
+            crate::EditorHit::VScrollbar,
+            "a click at the painted scrollbar track's origin must resolve via editor_layout's \
+             own hit_test as VScrollbar"
         );
     }
 }

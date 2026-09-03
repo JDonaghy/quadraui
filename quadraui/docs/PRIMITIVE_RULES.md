@@ -68,7 +68,18 @@ Read this when adding or changing a primitive.
    `Backend::char_width()` / `Backend::line_height()` (and primitive
    state) — i.e. every backend's own `draw_<name>` already resolves the
    same two values into the same formula (`terminal_layout`,
-   `editor_layout`, `diff_view_layout`). If a backend supplies its own
+   `editor_layout`, `diff_view_layout`). "The same two values" can
+   include a small backend-shaped accessor of the same shape as
+   `char_width()`/`line_height()` when the *formula* is still uniform
+   but a scalar it depends on genuinely isn't — `terminal_layout` also
+   calls `Backend::terminal_scrollbar_default_width()` to reserve the
+   scrollbar gutter's default width before dividing by `char_width()`,
+   because every backend's real `draw_terminal` reserves that gutter
+   with a backend-specific fallback (1 cell on TUI, 8px on GTK/macOS/Win)
+   before iterating cells — skip that reservation and the default body's
+   `grid_cols` silently over-reports by the gutter's width whenever a
+   caller omits an explicit scrollbar width (issue #506 review fix; see
+   `docs/DECISIONS.md` D-007's "`terminal_layout`'s scrollbar gap" note). If a backend supplies its own
    sizing constants that aren't derivable from those two accessors
    (`BoardMeasure`'s per-backend column/card pixel sizes, `ListView`'s
    scrollbar reservation), there is no default — every backend

@@ -1155,6 +1155,27 @@ pub trait Backend {
     /// terminal selection is driven by mouse drag against cell
     /// dimensions, which the app already tracks.
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
+    /// The reserved width of a `Terminal`'s scrollbar gutter when
+    /// [`TerminalScrollbar::width`](crate::primitives::terminal::TerminalScrollbar::width)
+    /// is `None`, in this backend's own surface-native unit (issue #506
+    /// review fix). Every `draw_terminal` implementation falls back to a
+    /// hardcoded default when the caller didn't specify a width, and
+    /// that default is backend-shaped, not uniform: TUI's cells *are*
+    /// the coordinate system, so its gutter is exactly one column
+    /// (`src/tui/terminal.rs`'s `sb_cols: … .unwrap_or(1)`); GTK, macOS,
+    /// and Win all measure in pixels and use 8px
+    /// (`src/gtk/backend.rs`, `src/macos/backend.rs`,
+    /// `src/win/backend.rs`, each `sb_width: … .unwrap_or(8.0)`).
+    /// [`Self::terminal_layout`]'s default body calls this so its
+    /// scrollbar reservation matches whichever default the paint path
+    /// actually used, instead of silently assuming the pixel-backend
+    /// value for every backend (or ignoring the reservation entirely).
+    ///
+    /// Default: `8.0`, matching GTK/macOS/Win. TUI overrides this to
+    /// `1.0` — see `TuiBackend::terminal_scrollbar_default_width`.
+    fn terminal_scrollbar_default_width(&self) -> f32 {
+        8.0
+    }
     /// Compute the viewport → grid conversion [`Self::draw_terminal`]
     /// implicitly uses (issue #506: `Terminal::layout` already existed as
     /// a pure fn but no `Backend` method exposed it, so hosts had to
@@ -1164,21 +1185,41 @@ pub trait Backend {
     /// reproduces its uniform cell grid exactly; pixel backends get the
     /// same font metrics `draw_terminal`'s cell iteration assumes.
     ///
+    /// When `term.scrollbar` is `Some`, the viewport width fed to
+    /// [`crate::primitives::terminal::Terminal::layout`] is first reduced
+    /// by the scrollbar's reserved width — `sb.width` when set, else
+    /// [`Self::terminal_scrollbar_default_width`] — exactly as every
+    /// backend's real `draw_terminal` reserves that gutter *before*
+    /// iterating cells (`cell_area_w = area.width.saturating_sub(sb_cols)`
+    /// on TUI; `cell_area_w = (rect.width - sb_width).max(0.0)` on
+    /// GTK/macOS/Win). Skipping this step would report `grid_cols` wide
+    /// enough to claim the scrollbar gutter itself as a clickable cell —
+    /// exactly the "paint and no-paint silently disagree" bug class rule
+    /// 5 exists to prevent (issue #506 review fix).
+    ///
     /// Coordinate frame: **LOCAL** — relative to `rect`'s origin; see
     /// [`crate::primitives::terminal::TerminalLayout::hit_test`] /
     /// [`crate::primitives::terminal::TerminalLayout::cell_bounds`],
     /// neither of which fold in an origin offset (issue #505).
     ///
     /// Default body: uniform for every backend, since it's a pure
-    /// function of the two metrics above — no backend needs to override
-    /// this.
+    /// function of the metrics above plus [`Self::terminal_scrollbar_default_width`]
+    /// — no backend needs to override this.
     fn terminal_layout(
         &self,
         rect: Rect,
         term: &Terminal,
     ) -> crate::primitives::terminal::TerminalLayout {
+        let sb_reserved = match &term.scrollbar {
+            Some(sb) => sb
+                .width
+                .map(|w| w as f32)
+                .unwrap_or_else(|| self.terminal_scrollbar_default_width()),
+            None => 0.0,
+        };
+        let cell_area_w = (rect.width - sb_reserved).max(0.0);
         term.layout(
-            rect.width,
+            cell_area_w,
             rect.height,
             self.char_width(),
             self.line_height(),
@@ -1364,6 +1405,16 @@ pub trait Backend {
     /// Default body: uniform for every backend, since it's a pure
     /// function of the two metrics above — no backend needs to override
     /// this.
+    ///
+    /// **Caller invariant:** `rect` here must be the same rect the
+    /// backend actually paints with. This holds by construction on TUI
+    /// (`draw_editor` takes the `rect` argument directly), but on GTK
+    /// `GtkBackend::draw_editor` ignores its own `rect` parameter
+    /// (`let _ = rect;`) and paints at `editor.rect` instead
+    /// (`src/gtk/editor.rs`). The two happen to always match in every
+    /// call site today, but nothing enforces it — pass a `rect` that
+    /// diverges from `editor.rect` and this method's return value quietly
+    /// stops matching what GTK painted (issue #506 review follow-up).
     fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
         editor.layout(rect, self.char_width(), self.line_height())
     }
