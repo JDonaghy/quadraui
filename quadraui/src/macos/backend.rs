@@ -1436,6 +1436,18 @@ impl Backend for MacBackend {
             );
         }
     }
+    fn command_line_layout(
+        &self,
+        rect: Rect,
+        cmd: &CommandLine,
+    ) -> crate::primitives::command_line::CommandLineLayout {
+        cmd.layout(
+            rect,
+            crate::primitives::command_line::CommandLineMeasure::new(
+                self.current_char_width as f32,
+            ),
+        )
+    }
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
         super::text_display::mac_text_display_layout(td, rect, self.current_line_height)
     }

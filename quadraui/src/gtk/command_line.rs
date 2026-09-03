@@ -4,8 +4,23 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::primitives::command_line::CommandLine;
+use crate::primitives::command_line::{CommandLine, CommandLineLayout, CommandLineMeasure};
 use crate::theme::Theme;
+
+/// Compute [`CommandLineLayout`] for `cmd` painted at
+/// `(x, y, width, line_height)`, using the backend's monospace
+/// `char_width` (issue #705).
+pub fn gtk_command_line_layout(
+    cmd: &CommandLine,
+    x: f64,
+    y: f64,
+    width: f64,
+    line_height: f64,
+    char_width: f32,
+) -> CommandLineLayout {
+    let rect = crate::event::Rect::new(x as f32, y as f32, width as f32, line_height as f32);
+    cmd.layout(rect, CommandLineMeasure::new(char_width))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_command_line(
@@ -81,5 +96,25 @@ mod tests {
 
         // Must not panic.
         draw_command_line(&cr, &pango_layout, &cmd, &theme, 0.0, 0.0, 400.0, 20.0);
+    }
+
+    /// #505: a LOCAL/ABSOLUTE mixup is invisible at `x == 0`, so
+    /// `gtk_command_line_layout`'s hit test must be exercised at a
+    /// nonzero origin too.
+    #[test]
+    fn gtk_command_line_layout_hit_test_at_nonzero_origin() {
+        let cmd = CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: ":wq".into(),
+            cursor_offset: None,
+            right_align: false,
+        };
+        let layout = gtk_command_line_layout(&cmd, 40.0, 12.0, 200.0, 20.0, 8.0);
+        // A click left of the bar clamps to the first column's byte offset.
+        assert_eq!(layout.hit_test(0.0), 0);
+        // Column 0 starts at x == origin x == 40.
+        assert_eq!(layout.hit_test(40.0), 0);
+        // Column 1 ('w') starts at x == 40 + char_width == 48.
+        assert_eq!(layout.hit_test(50.0), 1);
     }
 }

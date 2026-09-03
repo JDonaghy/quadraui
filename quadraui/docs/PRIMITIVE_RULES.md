@@ -206,7 +206,8 @@ caller has no other reason to track that rect, are ABSOLUTE
 `split_tree_layout`, `panel_layout`, `toast_stack_layout`,
 `pipeline_view_layout`, `progress_layout`, `spinner_layout`,
 `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`,
-`chart_layout`, `minimap_layout`, `msv_layout`, `text_input_layout`).
+`chart_layout`, `minimap_layout`, `msv_layout`, `text_input_layout`,
+`command_line_layout`).
 See `quadraui/docs/DECISIONS.md` D-005 for the full audit and why the
 split isn't collapsed to one frame everywhere.
 

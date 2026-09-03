@@ -45,7 +45,7 @@
 //!   `progress_layout`, `spinner_layout`, `command_center_layout`,
 //!   `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`,
 //!   `minimap_layout`, `msv_layout`, `text_input_layout`, `board_layout`,
-//!   `editor_layout`).
+//!   `editor_layout`, `command_line_layout`).
 //!
 //! A third category returns no coordinates at all — `diff_view_layout`
 //! returns row *counts* (`visible_rows` / `total_rows`), not positions —
@@ -75,7 +75,7 @@ use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
-use crate::primitives::command_line::CommandLine;
+use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
@@ -1285,6 +1285,26 @@ pub trait Backend {
     /// renders text (left- or right-aligned), and optionally draws an
     /// insert cursor at `cursor_offset`.
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine);
+
+    /// Compute the click/selection layout `draw_command_line` paints from
+    /// (issue #705). Hosts call this to hit-test a click to a **byte
+    /// offset** in `cmd.text` (`CommandLineLayout::hit_test`) and to turn a
+    /// selection range back into a paintable rect
+    /// (`CommandLineLayout::selection_bounds`), without re-deriving glyph
+    /// metrics or repainting.
+    ///
+    /// This is the fix for the gap `CommandLine` shipped with: the TUI
+    /// rasteriser could support mouse drag-selection only by reading back
+    /// inverted terminal cells after paint, a trick with no GTK/macOS/Win
+    /// equivalent — so the command line was mouse-selectable on TUI and
+    /// structurally could not be on any pixel backend. Every backend now
+    /// exposes the same character-offset mapping, so a host can share one
+    /// selection implementation instead of leaving pixel backends behind.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
+    /// callers compare directly against raw click coordinates, matching
+    /// [`Self::text_input_layout`] (issue #505).
+    fn command_line_layout(&self, rect: Rect, cmd: &CommandLine) -> CommandLineLayout;
 
     /// Compute the text-display layout the rasteriser would produce for
     /// `td` in `rect`, using the backend's native metrics. Hosts call
