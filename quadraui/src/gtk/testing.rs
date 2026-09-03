@@ -50,10 +50,11 @@ use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
-use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
-use crate::{
-    ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, ScrollDelta, UiEvent, WidgetId,
+use crate::testing::{
+    Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
+    TextRun,
 };
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent, WidgetId};
 
 use super::backend::GtkBackend;
 use super::run::{dispatch_event, render_frame, EventOutcome};
@@ -194,34 +195,23 @@ impl<A: AppLogic> GtkDriver<A> {
 
     /// Press a key (no modifiers).
     pub fn press(&mut self, key: Key) -> Reaction {
-        self.dispatch(UiEvent::KeyPressed {
-            key,
-            modifiers: Modifiers::default(),
-            repeat: false,
-        })
+        DriverInput::press(self, key)
     }
 
     /// Type a single character key (no modifiers).
     pub fn type_char(&mut self, c: char) -> Reaction {
-        self.press(Key::Char(c))
+        DriverInput::type_char(self, c)
     }
 
     /// Press a named (non-printable) key, e.g. [`NamedKey::Enter`].
     pub fn press_named(&mut self, key: NamedKey) -> Reaction {
-        self.press(Key::Named(key))
+        DriverInput::press_named(self, key)
     }
 
     /// Press a character key with Ctrl held (e.g. `ctrl_char('c')` to
     /// trigger the runner's copy-on-selection path).
     pub fn ctrl_char(&mut self, c: char) -> Reaction {
-        self.dispatch(UiEvent::KeyPressed {
-            key: Key::Char(c),
-            modifiers: Modifiers {
-                ctrl: true,
-                ..Modifiers::default()
-            },
-            repeat: false,
-        })
+        DriverInput::ctrl_char(self, c)
     }
 
     /// Left-click at surface coordinates `(x, y)` (pixels), routed
@@ -229,7 +219,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// so a click on a registered text region or scrollbar begins a drag
     /// exactly as it would live.
     pub fn click(&mut self, x: f32, y: f32) -> Reaction {
-        self.mouse_down(x, y)
+        DriverInput::click(self, x, y)
     }
 
     /// Press the left mouse button down at `(x, y)`. Begins a drag if it
@@ -294,9 +284,7 @@ impl<A: AppLogic> GtkDriver<A> {
 
     /// Left-button drag from `(x0, y0)` to `(x1, y1)`: down → move → up.
     pub fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> Reaction {
-        self.mouse_down(x0, y0);
-        self.mouse_move(x1, y1);
-        self.mouse_up(x1, y1)
+        DriverInput::drag(self, x0, y0, x1, y1)
     }
 
     /// Dispatch each of `events` in order, short-circuiting on `Exit` and
@@ -457,6 +445,46 @@ impl<A: AppLogic> GtkDriver<A> {
     }
 }
 
+/// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
+/// `press_named`/`ctrl_char`/`click`/`drag` methods build on — see that
+/// trait's doc for why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up`
+/// stay required (genuinely per-backend) rather than shared (quadraui#708).
+impl<A: AppLogic> DriverInput for GtkDriver<A> {
+    fn dispatch(&mut self, event: UiEvent) -> Reaction {
+        self.dispatch(event)
+    }
+
+    fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_down(x, y)
+    }
+
+    fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_move(x, y)
+    }
+
+    fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
+        self.mouse_up(x, y)
+    }
+}
+
+/// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
+/// shared pixel-unit bodies (quadraui#708).
+impl<A: AppLogic> PixelClickConformance for GtkDriver<A> {
+    const NAME: &'static str = "GtkDriver";
+
+    fn find_bounds(&self, needle: &str) -> Option<crate::Rect> {
+        self.find_bounds(needle)
+    }
+
+    fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.find(needle)
+    }
+
+    fn conformance_line_height(&self) -> f32 {
+        self.backend.line_height()
+    }
+}
+
 impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
     type App = A;
 
@@ -494,38 +522,15 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
     }
 
     fn click_text_at(&mut self, needle: &str, at: Anchor) {
-        let bounds = self
-            .find_bounds(needle)
-            .unwrap_or_else(|| panic!("GtkDriver: {needle:?} not painted"));
-        let y = bounds.y + bounds.height / 2.0;
-        let x = match at {
-            Anchor::Center => bounds.x + bounds.width / 2.0,
-            Anchor::LeftEdge => bounds.x + 1.0,
-            Anchor::RightEdge => bounds.x + bounds.width - 1.0,
-        };
-        self.click(x, y);
+        PixelClickConformance::click_text_at(self, needle, at)
     }
 
     fn drag_text(&mut self, from: &str, to: &str) {
-        let (x0, y0) = self
-            .find(from)
-            .unwrap_or_else(|| panic!("GtkDriver: {from:?} not painted"));
-        let (x1, y1) = self
-            .find(to)
-            .unwrap_or_else(|| panic!("GtkDriver: {to:?} not painted"));
-        self.drag(x0, y0, x1, y1);
+        PixelClickConformance::drag_text(self, from, to)
     }
 
     fn scroll_at(&mut self, needle: &str, lines: i32) {
-        let (x, y) = self
-            .find(needle)
-            .unwrap_or_else(|| panic!("GtkDriver: {needle:?} not painted"));
-        let line_height = self.backend.line_height();
-        self.dispatch(UiEvent::Scroll {
-            widget: None,
-            delta: ScrollDelta::new(0.0, lines as f32 * line_height),
-            position: Point::new(x, y),
-        });
+        PixelClickConformance::scroll_at(self, needle, lines)
     }
 
     fn inventory(&self) -> FrameInventory {
@@ -963,7 +968,7 @@ mod tests {
         assert!(!ConformanceDriver::exited(&driver));
         assert!(ConformanceDriver::screen_has(&driver, "Toggle"));
 
-        driver.click_text_at("Toggle", Anchor::Center);
+        ConformanceDriver::click_text_at(&mut driver, "Toggle", Anchor::Center);
 
         assert!(
             driver.app().on,

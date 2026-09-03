@@ -195,6 +195,31 @@ impl runner::DriverFactory for MacFactory {
     }
 }
 
+// Win-GUI: `feature = "win"` alone compiles `quadraui::win` (its real
+// WinAPI calls internally `cfg(target_os = "windows")`-gate to a `todo!()`
+// fallback elsewhere — see `Cargo.toml`'s `win` feature comment), but
+// `win::testing` — and therefore `WinDriver` — only exists on
+// `target_os = "windows"` itself (real Direct2D/GDI calls with no
+// meaningful non-Windows fallback). This registration is inert on every
+// CI leg that runs today (none is a Windows host — see CLAUDE.md's
+// Win-GUI section); it activates once one is (quadraui#708, #580's
+// burn-down gate).
+#[cfg(all(feature = "win", target_os = "windows"))]
+struct WinFactory;
+
+#[cfg(all(feature = "win", target_os = "windows"))]
+impl runner::DriverFactory for WinFactory {
+    fn make<A: quadraui::AppLogic + 'static>(
+        app: A,
+        viewport: quadraui::testing::LogicalViewport,
+    ) -> Box<dyn runner::DynDriver> {
+        use quadraui::testing::ConformanceDriver;
+        Box::new(quadraui::win::testing::WinDriver::new_fixture(
+            app, viewport,
+        ))
+    }
+}
+
 /// Every backend compiled into this build. **This is the registration
 /// point** — a new backend adds exactly one `push` here.
 ///
@@ -218,6 +243,8 @@ fn backends() -> Vec<BackendReg> {
     regs.push(BackendReg::register::<GtkFactory>("gtk"));
     #[cfg(all(feature = "macos", target_os = "macos"))]
     regs.push(BackendReg::register::<MacFactory>("macos"));
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    regs.push(BackendReg::register::<WinFactory>("win"));
     regs
 }
 
