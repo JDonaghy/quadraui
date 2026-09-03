@@ -41,8 +41,9 @@
 //! [`super::event_loop`] consumes those `UiEvent`s via
 //! [`Backend::wait_events`].
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
@@ -94,8 +95,13 @@ pub(crate) struct TuiTextSelection {
 /// rationale and the eventual migration plan.
 pub struct TuiBackend {
     viewport: Viewport,
-    modal_stack: ModalStack,
-    drag_state: DragState,
+    /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
+    /// can hand back a handle that outlives any single `&mut self` borrow
+    /// — the same shape `GtkBackend` uses for its own callback-driven
+    /// access (quadraui#699).
+    modal_stack: Rc<RefCell<ModalStack>>,
+    /// See `modal_stack`'s doc comment — same rationale.
+    drag_state: Rc<RefCell<DragState>>,
     accelerators: HashMap<AcceleratorId, Accelerator>,
     /// Pre-parsed bindings, kept in lock-step with `accelerators`. Stage 6
     /// uses this for the `wait_events`/`poll_events` matcher to avoid
@@ -218,8 +224,8 @@ impl TuiBackend {
     pub fn new() -> Self {
         Self {
             viewport: Viewport::default(),
-            modal_stack: ModalStack::new(),
-            drag_state: DragState::new(),
+            modal_stack: Rc::new(RefCell::new(ModalStack::new())),
+            drag_state: Rc::new(RefCell::new(DragState::new())),
             accelerators: HashMap::new(),
             parsed_accelerators: Vec::new(),
             services: TuiPlatformServices::new(),
@@ -349,11 +355,9 @@ impl TuiBackend {
     /// Ctrl-C copies the selection.
     pub(crate) fn clear_text_selection(&mut self) {
         self.active_selection = None;
-        if matches!(
-            self.drag_state.target(),
-            Some(DragTarget::TextSelection { .. })
-        ) {
-            self.drag_state.end();
+        let mut drag_state = self.drag_state.borrow_mut();
+        if matches!(drag_state.target(), Some(DragTarget::TextSelection { .. })) {
+            drag_state.end();
         }
     }
 
@@ -371,11 +375,9 @@ impl TuiBackend {
     /// chance to forward the click to a PTY) while preserving any
     /// previously finalised selection highlight on screen.
     fn cancel_text_selection_drag_impl(&mut self) {
-        if matches!(
-            self.drag_state.target(),
-            Some(DragTarget::TextSelection { .. })
-        ) {
-            self.drag_state.end();
+        let mut drag_state = self.drag_state.borrow_mut();
+        if matches!(drag_state.target(), Some(DragTarget::TextSelection { .. })) {
+            drag_state.end();
         }
     }
 
@@ -603,25 +605,27 @@ impl TuiBackend {
                     modifiers,
                     ..
                 } => {
+                    let modal_stack = self.modal_stack.borrow();
+                    let mut drag_state = self.drag_state.borrow_mut();
                     out.extend(crate::dispatch::dispatch_click(
-                        &self.modal_stack,
+                        &modal_stack,
                         &[],
                         &self.text_regions.clone(),
-                        &mut self.drag_state,
+                        &mut drag_state,
                         position,
                         button,
                         modifiers,
                     ));
                     // Track which region was clicked so Ctrl-A can target
                     // the right region even before the first drag move.
-                    if let Some(DragTarget::TextSelection { region, .. }) = self.drag_state.target()
-                    {
+                    if let Some(DragTarget::TextSelection { region, .. }) = drag_state.target() {
                         self.last_text_region_id = Some(region.clone());
                     }
                 }
                 UiEvent::MouseMoved { position, buttons } => {
+                    let drag_state = self.drag_state.borrow();
                     out.extend(crate::dispatch::dispatch_mouse_drag(
-                        &self.drag_state,
+                        &drag_state,
                         position,
                         buttons,
                     ));
@@ -629,9 +633,11 @@ impl TuiBackend {
                 UiEvent::MouseUp {
                     button, position, ..
                 } => {
+                    let modal_stack = self.modal_stack.borrow();
+                    let mut drag_state = self.drag_state.borrow_mut();
                     out.extend(crate::dispatch::dispatch_mouse_up(
-                        &self.modal_stack,
-                        &mut self.drag_state,
+                        &modal_stack,
+                        &mut drag_state,
                         position,
                         button,
                     ));
@@ -815,7 +821,7 @@ impl Backend for TuiBackend {
         self.tab_bar_layouts.clear();
         // #455: clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
-        self.modal_stack.reset_frame_paint();
+        self.modal_stack.borrow_mut().reset_frame_paint();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -841,7 +847,7 @@ impl Backend for TuiBackend {
         // invisible" defect class (vimcode#587) made detectable instead
         // of silently shipping.
         #[cfg(debug_assertions)]
-        for id in self.modal_stack.unpainted_ids() {
+        for id in self.modal_stack.borrow().unpainted_ids() {
             crate::diagnostics::emit(crate::modal_stack::ModalStack::unpainted_modal_message(&id));
         }
     }
@@ -922,7 +928,22 @@ impl Backend for TuiBackend {
     }
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
-        &mut self.modal_stack
+        // `modal_stack` moved behind `Rc<RefCell<>>` for quadraui#699
+        // (so `modal_stack_handle` can hand back a handle that outlives
+        // this borrow), the same shape `GtkBackend::modal_stack_mut`
+        // already uses. See that method's SAFETY comment for the full
+        // rationale; it applies unchanged here.
+        //
+        // SAFETY: `Rc::as_ptr` returns a stable pointer to the
+        // `RefCell`'s inner. The trait's contract is that callers don't
+        // reentrantly call back into this backend while holding the
+        // returned `&mut ModalStack` — if they did, a real
+        // `RefCell::borrow_mut` would panic on the double-borrow, and
+        // this leak just skips that dynamic check.
+        unsafe {
+            let cell_ptr = Rc::as_ptr(&self.modal_stack);
+            &mut *(*cell_ptr).as_ptr()
+        }
     }
 
     /// Disjoint mutable borrows of drag state and modal stack.
@@ -932,7 +953,23 @@ impl Backend for TuiBackend {
     /// accessor would conflict — this splits the field borrows in
     /// one call. See [`crate::Backend::drag_and_modal_mut`] (#467).
     fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        (&mut self.drag_state, &mut self.modal_stack)
+        // SAFETY: same leak-via-`Rc::as_ptr` rationale as
+        // `modal_stack_mut` above, applied to both fields — they are
+        // separate `Rc<RefCell<>>`s, so the two leaked derefs never
+        // alias.
+        unsafe {
+            let drag_ptr = Rc::as_ptr(&self.drag_state);
+            let modal_ptr = Rc::as_ptr(&self.modal_stack);
+            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
+        }
+    }
+
+    fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
+        self.modal_stack.clone()
+    }
+
+    fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
+        self.drag_state.clone()
     }
 
     fn services(&self) -> &dyn PlatformServices {
@@ -1091,7 +1128,7 @@ impl Backend for TuiBackend {
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
         // #455: mark before borrowing the frame — a modal-stack entry
         // whose id matches this palette is now known-painted this frame.
-        self.modal_stack.mark_painted(&palette.id);
+        self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
@@ -1632,7 +1669,7 @@ impl Backend for TuiBackend {
         layout: &crate::ContextMenuLayout,
     ) -> Vec<(QRect, crate::WidgetId)> {
         // #455: see draw_palette for why this happens before the frame borrow.
-        self.modal_stack.mark_painted(&menu.id);
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
@@ -1660,7 +1697,7 @@ impl Backend for TuiBackend {
         layout: &crate::primitives::dialog::DialogLayout,
     ) -> Vec<QRect> {
         // #455: see draw_palette for why this happens before the frame borrow.
-        self.modal_stack.mark_painted(&dialog.id);
+        self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
         let frame = self
             .current_frame_mut()
@@ -2281,8 +2318,8 @@ mod tests {
 
     struct MockBackend {
         calls: Vec<DrawCall>,
-        modal_stack: ModalStack,
-        drag_state: DragState,
+        modal_stack: Rc<RefCell<ModalStack>>,
+        drag_state: Rc<RefCell<DragState>>,
         services: MockServices,
         viewport: Viewport,
         theme: crate::Theme,
@@ -2292,8 +2329,8 @@ mod tests {
         fn new() -> Self {
             Self {
                 calls: Vec::new(),
-                modal_stack: ModalStack::new(),
-                drag_state: DragState::new(),
+                modal_stack: Rc::new(RefCell::new(ModalStack::new())),
+                drag_state: Rc::new(RefCell::new(DragState::new())),
                 services: MockServices::new(),
                 viewport: Viewport::new(80.0, 24.0, 1.0),
                 theme: crate::Theme::default(),
@@ -2321,10 +2358,26 @@ mod tests {
         fn register_accelerator(&mut self, _a: &Accelerator) {}
         fn unregister_accelerator(&mut self, _id: &AcceleratorId) {}
         fn modal_stack_mut(&mut self) -> &mut ModalStack {
-            &mut self.modal_stack
+            // SAFETY: see `TuiBackend::modal_stack_mut` — same leak,
+            // same no-reentrancy contract; this mock is single-threaded
+            // test code that never calls back into itself mid-borrow.
+            unsafe {
+                let cell_ptr = Rc::as_ptr(&self.modal_stack);
+                &mut *(*cell_ptr).as_ptr()
+            }
         }
         fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-            (&mut self.drag_state, &mut self.modal_stack)
+            unsafe {
+                let drag_ptr = Rc::as_ptr(&self.drag_state);
+                let modal_ptr = Rc::as_ptr(&self.modal_stack);
+                (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
+            }
+        }
+        fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
+            self.modal_stack.clone()
+        }
+        fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
+            self.drag_state.clone()
         }
         fn services(&self) -> &dyn PlatformServices {
             &self.services
@@ -3087,6 +3140,58 @@ mod tests {
         assert_eq!(mock.modal_stack_mut().len(), 1);
     }
 
+    /// quadraui#699: `TuiBackend::modal_stack_handle` must hand back a
+    /// handle that shares state with the backend's own modal stack (the
+    /// same guarantee `GtkBackend::modal_stack_handle` already proves in
+    /// `gtk::backend::tests::gtk_backend_modal_stack_handle_shares_state`)
+    /// — two independently-obtained handles must observe each other's
+    /// writes, not two disconnected copies.
+    #[test]
+    fn tui_backend_modal_stack_handle_shares_state() {
+        let backend = TuiBackend::new();
+        let h1 = backend.modal_stack_handle();
+        let h2 = backend.modal_stack_handle();
+        h1.borrow_mut()
+            .push(WidgetId::new("test:popup"), QRect::new(0.0, 0.0, 10.0, 5.0));
+        assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// quadraui#699: the whole point of `modal_stack_handle` over
+    /// `modal_stack_mut` is that the handle outlives the borrow that
+    /// produced it — this is the stash-then-reuse pattern GTK hosts
+    /// (and vimcode's macOS host, once #699 lands there too) depend on.
+    /// Prove it compiles and behaves through `&mut dyn Backend`, not
+    /// just the concrete `TuiBackend` type.
+    #[test]
+    fn modal_stack_handle_outlives_the_backend_borrow_through_the_trait() {
+        let mut backend = TuiBackend::new();
+        let stack_rc = {
+            let dyn_backend: &mut dyn Backend = &mut backend;
+            dyn_backend.modal_stack_handle() // stash, then the `&mut dyn Backend` borrow ends
+        };
+        // `backend` is usable again here — the handle didn't keep it borrowed.
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        stack_rc
+            .borrow_mut()
+            .push(WidgetId::new("test:popup"), QRect::new(0.0, 0.0, 10.0, 5.0));
+        assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
+    }
+
+    /// quadraui#699: same shared-state guarantee as
+    /// `tui_backend_modal_stack_handle_shares_state`, for
+    /// `drag_state_handle`.
+    #[test]
+    fn tui_backend_drag_state_handle_shares_state() {
+        let backend = TuiBackend::new();
+        let h1 = backend.drag_state_handle();
+        let h2 = backend.drag_state_handle();
+        h1.borrow_mut().begin(DragTarget::TextSelection {
+            region: WidgetId::new("r"),
+            anchor: Point::new(0.0, 0.0),
+        });
+        assert!(h2.borrow().is_active());
+    }
+
     /// #455 regression: `TuiBackend::draw_dialog` must mark the modal
     /// stack entry it paints, so `ModalStack::unpainted_ids` can catch a
     /// backend that registers a modal for hit-testing but never actually
@@ -3520,12 +3625,15 @@ mod tests {
         backend.clear_text_selection();
         assert!(backend.active_text_selection().is_none());
         // Drag state should also be cleared if it was a TextSelection.
-        backend.drag_state.begin(DragTarget::TextSelection {
-            region: WidgetId::new("r"),
-            anchor: Point::new(0.0, 0.0),
-        });
+        backend
+            .drag_state
+            .borrow_mut()
+            .begin(DragTarget::TextSelection {
+                region: WidgetId::new("r"),
+                anchor: Point::new(0.0, 0.0),
+            });
         backend.clear_text_selection();
-        assert!(!backend.drag_state.is_active());
+        assert!(!backend.drag_state.borrow().is_active());
     }
 
     #[test]

@@ -1559,6 +1559,12 @@ mod tests {
         fn drag_and_modal_mut(&mut self) -> (&mut crate::DragState, &mut crate::ModalStack) {
             unimplemented!()
         }
+        fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
+            unimplemented!()
+        }
+        fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
+            unimplemented!()
+        }
         fn services(&self) -> &dyn crate::backend::PlatformServices {
             unimplemented!()
         }

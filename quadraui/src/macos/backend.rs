@@ -31,7 +31,7 @@
 //! observer, #486) dispatches synchronously like mouse/keyboard events
 //! rather than going through the queue.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
@@ -111,8 +111,13 @@ use super::services::MacPlatformServices;
 ///   [`Self::set_current_font`].
 pub struct MacBackend {
     viewport: Viewport,
-    modal_stack: ModalStack,
-    drag_state: DragState,
+    /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
+    /// can hand back a handle that outlives any single `&mut self`
+    /// borrow — the shape `GtkBackend` and `TuiBackend` already use for
+    /// this (quadraui#699).
+    modal_stack: Rc<RefCell<ModalStack>>,
+    /// See `modal_stack`'s doc comment — same rationale.
+    drag_state: Rc<RefCell<DragState>>,
     accelerators: HashMap<AcceleratorId, Accelerator>,
     /// Parsed form of `accelerators`, kept in sync by
     /// `register_accelerator` / `unregister_accelerator`. Mirrors
@@ -330,8 +335,8 @@ impl MacBackend {
     pub fn new() -> Self {
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
-            modal_stack: ModalStack::new(),
-            drag_state: DragState::new(),
+            modal_stack: Rc::new(RefCell::new(ModalStack::new())),
+            drag_state: Rc::new(RefCell::new(DragState::new())),
             accelerators: HashMap::new(),
             parsed_accelerators: Vec::new(),
             double_click: DoubleClickDetector::with_radius(MAC_DOUBLE_CLICK_RADIUS),
@@ -569,7 +574,7 @@ impl Backend for MacBackend {
         self.focused_activity_bar = None;
         // #455: clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
-        self.modal_stack.reset_frame_paint();
+        self.modal_stack.borrow_mut().reset_frame_paint();
     }
 
     fn end_frame(&mut self) {
@@ -583,7 +588,7 @@ impl Backend for MacBackend {
         // invisible" defect class (vimcode#587) made detectable instead
         // of silently shipping.
         #[cfg(debug_assertions)]
-        for id in self.modal_stack.unpainted_ids() {
+        for id in self.modal_stack.borrow().unpainted_ids() {
             crate::diagnostics::emit(crate::modal_stack::ModalStack::unpainted_modal_message(&id));
         }
     }
@@ -659,11 +664,40 @@ impl Backend for MacBackend {
     }
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
-        &mut self.modal_stack
+        // `modal_stack` moved behind `Rc<RefCell<>>` for quadraui#699
+        // (so `modal_stack_handle` can hand back a handle that outlives
+        // this borrow) — same shape and same leak-based trait-signature
+        // bridge as `GtkBackend::modal_stack_mut` / `TuiBackend::modal_stack_mut`.
+        // See `GtkBackend::modal_stack_mut`'s SAFETY comment for the
+        // full rationale; it applies unchanged here.
+        //
+        // SAFETY: `Rc::as_ptr` returns a stable pointer to the
+        // `RefCell`'s inner. The trait's contract is that callers don't
+        // reentrantly call back into this backend while holding the
+        // returned `&mut ModalStack`.
+        unsafe {
+            let cell_ptr = Rc::as_ptr(&self.modal_stack);
+            &mut *(*cell_ptr).as_ptr()
+        }
     }
 
     fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        (&mut self.drag_state, &mut self.modal_stack)
+        // SAFETY: same leak-via-`Rc::as_ptr` rationale as
+        // `modal_stack_mut` above, applied to both fields — separate
+        // `Rc<RefCell<>>`s, so the two leaked derefs never alias.
+        unsafe {
+            let drag_ptr = Rc::as_ptr(&self.drag_state);
+            let modal_ptr = Rc::as_ptr(&self.modal_stack);
+            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
+        }
+    }
+
+    fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
+        self.modal_stack.clone()
+    }
+
+    fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
+        self.drag_state.clone()
     }
 
     fn services(&self) -> &dyn PlatformServices {
@@ -979,7 +1013,7 @@ impl Backend for MacBackend {
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
         // #455: see `modal_stack.rs`'s "Paint-consistency detection" docs —
         // records that this palette's surface was actually painted this frame.
-        self.modal_stack.mark_painted(&palette.id);
+        self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -1474,7 +1508,7 @@ impl Backend for MacBackend {
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)> {
         // #455: see draw_palette for why this happens before the CG borrow.
-        self.modal_stack.mark_painted(&menu.id);
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -1490,7 +1524,7 @@ impl Backend for MacBackend {
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
         // #455: see draw_palette for why this happens before the CG borrow.
-        self.modal_stack.mark_painted(&dialog.id);
+        self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -2325,6 +2359,62 @@ mod tests {
         assert_eq!(v.width, 800.0);
         assert_eq!(v.height, 600.0);
         assert_eq!(v.scale, 2.0);
+    }
+
+    /// quadraui#699: `MacBackend::modal_stack_handle` must hand back a
+    /// handle that shares state with the backend's own modal stack —
+    /// this is the whole point of the issue: a host holding only
+    /// `&mut dyn Backend` needs this to work identically on macOS to
+    /// how it already works on `GtkBackend`
+    /// (`gtk::backend::tests::gtk_backend_modal_stack_handle_shares_state`)
+    /// and `TuiBackend`
+    /// (`tui::backend::tests::tui_backend_modal_stack_handle_shares_state`).
+    #[test]
+    fn mac_backend_modal_stack_handle_shares_state() {
+        let backend = MacBackend::new();
+        let h1 = backend.modal_stack_handle();
+        let h2 = backend.modal_stack_handle();
+        h1.borrow_mut().push(
+            crate::types::WidgetId::new("test:popup"),
+            crate::event::Rect::new(0.0, 0.0, 10.0, 5.0),
+        );
+        assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// quadraui#699: the stash-then-reuse pattern this issue exists to
+    /// unblock — obtain the handle through `&mut dyn Backend`, drop
+    /// that borrow, and use the handle afterwards from an unrelated
+    /// borrow scope. Mirrors
+    /// `tui::backend::tests::modal_stack_handle_outlives_the_backend_borrow_through_the_trait`.
+    #[test]
+    fn modal_stack_handle_outlives_the_backend_borrow_through_the_trait() {
+        let mut backend = MacBackend::new();
+        let stack_rc = {
+            let dyn_backend: &mut dyn Backend = &mut backend;
+            dyn_backend.modal_stack_handle()
+        };
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        stack_rc.borrow_mut().push(
+            crate::types::WidgetId::new("test:popup"),
+            crate::event::Rect::new(0.0, 0.0, 10.0, 5.0),
+        );
+        assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
+    }
+
+    /// quadraui#699: same shared-state guarantee as
+    /// `mac_backend_modal_stack_handle_shares_state`, for
+    /// `drag_state_handle`.
+    #[test]
+    fn mac_backend_drag_state_handle_shares_state() {
+        let backend = MacBackend::new();
+        let h1 = backend.drag_state_handle();
+        let h2 = backend.drag_state_handle();
+        h1.borrow_mut()
+            .begin(crate::dispatch::DragTarget::TextSelection {
+                region: crate::types::WidgetId::new("r"),
+                anchor: Point::new(0.0, 0.0),
+            });
+        assert!(h2.borrow().is_active());
     }
 
     #[test]
