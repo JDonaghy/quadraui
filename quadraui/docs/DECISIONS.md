@@ -1592,3 +1592,27 @@ have GitHub write access, coordinator: please open against #481)
    (`quadraui/tests/conformance/c2.rs`) — `DoubleClick`, `Accelerator`,
    `ClipboardPaste`, `TextCopied` still need their own per-backend
    proof-of-emission rows.
+5. Give every `gtk_*` example an explicit `WindowClose` opinion.
+   Review caught a real interaction this PR's own tests didn't: the
+   veto default means an app with *no* `WindowClose` arm — the
+   unhandled catch-all, true of every `examples/common/*.rs` file
+   except `terminal_app.rs` (fixed in the same PR that added this
+   follow-up) — silently ignores the native "×" button, since its
+   catch-all's `Reaction::Continue` is exactly what the veto logic
+   treats as "don't close." Two internal call sites that used to hit
+   the same trap (`schedule_smoke_check`'s forced timeout-close and
+   `GtkSink::request_exit`, the target of every *other*
+   `Reaction::Exit`) are already fixed, by using `window.destroy()`
+   instead of `window.close()` so neither re-enters the
+   `close-request` veto handler — so `gtk_smoke.sh` no longer hangs
+   and a keyboard-driven quit (e.g. "press q") still actually quits.
+   What's still open is the remaining ~49 examples' native "×" button:
+   until each gets its own `WindowClose => Reaction::Exit` arm (or the
+   veto default is reconsidered — rejected here to keep GTK consistent
+   with `win/run.rs`'s pre-existing, already-shipped `WM_CLOSE`
+   contract), clicking "×" on any of them silently does nothing. Until
+   this follow-up lands, `docs/BACKEND.md`'s emission-matrix "required:
+   GTK ✅" cell for `WindowClose` is proven only at the
+   `dispatch_event`-funnel level (`gtk::run::window_close_tests`) and
+   for the one updated example — not end-to-end for the example set as
+   a whole.

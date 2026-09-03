@@ -543,6 +543,11 @@ fn c2_event_parity() {
     table.push('\n');
 
     let mut gaps: Vec<String> = Vec::new();
+    // Placeholder rows (quadraui#501 review — `c2::CaseOutcome::placeholder`)
+    // always report `pass`, but aren't backed by a real assertion at this
+    // tier; collected here so the table can foot-note them instead of
+    // letting them read identically to a verified `pass`.
+    let mut placeholders: Vec<String> = Vec::new();
     for row in &all_rows {
         table.push_str(&format!("{row:<row_w$}"));
         for col in &columns {
@@ -551,12 +556,27 @@ fn c2_event_parity() {
                 continue;
             }
             let outcome = (col.case)(row);
-            table.push_str(&format!("  {:<6}", if outcome.pass { "pass" } else { "FAIL" }));
+            let cell = if !outcome.pass {
+                "FAIL"
+            } else if outcome.placeholder {
+                "pass*"
+            } else {
+                "pass"
+            };
+            table.push_str(&format!("  {cell:<6}"));
             if !outcome.pass {
                 gaps.push(format!("{}/{row}: {}", col.name, outcome.detail));
+            } else if outcome.placeholder {
+                placeholders.push(format!("{}/{row}: {}", col.name, outcome.detail));
             }
         }
         table.push('\n');
+    }
+    if !placeholders.is_empty() {
+        table.push_str("* placeholder — not a live assertion at this tier:\n");
+        for p in &placeholders {
+            table.push_str(&format!("  {p}\n"));
+        }
     }
     println!("{table}");
 
