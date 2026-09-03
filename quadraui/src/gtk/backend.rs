@@ -356,6 +356,30 @@ pub(crate) struct GtkTextSelection {
     pub focus: Point,
 }
 
+/// Adapts a live `pango::Layout` (falling back to `char_w` when no
+/// Pango context is available, e.g. in headless tests) to the shared
+/// [`crate::primitives::layout_metrics::TextMeasure`] trait so
+/// `form_field_measure` never has to name a Pango type — mirrors
+/// `macos::form::CtFontMeasure` / `win::form::DWriteMeasure`, which
+/// exist for exactly this reason. Same width formula as
+/// `GtkBackend::pango_str_width`.
+struct PangoTextMeasure<'a> {
+    layout: &'a Option<pango::Layout>,
+    char_w: f32,
+}
+
+impl crate::primitives::layout_metrics::TextMeasure for PangoTextMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        if let Some(pl) = self.layout {
+            pl.set_text(text);
+            let (w, _) = pl.pixel_size();
+            w as f32
+        } else {
+            (text.chars().count() as f32 * self.char_w).ceil() + 2.0
+        }
+    }
+}
+
 impl GtkBackend {
     /// Construct a fresh `GtkBackend`. The viewport defaults to
     /// (0, 0, 1.0); the App component overwrites it before the first
@@ -656,18 +680,6 @@ impl GtkBackend {
     /// Returns `None` if no Pango context has been stored.
     pub fn create_stable_pango_layout(&self) -> Option<pango::Layout> {
         self.pango_ctx.as_ref().map(pango::Layout::new)
-    }
-
-    /// Measure a `StyledText` label width in pixels using Pango if
-    /// available, falling back to `visible_width * char_w`.
-    fn pango_text_width(
-        &self,
-        pango_layout: &Option<pango::Layout>,
-        text: &crate::types::StyledText,
-        char_w: f32,
-    ) -> f32 {
-        let plain: String = text.spans.iter().map(|s| s.text.as_str()).collect();
-        self.pango_str_width(pango_layout, &plain, char_w)
     }
 
     /// Measure a plain string width in pixels using Pango if
@@ -2809,116 +2821,29 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
     }
 
-    // NOT migrated to `primitives::layout_metrics::form_field_measure`
-    // (#499): this file is fenced by concurrent #683 work, so per
-    // PRIMITIVE_RULES.md's "Shared pixel-layout math" rule ("leave the
-    // blocked one's duplication in place with a comment pointing at
-    // the tracking issue"), the duplication below is intentional and
-    // temporary. macOS's `mac_form_layout` already delegates to the
-    // shared fn; migrate this one once #683 lands. Tracking: #499.
+    /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
+    /// (#499) — the shared per-field-kind measurer `macos::form::mac_form_layout`
+    /// and `win::form::win_form_layout` already use. Migrated off the
+    /// inline duplicate once #683 (the concurrent work that had fenced
+    /// this file) landed; see issue #710 for why the migration matters:
+    /// the old inline measurer sized `FieldKind::TextArea` as
+    /// `row_h * visible_rows` while `gtk::form::draw_form` only ever
+    /// painted one row, so clicks on the rows below a `TextArea` hit
+    /// the `TextArea`'s hit region instead of the field actually
+    /// painted there. The shared fn deliberately does not special-case
+    /// `TextArea` (see its doc comment), so it now measures one row —
+    /// matching what GTK paints.
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
-        let row_h = (self.current_line_height * 1.4).round() as f32;
+        let row_h = crate::primitives::layout_metrics::form_row_height(self.current_line_height);
         let char_w = self.current_char_width as f32;
-        let gap = 8.0_f32;
-
         let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
+        };
 
         form.layout(rect.width, rect.height, |i| {
-            let field = &form.fields[i];
-            match &field.kind {
-                crate::primitives::form::FieldKind::ToggleGroup { toggles } => {
-                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
-                    let start_x = 6.0 + label_w + 12.0;
-                    let items = toggles
-                        .iter()
-                        .map(|t| crate::primitives::form::FormItemMeasure {
-                            id: t.id.clone(),
-                            width: self.pango_str_width(&pango_layout, &t.label, char_w),
-                        })
-                        .collect();
-                    crate::primitives::form::FormFieldMeasure::with_items(
-                        row_h, start_x, gap, items,
-                    )
-                }
-                crate::primitives::form::FieldKind::ButtonRow { buttons } => {
-                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
-                    let start_x = 6.0 + label_w + 12.0;
-                    let items = buttons
-                        .iter()
-                        .map(|b| {
-                            let bracketed = format!("[{}]", b.label);
-                            crate::primitives::form::FormItemMeasure {
-                                id: b.id.clone(),
-                                width: self.pango_str_width(&pango_layout, &bracketed, char_w),
-                            }
-                        })
-                        .collect();
-                    crate::primitives::form::FormFieldMeasure::with_items(
-                        row_h, start_x, gap, items,
-                    )
-                }
-                crate::primitives::form::FieldKind::SegmentedControl { options, .. } => {
-                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
-                    let start_x = 6.0 + label_w + 12.0;
-                    let items = options
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, opt)| {
-                            let bracketed = format!("[{opt}]");
-                            crate::primitives::form::FormItemMeasure {
-                                id: crate::WidgetId::new(format!(
-                                    "{}__seg_{idx}",
-                                    field.id.as_str()
-                                )),
-                                width: self.pango_str_width(&pango_layout, &bracketed, char_w),
-                            }
-                        })
-                        .collect();
-                    crate::primitives::form::FormFieldMeasure::with_items(
-                        row_h, start_x, 0.0, items,
-                    )
-                }
-                crate::primitives::form::FieldKind::TextArea { visible_rows, .. } => {
-                    crate::primitives::form::FormFieldMeasure::new(row_h * *visible_rows as f32)
-                }
-                crate::primitives::form::FieldKind::Toolbar(toolbar) => {
-                    // Mirror the TUI / macOS measurer: per-button FormItemMeasures
-                    // so FormLayout::hit_test can resolve a click to the button's
-                    // action id. Same `start_x` origin as ToggleGroup / ButtonRow.
-                    // gap=0: toolbar items pack edge-to-edge (same as Toolbar::layout).
-                    let label_w = self.pango_text_width(&pango_layout, &field.label, char_w);
-                    let start_x = if label_w > 0.0 {
-                        6.0 + label_w + 12.0
-                    } else {
-                        6.0
-                    };
-                    let pango_ref = pango_layout.as_ref();
-                    let items = toolbar
-                        .buttons
-                        .iter()
-                        .map(|btn| {
-                            let id = match btn {
-                                crate::primitives::toolbar::ToolbarButton::Action {
-                                    id, ..
-                                } => id.clone(),
-                                _ => field.id.clone(),
-                            };
-                            crate::primitives::form::FormItemMeasure {
-                                id,
-                                width: crate::gtk::toolbar::measure_item(
-                                    pango_ref,
-                                    char_w as f64,
-                                    btn,
-                                ),
-                            }
-                        })
-                        .collect();
-                    crate::primitives::form::FormFieldMeasure::with_items(
-                        row_h, start_x, 0.0, items,
-                    )
-                }
-                _ => crate::primitives::form::FormFieldMeasure::new(row_h),
-            }
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
         })
     }
 
@@ -4140,6 +4065,86 @@ mod tests {
             Some("terminal.toggle_maximize"),
             "Ctrl+Shift+T (with uppercase T) should match terminal.toggle_maximize, got {:?}",
             max_upper
+        );
+    }
+
+    /// Regression for issue #710: a `FieldKind::TextArea` must measure
+    /// exactly one row — matching what `gtk::form::draw_form` actually
+    /// paints — so a click on the field painted immediately below it
+    /// hits that field, not the `TextArea`'s hit region.
+    ///
+    /// Before the fix, `GtkBackend::form_layout` had its own inline
+    /// measurer sizing `TextArea` as `row_h * visible_rows`, while the
+    /// painter only ever advanced one `row_h` per field regardless of
+    /// kind. The `visible_rows - 1` rows the layout believed belonged
+    /// to the `TextArea` were actually painted with the *following*
+    /// field, but still hit-tested to the `TextArea`.
+    #[test]
+    fn gtk_form_layout_textarea_does_not_swallow_the_next_fields_row() {
+        use crate::primitives::form::{FieldKind, Form, FormField, FormHit};
+        use crate::types::StyledText;
+
+        let mut backend = GtkBackend::new();
+        // No Pango context — fallback char-width path is exercised.
+        backend.current_char_width = 8.0;
+        backend.current_line_height = 20.0;
+
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("notes"),
+                    label: StyledText::plain("Notes"),
+                    kind: FieldKind::TextArea {
+                        value: "line one".into(),
+                        placeholder: String::new(),
+                        cursor: None,
+                        visible_rows: 4,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("enabled"),
+                    label: StyledText::plain("Enabled"),
+                    kind: FieldKind::Toggle { value: true },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+            ],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+
+        let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
+        let layout = backend.form_layout(rect, &form);
+
+        assert_eq!(
+            layout.visible_fields.len(),
+            2,
+            "both fields should be visible"
+        );
+        let notes = &layout.visible_fields[0];
+        let enabled = &layout.visible_fields[1];
+
+        let row_h = crate::primitives::layout_metrics::form_row_height(backend.current_line_height);
+        assert_eq!(
+            notes.bounds.height, row_h,
+            "TextArea must measure one row_h, matching gtk::form::draw_form's single-row paint"
+        );
+
+        // A click at the centre of the field painted right below the
+        // TextArea must hit that field, not the TextArea — pre-fix this
+        // resolved to "notes" for the whole `visible_rows * row_h` band.
+        let cx = enabled.bounds.x + enabled.bounds.width * 0.5;
+        let cy = enabled.bounds.y + enabled.bounds.height * 0.5;
+        assert_eq!(
+            layout.hit_test(cx, cy),
+            FormHit::Field(WidgetId::new("enabled")),
+            "click below the TextArea should hit the field actually painted there"
         );
     }
 
