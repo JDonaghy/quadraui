@@ -875,7 +875,13 @@ pub trait Backend {
     /// for the same geometry without repainting). `draw_list` and this
     /// method route through the same backend-internal resolver
     /// (`tui_list_layout` / `gtk_list_layout` / `win_list_layout` /
-    /// `mac_list_layout`), so paint and no-paint can't drift apart.
+    /// `mac_list_layout`), so paint and no-paint can't drift apart. Every
+    /// pixel backend's resolver shares its h-scrollbar row reservation
+    /// via `primitives::layout_metrics::list_layout` (#712) — before
+    /// that fix, `mac_list_layout` had no way to compute the reservation
+    /// at all and `macos::list::draw_list` recomputed a second, reduced
+    /// layout only at paint time, so this method's claim didn't actually
+    /// hold on macOS whenever `max_content_width` forced a scrollbar.
     ///
     /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
     /// at `rect`'s top-left; does **not** account for

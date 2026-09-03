@@ -5408,6 +5408,67 @@ mod tests {
         );
     }
 
+    /// #712: the h-scrollbar row reservation must actually shrink the
+    /// returned layout — not just avoid crashing — and `Backend::list_layout`
+    /// must still equal the exact helper `draw_list` uses internally once
+    /// that reservation is active. Companion to
+    /// `gtk_backend_list_layout_ignores_rect_origin_and_matches_helper`
+    /// above but with `max_content_width` forcing a scrollbar, so this
+    /// specifically exercises the row-reservation math GTK now shares
+    /// with macOS via `primitives::layout_metrics::list_layout` — a
+    /// regression here would mean the two backends drifted apart again.
+    #[test]
+    fn gtk_backend_list_layout_reserves_hscrollbar_row_and_matches_helper() {
+        let list = ListView {
+            id: WidgetId::new("test:list"),
+            title: None,
+            items: (0..12)
+                .map(|i| crate::primitives::list::ListItem {
+                    text: crate::types::StyledText::plain(format!("row {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: crate::types::Decoration::Normal,
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            // Way past any plausible visible width at the default 8px
+            // char width, so this reliably forces the scrollbar.
+            max_content_width: Some(1000),
+            show_v_scrollbar: false,
+        };
+        let backend = GtkBackend::new();
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+
+        let via_backend = Backend::list_layout(&backend, rect, &list);
+        let via_helper = crate::gtk::gtk_list_layout(
+            200.0,
+            100.0,
+            &list,
+            backend.current_line_height,
+            backend.current_char_width,
+        );
+        assert_eq!(
+            via_backend, via_helper,
+            "list_layout must equal the exact helper draw_list uses internally, \
+             even when an h-scrollbar row is reserved"
+        );
+
+        // Sanity: the reservation actually happened — content stops
+        // before filling the full 100px viewport height.
+        let last = via_backend.visible_items.last().expect("has items");
+        assert!(
+            last.bounds.y + last.bounds.height <= 100.0 - backend.current_line_height as f32,
+            "h-scrollbar row must be reserved: last row bottom = {}, \
+             viewport height = 100, line_height = {}",
+            last.bounds.y + last.bounds.height,
+            backend.current_line_height,
+        );
+    }
+
     /// Issue #506: `board_layout` is documented **ABSOLUTE** — bounds are
     /// shifted by `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s
     /// contract. Also proves `board_layout` and `draw_board` agree

@@ -23,6 +23,7 @@
 
 use crate::event::Rect as QRect;
 use crate::primitives::form::{FieldKind, FormField, FormFieldMeasure, FormItemMeasure};
+use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
 use crate::primitives::multi_section_view::{
     LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
@@ -87,6 +88,66 @@ pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLa
             height: row_h,
             chevron_end_x,
         }
+    })
+}
+
+// ── List ─────────────────────────────────────────────────────────────
+
+/// Compute the pixel-unit layout for a [`ListView`], including the
+/// horizontal-scrollbar row reservation (#712). Every pixel backend
+/// (`gtk_list_layout`, `mac_list_layout`, and any future Direct2D
+/// equivalent) calls this one function so [`crate::Backend::list_layout`]
+/// and the layout a backend actually paints can never disagree about
+/// whether a row is reserved for the h-scrollbar.
+///
+/// Before #712, `gtk_list_layout` had this reservation inline and
+/// `mac_list_layout` had none at all — `macos::list::draw_list`
+/// recomputed a *second*, reduced-height layout only when painting, so
+/// `MacBackend::list_layout` was one row taller than what macOS
+/// actually painted whenever `max_content_width` forced a scrollbar.
+/// This function is that reservation logic, generalised over
+/// `border_inset` so both backends share one implementation instead of
+/// two copies that can drift.
+///
+/// `char_width` is used only for the h-scrollbar-overflow threshold
+/// check (`ListView::max_content_width` is in character columns); pass
+/// [`crate::Backend::char_width`]'s cached value when no live text
+/// measurer is available — the same approximation
+/// `GtkBackend::list_hscrollbar` / `MacBackend::list_hscrollbar` already
+/// use for this exact check.
+///
+/// `border_inset` is the pixel border a backend reserves around a
+/// `bordered` list: `1.0` for GTK's `bordered` lists, `0.0` for
+/// backends — like macOS today — that don't yet paint a list border
+/// (see `macos::list`'s module doc "Scope omissions").
+///
+/// Coordinate frame: **LOCAL** — relative to `(0, 0)`, matching every
+/// other layout_metrics fn. Windows does not yet reserve an
+/// h-scrollbar row at all (`win_list_layout` has no `char_width`
+/// parameter and no overflow check) — a real gap, not drift, tracked
+/// separately from this fix; see `win::list`'s module doc.
+pub fn list_layout(
+    list: &ListView,
+    w: f64,
+    h: f64,
+    line_height: f64,
+    char_width: f64,
+    border_inset: f64,
+) -> ListViewLayout {
+    let visible_px = (w - border_inset * 2.0).max(0.0);
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_width > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+    let title_h = if list.title.is_some() {
+        line_height as f32
+    } else {
+        0.0
+    };
+    let layout_w = (w - border_inset * 2.0) as f32;
+    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
+    list.layout(layout_w, layout_h, title_h, |_| {
+        ListItemMeasure::new(line_height as f32)
     })
 }
 
@@ -601,5 +662,104 @@ mod tests {
                 m.height,
             );
         }
+    }
+
+    // ── List (#712) ──────────────────────────────────────────────────
+
+    fn list_with_max_content_width(n_items: usize, max_content_width: Option<usize>) -> ListView {
+        use crate::primitives::list::ListItem;
+        use crate::types::StyledText;
+
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..n_items)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("row {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::Normal,
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width,
+            show_v_scrollbar: false,
+        }
+    }
+
+    /// The single reservation rule #712 exists to unify: when
+    /// `max_content_width` (in chars) exceeds the visible width (chars ×
+    /// `char_width`, in pixels), the bottom `line_height` row is reserved
+    /// for the h-scrollbar and is not available to items — one fewer row
+    /// fits than when no overflow is signalled. Every pixel backend
+    /// shares this exact function, so proving it here proves it for all
+    /// of them at once.
+    #[test]
+    fn list_layout_reserves_hscrollbar_row_when_content_overflows() {
+        const LINE_HEIGHT: f64 = 10.0;
+        const CHAR_WIDTH: f64 = 8.0;
+        const W: f64 = 200.0; // 25 chars visible at CHAR_WIDTH.
+        const H: f64 = 100.0; // 10 rows at LINE_HEIGHT with no reservation.
+
+        let overflowing = list_with_max_content_width(12, Some(1000));
+        let fitting = list_with_max_content_width(12, None);
+
+        let with_reservation = list_layout(&overflowing, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
+        let without_reservation = list_layout(&fitting, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
+
+        assert_eq!(
+            without_reservation.visible_items.len(),
+            10,
+            "sanity: 100px / 10px rows == 10 full rows with no reservation"
+        );
+        assert_eq!(
+            with_reservation.visible_items.len(),
+            9,
+            "overflowing max_content_width must reserve exactly one \
+             line_height row for the h-scrollbar, leaving 9 rows"
+        );
+
+        let last = with_reservation.visible_items.last().unwrap();
+        assert!(
+            (last.bounds.y + last.bounds.height) as f64 <= H - LINE_HEIGHT,
+            "reserved layout's content must stop at or before the \
+             scrollbar row's top edge"
+        );
+    }
+
+    #[test]
+    fn list_layout_border_inset_reduces_visible_width_for_overflow_check() {
+        // A `max_content_width` that only overflows once the border
+        // inset narrows the visible width must still trigger the
+        // reservation — mirrors GTK's `bordered` lists.
+        const LINE_HEIGHT: f64 = 10.0;
+        const CHAR_WIDTH: f64 = 8.0;
+        const W: f64 = 200.0;
+        const H: f64 = 100.0;
+        const BORDER_INSET: f64 = 1.0;
+
+        // 24 chars * 8px = 192px, which fits in the full 200px width but
+        // not in the 198px width left after a 1px border inset on each
+        // side... so pick a value that straddles exactly that gap.
+        let list = list_with_max_content_width(12, Some(25)); // 25*8=200 > 198
+
+        let with_border = list_layout(&list, W, H, LINE_HEIGHT, CHAR_WIDTH, BORDER_INSET);
+        let without_border = list_layout(&list, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
+
+        assert_eq!(
+            without_border.visible_items.len(),
+            10,
+            "200px content width == 200px visible width: no overflow, no reservation"
+        );
+        assert_eq!(
+            with_border.visible_items.len(),
+            9,
+            "200px content width > 198px visible width once border-inset \
+             narrows it: overflow, reservation kicks in"
+        );
     }
 }

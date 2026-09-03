@@ -952,6 +952,7 @@ impl Backend for MacBackend {
             rect.width as f64,
             rect.height as f64,
             self.current_line_height,
+            self.current_char_width,
         )
     }
     fn draw_form(&mut self, rect: Rect, form: &Form) {
