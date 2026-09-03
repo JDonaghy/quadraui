@@ -8,7 +8,10 @@
 //!
 //! Mirrors `quadraui::gtk::run` and `quadraui::tui::run` — consumers
 //! call `quadraui::win::run(MyApp::new())` and the same `AppLogic`
-//! impl drives every backend.
+//! impl drives every backend. [`run_with`] takes a [`RunConfig`] for the
+//! one value a `ShellConfig`-driven consumer needs that [`run`] hardcodes
+//! (the window title) — see `win::shell_runner::run_with_shell` (#707),
+//! mirroring `gtk::run::RunConfig`.
 //!
 //! # Scope
 //!
@@ -57,6 +60,46 @@
 //! one for whatever app type `run::<A>` was called with.
 
 use crate::runner::AppLogic;
+
+/// Configuration for [`run_with`]: the window title [`run`] hardcodes to
+/// a generic default (`"quadraui"`).
+///
+/// A `ShellConfig`-driven consumer (`win::shell_runner::run_with_shell`)
+/// needs its own window title to reach the real Win32 window instead of
+/// always showing `"quadraui"` — mirrors `gtk::run::RunConfig`, minus the
+/// GTK-specific `app_id`/`icon_name` fields Win32 has no equivalent
+/// concept for.
+///
+/// Deliberately *not* `#[cfg(target_os = "windows")]`: it must type-check
+/// under a plain `cargo check --features win` on Linux, since
+/// `win::shell_runner::run_with_shell` constructs one unconditionally
+/// (same "compiles everywhere, only *works* on Windows" posture as the
+/// rest of `src/win/` — see `Cargo.toml`'s `win`-example comments).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunConfig {
+    /// Window title shown by the title bar, taskbar, and Alt-Tab switcher.
+    pub title: String,
+}
+
+impl RunConfig {
+    /// Build a config with the given window title.
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+        }
+    }
+}
+
+impl Default for RunConfig {
+    /// Mirrors [`run`]'s previously-hardcoded window title, so
+    /// `run_with(app, RunConfig::default())` and `run(app)` behave
+    /// identically.
+    fn default() -> Self {
+        Self {
+            title: "quadraui".to_string(),
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod win32 {
@@ -112,7 +155,6 @@ mod win32 {
     /// module builds from a Rust string does the same, since Win32 wide
     /// strings have no length field.
     const CLASS_NAME: &str = "QuadrauiWin32WindowClass\0";
-    const WINDOW_TITLE: &str = "quadraui\0";
 
     /// Seed window size in DIPs, matching the GTK runner's
     /// `DEFAULT_WINDOW_WIDTH`/`HEIGHT`. `WM_SIZE` (fired synchronously
@@ -166,7 +208,10 @@ mod win32 {
         unsafe { GetKeyState(vk.0 as i32) < 0 }
     }
 
-    pub(super) fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+    pub(super) fn run<A: AppLogic + 'static>(
+        app: A,
+        config: super::RunConfig,
+    ) -> std::process::ExitCode {
         // #19 acceptance: "DPI scale factor plumbed to Viewport::scale".
         // Without per-monitor-v2 awareness, Windows silently bitmap-scales
         // the whole window on HiDPI displays and `GetDpiForWindow` always
@@ -181,7 +226,7 @@ mod win32 {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
 
-        match unsafe { run_inner(app) } {
+        match unsafe { run_inner(app, &config.title) } {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(_) => {
                 // `Backend`'s frame/window lifecycle has no error
@@ -201,11 +246,19 @@ mod win32 {
     /// below assumes it's only ever invoked by `DispatchMessageW` on
     /// this same thread (no synchronization guards `RunState`'s
     /// `RefCell`).
-    unsafe fn run_inner<A: AppLogic + 'static>(mut app: A) -> windows::core::Result<()> {
+    unsafe fn run_inner<A: AppLogic + 'static>(
+        mut app: A,
+        title: &str,
+    ) -> windows::core::Result<()> {
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null())?.into() };
 
         let class_name = wide(CLASS_NAME);
-        let window_title = wide(WINDOW_TITLE);
+        // `wide()` expects an already-`\0`-terminated string (see its doc
+        // comment) — `title` (from `RunConfig::title`) carries no
+        // terminator of its own, unlike the `\0`-suffixed string literals
+        // this module builds everywhere else.
+        let title_nul = format!("{title}\0");
+        let window_title = wide(&title_nul);
 
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -632,7 +685,15 @@ mod win32 {
 
 #[cfg(target_os = "windows")]
 pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
-    win32::run(app)
+    win32::run(app, RunConfig::default())
+}
+
+/// Like [`run`], but with a custom window title via [`RunConfig`] instead
+/// of the hardcoded `"quadraui"` default. `run(app)` is equivalent to
+/// `run_with(app, RunConfig::default())`.
+#[cfg(target_os = "windows")]
+pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
+    win32::run(app, config)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -642,4 +703,47 @@ pub fn run<A: AppLogic + 'static>(_app: A) -> std::process::ExitCode {
          Direct2D render target, translate WM_* → UiEvent, \
          dispatch to app.handle(), redraw via app.render()"
     )
+}
+
+/// Like [`run`], but with a custom window title via [`RunConfig`] — see
+/// [`run`]'s non-Windows stub for why this is `todo!()` off Windows too.
+#[cfg(not(target_os = "windows"))]
+pub fn run_with<A: AppLogic + 'static>(_app: A, _config: RunConfig) -> std::process::ExitCode {
+    todo!(
+        "Win32 message loop: RegisterClassEx, CreateWindowEx, \
+         Direct2D render target, translate WM_* → UiEvent, \
+         dispatch to app.handle(), redraw via app.render() — with a \
+         custom window title from RunConfig"
+    )
+}
+
+// `RunConfig` itself is deliberately not `target_os = "windows"`-gated
+// (see its doc comment), so these run on every host — including plain
+// `cargo test -p quadraui --features win` on Linux, same as the rest of
+// this crate's `win` compile/test gate. Mirrors `gtk::run`'s
+// `run_config_tests` module.
+#[cfg(test)]
+mod tests {
+    use super::RunConfig;
+
+    #[test]
+    fn new_sets_the_title() {
+        let config = RunConfig::new("kubeui");
+        assert_eq!(config.title, "kubeui");
+    }
+
+    #[test]
+    fn new_accepts_owned_and_borrowed_strings() {
+        assert_eq!(RunConfig::new("borrowed").title, "borrowed");
+        assert_eq!(RunConfig::new(String::from("owned")).title, "owned");
+    }
+
+    #[test]
+    fn default_matches_runs_previously_hardcoded_title() {
+        // `run(app)` used to always show a `"quadraui\0"`-derived window
+        // title; `RunConfig::default()` must reproduce that exact value
+        // so `run(app)` staying `run_with(app, RunConfig::default())`
+        // (see both functions above) doesn't change existing behaviour.
+        assert_eq!(RunConfig::default().title, "quadraui");
+    }
 }

@@ -108,6 +108,13 @@ pub mod run;
 #[cfg(target_os = "windows")]
 mod scrollbar;
 pub mod services;
+/// `run_with_shell()`: composes a [`crate::ShellApp`] into an `AppShell`
+/// and drives it through the Win32 message loop (#707) — the Windows
+/// analogue of `gtk::shell_runner` / `tui::shell_runner` /
+/// `macos::shell_runner`. `pub` (not target-gated) for the same
+/// "compiles everywhere, only *works* on Windows" reason as `run`/`mod
+/// run` above — see this module's own doc.
+pub mod shell_runner;
 /// Direct2D / DirectWrite rasteriser for [`crate::Spinner`] (#29).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -206,7 +213,7 @@ pub use panel::{draw_panel, win_panel_layout, ACTION_BUTTON_DIP};
 pub use progress::{draw_progress, win_progress_layout, CANCEL_WIDTH_DIP};
 #[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
-pub use run::run;
+pub use run::{run, run_with, RunConfig};
 #[cfg(target_os = "windows")]
 pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
