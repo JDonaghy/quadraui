@@ -1011,3 +1011,621 @@ mod hit_test_diff_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_bar_roundtrip_serde() {
+        let bar = TabBar {
+            id: WidgetId::new("group-0-tabs"),
+            tabs: vec![
+                TabItem {
+                    label: " 1: main.rs ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                TabItem {
+                    label: " 2: lib.rs ".to_string(),
+                    is_active: false,
+                    is_dirty: true,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                TabItem {
+                    label: " 3: render.rs ".to_string(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: true,
+                    is_closable: true,
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: vec![
+                TabBarSegment {
+                    text: "2 of 5 ".to_string(),
+                    width_cells: 7,
+                    id: None,
+                    is_active: false,
+                },
+                TabBarSegment {
+                    text: " ← ".to_string(),
+                    width_cells: 3,
+                    id: Some(WidgetId::new("tab:diff_prev")),
+                    is_active: false,
+                },
+                TabBarSegment {
+                    text: " … ".to_string(),
+                    width_cells: 3,
+                    id: Some(WidgetId::new("tab:action_menu")),
+                    is_active: false,
+                },
+            ],
+            active_accent: Some(Color::rgb(100, 200, 255)),
+            show_tab_close: true,
+            compact: false,
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: TabBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    #[test]
+    fn tab_bar_fit_active_scroll_offset() {
+        // 10 tabs, each measures 100 units. Width 250 fits 2 full tabs.
+        let measure = |_i: usize| 100usize;
+
+        // Active 0 fits at offset 0.
+        assert_eq!(TabBar::fit_active_scroll_offset(0, 10, 250, measure), 0);
+        // Active 1 fits at offset 0 (tabs 0,1 fit in 250).
+        assert_eq!(TabBar::fit_active_scroll_offset(1, 10, 250, measure), 0);
+        // Active 2 doesn't fit at offset 0; walk back from 2 → tabs 1,2 fit in 250 → offset 1.
+        assert_eq!(TabBar::fit_active_scroll_offset(2, 10, 250, measure), 1);
+        // Active 9 (last) → tabs 8,9 fit → offset 8.
+        assert_eq!(TabBar::fit_active_scroll_offset(9, 10, 250, measure), 8);
+
+        // Variable widths: GTK-like scenario where each tab has ~50 units of
+        // padding overhead the engine's char-based estimate would miss.
+        let varied = [60, 80, 70, 90, 100, 50, 120, 75, 65, 85];
+        let measure_varied = |i: usize| varied[i];
+        // Width 200, active 9 (last). Walk back: 85+65=150, +75=225 > 200 → break.
+        // best_offset stays at 8 (only tabs 8,9 fit).
+        assert_eq!(
+            TabBar::fit_active_scroll_offset(9, 10, 200, measure_varied),
+            8
+        );
+
+        // Edge case: tab wider than width → keep that tab as the only visible one.
+        // Active 5 (width 50) at width 30. Walk back from 5: tw=50 > 30 → break.
+        // best_offset stays at 5 (initial). Renders tab 5 alone, clipped on right.
+        assert_eq!(
+            TabBar::fit_active_scroll_offset(5, 10, 30, measure_varied),
+            5
+        );
+
+        // Edge cases: empty + out-of-bounds active.
+        assert_eq!(TabBar::fit_active_scroll_offset(0, 0, 100, measure), 0);
+        assert_eq!(TabBar::fit_active_scroll_offset(99, 5, 100, measure), 0);
+    }
+
+    // ── D6 layout API tests (per-primitive Layout + hit_test) ────────────
+    //
+    // These exercise the unit-agnostic contract: a TUI-style measurer
+    // (char counts, integer-valued f32) and a pixel-style measurer
+    // (fractional f32 from proportional-font metrics) must both produce
+    // consistent layouts. The cross-backend correctness of this
+    // abstraction is the whole point — see north-star goal in PLAN.md.
+
+    fn make_tab(label: &str, is_active: bool) -> TabItem {
+        TabItem {
+            label: label.to_string(),
+            is_active,
+            is_dirty: false,
+            is_preview: false,
+            is_closable: true,
+        }
+    }
+
+    fn make_bar(tabs: Vec<TabItem>) -> TabBar {
+        TabBar {
+            id: WidgetId::new("t"),
+            tabs,
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    #[test]
+    fn tab_bar_layout_empty() {
+        let bar = make_bar(vec![]);
+        let layout = bar.layout(
+            100.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.visible_tabs.len(), 0);
+        assert_eq!(layout.visible_segments.len(), 0);
+        assert!(layout.scroll_left.is_none());
+        assert!(layout.scroll_right.is_none());
+        assert_eq!(layout.hit_regions.len(), 0);
+        assert_eq!(layout.resolved_scroll_offset, 0);
+        assert_eq!(layout.hit_test(5.0, 1.0), TabBarHit::Empty);
+    }
+
+    #[test]
+    fn tab_bar_layout_single_tab_fits() {
+        let bar = make_bar(vec![make_tab("main.rs", true)]);
+        // Width 20; tab is 10 wide; plenty of room; no scroll arrows needed.
+        let layout = bar.layout(
+            20.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 2.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.visible_tabs.len(), 1);
+        assert_eq!(layout.visible_tabs[0].tab_idx, 0);
+        assert_eq!(layout.visible_tabs[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_tabs[0].bounds.width, 10.0);
+        assert!(layout.visible_tabs[0].close_bounds.is_some());
+        let cb = layout.visible_tabs[0].close_bounds.unwrap();
+        assert_eq!(cb.x, 8.0); // 10 - 2
+        assert_eq!(cb.width, 2.0);
+        assert!(layout.scroll_left.is_none());
+        assert!(layout.scroll_right.is_none());
+
+        // Hit-test: click on tab body returns Tab(0).
+        assert_eq!(layout.hit_test(5.0, 1.0), TabBarHit::Tab(0));
+        // Click on close area returns TabClose(0), not Tab(0).
+        assert_eq!(layout.hit_test(9.0, 1.0), TabBarHit::TabClose(0));
+        // Click past the tab returns Empty.
+        assert_eq!(layout.hit_test(15.0, 1.0), TabBarHit::Empty);
+    }
+
+    #[test]
+    fn tab_bar_layout_tui_char_units() {
+        // Classic TUI scenario: 3 tabs each 10 cells wide; bar is 30 cells.
+        // All fit, no scroll.
+        let bar = make_bar(vec![
+            make_tab("a", true),
+            make_tab("b", false),
+            make_tab("c", false),
+        ]);
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.visible_tabs.len(), 3);
+        assert_eq!(layout.visible_tabs[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_tabs[1].bounds.x, 10.0);
+        assert_eq!(layout.visible_tabs[2].bounds.x, 20.0);
+        assert!(layout.scroll_left.is_none());
+        assert!(layout.scroll_right.is_none());
+        assert_eq!(layout.resolved_scroll_offset, 0);
+    }
+
+    #[test]
+    fn tab_bar_layout_pixel_units_fractional() {
+        // Proves the unit-agnostic contract: fractional pixel widths (as
+        // Pango would return) produce a consistent layout. Same 3 tabs but
+        // each measured at 87.5 px; bar is 400 px.
+        let bar = make_bar(vec![
+            make_tab("a", true),
+            make_tab("b", false),
+            make_tab("c", false),
+        ]);
+        let layout = bar.layout(
+            400.0,
+            22.0,
+            16.0,
+            |_| TabMeasure::new(87.5, 18.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.visible_tabs.len(), 3);
+        assert_eq!(layout.visible_tabs[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_tabs[1].bounds.x, 87.5);
+        assert_eq!(layout.visible_tabs[2].bounds.x, 175.0);
+        assert_eq!(layout.visible_tabs[0].bounds.height, 22.0);
+        let cb = layout.visible_tabs[0].close_bounds.unwrap();
+        assert_eq!(cb.x, 87.5 - 18.0);
+        assert_eq!(cb.width, 18.0);
+    }
+
+    #[test]
+    fn tab_bar_layout_overflow_active_in_middle() {
+        // 10 tabs × 10 cells; bar 30 cells → ~2 tabs fit after reserving
+        // 2*2=4 cells for scroll arrows. Active is tab 5 (middle). Both
+        // scroll arrows should appear.
+        let bar = make_bar(
+            (0..10)
+                .map(|i| make_tab(&format!("t{i}"), i == 5))
+                .collect(),
+        );
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(layout.scroll_left.is_some());
+        assert!(layout.scroll_right.is_some());
+        // Active tab must be among visible.
+        let visible_indices: Vec<usize> = layout.visible_tabs.iter().map(|v| v.tab_idx).collect();
+        assert!(
+            visible_indices.contains(&5),
+            "active tab 5 not visible: {:?}",
+            visible_indices
+        );
+        // Scroll offset > 0 (we walked back from the active tab).
+        assert!(layout.resolved_scroll_offset > 0);
+        // First visible tab starts after the left arrow.
+        assert_eq!(layout.visible_tabs[0].bounds.x, 2.0);
+    }
+
+    #[test]
+    fn tab_bar_layout_overflow_active_at_start() {
+        // 10 tabs × 10; bar 30; active is tab 0. Only right arrow needed.
+        let bar = make_bar(
+            (0..10)
+                .map(|i| make_tab(&format!("t{i}"), i == 0))
+                .collect(),
+        );
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(layout.scroll_left.is_none()); // offset 0
+        assert!(layout.scroll_right.is_some()); // tabs to the right
+        assert_eq!(layout.resolved_scroll_offset, 0);
+    }
+
+    #[test]
+    fn tab_bar_layout_overflow_active_at_end() {
+        // 10 tabs × 10; bar 30; active is tab 9 (last). Only left arrow.
+        let bar = make_bar(
+            (0..10)
+                .map(|i| make_tab(&format!("t{i}"), i == 9))
+                .collect(),
+        );
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(layout.scroll_left.is_some());
+        assert!(layout.scroll_right.is_none()); // nothing past active
+        assert!(layout.resolved_scroll_offset > 0);
+        // Active tab is among visible.
+        assert!(layout.visible_tabs.iter().any(|v| v.tab_idx == 9));
+    }
+
+    #[test]
+    fn tab_bar_layout_right_segments_fit() {
+        let bar = TabBar {
+            id: WidgetId::new("t"),
+            tabs: vec![make_tab("a", true)],
+            scroll_offset: 0,
+            right_segments: vec![
+                TabBarSegment {
+                    text: " ← ".to_string(),
+                    width_cells: 3,
+                    id: Some(WidgetId::new("prev")),
+                    is_active: false,
+                },
+                TabBarSegment {
+                    text: " → ".to_string(),
+                    width_cells: 3,
+                    id: Some(WidgetId::new("next")),
+                    is_active: false,
+                },
+            ],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        // Bar 100 wide. Tab 10 wide. Right segments: 6 wide total.
+        let layout = bar.layout(
+            100.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |i| {
+                let w = [3.0, 3.0][i];
+                SegmentMeasure::new(w)
+            },
+        );
+        assert_eq!(layout.visible_segments.len(), 2);
+        // Right segments start at bar_width - total_width = 100 - 6 = 94.
+        assert_eq!(layout.visible_segments[0].bounds.x, 94.0);
+        assert_eq!(layout.visible_segments[1].bounds.x, 97.0);
+        // Hit-test on first segment.
+        let hit = layout.hit_test(95.0, 1.0);
+        match hit {
+            TabBarHit::RightSegment(id) => assert_eq!(id.as_str(), "prev"),
+            other => panic!("expected RightSegment(prev), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tab_bar_layout_right_segments_dropped_when_too_wide() {
+        let bar = TabBar {
+            id: WidgetId::new("t"),
+            tabs: vec![make_tab("a", true)],
+            scroll_offset: 0,
+            right_segments: vec![TabBarSegment {
+                text: "many many pixels".to_string(),
+                width_cells: 60,
+                id: Some(WidgetId::new("huge")),
+                is_active: false,
+            }],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        // Bar 50 wide. Segment is 60 wide; literally doesn't fit → drop.
+        let layout = bar.layout(
+            50.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(60.0),
+        );
+        assert_eq!(layout.visible_segments.len(), 0);
+        // No hit-region for the dropped segment.
+        for (_, hit) in &layout.hit_regions {
+            assert!(!matches!(hit, TabBarHit::RightSegment(_)));
+        }
+
+        // But a segment that fits, even narrowly, renders. 60 ≤ 100 → keep.
+        let bar2 = bar.clone();
+        let layout2 = bar2.layout(
+            100.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(60.0),
+        );
+        assert_eq!(layout2.visible_segments.len(), 1);
+    }
+
+    #[test]
+    fn tab_bar_layout_stale_scroll_offset_corrected() {
+        // App stored scroll_offset 0 but active is tab 9 — layout should
+        // correct by returning a non-zero `resolved_scroll_offset`. This is
+        // the "write this back to storage" signal for the two-pass-paint
+        // pattern.
+        let tabs: Vec<_> = (0..10)
+            .map(|i| make_tab(&format!("t{i}"), i == 9))
+            .collect();
+        let mut bar = make_bar(tabs);
+        bar.scroll_offset = 0; // stale
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(
+            layout.resolved_scroll_offset > 0,
+            "expected correction but got {}",
+            layout.resolved_scroll_offset
+        );
+    }
+
+    #[test]
+    fn tab_bar_layout_no_arrows_honours_caller_scroll_offset() {
+        // When `scroll_arrow_width = 0.0` the primitive defers scroll to the
+        // caller — vimcode's TUI computes scroll via
+        // `Engine::ensure_active_tab_visible` and writes it to
+        // `bar.scroll_offset`. Regression for "newly-opened tabs invisible
+        // in TUI when the bar overflows" — without this, the layout
+        // collapsed to `resolved_scroll_offset = 0` and clipped the
+        // active (rightmost) tab.
+        let tabs: Vec<_> = (0..10)
+            .map(|i| make_tab(&format!("t{i}"), i == 9))
+            .collect();
+        let mut bar = make_bar(tabs);
+        // Caller has already computed: show tabs starting at 7 so 7,8,9 fit.
+        bar.scroll_offset = 7;
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            0.0, // no arrows
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.resolved_scroll_offset, 7);
+        assert_eq!(layout.visible_tabs.len(), 3);
+        assert_eq!(layout.visible_tabs[0].tab_idx, 7);
+        assert_eq!(layout.visible_tabs[2].tab_idx, 9);
+    }
+
+    #[test]
+    fn tab_bar_layout_no_arrows_clamps_oversize_scroll_offset() {
+        // Caller-supplied scroll_offset is clamped to a valid index so a
+        // stale value (e.g. tab count just shrank) can't push out of range.
+        let tabs: Vec<_> = (0..3).map(|i| make_tab(&format!("t{i}"), false)).collect();
+        let mut bar = make_bar(tabs);
+        bar.scroll_offset = 99;
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            0.0,
+            |_| TabMeasure::new(50.0, 1.0), // each tab way oversized so overflow path fires
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.resolved_scroll_offset, 2); // tabs.len() - 1
+    }
+
+    #[test]
+    fn tab_bar_layout_no_close_button_when_close_width_zero() {
+        // A pinned / preview tab style — backend passes close_width = 0
+        // to suppress the close button.
+        let bar = make_bar(vec![make_tab("pinned.rs", true)]);
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 0.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(layout.visible_tabs.len(), 1);
+        assert!(layout.visible_tabs[0].close_bounds.is_none());
+        // Hit-test anywhere on the tab returns Tab(0), never TabClose.
+        assert_eq!(layout.hit_test(5.0, 0.5), TabBarHit::Tab(0));
+        assert_eq!(layout.hit_test(9.5, 0.5), TabBarHit::Tab(0));
+    }
+
+    #[test]
+    fn tab_bar_layout_hit_test_outside_bar() {
+        let bar = make_bar(vec![make_tab("a", true)]);
+        let layout = bar.layout(
+            20.0,
+            2.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 2.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        // Well past the bar.
+        assert_eq!(layout.hit_test(100.0, 1.0), TabBarHit::Empty);
+        // Below the bar.
+        assert_eq!(layout.hit_test(5.0, 100.0), TabBarHit::Empty);
+        // Negative coords (robust to weird backends).
+        assert_eq!(layout.hit_test(-1.0, 1.0), TabBarHit::Empty);
+    }
+
+    #[test]
+    fn tab_bar_layout_scroll_disabled_tabs_clip() {
+        // scroll_arrow_width = 0.0 disables scroll arrows; tabs that don't
+        // fit are silently clipped. Useful for backends that don't want
+        // scroll affordances yet.
+        let bar = make_bar(
+            (0..10)
+                .map(|i| make_tab(&format!("t{i}"), i == 0))
+                .collect(),
+        );
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            0.0, // scroll disabled
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        // Exactly 3 tabs fit (no arrow reservation).
+        assert_eq!(layout.visible_tabs.len(), 3);
+        assert!(layout.scroll_left.is_none());
+        assert!(layout.scroll_right.is_none());
+    }
+
+    // ─── quadraui#594 ────────────────────────────────────────────────────
+
+    #[test]
+    fn tab_bar_layout_tab_center_and_tab_close_center() {
+        let bar = make_bar(vec![
+            make_tab("a", true),
+            make_tab("b", false),
+            make_tab("c", false),
+        ]);
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 2.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        // Tab 1 occupies x in [10, 20); center is (15, 0.5).
+        assert_eq!(layout.tab_center(1), Some((15.0, 0.5)));
+        // Its close button is the trailing 2 cells [18, 20); center (19, 0.5).
+        assert_eq!(layout.tab_close_center(1), Some((19.0, 0.5)));
+        // Out-of-range index — never a visible tab.
+        assert_eq!(layout.tab_center(99), None);
+        assert_eq!(layout.tab_close_center(99), None);
+    }
+
+    #[test]
+    fn tab_bar_layout_tab_center_none_when_scrolled_out_of_view() {
+        // Mirrors `tab_bar_layout_overflow_active_at_end`: tab 0 scrolls
+        // out of view once tab 9 (active) forces the window rightward.
+        let bar = make_bar(
+            (0..10)
+                .map(|i| make_tab(&format!("t{i}"), i == 9))
+                .collect(),
+        );
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 1.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(
+            !layout.visible_tabs.iter().any(|v| v.tab_idx == 0),
+            "tab 0 should have scrolled out of view"
+        );
+        assert_eq!(
+            layout.tab_center(0),
+            None,
+            "tab_center must be None for a tab hidden behind scroll_offset"
+        );
+        assert_eq!(layout.tab_close_center(0), None);
+    }
+
+    #[test]
+    fn tab_bar_layout_tab_close_center_none_when_not_closable() {
+        // close_width = 0.0 (mirrors `tab_bar_layout_no_close_button_when_close_width_zero`)
+        // models `is_closable: false` / `show_tab_close: false` — the tab
+        // itself is still visible, but drew no close button this frame.
+        let bar = make_bar(vec![make_tab("pinned.rs", true)]);
+        let layout = bar.layout(
+            30.0,
+            1.0,
+            2.0,
+            |_| TabMeasure::new(10.0, 0.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert!(layout.tab_center(0).is_some());
+        assert_eq!(
+            layout.tab_close_center(0),
+            None,
+            "tab_close_center must be None when the tab drew no close button"
+        );
+    }
+
+    #[test]
+    fn tab_bar_event_roundtrip_serde() {
+        let events = vec![
+            TabBarEvent::TabActivated { index: 2 },
+            TabBarEvent::TabClosed { index: 0 },
+            TabBarEvent::ButtonClicked {
+                id: WidgetId::new("tab:split_right"),
+            },
+            TabBarEvent::KeyPressed {
+                key: "F1".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: TabBarEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
+    }
+}

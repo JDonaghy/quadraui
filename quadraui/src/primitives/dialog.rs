@@ -990,4 +990,215 @@ mod tests {
             "no native alert facility hosts a DialogInput text field"
         );
     }
+
+    // ── Dialog primitive tests ────────────────────────────────────────
+
+    fn mk_dialog_button(id: &str, label: &str) -> DialogButton {
+        DialogButton {
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            is_default: false,
+            is_cancel: false,
+            tint: None,
+        }
+    }
+
+    #[test]
+    fn dialog_layout_centered_horizontal_buttons() {
+        let mut ok = mk_dialog_button("ok", "OK");
+        ok.is_default = true;
+        let mut cancel = mk_dialog_button("cancel", "Cancel");
+        cancel.is_cancel = true;
+        let d = Dialog {
+            id: WidgetId::new("confirm"),
+            title: StyledText::plain("Close unsaved file?"),
+            body: vec![StyledText::plain("You have unsaved changes. Close anyway?")],
+            buttons: vec![cancel, ok],
+            severity: Some(DialogSeverity::Question),
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let measure = DialogMeasure {
+            width: 400.0,
+            title_height: 24.0,
+            body_height: 40.0,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 32.0,
+            button_width: 80.0,
+            button_gap: 8.0,
+            padding: 16.0,
+        };
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
+
+        // Centered: x = (800 - 400)/2 = 200
+        assert_eq!(layout.bounds.x, 200.0);
+        // total_h = 24 + 40 + 32 + 32 = 128; y = (600 - 128)/2 = 236
+        assert_eq!(layout.bounds.y, 236.0);
+
+        assert!(layout.title_bounds.is_some());
+        assert_eq!(layout.visible_buttons.len(), 2);
+        // Right-aligned: last button's right edge = content right edge.
+        let last = &layout.visible_buttons[1];
+        assert_eq!(
+            last.bounds.x + last.bounds.width,
+            layout.bounds.x + measure.width - measure.padding
+        );
+    }
+
+    #[test]
+    fn dialog_layout_vertical_buttons() {
+        let d = Dialog {
+            id: WidgetId::new("code-actions"),
+            title: StyledText::plain("Code actions"),
+            body: vec![StyledText::default()],
+            buttons: vec![
+                mk_dialog_button("a1", "Add import"),
+                mk_dialog_button("a2", "Use fully qualified path"),
+                mk_dialog_button("a3", "Ignore"),
+            ],
+            severity: None,
+            vertical_buttons: true,
+            table: None,
+            input: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let measure = DialogMeasure {
+            width: 300.0,
+            title_height: 20.0,
+            body_height: 0.0,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 90.0,
+            button_width: 280.0,
+            button_gap: 0.0,
+            padding: 10.0,
+        };
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
+        assert_eq!(layout.visible_buttons.len(), 3);
+        // Stacked: each one full button row tall (button_row_height = 90);
+        // widths equal content_w = 300-20 = 280.
+        for b in &layout.visible_buttons {
+            assert_eq!(b.bounds.width, 280.0);
+            assert_eq!(b.bounds.height, 90.0);
+        }
+        // Button 0 y < button 1 y < button 2 y.
+        assert!(layout.visible_buttons[0].bounds.y < layout.visible_buttons[1].bounds.y);
+    }
+
+    #[test]
+    fn dialog_hit_test_on_button_returns_id() {
+        let d = Dialog {
+            id: WidgetId::new("confirm"),
+            title: StyledText::plain("T"),
+            body: vec![StyledText::plain("B")],
+            buttons: vec![
+                mk_dialog_button("cancel", "Cancel"),
+                mk_dialog_button("ok", "OK"),
+            ],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let measure = DialogMeasure {
+            width: 200.0,
+            title_height: 20.0,
+            body_height: 20.0,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 20.0,
+            button_width: 60.0,
+            button_gap: 10.0,
+            padding: 10.0,
+        };
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
+        // Click on the second (right) button — OK.
+        let ok_btn = &layout.visible_buttons[1];
+        let cx = ok_btn.bounds.x + ok_btn.bounds.width / 2.0;
+        let cy = ok_btn.bounds.y + ok_btn.bounds.height / 2.0;
+        match layout.hit_test(cx, cy) {
+            DialogHit::Button(id) => assert_eq!(id.as_str(), "ok"),
+            _ => panic!(),
+        }
+        // Click on body (not on button) → Body.
+        assert_eq!(
+            layout.hit_test(layout.body_bounds.x + 5.0, layout.body_bounds.y + 5.0),
+            DialogHit::Body
+        );
+        // Click outside dialog → Outside.
+        assert_eq!(layout.hit_test(0.0, 0.0), DialogHit::Outside);
+    }
+
+    #[test]
+    fn dialog_with_input_field_layout() {
+        // Rename-style dialog: title + short body + input + buttons.
+        let ok = mk_dialog_button("ok", "OK");
+        let cancel = mk_dialog_button("cancel", "Cancel");
+        let d = Dialog {
+            id: WidgetId::new("rename"),
+            title: StyledText::plain("Rename"),
+            body: vec![StyledText::plain("New name:")],
+            buttons: vec![cancel, ok],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: Some(DialogInput::TextInput(DialogTextInput {
+                value: "old_name.rs".to_string(),
+                placeholder: String::new(),
+                cursor: Some(11),
+            })),
+        };
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let measure = DialogMeasure {
+            width: 200.0,
+            title_height: 20.0,
+            body_height: 20.0,
+            table_height: 0.0,
+            input_height: 24.0,
+            button_row_height: 20.0,
+            button_width: 60.0,
+            button_gap: 10.0,
+            padding: 10.0,
+        };
+        let layout = d.layout(viewport, measure, |_| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
+        });
+        assert!(layout.input_bounds.is_some());
+        let ib = layout.input_bounds.unwrap();
+        // Input sits between body and buttons.
+        assert_eq!(ib.y, layout.body_bounds.y + layout.body_bounds.height);
+        assert_eq!(ib.height, 24.0);
+        // Buttons pushed down by input_height.
+        assert_eq!(layout.button_row_bounds.y, ib.y + ib.height);
+    }
+
+    #[test]
+    fn dialog_default_and_cancel_resolution() {
+        let mut ok = mk_dialog_button("ok", "OK");
+        ok.is_default = true;
+        let mut cancel = mk_dialog_button("cancel", "Cancel");
+        cancel.is_cancel = true;
+        let d = Dialog {
+            id: WidgetId::new("d"),
+            title: StyledText::default(),
+            body: vec![StyledText::default()],
+            buttons: vec![cancel, ok],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        };
+        assert_eq!(d.default_button_id().unwrap().as_str(), "ok");
+        assert_eq!(d.cancel_button_id().unwrap().as_str(), "cancel");
+    }
 }

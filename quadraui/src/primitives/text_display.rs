@@ -413,7 +413,7 @@ impl TextDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::StyledSpan;
+    use crate::types::{Color, StyledSpan};
 
     fn line(text: &str) -> TextDisplayLine {
         TextDisplayLine {
@@ -578,5 +578,185 @@ mod tests {
         // Oldest lines should be trimmed; newest 5 remain.
         assert_eq!(td.lines[0].spans[0].text, "l5");
         assert_eq!(td.lines[4].spans[0].text, "l9");
+    }
+
+    #[test]
+    fn text_display_append_and_cap() {
+        let mut td = TextDisplay::new(WidgetId::new("logs"));
+        td.set_max_lines(3);
+
+        let mk = |text: &str| TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        };
+
+        td.append_line(mk("a"));
+        td.append_line(mk("b"));
+        td.append_line(mk("c"));
+        assert_eq!(td.lines.len(), 3);
+
+        // Fourth append evicts the oldest.
+        td.append_line(mk("d"));
+        assert_eq!(td.lines.len(), 3);
+        assert_eq!(td.lines.first().unwrap().spans[0].text, "b");
+        assert_eq!(td.lines.last().unwrap().spans[0].text, "d");
+
+        // Lower the cap → trims oldest.
+        td.set_max_lines(2);
+        assert_eq!(td.lines.len(), 2);
+        assert_eq!(td.lines.first().unwrap().spans[0].text, "c");
+
+        td.clear();
+        assert_eq!(td.lines.len(), 0);
+        assert_eq!(td.scroll_offset, 0);
+    }
+
+    #[test]
+    fn text_display_roundtrip_serde() {
+        let td = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![
+                TextDisplayLine {
+                    spans: vec![StyledSpan::plain("hello")],
+                    decoration: Decoration::Normal,
+                    timestamp: Some("12:00:00".to_string()),
+                },
+                TextDisplayLine {
+                    spans: vec![
+                        StyledSpan::plain("error: "),
+                        StyledSpan::with_fg("not found", Color::rgb(255, 80, 80)),
+                    ],
+                    decoration: Decoration::Error,
+                    timestamp: None,
+                },
+            ],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 1000,
+            has_focus: true,
+            title: None,
+            show_scrollbar: false,
+        };
+        let json = serde_json::to_string(&td).unwrap();
+        let back: TextDisplay = serde_json::from_str(&json).unwrap();
+        assert_eq!(td, back);
+    }
+
+    #[test]
+    fn text_display_event_roundtrip_serde() {
+        let events = vec![
+            TextDisplayEvent::Scrolled { new_offset: 42 },
+            TextDisplayEvent::AutoScrollToggled { enabled: false },
+            TextDisplayEvent::Copied {
+                text: "selected line".to_string(),
+            },
+            TextDisplayEvent::KeyPressed {
+                key: "G".to_string(),
+                modifiers: Modifiers::default(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let back: TextDisplayEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, &back);
+        }
+    }
+
+    // ── D6 TextDisplay layout API tests ───────────────────────────────
+
+    fn make_td_line(text: &str) -> TextDisplayLine {
+        TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn make_td_from_lines(lines: Vec<TextDisplayLine>, scroll: usize, auto: bool) -> TextDisplay {
+        TextDisplay {
+            id: WidgetId::new("td"),
+            lines,
+            scroll_offset: scroll,
+            auto_scroll: auto,
+            max_lines: 0,
+            has_focus: true,
+            title: None,
+            show_scrollbar: false,
+        }
+    }
+
+    #[test]
+    fn text_display_layout_empty() {
+        let td = make_td_from_lines(vec![], 0, true);
+        let layout = td.layout(40.0, 10.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert_eq!(layout.visible_lines.len(), 0);
+        assert_eq!(layout.hit_test(5.0, 5.0), TextDisplayHit::Empty);
+    }
+
+    #[test]
+    fn text_display_layout_manual_scroll() {
+        let td = make_td_from_lines(
+            (0..10).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            3,
+            false,
+        );
+        let layout = td.layout(40.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        // scroll_offset honoured verbatim; 5 lines visible from offset 3.
+        assert_eq!(layout.resolved_scroll_offset, 3);
+        assert_eq!(layout.visible_lines.len(), 5);
+        assert_eq!(layout.visible_lines[0].line_idx, 3);
+    }
+
+    #[test]
+    fn text_display_layout_auto_scroll_pins_bottom() {
+        // 10 lines, viewport fits 5 lines, auto_scroll true. Layout
+        // should pick offset 5 so lines 5..10 are visible — ignoring
+        // whatever scroll_offset was in the primitive.
+        let td = make_td_from_lines(
+            (0..10).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            0, // stored scroll_offset overridden by auto-scroll
+            true,
+        );
+        let layout = td.layout(40.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 5);
+        assert_eq!(layout.visible_lines.len(), 5);
+        assert_eq!(layout.visible_lines[0].line_idx, 5);
+        assert_eq!(layout.visible_lines[4].line_idx, 9);
+    }
+
+    #[test]
+    fn text_display_layout_auto_scroll_short_stream() {
+        // Only 3 lines, viewport fits 5. Auto-scroll pins bottom but
+        // there's nothing to scroll past — offset should stay at 0.
+        let td = make_td_from_lines(
+            (0..3).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            0,
+            true,
+        );
+        let layout = td.layout(40.0, 5.0, |_| TextDisplayLineMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 0);
+        assert_eq!(layout.visible_lines.len(), 3);
+    }
+
+    #[test]
+    fn text_display_layout_wrap_heights() {
+        // Simulate wrap: line 0 wraps to 3 rows, line 1 fits in 1 row,
+        // line 2 wraps to 2 rows. Viewport 5 rows. Lines 0 + 1 take
+        // rows 0..4; line 2 starts at y=4 and clips to 1 row.
+        let td = make_td_from_lines(
+            (0..3).map(|i| make_td_line(&format!("l{i}"))).collect(),
+            0,
+            false,
+        );
+        let heights = [3.0, 1.0, 2.0];
+        let layout = td.layout(40.0, 5.0, |i| TextDisplayLineMeasure::new(heights[i]));
+        assert_eq!(layout.visible_lines.len(), 3);
+        assert_eq!(layout.visible_lines[0].bounds.height, 3.0);
+        assert_eq!(layout.visible_lines[1].bounds.y, 3.0);
+        assert_eq!(layout.visible_lines[1].bounds.height, 1.0);
+        // Third line clipped to the remaining 1 row of viewport.
+        assert_eq!(layout.visible_lines[2].bounds.y, 4.0);
+        assert_eq!(layout.visible_lines[2].bounds.height, 1.0);
     }
 }
