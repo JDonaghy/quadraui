@@ -43,8 +43,10 @@
 //! # Per-window state without closures
 //!
 //! `WndProc` must be a plain `extern "system" fn` — it cannot capture
-//! `app`/`backend` as a closure. [`RunState`] is heap-allocated once via
-//! `Box::into_raw` *before* `CreateWindowExW` runs, and its address is
+//! `app`/`backend` as a closure. `WindowState` (wrapping `RunState` in a
+//! `RefCell`, alongside a reentrancy-guard counter — see "Reentrancy
+//! guard" below) is heap-allocated once via `Box::into_raw` *before*
+//! `CreateWindowExW` runs, and its address is
 //! threaded through as `CreateWindowExW`'s last parameter
 //! (`lpCreateParams`), which Windows hands back inside `WM_NCCREATE`'s
 //! `CREATESTRUCTW`. `wndproc::<A>` stashes that pointer in
@@ -58,6 +60,26 @@
 //! `extern "system" fn` with its own address, so `RegisterClassExW`
 //! (which needs one concrete function pointer) can register the right
 //! one for whatever app type `run::<A>` was called with.
+//!
+//! # Reentrancy guard
+//!
+//! `wndproc` dispatches `app.handle`/`app.render` while holding
+//! `WindowState::state`'s `RefCell` borrow. A `wndproc` invoked by
+//! `DispatchMessageW` never nests directly, but a *synchronous* native
+//! re-entry onto this same thread is possible — a future `AppLogic` that
+//! shows a native modal (which internally pumps messages) or
+//! `SendMessage`s its own `hwnd` from inside `handle`/`render` — and
+//! would otherwise double-borrow the same `RefCell` and panic (quadraui
+//! #702, following up on #498/#427, which hit the identical hazard in
+//! `gtk::services`'s async-dialog pump first). [`guarded_call`] plus the
+//! `ws.pump_depth.is_pumping()` check at the top of `wndproc` close it:
+//! [`crate::desktop::ModalPumpDepth`]/[`crate::desktop::ModalPumpGuard`]
+//! (extracted backend-neutral by #498) track whether a guarded call is
+//! already in flight, and a reentrant message is ceded to
+//! `DefWindowProcW` rather than ever touching `WindowState::state`.
+//! [`guarded_call`] itself has no WinAPI dependency, so it — and the
+//! double-borrow scenario it prevents — are unit-tested off Windows; see
+//! the `tests` module below.
 
 use crate::backend::Backend;
 use crate::event::Viewport;
@@ -217,6 +239,49 @@ impl Default for RunConfig {
     }
 }
 
+// `ModalPumpDepth`/`ModalPumpGuard`/`RefCell` are only reachable from
+// `guarded_call` and its test module below — both `#[cfg(any(target_os
+// = "windows", test))]`, matching `win32`'s own `target_os = "windows"`
+// gate plus an off-Windows `test`-only carve-out (see `guarded_call`'s
+// doc for why it, unlike `win32`, is unit-testable off Windows). Gating
+// these imports identically avoids an unresolved-import error on a
+// plain, non-test `cargo check --features win` build on a non-Windows
+// host, where neither `guarded_call` nor `win32::dispatch` exist to
+// consume them.
+#[cfg(any(target_os = "windows", test))]
+use crate::desktop::{ModalPumpDepth, ModalPumpGuard};
+#[cfg(any(target_os = "windows", test))]
+use std::cell::RefCell;
+
+/// Runs `f` against a mutable borrow of `*state`, guarded by
+/// `pump_depth` against the `wndproc` reentrancy hazard this module used
+/// to just document rather than close (#702, following up on #498): if
+/// `pump_depth` already shows a guarded call in flight on this thread —
+/// i.e. something reachable from `f` re-enters this same call path
+/// synchronously, the way `win32::dispatch`'s doc comment describes a
+/// future `AppLogic` pumping a native modal or `SendMessage`ing its own
+/// `hwnd` from inside `handle` — this returns `None` *without ever
+/// taking `state`'s `RefCell` borrow*, instead of panicking on a double
+/// `borrow_mut()`.
+///
+/// Pure `RefCell`/[`ModalPumpDepth`] logic with no WinAPI dependency of
+/// its own, so — unlike its production caller, `win32::dispatch`
+/// (Windows-only, since `wndproc` itself is) — this is unit-testable off
+/// Windows; see the `tests` module below for a from-scratch reproduction
+/// of the double-borrow panic this guards against.
+#[cfg(any(target_os = "windows", test))]
+fn guarded_call<T, R>(
+    state: &RefCell<T>,
+    pump_depth: &ModalPumpDepth,
+    f: impl FnOnce(&mut T) -> R,
+) -> Option<R> {
+    if pump_depth.is_pumping() {
+        return None;
+    }
+    let _guard = ModalPumpGuard::new(pump_depth);
+    Some(f(&mut state.borrow_mut()))
+}
+
 #[cfg(target_os = "windows")]
 mod win32 {
     use std::cell::RefCell;
@@ -247,6 +312,7 @@ mod win32 {
     };
 
     use crate::backend::Backend;
+    use crate::desktop::ModalPumpDepth;
     use crate::event::UiEvent;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
@@ -285,6 +351,18 @@ mod win32 {
     struct RunState<A: AppLogic> {
         app: A,
         backend: WinBackend,
+    }
+
+    /// Per-window state stashed in `GWLP_USERDATA` (see module docs).
+    /// `pump_depth` deliberately lives *outside* `state`'s `RefCell`
+    /// rather than as a `RunState` field: `super::guarded_call` (used by
+    /// [`dispatch`] and the `WM_PAINT` handler below) must be able to
+    /// read it without itself needing a borrow of the very `RefCell` a
+    /// reentrant `wndproc` call would already be fighting over — see
+    /// `super::guarded_call`'s docs (#702).
+    struct WindowState<A: AppLogic> {
+        state: RefCell<RunState<A>>,
+        pump_depth: ModalPumpDepth,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -405,8 +483,10 @@ mod win32 {
         let mut backend = WinBackend::new();
         app.setup(&mut backend);
 
-        let state_ptr: *mut RefCell<RunState<A>> =
-            Box::into_raw(Box::new(RefCell::new(RunState { app, backend })));
+        let state_ptr: *mut WindowState<A> = Box::into_raw(Box::new(WindowState {
+            state: RefCell::new(RunState { app, backend }),
+            pump_depth: ModalPumpDepth::new(),
+        }));
 
         let hwnd = unsafe {
             CreateWindowExW(
@@ -449,8 +529,8 @@ mod win32 {
             // dispatched (synchronously, before returning), and that
             // path only stores the pointer in `GWLP_USERDATA`, never
             // dereferences it.
-            let state: &RefCell<RunState<A>> = unsafe { &*state_ptr };
-            state.borrow_mut().backend.attach_surface(hwnd)
+            let ws: &WindowState<A> = unsafe { &*state_ptr };
+            ws.state.borrow_mut().backend.attach_surface(hwnd)
         };
         if let Err(e) = attach_result {
             // SAFETY: `state_ptr` must stay valid until `DestroyWindow`
@@ -513,19 +593,28 @@ mod win32 {
     /// destroys the window, letting `WM_DESTROY` post the quit message
     /// that actually ends `run_inner`'s loop).
     ///
-    /// Holds `state.borrow_mut()` for the duration of
-    /// `super::dispatch_event`. No bootstrap-era `AppLogic` (#19) does
-    /// anything that pumps messages synchronously, but a future impl
-    /// that shows a native modal or `SendMessage`s its own `hwnd` from
-    /// inside `handle` would re-enter `wndproc` on this same thread
-    /// while this borrow is still live — a `RefCell` double-borrow
-    /// panic. Worth revisiting once #20 lands real input handling and
-    /// third-party `AppLogic` impls get more latitude.
-    fn dispatch<A: AppLogic>(state: &RefCell<RunState<A>>, hwnd: HWND, event: UiEvent) -> Reaction {
-        let outcome = {
-            let mut state = state.borrow_mut();
-            let RunState { app, backend } = &mut *state;
+    /// Routes the `state.borrow_mut()` that spans `super::dispatch_event`
+    /// (the shared pre-processing funnel, #707) through
+    /// `super::guarded_call(&ws.state, &ws.pump_depth, ...)` (#702,
+    /// following up on #498, closing the hazard this comment used to
+    /// only document): no bootstrap-era `AppLogic` (#19) pumps messages
+    /// synchronously, but a future impl that shows a native modal or
+    /// `SendMessage`s its own `hwnd` from inside `handle` would
+    /// synchronously re-enter `wndproc` on this same thread while this
+    /// borrow is still live. `guarded_call` makes that reentrant call
+    /// see `ws.pump_depth.is_pumping()` and no-op — via `wndproc`'s own
+    /// `is_pumping()` check before it ever reaches here — instead of
+    /// panicking on a double `borrow_mut()`. When that happens, `dispatch`
+    /// returns `Reaction::Continue` for the dropped message: no redraw,
+    /// no exit, matching every other message this `wndproc` doesn't
+    /// otherwise handle.
+    fn dispatch<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND, event: UiEvent) -> Reaction {
+        let outcome = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
+            let RunState { app, backend } = run_state;
             super::dispatch_event(event, backend, app)
+        });
+        let Some(outcome) = outcome else {
+            return Reaction::Continue;
         };
         let reaction = match outcome {
             super::EventOutcome::Continue => Reaction::Continue,
@@ -550,10 +639,10 @@ mod win32 {
     /// `CreateWindowExW` (`WM_NCCREATE`), per the standard `WNDPROC`
     /// contract. `GWLP_USERDATA` is trusted to hold either `0` (no state
     /// yet — every message before `WM_NCCREATE` sets it) or a valid
-    /// `*const RefCell<RunState<A>>` that outlives every message this
-    /// function will ever receive for this `hwnd` (guaranteed by
-    /// `run_inner` freeing it only after the message loop — driven by
-    /// this same `hwnd` — has already exited).
+    /// `*const WindowState<A>` that outlives every message this function
+    /// will ever receive for this `hwnd` (guaranteed by `run_inner`
+    /// freeing it only after the message loop — driven by this same
+    /// `hwnd` — has already exited).
     unsafe extern "system" fn wndproc<A: AppLogic + 'static>(
         hwnd: HWND,
         msg: u32,
@@ -574,8 +663,7 @@ mod win32 {
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
 
-        let state_ptr =
-            unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const RefCell<RunState<A>>;
+        let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState<A>;
         if state_ptr.is_null() {
             // Messages Windows can send before `WM_NCCREATE` populates
             // `GWLP_USERDATA` (rare, but the contract allows it) — no
@@ -583,7 +671,19 @@ mod win32 {
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
         // SAFETY: see this function's contract above.
-        let state: &RefCell<RunState<A>> = unsafe { &*state_ptr };
+        let ws: &WindowState<A> = unsafe { &*state_ptr };
+
+        // #702: a message re-entering `wndproc` while a `super::
+        // guarded_call` borrow (`dispatch`'s `app.handle`, or `WM_PAINT`'s
+        // `app.render`, below) is already live on this same thread — see
+        // `super::guarded_call`'s and `dispatch`'s docs for the hazard
+        // this closes. Cede to the default window proc rather than ever
+        // touching `ws.state` while that's a live possibility; the next
+        // non-reentrant message (once the outer guarded call returns)
+        // handles normally.
+        if ws.pump_depth.is_pumping() {
+            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+        }
 
         match msg {
             WM_SIZE => {
@@ -591,7 +691,7 @@ mod win32 {
                 // in pixels — the standard `WM_SIZE` payload shape.
                 let (width, height) = size_from_lparam(lparam.0);
                 let viewport = {
-                    let mut s = state.borrow_mut();
+                    let mut s = ws.state.borrow_mut();
                     // Recreate the render target first if a prior
                     // `EndDraw` failure (see `backend.rs`'s `end_frame`)
                     // dropped it — `resize_surface` alone is a no-op on
@@ -604,7 +704,7 @@ mod win32 {
                     let _ = s.backend.resize_surface(width, height);
                     s.backend.viewport()
                 };
-                dispatch(state, hwnd, UiEvent::WindowResized { viewport });
+                dispatch(ws, hwnd, UiEvent::WindowResized { viewport });
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -615,7 +715,7 @@ mod win32 {
                 // always equal on Windows) — see `WM_DPICHANGED`'s docs.
                 let scale = dpi_scale_from_wparam(wparam.0);
                 {
-                    let mut s = state.borrow_mut();
+                    let mut s = ws.state.borrow_mut();
                     s.backend.set_dpi_scale(scale);
                 }
                 // `lparam` points at Windows' suggested new window rect
@@ -639,15 +739,15 @@ mod win32 {
                         );
                     }
                 }
-                dispatch(state, hwnd, UiEvent::DpiChanged(scale));
+                dispatch(ws, hwnd, UiEvent::DpiChanged(scale));
                 LRESULT(0)
             }
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
                 if let Some(button) = win_mouse_button_for_message(msg, wparam.0) {
                     let (x, y) = point_from_lparam(lparam.0);
-                    let scale = state.borrow().backend.viewport().scale;
+                    let scale = ws.state.borrow().backend.viewport().scale;
                     let modifiers = win_key_modifiers();
-                    dispatch(state, hwnd, win_button_down(button, x, y, scale, modifiers));
+                    dispatch(ws, hwnd, win_button_down(button, x, y, scale, modifiers));
                 }
                 // `WM_XBUTTONDOWN`/`WM_XBUTTONUP` are the one pair in this
                 // group whose docs require returning `TRUE` when handled —
@@ -662,8 +762,8 @@ mod win32 {
             WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
                 if let Some(button) = win_mouse_button_for_message(msg, wparam.0) {
                     let (x, y) = point_from_lparam(lparam.0);
-                    let scale = state.borrow().backend.viewport().scale;
-                    dispatch(state, hwnd, win_button_up(button, x, y, scale));
+                    let scale = ws.state.borrow().backend.viewport().scale;
+                    dispatch(ws, hwnd, win_button_up(button, x, y, scale));
                 }
                 if msg == WM_XBUTTONUP {
                     LRESULT(1)
@@ -673,13 +773,13 @@ mod win32 {
             }
             WM_MOUSEMOVE => {
                 let (x, y) = point_from_lparam(lparam.0);
-                let scale = state.borrow().backend.viewport().scale;
+                let scale = ws.state.borrow().backend.viewport().scale;
                 let buttons = ButtonMask {
                     left: wparam.0 & MK_LBUTTON != 0,
                     right: wparam.0 & MK_RBUTTON != 0,
                     middle: wparam.0 & MK_MBUTTON != 0,
                 };
-                dispatch(state, hwnd, win_mouse_moved(x, y, scale, buttons));
+                dispatch(ws, hwnd, win_mouse_moved(x, y, scale, buttons));
                 LRESULT(0)
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
@@ -697,7 +797,7 @@ mod win32 {
                 unsafe {
                     let _ = ScreenToClient(hwnd, &mut pt);
                 }
-                let scale = state.borrow().backend.viewport().scale;
+                let scale = ws.state.borrow().backend.viewport().scale;
                 let event = win_wheel_to_uievent(
                     raw_delta,
                     pt.x as i16,
@@ -705,7 +805,7 @@ mod win32 {
                     scale,
                     msg == WM_MOUSEHWHEEL,
                 );
-                dispatch(state, hwnd, event);
+                dispatch(ws, hwnd, event);
                 LRESULT(0)
             }
             WM_KEYDOWN => {
@@ -726,7 +826,7 @@ mod win32 {
                 let repeat = is_repeat_from_lparam(lparam.0);
                 let modifiers = win_key_modifiers();
                 if let Some(event) = wm_keydown_to_uievent(vk, modifiers, repeat) {
-                    dispatch(state, hwnd, event);
+                    dispatch(ws, hwnd, event);
                 }
                 LRESULT(0)
             }
@@ -743,22 +843,30 @@ mod win32 {
                 if let Some(c) = char::from_u32((wparam.0 & 0xFFFF) as u32) {
                     let modifiers = win_key_modifiers();
                     if let Some(event) = wm_char_to_uievent(c, modifiers, repeat) {
-                        dispatch(state, hwnd, event);
+                        dispatch(ws, hwnd, event);
                     }
                 }
                 LRESULT(0)
             }
             WM_SETFOCUS => {
-                dispatch(state, hwnd, win_focus_to_uievent(true));
+                dispatch(ws, hwnd, win_focus_to_uievent(true));
                 LRESULT(0)
             }
             WM_KILLFOCUS => {
-                dispatch(state, hwnd, win_focus_to_uievent(false));
+                dispatch(ws, hwnd, win_focus_to_uievent(false));
                 LRESULT(0)
             }
             WM_PAINT => {
-                {
-                    let mut s = state.borrow_mut();
+                // Routed through `super::guarded_call` for the same
+                // reason as `dispatch` (#702): `app.render` can hit the
+                // same synchronous-reentrancy hazard `app.handle` can.
+                // The top-of-`wndproc` `is_pumping()` check above already
+                // guarantees `WM_PAINT` itself is never the *reentrant*
+                // call, but `guarded_call` still has to be the one
+                // holding `ws.pump_depth`'s guard for the duration of
+                // `app.render` — otherwise a nested pump triggered *from
+                // inside* `render` wouldn't be caught by that same check.
+                let _ = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
                     // Recreate the render target if a prior `EndDraw`
                     // failure dropped it (device lost, RDP session
                     // change — see `backend.rs`'s `end_frame` docs).
@@ -766,11 +874,11 @@ mod win32 {
                     // still unavailable), `begin_frame`/`end_frame`
                     // below are no-ops while `surface` stays `None`, and
                     // the next `WM_PAINT`/`WM_SIZE` tries again.
-                    let _ = s.backend.ensure_surface();
-                    let viewport = s.backend.viewport();
-                    let RunState { app, backend } = &mut *s;
+                    let _ = run_state.backend.ensure_surface();
+                    let viewport = run_state.backend.viewport();
+                    let RunState { app, backend } = run_state;
                     super::render_frame(backend, app, viewport);
-                }
+                });
                 // Direct2D draws straight to the swap chain via the
                 // `ID2D1HwndRenderTarget` — no GDI `HDC`/`PAINTSTRUCT`
                 // involved, so this validates the update region directly
@@ -782,7 +890,7 @@ mod win32 {
                 LRESULT(0)
             }
             WM_CLOSE => {
-                if dispatch(state, hwnd, UiEvent::WindowClose) == Reaction::Exit {
+                if dispatch(ws, hwnd, UiEvent::WindowClose) == Reaction::Exit {
                     unsafe {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -845,7 +953,7 @@ pub fn run_with<A: AppLogic + 'static>(_app: A, _config: RunConfig) -> std::proc
 // `run_config_tests` module.
 #[cfg(test)]
 mod tests {
-    use super::RunConfig;
+    use super::*;
 
     #[test]
     fn new_sets_the_title() {
@@ -866,5 +974,70 @@ mod tests {
         // so `run(app)` staying `run_with(app, RunConfig::default())`
         // (see both functions above) doesn't change existing behaviour.
         assert_eq!(RunConfig::default().title, "quadraui");
+    }
+
+    /// Reproduces the exact hazard `win32::dispatch`'s doc comment used
+    /// to only describe as a future risk: a synchronous reentrant call
+    /// into [`guarded_call`] while the outer call's `state.borrow_mut()`
+    /// is still live. Without the `pump_depth.is_pumping()` check, the
+    /// inner `state.borrow_mut()` would panic ("already mutably
+    /// borrowed"); with it, the inner call is skipped and the outer one
+    /// completes normally — this is the "test that re-enters wndproc ...
+    /// and does not panic" #702 asks for, at the nearest seam that's
+    /// testable without a live Win32 message loop (`wndproc` itself only
+    /// compiles under `target_os = "windows"`; this doesn't).
+    #[test]
+    fn reentrant_call_is_skipped_not_double_borrowed() {
+        let state = RefCell::new(0i32);
+        let depth = ModalPumpDepth::new();
+        let outer = guarded_call(&state, &depth, |v| {
+            *v += 1;
+            // Simulate `wndproc` re-entering while this closure — the
+            // stand-in for `app.handle`/`app.render` — is still running
+            // with `state`'s `RefCell` mutably borrowed.
+            let inner = guarded_call(&state, &depth, |v2| {
+                *v2 += 100;
+                *v2
+            });
+            assert_eq!(
+                inner, None,
+                "a reentrant guarded_call must be skipped, not run"
+            );
+            *v
+        });
+        assert_eq!(
+            outer,
+            Some(1),
+            "the outer call must still complete normally"
+        );
+        assert_eq!(
+            *state.borrow(),
+            1,
+            "the skipped reentrant call must not have mutated state"
+        );
+    }
+
+    #[test]
+    fn sequential_non_reentrant_calls_both_run() {
+        let state = RefCell::new(0i32);
+        let depth = ModalPumpDepth::new();
+        assert_eq!(
+            guarded_call(&state, &depth, |v| {
+                *v += 1;
+                *v
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            guarded_call(&state, &depth, |v| {
+                *v += 1;
+                *v
+            }),
+            Some(2)
+        );
+        assert!(
+            !depth.is_pumping(),
+            "depth must return to 0 once each guarded call completes"
+        );
     }
 }

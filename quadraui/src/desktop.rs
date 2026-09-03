@@ -17,7 +17,11 @@
 //!   `MainContext::iteration` pump, an AppKit `runModal` /
 //!   `performWindowDragWithEvent:`, a Win32 `IFileOpenDialog::Show`).
 //!   Extracted from `gtk/services.rs`'s `pumping` field + `PumpGuard`
-//!   (#427).
+//!   (#427). Adopted by `win::run`'s `wndproc` → `app.handle`/
+//!   `app.render` dispatch (#702) via `win::run`'s own
+//!   `guarded_call` — the actual `RefCell` double-borrow guard lives
+//!   there since it has no toolkit dependency of its own either; see
+//!   that function's docs.
 //! - [`SmokeConfig`] + [`smoke_size_ok`] / [`smoke_clipboard_round_trip_ok`]
 //!   — the headless smoke-mode predicates behind `QUADRAUI_*_SMOKE_MS` /
 //!   `_SMOKE_PASTE`. Extracted from `gtk/run.rs` (#450, GD-5), renamed
@@ -216,19 +220,38 @@ impl<P> Default for WindowDragArm<P> {
 /// closure that might re-enter should clone this handle and check
 /// [`Self::is_pumping`] before touching the backend.
 ///
-/// `#[cfg(feature = "gtk")]`, not `any(gtk, macos)`: GTK's async
-/// `FileDialog` pump is the only adopter today. `macos::backend`'s
-/// `performWindowDragWithEvent:` is listed above as a *candidate* nested
-/// pump, but nothing in `macos/` guards on this counter yet — and per
-/// the module doc, a `pub(crate)` item with no caller under some
-/// compiled feature set is a hard `-D warnings` build failure, not a
-/// warning. A macOS (or Win32) adopter widens this gate in the same
+/// `#[cfg(any(feature = "gtk", all(feature = "win", any(target_os =
+/// "windows", test))))]`, not `any(gtk, macos)`: GTK's async
+/// `FileDialog` pump and `win::run`'s `wndproc` → `dispatch`/`WM_PAINT`
+/// borrows (#702, via `win::run::guarded_call`) are the adopters today.
+/// Unlike `win/backend.rs`'s WinAPI-calling methods, `guarded_call` is
+/// pure `RefCell`/`Rc<Cell<>>` logic with no toolkit dependency of its
+/// own, so it (and its unit test reproducing the double-borrow hazard)
+/// compile and run under plain `--features win` on *any* host —
+/// matching this module's own "no toolkit feature needed" design — but
+/// only in a `cfg(test)` build: `win::run::guarded_call` has no
+/// *production* caller unless `win32::wndproc` (its Windows-only
+/// adopter) also compiles, so the `test` alternative exists purely to
+/// keep a genuine consumer around for a plain, non-test
+/// `cargo check --features win` on a non-Windows host — see
+/// `win::run::guarded_call`'s own gate for the matching half of this.
+/// `macos::backend`'s `performWindowDragWithEvent:` is listed above as a
+/// *candidate* nested pump, but nothing in `macos/` guards on this
+/// counter yet — and per the module doc, a `pub(crate)` item with no
+/// caller under some compiled feature set is a hard `-D warnings` build
+/// failure, not a warning. A macOS adopter widens this gate in the same
 /// commit that adds the call.
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModalPumpDepth(std::rc::Rc<std::cell::Cell<u32>>);
 
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 impl ModalPumpDepth {
     /// A fresh counter at depth 0 (no pump in flight).
     pub(crate) fn new() -> Self {
@@ -254,13 +277,19 @@ impl ModalPumpDepth {
 /// one finishes. Construct one right before starting a nested native
 /// modal loop; hold it for the loop's duration.
 ///
-/// `#[cfg(feature = "gtk")]` — see [`ModalPumpDepth`]'s gate note.
-#[cfg(feature = "gtk")]
+/// See [`ModalPumpDepth`]'s gate note for this type's identical gate.
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 pub(crate) struct ModalPumpGuard<'a> {
     depth: &'a ModalPumpDepth,
 }
 
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 impl<'a> ModalPumpGuard<'a> {
     pub(crate) fn new(depth: &'a ModalPumpDepth) -> Self {
         depth.0.set(depth.0.get() + 1);
@@ -268,7 +297,10 @@ impl<'a> ModalPumpGuard<'a> {
     }
 }
 
-#[cfg(feature = "gtk")]
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
 impl Drop for ModalPumpGuard<'_> {
     fn drop(&mut self) {
         self.depth.0.set(self.depth.0.get() - 1);
@@ -481,7 +513,7 @@ mod window_drag_arm_tests {
     }
 }
 
-#[cfg(all(test, feature = "gtk"))]
+#[cfg(all(test, any(feature = "gtk", feature = "win")))]
 mod modal_pump_tests {
     use super::*;
 
