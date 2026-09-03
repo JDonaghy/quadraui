@@ -63,6 +63,19 @@ impl CaseOutcome {
     /// for why) — recorded so the row appears in the matrix at all,
     /// distinctly marked so it isn't read as equivalent to a verified
     /// `ok()`.
+    ///
+    /// The only placeholder row today is GTK's `window_close`, so on a
+    /// `--features tui` build (no `gtk`) this constructor has no caller.
+    /// CI sets `RUSTFLAGS: -D warnings` workflow-wide, which promotes
+    /// that to a hard `dead_code` build failure on the tui leg — the
+    /// same shape as this file's crate-root
+    /// `cfg_attr(not(any(tui, gtk)), allow(dead_code))` in
+    /// `conformance.rs`, and allowed for the same reason: the item is
+    /// unreachable *from this feature set*, not unused. Scoped to
+    /// `not(gtk)` rather than blanket-allowed so that if the
+    /// `window_close` call below ever goes away, the `gtk,tui` leg
+    /// still reports this as genuinely dead.
+    #[cfg_attr(not(feature = "gtk"), allow(dead_code))]
     fn placeholder(detail: impl Into<String>) -> Self {
         Self {
             pass: true,
