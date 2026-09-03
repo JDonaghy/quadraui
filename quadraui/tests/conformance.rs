@@ -91,6 +91,8 @@ mod common;
 
 #[path = "conformance/c0.rs"]
 mod c0;
+#[path = "conformance/c2.rs"]
+mod c2;
 #[path = "conformance/caps.rs"]
 mod caps;
 #[path = "conformance/fixtures.rs"]
@@ -472,6 +474,96 @@ fn c0_paint_smoke() {
         "{} C0 paint-smoke gap(s) — a primitive either panicked, dropped its text, or left the \
          frame unobservable, which contract §5b (tests/acceptance/ms-11/contract.md) treats as \
          indistinguishable from the trait's no-op default:\n{}\n{table}",
+        gaps.len(),
+        gaps.join("\n")
+    );
+}
+
+/// Tier C2 — event-emission conformance (quadraui#501, epic #480). See
+/// `c2.rs`'s module doc for what this proves and why it's a distinct
+/// axis from C0 (paint) and C1 (behaviour). Covers the
+/// mouse/key/scroll/resize core plus GTK's `WindowClose` on TUI+GTK —
+/// the acceptance bar issue #501 named; the rest of the required matrix
+/// (`DoubleClick`/`Accelerator`/`ClipboardPaste`/`TextCopied`) is D-010
+/// follow-up, tracked in `docs/BACKEND.md`'s emission matrix rather than
+/// silently missing from this tier.
+#[test]
+fn c2_event_parity() {
+    struct Column {
+        name: &'static str,
+        rows: Vec<&'static str>,
+        case: fn(&str) -> c2::CaseOutcome,
+    }
+
+    #[allow(unused_mut)]
+    let mut columns: Vec<Column> = Vec::new();
+    #[cfg(feature = "tui")]
+    columns.push(Column {
+        name: "tui",
+        rows: c2::CORE_ROWS.to_vec(),
+        case: c2::tui_case,
+    });
+    #[cfg(feature = "gtk")]
+    columns.push(Column {
+        name: "gtk",
+        rows: c2::CORE_ROWS
+            .iter()
+            .chain(c2::GTK_ONLY_ROWS)
+            .copied()
+            .collect(),
+        case: c2::gtk_case,
+    });
+
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    assert!(
+        !columns.is_empty(),
+        "c2_event_parity: no backend feature enabled — run with --features tui,gtk"
+    );
+
+    if columns.is_empty() {
+        println!(
+            "c2_event_parity: SKIPPED — no C2 driver backend in this feature set. \
+             Build with --features tui and/or gtk to run tier 2."
+        );
+        return;
+    }
+
+    // Every row that at least one column declares, in a stable order:
+    // `CORE_ROWS` first (shared), then `GTK_ONLY_ROWS`. A column that
+    // doesn't declare a row prints `n/a` for it rather than a fabricated
+    // pass/fail — `WindowClose` genuinely does not apply to TUI (D-010).
+    let mut all_rows: Vec<&'static str> = c2::CORE_ROWS.to_vec();
+    all_rows.extend(c2::GTK_ONLY_ROWS);
+
+    let row_w = all_rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut table = format!("{:<row_w$}", "event (tier 2)");
+    for col in &columns {
+        table.push_str(&format!("  {:<6}", col.name));
+    }
+    table.push('\n');
+
+    let mut gaps: Vec<String> = Vec::new();
+    for row in &all_rows {
+        table.push_str(&format!("{row:<row_w$}"));
+        for col in &columns {
+            if !col.rows.contains(row) {
+                table.push_str(&format!("  {:<6}", "n/a"));
+                continue;
+            }
+            let outcome = (col.case)(row);
+            table.push_str(&format!("  {:<6}", if outcome.pass { "pass" } else { "FAIL" }));
+            if !outcome.pass {
+                gaps.push(format!("{}/{row}: {}", col.name, outcome.detail));
+            }
+        }
+        table.push('\n');
+    }
+    println!("{table}");
+
+    assert!(
+        gaps.is_empty(),
+        "{} C2 event-parity gap(s) — a backend's native→UiEvent translation for a required \
+         event didn't produce the expected shape:\n{}\n{table}",
         gaps.len(),
         gaps.join("\n")
     );

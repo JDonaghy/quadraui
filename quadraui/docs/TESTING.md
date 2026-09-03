@@ -403,10 +403,18 @@ behind `dialog.blocks_click_through` — ships both: see the
   editor click-to-caret. **This is what ships today** — see the ten
   scenario files under `tests/conformance/scenarios/`.
 - **C2 — Event parity.** For each required `UiEvent` variant, a
-  per-backend native-injection recipe proving it is emitted. Required:
+  per-backend native-injection recipe proving it is emitted. Required
+  (windowed backends — GTK/Win/macOS):
   Key/Char/MouseDown/Up/Moved/Scroll/DoubleClick/WindowResized/
-  Accelerator/ClipboardPaste/TextCopied. Optional (declare, don't fake):
-  FilesDropped, MouseEntered/Left, DpiChanged, native menu events.
+  WindowClose/Accelerator/ClipboardPaste/TextCopied. TUI has no OS
+  window, so `WindowClose` doesn't apply there — see
+  `quadraui/docs/DECISIONS.md` D-010. Optional (declare, don't fake):
+  FilesDropped, MouseEntered/Left, DpiChanged, native menu events. The
+  full required/optional-per-backend table, with current pass/fail per
+  cell, lives in `quadraui/docs/BACKEND.md`'s "UiEvent emission matrix".
+  `tests/conformance/c2.rs` (quadraui#501) is the mouse/key/scroll/
+  resize slice of this tier's harness on TUI+GTK; the rest of the
+  required list is tracked follow-up (see D-010's *Follow-ups*).
 - **C3 — Platform services.** Clipboard round-trip (headless where
   possible), capability-honest dialogs and notifications.
 - **C4 — Native residue (never shared).** Exact colours, font rendering,

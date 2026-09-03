@@ -827,6 +827,54 @@ fn activate<A: AppLogic + 'static>(
         });
     }
 
+    // ── Window close (quadraui#501) ───────────────────────────────
+    //
+    // Until now GTK never asked the app before tearing the window down:
+    // the OS "×" button / Alt-F4 / window-manager close went straight to
+    // GLib's default `close-request` handling with no `UiEvent` in
+    // between, so an app had no way to veto an unsaved-changes close or
+    // even *know* the window was closing. `WinBackend::wnd_proc`'s
+    // `WM_CLOSE` arm (`win/run.rs`) already documents the intended
+    // contract — "matching the GTK runner's `Reaction::Exit =>
+    // window.close()`" — this wiring is the GTK half that comment
+    // assumed already existed. `connect_close_request` fires before the
+    // window is destroyed and lets the handler return
+    // `glib::Propagation::Stop` to cancel it.
+    //
+    // Dispatch `UiEvent::WindowClose` through the same `dispatch_event`
+    // funnel every other native signal uses, then only let the close
+    // proceed if the app's own reaction was `Exit` — same rule Win uses.
+    // An app that doesn't return `Exit` (the default for an unhandled
+    // event, and any app that wants to show a confirmation dialog first)
+    // implicitly vetoes the close. Never route this outcome through
+    // `apply_event_outcome`/`request_exit`: that calls `window.close()`,
+    // which would re-enter this same `close-request` handler.
+    {
+        let backend = backend.clone();
+        let app = app.clone();
+        let da_for_redraw = da.clone();
+        let pump_depth = pump_depth.clone();
+        window.connect_close_request(move |_window| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.is_pumping() {
+                return glib::Propagation::Proceed;
+            }
+            let outcome = {
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                dispatch_event(UiEvent::WindowClose, &mut backend_mut, &mut *app_mut)
+            };
+            match outcome {
+                EventOutcome::Exit => glib::Propagation::Proceed,
+                EventOutcome::Redraw => {
+                    da_for_redraw.queue_draw();
+                    glib::Propagation::Stop
+                }
+                EventOutcome::Continue => glib::Propagation::Stop,
+            }
+        });
+    }
+
     // ── Backend event-queue drain (low-rate idle) ─────────────────
     //
     // Producer-side event controllers above already dispatch
@@ -1713,5 +1761,89 @@ mod paste_tests {
             "middle-click with no PRIMARY selection should fall through, got {:?}",
             driver.app().events
         );
+    }
+}
+
+#[cfg(test)]
+mod window_close_tests {
+    //! Coverage for quadraui#501 — `UiEvent::WindowClose` dispatch.
+    //!
+    //! `connect_close_request` itself (the live GDK signal → `dispatch`
+    //! → `glib::Propagation` wiring in `activate`) needs a real
+    //! `ApplicationWindow`/display and can't run through `GtkDriver`
+    //! (deliberately display-free — see its module doc); that half is
+    //! covered by the GTK live-window smoke tier instead. What *is*
+    //! headless-testable, and what actually matters for app authors, is
+    //! that `dispatch_event` doesn't silently intercept or rewrite
+    //! `WindowClose` the way it does `KeyPressed`/`MouseDown` for
+    //! accelerators, paste, etc. — it must reach `app.handle` verbatim
+    //! and round-trip the app's `Reaction` through `EventOutcome`
+    //! unchanged, since that's the veto mechanism: `activate` only lets
+    //! the OS proceed with the close when the app returns `Exit`.
+    use super::*;
+    use crate::gtk::testing::GtkDriver;
+
+    #[derive(Default)]
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+        reaction: Option<Reaction>,
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            self.reaction.unwrap_or(Reaction::Continue)
+        }
+    }
+
+    #[test]
+    fn window_close_reaches_app_handle_unmodified() {
+        let mut driver = GtkDriver::new(RecordingApp::default(), 400, 300);
+        let reaction = driver.dispatch(UiEvent::WindowClose);
+        assert_eq!(reaction, Reaction::Continue, "no veto ⇒ Continue, not Exit");
+        assert_eq!(
+            driver.app().events,
+            vec![UiEvent::WindowClose],
+            "WindowClose must not be rewritten (e.g. into Accelerator) or swallowed \
+             by any of dispatch_event's pre-processing branches"
+        );
+    }
+
+    /// An app returning `Reaction::Exit` from its `WindowClose` handler
+    /// is the "don't veto, let the OS close the window" path —
+    /// `activate`'s `close-request` handler maps this outcome to
+    /// `glib::Propagation::Proceed`.
+    #[test]
+    fn window_close_can_be_accepted() {
+        let mut driver = GtkDriver::new(
+            RecordingApp {
+                reaction: Some(Reaction::Exit),
+                ..Default::default()
+            },
+            400,
+            300,
+        );
+        assert_eq!(driver.dispatch(UiEvent::WindowClose), Reaction::Exit);
+    }
+
+    /// An app returning anything other than `Exit` (here: `Redraw`, e.g.
+    /// to show an "unsaved changes" prompt) is the veto path —
+    /// `activate`'s handler maps every non-`Exit` outcome to
+    /// `glib::Propagation::Stop` and keeps the window open.
+    #[test]
+    fn window_close_can_be_vetoed() {
+        let mut driver = GtkDriver::new(
+            RecordingApp {
+                reaction: Some(Reaction::Redraw),
+                ..Default::default()
+            },
+            400,
+            300,
+        );
+        assert_eq!(driver.dispatch(UiEvent::WindowClose), Reaction::Redraw);
     }
 }

@@ -238,6 +238,70 @@ device) records into the same `last_error()` field `begin_frame`/
 paints — `last_error()` after `end_frame` is where that surfaces, not a
 per-`draw_*` return value.
 
+## `UiEvent` emission matrix (issue #501)
+
+Not every `UiEvent` variant needs to be emitted by every backend to be
+conformant, and until this issue almost nothing said which was which —
+`docs/LESSONS.md`'s "all runners must fire all `UiEvent` variants the
+consumer pattern needs" rule was unenforceable without a definition of
+the required set. This table is that definition. `docs/DECISIONS.md`
+D-010 has the full per-variant reasoning and the grep evidence behind
+each disposition; this table is the quick-reference a new backend author
+should build against.
+
+**Required** — a conformant backend must emit this from real native
+input, or the variant is inapplicable to that backend class (TUI has no
+OS window: `WindowClose`/`DpiChanged`/`WindowFocused`/`WindowResized`'s
+"window" is the terminal's viewport, not an OS window it can close
+independently of the process).
+
+| Variant | TUI | GTK | macOS | Win | Note |
+|---|---|---|---|---|---|
+| `KeyPressed` | ✅ | ✅ | ✅ | ✅ | Canonical text-input path — see `CharTyped` below. |
+| `MouseDown` / `MouseUp` / `MouseMoved` | ✅ | ✅ | ✅ | ✅ | |
+| `Scroll` | ✅ | ✅ | ✅ | ✅ | |
+| `DoubleClick` | ✅ | ✅ | ✅ (`MacBackend::fold_double_click`, #486) | ❌ | Win: `WM_*BUTTONDBLCLK` documented as "not dispatched" (`win/events.rs`); Win-GUI milestone in progress, not this issue's scope. |
+| `WindowResized` | ✅ | ✅ | ✅ (`macos/run.rs:560`, #486) | ✅ | |
+| `WindowClose` | N/A (no OS window) | ✅ (this issue — `gtk::run::activate`'s `connect_close_request`) | ❌ | ✅ (`WM_CLOSE`, pre-existing) | Veto mechanism: app returns `Reaction::Exit` to allow, anything else vetoes. macOS wiring is a D-010 follow-up (may fold into #486). |
+| `Accelerator` | ✅ | ✅ | ✅ (`MacBackend::match_keypress`, #486) | ❌ | Win: no accelerator matching wired yet; Win-GUI milestone in progress. |
+| `ClipboardPaste` | ✅ | ✅ | ✅ (`macos/run.rs:266`, #486) | ❌ | Win: not wired yet; Win-GUI milestone in progress. |
+| `TextCopied` | ✅ | ✅ | ❌ | ❌ | Neither macOS nor Win wire a Ctrl-C-with-selection → `TextCopied` path yet. Out of this issue's scope. |
+
+Verified directly against `quadraui/src/{tui,gtk,macos,win}` on this
+issue's branch, superseding `SMELL_AUDIT_2026-07.md`'s PORT-04 table
+(dated 2026-07-25) where they disagree — #486 landed most of the macOS
+column since that audit ran; re-verify before trusting either table
+against a much later `develop`.
+
+**Optional** (declare the gap via a doc comment / `BackendCaps` once one
+exists for it — do not silently no-op and do not fake it):
+
+| Variant | Status | Note |
+|---|---|---|
+| `CharTyped` | Emitted by **no backend today** | Reserved exclusively for IME-committed composed text (epic #481, IME story #502) — **not** a second way to report a plain keystroke. `KeyPressed{Key::Char}` is the always-on text-input event every backend already emits; two in-tree consumers (`compose::sidebar_system`, `compose::tree_controller`) will double-insert a character if a future backend ever emits both for the same keystroke. See D-010. |
+| `MouseEntered` / `MouseLeft` | Emitted by no backend | Zero consumers anywhere today; kept for future hover-driven features (tooltip auto-show). See D-010. |
+| `FilesDropped` | Emitted by no backend | Zero consumers today; kept for future drag-and-drop file import. See D-010. |
+| `DpiChanged` | Win: ✅ (`WM_DPICHANGED`). GTK: read once at smoke-check time, never on a live runtime change. TUI: N/A (`scale` is always `1.0`). macOS: ❌, not wired. | GTK's live-runtime case is PORT-12's scope, not this issue's. See D-010. |
+| Native menu events (`MenuActivated`, `ContextMenuItemActivated`, `ContextMenuDismissed`) | Backend-dependent, out of this table's scope | Only meaningful on a backend with `BackendCaps::native_menu`. |
+
+`❓` = not verified as part of this pass (out of scope for issue #501;
+don't infer either way from this table). `❌` on a windowed backend for
+a **required** row is a tracked gap, not a design choice — every such
+cell above is either wired in this PR or has a named follow-up issue in
+D-010.
+
+### Conformance tier C2
+
+`quadraui/tests/conformance/c2.rs` (quadraui#501) is the executable
+half of this table: per-backend "native-injection recipes" that call
+each backend's real native→`UiEvent` translation function (not the
+Tier-1 scenario suite's higher-level `AppLogic` replay) with a
+synthetic native input and assert the resulting `UiEvent` has the
+expected shape. It currently covers the mouse/key/scroll/resize core on
+TUI+GTK; `DoubleClick`/`Accelerator`/`ClipboardPaste`/`TextCopied` rows
+are D-010 follow-up work. See `docs/TESTING.md`'s "Conformance tiers"
+section for how C2 relates to C0/C1/C3/C4.
+
 ## Glossary
 
 - **Accelerator**: a stable `AcceleratorId` + `KeyBinding` registered

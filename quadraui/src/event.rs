@@ -32,6 +32,19 @@
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
 //! Native convention on Win32, Cocoa, and GTK.
+//!
+//! ## Emission conformance — required vs. optional (issue #501)
+//!
+//! Not every backend emits every variant, and not every variant needs
+//! to be emitted by every backend to be conformant. `docs/BACKEND.md`'s
+//! "UiEvent emission matrix" is the published required/optional table
+//! per backend, kept in sync with `docs/TESTING.md`'s C2 conformance
+//! tier; `docs/DECISIONS.md`'s D-010 records the per-variant disposition
+//! (wire / optional-capability / keep-undocumented-no-longer) this doc
+//! comment reflects. Two variants get their own doc-comment note below
+//! because the matrix alone doesn't explain *why*: [`Self::CharTyped`]
+//! (the IME-vs-raw-keystroke duality) and [`Self::WindowClose`] (wired
+//! for GTK/Win, tracked as a gap elsewhere for macOS/TUI).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -238,10 +251,34 @@ pub enum UiEvent {
         repeat: bool,
     },
 
-    /// A character was typed, ready for insertion. Routes to the focused
-    /// text-input widget. No backend runs an IME composition pipeline yet
-    /// (tracked under epic #481) — this is a direct keystroke-to-char
-    /// translation, not the result of IME composition.
+    /// An IME **committed** the composed text for one character. Routes
+    /// to the focused text-input widget, same as [`Self::KeyPressed`].
+    ///
+    /// **This is not "a character was typed" in general — that's
+    /// `KeyPressed { key: Key::Char(c), .. }`, which every backend
+    /// already emits and which every text-input consumer in this crate
+    /// (`compose::folder_picker`, and the plain-typing path inside
+    /// `compose::{tree_controller,sidebar_system,chat_controller}`)
+    /// treats as the canonical, always-present text-input event.**
+    /// `CharTyped` is reserved exclusively for the *output* of an IME
+    /// composition sequence (dead-key accents, Japanese/Chinese/Korean
+    /// input, emoji picker commit) — text a user produced through
+    /// multiple keystrokes/UI interactions that resolve to one commit,
+    /// which has no sensible `KeyPressed` translation of its own.
+    ///
+    /// No backend implements IME today (tracked under epic #481, IME
+    /// design story #502) and consequently **no backend emits this
+    /// variant** — every `KeyPressed{Key::Char}` a user types already
+    /// reaches apps through the always-on path above. A future IME
+    /// backend must not emit both for the same keystroke: real IME
+    /// composition consumes the raw keydown while a composition is in
+    /// progress (nothing reaches `KeyPressed` for it), and only the
+    /// final commit produces `CharTyped`. Emitting both would double-
+    /// insert on any consumer that (correctly, per its own doc) listens
+    /// to both — `sidebar_system::SidebarSystem::handle_inner` and
+    /// `tree_controller::TreeController::handle` both call
+    /// `edit_insert_char` from *either* event today, on the assumption
+    /// they're mutually exclusive per keystroke.
     CharTyped(char),
 
     // ── Mouse ──────────────────────────────────────────────────────────
@@ -260,9 +297,19 @@ pub enum UiEvent {
         position: Point,
         buttons: ButtonMask,
     },
+    /// **Optional capability** (D-010, issue #501) — no backend emits
+    /// this today, and no in-tree or downstream consumer matches on it.
+    /// Kept (not removed) because hover state is a real, likely-future
+    /// desktop need (tooltip auto-show, hover highlighting) that has no
+    /// substitute mechanism the way the D-008 dead `*Event` enums did
+    /// (those had a working `*Hit`/`*Layout` replacement already
+    /// shipping; this doesn't). A backend that never emits it is fully
+    /// conformant — declare the gap, don't fake it.
     MouseEntered {
         widget: WidgetId,
     },
+    /// See [`Self::MouseEntered`] — same optional-capability status,
+    /// same rationale, always emitted/not-emitted as a pair.
     MouseLeft {
         widget: WidgetId,
     },
@@ -283,11 +330,36 @@ pub enum UiEvent {
     WindowResized {
         viewport: Viewport,
     },
+    /// **Required capability on every windowed (non-TUI) backend**
+    /// (D-010, issue #501) — the app's only hook to observe or veto an
+    /// OS-level window close (the "×" button, Alt-F4, window-manager
+    /// close). Not applicable to TUI: a terminal has no OS window to
+    /// close independently of the process exiting, so TUI legitimately
+    /// never emits this. GTK's `close-request` signal (`gtk::run`) and
+    /// Win's `WM_CLOSE` (`win::run`) both dispatch this event and only
+    /// let the close proceed when the app's `Reaction` is `Exit` —
+    /// anything else vetoes it. macOS wiring is tracked separately
+    /// (issue #486's window-lifecycle scope), not by this issue.
     WindowClose,
     WindowFocused(bool),
+    /// **Optional capability** (D-010, issue #501) — Win emits this
+    /// from `WM_DPICHANGED` (`win::run`); GTK reads `scale_factor()`
+    /// once at smoke-check time (`gtk::run::schedule_smoke_check`) but
+    /// never on a live runtime DPI change (monitor move, external
+    /// monitor plug/unplug); TUI is always `scale == 1.0`, so it never
+    /// applies there. Wiring GTK's live case is real, wanted future
+    /// work (PORT-12) but out of this issue's scope — declare the gap
+    /// via `BackendCaps` rather than silently no-op.
     DpiChanged(f32),
 
     // ── Drops + paste ──────────────────────────────────────────────────
+    /// **Optional capability** (D-010, issue #501) — no backend emits
+    /// this today, and no in-tree or downstream consumer matches on it.
+    /// Kept for the same reason as [`Self::MouseEntered`]: drag-and-
+    /// drop file import (e.g. an explorer sidebar accepting a dropped
+    /// file) is a real desktop feature with no working substitute
+    /// mechanism in this crate today, unlike the D-008 dead `*Event`
+    /// enums it would be easy to conflate this with.
     FilesDropped {
         paths: Vec<PathBuf>,
         position: Point,
