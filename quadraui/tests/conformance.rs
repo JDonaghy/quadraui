@@ -414,10 +414,14 @@ fn conformance_matrix() {
 ///
 /// A registered backend with nothing to say for a given primitive prints
 /// as a row here, same as a tier-1 `FAIL` — never silence (#492's second
-/// acceptance bullet). Backends this build doesn't compile in (Win,
-/// macOS) simply have no column, matching how `conformance_matrix`
-/// already treats an unregistered backend: the *absence* of a Win/macOS
-/// column in this artifact **is** the gap enumerated, not a hidden pass.
+/// acceptance bullet). A backend this build doesn't compile in simply has
+/// no column, matching how `conformance_matrix` already treats an
+/// unregistered backend: the *absence* of a column in this artifact **is**
+/// the gap enumerated, not a hidden pass. `win` is the one exception
+/// (quadraui#722): it *is* registered here, but as
+/// [`runner::Gating::BurnDown`] rather than blocking — see the `columns.push`
+/// for `"win"` below and `docs/TESTING.md` → *Burn-down columns* for why a
+/// half-built backend gets a column before it can pass one.
 ///
 /// ## What this tier does *not* yet catch, stated plainly
 ///
@@ -429,18 +433,19 @@ fn conformance_matrix() {
 /// `draw_diff_view`'s known fake would turn straight into a hard
 /// `c0_paint_smoke` failure the moment a real macOS host ran it, which is
 /// its own follow-up rather than something to paper over here by, say,
-/// special-casing that one row. `WinBackend` still has no
-/// `ConformanceDriver` at all, so it has nothing to run on any host either
-/// way. The `draw_diff_view` row below is proven on TUI and GTK only.
+/// special-casing that one row. The `draw_diff_view` row below is proven
+/// on TUI and GTK only — `win`'s column has no needle-text coverage at all
+/// yet (see the burn-down note above), so it says nothing about that row
+/// either, just more loudly.
 ///
 /// That is a pre-existing limitation inherited from #491's tier-1 suite
 /// rather than something this tier introduced, and it is why the
 /// capability half of #492 was deliberately built to read *source*
-/// instead (`caps.rs`): `MacBackend`/`WinBackend` are checked there on
-/// every run, on every platform. Closing the paint half needs a macOS/Win
-/// `ConformanceDriver`, which is the follow-up — until it lands, C0's
+/// instead (`caps.rs`): `MacBackend` is checked there on every run, on
+/// every platform. Closing the paint half needs a macOS `ConformanceDriver`
+/// wired into this tier, which is the follow-up — until it lands, C0's
 /// coverage claim is "every primitive, on every backend that has a
-/// driver", not "on every backend".
+/// driver and is wired into this tier", not "on every backend".
 // `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
 // `vec![…]` form clippy suggests would need the cfg attributes on macro
 // arguments — same trade-off `backends()` above already makes.
@@ -450,30 +455,58 @@ fn c0_paint_smoke() {
     struct Column {
         name: &'static str,
         outcomes: Vec<c0::CaseOutcome>,
+        /// See [`runner::Gating`] — a `BurnDown` column's `PANIC`/`FAIL`
+        /// rows are printed and named exactly like a blocking column's,
+        /// but do not fail this test (quadraui#722).
+        gating: Gating,
     }
 
-    // `mut` is unused when neither push below is compiled in — see the
-    // skip arm underneath.
+    // `mut` is unused when none of the pushes below is compiled in — see
+    // the skip arm underneath.
     #[allow(unused_mut)]
     let mut columns: Vec<Column> = Vec::new();
     #[cfg(feature = "tui")]
     columns.push(Column {
         name: "tui",
         outcomes: c0::run::<TuiFactory>(),
+        gating: Gating::Blocking,
     });
     #[cfg(feature = "gtk")]
     columns.push(Column {
         name: "gtk",
         outcomes: c0::run::<GtkFactory>(),
+        gating: Gating::Blocking,
+    });
+    // Win-GUI (quadraui#722): registered burn-down, not blocking — same
+    // posture #708 gave the Tier-1 matrix above, applied to this tier's
+    // per-primitive grid. `WinFactory`/`WinDriver` exist (quadraui#674), so
+    // there is a real driver to smoke, but `WinBackend`'s painted-text-run
+    // recording and `register_zone` are both still a stub/no-op and several
+    // `draw_*` methods are still `todo!()` — an estimated 13 of 45 cases
+    // panic mid-paint today and the rest fail `text_ok`/`observable`
+    // outright. Gating on that would red the windows-latest leg for every
+    // unrelated PR while adding no new information; the row-by-row detail
+    // below *is* the burn-down checklist (#480/#580) this registration
+    // exists to produce.
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    columns.push(Column {
+        name: "win",
+        outcomes: c0::run::<WinFactory>(),
+        gating: Gating::BurnDown,
     });
 
     // With a C0 driver compiled in, an empty column set means the
     // registration above broke — still a hard failure, and still the
     // guard against a vacuous pass.
-    #[cfg(any(feature = "tui", feature = "gtk"))]
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        all(feature = "win", target_os = "windows")
+    ))]
     assert!(
         !columns.is_empty(),
-        "c0_paint_smoke: no backend feature enabled — run with --features tui,gtk"
+        "c0_paint_smoke: no backend feature enabled — run with --features tui,gtk (or --features \
+         win on a windows-latest host)"
     );
 
     // Without one, there is no driver to smoke and nothing to prove
@@ -487,7 +520,7 @@ fn c0_paint_smoke() {
     if columns.is_empty() {
         println!(
             "c0_paint_smoke: SKIPPED — no C0 driver backend in this feature set. \
-             Build with --features tui and/or gtk to run tier 0."
+             Build with --features tui, gtk, and/or win (on Windows) to run tier 0."
         );
         return;
     }
@@ -504,7 +537,19 @@ fn c0_paint_smoke() {
     }
     table.push('\n');
 
-    let mut gaps: Vec<String> = Vec::new();
+    // Split by gating exactly as `verdict` does for the Tier-1 matrix
+    // (quadraui#708): a `BurnDown` column's gaps are printed, named, and
+    // folded into the promotable check below, but never fail this test.
+    let mut blocking_gaps: Vec<String> = Vec::new();
+    let mut burn_down_gaps: Vec<String> = Vec::new();
+    // Which burn-down columns failed at least one case. Every case in
+    // `CASES` always runs here — there is no capability-skip concept at
+    // this tier — so unlike `verdict`'s `ran` set, "did it run" is not in
+    // question; only "did it ever fail" is, which is exactly what decides
+    // promotability.
+    let mut burn_down_failed: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
+
     for (i, case) in c0::CASES.iter().enumerate() {
         table.push_str(&format!("{:<method_w$}", case.method));
         for col in &columns {
@@ -531,20 +576,58 @@ fn c0_paint_smoke() {
                         outcome.reported
                     )
                 };
-                gaps.push(format!("{}/{}: {why}", col.name, case.method));
+                let line = format!("{}/{}: {why}", col.name, case.method);
+                if col.gating == Gating::BurnDown {
+                    burn_down_failed.insert(col.name);
+                    burn_down_gaps.push(line);
+                } else {
+                    blocking_gaps.push(line);
+                }
             }
         }
         table.push('\n');
     }
+
+    let burn_down: std::collections::BTreeSet<&'static str> = columns
+        .iter()
+        .filter(|c| c.gating == Gating::BurnDown)
+        .map(|c| c.name)
+        .collect();
+    // Same legend `conformance_matrix` prints under its own table — a
+    // reader must never mistake a non-gating `FAIL`/`PANIC` row here for a
+    // regression (quadraui#708/#722).
+    table.push_str(&burn_down_legend(&burn_down));
     println!("{table}");
 
+    if !burn_down_gaps.is_empty() {
+        println!(
+            "{} non-gating C0 gap(s) on burn-down column(s) {:?} — implementation checklist, \
+             not a regression, and does not fail this test:\n{}",
+            burn_down_gaps.len(),
+            burn_down,
+            burn_down_gaps.join("\n")
+        );
+    }
+
     assert!(
-        gaps.is_empty(),
+        blocking_gaps.is_empty(),
         "{} C0 paint-smoke gap(s) — a primitive either panicked, dropped its text, or left the \
          frame unobservable, which contract §5b (tests/acceptance/ms-11/contract.md) treats as \
          indistinguishable from the trait's no-op default:\n{}\n{table}",
-        gaps.len(),
-        gaps.join("\n")
+        blocking_gaps.len(),
+        blocking_gaps.join("\n")
+    );
+
+    // Self-expiring, same as `verdict`'s `promotable` check (quadraui#708):
+    // a burn-down column that stops failing is a column nobody has any
+    // reason not to gate on, so leaving it non-gating forever would let a
+    // green column silently stop protecting anything.
+    let promotable: Vec<&'static str> = burn_down.difference(&burn_down_failed).copied().collect();
+    assert!(
+        promotable.is_empty(),
+        "C0 burn-down backend(s) {:?} failed no case — promote them from `Gating::BurnDown` to \
+         `Gating::Blocking` in `c0_paint_smoke` so their column gates again (quadraui#708).\n{table}",
+        promotable
     );
 }
 
