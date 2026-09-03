@@ -280,6 +280,25 @@ pub struct WinBackend {
     /// [`Backend::set_cursor`] (below) always records it regardless of
     /// host — only *applying* it via `SetCursor` is Windows-only.
     current_pointer_shape: PointerShape,
+    /// Whether [`Self::begin_frame`]/[`Self::end_frame`] should bracket
+    /// the frame in the shared paint-time text-run recording sink
+    /// (`crate::testing::install_text_run_sink`/`take_text_run_sink`) and
+    /// drain it into [`Self::text_runs`] — mirrors
+    /// `GtkBackend::painted_text_recording` / `MacBackend::painted_text_recording`.
+    /// Off by default: a live app never reads `text_runs`, and recording
+    /// every run would allocate a `String` per painted text run per
+    /// frame. [`super::testing::WinDriver`] turns it on (quadraui#721).
+    /// Not `target_os`-gated: the flag itself is a plain `bool` with no
+    /// WinAPI dependency, only the paint calls that would ever populate
+    /// anything are.
+    painted_text_recording: bool,
+    /// Text runs recorded during the last frame, when
+    /// `painted_text_recording` is on — the `WinDriver::find`/`find_bounds`
+    /// /`inventory`/`screen_has` backing store (quadraui#721). Populated
+    /// by draining the shared sink at the end of [`Self::end_frame`];
+    /// mirrors `MacBackend::text_runs`'s lifecycle. Not `target_os`-gated
+    /// for the same reason as `painted_text_recording` above.
+    text_runs: Vec<crate::testing::TextRun>,
 }
 
 impl WinBackend {
@@ -307,6 +326,8 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             editor_font_size_pt: 11.0,
             current_pointer_shape: PointerShape::Default,
+            painted_text_recording: false,
+            text_runs: Vec::new(),
         }
     }
 
@@ -579,6 +600,31 @@ impl WinBackend {
             );
         }
     }
+
+    // ── Paint-time text-run recording (quadraui#721) ────────────────────
+
+    /// Enable/disable the paint-time text-run recording that backs
+    /// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`/
+    /// `screen_has`. Off by default — see [`Self::text_runs`].
+    ///
+    /// `target_os`-gated (unlike the `painted_text_recording` field it
+    /// writes): its only caller, [`super::testing::WinDriver::new`], lives
+    /// in `win::testing`, which is itself windows-only (see that module's
+    /// doc) — so on every other host this method has no caller and would
+    /// otherwise be flagged `dead_code` under this crate's `-D warnings`.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
+        self.painted_text_recording = enabled;
+    }
+
+    /// Text runs recorded during the last [`Self::begin_frame`]/
+    /// [`Self::end_frame`] bracket, when [`Self::set_painted_text_recording`]
+    /// is on. `target_os`-gated for the same reason that method is — see
+    /// its doc.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn text_runs(&self) -> &[crate::testing::TextRun] {
+        &self.text_runs
+    }
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
@@ -649,6 +695,15 @@ impl Backend for WinBackend {
         // lifecycle as `GtkBackend`/`MacBackend`'s `focused_activity_bar`
         // (quadraui#707).
         self.focused_activity_bar = None;
+        // Install the shared paint-time text-run recording sink for the
+        // duration of this frame — drained into `self.text_runs` by
+        // `end_frame` below. Mirrors `MacBackend::enter_frame_scope`'s
+        // start/stop bracket (quadraui#721); Win-GUI needs no closure-based
+        // frame scope of its own, since `draw_*` trait methods already
+        // have `&mut self` throughout the frame.
+        if self.painted_text_recording {
+            let _ = crate::testing::install_text_run_sink();
+        }
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             // `BeginDraw`/`Clear` are infallible on `ID2D1RenderTarget`
@@ -676,6 +731,12 @@ impl Backend for WinBackend {
     }
 
     fn end_frame(&mut self) {
+        // Drain the sink `begin_frame` installed, if recording was on —
+        // see that method's doc for why this needs no closure-based frame
+        // scope the way GTK/macOS's `enter_frame_scope` does.
+        if self.painted_text_recording {
+            self.text_runs = crate::testing::take_text_run_sink(None);
+        }
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             // `EndDraw` fails for two distinct reasons, both handled the

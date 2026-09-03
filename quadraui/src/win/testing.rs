@@ -325,28 +325,19 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// accelerator matching) identically to a real keypress — mirrors
 /// `MacDriver`'s "no drift from production" contract.
 ///
-/// ## Limitations
+/// ## Painted-text recording (quadraui#721)
 ///
-/// Unlike [`crate::tui::testing::TuiDriver`] / [`crate::gtk::testing::GtkDriver`]
-/// / [`crate::macos::testing::MacDriver`], this driver has no
-/// `find`/`screen_contains`/painted-text-run recording yet: `WinBackend`
-/// doesn't instrument its `draw_text` call sites the way
-/// `GtkBackend`/`MacBackend` do (no `TextRun` list, no
-/// `set_painted_text_recording`). Assert on [`Self::pixel`] colours
-/// instead until that instrumentation lands — the same gap
-/// `HeadlessSurface`'s own module docs note for `WinBackend` generally.
-///
-/// It **does** implement [`crate::testing::ConformanceDriver`] (quadraui#708)
-/// so the conformance suite (`tests/conformance.rs`) has a `win` row at
-/// all — every step that needs to locate painted text
-/// (`click_text`/`AssertScreenHas`/…) reports "not painted" and the
-/// scenario fails, honestly, rather than the suite having no Win-GUI
-/// column to report against. That failing matrix *is* the
-/// text-run-recording work's checklist (see `tests/conformance.rs`'s own
-/// module doc: "For a backend that doesn't exist yet … that artifact is
-/// the implementation checklist"). Once `WinBackend` gains painted-text
-/// recording, replace this driver's `find_bounds`/`find` `None` stubs
-/// below with a real scan and this whole class of failure clears at once.
+/// Like [`crate::gtk::testing::GtkDriver`] / [`crate::macos::testing::MacDriver`],
+/// this driver records every [`super::text::DWrite::draw_text`]/
+/// `draw_text_styled` call into [`super::backend::WinBackend::text_runs`]
+/// — [`Self::new`] turns recording on — so [`Self::find`]/
+/// [`Self::find_bounds`]/[`Self::screen_contains`]/[`Self::painted_texts`]
+/// and the [`crate::testing::ConformanceDriver`] surface
+/// (`click_text`/`AssertScreenHas`/…) resolve real painted text instead
+/// of an honest `None`/`false` stub. Coverage is exactly as wide as the
+/// rasterisers that have landed against `super::text::draw_text`'s choke
+/// point — every `todo!()`-stub rasteriser still contributes nothing,
+/// same as it contributes no pixels.
 pub struct WinDriver<A: AppLogic> {
     app: A,
     backend: WinBackend,
@@ -375,6 +366,12 @@ impl<A: AppLogic> WinDriver<A> {
         let surface = HeadlessSurface::new(width, height)
             .expect("WinDriver::new: create offscreen Direct2D DC render target");
         let mut backend = WinBackend::new();
+        // Record every painted text run into `WinBackend::text_runs` so
+        // `find`/`find_bounds`/`screen_contains`/`inventory` can locate
+        // text from any DirectWrite-painted primitive — off in
+        // production, mirrors `GtkBackend::set_painted_text_recording` /
+        // `MacBackend::set_painted_text_recording` (quadraui#721).
+        backend.set_painted_text_recording(true);
         backend
             .attach_headless(surface.target().clone(), width, height)
             .expect("WinDriver::new: attach headless surface to WinBackend");
@@ -513,6 +510,44 @@ impl<A: AppLogic> WinDriver<A> {
     pub fn pixel(&self, x: u32, y: u32) -> Color {
         self.surface.pixel_at(x, y)
     }
+
+    /// All text painted during the last [`Self::render`], as recorded at
+    /// the [`super::text::DWrite::draw_text`]/`draw_text_styled` choke
+    /// point (quadraui#721).
+    pub fn painted_texts(&self) -> Vec<&str> {
+        self.backend
+            .text_runs()
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect()
+    }
+
+    /// True if any painted text contains `needle` — the Win-GUI analogue
+    /// of [`crate::gtk::testing::GtkDriver::screen_contains`] /
+    /// [`crate::macos::testing::MacDriver::screen_contains`].
+    pub fn screen_contains(&self, needle: &str) -> bool {
+        self.backend
+            .text_runs()
+            .iter()
+            .any(|r| r.text.contains(needle))
+    }
+
+    /// Bounds (DIPs) of the first painted text run containing `needle`.
+    pub fn find_bounds(&self, needle: &str) -> Option<Rect> {
+        self.backend
+            .text_runs()
+            .iter()
+            .find(|r| r.text.contains(needle))
+            .map(|r| r.bounds)
+    }
+
+    /// Center coordinates (DIPs) of the first painted text run containing
+    /// `needle` — pass straight to [`Self::click`]. `None` if nothing
+    /// painted this frame matched.
+    pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.find_bounds(needle)
+            .map(|b| (b.x + b.width / 2.0, b.y + b.height / 2.0))
+    }
 }
 
 /// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
@@ -545,23 +580,26 @@ impl<A: AppLogic> DriverInput for WinDriver<A> {
 }
 
 /// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
-/// shared pixel-unit bodies (quadraui#708). `find_bounds`/`find` are
-/// honest `None` stubs — see [`WinDriver`]'s module doc's "Limitations"
-/// section — so any conformance step that reaches
+/// shared pixel-unit bodies (quadraui#708), resolved against the real
+/// painted-text-run recording described on [`WinDriver`]'s module doc
+/// (quadraui#721). A needle no rasteriser has painted this frame (either
+/// because it genuinely isn't on screen, or because its rasteriser is
+/// still a `todo!()` stub) reports `None`/`false`, same as every other
+/// backend's driver does for a genuinely-missing needle — any
+/// conformance step that reaches
 /// [`PixelClickConformance::click_text_at`]/`drag_text`/`scroll_at`
 /// directly (rather than through the runner's `require_painted` guard,
 /// which turns a `None` into a graceful `Outcome::Fail` first) panics
-/// with a `"WinDriver: … not painted"` message, same as every other
-/// backend's driver does for a genuinely-missing needle.
+/// with a `"WinDriver: … not painted"` message.
 impl<A: AppLogic> PixelClickConformance for WinDriver<A> {
     const NAME: &'static str = "WinDriver";
 
-    fn find_bounds(&self, _needle: &str) -> Option<Rect> {
-        None
+    fn find_bounds(&self, needle: &str) -> Option<Rect> {
+        self.find_bounds(needle)
     }
 
-    fn find(&self, _needle: &str) -> Option<(f32, f32)> {
-        None
+    fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.find(needle)
     }
 
     fn conformance_line_height(&self) -> f32 {
@@ -619,13 +657,18 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
     }
 
     fn inventory(&self) -> FrameInventory {
-        // No painted-text-run recording yet (see the module doc) — an
-        // honestly-empty inventory, not a guess.
-        FrameInventory::default()
+        FrameInventory {
+            text_runs: self.backend.text_runs().to_vec(),
+            // `WinBackend` doesn't yet call `Backend::register_zone`
+            // anywhere (no rasteriser wires it up) — no zone, rather than
+            // a wrong one, same posture `gtk`/`macos` take for any
+            // primitive that hasn't been wired to `register_zone` either.
+            zones: Vec::new(),
+        }
     }
 
-    fn screen_has(&self, _needle: &str) -> bool {
-        false
+    fn screen_has(&self, needle: &str) -> bool {
+        self.screen_contains(needle)
     }
 
     fn exited(&self) -> bool {
@@ -669,5 +712,64 @@ mod tests {
         let outside = surface.pixel_at(20, 20);
         assert_eq!((inside.r, inside.g, inside.b), (0, 255, 0));
         assert_eq!((outside.r, outside.g, outside.b), (0, 0, 0));
+    }
+
+    /// A minimal `AppLogic` that paints one `StatusBar` segment — the
+    /// acceptance scenario quadraui#721 names: `WinDriver::find` should
+    /// locate a status-bar label, and `inventory().text_runs()` should be
+    /// non-empty, after a real `WinBackend::draw_status_bar` paint
+    /// (`super::status_bar::draw_status_bar`, which paints through
+    /// [`super::text::DWrite::draw_text_styled`] — the choke point this
+    /// module's recording hooks into).
+    struct StatusBarApp;
+
+    impl AppLogic for StatusBarApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn crate::Backend, _area: ()) {
+            backend.draw_status_bar(
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+                &crate::StatusBar {
+                    id: crate::WidgetId::new("status"),
+                    left_segments: vec![crate::StatusBarSegment {
+                        text: "NORMAL".into(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: Color::rgb(10, 20, 30),
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                None,
+                None,
+            );
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// quadraui#721's acceptance criterion, verified headlessly (the real
+    /// `windows-latest` run is what `ci.yml`'s "Test (win feature, real
+    /// Windows)" step covers — see `HeadlessSurface`'s module doc for why
+    /// this needs no live `HWND`/GPU/display to be a faithful stand-in).
+    #[test]
+    fn find_locates_a_status_bar_segment_after_paint() {
+        let driver = WinDriver::new(StatusBarApp, 200, 20);
+
+        assert!(
+            driver.find("NORMAL").is_some(),
+            "WinDriver::find should locate the painted status-bar segment: {:?}",
+            driver.painted_texts()
+        );
+        assert!(driver.screen_contains("NORMAL"));
+
+        let inventory = ConformanceDriver::inventory(&driver);
+        assert!(
+            !inventory.text_runs().is_empty(),
+            "inventory().text_runs() should be non-empty after a status-bar paint"
+        );
+        assert!(inventory.screen_has("NORMAL"));
     }
 }

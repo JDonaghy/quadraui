@@ -733,14 +733,14 @@ impl GtkBackend {
         // drain it after. See `painted_text`'s docs for why the drain
         // happens here (after the frame) rather than per `draw_*` call.
         let prev_sink = if self.painted_text_recording {
-            Some(super::painted_text::install_sink())
+            Some(crate::testing::install_text_run_sink())
         } else {
             None
         };
         let result = f(self);
         if let Some(prev_sink) = prev_sink {
-            for (text, bounds) in super::painted_text::take_sink(prev_sink) {
-                self.record_painted_text(&text, bounds);
+            for run in crate::testing::take_text_run_sink(prev_sink) {
+                self.record_painted_text(&run.text, run.bounds);
             }
         }
         self.current_cr_ptr.set(prev_cr);
