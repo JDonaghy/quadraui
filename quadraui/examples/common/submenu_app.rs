@@ -256,7 +256,8 @@ impl SubmenuApp {
             })
         });
         backend
-            .modal_stack_mut()
+            .modal_stack_handle()
+            .borrow_mut()
             .push(WidgetId::new("ctx-menu"), layout.bounds);
         self.ctx_menu = Some(CtxState {
             menu,
@@ -267,7 +268,10 @@ impl SubmenuApp {
     }
 
     fn close_ctx_menu(&mut self, backend: &mut dyn Backend) {
-        backend.modal_stack_mut().pop(&WidgetId::new("ctx-menu"));
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .pop(&WidgetId::new("ctx-menu"));
         self.ctx_menu = None;
     }
 

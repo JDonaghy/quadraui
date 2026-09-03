@@ -2265,12 +2265,6 @@ mod tests {
         }
         fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
         fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
-        fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
-            unimplemented!()
-        }
-        fn drag_and_modal_mut(&mut self) -> (&mut crate::DragState, &mut crate::ModalStack) {
-            unimplemented!()
-        }
         fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
             unimplemented!()
         }

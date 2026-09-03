@@ -730,35 +730,6 @@ impl Backend for WinBackend {
 
     // ─── Modal-overlay tracking ───────────────────────────────────────
 
-    fn modal_stack_mut(&mut self) -> &mut ModalStack {
-        // `modal_stack` moved behind `Rc<RefCell<>>` for quadraui#699
-        // (so `modal_stack_handle` can hand back a handle that outlives
-        // this borrow) — same shape and same leak-based trait-signature
-        // bridge as `GtkBackend::modal_stack_mut`. See that method's
-        // SAFETY comment for the full rationale; it applies unchanged
-        // here.
-        //
-        // SAFETY: `Rc::as_ptr` returns a stable pointer to the
-        // `RefCell`'s inner. The trait's contract is that callers don't
-        // reentrantly call back into this backend while holding the
-        // returned `&mut ModalStack`.
-        unsafe {
-            let cell_ptr = Rc::as_ptr(&self.modal_stack);
-            &mut *(*cell_ptr).as_ptr()
-        }
-    }
-
-    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        // SAFETY: same leak-via-`Rc::as_ptr` rationale as
-        // `modal_stack_mut` above, applied to both fields — separate
-        // `Rc<RefCell<>>`s, so the two leaked derefs never alias.
-        unsafe {
-            let drag_ptr = Rc::as_ptr(&self.drag_state);
-            let modal_ptr = Rc::as_ptr(&self.modal_stack);
-            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
-        }
-    }
-
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
         self.modal_stack.clone()
     }

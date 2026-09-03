@@ -38,7 +38,8 @@
 //!
 //! Registering a modal in this stack makes it hit-testable, but nothing
 //! *forces* a backend to also paint it — those are two independent code
-//! paths (`modal_stack_mut().push(...)` vs. `backend.draw_dialog(...)`),
+//! paths (`modal_stack_handle().borrow_mut().push(...)` vs.
+//! `backend.draw_dialog(...)`),
 //! and a backend that pushes without ever painting (or paints without
 //! ever pushing) produces a defect that reads correctly at every other
 //! layer: input is healthy, state is right, hit-testing works — the
@@ -86,8 +87,8 @@ pub struct ModalEntry {
 /// Top-of-stack-is-topmost ordered list of open modal overlays.
 ///
 /// Backends hold one instance (typically on their concrete backend
-/// struct; the trait exposes
-/// [`crate::Backend::modal_stack_mut`][crate::Backend::modal_stack_mut]).
+/// struct behind `Rc<RefCell<_>>`; the trait exposes
+/// [`crate::Backend::modal_stack_handle`][crate::Backend::modal_stack_handle]).
 /// The app mutates it through modal-open and modal-close code paths
 /// (typically in the engine's picker/dialog-open state transitions);
 /// quadraui's dispatcher reads it.

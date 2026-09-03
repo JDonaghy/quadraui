@@ -29,9 +29,10 @@
 //!
 //! Drag-state observation is normally a backend implementation
 //! detail — only `crate::dispatch::*` needs to inspect it directly.
-//! It's still exposed via [`crate::Backend::drag_and_modal_mut`] (#467)
-//! so `&mut dyn Backend` consumers (e.g. a `ShellApp`'s mouse-dispatch
-//! logic) can reach it without downcasting to the concrete backend.
+//! It's still reachable via [`crate::Backend::drag_state_handle`]
+//! (#467, #699, #704) so `&mut dyn Backend` / `&dyn Backend`
+//! consumers (e.g. a `ShellApp`'s mouse-dispatch logic) can reach it
+//! without downcasting to the concrete backend.
 //!
 //! Event flow goes through the trait: [`Self::wait_events`] reads
 //! crossterm events, translates them via
@@ -925,43 +926,6 @@ impl Backend for TuiBackend {
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
         self.accelerators.remove(id);
         self.parsed_accelerators.retain(|(_, eid)| eid != id);
-    }
-
-    fn modal_stack_mut(&mut self) -> &mut ModalStack {
-        // `modal_stack` moved behind `Rc<RefCell<>>` for quadraui#699
-        // (so `modal_stack_handle` can hand back a handle that outlives
-        // this borrow), the same shape `GtkBackend::modal_stack_mut`
-        // already uses. See that method's SAFETY comment for the full
-        // rationale; it applies unchanged here.
-        //
-        // SAFETY: `Rc::as_ptr` returns a stable pointer to the
-        // `RefCell`'s inner. The trait's contract is that callers don't
-        // reentrantly call back into this backend while holding the
-        // returned `&mut ModalStack` — if they did, a real
-        // `RefCell::borrow_mut` would panic on the double-borrow, and
-        // this leak just skips that dynamic check.
-        unsafe {
-            let cell_ptr = Rc::as_ptr(&self.modal_stack);
-            &mut *(*cell_ptr).as_ptr()
-        }
-    }
-
-    /// Disjoint mutable borrows of drag state and modal stack.
-    /// `mouse.rs::handle_mouse` (quadraui + downstream consumers'
-    /// `ShellApp::handle` mouse dispatch) needs both at the same
-    /// time, and borrowing each field through a separate `&mut self`
-    /// accessor would conflict — this splits the field borrows in
-    /// one call. See [`crate::Backend::drag_and_modal_mut`] (#467).
-    fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        // SAFETY: same leak-via-`Rc::as_ptr` rationale as
-        // `modal_stack_mut` above, applied to both fields — they are
-        // separate `Rc<RefCell<>>`s, so the two leaked derefs never
-        // alias.
-        unsafe {
-            let drag_ptr = Rc::as_ptr(&self.drag_state);
-            let modal_ptr = Rc::as_ptr(&self.modal_stack);
-            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
-        }
     }
 
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
@@ -2357,22 +2321,6 @@ mod tests {
         }
         fn register_accelerator(&mut self, _a: &Accelerator) {}
         fn unregister_accelerator(&mut self, _id: &AcceleratorId) {}
-        fn modal_stack_mut(&mut self) -> &mut ModalStack {
-            // SAFETY: see `TuiBackend::modal_stack_mut` — same leak,
-            // same no-reentrancy contract; this mock is single-threaded
-            // test code that never calls back into itself mid-borrow.
-            unsafe {
-                let cell_ptr = Rc::as_ptr(&self.modal_stack);
-                &mut *(*cell_ptr).as_ptr()
-            }
-        }
-        fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-            unsafe {
-                let drag_ptr = Rc::as_ptr(&self.drag_state);
-                let modal_ptr = Rc::as_ptr(&self.modal_stack);
-                (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
-            }
-        }
         fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
             self.modal_stack.clone()
         }
@@ -3134,10 +3082,11 @@ mod tests {
     fn mock_backend_modal_stack_routes_through_trait() {
         // Modal stack is on the trait too — backends that implement it
         // wire into `crate::dispatch::dispatch_mouse_down` automatically.
-        let mut mock = MockBackend::new();
-        mock.modal_stack_mut()
+        let mock = MockBackend::new();
+        mock.modal_stack_handle()
+            .borrow_mut()
             .push(WidgetId::new("test:popup"), QRect::new(0.0, 0.0, 10.0, 5.0));
-        assert_eq!(mock.modal_stack_mut().len(), 1);
+        assert_eq!(mock.modal_stack_handle().borrow().len(), 1);
     }
 
     /// quadraui#699: `TuiBackend::modal_stack_handle` must hand back a
@@ -3156,9 +3105,26 @@ mod tests {
         assert_eq!(h2.borrow().len(), 1);
     }
 
-    /// quadraui#699: the whole point of `modal_stack_handle` over
-    /// `modal_stack_mut` is that the handle outlives the borrow that
-    /// produced it — this is the stash-then-reuse pattern GTK hosts
+    /// quadraui#704: the bridge methods this issue removed
+    /// (`modal_stack_mut()` / `drag_and_modal_mut()`) synthesized a
+    /// `&mut ModalStack` via `unsafe { Rc::as_ptr(..) }`, which bypassed
+    /// `RefCell`'s runtime borrow check entirely — two live mutable
+    /// aliases would silently corrupt state instead of panicking. Now
+    /// that `modal_stack_handle()` is the only way to reach the stack,
+    /// holding a `borrow_mut()` while a second one is taken through the
+    /// same (or another) handle must panic loudly, not alias silently.
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn modal_stack_handle_reentrant_borrow_mut_panics_loudly() {
+        let backend = TuiBackend::new();
+        let handle = backend.modal_stack_handle();
+        let _first = handle.borrow_mut();
+        let _second = handle.borrow_mut(); // must panic: real double-borrow check
+    }
+
+    /// quadraui#699: the whole point of `modal_stack_handle` is that
+    /// the handle outlives the borrow that produced it — this is the
+    /// stash-then-reuse pattern GTK hosts
     /// (and vimcode's macOS host, once #699 lands there too) depend on.
     /// Prove it compiles and behaves through `&mut dyn Backend`, not
     /// just the concrete `TuiBackend` type.
@@ -3240,13 +3206,14 @@ mod tests {
         let mut backend = TuiBackend::new();
         backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
         backend
-            .modal_stack_mut()
+            .modal_stack_handle()
+            .borrow_mut()
             .push(dialog_id.clone(), layout.bounds);
 
         // Registered but not yet drawn this frame — exactly the drift
         // #455 wants surfaced.
         assert_eq!(
-            backend.modal_stack_mut().unpainted_ids(),
+            backend.modal_stack_handle().borrow().unpainted_ids(),
             vec![dialog_id.clone()]
         );
 
@@ -3261,13 +3228,20 @@ mod tests {
 
         // draw_dialog ran through the real trait method and marked its
         // own id painted — the drift is gone for this frame.
-        assert!(backend.modal_stack_mut().unpainted_ids().is_empty());
+        assert!(backend
+            .modal_stack_handle()
+            .borrow()
+            .unpainted_ids()
+            .is_empty());
 
         // The next frame must reset the mark: a backend that stops
         // calling draw_dialog (even though the modal stays registered)
         // has to be caught again, not remembered as painted forever.
         backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
-        assert_eq!(backend.modal_stack_mut().unpainted_ids(), vec![dialog_id]);
+        assert_eq!(
+            backend.modal_stack_handle().borrow().unpainted_ids(),
+            vec![dialog_id]
+        );
     }
 
     // ─── Stage 6: accelerator matching ──────────────────────────────────────

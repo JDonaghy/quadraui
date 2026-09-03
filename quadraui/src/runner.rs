@@ -25,7 +25,7 @@
 //! `draw_*` methods. Wrapping it in a `RenderCtx` would add a parallel
 //! API to maintain without hiding anything meaningful. Direct backend
 //! access also gives apps `services()` (clipboard, dialogs) and
-//! `modal_stack_mut()` for free in the event handler.
+//! `modal_stack_handle()` for free in the event handler.
 //!
 //! # AreaId associated type
 //!
