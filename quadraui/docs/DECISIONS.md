@@ -640,3 +640,160 @@ scoped separately because it touches 11 primitives' worth of
   `Backend::draw_*`-only indefinitely — the rule is "if it's composed
   into a `ScreenLayout` frame, it needs a `Surface` variant," not
   "every primitive must have one."
+
+## D-007 — `Backend` trait symmetry: missing `*_layout` methods, off-trait rasteriser fns (issue #506)
+
+### Question
+
+#456/D-006 found that `Surface` and `Backend::draw_*` were two paint
+paths with nothing steering a consumer toward one. #506 is the
+trait-internal half of the same audit: does every primitive with a
+real `layout()` also expose a `Backend::<name>_layout` method, the way
+`data_table_layout` / `tree_layout` / `chart_layout` etc. already do?
+And are there rasteriser entry points that exist only as backend-crate
+free functions (`tui_board_layout`, `mac_list_layout`, ...) with no
+trait-level home at all — the "off-trait rasteriser fns" CLAUDE.md's
+portability commitment §1 calls a bug, since a Windows/macOS author
+can't discover them by reading the trait?
+
+### Audit
+
+Six primitives had a `draw_<name>` but no `<name>_layout` twin, despite
+a real `layout()` existing somewhere in the stack:
+
+| Primitive | What existed before #506 |
+|---|---|
+| `BoardModel` | `board_layout` free fn (`primitives/board.rs`); every backend already wrapped it in its own off-trait helper (`tui_board_layout` / `gtk_board_layout` / `mac_board_layout`) — nothing put it on the trait |
+| `ListView` | `ListView::layout()` (`primitives/list.rs:176`); TUI/GTK computed it *inline* inside `draw_list` (no reusable fn at all); Win/macOS had off-trait `win_list_layout` / `mac_list_layout` |
+| `Editor` | `Editor::layout()` (`primitives/editor.rs:524`); every backend's `draw_editor` already calls it with `(self.char_width(), self.line_height())` |
+| `Terminal` | `Terminal::layout()` (`primitives/terminal.rs:251`, plus `TerminalLayout::hit_test` / `cell_bounds`); **no backend called it at all** — `draw_terminal` iterates cells directly and callers had to re-derive `rect.width / char_width` by hand to hit-test a click |
+| `DiffView` | No standalone `layout()`; `DiffViewLayout { visible_rows, total_rows }` was computed by hand, identically, inside every backend's `draw_diff_view` (header-row reservation in side-by-side mode, `+1` per hunk in unified mode) |
+| `Palette` | `Palette::layout()` (`primitives/palette.rs:273`); Win/macOS had off-trait `win_palette_layout` / `mac_palette_layout`. **See "Palette: deferred, not missed" below — this one did not get a trait method.** |
+
+Off-trait rasteriser entry points named in the issue, re-audited against
+the *current* tree (some had already been resolved by earlier work on
+this branch before #506 started):
+
+| Entry point | Resolution |
+|---|---|
+| `draw_terminal_divider` | Already a `Backend` method on all four backends (no default — `PRIMITIVE_RULES.md` rule 7). The issue text predates this; no action needed. |
+| `draw_settings_chrome` | Same — already a required `Backend` method (TUI + GTK implement it; no consumer needs it on Win/macOS yet). No action needed. |
+| `tui_dialog_layout` | **Exempt, by design.** `Dialog` is an *overlay-with-caller-anchor* primitive (see the convention table below) — same class as `Tooltip`/`ContextMenu`/`Completions`. The host builds its own `DialogMeasure` from portable `Backend::line_height()` and calls `dialog.layout(...)` directly (see `examples/common/modal_occlusion_demo.rs::dialog_layout`); no `Backend::dialog_layout` exists for any of those primitives, and Dialog shouldn't be the odd one out. `tui_dialog_layout` is TUI's *own* internal default measurer for dialogs TUI paints without a caller-supplied `DialogMeasure` — a backend-private convenience, not a missing trait method. |
+| `draw_context_menu_with_submenus` (TUI only) | **Exempt, written down, not promoted.** GTK has no cascading-submenu rasteriser yet (#371). A trait method here would need a default for GTK/Win/macOS, and CLAUDE.md's portability commitment explicitly rejects a no-op default that silently hides a real capability gap (`draw_terminal_divider`'s doc, `docs/SMELL_AUDIT_2026-07.md` PORT-01) — unlike `TabChrome`/`ActivityBarStyle`, ignoring `submenu_path` isn't a legitimate "no chrome vocabulary" fallback, it's "multi-level menus silently don't cascade." Also has zero call sites today (no compose helper or example wires it up) — it's a tested capability with no production consumer. Revisit once #371 gives GTK a real submenu rasteriser to pair it with; promoting it before that would ship a trait method that is honest for one backend out of four. |
+| `mac_palette_layout` | **Deferred alongside `palette_layout` — see below.** |
+| `mac_list_layout` | **Resolved.** Now the real backing implementation of `Backend::list_layout` for macOS (this issue). Kept as a `pub fn` — same "public free fn is the primitive-side thin wrapper" shape `data_table_layout`'s implementers already use; not deprecated, since nothing about its own contract changed. |
+| `gtk::MenuOverlay` | **Exempt, decided.** This is a GTK-hosting/compositing helper (coordinate transform for GTK's native overlay-widget positioning), not a primitive rasteriser — it implements no primitive's `layout()`/paint contract, so there is no `draw_<name>` for it to pair with. TUI/Win/macOS have no equivalent concept because they don't have GTK's overlay-widget model to bridge into. Same category as `AppShell`'s GTK widget-tree bootstrap: legitimately backend-specific, and rule 7 ("every primitive gets a trait method") doesn't apply to it because it isn't a primitive. |
+
+### Palette: deferred, not missed
+
+`palette_layout` looks like the same fix as `list_layout` — add the
+missing trait method, wire each backend's existing helper into it. The
+audit found a reason not to do that yet: **GTK's `draw_palette` paints
+item rows at `rows_y + i*line_height`, computed independently of the
+`PaletteLayout` struct's own `visible_items[i].bounds.y`.** When
+`show_query` is true, GTK reserves an extra 1px for the query/list
+separator stroke *outside* the `Palette::layout()` call (baked into
+`rows_y`, not into the `query_height` argument), so the struct's own
+`bounds.y` under-reports the real paint position by that 1px. This is
+harmless today only because `draw_palette` returns `()` — nothing
+outside the function ever reads the mismatched struct.
+
+Shipping `Backend::palette_layout` now would make that latent 1px drift
+externally visible the moment a host trusted it for hit-testing —
+exactly the "paint and no-paint silently disagree" bug class rule 5
+("one source of truth for layout") and the `mac_tree_layout` postmortem
+in `LESSONS.md` both exist to prevent. TUI's `draw_palette` doesn't
+call `Palette::layout()` at all (its border/query/separator rows
+predate the shared D6 layout refactor other primitives went through),
+which is a second, larger version of the same problem: a `tui_palette_layout`
+built from scratch today would be a parallel reimplementation, not an
+extraction, with no guarantee it matches what `draw_palette` actually
+paints.
+
+**Decision: do not add `Backend::palette_layout` in this PR.** Fixing
+`gtk::draw_palette` to consume `PaletteLayout.visible_items[i].bounds`
+directly (eliminating the independent `rows_y` recomputation) and
+refactoring `tui::draw_palette` to route through `Palette::layout()`
+are both rendering-behavior changes, not trait-symmetry ones — real
+work, tracked as a follow-up, that must land *before* a `palette_layout`
+trait method can honestly claim to match its `draw_palette` twin. Rule
+5 exists precisely so a new `*_layout` method is never the first thing
+to notice a paint function's internal layout was already lying.
+
+### Decision: the convention table
+
+Three conventions coexist on the trait, and #506 asked which primitive
+class picks which. Audited against every `draw_<name>` / `<name>_layout`
+pair on the trait:
+
+| Primitive class | Convention | Examples |
+|---|---|---|
+| **Content-in-rect** (backend paints inline, inside a caller-supplied `rect`, and can compute the same layout without a live paint context) | **Paired**: `draw_<name>` + `<name>_layout`, both taking `rect`. | `data_table_layout`, `tree_layout`, `form_layout`, `list_layout`, `board_layout` (new), `terminal_layout` (new), `editor_layout` (new) |
+| **Overlay-with-caller-anchor** (host computes anchor/viewport/measure itself and calls the primitive's own `.layout(...)` directly; the backend only paints at the resolved bounds) | **Draw-takes-layout**: `draw_<name>(&self, thing, layout)`, no `Backend::<name>_layout` at all — there's nothing backend-specific to compute. | `Tooltip`, `ContextMenu`, `Completions`, `RichTextPopup`, `Dialog` (see `tui_dialog_layout`'s exemption above) |
+| **Interactive chrome** (freestanding widget painted at its own screen rect; used to have `draw_<name>` return its own layout with no separate no-paint accessor) | **Draw-returns-layout is redundant with paired — collapsed.** Every primitive that used to be draw-returns-layout-only now also has the paired `<name>_layout` twin, so a host can ask for hit-test geometry without a frame in progress. `BoardModel`/`DiffView` were the two hold-outs (`draw_board` / `draw_diff_view` already returned their layout struct, but had no no-paint twin) — `board_layout` closes this for `BoardModel`; `diff_view_layout` closes it for `DiffView`. | `chart_layout`, `toolbar_layout`, `sidebar_panel_layout`, `board_layout` (new), `diff_view_layout` (new) |
+
+A fourth shape showed up during the audit that the original three-way
+split didn't anticipate: **counts, not coordinates.** `diff_view_layout`
+returns `{ visible_rows, total_rows }` — there is no LOCAL/ABSOLUTE
+frame to pick because nothing it returns is a position. Its doc
+comment says so explicitly rather than silently defaulting to one.
+
+**Defaults, where the formula is provably uniform across backends.**
+`terminal_layout`, `editor_layout`, and `diff_view_layout` all turned
+out to be pure functions of `Backend::char_width()` / `line_height()`
+(plus, for diff views, `DiffView::mode`) — exactly the values every
+backend's own `draw_terminal` / `draw_editor` / `draw_diff_view`
+already resolves them to. Rather than hand-copy the same three-line
+body into `TuiBackend`, `GtkBackend`, `MacBackend`, and `WinBackend`
+(and every test `MockBackend`), these three got a **default trait
+body**, verified byte-for-byte against each backend's real paint
+formula (see the doc comments on `Backend::terminal_layout` /
+`editor_layout` / `diff_view_layout`, and the parity tests in
+`tui/backend.rs` / `gtk/backend.rs`). This is new territory for a
+`*_layout` method — every prior one required an explicit per-backend
+override — so `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` list
+(quadraui#492's "no silent no-op defaults" honesty check) carries all
+twelve `(backend, method)` pairs with the reason, so a future backend
+that overrides one of these three without a good reason still shows up
+as a source-vs-declaration mismatch, not a silently-accepted default.
+
+`board_layout` and `list_layout` do **not** get a default: `BoardMeasure`'s
+column/card sizing and `ListView`'s scrollbar-reservation logic are
+backend-native constants (GTK's card height is 64px, not a multiple of
+`line_height()`), the same reason `TreeStyle::row_height`'s backend
+derivation isn't a single formula either. Every backend implements
+these two explicitly, mirroring `draw_board`'s existing "no default —
+a backend that forgets this silently reports an empty board" rule
+(quadraui#600, `PRIMITIVE_RULES.md` rule 7).
+
+### Surface-enum gap list
+
+D-006 already tracked and quantified this (`SMELL_AUDIT_2026-07.md` §4:
+`Board`, `DiffView`, `PipelineView`, `Toolbar`, `SidebarPanel`,
+`TextInput`, `Spinner`, `Progress`, `CommandCenter`, `DropOverlay`,
+`MessageList` have `Backend::draw_*` but no `Surface` variant), scoped
+to #456 as "Epic D's `D4`, trait symmetry, separately." #506 is that
+D4 follow-up for the *trait* half of the gap; the `Surface`/`FrameZone`
+half stays #456's to close — this decision doesn't duplicate or
+re-quantify it, only cross-references it so a reader doesn't go
+looking for a second gap list here.
+
+### What this does NOT mean
+
+- It does not mean every off-trait free fn in a backend crate is a bug.
+  `tui_board_layout` / `gtk_board_layout` / `mac_board_layout` /
+  `win_list_layout` / `mac_list_layout` all stay exactly as public as
+  they were — they're each backend's own thin wrapper that the new
+  trait method calls into (`data_table_layout`'s implementers already
+  established this shape). The bug #506 fixes is a rasteriser
+  capability with **no trait-level path at all**, not "a free function
+  exists alongside a trait method."
+- It does not mean `palette_layout` is cancelled — see "Palette:
+  deferred, not missed" above. It's blocked on a rendering fix, not a
+  design question, and should land as its own follow-up once GTK's
+  `draw_palette` and TUI's `draw_palette` both consume `Palette::layout()`'s
+  own returned bounds instead of recomputing paint positions
+  independently.
+- It does not promote `draw_context_menu_with_submenus` preemptively.
+  That waits on #371 (GTK cascading submenus) so the eventual trait
+  method is honest on more than one backend out of four.

@@ -33,7 +33,8 @@
 //!   top-left corner. Used by primitives a parent composer paints
 //!   *inline* and localises clicks for before calling `hit_test`
 //!   (`tree_layout`, `form_layout`, `data_table_layout`,
-//!   `text_display_layout`, `status_bar_layout`, `activity_bar_layout`).
+//!   `text_display_layout`, `status_bar_layout`, `activity_bar_layout`,
+//!   `list_layout`, `terminal_layout`).
 //! - **ABSOLUTE** — shifted by `rect.x` / `rect.y`, i.e. target-surface
 //!   coordinates a caller can compare directly against raw click
 //!   coordinates with no further adjustment. Used by primitives that are
@@ -43,7 +44,13 @@
 //!   `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`,
 //!   `progress_layout`, `spinner_layout`, `command_center_layout`,
 //!   `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`,
-//!   `minimap_layout`, `msv_layout`, `text_input_layout`).
+//!   `minimap_layout`, `msv_layout`, `text_input_layout`, `board_layout`,
+//!   `editor_layout`).
+//!
+//! A third category returns no coordinates at all — `diff_view_layout`
+//! returns row *counts* (`visible_rows` / `total_rows`), not positions —
+//! so LOCAL/ABSOLUTE doesn't apply; its doc comment says so explicitly
+//! rather than silently picking neither.
 //!
 //! Both frames are legitimate — the rule this file enforces is that the
 //! frame is *stated on the method's doc comment* and *matches what every
@@ -71,12 +78,13 @@ use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
-use crate::primitives::diff_view::{DiffView, DiffViewLayout};
+use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::{Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
 use crate::primitives::image::Image;
+use crate::primitives::list::ListViewLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout};
@@ -845,6 +853,19 @@ pub trait Backend {
     /// the returned thumb to implement drag without re-deriving geometry.
     /// Mirrors [`Backend::list_hscrollbar`]; see [`ListView::vscrollbar`].
     fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
+    /// Compute the list layout without painting — the no-paint twin of
+    /// [`Self::draw_list`] (issue #506: `ListView::layout` already existed
+    /// but `draw_list` computed it inline, with no way for a host to ask
+    /// for the same geometry without repainting). `draw_list` and this
+    /// method route through the same backend-internal resolver
+    /// (`tui_list_layout` / `gtk_list_layout` / `win_list_layout` /
+    /// `mac_list_layout`), so paint and no-paint can't drift apart.
+    ///
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
+    /// at `rect`'s top-left; does **not** account for
+    /// [`ListView::bordered`]'s 1-cell/1px border inset, matching every
+    /// backend's `draw_list` (issue #505).
+    fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 
@@ -1134,6 +1155,35 @@ pub trait Backend {
     /// terminal selection is driven by mouse drag against cell
     /// dimensions, which the app already tracks.
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
+    /// Compute the viewport → grid conversion [`Self::draw_terminal`]
+    /// implicitly uses (issue #506: `Terminal::layout` already existed as
+    /// a pure fn but no `Backend` method exposed it, so hosts had to
+    /// re-derive `rect.width / char_width` by hand to hit-test a click
+    /// against a cell). Uses this backend's own [`Self::char_width`] /
+    /// [`Self::line_height`] as the cell dimensions — TUI's `(1.0, 1.0)`
+    /// reproduces its uniform cell grid exactly; pixel backends get the
+    /// same font metrics `draw_terminal`'s cell iteration assumes.
+    ///
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin; see
+    /// [`crate::primitives::terminal::TerminalLayout::hit_test`] /
+    /// [`crate::primitives::terminal::TerminalLayout::cell_bounds`],
+    /// neither of which fold in an origin offset (issue #505).
+    ///
+    /// Default body: uniform for every backend, since it's a pure
+    /// function of the two metrics above — no backend needs to override
+    /// this.
+    fn terminal_layout(
+        &self,
+        rect: Rect,
+        term: &Terminal,
+    ) -> crate::primitives::terminal::TerminalLayout {
+        term.layout(
+            rect.width,
+            rect.height,
+            self.char_width(),
+            self.line_height(),
+        )
+    }
     /// Draw a vertical divider between two split terminal panes.
     /// `rect.x` is the divider's column, `rect.y` its top row, and
     /// `rect.height` its length; `rect.width` is ignored — the
@@ -1294,6 +1344,29 @@ pub trait Backend {
     /// overlays, etc.). Asymmetric across backends: TUI populates
     /// the result; GTK paints its own caret and returns the default.
     fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult;
+
+    /// Compute the editor viewport layout (gutter / text / scrollbar
+    /// bounds) without painting — the no-paint twin of [`Self::draw_editor`]
+    /// (issue #506: `Editor::layout` already existed but no `Backend`
+    /// method exposed it). Uses this backend's own [`Self::char_width`] /
+    /// [`Self::line_height`] as the cell metrics — the same values
+    /// `draw_editor` resolves them to on every backend that implements it
+    /// today (`GtkBackend`/`WinBackend`/`MacBackend` all pass
+    /// `current_char_width` / `current_line_height`, which is exactly what
+    /// [`Self::char_width`] / [`Self::line_height`] return; TUI's fixed
+    /// `(1.0, 1.0)` matches its uniform cell grid).
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `text_bounds` / `gutter_bounds` /
+    /// scrollbar bounds are shifted by `rect.x` / `rect.y`, matching
+    /// [`Self::editor_col_at_x`]'s "x is an absolute (surface-space)
+    /// coordinate" contract (issue #505).
+    ///
+    /// Default body: uniform for every backend, since it's a pure
+    /// function of the two metrics above — no backend needs to override
+    /// this.
+    fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
+        editor.layout(rect, self.char_width(), self.line_height())
+    }
 
     /// Resolve a click x-coordinate to a text column on one visible row
     /// of an [`Editor`], honouring the same glyph-advance metrics
@@ -1481,6 +1554,63 @@ pub trait Backend {
     /// only rasterises. Returns [`DiffViewLayout`] for scroll clamping.
     fn draw_diff_view(&mut self, rect: Rect, view: &DiffView) -> DiffViewLayout;
 
+    /// Compute the diff-view layout without painting — the no-paint twin
+    /// of [`Self::draw_diff_view`] (issue #506). `visible_rows` uses this
+    /// backend's [`Self::line_height`] exactly as every backend's
+    /// `draw_diff_view` does today: in [`DiffMode::SideBySide`] one
+    /// `line_height` band is reserved for the header row when either
+    /// label is set (`view.left_label` / `view.right_label`); in
+    /// [`DiffMode::Unified`] every row — including each hunk's `@@ … @@`
+    /// header — scrolls as content, so no band is reserved.
+    /// `total_rows` matches [`DiffViewLayout::total_rows`]'s documented
+    /// contract (`view.total_rows()` in side-by-side mode, `+
+    /// hunk_count` in unified mode for the synthesized header lines).
+    ///
+    /// Frame: no coordinates are returned — `visible_rows` /
+    /// `total_rows` are counts, not positions — so there is no LOCAL vs
+    /// ABSOLUTE distinction to state (issue #505).
+    ///
+    /// Default body: uniform for every backend, since it's a pure
+    /// function of `rect`, `view`, and `Self::line_height` — no backend
+    /// needs to override this.
+    fn diff_view_layout(&self, rect: Rect, view: &DiffView) -> DiffViewLayout {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return DiffViewLayout {
+                visible_rows: 0,
+                total_rows: view.total_rows(),
+            };
+        }
+        let lh = self.line_height();
+        match view.mode {
+            DiffMode::SideBySide => {
+                let has_header = view.left_label.is_some() || view.right_label.is_some();
+                let header_h = if has_header { lh } else { 0.0 };
+                let content_h = (rect.height - header_h).max(0.0);
+                let visible_rows = if lh > 0.0 {
+                    (content_h / lh).floor() as usize
+                } else {
+                    0
+                };
+                DiffViewLayout {
+                    visible_rows,
+                    total_rows: view.total_rows(),
+                }
+            }
+            DiffMode::Unified => {
+                let visible_rows = if lh > 0.0 {
+                    (rect.height / lh).floor() as usize
+                } else {
+                    0
+                };
+                let total_rows: usize = view.hunks.iter().map(|h| h.rows.len() + 1).sum();
+                DiffViewLayout {
+                    visible_rows,
+                    total_rows,
+                }
+            }
+        }
+    }
+
     /// Draw a [`ProgressBar`]. The backend paints the track, fill,
     /// optional label, and optional cancel affordance. Returns the
     /// [`ProgressBarLayout`] so hosts can route clicks. Same
@@ -1603,6 +1733,27 @@ pub trait Backend {
     /// A no-op default here would let a backend silently paint an empty
     /// board instead of failing to build (quadraui#600, PORT-01).
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
+
+    /// Compute the board layout without painting — the no-paint twin of
+    /// [`Self::draw_board`] (issue #506: [`crate::primitives::board::board_layout`]
+    /// already existed as a free fn, and every backend already wrapped it
+    /// in its own off-trait helper — `tui_board_layout` / `gtk_board_layout`
+    /// / `mac_board_layout` — but nothing put it on the trait, so a host
+    /// could not ask for board geometry without a live paint pass). Each
+    /// backend routes through the exact same helper `draw_board` calls
+    /// internally, using its own [`crate::primitives::board::BoardMeasure`]
+    /// (column/card sizing is backend-native, like `TreeStyle::row_height`
+    /// — not derivable from [`Self::char_width`] / [`Self::line_height`]
+    /// alone), so paint and no-paint can't drift apart.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `columns[i].bounds` / card bounds
+    /// are shifted by `rect.x` / `rect.y`, matching [`BoardLayout::hit_test`]
+    /// (issue #505).
+    ///
+    /// No default impl, same rule-7 reasoning as [`Self::draw_board`]: a
+    /// backend that forgets to override this would otherwise silently
+    /// report an empty board's worth of hit regions.
+    fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout;
 
     /// Draw a [`Minimap`] (code-overview density view). GTK tiles rows at
     /// a fixed pitch and paints one colour block per non-blank character

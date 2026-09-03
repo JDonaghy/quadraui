@@ -12,9 +12,64 @@ use ratatui::layout::Rect;
 use ratatui::style::Color as RatatuiColor;
 
 use super::{draw_styled_text, ratatui_color, set_cell};
-use crate::primitives::list::{ListItemMeasure, ListView};
+use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
 use crate::theme::Theme;
 use crate::types::{Decoration, StyledText};
+
+/// Compute the TUI cell-unit layout for a [`ListView`] without painting —
+/// the same viewport reservation (h/v scrollbar rows/columns, title row)
+/// [`draw_list`] applies internally before calling [`ListView::layout`].
+/// `draw_list` calls this exact function so paint and no-paint hit-testing
+/// can never drift apart (`PRIMITIVE_RULES.md` rule 5).
+///
+/// Coordinate frame: **LOCAL** — relative to `area`'s origin, `(0, 0)` at
+/// `area`'s top-left, matching `gtk_list_layout` / `win_list_layout` /
+/// `mac_list_layout`. Does **not** account for `ListView::bordered`'s
+/// 1-cell border inset — same as every other backend's list-layout
+/// helper; a bordered list's caller adds that inset itself.
+pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
+    let area_f = crate::event::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    let hscrollbar = list.hscrollbar(area_f, 1.0);
+    let needs_hscrollbar = hscrollbar.is_some();
+
+    // #326 fix: when an h-scrollbar reserves the bottom row, the v-scrollbar's
+    // track and visible-row count must be computed against the REDUCED height.
+    let v_area_f = if needs_hscrollbar {
+        crate::event::Rect::new(
+            area_f.x,
+            area_f.y,
+            area_f.width,
+            (area_f.height - 1.0).max(0.0),
+        )
+    } else {
+        area_f
+    };
+    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
+    let needs_vscrollbar = vscrollbar.is_some();
+
+    let viewport_h = if needs_hscrollbar {
+        (area.height as f32 - 1.0).max(0.0)
+    } else {
+        area.height as f32
+    };
+
+    // Reserve one column on the right for the vertical scrollbar.
+    let viewport_w = if needs_vscrollbar {
+        (area.width as f32 - 1.0).max(0.0)
+    } else {
+        area.width as f32
+    };
+
+    let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
+    list.layout(viewport_w, viewport_h, title_h, |_| {
+        ListItemMeasure::new(1.0)
+    })
+}
 
 /// Draw a [`ListView`] into `area` on `buf`. Honours
 /// [`ListView::bordered`] (rounded box border + title overlay) and
@@ -76,6 +131,11 @@ pub fn draw_list(
     // `Backend::list_vscrollbar`), so the painted thumb and the draggable
     // thumb can never drift apart. In bordered mode the scrollbars sit
     // inside the box; in flat mode they occupy the outermost row/column.
+    let layout = tui_list_layout(area, list);
+
+    // Re-derive the scrollbar geometry for painting (cheap — pure
+    // functions of `list` + `area`). `tui_list_layout` only needs to know
+    // *whether* a scrollbar reserves space, not its track/thumb geometry.
     let area_f = crate::event::Rect::new(
         area.x as f32,
         area.y as f32,
@@ -83,14 +143,7 @@ pub fn draw_list(
         area.height as f32,
     );
     let hscrollbar = list.hscrollbar(area_f, 1.0);
-    let needs_hscrollbar = hscrollbar.is_some();
-
-    // #326 fix: when an h-scrollbar reserves the bottom row, the v-scrollbar's
-    // track and visible-row count must be computed against the REDUCED height.
-    // Passing the full `area_f` overcounts `visible` by one row, so the thumb is
-    // sized for a row that isn't actually visible, never advances fully to the
-    // bottom, and its track overlaps the h-scrollbar's row in the corner cell.
-    let v_area_f = if needs_hscrollbar {
+    let v_area_f = if hscrollbar.is_some() {
         crate::event::Rect::new(
             area_f.x,
             area_f.y,
@@ -101,25 +154,6 @@ pub fn draw_list(
         area_f
     };
     let vscrollbar = list.vscrollbar(v_area_f, 1.0);
-    let needs_vscrollbar = vscrollbar.is_some();
-
-    let viewport_h = if needs_hscrollbar {
-        (area.height as f32 - 1.0).max(0.0)
-    } else {
-        area.height as f32
-    };
-
-    // Reserve one column on the right for the vertical scrollbar.
-    let viewport_w = if needs_vscrollbar {
-        (area.width as f32 - 1.0).max(0.0)
-    } else {
-        area.width as f32
-    };
-
-    let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
-    let layout = list.layout(viewport_w, viewport_h, title_h, |_| {
-        ListItemMeasure::new(1.0)
-    });
 
     if list.bordered {
         let top_y = area.y;

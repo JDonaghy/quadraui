@@ -1807,6 +1807,16 @@ impl Backend for GtkBackend {
         list.vscrollbar(rect, self.line_height())
     }
 
+    fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
+        crate::gtk::gtk_list_layout(
+            rect.width as f64,
+            rect.height as f64,
+            list,
+            self.current_line_height,
+            self.current_char_width,
+        )
+    }
+
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let (cr, layout) = self
             .current_frame_refs()
@@ -3765,6 +3775,20 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn board_layout(
+        &self,
+        rect: QRect,
+        model: &crate::primitives::board::BoardModel,
+    ) -> crate::primitives::board::BoardLayout {
+        crate::gtk::gtk_board_layout(
+            model,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
+    }
+
     fn draw_minimap(
         &mut self,
         rect: QRect,
@@ -5361,6 +5385,103 @@ mod tests {
         assert_eq!(
             at_origin.hit_regions, shifted.hit_regions,
             "LOCAL form_layout must not shift hit regions by rect.x/rect.y"
+        );
+    }
+
+    /// Issue #506: `list_layout` is documented **LOCAL** — `GtkBackend`'s
+    /// impl calls `gtk_list_layout(rect.width, rect.height, ..)`, never
+    /// reading `rect.x`/`rect.y` — so a non-zero origin must produce
+    /// byte-identical geometry to the zero-origin case, and it must
+    /// equal the exact `gtk_list_layout` helper `draw_list` uses
+    /// internally (`PRIMITIVE_RULES.md` rule 5).
+    #[test]
+    fn gtk_backend_list_layout_ignores_rect_origin_and_matches_helper() {
+        let list = ListView {
+            id: WidgetId::new("test:list"),
+            title: None,
+            items: vec![crate::primitives::list::ListItem {
+                text: crate::types::StyledText::plain("only"),
+                icon: None,
+                detail: None,
+                decoration: crate::types::Decoration::Normal,
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let backend = GtkBackend::new();
+
+        let at_origin = Backend::list_layout(&backend, QRect::new(0.0, 0.0, 200.0, 100.0), &list);
+        let shifted = Backend::list_layout(&backend, QRect::new(7.0, 13.0, 200.0, 100.0), &list);
+        assert_eq!(
+            at_origin, shifted,
+            "LOCAL list_layout must not shift geometry by rect.x/rect.y"
+        );
+
+        let via_helper = crate::gtk::gtk_list_layout(
+            200.0,
+            100.0,
+            &list,
+            backend.current_line_height,
+            backend.current_char_width,
+        );
+        assert_eq!(
+            at_origin, via_helper,
+            "list_layout must equal the exact helper draw_list uses internally"
+        );
+        assert!(
+            !at_origin.visible_items.is_empty(),
+            "sanity: the sample list has an item to lay out"
+        );
+    }
+
+    /// Issue #506: `board_layout` is documented **ABSOLUTE** — bounds are
+    /// shifted by `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s
+    /// contract. Also proves `board_layout` and `draw_board` agree
+    /// byte-for-byte, since both route through `gtk_board_layout`.
+    #[test]
+    fn gtk_backend_board_layout_is_absolute_and_matches_helper() {
+        let model = crate::primitives::board::BoardModel {
+            id: WidgetId::new("test:board"),
+            columns: vec![crate::primitives::board::BoardColumn {
+                id: WidgetId::new("col:a"),
+                title: "Backlog".into(),
+                cards: vec![crate::primitives::board::BoardCard {
+                    id: WidgetId::new("card:1"),
+                    title: "Do the thing".into(),
+                    labels: vec![],
+                    badges: vec![],
+                    hint: None,
+                }],
+                scroll_offset: 0,
+            }],
+            selected_card_id: None,
+            col_scroll_offset: 0,
+        };
+        let backend = GtkBackend::new();
+        let rect = QRect::new(5.0, 2.0, 400.0, 300.0);
+
+        let no_paint = Backend::board_layout(&backend, rect, &model);
+        assert_eq!(
+            no_paint.bounds,
+            crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
+            "board_layout must fold rect's origin into `bounds` (ABSOLUTE, issue #505)"
+        );
+
+        let via_helper = crate::gtk::gtk_board_layout(
+            &model,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        assert_eq!(
+            no_paint, via_helper,
+            "board_layout must equal the exact helper draw_board uses internally"
         );
     }
 

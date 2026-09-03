@@ -939,6 +939,16 @@ impl Backend for MacBackend {
             row_h,
         )
     }
+    fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
+        super::list::mac_list_layout(
+            list,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+        )
+    }
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -2231,6 +2241,16 @@ impl Backend for MacBackend {
                 &theme,
             )
         }
+    }
+
+    fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout {
+        super::board::mac_board_layout(
+            model,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
 
     /// #382 scopes the `Minimap` rasteriser to GTK (fixed-pitch colour

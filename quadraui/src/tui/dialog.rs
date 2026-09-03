@@ -24,6 +24,18 @@ fn flatten(text: &StyledText) -> String {
 ///
 /// Uses the same `tui_item_width` measurer as the toolbar rasteriser so
 /// toolbar button positions agree between paint and hit-test.
+///
+/// **Not a `Backend::dialog_layout` gap (issue #506 audit).** `Dialog`
+/// is an *overlay-with-caller-anchor* primitive, same class as
+/// `Tooltip`/`ContextMenu`/`Completions`: a host builds its own
+/// `DialogMeasure` from portable `Backend::line_height()` and calls
+/// `dialog.layout(...)` directly (see
+/// `examples/common/modal_occlusion_demo.rs::dialog_layout`), so there
+/// is no `Backend::<name>_layout` for any primitive in that class. This
+/// function is TUI's own internal default measurer for dialogs painted
+/// without a caller-supplied `DialogMeasure` — a backend-private
+/// convenience, not a missing trait method. See
+/// `quadraui/docs/DECISIONS.md` D-007 for the full write-up.
 pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> DialogLayout {
     use super::toolbar::tui_item_width;
     use crate::primitives::dialog::DialogMeasure;

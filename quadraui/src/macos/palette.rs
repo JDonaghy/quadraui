@@ -32,12 +32,27 @@ const SCROLLBAR_PX: f32 = 8.0;
 /// Coordinate frame: all returned bounds (`title_bounds`,
 /// `query_bounds`, `visible_items.bounds`, `create_bounds`,
 /// `preview_bounds`, `scrollbar.{track,thumb}`, `hit_regions`) are in
-/// **palette-local** coords (origin at 0, 0), matching
-/// `tui_palette_layout` and `gtk_palette_layout`. Hosts must subtract
+/// **palette-local** coords (origin at 0, 0). Hosts must subtract
 /// the palette's `area.x` / `area.y` from absolute click coords before
 /// calling `PaletteLayout::hit_test`. The `x` / `y` params are kept in
 /// the signature for symmetry with `draw_palette` but do not affect
 /// output.
+///
+/// **Correction (issue #506 audit):** despite what this doc used to
+/// imply, TUI and GTK have no `tui_palette_layout` / `gtk_palette_layout`
+/// free functions to be consistent with — GTK's `draw_palette` computes
+/// its `Palette::layout()` call inline and then paints item rows at an
+/// independently-derived `rows_y` offset that drifts from the returned
+/// struct's own `bounds.y` by 1px whenever `show_query` is true; TUI's
+/// `draw_palette` predates the shared `Palette::layout()` refactor
+/// entirely and never calls it. Neither gap is visible today only
+/// because `draw_palette` returns `()` on every backend, so nothing
+/// reads this function's output except its own paint call and its own
+/// tests. `Backend::palette_layout` was deliberately **not** added
+/// alongside `list_layout` / `board_layout` in #506 because exposing
+/// this function through the trait would make that drift externally
+/// visible. See `quadraui/docs/DECISIONS.md` D-007, "Palette: deferred,
+/// not missed."
 pub fn mac_palette_layout(
     palette: &Palette,
     _x: f64,

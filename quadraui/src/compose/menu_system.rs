@@ -796,6 +796,11 @@ mod tests {
         fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
             None
         }
+        fn list_layout(&self, r: Rect, l: &crate::ListView) -> crate::ListViewLayout {
+            l.layout(r.width, r.height, 0.0, |_| {
+                crate::primitives::list::ListItemMeasure::new(1.0)
+            })
+        }
         fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
         fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
         fn draw_settings_chrome(
@@ -1097,6 +1102,17 @@ mod tests {
 
         fn draw_board(
             &mut self,
+            _r: Rect,
+            _m: &crate::primitives::board::BoardModel,
+        ) -> crate::primitives::board::BoardLayout {
+            crate::primitives::board::BoardLayout {
+                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
+                columns: vec![],
+            }
+        }
+
+        fn board_layout(
+            &self,
             _r: Rect,
             _m: &crate::primitives::board::BoardModel,
         ) -> crate::primitives::board::BoardLayout {
