@@ -61,7 +61,9 @@
 //!   `WM_DPICHANGED` → `UiEvent::DpiChanged`, and `WM_CLOSE` →
 //!   `UiEvent::WindowClose`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::backend::{Backend, EditorPaintResult, PlatformServices};
@@ -156,8 +158,13 @@ struct Surface {
 
 pub struct WinBackend {
     viewport: Viewport,
-    modal_stack: ModalStack,
-    drag_state: DragState,
+    /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
+    /// can hand back a handle that outlives any single `&mut self`
+    /// borrow — the shape `GtkBackend`/`TuiBackend`/`MacBackend` already
+    /// use for this (quadraui#699).
+    modal_stack: Rc<RefCell<ModalStack>>,
+    /// See `modal_stack`'s doc comment — same rationale.
+    drag_state: Rc<RefCell<DragState>>,
     accelerators: HashMap<AcceleratorId, Accelerator>,
     services: WinPlatformServices,
     current_line_height: f32,
@@ -207,8 +214,8 @@ impl WinBackend {
     pub fn new() -> Self {
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
-            modal_stack: ModalStack::new(),
-            drag_state: DragState::new(),
+            modal_stack: Rc::new(RefCell::new(ModalStack::new())),
+            drag_state: Rc::new(RefCell::new(DragState::new())),
             accelerators: HashMap::new(),
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
@@ -484,11 +491,40 @@ impl Backend for WinBackend {
     // ─── Modal-overlay tracking ───────────────────────────────────────
 
     fn modal_stack_mut(&mut self) -> &mut ModalStack {
-        &mut self.modal_stack
+        // `modal_stack` moved behind `Rc<RefCell<>>` for quadraui#699
+        // (so `modal_stack_handle` can hand back a handle that outlives
+        // this borrow) — same shape and same leak-based trait-signature
+        // bridge as `GtkBackend::modal_stack_mut`. See that method's
+        // SAFETY comment for the full rationale; it applies unchanged
+        // here.
+        //
+        // SAFETY: `Rc::as_ptr` returns a stable pointer to the
+        // `RefCell`'s inner. The trait's contract is that callers don't
+        // reentrantly call back into this backend while holding the
+        // returned `&mut ModalStack`.
+        unsafe {
+            let cell_ptr = Rc::as_ptr(&self.modal_stack);
+            &mut *(*cell_ptr).as_ptr()
+        }
     }
 
     fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack) {
-        (&mut self.drag_state, &mut self.modal_stack)
+        // SAFETY: same leak-via-`Rc::as_ptr` rationale as
+        // `modal_stack_mut` above, applied to both fields — separate
+        // `Rc<RefCell<>>`s, so the two leaked derefs never alias.
+        unsafe {
+            let drag_ptr = Rc::as_ptr(&self.drag_state);
+            let modal_ptr = Rc::as_ptr(&self.modal_stack);
+            (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
+        }
+    }
+
+    fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
+        self.modal_stack.clone()
+    }
+
+    fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
+        self.drag_state.clone()
     }
 
     // ─── Platform services ────────────────────────────────────────────
@@ -1727,5 +1763,63 @@ impl Backend for WinBackend {
             let _ = (rect, chart);
             todo!("DirectWrite chart layout")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// quadraui#699: `WinBackend::modal_stack_handle` must hand back a
+    /// handle that shares state with the backend's own modal stack —
+    /// same guarantee already proved for `GtkBackend`
+    /// (`gtk::backend::tests::gtk_backend_modal_stack_handle_shares_state`),
+    /// `TuiBackend`
+    /// (`tui::backend::tests::tui_backend_modal_stack_handle_shares_state`),
+    /// and `MacBackend`
+    /// (`macos::backend::tests::mac_backend_modal_stack_handle_shares_state`).
+    /// Pure-Rust `Rc<RefCell<>>` plumbing, so this runs on every host —
+    /// no `target_os = "windows"` gate needed, unlike most of this file.
+    #[test]
+    fn win_backend_modal_stack_handle_shares_state() {
+        let backend = WinBackend::new();
+        let h1 = backend.modal_stack_handle();
+        let h2 = backend.modal_stack_handle();
+        h1.borrow_mut()
+            .push(WidgetId::new("test:popup"), Rect::new(0.0, 0.0, 10.0, 5.0));
+        assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// quadraui#699: the stash-then-reuse pattern this issue exists to
+    /// unblock — obtain the handle through `&mut dyn Backend`, drop
+    /// that borrow, and use the handle afterwards from an unrelated
+    /// borrow scope.
+    #[test]
+    fn modal_stack_handle_outlives_the_backend_borrow_through_the_trait() {
+        let mut backend = WinBackend::new();
+        let stack_rc = {
+            let dyn_backend: &mut dyn Backend = &mut backend;
+            dyn_backend.modal_stack_handle()
+        };
+        stack_rc
+            .borrow_mut()
+            .push(WidgetId::new("test:popup"), Rect::new(0.0, 0.0, 10.0, 5.0));
+        assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
+    }
+
+    /// quadraui#699: same shared-state guarantee as
+    /// `win_backend_modal_stack_handle_shares_state`, for
+    /// `drag_state_handle`.
+    #[test]
+    fn win_backend_drag_state_handle_shares_state() {
+        let backend = WinBackend::new();
+        let h1 = backend.drag_state_handle();
+        let h2 = backend.drag_state_handle();
+        h1.borrow_mut()
+            .begin(crate::dispatch::DragTarget::TextSelection {
+                region: WidgetId::new("r"),
+                anchor: crate::event::Point::new(0.0, 0.0),
+            });
+        assert!(h2.borrow().is_active());
     }
 }

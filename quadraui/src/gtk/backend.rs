@@ -1436,6 +1436,18 @@ impl Backend for GtkBackend {
         }
     }
 
+    fn modal_stack_handle(&self) -> Rc<std::cell::RefCell<ModalStack>> {
+        // Trait-level entry point for quadraui#699 — delegates to the
+        // inherent `GtkBackend::modal_stack_handle` (same clone), which
+        // predates the trait method and stays the primary spelling for
+        // `GtkBackend`-typed callers (`gtk/run.rs`, tests).
+        self.modal_stack.clone()
+    }
+
+    fn drag_state_handle(&self) -> Rc<std::cell::RefCell<DragState>> {
+        self.drag_state.clone()
+    }
+
     fn services(&self) -> &dyn PlatformServices {
         &self.services
     }

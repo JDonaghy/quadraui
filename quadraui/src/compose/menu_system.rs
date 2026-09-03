@@ -726,15 +726,15 @@ mod tests {
     // ── Minimal mock backend for handle()-level tests ─────────────────────────
 
     struct MockBackend {
-        modal_stack: crate::ModalStack,
-        drag_state: crate::DragState,
+        modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
+        drag_state: std::rc::Rc<std::cell::RefCell<crate::DragState>>,
     }
 
     impl MockBackend {
         fn new() -> Self {
             Self {
-                modal_stack: crate::ModalStack::new(),
-                drag_state: crate::DragState::new(),
+                modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::new())),
+                drag_state: std::rc::Rc::new(std::cell::RefCell::new(crate::DragState::new())),
             }
         }
     }
@@ -754,10 +754,27 @@ mod tests {
         fn register_accelerator(&mut self, _: &crate::accelerator::Accelerator) {}
         fn unregister_accelerator(&mut self, _: &crate::accelerator::AcceleratorId) {}
         fn modal_stack_mut(&mut self) -> &mut crate::ModalStack {
-            &mut self.modal_stack
+            // SAFETY: same leak-via-`Rc::as_ptr` pattern as
+            // `GtkBackend::modal_stack_mut` — this mock is
+            // single-threaded test code that never reentrantly calls
+            // back into itself mid-borrow.
+            unsafe {
+                let cell_ptr = std::rc::Rc::as_ptr(&self.modal_stack);
+                &mut *(*cell_ptr).as_ptr()
+            }
         }
         fn drag_and_modal_mut(&mut self) -> (&mut crate::DragState, &mut crate::ModalStack) {
-            (&mut self.drag_state, &mut self.modal_stack)
+            unsafe {
+                let drag_ptr = std::rc::Rc::as_ptr(&self.drag_state);
+                let modal_ptr = std::rc::Rc::as_ptr(&self.modal_stack);
+                (&mut *(*drag_ptr).as_ptr(), &mut *(*modal_ptr).as_ptr())
+            }
+        }
+        fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
+            self.modal_stack.clone()
+        }
+        fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
+            self.drag_state.clone()
         }
         fn services(&self) -> &dyn crate::backend::PlatformServices {
             unimplemented!()

@@ -63,7 +63,9 @@
 //! guards against: a `*_layout` twin that silently disagrees with its
 //! own TUI/GTK siblings about which frame it returns.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::dispatch::DragState;
@@ -716,6 +718,36 @@ pub trait Backend {
     /// it. Use [`Self::modal_stack_mut`] instead when only the modal
     /// stack is needed.
     fn drag_and_modal_mut(&mut self) -> (&mut DragState, &mut ModalStack);
+
+    /// Shared handle to the modal stack that outlives any single
+    /// `&mut dyn Backend` (or `&dyn Backend`) borrow.
+    ///
+    /// [`Self::modal_stack_mut`] ties its `&mut ModalStack` to the
+    /// lifetime of the borrow that produced it, so it cannot be stashed
+    /// and used again later from an unrelated borrow scope — exactly the
+    /// stash-then-reuse pattern GTK hosts (and quadraui's own
+    /// `gtk::run`) depend on:
+    ///
+    /// ```ignore
+    /// let stack_rc = backend.modal_stack_handle(); // stash, drop the borrow
+    /// // ... other code, other borrows of `backend` in between ...
+    /// stack_rc.borrow_mut().push(...);             // use it later
+    /// ```
+    ///
+    /// Every in-tree backend implements this by owning its modal stack
+    /// behind `Rc<RefCell<ModalStack>>` and cloning the `Rc` here — see
+    /// `GtkBackend::modal_stack_handle` for the pattern this trait
+    /// method generalises (quadraui#699). No default: a host holding
+    /// only `&mut dyn Backend` needs this to work identically on every
+    /// backend, including a future macOS/Win-GUI host, so a backend
+    /// that forgets to wire it up should fail to compile rather than
+    /// silently hand back a handle to a stack nobody else observes.
+    fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>>;
+
+    /// Shared handle to the drag state, with the same stash-then-reuse
+    /// contract as [`Self::modal_stack_handle`]. See that method's docs
+    /// for the pattern and rationale (quadraui#699).
+    fn drag_state_handle(&self) -> Rc<RefCell<DragState>>;
 
     // ─── Platform services ─────────────────────────────────────────────
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
