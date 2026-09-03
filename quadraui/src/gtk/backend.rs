@@ -5485,6 +5485,284 @@ mod tests {
         );
     }
 
+    /// Issue #506 review fix: `terminal_layout`'s default body must
+    /// reserve the same scrollbar gutter width `draw_terminal` reserves
+    /// before iterating cells (`cell_area_w = (rect.width -
+    /// sb_width).max(0.0)`, this file's `draw_terminal`), or a click on
+    /// the gutter resolves to `TerminalHit::Cell` when the paint path
+    /// shows a scrollbar there, not a cell — "paint and no-paint
+    /// silently disagree" (rule 5). Pins the formula, then proves it
+    /// against a real Cairo paint: the last (gutter) column must not
+    /// show the painted cell colour.
+    #[test]
+    fn gtk_backend_terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bright = crate::types::Color::rgb(0, 255, 0);
+        let cw = 10.0;
+        let lh = 20.0;
+        let w = 40;
+        let h = 20;
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = lh;
+        backend.current_char_width = cw;
+        let rect = QRect::new(0.0, 0.0, w as f32, h as f32);
+
+        let cell = TerminalCell {
+            ch: ' ',
+            fg: bright,
+            bg: bright,
+            bold: false,
+            italic: false,
+            underline: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+        };
+        let term = TerminalPrim {
+            id: WidgetId::new("test:term-sb"),
+            cells: vec![vec![cell; 4]],
+            scrollbar: Some(crate::TerminalScrollbar {
+                total_lines: 100,
+                visible_lines: 1,
+                scroll_offset: 0,
+                inverted: false,
+                // `None` — draw_terminal's `sb_width: … .unwrap_or(8.0)`
+                // fallback, which `terminal_scrollbar_default_width` must
+                // reproduce.
+                width: None,
+            }),
+        };
+
+        let layout = Backend::terminal_layout(&backend, rect, &term);
+        // GTK's default scrollbar gutter is 8px: cell_area_w = 40 - 8 =
+        // 32; grid_cols = floor(32 / char_width=10) = 3.
+        assert_eq!(
+            layout.grid_cols, 3,
+            "terminal_layout must reserve the 8px scrollbar gutter default \
+             (GtkBackend::terminal_scrollbar_default_width), matching draw_terminal's \
+             `cell_area_w = (rect.width - sb_width).max(0.0)`"
+        );
+        assert_eq!(
+            layout.hit_test(35.0, 0.0),
+            crate::TerminalHit::Empty,
+            "a click at x=35 (inside the 8px scrollbar gutter, cols 32..40) must not resolve to \
+             a grid cell"
+        );
+
+        let mut surface = ImageSurface::create(Format::ARgb32, w, h).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, Viewport::new(w as f32, h as f32, 1.0));
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_terminal(rect, &term));
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let probe = |x: i32, y: i32| -> (u8, u8, u8) {
+            let off = y as usize * stride + x as usize * 4;
+            (data[off + 2], data[off + 1], data[off])
+        };
+
+        assert_eq!(
+            probe(5, 5),
+            (0, 255, 0),
+            "column 0 (inside grid_cols=3) must show the painted cell colour"
+        );
+        assert_ne!(
+            probe(35, 5),
+            (0, 255, 0),
+            "x=35 sits inside draw_terminal's 8px scrollbar gutter — it must not show the \
+             terminal cell colour, matching terminal_layout's grid_cols=3 exclusion of that \
+             region"
+        );
+    }
+
+    /// Minimal two-row-hunk `DiffView` fixture for `diff_view_layout`
+    /// parity tests below — mirrors `tui::backend::tests::sample_diff_view`.
+    fn gtk_sample_diff_view(mode: crate::DiffMode, left_label: Option<String>) -> crate::DiffView {
+        crate::DiffView {
+            id: WidgetId::new("diff"),
+            left: String::new(),
+            right: String::new(),
+            left_label,
+            right_label: None,
+            hunks: vec![crate::DiffHunk {
+                left_start: 1,
+                right_start: 1,
+                rows: vec![
+                    crate::DiffRow {
+                        left: Some("alpha".into()),
+                        right: Some("ALPHA".into()),
+                        kind: crate::DiffRowKind::Changed,
+                    },
+                    crate::DiffRow {
+                        left: Some("beta".into()),
+                        right: Some("beta".into()),
+                        kind: crate::DiffRowKind::Same,
+                    },
+                ],
+            }],
+            mode,
+            editability: crate::DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: crate::DiffPane::Left,
+            has_focus: false,
+        }
+    }
+
+    /// Issue #506 review fix: `diff_view_layout` is claimed to be
+    /// "verified byte-for-byte against each backend's real paint
+    /// formula" — this test (and its unified-mode sibling below) makes
+    /// that claim true for GTK. `gtk::draw_diff_view` returns its
+    /// `DiffViewLayout` directly, so this compares the no-paint default
+    /// body against the exact value the real paint path produced, in
+    /// `SideBySide` mode with a header row reserved.
+    #[test]
+    fn gtk_diff_view_layout_matches_draw_diff_view_side_by_side_with_header() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = 20.0;
+        let view = gtk_sample_diff_view(crate::DiffMode::SideBySide, Some("left.txt".into()));
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+
+        let no_paint = Backend::diff_view_layout(&backend, rect, &view);
+
+        let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let painted = crate::gtk::draw_diff_view(
+            &cr,
+            &pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            &view,
+            &backend.current_theme,
+            backend.current_line_height,
+        );
+
+        assert_eq!(
+            no_paint, painted,
+            "diff_view_layout must equal the exact layout draw_diff_view painted with"
+        );
+        assert_eq!(
+            no_paint.visible_rows, 4,
+            "a 100px-tall rect minus a 20px header (left_label is set) leaves 4 content rows at \
+             line_height=20"
+        );
+    }
+
+    /// Same parity check in `Unified` mode, where no header row is
+    /// reserved.
+    #[test]
+    fn gtk_diff_view_layout_matches_draw_diff_view_unified() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = 20.0;
+        let view = gtk_sample_diff_view(crate::DiffMode::Unified, None);
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+
+        let no_paint = Backend::diff_view_layout(&backend, rect, &view);
+
+        let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let painted = crate::gtk::draw_diff_view(
+            &cr,
+            &pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            &view,
+            &backend.current_theme,
+            backend.current_line_height,
+        );
+
+        assert_eq!(
+            no_paint, painted,
+            "diff_view_layout must equal the exact layout draw_diff_view painted with (unified \
+             mode reserves no header band)"
+        );
+    }
+
+    /// Issue #506 review fix: `editor_layout`'s default body
+    /// (`editor.layout(rect, char_width, line_height)`) must match the
+    /// gutter/text geometry `gtk::draw_editor` actually paints with —
+    /// `gutter_width = editor.gutter_char_width * char_width` and
+    /// `text_x_offset = rect.x + gutter_width - h_scroll_offset`
+    /// (`src/gtk/editor.rs`). Note `gtk::draw_editor` paints at
+    /// `editor.rect`, not the `rect` argument `Backend::draw_editor`
+    /// receives (it discards that argument — `let _ = rect;`), so this
+    /// test sets `editor.rect == rect` to hold the two in sync, exactly
+    /// the invariant callers must maintain (see `editor_layout`'s doc).
+    #[test]
+    fn gtk_backend_editor_layout_matches_draw_editor_gutter_and_text_geometry() {
+        let mut backend = GtkBackend::new();
+        backend.current_char_width = 10.0;
+        backend.current_line_height = 20.0;
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+        let editor = crate::Editor {
+            id: WidgetId::new("ed"),
+            rect,
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 3,
+            max_col: 4,
+            gutter_char_width: 3,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '!',
+        };
+
+        let layout = Backend::editor_layout(&backend, rect, &editor);
+        let gutter = layout
+            .gutter_bounds
+            .expect("gutter_char_width=3 must produce a gutter region");
+        assert_eq!(
+            gutter.width,
+            editor.gutter_char_width as f32 * backend.current_char_width as f32,
+            "editor_layout's gutter width must match draw_editor's `gutter_width = \
+             editor.gutter_char_width * char_width` (src/gtk/editor.rs)"
+        );
+        assert_eq!(
+            layout.text_bounds.x,
+            rect.x + gutter.width,
+            "editor_layout's text_bounds.x must match draw_editor's `text_x_offset = rect.x + \
+             gutter_width` when scroll_left is 0 (src/gtk/editor.rs)"
+        );
+
+        // Paint via the real trait method with this exact geometry —
+        // proves it doesn't panic and exercises the formula this test
+        // pins.
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+        let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
+    }
+
     /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
     /// internally (`gtk::sidebar_panel::draw_sidebar_panel` calls
     /// `gtk::toolbar::draw_toolbar` directly, bypassing

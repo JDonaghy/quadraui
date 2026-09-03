@@ -746,16 +746,50 @@ backend's own `draw_terminal` / `draw_editor` / `draw_diff_view`
 already resolves them to. Rather than hand-copy the same three-line
 body into `TuiBackend`, `GtkBackend`, `MacBackend`, and `WinBackend`
 (and every test `MockBackend`), these three got a **default trait
-body**, verified byte-for-byte against each backend's real paint
-formula (see the doc comments on `Backend::terminal_layout` /
-`editor_layout` / `diff_view_layout`, and the parity tests in
-`tui/backend.rs` / `gtk/backend.rs`). This is new territory for a
-`*_layout` method — every prior one required an explicit per-backend
-override — so `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` list
-(quadraui#492's "no silent no-op defaults" honesty check) carries all
-twelve `(backend, method)` pairs with the reason, so a future backend
-that overrides one of these three without a good reason still shows up
-as a source-vs-declaration mismatch, not a silently-accepted default.
+body**, each backed by a real paint-vs-layout parity test in
+`tui/backend.rs` / `gtk/backend.rs` — see the doc comments on
+`Backend::terminal_layout` / `editor_layout` / `diff_view_layout` for
+the per-method contract, and
+`{tui,gtk}::backend::tests::{terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal,
+editor_layout_matches_draw_editor_*, diff_view_layout_matches_draw_diff_view_*}`
+for the tests themselves (issue #506 review fix — a first pass at this
+paragraph asserted these were already "verified byte-for-byte" and
+covered by "parity tests," which was aspirational, not true: no such
+tests existed at the time, and `terminal_layout`'s default body turned
+out to have exactly the drift the missing test would have caught —
+next paragraph). This is new territory for a `*_layout` method — every
+prior one required an explicit per-backend override — so
+`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` list (quadraui#492's
+"no silent no-op defaults" honesty check) carries all twelve `(backend,
+method)` pairs with the reason, so a future backend that overrides one
+of these three without a good reason still shows up as a
+source-vs-declaration mismatch, not a silently-accepted default. The
+review fix below added a thirteenth method, `terminal_scrollbar_default_width`
+— a helper `terminal_layout` calls internally, not a `*_layout` method
+itself — with three more `ACCEPTED_DEFAULTS` entries (GTK/macOS/Win; TUI
+overrides it, so needs none), for fifteen total.
+
+**`terminal_layout`'s scrollbar gap (found at review, fixed before
+merge).** Unlike `Editor::layout` — which already takes the vertical
+scrollbar's presence into account internally — `Terminal::layout` is a
+bare `viewport_width / cell_width` division with no scrollbar concept
+at all; the scrollbar-gutter reservation happens entirely in each
+backend's `draw_terminal`, *before* it calls the cell-iteration logic
+(`cell_area_w = area.width.saturating_sub(sb_cols)` on TUI,
+`cell_area_w = (rect.width - sb_width).max(0.0)` on GTK/macOS/Win). The
+first version of `terminal_layout`'s default body called
+`term.layout(rect.width, …)` directly — the *unreduced* width — so
+`TerminalLayout::grid_cols` came out too wide by the scrollbar's column
+count whenever `term.scrollbar` was `Some`, meaning `hit_test` would
+report a click on the scrollbar gutter as a valid cell. Fixed by adding
+`Backend::terminal_scrollbar_default_width` (default `8.0`, matching
+GTK/macOS/Win's `unwrap_or(8.0)`; TUI overrides it to `1.0`, matching
+its own `unwrap_or(1)`) and having `terminal_layout` reduce the
+viewport width by the scrollbar's reserved width — `sb.width` when the
+caller set it, else that default — before calling `Terminal::layout`,
+mirroring every backend's real `draw_terminal` order of operations. The
+parity tests named above pin a `Terminal` with `scrollbar: Some(..)`
+against this exact formula so the drift can't reopen silently.
 
 `board_layout` and `list_layout` do **not** get a default: `BoardMeasure`'s
 column/card sizing and `ListView`'s scrollbar-reservation logic are
