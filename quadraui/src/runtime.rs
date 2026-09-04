@@ -21,7 +21,21 @@
 //!   adopts [`ResizeDebouncer`] for the pending-viewport coalescing
 //!   itself (GTK's mechanism is GLib-timer-native — cancel + reschedule
 //!   a `glib::SourceId` — and doesn't need a separate pending-value
-//!   store, so it only picks up the shared constant/doc).
+//!   store, so it only picks up the shared constant/doc). macOS and
+//!   Windows dispatched `WindowResized` undebounced until quadraui#780
+//!   — that issue's audit found the shared machinery already existed
+//!   here but only two of the four backends had adopted it. Both now
+//!   adopt [`ResizeDebouncer`] too: macOS's `NSTimer`
+//!   cancel-and-reschedule and Windows' `SetTimer`
+//!   replace-if-already-armed both give "fire once, `RESIZE_SETTLE`
+//!   after the last resize" for free, same as GTK's `glib::SourceId`,
+//!   but — unlike GTK — neither can cheaply re-read a "live" size at
+//!   fire time from outside the event that carried it, so they still
+//!   need somewhere to stash the pending viewport between "resize
+//!   arrived" and "burst settled". [`ResizeDebouncer`] is exactly that
+//!   store, decoupled from any particular platform timer so its
+//!   coalescing behavior stays unit-testable here even though the
+//!   `NSTimer`/`SetTimer` plumbing that drives it isn't.
 //!
 //! ## What this module deliberately does *not* unify yet
 //!
@@ -80,10 +94,19 @@
 //! pass — those two have no such divergence (see
 //! `macos::run::QuadraView`'s `ReactionSink` impl).
 
-#[cfg(any(feature = "tui", feature = "gtk"))]
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "win", target_os = "windows"),
+    all(feature = "macos", target_os = "macos")
+))]
 use std::time::Duration;
 
-#[cfg(feature = "tui")]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "win", target_os = "windows"),
+    all(feature = "macos", target_os = "macos")
+))]
 use crate::event::Viewport;
 use crate::runner::Reaction;
 
@@ -157,33 +180,55 @@ pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl Reacti
 /// #209, and the GTK counterpart the DrawingArea resize handler guards
 /// against too.
 ///
-/// Both runners coalesce the burst and dispatch a single
+/// All four runners coalesce the burst and dispatch a single
 /// `WindowResized` at the final settled size once no new resize has
-/// arrived for this interval. Painting stays live throughout in both —
+/// arrived for this interval. Painting stays live throughout in all —
 /// each runner's frame/draw callback re-reads the real surface size
 /// every frame regardless of whether the debounced event has fired yet.
-#[cfg(any(feature = "tui", feature = "gtk"))]
+/// macOS and Windows adopted this alongside TUI/GTK in quadraui#780;
+/// before that they dispatched `WindowResized` on every intermediate
+/// size, undebounced.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "win", target_os = "windows"),
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
 /// Trailing-edge resize-event coalescing (quadraui#437, extracted for
-/// #496): stores the most recent viewport from a burst of resize
-/// events, superseding any earlier one, until the caller decides the
-/// burst has settled and takes it.
+/// #496; adopted by macOS/Windows in #780): stores the most recent
+/// viewport from a burst of resize events, superseding any earlier one,
+/// until the caller decides the burst has settled and takes it.
 ///
 /// Mechanism-agnostic by design — this struct only coalesces the
 /// *value*, not the *timing*. Each backend owns how it decides "has this
 /// settled": TUI polls an `Instant` deadline once per loop iteration
-/// (see `tui::run::run_inner`); GTK cancels and reschedules a
-/// `glib::SourceId` timer per resize (see `gtk::run::run_with`) and
-/// doesn't need this struct at all, since GLib's timer already gives it
-/// exactly-once-after-settle semantics and it re-reads the DA's live
-/// size at fire time rather than storing a pending value.
-#[cfg(feature = "tui")]
+/// (see `tui::run::run_inner`); macOS cancels and reschedules a one-shot
+/// `NSTimer` targeting the view itself per `viewFrameDidChange:` (see
+/// `macos::run::QuadraView::view_frame_did_change`); Windows relies on
+/// `SetTimer` replacing an already-armed timer of the same id rather
+/// than stacking a new one, so a live drag keeps rescheduling the same
+/// `WM_TIMER` (see `win::run`'s `WM_SIZE`/`WM_TIMER` arms). GTK cancels
+/// and reschedules a `glib::SourceId` timer per resize (see
+/// `gtk::run::run_with`) and doesn't need this struct at all, since
+/// GLib's timer already gives it exactly-once-after-settle semantics
+/// and it re-reads the DA's live size at fire time rather than storing
+/// a pending value.
+#[cfg(any(
+    feature = "tui",
+    all(feature = "win", target_os = "windows"),
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) struct ResizeDebouncer {
     pending: Option<Viewport>,
 }
 
-#[cfg(feature = "tui")]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "win", target_os = "windows"),
+    all(feature = "macos", target_os = "macos")
+))]
 impl ResizeDebouncer {
     /// No resize pending.
     pub(crate) const fn new() -> Self {
@@ -270,9 +315,17 @@ mod reaction_sink_tests {
     }
 }
 
-// `ResizeDebouncer` only exists under `feature = "tui"` — see its doc
+// `ResizeDebouncer` exists under `feature = "tui"`, `"win"` (on a real
+// Windows host), or `"macos"` (on a real macOS host) — see its doc
 // comment for why GTK doesn't need it.
-#[cfg(all(test, feature = "tui"))]
+#[cfg(all(
+    test,
+    any(
+        feature = "tui",
+        all(feature = "win", target_os = "windows"),
+        all(feature = "macos", target_os = "macos")
+    )
+))]
 mod resize_debouncer_tests {
     use super::*;
 
@@ -296,5 +349,51 @@ mod resize_debouncer_tests {
         d.note(Viewport::new(100.0, 50.0, 1.0));
         d.note(Viewport::new(200.0, 80.0, 1.0));
         assert_eq!(d.take(), Some(Viewport::new(200.0, 80.0, 1.0)));
+    }
+
+    /// quadraui#780 acceptance: "a test that drives a burst of resize
+    /// events and asserts the dispatched count collapses". Simulates
+    /// exactly what every native-timer-driven caller (macOS's
+    /// `viewFrameDidChange:`, Windows' `WM_SIZE`) does per event —
+    /// `note()`, never `take()` — for a burst of intermediate sizes a
+    /// live drag would deliver, then fires the settle timer once, the
+    /// way `resizeDebounceFired:`/`WM_TIMER` do. However large the
+    /// burst, exactly one `WindowResized` worth of dispatch data (the
+    /// final size) survives to be taken — the rest never reach
+    /// `AppLogic::handle` at all, which is the collapse this debouncer
+    /// exists to guarantee.
+    #[test]
+    fn burst_of_resize_events_collapses_to_one_dispatch() {
+        let mut d = ResizeDebouncer::new();
+        let mut dispatched = 0u32;
+
+        // A live edge-drag burst: many intermediate sizes, no settle
+        // between them.
+        for i in 1..=50u32 {
+            d.note(Viewport::new(i as f32, i as f32, 1.0));
+            // No timer fired yet during the burst — nothing to take.
+        }
+
+        // The drag settles: the native timer fires exactly once and
+        // the caller takes whatever is pending.
+        if let Some(viewport) = d.take() {
+            dispatched += 1;
+            assert_eq!(
+                viewport,
+                Viewport::new(50.0, 50.0, 1.0),
+                "the settled dispatch must carry the final size, not an \
+                 intermediate one"
+            );
+        }
+
+        assert_eq!(
+            dispatched, 1,
+            "a 50-event resize burst must collapse to exactly one \
+             dispatched WindowResized"
+        );
+        assert!(
+            d.take().is_none(),
+            "take() must not yield a second dispatch for the same burst"
+        );
     }
 }
