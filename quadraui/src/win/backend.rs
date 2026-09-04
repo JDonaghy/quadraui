@@ -2465,12 +2465,28 @@ impl Backend for WinBackend {
         todo!("DirectWrite sidebar-panel layout (no surface attached yet)")
     }
 
+    /// #737: `diff_view_layout` is **not** overridden on this backend —
+    /// see `win::diff_view`'s module doc for why the trait default stays
+    /// the honest answer even after the shared `DiffView::layout` landed.
     fn draw_diff_view(
         &mut self,
-        _rect: Rect,
-        _view: &crate::primitives::diff_view::DiffView,
+        rect: Rect,
+        view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
-        todo!("Direct2D DiffView rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::diff_view::draw_diff_view(
+                &surface.target,
+                dwrite,
+                rect,
+                view,
+                &self.current_theme,
+                self.current_line_height,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, view);
+        todo!("Direct2D DiffView rasteriser (no surface attached yet)")
     }
 
     /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
