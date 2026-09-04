@@ -184,6 +184,11 @@ pub mod text;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod text_display;
+/// Direct2D / DirectWrite rasteriser for
+/// [`crate::primitives::text_input::TextInput`] (#733). Windows-only in
+/// full — see its module docs.
+#[cfg(target_os = "windows")]
+mod text_input;
 /// Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (#29).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -261,6 +266,8 @@ pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_
 pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 #[cfg(target_os = "windows")]
 pub use text_display::{draw_text_display, win_text_display_layout};
+#[cfg(target_os = "windows")]
+pub use text_input::{draw_text_input, win_text_input_layout};
 #[cfg(target_os = "windows")]
 pub use toast::{draw_toast_stack, win_toast_stack_layout};
 #[cfg(target_os = "windows")]
