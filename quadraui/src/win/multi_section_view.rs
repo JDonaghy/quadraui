@@ -5,8 +5,14 @@
 //! per-section scrollbars, optional dividers) onto an `ID2D1RenderTarget`
 //! and dispatches each section's body to the appropriate quadraui body
 //! rasteriser (`super::tree::draw_tree`, `super::list::draw_list`,
-//! `super::form::draw_form`, `super::chart::draw_chart`) using the body
-//! bounds returned by the primitive's [`crate::MultiSectionView::layout`].
+//! `super::form::draw_form`, `super::chart::draw_chart`,
+//! `super::terminal::draw_terminal_cells`,
+//! `super::message_list::draw_message_list`) using the body bounds
+//! returned by the primitive's [`crate::MultiSectionView::layout`].
+//! `SectionBody::Terminal` / `SectionBody::MessageList` used to paint
+//! background only, on the rationale that `super::terminal` /
+//! `super::message_list` were still `todo!()` stubs — stale since #30
+//! landed both rasterisers; #727 wired them in here.
 //!
 //! Mirrors [`crate::macos::multi_section_view`] in shape (the closest
 //! existing pixel backend: no frame-scope requirement for layout, real
@@ -35,10 +41,6 @@
 //!
 //! # Scope omissions (follow-up, matches `crate::macos::multi_section_view`)
 //!
-//! - **Terminal / MessageList section bodies** — `WinBackend::draw_terminal`
-//!   and `draw_message_list` are still `todo!()` stubs (see
-//!   `super::backend`'s module doc); `SectionBody::Terminal` /
-//!   `SectionBody::MessageList` paint the background only for now.
 //! - **Custom-icon empty bodies** — the `EmptyBody::action` button is
 //!   rendered as plain centred text, no clickable button chrome.
 //! - **Caret blink** — `WinBackend` has no caret-blink timer
@@ -371,9 +373,30 @@ fn paint_body(
                 None,
             );
         }
-        SectionBody::Terminal(_) | SectionBody::MessageList(_) => {
-            // Lands in a follow-up issue — paint the bg only for now.
-            let _ = fill_rect(target, bounds, theme.background);
+        SectionBody::Terminal(t) => {
+            super::terminal::draw_terminal_cells(
+                target,
+                dwrite,
+                t,
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+                line_height,
+                char_width,
+                theme,
+            );
+        }
+        SectionBody::MessageList(m) => {
+            super::message_list::draw_message_list(
+                target,
+                dwrite,
+                m,
+                bounds.x,
+                bounds.y,
+                bounds.y + bounds.height,
+                line_height,
+            );
         }
         SectionBody::Text(lines) => {
             paint_text_lines(target, dwrite, bounds, lines, theme, line_height);
@@ -884,6 +907,132 @@ mod tests {
             expected_resolved,
             metrics.header_size,
             shared_measure.content_size,
+        );
+    }
+
+    /// #727: `SectionBody::MessageList` used to paint background only.
+    /// A real MSV paint of a `MessageList` section must now reach
+    /// `super::message_list::draw_message_list` and record a text run
+    /// for each row — the same `inventory().text_runs()` contract
+    /// quadraui#721 established for `WinDriver`, checked here directly
+    /// against the recording sink `paint_via` doesn't install.
+    #[test]
+    fn message_list_section_paints_row_text() {
+        use crate::primitives::message_list::{MessageList, MessageRow};
+        use crate::types::Color;
+
+        let body = SectionBody::MessageList(MessageList {
+            id: WidgetId::new("messages"),
+            rows: vec![MessageRow::new(
+                "hello from win msv",
+                Color::rgb(255, 255, 255),
+                0.0,
+            )],
+            scroll_top: 0,
+        });
+        let view = MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: vec![Section {
+                id: "messages".into(),
+                header: SectionHeader {
+                    icon: None,
+                    title: StyledText::plain("Messages"),
+                    badge: None,
+                    actions: vec![],
+                    show_chevron: true,
+                },
+                body,
+                aux: None,
+                size: SectionSize::EqualShare,
+                collapsed: false,
+                min_size: None,
+                max_size: None,
+            }],
+            active_section: Some(0),
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: true,
+            panel_scroll: 0.0,
+        };
+
+        let previous = crate::testing::install_text_run_sink();
+        let (_surface, _layout) = paint_via(&view);
+        let runs = crate::testing::take_text_run_sink(previous);
+
+        assert!(
+            runs.iter().any(|r| r.text.contains("hello from win msv")),
+            "expected a text run for the MessageList row, got {:?}",
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// #727: `SectionBody::Terminal` used to paint background only. A
+    /// real MSV paint of a `Terminal` section must now reach
+    /// `super::terminal::draw_terminal_cells` and record a text run for
+    /// each non-blank cell — same contract as
+    /// `message_list_section_paints_row_text` above.
+    #[test]
+    fn terminal_section_paints_cell_glyphs() {
+        use crate::primitives::terminal::{Terminal, TerminalCell};
+        use crate::types::Color;
+
+        fn cell(ch: char) -> TerminalCell {
+            TerminalCell {
+                ch,
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(0, 0, 0),
+                bold: false,
+                italic: false,
+                underline: false,
+                selected: false,
+                is_cursor: false,
+                is_find_match: false,
+                is_find_active: false,
+            }
+        }
+
+        let body = SectionBody::Terminal(Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![cell('Q'), cell('X')]],
+            scrollbar: None,
+        });
+        let view = MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: vec![Section {
+                id: "term".into(),
+                header: SectionHeader {
+                    icon: None,
+                    title: StyledText::plain("Terminal"),
+                    badge: None,
+                    actions: vec![],
+                    show_chevron: true,
+                },
+                body,
+                aux: None,
+                size: SectionSize::EqualShare,
+                collapsed: false,
+                min_size: None,
+                max_size: None,
+            }],
+            active_section: Some(0),
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: true,
+            panel_scroll: 0.0,
+        };
+
+        let previous = crate::testing::install_text_run_sink();
+        let (_surface, _layout) = paint_via(&view);
+        let runs = crate::testing::take_text_run_sink(previous);
+
+        assert!(
+            runs.iter().any(|r| r.text.contains('Q')),
+            "expected a text run for the Terminal cell glyphs, got {:?}",
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
         );
     }
 }
