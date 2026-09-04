@@ -1651,20 +1651,56 @@ impl Backend for WinBackend {
         }
     }
 
+    /// #733: real Direct2D/DirectWrite rasteriser via `win::text_input`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// for the "surface not attached yet" fallback posture.
     fn draw_text_input(
         &mut self,
-        _rect: Rect,
-        _ti: &crate::primitives::text_input::TextInput,
+        rect: Rect,
+        ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
-        todo!("Direct2D text input rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::text_input::draw_text_input(
+                &surface.target,
+                dwrite,
+                rect,
+                ti,
+                &self.current_theme,
+                self.current_line_height,
+                self.current_char_width,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, ti);
+        todo!("Direct2D text input rasteriser (no surface attached yet)")
     }
 
+    /// #733: pure measurement — only needs `current_line_height`/
+    /// `current_char_width`, not a live render target or `self.dwrite`
+    /// (mirrors [`Self::command_line_layout`]'s doc for why this only
+    /// needs the `target_os = "windows"` gate every method in this file
+    /// shares). No `return` in the `windows` arm — see
+    /// [`Self::activity_bar_layout`]'s doc for why.
     fn text_input_layout(
         &self,
-        _rect: Rect,
-        _ti: &crate::primitives::text_input::TextInput,
+        rect: Rect,
+        ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
-        todo!("Direct2D text input layout")
+        #[cfg(target_os = "windows")]
+        {
+            super::text_input::win_text_input_layout(
+                ti,
+                rect,
+                self.current_line_height,
+                self.current_char_width,
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, ti);
+            todo!("Direct2D text input layout")
+        }
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
