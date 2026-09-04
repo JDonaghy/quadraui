@@ -9,7 +9,7 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::primitives::pipeline_view::{
-    PipelineView, PipelineViewLayout, PipelineViewMeasure, StageStatus,
+    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
 };
 use crate::theme::Theme;
 use crate::types::Color;
@@ -97,12 +97,7 @@ pub unsafe fn draw_pipeline_view(
         CGContextFillPath(ctx);
 
         // ── Box border (per-status colour; focus uses an above-box indicator) ──
-        let border_color = match stage.status {
-            StageStatus::Active => theme.accent_bg,
-            StageStatus::Done => theme.git_added,
-            StageStatus::Failed => theme.error_fg,
-            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => theme.muted_fg,
-        };
+        let border_color = status_color(&stage.status, theme);
         set_stroke_color(ctx, border_color);
         CGContextSetLineWidth(ctx, BORDER_WIDTH);
         add_rounded_rect_path(ctx, bx, by, bw, bh, CORNER_RADIUS);
@@ -123,8 +118,8 @@ pub unsafe fn draw_pipeline_view(
         }
 
         // ── Status icon ───────────────────────────────────────────────────
-        let icon_text = status_icon_text(stage);
-        let icon_color = status_icon_color(stage, theme);
+        let icon_text = status_glyph(&stage.status);
+        let icon_color = status_color(&stage.status, theme);
         let (iw, _ih) = measure_text(font, icon_text);
         let icon_cx = bx + bw / 2.0 - iw / 2.0;
         let icon_cy = by + bh / 5.0;
@@ -195,31 +190,6 @@ pub unsafe fn draw_pipeline_view(
     }
 
     layout
-}
-
-fn status_icon_text(stage: &crate::primitives::pipeline_view::PipelineStage) -> &'static str {
-    match stage.status {
-        StageStatus::Done => "✓",
-        StageStatus::Active => "●",
-        StageStatus::Failed => "✗",
-        StageStatus::Pending => "·",
-        StageStatus::Skipped => "─",
-        StageStatus::Stale => "↻",
-    }
-}
-
-fn status_icon_color(
-    stage: &crate::primitives::pipeline_view::PipelineStage,
-    theme: &Theme,
-) -> Color {
-    match stage.status {
-        StageStatus::Done => theme.git_added,
-        StageStatus::Active => theme.accent_bg,
-        StageStatus::Failed => theme.error_fg,
-        StageStatus::Pending => theme.muted_fg,
-        StageStatus::Skipped => theme.muted_fg,
-        StageStatus::Stale => theme.muted_fg,
-    }
 }
 
 /// Build a rounded-rectangle CG path and make it the current path on `ctx`.
@@ -324,7 +294,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::pipeline_view::{PipelineHit, PipelineStage};
+    use crate::primitives::pipeline_view::{PipelineHit, PipelineStage, StageStatus};
     use crate::types::WidgetId;
     use crate::Backend;
 

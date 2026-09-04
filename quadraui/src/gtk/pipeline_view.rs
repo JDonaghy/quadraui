@@ -19,10 +19,9 @@ use gtk4::pango;
 
 use super::{rounded_rect_path, set_source};
 use crate::primitives::pipeline_view::{
-    PipelineView, PipelineViewLayout, PipelineViewMeasure, StageStatus,
+    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
 };
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Arrow connector width in pixels.
 const GTK_ARROW_WIDTH_PX: f32 = 32.0;
@@ -105,12 +104,7 @@ pub fn draw_pipeline_view(
         cr.fill().ok();
 
         // ── Box border (per-status colour; focus uses an above-box indicator) ──
-        let border_color = match stage.status {
-            StageStatus::Active => theme.accent_bg,
-            StageStatus::Done => theme.git_added,
-            StageStatus::Failed => theme.error_fg,
-            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => theme.muted_fg,
-        };
+        let border_color = status_color(&stage.status, theme);
         set_source(cr, border_color);
         cr.set_line_width(BORDER_WIDTH);
         rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
@@ -131,8 +125,8 @@ pub fn draw_pipeline_view(
         }
 
         // ── Status icon (top third of box) ───────────────────────────────
-        let icon_text = status_icon_text(stage);
-        let icon_color = status_icon_color(stage, theme);
+        let icon_text = status_glyph(&stage.status);
+        let icon_color = status_color(&stage.status, theme);
         set_source(cr, icon_color);
         pango_layout.set_text(icon_text);
         pango_layout.set_attributes(None);
@@ -212,31 +206,6 @@ pub fn draw_pipeline_view(
     layout
 }
 
-fn status_icon_text(stage: &crate::primitives::pipeline_view::PipelineStage) -> &'static str {
-    match stage.status {
-        StageStatus::Done => "✓",
-        StageStatus::Active => "●",
-        StageStatus::Failed => "✗",
-        StageStatus::Pending => "·",
-        StageStatus::Skipped => "─",
-        StageStatus::Stale => "↻",
-    }
-}
-
-fn status_icon_color(
-    stage: &crate::primitives::pipeline_view::PipelineStage,
-    theme: &Theme,
-) -> Color {
-    match stage.status {
-        StageStatus::Done => theme.git_added,
-        StageStatus::Active => theme.accent_bg,
-        StageStatus::Failed => theme.error_fg,
-        StageStatus::Pending => theme.muted_fg,
-        StageStatus::Skipped => theme.muted_fg,
-        StageStatus::Stale => theme.muted_fg,
-    }
-}
-
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
 // Headless painted-indicator tests (mirror the TUI tests in
@@ -255,7 +224,7 @@ fn status_icon_color(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::pipeline_view::{PipelineStage, PipelineViewLayout};
+    use crate::primitives::pipeline_view::{PipelineStage, PipelineViewLayout, StageStatus};
     use crate::types::WidgetId;
     use pangocairo::cairo::{Context, Format, ImageSurface};
 

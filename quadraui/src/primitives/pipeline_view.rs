@@ -28,7 +28,8 @@
 //! [`PipelineView::handle_key`].
 
 use crate::event::Rect;
-use crate::types::{Modifiers, WidgetId};
+use crate::theme::Theme;
+use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 // ── Data model ───────────────────────────────────────────────────────────────
@@ -51,6 +52,40 @@ pub enum StageStatus {
     /// be trusted. Distinct from Pending ("never run") and Done ("trustworthy").
     /// Rendered dim with an `↻` icon to suggest re-running.
     Stale,
+}
+
+/// The `status → glyph` table for a stage's status icon — shared by every
+/// backend's rasteriser (gtk, macos, tui, win). Issue #713's primitive-first
+/// rule forbids a backend from carrying its own copy of this match; a
+/// second/third/fourth `status_icon_text`-shaped function is exactly the
+/// duplication that rule exists to stop.
+///
+/// Every arm is a single-codepoint glyph, so callers needing a `char`
+/// (e.g. `tui::pipeline_view`, which paints one cell at a time) can take
+/// `.chars().next()` safely.
+pub fn status_glyph(status: &StageStatus) -> &'static str {
+    match status {
+        StageStatus::Done => "✓",
+        StageStatus::Active => "●",
+        StageStatus::Failed => "✗",
+        StageStatus::Pending => "·",
+        StageStatus::Skipped => "─",
+        StageStatus::Stale => "↻",
+    }
+}
+
+/// The `status → colour` table for a stage — shared by every backend's
+/// rasteriser (#713). Used for **both** the status icon fill and the stage
+/// box border: the two mappings were identical in all three pre-existing
+/// copies (gtk, macos, tui), so this single table covers both call sites
+/// rather than shipping as two near-duplicate tables that could drift.
+pub fn status_color(status: &StageStatus, theme: &Theme) -> Color {
+    match status {
+        StageStatus::Done => theme.git_added,
+        StageStatus::Active => theme.accent_bg,
+        StageStatus::Failed => theme.error_fg,
+        StageStatus::Pending | StageStatus::Skipped | StageStatus::Stale => theme.muted_fg,
+    }
 }
 
 /// A single stage in a [`PipelineView`].
