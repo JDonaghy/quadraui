@@ -225,6 +225,45 @@ jobs:
       - name: Test (win feature, real Windows)
         if: matrix.os == 'windows-latest'
         run: cargo test -p quadraui --features win
+      # C0 + Tier-1 `win` burn-down tables, actually surfaced (quadraui#722
+      # review). The step above already runs this same `conformance.rs`
+      # binary under `--features win` — `c0_paint_smoke` registers a `win`
+      # column (Tier-0, this issue) and `backends()` already registered one
+      # for `conformance_matrix` (Tier-1, #708) — but both are designed to
+      # *pass* here (their `win` column is `Gating::BurnDown`, so its
+      # PANIC/FAIL rows never reach `blocking_gaps`), and `cargo test`
+      # captures and discards stdout for a passing test. Without a
+      # dedicated `--nocapture` run neither table was ever visible on a
+      # routine green CI run — only if someone reran locally or the test
+      # started failing. `--test conformance` scopes this to the one
+      # binary that matters; every other `--features win` test already ran
+      # in the step above, so nothing here re-runs work.
+      - name: Conformance matrix (win)
+        if: matrix.os == 'windows-latest'
+        run: cargo test -p quadraui --features win --test conformance -- --nocapture
+      # `c0_paint_smoke`'s table (quadraui#722) — its own file
+      # (`conformance-matrix-c0.txt`, written by `write_artifact` in
+      # `tests/conformance.rs`) so it can't race with `conformance_matrix`'s
+      # write to `conformance-matrix.txt` in the same test binary.
+      - name: Upload conformance matrix (win, C0)
+        if: matrix.os == 'windows-latest' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-matrix-c0-win
+          path: target/conformance-matrix-c0.txt
+          if-no-files-found: warn
+      # `conformance_matrix`'s Tier-1 table for this same run — distinct
+      # artifact name from `conformance-matrix-tui-windows-latest` above
+      # (that one is the `tui`/`tui-vt100` backends only; this is `win`
+      # alone) and uploaded here, before anything else in this job could
+      # overwrite `target/conformance-matrix.txt` again.
+      - name: Upload conformance matrix (win, Tier-1)
+        if: matrix.os == 'windows-latest' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-matrix-win
+          path: target/conformance-matrix.txt
+          if-no-files-found: warn
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
       # drives them with real ANSI escape sequences (vt100). No display

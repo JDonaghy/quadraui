@@ -12,9 +12,11 @@
 //! cargo test --features tui,terminal --test conformance -- --nocapture
 //! ```
 //!
-//! The matrix is also written to `target/conformance-matrix.txt` so CI can
-//! upload it as an artifact. For a backend that doesn't exist yet
-//! (Windows, macOS) that artifact **is** the implementation checklist.
+//! The Tier-1 matrix (`conformance_matrix`) is also written to
+//! `target/conformance-matrix.txt`, and the Tier-0 grid (`c0_paint_smoke`)
+//! to `target/conformance-matrix-c0.txt` (quadraui#722), so CI can upload
+//! each as an artifact. For a backend that doesn't exist yet (Windows,
+//! macOS) that artifact **is** the implementation checklist.
 //!
 //! ## Gating vs. reporting (quadraui#708)
 //!
@@ -388,7 +390,7 @@ fn conformance_matrix() {
         burn_down_legend(&burn_down)
     );
     println!("{table}");
-    write_artifact(&table);
+    write_artifact(&table, "conformance-matrix.txt");
 
     let judged = verdict(&rows, &burn_down);
     assert!(
@@ -404,6 +406,62 @@ fn conformance_matrix() {
          column gates again (quadraui#708).\n{table}",
         judged.promotable
     );
+}
+
+/// One case's classification on one column: the table cell to print, and
+/// — for anything but a clean pass — the `col_name/method: why` line ready
+/// to push into whichever gap list `c0_paint_smoke`'s `Gating` split
+/// selects.
+///
+/// Pulled out of `c0_paint_smoke`'s loop body (quadraui#722 review) so this
+/// tier's primitive-axis gating split has a unit test of its own,
+/// mirroring `runner::verdict`'s scenario-axis equivalent — which
+/// `runner.rs`'s own test module already covers (e.g.
+/// `register_burn_down_marks_the_registration_non_gating`). Before this,
+/// the split logic below was only ever exercised by `c0_paint_smoke`
+/// itself actually running for real; if the two gating-split
+/// implementations ever drift, this is what would catch it.
+struct C0CaseVerdict {
+    /// `"pass"`, `"FAIL"`, or `"PANIC"`.
+    cell: &'static str,
+    /// `None` for a clean pass; otherwise the fully-formatted gap line.
+    gap_line: Option<String>,
+}
+
+fn classify_c0_case(
+    outcome: &c0::CaseOutcome,
+    method: &str,
+    needle: Option<&str>,
+    col_name: &str,
+) -> C0CaseVerdict {
+    if !outcome.survived {
+        return C0CaseVerdict {
+            cell: "PANIC",
+            gap_line: Some(format!("{col_name}/{method}: panicked mid-paint")),
+        };
+    }
+    if !outcome.text_ok {
+        return C0CaseVerdict {
+            cell: "FAIL",
+            gap_line: Some(format!(
+                "{col_name}/{method}: handed {needle:?} and the frame does not report it — {}",
+                outcome.reported
+            )),
+        };
+    }
+    if !outcome.observable {
+        return C0CaseVerdict {
+            cell: "FAIL",
+            gap_line: Some(format!(
+                "{col_name}/{method}: reported neither a text run nor a zone — {}",
+                outcome.reported
+            )),
+        };
+    }
+    C0CaseVerdict {
+        cell: "pass",
+        gap_line: None,
+    }
 }
 
 /// Tier 0 — C0 paint smoke (quadraui#492, epic #480). Runs ahead of every
@@ -554,29 +612,9 @@ fn c0_paint_smoke() {
         table.push_str(&format!("{:<method_w$}", case.method));
         for col in &columns {
             let outcome = &col.outcomes[i];
-            let verdict = if !outcome.survived {
-                "PANIC"
-            } else if !outcome.text_ok || !outcome.observable {
-                "FAIL"
-            } else {
-                "pass"
-            };
-            table.push_str(&format!("  {verdict:<6}"));
-            if verdict != "pass" {
-                let why = if !outcome.survived {
-                    "panicked mid-paint".to_string()
-                } else if !outcome.text_ok {
-                    format!(
-                        "handed {:?} and the frame does not report it — {}",
-                        case.needle, outcome.reported
-                    )
-                } else {
-                    format!(
-                        "reported neither a text run nor a zone — {}",
-                        outcome.reported
-                    )
-                };
-                let line = format!("{}/{}: {why}", col.name, case.method);
+            let v = classify_c0_case(outcome, case.method, case.needle, col.name);
+            table.push_str(&format!("  {:<6}", v.cell));
+            if let Some(line) = v.gap_line {
                 if col.gating == Gating::BurnDown {
                     burn_down_failed.insert(col.name);
                     burn_down_gaps.push(line);
@@ -598,6 +636,13 @@ fn c0_paint_smoke() {
     // regression (quadraui#708/#722).
     table.push_str(&burn_down_legend(&burn_down));
     println!("{table}");
+    // Same artifact mechanism `conformance_matrix` uses (quadraui#722
+    // review), own filename: a passing `cargo test` captures and discards
+    // stdout, so without this the `win` burn-down grid above is invisible
+    // on a routine green CI run no matter what `--nocapture` does for the
+    // *log* — the artifact is what survives past the job. See
+    // `.github/workflows/ci.yml`'s "Conformance matrix (win)" step.
+    write_artifact(&table, "conformance-matrix-c0.txt");
 
     if !burn_down_gaps.is_empty() {
         println!(
@@ -741,17 +786,25 @@ fn c2_event_parity() {
     );
 }
 
-/// Drop the matrix where CI can pick it up as an artifact. Best-effort:
+/// Drop a matrix where CI can pick it up as an artifact. Best-effort:
 /// an unwritable target directory must not fail the suite.
 ///
 /// Honours `CARGO_TARGET_DIR` so a shared/relocated target directory
 /// still gets the file; otherwise falls back to the workspace's own
 /// `target/` (which `.gitignore` already covers).
-fn write_artifact(table: &str) {
+///
+/// Takes an explicit `filename` (quadraui#722 review) rather than a single
+/// hardcoded `conformance-matrix.txt`: `conformance_matrix` (Tier-1,
+/// scenario × backend) and `c0_paint_smoke` (Tier-0, primitive × backend)
+/// both call this, and `cargo test` runs test functions concurrently by
+/// default — two tests racing to write the *same* path would make whichever
+/// finished last silently clobber the other's artifact, so each tier gets
+/// its own file instead of sharing one.
+fn write_artifact(table: &str, filename: &str) {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"));
-    let path = target.join("conformance-matrix.txt");
+    let path = target.join(filename);
     let _ = fs::create_dir_all(&target);
     let _ = fs::write(&path, table);
 }
@@ -1045,4 +1098,68 @@ fn ships_at_least_ten_tier_one_scenarios() {
         tier1 >= 10,
         "expected at least 10 Tier-1 scenarios (audit §6.6 C1), found {tier1}"
     );
+}
+
+/// Unit coverage for `classify_c0_case` (quadraui#722 review) — the
+/// primitive-axis gating split `c0_paint_smoke` applies to `c0::CaseOutcome`.
+/// Direct calls rather than a full `c0_paint_smoke` run: no backend driver
+/// needed, and each case below pins one branch of the split so a future
+/// edit can't silently change which failures land in `blocking_gaps` vs.
+/// `burn_down_gaps` without a red test naming exactly which branch moved.
+#[cfg(test)]
+mod c0_verdict_tests {
+    use super::{c0, classify_c0_case};
+
+    fn outcome(survived: bool, text_ok: bool, observable: bool) -> c0::CaseOutcome {
+        c0::CaseOutcome {
+            survived,
+            text_ok,
+            observable,
+            reported: "reported: <nothing>".to_string(),
+        }
+    }
+
+    #[test]
+    fn survived_text_ok_observable_is_a_clean_pass() {
+        let v = classify_c0_case(&outcome(true, true, true), "draw_panel", None, "win");
+        assert_eq!(v.cell, "pass");
+        assert!(v.gap_line.is_none());
+    }
+
+    #[test]
+    fn a_panic_is_named_by_column_and_method_regardless_of_the_rest() {
+        // `survived: false` must win even when the other two flags claim
+        // success — a panic mid-paint means those flags describe a frame
+        // that was never actually produced.
+        let v = classify_c0_case(&outcome(false, true, true), "draw_editor", None, "win");
+        assert_eq!(v.cell, "PANIC");
+        assert_eq!(
+            v.gap_line.as_deref(),
+            Some("win/draw_editor: panicked mid-paint")
+        );
+    }
+
+    #[test]
+    fn a_missing_needle_fails_and_names_what_was_handed() {
+        let v = classify_c0_case(
+            &outcome(true, false, true),
+            "draw_status_bar",
+            Some("hi"),
+            "win",
+        );
+        assert_eq!(v.cell, "FAIL");
+        let line = v.gap_line.expect("text_ok=false must produce a gap line");
+        assert!(line.starts_with("win/draw_status_bar: "));
+        assert!(line.contains("Some(\"hi\")"));
+    }
+
+    #[test]
+    fn an_unobservable_frame_fails_even_with_the_right_text() {
+        let v = classify_c0_case(&outcome(true, true, false), "draw_toolbar", None, "win");
+        assert_eq!(v.cell, "FAIL");
+        assert_eq!(
+            v.gap_line.as_deref(),
+            Some("win/draw_toolbar: reported neither a text run nor a zone — reported: <nothing>")
+        );
+    }
 }

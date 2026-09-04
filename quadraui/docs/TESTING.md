@@ -35,7 +35,7 @@ this list in the same PR.
 |---|---|---|
 | `rustfmt` | ubuntu-latest | `cargo fmt --all --check` |
 | `Example-test coverage` | ubuntu-latest, PR events only | `tools/example_coverage.py --fail-on-gap` — a new `tui_*.rs` example added by the PR must have a matching `TuiDriver` test |
-| `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check + arithmetic-only unit tests (`cargo check`/`test -p quadraui --features win`, ubuntu leg only, #538); on the windows-latest leg (all three `continue-on-error`, see the job's comments for the rollout plan): a real build + clippy of the `win_demo` example (`--features win`, #19/#21) and `cargo test -p quadraui --features win` (#24 — the first step that actually *runs* `cfg(target_os = "windows")` code against real Direct2D, via `src/win/testing.rs`'s `HeadlessSurface`); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg |
+| `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check + arithmetic-only unit tests (`cargo check`/`test -p quadraui --features win`, ubuntu leg only, #538); on the windows-latest leg (all three `continue-on-error`, see the job's comments for the rollout plan): a real build + clippy of the `win_demo` example (`--features win`, #19/#21) and `cargo test -p quadraui --features win` (#24 — the first step that actually *runs* `cfg(target_os = "windows")` code against real Direct2D, via `src/win/testing.rs`'s `HeadlessSurface`); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg; on the windows-latest leg only, a second conformance run under `--features win --test conformance -- --nocapture` (quadraui#722 review) uploads the `win` column's C0 and Tier-1 tables as their own artifacts (`conformance-matrix-c0-win`, `conformance-matrix-win`) — without it, the `win` burn-down grid never left the log of a step whose stdout `cargo test` discards on a pass |
 | `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs`); a build of the `gtk_terminal` example (`--features gtk,terminal`, #483, same `required-features` gap as `tui_terminal` above); the gtk+tui conformance matrix, uploaded as an artifact |
 | `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout — see the job's comments for how (#528) |
 | `macos (build, test)` (separate workflow, `macos.yml`) | macos-latest, **`pull_request` gated on a `quadraui/src/macos/**` path filter (#598), plus `workflow_dispatch`/weekly `schedule`** | `cargo build`/`test -p quadraui --features macos` — the only place `src/macos`'s tests (including `MacDriver`'s, quadraui#493, and the Tier-1 `backends()` row it adds to `tests/conformance.rs`) run. The path filter is load-bearing, not incidental (see the workflow's own header comment): a PR that doesn't touch `src/macos/**` gets no check at all, but one that does gets a *real*, merge-blocking macos-latest build+test — `#484`'s progress bar. Still weekly (Mondays 06:00 UTC) / manual-dispatch otherwise, for the same "don't let a regression sit undiscovered" reason as before #598 |
@@ -430,10 +430,16 @@ cargo test -p quadraui --features tui      --test conformance -- --nocapture
 cargo test -p quadraui --features gtk,tui  --test conformance -- --nocapture
 ```
 
-The matrix prints on every run and is also written to
-`$CARGO_TARGET_DIR/conformance-matrix.txt`; CI uploads it as an artifact
-from both the `tui` and `gtk` jobs. For a backend that doesn't exist yet
-(Windows, macOS) **that artifact is the implementation checklist**.
+The Tier-1 matrix prints on every run and is also written to
+`$CARGO_TARGET_DIR/conformance-matrix.txt`; the Tier-0 grid
+(`c0_paint_smoke`) does the same to `$CARGO_TARGET_DIR/conformance-matrix-c0.txt`
+(quadraui#722) — two files, not one, because both tests can run
+concurrently in the same `cargo test` invocation and a shared path would
+let whichever finished last silently clobber the other's artifact. CI
+uploads both as artifacts from the `tui` and `gtk` jobs (plus a
+`win`-only rerun of each on the windows-latest leg — see the CI table
+above). For a backend that doesn't exist yet (Windows, macOS) **that
+artifact is the implementation checklist**.
 
 ```text
 Conformance matrix (scenario × backend)
