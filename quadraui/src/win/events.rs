@@ -19,11 +19,14 @@
 //!
 //! # Known gaps (follow-up, not this issue's table)
 //!
-//! - `WM_SYSKEYDOWN`/`WM_SYSKEYUP`/`WM_SYSCHAR` (fired while Alt is held
-//!   — Alt+F4, menu mnemonics) aren't dispatched. Plain `WM_KEYDOWN`/
-//!   `WM_CHAR` never fire for those combinations on real Windows, so
-//!   wiring this up needs an extra `wndproc` arm reusing the same
-//!   translators here.
+//! - `WM_SYSKEYUP` isn't dispatched — mirrors plain `WM_KEYUP` staying
+//!   unhandled (no [`UiEvent`] key-release variant exists yet; see
+//!   `super::run`'s `WM_KEYDOWN` arm doc). `WM_SYSKEYDOWN`/`WM_SYSCHAR`
+//!   (fired while Alt is held — Alt+F4, menu mnemonics) *are* dispatched
+//!   as of #743, reusing [`wm_keydown_to_uievent`]/[`wm_char_to_uievent`]
+//!   exactly as `WM_KEYDOWN`/`WM_CHAR` do — see `super::run`'s
+//!   `WM_SYSKEYDOWN`/`WM_SYSCHAR` arms for the Alt+F4 dispatch-vs-
+//!   `DefWindowProcW` decision.
 //! - `WM_*BUTTONDBLCLK` is deliberately never dispatched here.
 //!   [`UiEvent::DoubleClick`] is instead synthesized from repeated
 //!   `MouseDown`s by the shared `dispatch::DoubleClickDetector`, folded
@@ -685,6 +688,48 @@ mod tests {
         match ev {
             Some(UiEvent::KeyPressed { repeat, .. }) => assert!(repeat),
             _ => panic!(),
+        }
+    }
+
+    // ── Keyboard: WM_SYSKEYDOWN/WM_SYSCHAR (Alt-modified, #743) ──────
+    //
+    // `super::run`'s `WM_SYSKEYDOWN`/`WM_SYSCHAR` arms reuse these exact
+    // translators (no new translation logic — see this module's "Known
+    // gaps" doc), so an Alt-modified key producing `Modifiers::alt ==
+    // true` here is the host-independent half of #743's acceptance bar;
+    // the wndproc wiring itself only compiles under `target_os =
+    // "windows"`.
+
+    #[test]
+    fn keydown_alt_modifier_passes_through() {
+        // Alt+F4: VK_F4 (0x73) arrives via WM_SYSKEYDOWN with the Alt
+        // modifier already set (read live via GetKeyState(VK_MENU) by the
+        // caller) — same named-key translation WM_KEYDOWN uses.
+        let mods = win_modifiers(false, false, true, false);
+        let ev = wm_keydown_to_uievent(0x73, mods, false);
+        match ev {
+            Some(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::F(4)),
+                modifiers,
+                ..
+            }) => assert!(modifiers.alt),
+            other => panic!("expected KeyPressed{{Named(F(4)), alt}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn char_alt_modifier_passes_through() {
+        // Alt+letter menu mnemonics arrive via WM_SYSCHAR with the same
+        // already-decoded character WM_CHAR delivers.
+        let mods = win_modifiers(false, false, true, false);
+        let ev = wm_char_to_uievent('a', mods, false);
+        match ev {
+            Some(UiEvent::KeyPressed {
+                key: Key::Char('a'),
+                modifiers,
+                ..
+            }) => assert!(modifiers.alt),
+            other => panic!("expected KeyPressed{{Char('a'), alt}}, got {other:?}"),
         }
     }
 
