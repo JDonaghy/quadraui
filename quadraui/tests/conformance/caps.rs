@@ -573,6 +573,38 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
     ),
+    // ── issue #776: `scrollbar_reserve` is the width of *toolkit* scrollbar
+    // chrome that a backend paints over the content edge, which a caller
+    // must subtract before it computes a content viewport width. GTK is
+    // the only backend that hosts its content inside something with such
+    // chrome (a `ScrolledWindow` and its overlay scrollbar), so GTK is the
+    // only backend that overrides it. The other three draw straight into a
+    // surface they own end to end — a terminal cell grid, a `CGContext`, an
+    // HWND's Direct2D render target — and any scrollbar visible in them is
+    // quadraui's own `Scrollbar` primitive, laid out *inside* the rect the
+    // caller already passed rather than floated on top of it. Reserving a
+    // second gutter for it would double-count. Unlike the `#19` Win stub
+    // rows above, these are not unfinished work: `0.0` is the answer, and
+    // it does not change when the Win rasterisers land.
+    (
+        "tui",
+        "scrollbar_reserve",
+        "no toolkit overlay chrome — a terminal has no scrollbar of its own, and the `Scrollbar` \
+         primitive TUI paints occupies a real cell column inside the caller's rect (#776)",
+    ),
+    (
+        "macos",
+        "scrollbar_reserve",
+        "no toolkit overlay chrome — `MacBackend` draws into a `CGContext` it owns, not an \
+         `NSScrollView`, and paints the `Scrollbar` primitive inside the caller's rect (#776)",
+    ),
+    (
+        "win",
+        "scrollbar_reserve",
+        "no toolkit overlay chrome — Direct2D paints into the HWND's render target directly, with \
+         no native scrollbar floated over the content edge; unrelated to the #19 stub gaps above \
+         (#776)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
