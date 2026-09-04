@@ -121,7 +121,9 @@ use super::events::{
     gdk_scroll_to_uievent_with_direction,
 };
 use crate::backend::Backend;
-use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
+use crate::desktop::{
+    is_paste_keypress, smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig,
+};
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
@@ -1183,18 +1185,12 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.end_frame();
 }
 
-/// Whether a key press should trigger clipboard paste: plain Ctrl-V or
-/// Ctrl-Shift-V, with Alt/Cmd unheld (quadraui#415). `Shift` is
-/// deliberately not checked — some terminal emulators reserve Ctrl-V
-/// for a literal control byte and use Ctrl-Shift-V as the paste
-/// shortcut instead, and quadraui treats the two identically since a
-/// terminal grid has no "paste without formatting" distinction.
-fn is_paste_keypress(key: &Key, modifiers: &Modifiers) -> bool {
-    matches!(key, Key::Char('v') | Key::Char('V'))
-        && modifiers.ctrl
-        && !modifiers.alt
-        && !modifiers.cmd
-}
+// `is_paste_keypress` (plain Ctrl-V / Ctrl-Shift-V, quadraui#415) used to
+// be defined here; lifted to the backend-neutral `desktop` module (#728)
+// so `macos::run` and `win::run` share the exact same predicate instead
+// of each reimplementing (or, for `win`, never implementing) it — see
+// that module's doc and `docs/DECISIONS.md` D-011 for the shift-
+// tolerance contract this settles once for every adopter.
 
 // `EventOutcome` — what the caller should do after [`dispatch_event`]
 // handles one event — is defined once in `crate::runtime` and shared by
@@ -1551,9 +1547,14 @@ mod paste_tests {
     //! Coverage for quadraui#415 — GTK clipboard-paste and PRIMARY-
     //! selection routing added to [`dispatch_event`].
     //!
-    //! `is_paste_keypress` is a pure predicate, tested directly with no
-    //! display required. The `GtkDriver`-based tests below exercise the
-    //! actual [`dispatch_event`] wiring end to end.
+    //! `is_paste_keypress` (shared with `macos::run`/`win::run` since
+    //! #728 — see `crate::desktop`) is a pure predicate, tested directly
+    //! with no display required; its full cross-backend contract
+    //! (Shift/Cmd tolerance, D-011 in `docs/DECISIONS.md`) has its own
+    //! coverage in `crate::desktop`'s test module, so the pure-predicate
+    //! tests below stick to GTK's own Ctrl-based cases. The
+    //! `GtkDriver`-based tests below exercise the actual
+    //! [`dispatch_event`] wiring end to end.
     //!
     //! Each of those installs an in-memory clipboard via
     //! [`GtkBackend::install_test_clipboard`] before dispatching, so both

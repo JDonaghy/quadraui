@@ -115,18 +115,15 @@
 //!   window.
 //! - `QUADRAUI_WIN_SMOKE_PASTE=<text>` — optional. If set, the same timer
 //!   round-trips `<text>` through the real OS clipboard
-//!   (`WinPlatformServices::clipboard()`, the same object a live Ctrl-V
-//!   handler would read) and checks it byte-for-byte via
-//!   [`crate::desktop::smoke_clipboard_round_trip_ok`].
-//!
-//!   Unlike `gtk::run`'s equivalent check, this does **not** also
-//!   dispatch a synthetic Ctrl-V `UiEvent` through `win32::dispatch` —
-//!   `win::events` has no `WM_CHAR`/`WM_KEYDOWN` → `UiEvent::ClipboardPaste`
-//!   interception path yet (issue #20 wired the raw key events, not a
-//!   paste-specific one), so there is no live interception code for a
-//!   synthetic keypress to exercise. This checks the raw OS clipboard
-//!   round-trip only; widening it to also replay a synthetic paste is
-//!   follow-up work for whichever issue adds that interception.
+//!   (`WinPlatformServices::clipboard()`, the same object the live Ctrl-V
+//!   handler below reads) and checks it byte-for-byte via
+//!   [`crate::desktop::smoke_clipboard_round_trip_ok`], then — since
+//!   #728 gave `dispatch_event` a real Ctrl-V → `ClipboardPaste`
+//!   interception path — dispatches a synthetic Ctrl-V `KeyPressed`
+//!   through it, mirroring `gtk::run::schedule_smoke_check`'s identical
+//!   round-trip-then-replay sequence. A regression in the interception
+//!   wiring itself now fails the smoke too, not just a raw clipboard
+//!   failure.
 //!
 //! Any assertion failure is printed to stderr (`win32::run_smoke_check`
 //! is exempted from the crate-wide `print_stderr` deny for the same
@@ -136,6 +133,7 @@
 //! `QUADRAUI_WIN_SMOKE_MS` is set.
 
 use crate::backend::Backend;
+use crate::desktop::is_paste_keypress;
 use crate::event::Viewport;
 use crate::runner::AppLogic;
 // `EventOutcome` — what the caller should do after `dispatch_event`
@@ -170,6 +168,15 @@ use crate::{ActivityBarEvent, UiEvent};
 ///   `gtk::run::dispatch_event` / `macos::run::dispatch_event` use), so a
 ///   bound accelerator never steals a navigation key out from under a
 ///   keyboard-focused activity bar.
+/// - Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], shared with
+///   `gtk::run`/`macos::run` since #728): reads the system clipboard via
+///   [`WinBackend::services`] and delivers `UiEvent::ClipboardPaste`
+///   instead of forwarding the raw key press — Win-GUI's first paste
+///   support at all (#728; Win32 has no native paste signal on a bespoke
+///   `HWND` client area, same reasoning `gtk::run`'s doc comment gives
+///   for GTK's bespoke `DrawingArea`). See `docs/DECISIONS.md` D-011 for
+///   the shift-tolerance contract this predicate settles once for every
+///   backend.
 ///
 /// Anything not matched above falls through to `app.handle` unchanged.
 ///
@@ -178,7 +185,13 @@ use crate::{ActivityBarEvent, UiEvent};
 /// read plain `Option`/`Vec` fields populated by `register_accelerator`
 /// and `draw_activity_bar`), so this compiles and behaves identically on
 /// every host — same "compiles everywhere" posture as [`RunConfig`]
-/// above.
+/// above. The new paste arm keeps that posture too:
+/// `WinPlatformServices::clipboard()`'s `read_text()` is a real Win32
+/// clipboard read under `target_os = "windows"` and an unconditional
+/// `None` everywhere else (see `win::services`'s `Clipboard` impl), so
+/// off-Windows this arm always falls through to `EventOutcome::Continue`
+/// with nothing forwarded to the app — never a compile-time or
+/// behavioral surprise on the `ubuntu-latest` `--features win` leg.
 ///
 /// `#[allow(dead_code)]`: this function's only callers — `mod win32`'s
 /// live `wndproc`/`dispatch` and [`super::testing::WinDriver`] — are both
@@ -224,6 +237,17 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     } else {
         event
     };
+
+    // ── Ctrl-V / Ctrl-Shift-V interception (paste, #728) ─────────────
+    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        if is_paste_keypress(key, modifiers) {
+            return if let Some(text) = backend.services().clipboard().read_text() {
+                app.handle(UiEvent::ClipboardPaste(text), backend).into()
+            } else {
+                EventOutcome::Continue
+            };
+        }
+    }
 
     app.handle(event, backend).into()
 }
@@ -389,7 +413,7 @@ mod win32 {
         dpi_scale_from_wparam, is_repeat_from_lparam, point_from_lparam, size_from_lparam,
         wheel_delta_from_wparam,
     };
-    use crate::{ButtonMask, Modifiers};
+    use crate::{ButtonMask, Key, Modifiers};
 
     /// Window-class name. Null-terminated up front — every `PCWSTR` this
     /// module builds from a Rust string does the same, since Win32 wide
@@ -804,11 +828,28 @@ mod win32 {
                      {read_back:?}"
                 );
                 ws.smoke_failed.set(true);
+            } else {
+                // #728: also exercise the real Ctrl-V interception path
+                // (the exact code `WM_CHAR`'s live dispatch calls), so a
+                // regression there — not just in the raw OS clipboard —
+                // fails the smoke too. Mirrors
+                // `gtk::run::schedule_smoke_check`'s identical follow-up
+                // dispatch.
+                dispatch(
+                    ws,
+                    hwnd,
+                    UiEvent::KeyPressed {
+                        key: Key::Char('v'),
+                        modifiers: Modifiers {
+                            ctrl: true,
+                            shift: false,
+                            alt: false,
+                            cmd: false,
+                        },
+                        repeat: false,
+                    },
+                );
             }
-            // Unlike `gtk::run::schedule_smoke_check`, this does not also
-            // dispatch a synthetic Ctrl-V `UiEvent` — see the module
-            // doc's "Headless smoke mode" section for why: there is no
-            // live paste-interception code path here yet to exercise.
         }
     }
 
@@ -1262,6 +1303,97 @@ mod tests {
         assert!(
             !depth.is_pumping(),
             "depth must return to 0 once each guarded call completes"
+        );
+    }
+}
+
+/// Coverage for #728 — Ctrl-V/Ctrl-Shift-V clipboard-paste interception in
+/// [`dispatch_event`]. `dispatch_event` itself is deliberately not
+/// `target_os`-gated (see its doc comment), so this runs on every host,
+/// including plain `cargo test --features win` on Linux (`win::testing`'s
+/// `WinDriver`, by contrast, only exists under `target_os = "windows"` —
+/// see that module's doc — so it can't be used here).
+///
+/// `WinPlatformServices::clipboard().read_text()` is an unconditional
+/// `None` off Windows (`win::services`'s `Clipboard` impl) — there is no
+/// test-clipboard seam to seed a "there IS something to paste" case from
+/// this host, unlike `gtk::testing::GtkDriver::new`'s in-memory fake. This
+/// module covers the branch that *is* observable everywhere: an
+/// intercepted paste keypress with nothing to paste is fully consumed
+/// (never forwarded to the app as a raw `KeyPressed`) and produces
+/// `EventOutcome::Continue`. The "reads real clipboard text and delivers
+/// `ClipboardPaste`" branch needs a live Windows host to exercise for
+/// real — see `CLAUDE.md`'s "Win-GUI: building and testing for real".
+#[cfg(test)]
+mod paste_dispatch_tests {
+    use super::*;
+    use crate::runner::Reaction;
+    use crate::{Key, Modifiers, UiEvent};
+
+    /// Records every event `handle` receives, so tests can assert an
+    /// intercepted paste trigger does NOT also forward the raw key event
+    /// underneath it — mirrors `gtk::run::paste_tests::RecordingApp`.
+    #[derive(Default)]
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            Reaction::Continue
+        }
+    }
+
+    fn ctrl_v() -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char('v'),
+            modifiers: Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn ctrl_v_with_nothing_to_paste_is_consumed_not_forwarded() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        let outcome = dispatch_event(ctrl_v(), &mut backend, &mut app);
+        assert!(
+            matches!(outcome, EventOutcome::Continue),
+            "an intercepted paste keypress with an empty clipboard must \
+             resolve to Continue, not fall through to app.handle"
+        );
+        assert!(
+            app.events.is_empty(),
+            "the raw Ctrl-V KeyPressed must never reach the app once \
+             is_paste_keypress recognises it — got {:?}",
+            app.events
+        );
+    }
+
+    #[test]
+    fn non_paste_keypress_still_reaches_the_app() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = UiEvent::KeyPressed {
+            key: Key::Char('x'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let _ = dispatch_event(ev.clone(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![ev],
+            "a non-paste keypress must fall through to app.handle unchanged"
         );
     }
 }

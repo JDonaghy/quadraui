@@ -1616,3 +1616,111 @@ have GitHub write access, coordinator: please open against #481)
    `dispatch_event`-funnel level (`gtk::run::window_close_tests`) and
    for the one updated example — not end-to-end for the example set as
    a whole.
+
+## D-011 — Clipboard paste/copy keypress contract: shift tolerance, letter case, forced redraw (issue #728)
+
+### Question
+
+`runtime.rs`'s module doc (quadraui#496) audited `tui::run::dispatch_event`
+against `gtk::run::dispatch_event` line-by-line and found three real,
+load-bearing divergences in their Ctrl-C-copy handling, then deliberately
+left all three unresolved rather than silently picking one side:
+
+1. **Shift tolerance.** TUI's Ctrl-C guard accepts Shift as a stray
+   modifier (`modifiers.ctrl && !modifiers.alt && !modifiers.cmd`, no
+   `shift` check). GTK's requires `Modifiers { ctrl: true, shift: false,
+   alt: false, cmd: false }` exactly.
+2. **Letter case.** TUI matches both `Key::Char('c')` and `Key::Char('C')`
+   (tolerating CapsLock). GTK matches only lowercase `'c'`.
+3. **Forced redraw.** TUI's handler forces `EventOutcome::Redraw` after
+   `app.handle(TextCopied, …)` regardless of the app's own `Reaction`
+   (`Reaction::Exit => Exit, _ => Redraw`). GTK folds the app's `Reaction`
+   through unchanged (`Continue => Continue, Redraw => Redraw, Exit =>
+   Exit`).
+
+Issue #728 (Win-GUI clipboard paste) needed its own answer to a sibling
+question — GTK's private `is_paste_keypress` (Ctrl-V, quadraui#415) and
+macOS's inline Cmd-V match guard already disagreed on shift tolerance the
+same way — before it could lift a single shared predicate into
+`desktop.rs` for all three backends to call. Resolving *that* smaller
+fork is what forced this decision to finally happen, rather than leaving
+it as an open question a fourth backend could hit again.
+
+### Decision
+
+**Shift-tolerant, case-insensitive, and reaction-transparent — TUI's
+Ctrl-C behavior and GTK/macOS's reaction-folding both win, on different
+axes.** For every backend, present and future:
+
+1. **Shift is tolerated, not required-absent**, on both the copy chord
+   (Ctrl-C / Cmd-C) and the paste chord (Ctrl-V / Cmd-V). This was
+   already true for paste on GTK (`Ctrl-Shift-V` — quadraui#415: some
+   terminal emulators reserve plain Ctrl-V for a literal control byte and
+   use Shift as the paste-disambiguator instead) and already true for
+   copy on TUI. It now applies uniformly: `Ctrl-Shift-C`/`Cmd-Shift-C`
+   copy and `Ctrl-Shift-V`/`Cmd-Shift-V` paste all fire the same as their
+   plain forms everywhere. Rationale: a terminal grid (TUI's own
+   rationale for tolerating Shift on copy) and a bespoke `DrawingArea`/
+   `NSView` (GTK/macOS's rationale for tolerating it on paste) have the
+   same "no formatting-aware clipboard op" property either way — there is
+   no principled reason the *letter* (`C` vs `V`) should get a different
+   answer.
+2. **Both letter cases match** (`'c'`/`'C'`, `'v'`/`'V'`), i.e. TUI's
+   existing CapsLock-tolerant behavior wins over GTK's lowercase-only
+   check. A user with CapsLock on should not silently lose Ctrl-C/Ctrl-V
+   — that was already effectively true for the letter `v` (both GTK's
+   `is_paste_keypress` and macOS's Cmd-V guard already matched
+   `Key::Char('v') | Key::Char('V')`; only the *copy* side's `'c'`-only
+   check was the outlier), so this is a small, one-sided fix, not a new
+   axis of divergence.
+3. **`TextCopied`'s outcome folds the app's `Reaction` through unchanged**
+   — GTK's existing behavior wins over TUI's forced redraw. On inspection
+   TUI's forced redraw looks less like a deliberate feature and more like
+   an unexamined side effect: `backend.clear_text_selection()` runs
+   unconditionally before `app.handle(TextCopied, …)`, and if the
+   selection highlight is only erased on the *next* redraw, an app that
+   legitimately returns `Reaction::Continue` (nothing else changed) would
+   leave a stale highlight on screen over text that's already been
+   copied-and-deselected internally — TUI's forced redraw was papering
+   over that, not implementing a feature independent of it. The correct
+   fix for *that* problem is for the redraw need to be an explicit,
+   visible fact at the call site (`force_redraw = true` alongside the
+   `clear_text_selection()` call, the same pattern `dispatch_event`
+   already uses for `TextSelectionChanged`), not a blanket override of
+   whatever the app decided. A `Reaction::Continue` app's intent should
+   survive the round trip.
+
+This is a decision about the *contract*, not a code change to
+`tui::run`/`gtk::run` in this PR: #728's own scope is landing the paste
+half for `win` (see its issue body — "the `TextCopied` half needs a text
+selection to copy" and depends on `win`/`macos` gaining
+`BackendCaps::text_selection` first, tracked by this epic's
+text-selection issue). Applying points 1–3 above to `tui::run`'s and
+`gtk::run`'s existing Ctrl-C code — and then lifting the now-identical
+bodies into a shared, capability-gated helper the way `runtime.rs`'s doc
+already sketches (a `SelectionBackend` trait implemented only where
+`BackendCaps::text_selection` is `true`) — is that follow-up issue's job,
+not this one's. What #728 *does* land now, consistent with point 1 above:
+[`crate::desktop::is_paste_keypress`], the shared Ctrl-V/Cmd-V predicate
+every backend's `dispatch_event` calls, is shift-tolerant on every
+adopter (including macOS's Cmd-V, which used to require `shift: false`
+before adopting the shared predicate in this PR).
+
+### What this does NOT mean
+
+- It does not mean TUI's and GTK's Ctrl-C code already agree after this
+  PR — they don't yet; `runtime.rs`'s module doc still accurately
+  describes the current divergence until the follow-up issue applies
+  this decision to both bodies.
+- It does not mean every future clipboard shortcut inherits Shift
+  tolerance automatically. This decision is scoped to the copy/paste
+  chords specifically (`Ctrl`/`Cmd` + `C`/`V`) — a different shortcut
+  (e.g. Ctrl-A select-all, already Shift-*exclusive* on both TUI and GTK
+  today: `!modifiers.shift`) keeps its own, separately-reasoned contract.
+- It does not retroactively bless "any modifier goes" — Alt and holding
+  both `ctrl`+`cmd` at once are still rejected everywhere; only `shift`
+  moved from "must be absent" to "don't care."
+
+Future backends (or a fourth desktop toolkit) implementing copy/paste
+should read this decision rather than pattern-matching whichever
+existing backend they skim first.

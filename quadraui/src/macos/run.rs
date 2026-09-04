@@ -60,6 +60,7 @@ use super::backend::MacBackend;
 use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
 use super::text::make_font;
 use crate::backend::Backend;
+use crate::desktop::is_paste_keypress;
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink};
@@ -68,7 +69,7 @@ use crate::runtime::{self, ReactionSink};
 // module — keeps working unchanged after the type moved to
 // `crate::runtime` (quadraui#496).
 pub(crate) use crate::runtime::EventOutcome;
-use crate::{ButtonMask, Key, Modifiers, UiEvent};
+use crate::{ButtonMask, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -147,10 +148,14 @@ type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 ///   out from under the focused bar.
 /// - Global accelerator dispatch (#486): a `KeyPressed` matching a
 ///   registered `Global`-scope accelerator becomes `UiEvent::Accelerator`.
-/// - Cmd-V paste interception (#486): AppKit has no native paste signal
-///   on a bespoke `NSView`, so a plain Cmd-V reads the system clipboard
-///   directly and delivers `ClipboardPaste` instead of forwarding the raw
-///   key press.
+/// - Cmd-V / Cmd-Shift-V paste interception (#486, predicate shared via
+///   [`crate::desktop::is_paste_keypress`] since #728): AppKit has no
+///   native paste signal on a bespoke `NSView`, so a matching keypress
+///   reads the system clipboard directly and delivers `ClipboardPaste`
+///   instead of forwarding the raw key press. `Shift` is tolerated (not
+///   just plain Cmd-V) — see `docs/DECISIONS.md` D-011 for why this
+///   matches Ctrl-Shift-V's already-shipped GTK/Linux tolerance instead
+///   of the stricter `shift: false` this match guard used to require.
 ///
 /// Anything not matched above falls through to `app.handle` unchanged.
 pub(crate) fn dispatch_event<A: AppLogic>(
@@ -252,24 +257,16 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         event
     };
 
-    // Cmd (not Ctrl) is the Mac paste modifier.
-    if let UiEvent::KeyPressed {
-        key: Key::Char('v') | Key::Char('V'),
-        modifiers:
-            Modifiers {
-                cmd: true,
-                shift: false,
-                alt: false,
-                ctrl: false,
-            },
-        ..
-    } = &event
-    {
-        return if let Some(text) = backend.services().clipboard().read_text() {
-            app.handle(UiEvent::ClipboardPaste(text), backend).into()
-        } else {
-            EventOutcome::Continue
-        };
+    // Cmd-V / Cmd-Shift-V paste interception — shared predicate, #728
+    // (see this function's doc comment and D-011 in `docs/DECISIONS.md`).
+    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        if is_paste_keypress(key, modifiers) {
+            return if let Some(text) = backend.services().clipboard().read_text() {
+                app.handle(UiEvent::ClipboardPaste(text), backend).into()
+            } else {
+                EventOutcome::Continue
+            };
+        }
     }
 
     app.handle(event, backend).into()

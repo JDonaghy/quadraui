@@ -49,6 +49,15 @@
 //!   instead of hand-duplicating the variant list per backend. Adopted by
 //!   `win::backend`'s `PointerShape` → `IDC_*` cursor-resource mapping
 //!   (#702), driving `SetCursor`/`WM_SETCURSOR`.
+//! - [`is_paste_keypress`] — the clipboard-paste keypress predicate
+//!   (#728). Extracted from `gtk::run`'s private `is_paste_keypress`
+//!   (quadraui#415) and generalised to also cover macOS's Cmd-V, which
+//!   used to be an inline `match` guard in `macos::run::dispatch_event`
+//!   instead of a named, independently-testable predicate. See
+//!   `docs/DECISIONS.md` D-011 for the shift-tolerance contract this
+//!   settles once for every adopter instead of each backend picking its
+//!   own. Adopted by `win::run::dispatch_event` (#728) to give Win-GUI
+//!   its first `UiEvent::ClipboardPaste` at all.
 //!
 //! ## What stays backend-specific
 //!
@@ -403,6 +412,48 @@ pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&st
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Paste-keypress predicate
+// ─────────────────────────────────────────────────────────────────────
+
+/// Is `key`+`modifiers` this platform's clipboard-paste shortcut?
+///
+/// One predicate for every desktop backend (#728), where each backend's
+/// paste shortcut differs only in *which* platform modifier means
+/// "paste" — Ctrl-V on Linux/GTK and Windows, Cmd-V on macOS — and
+/// [`crate::Modifiers::cmd`] is already the crate-wide abstraction for
+/// "this platform's OS-level modifier key" (`win::events::win_modifiers`
+/// maps the Windows key to `cmd` the same way `macos::events` maps ⌘;
+/// see those modules' docs). Exactly one of `ctrl`/`cmd` must be held —
+/// `^` (`bool` XOR) rejects both plain `v` (neither held) and the
+/// vanishingly-unlikely chord of both platform modifiers at once — and
+/// `alt` is never a valid paste chord on any backend.
+///
+/// `shift` is deliberately **not** checked either way — Ctrl-Shift-V and
+/// (by the same reasoning, extended here) Cmd-Shift-V both trigger paste
+/// too. This was already GTK's behavior (quadraui#415: some terminal
+/// emulators reserve plain Ctrl-V for a literal control byte and use
+/// Ctrl-Shift-V as the paste shortcut instead), and D-011
+/// (`docs/DECISIONS.md`) extends the same shift-tolerant contract to
+/// every adopter — including macOS, which used to require `shift: false`
+/// in its inline Cmd-V match guard before this predicate replaced it.
+/// See D-011 for why this settles the contract once instead of letting
+/// each new adopter (this issue's `win` included) silently pick its own.
+///
+/// Case-insensitive on the letter (`'v'` or `'V'`) on every backend —
+/// this was already true everywhere a paste chord existed, so unifying
+/// the predicate doesn't change it.
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    feature = "win"
+))]
+pub(crate) fn is_paste_keypress(key: &crate::Key, modifiers: &crate::Modifiers) -> bool {
+    matches!(key, crate::Key::Char('v') | crate::Key::Char('V'))
+        && (modifiers.ctrl ^ modifiers.cmd)
+        && !modifiers.alt
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // PointerShape enum-walk scaffold
 // ─────────────────────────────────────────────────────────────────────
 
@@ -714,6 +765,122 @@ mod smoke_config_tests {
         assert!(!smoke_clipboard_round_trip_ok(
             "quadraui smoke",
             Some("something else")
+        ));
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        feature = "win"
+    )
+))]
+mod is_paste_keypress_tests {
+    //! Coverage for [`is_paste_keypress`] (#728) — the single predicate
+    //! `gtk::run`, `macos::run`, and `win::run`'s `dispatch_event`s all
+    //! now call. Pure/display-free: no live backend needed to exercise
+    //! every branch of the contract D-011 (`docs/DECISIONS.md`) records.
+    use super::*;
+    use crate::{Key, Modifiers};
+
+    fn mods(ctrl: bool, shift: bool, alt: bool, cmd: bool) -> Modifiers {
+        Modifiers {
+            ctrl,
+            shift,
+            alt,
+            cmd,
+        }
+    }
+
+    #[test]
+    fn plain_ctrl_v_is_a_paste_keypress() {
+        assert!(is_paste_keypress(
+            &Key::Char('v'),
+            &mods(true, false, false, false)
+        ));
+        assert!(is_paste_keypress(
+            &Key::Char('V'),
+            &mods(true, false, false, false)
+        ));
+    }
+
+    #[test]
+    fn plain_cmd_v_is_a_paste_keypress() {
+        // macOS convention — `cmd` is the crate-wide abstraction for the
+        // platform OS-modifier key (⌘ on macOS, mapped from the Windows
+        // key by `win::events::win_modifiers`).
+        assert!(is_paste_keypress(
+            &Key::Char('v'),
+            &mods(false, false, false, true)
+        ));
+    }
+
+    #[test]
+    fn ctrl_shift_v_is_a_paste_keypress() {
+        // quadraui#415: some terminal emulators reserve plain Ctrl-V for
+        // a control byte and use Ctrl-Shift-V for paste instead.
+        assert!(is_paste_keypress(
+            &Key::Char('v'),
+            &mods(true, true, false, false)
+        ));
+    }
+
+    #[test]
+    fn cmd_shift_v_is_a_paste_keypress() {
+        // D-011: the same shift-tolerant contract extends to macOS's
+        // Cmd-V, which used to require `shift: false` before this
+        // predicate replaced `macos::run`'s inline match guard.
+        assert!(is_paste_keypress(
+            &Key::Char('v'),
+            &mods(false, true, false, true)
+        ));
+    }
+
+    #[test]
+    fn ctrl_alt_v_is_not_a_paste_keypress() {
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods(true, false, true, false)
+        ));
+    }
+
+    #[test]
+    fn cmd_alt_v_is_not_a_paste_keypress() {
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods(false, false, true, true)
+        ));
+    }
+
+    #[test]
+    fn both_ctrl_and_cmd_is_not_a_paste_keypress() {
+        // XOR rejects the chord holding both platform modifiers at once.
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods(true, false, false, true)
+        ));
+    }
+
+    #[test]
+    fn shift_v_alone_is_not_a_paste_keypress() {
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods(false, true, false, false)
+        ));
+    }
+
+    #[test]
+    fn plain_v_is_not_a_paste_keypress() {
+        assert!(!is_paste_keypress(&Key::Char('v'), &Modifiers::default()));
+    }
+
+    #[test]
+    fn ctrl_c_is_not_a_paste_keypress() {
+        assert!(!is_paste_keypress(
+            &Key::Char('c'),
+            &mods(true, false, false, false)
         ));
     }
 }
