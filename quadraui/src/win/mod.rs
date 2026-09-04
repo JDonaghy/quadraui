@@ -31,6 +31,10 @@ pub mod backend;
 /// (#26). Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod chart;
+/// Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`] (#732).
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod command_center;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::command_line::CommandLine`] (#725). Windows-only
 /// in full — see its module docs.
@@ -203,6 +207,8 @@ pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 pub use chart::{draw_chart, win_chart_layout};
+#[cfg(target_os = "windows")]
+pub use command_center::{draw_command_center, win_command_center_layout};
 #[cfg(target_os = "windows")]
 pub use command_line::{draw_command_line, win_command_line_layout};
 #[cfg(target_os = "windows")]
