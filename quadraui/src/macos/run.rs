@@ -53,7 +53,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString,
+    NSRect, NSSize, NSString, NSTimer,
 };
 
 use super::backend::MacBackend;
@@ -63,7 +63,7 @@ use crate::backend::Backend;
 use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
-use crate::runtime::{self, ReactionSink};
+use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // Re-exported (not just imported) so `macos::testing` — and any other
 // in-crate caller that historically reached `EventOutcome` through this
 // module — keeps working unchanged after the type moved to
@@ -304,6 +304,19 @@ pub(crate) struct QuadraViewIvars {
     backend: Rc<RefCell<MacBackend>>,
     paint: PaintFn,
     handle: HandleFn,
+    /// Resize-settle debounce state (quadraui#780) — see
+    /// [`crate::runtime::ResizeDebouncer`]'s doc. `view_frame_did_change`
+    /// calls `note()` on every AppKit frame-change notification;
+    /// `resize_debounce_fired` calls `take()` once `resize_timer` proves
+    /// the drag has settled.
+    resize_debouncer: RefCell<ResizeDebouncer>,
+    /// The in-flight one-shot resize-settle timer, if any — invalidated
+    /// and replaced on every `view_frame_did_change` so a live drag keeps
+    /// pushing the deadline out, mirroring `SetTimer`'s
+    /// replace-if-already-armed semantics on Windows (`win::run`'s
+    /// `WM_SIZE`/`WM_TIMER` arms) and GTK's cancel-and-reschedule
+    /// `glib::SourceId`.
+    resize_timer: RefCell<Option<Retained<NSTimer>>>,
 }
 
 declare_class!(
@@ -539,8 +552,18 @@ declare_class!(
         /// resize, and the split-second the window first opens. Compares
         /// against `last_viewport` (also updated here) so a notification
         /// that doesn't actually change the size — AppKit can post one
-        /// on origin-only moves — doesn't spam `AppLogic::handle` with a
-        /// same-size `WindowResized`.
+        /// on origin-only moves — doesn't spam the debouncer with a
+        /// same-size note.
+        ///
+        /// The `WindowResized` *dispatch* itself is debounced
+        /// (quadraui#780, mirroring TUI/GTK's `RESIZE_SETTLE` — see
+        /// `crate::runtime::RESIZE_SETTLE`'s doc for the full
+        /// rationale): a live window drag delivers a burst of these
+        /// notifications, so this stashes the latest size in
+        /// `resize_debouncer` and (re)arms a one-shot `NSTimer` rather
+        /// than dispatching immediately. Painting stays live regardless
+        /// — `drawRect:` re-resolves the view's real `bounds` every
+        /// frame independent of whether the debounced event has fired.
         #[method(viewFrameDidChange:)]
         fn view_frame_did_change(&self, _note: &NSNotification) {
             let bounds = self.bounds();
@@ -557,7 +580,40 @@ declare_class!(
                 return;
             }
             self.ivars().last_viewport.set(viewport);
-            self.dispatch(UiEvent::WindowResized { viewport });
+            self.ivars().resize_debouncer.borrow_mut().note(viewport);
+
+            // Cancel any not-yet-fired settle timer from an earlier
+            // notification in this same burst, then arm a fresh one —
+            // the drag keeps pushing the deadline out until it settles.
+            if let Some(old) = self.ivars().resize_timer.borrow_mut().take() {
+                unsafe { old.invalidate() };
+            }
+            // SAFETY: `self` is a valid, live `QuadraView` (an `NSObject`
+            // subclass via `NSView`/`NSResponder`) for at least as long as
+            // this method call — same no-op upcast [`run`] uses to
+            // register the `viewFrameDidChange:` observer itself.
+            let self_obj: &AnyObject = unsafe { &*(self as *const Self as *const AnyObject) };
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    RESIZE_SETTLE.as_secs_f64(),
+                    self_obj,
+                    sel!(resizeDebounceFired:),
+                    None,
+                    false,
+                )
+            };
+            self.ivars().resize_timer.borrow_mut().replace(timer);
+        }
+
+        /// Fires once `RESIZE_SETTLE` after the last `viewFrameDidChange:`
+        /// in a burst — see that method's doc. Dispatches the coalesced
+        /// size, if any, as a single `WindowResized`.
+        #[method(resizeDebounceFired:)]
+        fn resize_debounce_fired(&self, _timer: &NSTimer) {
+            self.ivars().resize_timer.borrow_mut().take();
+            if let Some(viewport) = self.ivars().resize_debouncer.borrow_mut().take() {
+                self.dispatch(UiEvent::WindowResized { viewport });
+            }
         }
     }
 );
@@ -575,6 +631,8 @@ impl QuadraView {
             backend,
             paint,
             handle,
+            resize_debouncer: RefCell::new(ResizeDebouncer::new()),
+            resize_timer: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
     }

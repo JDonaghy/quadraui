@@ -645,6 +645,7 @@ mod win32 {
     // Payload decoding lives in `super::msg` so it can be unit-tested off
     // Windows — see that module's docs for why the shifts aren't inlined
     // here.
+    use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
     use crate::win::msg::{
         dpi_scale_from_wparam, is_repeat_from_lparam, point_from_lparam, size_from_lparam,
         wheel_delta_from_wparam,
@@ -682,6 +683,11 @@ mod win32 {
     /// given `hwnd` in this runner, so any nonzero id is fine — Win32
     /// scopes timer ids per-window, not per-process.
     const SMOKE_TIMER_ID: usize = 1;
+    /// `SetTimer`/`KillTimer`'s `nIDEvent` for the resize-settle debounce
+    /// (quadraui#780). Distinct from [`SMOKE_TIMER_ID`] — Win32 timer ids
+    /// are scoped per-`hwnd`, and both can legitimately be armed on the
+    /// same window (a headless smoke run that also resizes).
+    const RESIZE_TIMER_ID: usize = 2;
 
     /// Everything a live window needs, reachable from `wndproc::<A>` via
     /// `GWLP_USERDATA` (see module docs).
@@ -711,6 +717,15 @@ mod win32 {
         /// `gtk::run::run_with`'s `smoke_failed` is an `Rc<Cell<bool>>`
         /// shared with the `Application`, not a plain local.
         smoke_failed: Rc<Cell<bool>>,
+        /// Pending-viewport store for the resize-settle debounce
+        /// (quadraui#780) — see `crate::runtime::ResizeDebouncer`'s doc.
+        /// `WM_SIZE` calls `note()` on every message; the `RESIZE_TIMER_ID`
+        /// `WM_TIMER` arm calls `take()` once `SetTimer` proves the drag
+        /// has settled (`SetTimer` replaces an already-armed timer of the
+        /// same id rather than stacking a new one, so a live drag keeps
+        /// rescheduling the same timer and only the final call's deadline
+        /// ever actually fires).
+        resize_debouncer: RefCell<ResizeDebouncer>,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -857,6 +872,7 @@ mod win32 {
             pump_depth: ModalPumpDepth::new(),
             smoke,
             smoke_failed: smoke_failed.clone(),
+            resize_debouncer: RefCell::new(ResizeDebouncer::new()),
         }));
 
         let hwnd = unsafe {
@@ -1190,7 +1206,26 @@ mod win32 {
                     let _ = s.backend.resize_surface(width, height);
                     s.backend.viewport()
                 };
-                dispatch(ws, hwnd, UiEvent::WindowResized { viewport });
+                // Debounce the `WindowResized` *dispatch* to the app
+                // (quadraui#780) — painting stays live regardless, via
+                // `resize_surface` above and `InvalidateRect` below on
+                // every single `WM_SIZE`, matching `crate::runtime::
+                // RESIZE_SETTLE`'s doc. `note()` stashes the latest size;
+                // `SetTimer` (re)arms the shared `RESIZE_TIMER_ID` timer,
+                // which Win32 resets rather than stacking when it's
+                // already pending on this `hwnd` — so a live resize drag
+                // keeps pushing the deadline out and only the final
+                // `WM_TIMER`, once the drag settles for `RESIZE_SETTLE`,
+                // actually fires and dispatches.
+                ws.resize_debouncer.borrow_mut().note(viewport);
+                unsafe {
+                    SetTimer(
+                        Some(hwnd),
+                        RESIZE_TIMER_ID,
+                        RESIZE_SETTLE.as_millis() as u32,
+                        None,
+                    );
+                }
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -1483,10 +1518,12 @@ mod win32 {
             WM_TIMER => {
                 // #702: the one-shot headless-smoke timer armed by
                 // `run_inner`, if `QUADRAUI_WIN_SMOKE_MS` was set — see
-                // the module doc's "Headless smoke mode" section. Any
-                // other timer id is none of this runner's business (no
-                // `AppLogic` today owns one, but a future one might) and
-                // falls through to `DefWindowProcW` untouched.
+                // the module doc's "Headless smoke mode" section.
+                // #780: the resize-settle debounce timer armed by the
+                // `WM_SIZE` arm above. Any other timer id is none of this
+                // runner's business (no `AppLogic` today owns one, but a
+                // future one might) and falls through to `DefWindowProcW`
+                // untouched.
                 if wparam.0 == SMOKE_TIMER_ID {
                     unsafe {
                         let _ = KillTimer(Some(hwnd), SMOKE_TIMER_ID);
@@ -1494,6 +1531,16 @@ mod win32 {
                     run_smoke_check(ws, hwnd);
                     unsafe {
                         let _ = DestroyWindow(hwnd);
+                    }
+                    LRESULT(0)
+                } else if wparam.0 == RESIZE_TIMER_ID {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), RESIZE_TIMER_ID);
+                    }
+                    // The drag settled with no new `WM_SIZE` for
+                    // `RESIZE_SETTLE` — dispatch the coalesced size now.
+                    if let Some(viewport) = ws.resize_debouncer.borrow_mut().take() {
+                        dispatch(ws, hwnd, UiEvent::WindowResized { viewport });
                     }
                     LRESULT(0)
                 } else {
