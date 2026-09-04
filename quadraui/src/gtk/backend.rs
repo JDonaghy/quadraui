@@ -1436,6 +1436,16 @@ impl Backend for GtkBackend {
         self.current_char_width as f32
     }
 
+    /// GTK's `ScrolledWindow` overlay scrollbar draws on top of the
+    /// content edge. CSS requests 4px but GTK may allocate slightly
+    /// more; 8px is a safe reserve so text never renders behind it
+    /// (matches vimcode's pre-#776 hardcoded guess in
+    /// `render.rs::render_viewport_cols`, now sourced from the backend
+    /// instead of a caller-side constant).
+    fn scrollbar_reserve(&self) -> f32 {
+        8.0
+    }
+
     /// GTK applies per-line font scale via a Pango scale attr, so scaled
     /// rows (e.g. markdown headings) draw taller and layouts must
     /// reserve the extra height.
@@ -3699,6 +3709,17 @@ mod tests {
         backend.push_event(crate::UiEvent::WindowFocused(true));
         let q = backend.events_handle();
         assert_eq!(q.borrow().len(), 1);
+    }
+
+    /// #776: GTK reserves room for its `ScrolledWindow` overlay
+    /// scrollbar so a caller's content viewport width
+    /// (`rect.width - backend.scrollbar_reserve()`) never renders text
+    /// behind the overlay — see the trait default (0.0) that TUI relies
+    /// on instead.
+    #[test]
+    fn gtk_backend_scrollbar_reserve_is_nonzero() {
+        let backend = GtkBackend::new();
+        assert_eq!(Backend::scrollbar_reserve(&backend), 8.0);
     }
 
     /// #400: with no window set (the state of every unit test and every

@@ -4019,6 +4019,16 @@ mod tests {
         }
     }
 
+    /// #776: TUI has no windowing scrollbar overlay to dodge, so it
+    /// relies on `Backend::scrollbar_reserve`'s trait default (0.0)
+    /// rather than overriding it — unlike GTK (see
+    /// `GtkBackend::scrollbar_reserve`, 8.0).
+    #[test]
+    fn tui_backend_scrollbar_reserve_uses_the_zero_default() {
+        let backend = TuiBackend::new();
+        assert_eq!(Backend::scrollbar_reserve(&backend), 0.0);
+    }
+
     /// A pixel backend must not quantize — `snap_height` returns the input
     /// unchanged via the trait's default impl. `MockBackend` doesn't
     /// override `snap_height`, so it stands in for "any backend that only

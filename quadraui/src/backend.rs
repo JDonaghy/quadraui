@@ -771,6 +771,27 @@ pub trait Backend {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Width this backend reserves for its own native scrollbar overlay
+    /// alongside scrollable content — e.g. a GTK `ScrolledWindow`'s
+    /// overlay scrollbar, drawn on top of the content edge rather than
+    /// laid out beside it. A caller computing a content viewport width
+    /// (`rect.width - backend.scrollbar_reserve()`) gets the right
+    /// answer without asking which backend it's talking to (issue #776).
+    ///
+    /// Distinct from [`Self::terminal_scrollbar_default_width`]: that one
+    /// is the gutter width of the `Terminal` *primitive*'s own scrollbar,
+    /// which paints inside `draw_terminal`'s allotted rect and applies
+    /// even to TUI (which draws it as a real column). This one is
+    /// surrounding OS/toolkit scrollbar chrome that no primitive
+    /// controls — TUI has none of that, so it reserves nothing.
+    ///
+    /// Default `0.0`, correct for TUI and any backend with no overlay
+    /// scrollbar chrome to dodge. GTK overrides this to reserve room for
+    /// its `ScrolledWindow` overlay scrollbar.
+    fn scrollbar_reserve(&self) -> f32 {
+        0.0
+    }
+
     /// Whether this backend can render individual text rows at a larger
     /// font size (per-line scale), so layouts should reserve taller
     /// vertical space for scaled rows.
