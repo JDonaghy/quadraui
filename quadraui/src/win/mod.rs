@@ -52,6 +52,11 @@ mod data_table;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod dialog;
+/// Direct2D rasteriser for
+/// [`crate::primitives::drop_zone::DropOverlay`] (#726). Windows-only
+/// in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod drop_overlay;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`]
 /// (#26). Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -198,6 +203,8 @@ pub use context_menu::draw_context_menu;
 pub use data_table::{draw_data_table, win_data_table_layout};
 #[cfg(target_os = "windows")]
 pub use dialog::draw_dialog;
+#[cfg(target_os = "windows")]
+pub use drop_overlay::draw_drop_overlay;
 #[cfg(target_os = "windows")]
 pub use editor::draw_editor;
 #[cfg(target_os = "windows")]

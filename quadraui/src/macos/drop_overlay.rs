@@ -14,11 +14,6 @@ use core_graphics::sys::CGContextRef;
 use crate::primitives::drop_zone::DropOverlay;
 use crate::theme::Theme;
 
-/// Alpha applied to the highlight tint. Matches the GTK twin's `0.15`.
-const HIGHLIGHT_ALPHA: f64 = 0.15;
-/// Minimum insertion-bar thickness in points.
-const MIN_BAR_W: f64 = 2.0;
-
 /// Paint `overlay` on top of the current frame.
 ///
 /// # Safety
@@ -32,7 +27,7 @@ pub unsafe fn draw_drop_overlay(ctx: CGContextRef, overlay: &DropOverlay, theme:
 
     if let Some(h) = overlay.highlight {
         if h.width > 0.0 && h.height > 0.0 {
-            CGContextSetRGBFillColor(ctx, ar, ag, ab, HIGHLIGHT_ALPHA);
+            CGContextSetRGBFillColor(ctx, ar, ag, ab, DropOverlay::HIGHLIGHT_ALPHA as f64);
             CGContextFillRect(
                 ctx,
                 CGRect::new_xywh(h.x as f64, h.y as f64, h.width as f64, h.height as f64),
@@ -48,7 +43,7 @@ pub unsafe fn draw_drop_overlay(ctx: CGContextRef, overlay: &DropOverlay, theme:
                 CGRect::new_xywh(
                     bar.x as f64,
                     bar.y as f64,
-                    (bar.width as f64).max(MIN_BAR_W),
+                    (bar.width as f64).max(DropOverlay::MIN_BAR_THICKNESS as f64),
                     bar.height as f64,
                 ),
             );
@@ -123,7 +118,7 @@ mod tests {
             "the highlight must actually tint the surface, not no-op",
         );
         // 15% of accent over black — each channel lands near 0.15 * accent.
-        let expect = |c: u8| (c as f64 * HIGHLIGHT_ALPHA).round() as i32;
+        let expect = |c: u8| (c as f64 * DropOverlay::HIGHLIGHT_ALPHA as f64).round() as i32;
         for (got, want, name) in [
             (r as i32, expect(theme.accent_fg.r), "r"),
             (g as i32, expect(theme.accent_fg.g), "g"),
@@ -176,7 +171,7 @@ mod tests {
         let theme = Theme::default();
         let accent = (theme.accent_fg.r, theme.accent_fg.g, theme.accent_fg.b);
 
-        // Zero-width bars are widened to MIN_BAR_W, matching GTK.
+        // Zero-width bars are widened to DropOverlay::MIN_BAR_THICKNESS, matching GTK.
         let (r, g, b, _) = surface.pixel(140, 50);
         assert_eq!((r, g, b), accent, "bar should paint at its own x");
         let (r, g, b, _) = surface.pixel(141, 50);
