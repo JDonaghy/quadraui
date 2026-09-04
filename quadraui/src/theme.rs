@@ -15,6 +15,7 @@
 
 use crate::types::Color;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Minimal backend-agnostic colour palette consumed by the public
 /// `quadraui::tui` / `quadraui::gtk` rasterisers.
@@ -304,7 +305,331 @@ pub struct Theme {
     pub card_hint_fg: Color,
 }
 
+/// Strip `//` and `/* */` comments from JSON-with-comments (JSONC), as
+/// used by VS Code theme files. Preserves newlines inside block comments
+/// so that any later parse-error line/column reporting on the stripped
+/// string still lines up with the original file.
+///
+/// Lifted from vimcode's `render::strip_json_comments` (#775) — a pure
+/// text transform with nothing editor-specific about it.
+fn strip_json_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            // String literal — copy verbatim until the closing quote, so a
+            // `//` or `/*` inside a JSON string value is never mistaken
+            // for a comment.
+            out.push('"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    out.push(bytes[i] as char);
+                    out.push(bytes[i + 1] as char);
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    out.push('"');
+                    i += 1;
+                    break;
+                } else {
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            // Line comment — skip until newline.
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            // Block comment — skip until `*/`, preserving newlines.
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                if bytes[i] == b'\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            i += 2; // skip `*/`
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 impl Theme {
+    /// Parse a VS Code theme JSON (or JSONC — VS Code theme files commonly
+    /// carry `//` / `/* */` comments) file and map its `colors` object
+    /// onto a [`Theme`]. Keys the file doesn't set leave the corresponding
+    /// [`Theme::default`] field untouched, so even a minimal theme (a
+    /// handful of `colors` keys) produces a fully-populated, usable
+    /// palette rather than a partially-black one. Returns `None` if the
+    /// file cannot be read or does not parse as JSON.
+    ///
+    /// Lifted from vimcode's `render::Theme::from_vscode_json` (#775).
+    /// vimcode's own theme carries dozens of syntax/LSP/semantic-token
+    /// fields (`keyword`, `string_lit`, `semantic_namespace`, …) that
+    /// this crate's [`Theme`] has no equivalent for — those stay
+    /// app-side, built by app-specific code from the same theme file's
+    /// `tokenColors` array, which this function does not touch.
+    ///
+    /// Colours that VS Code themes commonly express as a translucent
+    /// `#rrggbbaa` overlay (e.g. `editor.lineHighlightBackground`, diff
+    /// backgrounds, bracket-match highlight) are alpha-composited over
+    /// `editor.background` via [`Color::try_from_hex_over`] rather than
+    /// taken at face value, so a rasteriser that draws an opaque rect
+    /// still gets the intended blended colour.
+    pub fn from_vscode_json(path: &Path) -> Option<Self> {
+        let data = std::fs::read_to_string(path).ok()?;
+        let data = strip_json_comments(&data);
+        let val: serde_json::Value = serde_json::from_str(&data).ok()?;
+        let colors = val.get("colors");
+
+        let mut theme = Self::default();
+
+        // Plain (non-composited) colour lookup.
+        let color =
+            |key: &str| -> Option<Color> { colors?.get(key)?.as_str().and_then(Color::from_hex) };
+        // Alpha-composited lookup, blended over `bg`.
+        let color_over = |key: &str, bg: Color| -> Option<Color> {
+            colors?
+                .get(key)?
+                .as_str()
+                .and_then(|s| Color::try_from_hex_over(s, bg))
+        };
+
+        // ── Editor core ──────────────────────────────────────────────
+        if let Some(c) = color("editor.background") {
+            theme.background = c;
+            theme.editor_active_background = c.lighten(0.02);
+            theme.scrollbar_track = c;
+            theme.command_line_bg = c;
+        }
+        if let Some(c) = color("editor.foreground") {
+            theme.foreground = c;
+            theme.command_line_fg = c;
+        }
+
+        // ── Selection / cursor ───────────────────────────────────────
+        if let Some(c) = color("editor.selectionBackground") {
+            theme.selection_bg = c;
+            theme.selection = c;
+        }
+        if let Some(c) = color("editorCursor.foreground") {
+            theme.cursor = c;
+        }
+        if let Some(c) = color_over("editor.lineHighlightBackground", theme.background) {
+            theme.cursorline_bg = c;
+        }
+        if let Some(c) = color_over("editor.stackFrameHighlightBackground", theme.background) {
+            theme.dap_stopped_bg = c;
+        }
+
+        // ── Tab bar ──────────────────────────────────────────────────
+        if let Some(c) = color("editorGroupHeader.tabsBackground") {
+            theme.tab_bar_bg = c;
+        }
+        if let Some(c) = color("tab.activeBackground") {
+            theme.tab_active_bg = c;
+        }
+        if let Some(c) = color("tab.activeForeground") {
+            theme.tab_active_fg = c;
+        }
+        if let Some(c) = color("tab.inactiveForeground") {
+            theme.tab_inactive_fg = c;
+            theme.tab_preview_active_fg = c.lighten(0.2);
+            theme.tab_preview_inactive_fg = c.darken(0.3);
+        }
+        if let Some(c) = color("editorGroup.border") {
+            theme.separator = c;
+        }
+
+        // ── Surfaces / lists (Palette, ListView) ────────────────────
+        if let Some(c) = color("editorWidget.background") {
+            theme.surface_bg = c;
+        }
+        if let Some(c) = color("editorWidget.foreground").or_else(|| color("editor.foreground")) {
+            theme.surface_fg = c;
+        }
+        if let Some(c) = color("list.activeSelectionBackground") {
+            theme.selected_bg = c;
+        }
+        if let Some(c) = color("list.inactiveSelectionBackground") {
+            theme.inactive_selected_bg = c;
+        }
+        if let Some(c) = color("editorWidget.border") {
+            theme.border_fg = c;
+        }
+        if let Some(c) = color("titleBar.activeForeground") {
+            theme.title_fg = c;
+        }
+        if let Some(c) = color("sideBarSectionHeader.background") {
+            theme.header_bg = c;
+        }
+        if let Some(c) = color("sideBarSectionHeader.foreground") {
+            theme.header_fg = c;
+        }
+        if let Some(c) = color("descriptionForeground") {
+            theme.muted_fg = c;
+        }
+        if let Some(c) = color("editorError.foreground") {
+            theme.error_fg = c;
+            theme.diagnostic_error = c;
+        }
+        if let Some(c) = color("editorWarning.foreground") {
+            theme.warning_fg = c;
+            theme.diagnostic_warning = c;
+        }
+        if let Some(c) = color("editorInfo.foreground") {
+            theme.diagnostic_info = c;
+        }
+        if let Some(c) = color("editorHint.foreground") {
+            theme.diagnostic_hint = c;
+        }
+
+        // ── Palette ──────────────────────────────────────────────────
+        if let Some(c) = color("input.foreground") {
+            theme.query_fg = c;
+        }
+        if let Some(c) = color("list.highlightForeground")
+            .or_else(|| color("editorSuggestWidget.highlightForeground"))
+        {
+            theme.match_fg = c;
+        }
+
+        // ── Form / accent ────────────────────────────────────────────
+        if let Some(c) = color("focusBorder") {
+            theme.accent_fg = c;
+        }
+        if let Some(c) = color("button.background") {
+            theme.accent_bg = c;
+        }
+
+        // ── Tooltip ──────────────────────────────────────────────────
+        if let Some(c) =
+            color("editorHoverWidget.background").or_else(|| color("editorWidget.background"))
+        {
+            theme.hover_bg = c;
+        }
+        if let Some(c) =
+            color("editorHoverWidget.foreground").or_else(|| color("editor.foreground"))
+        {
+            theme.hover_fg = c;
+        }
+        if let Some(c) = color("editorHoverWidget.border").or_else(|| color("editorWidget.border"))
+        {
+            theme.hover_border = c;
+        }
+
+        // ── Dialog ───────────────────────────────────────────────────
+        if let Some(c) = color("input.background") {
+            theme.input_bg = c;
+        }
+
+        // ── ActivityBar ──────────────────────────────────────────────
+        if let Some(c) =
+            color("activityBar.inactiveForeground").or_else(|| color("descriptionForeground"))
+        {
+            theme.inactive_fg = c;
+        }
+
+        // ── Completions / links ──────────────────────────────────────
+        if let Some(c) = color("textLink.foreground") {
+            theme.link_fg = c;
+        }
+        if let Some(c) =
+            color("editorSuggestWidget.background").or_else(|| color("editorWidget.background"))
+        {
+            theme.completion_bg = c;
+        }
+        if let Some(c) =
+            color("editorSuggestWidget.foreground").or_else(|| color("editor.foreground"))
+        {
+            theme.completion_fg = c;
+        }
+        if let Some(c) =
+            color("editorSuggestWidget.border").or_else(|| color("editorWidget.border"))
+        {
+            theme.completion_border = c;
+        }
+        if let Some(c) = color("editorSuggestWidget.selectedBackground") {
+            theme.completion_selected_bg = c;
+        }
+
+        // ── Scrollbar ────────────────────────────────────────────────
+        // VS Code doesn't have a separate track colour — the slider
+        // itself is drawn translucent over the editor background, so
+        // composite it the same way and reuse `editor.background` (set
+        // above) as the track.
+        if let Some(c) = color_over("scrollbarSlider.background", theme.background) {
+            theme.scrollbar_thumb = c;
+        }
+
+        // ── Gutter line numbers ──────────────────────────────────────
+        if let Some(c) = color("editorLineNumber.foreground") {
+            theme.line_number_fg = c;
+        }
+        if let Some(c) = color("editorLineNumber.activeForeground") {
+            theme.line_number_active_fg = c;
+        }
+
+        // ── Git gutter ───────────────────────────────────────────────
+        if let Some(c) = color("gitDecoration.addedResourceForeground")
+            .or_else(|| color("editorGutter.addedBackground"))
+        {
+            theme.git_added = c;
+        }
+        if let Some(c) = color("gitDecoration.modifiedResourceForeground")
+            .or_else(|| color("editorGutter.modifiedBackground"))
+        {
+            theme.git_modified = c;
+        }
+        if let Some(c) = color("gitDecoration.deletedResourceForeground")
+            .or_else(|| color("editorGutter.deletedBackground"))
+        {
+            theme.git_deleted = c;
+        }
+
+        // ── Code-action lightbulb ────────────────────────────────────
+        if let Some(c) = color("editorLightBulb.foreground") {
+            theme.lightbulb = c;
+        }
+
+        // ── Diff ─────────────────────────────────────────────────────
+        if let Some(c) = color_over("diffEditor.insertedTextBackground", theme.background) {
+            theme.diff_added_bg = c;
+        }
+        if let Some(c) = color_over("diffEditor.removedTextBackground", theme.background) {
+            theme.diff_removed_bg = c;
+        }
+
+        // ── Bracket-match + indent guides ────────────────────────────
+        if let Some(c) = color_over("editorBracketMatch.background", theme.background) {
+            theme.bracket_match_bg = c;
+        }
+        if let Some(c) = color("editorIndentGuide.background") {
+            theme.indent_guide_fg = c;
+        }
+        if let Some(c) = color("editorIndentGuide.activeBackground") {
+            theme.indent_guide_active_fg = c;
+        }
+
+        // ── Annotations / ghost text ─────────────────────────────────
+        if let Some(c) = color("editorCodeLens.foreground") {
+            theme.annotation_fg = c;
+        }
+        if let Some(c) = color("editorGhostText.foreground") {
+            theme.ghost_text_fg = c;
+        }
+
+        Some(theme)
+    }
+
     /// Colour of the 1 px accent line along the top edge of the active
     /// tab — VS Code Dark Modern's `tab.activeBorderTop` (#620).
     ///
@@ -460,6 +785,121 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_theme_json(dir: &std::path::Path, name: &str, contents: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).expect("write fixture theme json");
+        path
+    }
+
+    #[test]
+    fn strip_json_comments_removes_line_and_block_comments() {
+        let input = "{\n  // a line comment\n  \"a\": 1, /* inline block */\n  \"b\": \"has // not a comment\"\n}";
+        let stripped = strip_json_comments(input);
+        let val: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(val["a"], 1);
+        assert_eq!(val["b"], "has // not a comment");
+    }
+
+    #[test]
+    fn from_vscode_json_maps_colors_onto_theme_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_theme_json(
+            dir.path(),
+            "sample.json",
+            r##"{
+                "colors": {
+                    "editor.background": "#101820",
+                    "editor.foreground": "#f0f0f0",
+                    "tab.activeBackground": "#202830",
+                    "tab.activeForeground": "#ffffff",
+                    "editorError.foreground": "#ff0000",
+                    "editorLineNumber.foreground": "#808080"
+                }
+            }"##,
+        );
+        let theme = Theme::from_vscode_json(&path).expect("parse fixture theme");
+        assert_eq!(theme.background, Color::from_hex("#101820").unwrap());
+        assert_eq!(theme.foreground, Color::from_hex("#f0f0f0").unwrap());
+        assert_eq!(theme.tab_active_bg, Color::from_hex("#202830").unwrap());
+        assert_eq!(theme.tab_active_fg, Color::from_hex("#ffffff").unwrap());
+        assert_eq!(theme.error_fg, Color::from_hex("#ff0000").unwrap());
+        assert_eq!(theme.diagnostic_error, Color::from_hex("#ff0000").unwrap());
+        assert_eq!(theme.line_number_fg, Color::from_hex("#808080").unwrap());
+    }
+
+    /// Keys the theme file doesn't set must leave `Theme::default()`'s
+    /// value in place — a minimal theme should still be fully usable,
+    /// not partially black/undefined.
+    #[test]
+    fn from_vscode_json_leaves_unset_fields_at_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_theme_json(
+            dir.path(),
+            "minimal.json",
+            r##"{ "colors": { "editor.background": "#000000" } }"##,
+        );
+        let theme = Theme::from_vscode_json(&path).expect("parse fixture theme");
+        let default = Theme::default();
+        assert_eq!(theme.background, Color::rgb(0, 0, 0));
+        // Untouched field keeps the default's value.
+        assert_eq!(theme.badge_passed, default.badge_passed);
+        assert_eq!(theme.accent_fg, default.accent_fg);
+    }
+
+    /// VS Code theme files are JSONC — comments must not break parsing.
+    #[test]
+    fn from_vscode_json_strips_comments_before_parsing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_theme_json(
+            dir.path(),
+            "commented.json",
+            "{\n  // top-level comment\n  \"colors\": {\n    \"editor.background\": \"#123456\" /* trailing */\n  }\n}",
+        );
+        let theme = Theme::from_vscode_json(&path).expect("parse commented fixture theme");
+        assert_eq!(theme.background, Color::from_hex("#123456").unwrap());
+    }
+
+    /// `editor.lineHighlightBackground` is commonly a translucent
+    /// `#rrggbbaa` overlay in real VS Code themes — it must be
+    /// alpha-composited over `editor.background`, not taken at face
+    /// value with its original (translucent) alpha.
+    #[test]
+    fn from_vscode_json_composites_translucent_line_highlight_over_background() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_theme_json(
+            dir.path(),
+            "translucent.json",
+            r##"{
+                "colors": {
+                    "editor.background": "#000000",
+                    "editor.lineHighlightBackground": "#ffffff80"
+                }
+            }"##,
+        );
+        let theme = Theme::from_vscode_json(&path).expect("parse fixture theme");
+        let bg = Color::from_hex("#000000").unwrap();
+        let expected = Color::try_from_hex_over("#ffffff80", bg).unwrap();
+        assert_eq!(theme.cursorline_bg, expected);
+        // Fully opaque against black should be pure white, and fully
+        // transparent should stay black — sanity-check the direction of
+        // the blend rather than just re-deriving the same computation.
+        assert_ne!(theme.cursorline_bg, Color::rgb(255, 255, 255));
+        assert_ne!(theme.cursorline_bg, Color::rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn from_vscode_json_returns_none_for_missing_file() {
+        let path = std::path::Path::new("/nonexistent/path/does-not-exist.json");
+        assert_eq!(Theme::from_vscode_json(path), None);
+    }
+
+    #[test]
+    fn from_vscode_json_returns_none_for_malformed_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_theme_json(dir.path(), "broken.json", "{ not json at all");
+        assert_eq!(Theme::from_vscode_json(&path), None);
+    }
 
     /// #620: the active-tab top accent is exposed as a *method* derived
     /// from `accent_fg`, not as its own `Theme` field — a field addition
