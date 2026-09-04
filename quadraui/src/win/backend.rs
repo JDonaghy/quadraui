@@ -1545,20 +1545,51 @@ impl Backend for WinBackend {
         todo!("Direct2D text display rasteriser (no surface attached yet)")
     }
 
+    /// #725: real Direct2D/DirectWrite rasteriser via `win::command_line`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// for the "surface not attached yet" fallback posture.
     fn draw_command_line(
         &mut self,
-        _rect: Rect,
-        _cmd: &crate::primitives::command_line::CommandLine,
+        rect: Rect,
+        cmd: &crate::primitives::command_line::CommandLine,
     ) {
-        todo!("Direct2D command line rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::command_line::draw_command_line(
+                &surface.target,
+                dwrite,
+                rect,
+                cmd,
+                &self.current_theme,
+                self.current_char_width,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, cmd);
+        todo!("Direct2D command line rasteriser (no surface attached yet)")
     }
 
+    /// #725: pure measurement — only needs `current_char_width`, not a
+    /// live render target or `self.dwrite` (mirrors
+    /// `Self::text_display_layout`'s doc for why this only needs the
+    /// `target_os = "windows"` gate every method in this file shares). No
+    /// `return` in the `windows` arm — see [`Self::activity_bar_layout`]'s
+    /// doc for why.
     fn command_line_layout(
         &self,
-        _rect: Rect,
-        _cmd: &crate::primitives::command_line::CommandLine,
+        rect: Rect,
+        cmd: &crate::primitives::command_line::CommandLine,
     ) -> crate::primitives::command_line::CommandLineLayout {
-        todo!("Direct2D command line layout")
+        #[cfg(target_os = "windows")]
+        {
+            super::command_line::win_command_line_layout(cmd, rect, self.current_char_width)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, cmd);
+            todo!("Direct2D command line layout")
+        }
     }
 
     /// #30: pure measurement — only needs `line_height`, not a live
