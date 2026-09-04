@@ -68,7 +68,7 @@ use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult, PlatformServices, PointerShape};
-use crate::dispatch::DragState;
+use crate::dispatch::{DoubleClickDetector, DragState};
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -237,6 +237,20 @@ struct Surface {
     target: RenderTarget,
 }
 
+/// Position tolerance, in DIPs, for [`WinBackend::fold_double_click`]'s
+/// [`DoubleClickDetector`].
+///
+/// `win::events`' `win_button_down` (via `super::msg::point_from_lparam`)
+/// divides device pixels by the window's DPI scale before building a
+/// `Point`, so `MouseDown` positions here are point-precision DIPs — not
+/// TUI's whole character cells — same situation `MacBackend` documents for
+/// its own `MAC_DOUBLE_CLICK_RADIUS`. The detector's default radius
+/// (`crate::dispatch::DOUBLE_CLICK_RADIUS`, 1.5, tuned for TUI's integral
+/// cell grid) is far tighter than two real clicks can reliably land
+/// within, so this reuses the same heuristic value macOS settled on rather
+/// than inventing a third unverified constant.
+const WIN_DOUBLE_CLICK_RADIUS: f32 = 4.0;
+
 pub struct WinBackend {
     viewport: Viewport,
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
@@ -246,6 +260,15 @@ pub struct WinBackend {
     modal_stack: Rc<RefCell<ModalStack>>,
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
+    /// Folds a `MouseDown` translated from `WM_LBUTTONDOWN`/`WM_RBUTTONDOWN`/
+    /// etc. into `DoubleClick` when it lands within the time/position
+    /// window of the previous click (#729). `win::run`'s `wndproc`
+    /// dispatches synchronously per Win32 message — same model as
+    /// `macos::run` per `NSEvent` — so this runs on one event at a time
+    /// via [`Self::fold_double_click`] rather than `TuiBackend`'s
+    /// per-poll batch. Mirrors `MacBackend::double_click`; deliberately
+    /// *not* a new `WM_*BUTTONDBLCLK` translator — see that issue for why.
+    double_click: DoubleClickDetector,
     accelerators: HashMap<AcceleratorId, Accelerator>,
     /// Parsed form of every registered `Global`-scope-eligible
     /// accelerator, kept in registration order so [`Self::match_keypress`]
@@ -373,6 +396,7 @@ impl WinBackend {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
+            double_click: DoubleClickDetector::with_radius(WIN_DOUBLE_CLICK_RADIUS),
             accelerators: HashMap::new(),
             parsed_accelerators: Vec::new(),
             focused_activity_bar: None,
@@ -666,6 +690,22 @@ impl WinBackend {
     /// any surface has attached.
     pub(crate) fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
         self.focused_activity_bar.as_ref()
+    }
+
+    // ── Double-click folding (#729) ────────────────────────────────────
+
+    /// Fold a `MouseDown` into `DoubleClick` if it lands within the
+    /// detector's time/position window of the previous click. Every other
+    /// variant passes through unchanged. `win::run::dispatch_event` calls
+    /// this on each translated Win32 mouse-button message before handing
+    /// it to `AppLogic` — mirrors `MacBackend::fold_double_click`. Not
+    /// `target_os`-gated: `DoubleClickDetector::process` has no WinAPI
+    /// dependency, so this compiles and behaves identically on every host.
+    pub(crate) fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
+        let mut events = [ev];
+        self.double_click.process(&mut events);
+        let [ev] = events;
+        ev
     }
 
     // ── Accelerator matching (#707) ───────────────────────────────────
@@ -2451,6 +2491,48 @@ mod tests {
             ),
             Some(AcceleratorId::new("save")),
         );
+    }
+
+    // ── Double-click folding (#729) ─────────────────────────────────────
+    //
+    // Pure `DoubleClickDetector` logic, no Direct2D — runs on every host.
+    // Mirrors `macos::backend::tests`' `fold_double_click_*` suite.
+
+    fn win_mouse_down(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: crate::MouseButton::Left,
+            position: crate::event::Point::new(x, y),
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn fold_double_click_second_click_same_position_becomes_double_click() {
+        let mut b = WinBackend::new();
+        let first = b.fold_double_click(win_mouse_down(5.0, 3.0));
+        assert!(matches!(first, UiEvent::MouseDown { .. }));
+
+        let second = b.fold_double_click(win_mouse_down(5.0, 3.0));
+        assert!(
+            matches!(second, UiEvent::DoubleClick { .. }),
+            "second click at the same position should fold to DoubleClick"
+        );
+    }
+
+    #[test]
+    fn fold_double_click_different_position_stays_mouse_down() {
+        let mut b = WinBackend::new();
+        let _ = b.fold_double_click(win_mouse_down(5.0, 3.0));
+        let second = b.fold_double_click(win_mouse_down(50.0, 30.0));
+        assert!(matches!(second, UiEvent::MouseDown { .. }));
+    }
+
+    #[test]
+    fn fold_double_click_passes_non_mouse_down_events_through() {
+        let mut b = WinBackend::new();
+        let ev = b.fold_double_click(UiEvent::WindowFocused(true));
+        assert_eq!(ev, UiEvent::WindowFocused(true));
     }
 
     #[test]
