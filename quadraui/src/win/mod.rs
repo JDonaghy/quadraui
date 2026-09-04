@@ -89,6 +89,10 @@ mod find_replace;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod form;
+/// Direct2D + WIC rasteriser for [`crate::primitives::image::Image`]
+/// (#739). Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod image;
 /// Direct2D / DirectWrite rasteriser for [`crate::ListView`] (#26).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -256,6 +260,8 @@ pub use editor::draw_editor;
 pub use find_replace::draw_find_replace;
 #[cfg(target_os = "windows")]
 pub use form::{draw_form, draw_settings_chrome, win_form_layout};
+#[cfg(target_os = "windows")]
+pub use image::draw_image;
 #[cfg(target_os = "windows")]
 pub use list::{draw_list, win_list_layout};
 #[cfg(target_os = "windows")]
