@@ -174,6 +174,12 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_UI_Shell",
     # `COMDLG_FILTERSPEC` (file-type filters for `IFileDialog::SetFileTypes`).
     "Win32_UI_Shell_Common",
+    # `TaskDialogIndirect`/`TASKDIALOGCONFIG`/`TASKDIALOG_BUTTON` (#744):
+    # `show_message_dialog`'s native alert. This is the module gate the
+    # `windows` crate puts around all of `Win32::UI::Controls` (see that
+    # crate's `Win32/UI/mod.rs`) — `TaskDialogIndirect` itself is also
+    # gated on `Win32_UI_WindowsAndMessaging`, already present above.
+    "Win32_UI_Controls",
 ] }
 # `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
 # `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover

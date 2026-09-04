@@ -2,7 +2,8 @@
 //!
 //! Manual smoke test for issue #23's `WinPlatformServices`: clipboard
 //! round-trip, native file open/save dialogs, a `Shell_NotifyIconW`
-//! balloon notification, and `open_url`.
+//! balloon notification, and `open_url` — plus issue #744's
+//! `TaskDialogIndirect`-backed message dialog.
 //!
 //! Draws nothing — like `win_demo`, every `WinBackend::draw_*` rasteriser
 //! is still a `todo!()` stub (no `draw_status_bar` to report results
@@ -19,6 +20,8 @@
 //! - `o` — native file-open dialog (filtered to `*.rs`)
 //! - `s` — native file-save dialog (initial name `untitled.txt`)
 //! - `n` — fire a balloon notification (watch the notification area)
+//! - `m` — native message dialog (`TaskDialogIndirect`, #744) with
+//!   Save/Don't Save/Cancel buttons; reports which one was chosen
 //! - `u` — `open_url` a fixed address (the default browser should launch)
 //! - `Esc` / `q` — quit
 //!
@@ -29,7 +32,8 @@
 
 #[cfg(target_os = "windows")]
 use quadraui::{
-    AppLogic, Backend, FileDialogOptions, Key, NamedKey, Notification, Reaction, UiEvent,
+    AppLogic, Backend, DialogSeverity, FileDialogOptions, Key, MessageDialogButton,
+    MessageDialogOptions, NamedKey, Notification, Reaction, UiEvent, WidgetId,
 };
 
 #[cfg(target_os = "windows")]
@@ -108,6 +112,41 @@ impl AppLogic for PlatformServicesDemo {
                     urgent: false,
                 });
                 eprintln!("notification fired — check the notification area");
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('m'),
+                ..
+            } => {
+                let opts = MessageDialogOptions {
+                    title: "Save changes?".to_string(),
+                    body: "quadraui #744 message dialog demo — pick a button.".to_string(),
+                    buttons: vec![
+                        MessageDialogButton {
+                            id: WidgetId::new("save"),
+                            label: "Save".to_string(),
+                            is_default: true,
+                            is_cancel: false,
+                        },
+                        MessageDialogButton {
+                            id: WidgetId::new("dont_save"),
+                            label: "Don't Save".to_string(),
+                            is_default: false,
+                            is_cancel: false,
+                        },
+                        MessageDialogButton {
+                            id: WidgetId::new("cancel"),
+                            label: "Cancel".to_string(),
+                            is_default: false,
+                            is_cancel: true,
+                        },
+                    ],
+                    severity: Some(DialogSeverity::Warning),
+                };
+                match backend.services().show_message_dialog(opts) {
+                    Some(id) => eprintln!("message dialog: chose {id:?}"),
+                    None => eprintln!("message dialog: dismissed with no choice"),
+                }
                 Reaction::Continue
             }
             UiEvent::KeyPressed {
