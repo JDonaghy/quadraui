@@ -166,6 +166,10 @@ mod spinner;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod split;
+/// Direct2D rasteriser for [`crate::primitives::split_tree::SplitTree`]
+/// (#740). Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod split_tree;
 /// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`] (#25).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]

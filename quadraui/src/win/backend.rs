@@ -2089,20 +2089,43 @@ impl Backend for WinBackend {
         }
     }
 
+    /// #740: see [`Self::draw_split`]'s doc for the "surface not attached
+    /// yet" fallback posture. `SplitTree` paints no text, so unlike most
+    /// of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split_tree(
         &mut self,
-        _rect: Rect,
-        _tree: &crate::primitives::split_tree::SplitTree,
+        rect: Rect,
+        tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
-        todo!("Direct2D split-tree rasteriser")
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            return super::split_tree::draw_split_tree(&surface.target, rect, tree);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, tree);
+        todo!("Direct2D split-tree rasteriser (no surface attached yet)")
     }
 
+    /// #740: pure geometry — no measurer at all (uniform divider
+    /// thickness), so unlike most `*_layout` siblings this doesn't even
+    /// need `self.dwrite`, only kept behind the `target_os = "windows"`
+    /// gate for consistency with every other method in this file. See
+    /// [`Self::split_layout`]'s comment for why this block has no
+    /// `return`.
     fn split_tree_layout(
         &self,
-        _rect: Rect,
-        _tree: &crate::primitives::split_tree::SplitTree,
+        rect: Rect,
+        tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
-        todo!("DirectWrite split-tree layout")
+        #[cfg(target_os = "windows")]
+        {
+            super::split_tree::win_split_tree_layout(rect, tree)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, tree);
+            todo!("DirectWrite split-tree layout (no surface attached yet)")
+        }
     }
 
     /// #736: real Direct2D/DirectWrite rasteriser via `win::board` once a
