@@ -313,6 +313,33 @@ pub fn wm_char_to_uievent(c: char, modifiers: Modifiers, repeat: bool) -> Option
     })
 }
 
+// ─── Window resize ───────────────────────────────────────────────────────
+
+/// Translate `WM_SIZE`'s already-decoded client-area size into
+/// [`UiEvent::WindowResized`]. `width`/`height` are client-area device
+/// pixels (see [`super::msg::size_from_lparam`], the `pub(crate)` decoder
+/// that unpacks the raw `WM_SIZE` `lparam` into this pair — arithmetic
+/// only, unit-tested directly in `super::msg`); `scale` is the window's
+/// current DPI ratio (see [`super::msg::dpi_ratio`]).
+///
+/// `super::run`'s `wndproc` doesn't call this directly — it builds the
+/// same event inline via `WinBackend::resize_surface` +
+/// `Backend::viewport()` (see this module's "Scope vs #19" doc for why
+/// window-lifecycle events are handled there rather than through a
+/// translator here). This function exists as the public,
+/// host-independent entry point tier C2 (`tests/conformance/c2.rs`,
+/// quadraui#742) asserts against, mirroring
+/// `gtk::events::gdk_resize_to_uievent` / `macos::events::ns_resize_to_uievent`
+/// — and `resize_surface` builds the identical `Viewport` shape (width/
+/// height carried in device pixels, `scale` kept separate rather than
+/// pre-divided into DIPs the way mouse positions are — see this module's
+/// "Coordinate convention" doc), so this stays a thin wrapper over the
+/// same shared [`crate::event::window_resized`] constructor GTK/macOS
+/// route through.
+pub fn win_resize_to_uievent(width: u32, height: u32, scale: f32) -> UiEvent {
+    crate::event::window_resized(width as f32, height as f32, scale)
+}
+
 // ─── Focus ───────────────────────────────────────────────────────────────
 
 /// Translate `WM_SETFOCUS`/`WM_KILLFOCUS` into [`UiEvent::WindowFocused`].
@@ -759,6 +786,35 @@ mod tests {
             Some(UiEvent::KeyPressed { repeat, .. }) => assert!(repeat),
             _ => panic!(),
         }
+    }
+
+    // ── Window resize ───────────────────────────────────────────────
+
+    #[test]
+    fn resize_translation_carries_device_pixel_size_and_scale() {
+        let ev = win_resize_to_uievent(1920, 1080, 2.0);
+        match ev {
+            UiEvent::WindowResized { viewport } => {
+                assert_eq!(viewport.width, 1920.0);
+                assert_eq!(viewport.height, 1080.0);
+                assert_eq!(viewport.scale, 2.0);
+            }
+            other => panic!("expected WindowResized, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resize_translation_zero_size_round_trips() {
+        // The synchronous WM_SIZE Windows fires for a minimised/zero-size
+        // window (see `msg::size_from_lparam_handles_a_zero_client_rect`) —
+        // this translator must report it verbatim, not panic.
+        let ev = win_resize_to_uievent(0, 0, 1.0);
+        assert_eq!(
+            ev,
+            UiEvent::WindowResized {
+                viewport: crate::Viewport::new(0.0, 0.0, 1.0),
+            }
+        );
     }
 
     // ── Focus ────────────────────────────────────────────────────────

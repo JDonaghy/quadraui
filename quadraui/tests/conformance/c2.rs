@@ -20,20 +20,38 @@
 //! involved. There is no cross-backend `DriverFactory`-style
 //! abstraction for "translate a native event" the way there is for
 //! painting, because each backend's native event type is genuinely
-//! different (crossterm vs. GDK); `TUI_ROWS`/`GTK_ROWS` below are
-//! independent per-backend case tables instead, joined by row *name*
-//! into one printed matrix (`c2_event_parity` in `conformance.rs`),
-//! mirroring `c0.rs`'s report shape without forcing a shared driver
-//! trait that doesn't fit this layer.
+//! different (crossterm vs. GDK vs. raw `WM_*` message params);
+//! `tui_case`/`gtk_case`/`win_case` below are independent per-backend
+//! case tables instead, joined by row *name* into one printed matrix
+//! (`c2_event_parity` in `conformance.rs`), mirroring `c0.rs`'s report
+//! shape without forcing a shared driver trait that doesn't fit this
+//! layer.
 //!
-//! **Scope of this pass**: the mouse/key/scroll/resize core plus GTK's
-//! `WindowClose` (this issue's own wiring — see `gtk::run`'s
-//! `connect_close_request`). `DoubleClick`, `Accelerator`,
-//! `ClipboardPaste`, and `TextCopied` are required too (per the matrix)
-//! but need dispatch-level fixtures (`DoubleClickDetector`, an
-//! accelerator registry, a backend + clipboard) rather than a bare
-//! translation-function call, and are tracked as D-010 follow-up rather
-//! than added here.
+//! **Win** (quadraui#742) needs no `target_os = "windows"` host: unlike
+//! C0/C1, which drive a live `Backend` (a real `ID2D1DCRenderTarget` for
+//! Win), C2 only calls `win::events`'s free functions — pure `WM_*`
+//! message + already-decoded params → `UiEvent`, no WinAPI call in
+//! sight (see `win::events`'s module doc) — so `win_case` runs on the
+//! plain `ubuntu-latest --features win` leg, same as `tui_case`/
+//! `gtk_case` run wherever their own feature is enabled.
+//!
+//! **Scope of this pass**: the mouse/key/scroll/resize core, plus
+//! `WindowClose` on the two backends with a real OS window (GTK — this
+//! issue's own wiring, see `gtk::run`'s `connect_close_request`; Win —
+//! pre-existing `WM_CLOSE` handling, see `win::run`'s `wndproc`).
+//! `DoubleClick`, `Accelerator`, `ClipboardPaste`, and `TextCopied` are
+//! required too (per the matrix) but need dispatch-level fixtures
+//! (`DoubleClickDetector`, an accelerator registry, a backend +
+//! clipboard) rather than a bare translation-function call, and are
+//! tracked as D-010 follow-up rather than added here — true for Win as
+//! much as TUI/GTK: `WinBackend::match_keypress`/`dispatch_event` are
+//! `pub(crate)` and need a live `WinBackend` + `AppLogic`, not a bare
+//! native-input-in/`UiEvent`-out call, even though the underlying
+//! wiring itself has landed (`WinBackend::match_keypress`, #707;
+//! `WinBackend::fold_double_click`, #729; Ctrl-V paste, #728) — see
+//! `docs/BACKEND.md`'s emission matrix for the production-wiring status
+//! and this file's `WINDOWED_ROWS` doc for why `window_close` is the one
+//! exception that *can* still appear as a (placeholder) row.
 
 /// Outcome of one C2 case.
 pub struct CaseOutcome {
@@ -64,18 +82,20 @@ impl CaseOutcome {
     /// distinctly marked so it isn't read as equivalent to a verified
     /// `ok()`.
     ///
-    /// The only placeholder row today is GTK's `window_close`, so on a
-    /// `--features tui` build (no `gtk`) this constructor has no caller.
-    /// CI sets `RUSTFLAGS: -D warnings` workflow-wide, which promotes
-    /// that to a hard `dead_code` build failure on the tui leg — the
-    /// same shape as this file's crate-root
-    /// `cfg_attr(not(any(tui, gtk)), allow(dead_code))` in
-    /// `conformance.rs`, and allowed for the same reason: the item is
+    /// The only placeholder row today is `window_close`, on GTK and Win
+    /// (quadraui#742) — the two backends with a real OS window whose
+    /// close veto only round-trips through a live window/`wndproc`, not
+    /// a bare translation call — so on a `--features tui` build (neither
+    /// `gtk` nor `win`) this constructor has no caller. CI sets
+    /// `RUSTFLAGS: -D warnings` workflow-wide, which promotes that to a
+    /// hard `dead_code` build failure on the tui leg — the same shape as
+    /// this file's crate-root `cfg_attr(not(any(tui, gtk)), allow(dead_code))`
+    /// in `conformance.rs`, and allowed for the same reason: the item is
     /// unreachable *from this feature set*, not unused. Scoped to
-    /// `not(gtk)` rather than blanket-allowed so that if the
-    /// `window_close` call below ever goes away, the `gtk,tui` leg
-    /// still reports this as genuinely dead.
-    #[cfg_attr(not(feature = "gtk"), allow(dead_code))]
+    /// `not(any(gtk, win))` rather than blanket-allowed so that if every
+    /// `window_close` call below ever goes away, a `tui`-only leg still
+    /// reports this as genuinely dead.
+    #[cfg_attr(not(any(feature = "gtk", feature = "win")), allow(dead_code))]
     fn placeholder(detail: impl Into<String>) -> Self {
         Self {
             pass: true,
@@ -94,9 +114,9 @@ impl CaseOutcome {
 }
 
 /// Row labels for the mouse/key/scroll/resize core, in print order.
-/// `window_close` is GTK-only (TUI has no OS window — D-010) so it's
-/// appended separately by `conformance.rs` rather than forced into this
-/// shared list with a fake TUI entry.
+/// `window_close` is only applicable to backends with a real OS window
+/// (TUI has none — D-010) so it's kept out of this shared list and
+/// appended separately by `conformance.rs`, via [`WINDOWED_ROWS`].
 pub const CORE_ROWS: &[&str] = &[
     "key_char",
     "key_named",
@@ -107,8 +127,11 @@ pub const CORE_ROWS: &[&str] = &[
     "window_resized",
 ];
 
-/// GTK-only required row (D-010: `WindowClose` is N/A on TUI).
-pub const GTK_ONLY_ROWS: &[&str] = &["window_close"];
+/// Required row(s) for backends with a real OS window — GTK and Win
+/// (quadraui#742) — but N/A on TUI (D-010: TUI's "window" is the
+/// terminal viewport, which the process doesn't close independently of
+/// itself).
+pub const WINDOWED_ROWS: &[&str] = &["window_close"];
 
 #[cfg(feature = "tui")]
 pub fn tui_case(row: &str) -> CaseOutcome {
@@ -302,6 +325,122 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
                 "no live-window assertion at this tier — see gtk::run::window_close_tests \
                  (dispatch_event pass-through) and the C4 live-window smoke tier for the \
                  real close-request/veto coverage",
+            )
+        }
+        other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
+    }
+}
+
+/// Win-GUI (quadraui#742). Unlike `tui_case`/`gtk_case`, none of the
+/// `win::events` functions this calls need `target_os = "windows"` — see
+/// this file's module doc and `win::events`'s own doc for why the
+/// translators are plain host-independent functions, so this whole
+/// function (and therefore the `win` column in `c2_event_parity`) runs
+/// on the `ubuntu-latest --features win` leg with no live `HWND`/
+/// Direct2D anywhere in sight.
+#[cfg(feature = "win")]
+pub fn win_case(row: &str) -> CaseOutcome {
+    use quadraui::win::events::{
+        win_button_down, win_button_up, win_mouse_moved, win_resize_to_uievent,
+        win_wheel_to_uievent, wm_char_to_uievent, wm_keydown_to_uievent,
+    };
+    use quadraui::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, UiEvent};
+
+    // `VK_RETURN` (0x0D) — `<winuser.h>`'s stable numeric value, same
+    // convention `win::events::vk_to_named_key`'s own match arms use.
+    const VK_RETURN: u32 = 0x0D;
+
+    match row {
+        // `WM_CHAR`'s printable-text path (`wm_char_to_uievent`) — the
+        // production caller only reaches this arm for a character
+        // `vk_to_named_key` doesn't map, same split `wm_keydown_to_uievent`'s
+        // doc describes.
+        "key_char" => match wm_char_to_uievent('q', Modifiers::default(), false) {
+            Some(UiEvent::KeyPressed {
+                key: Key::Char('q'),
+                ..
+            }) => CaseOutcome::ok(),
+            other => CaseOutcome::fail(format!("expected KeyPressed{{Char('q')}}, got {other:?}")),
+        },
+        // `WM_KEYDOWN`'s named-key path (`wm_keydown_to_uievent`).
+        "key_named" => match wm_keydown_to_uievent(VK_RETURN, Modifiers::default(), false) {
+            Some(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                ..
+            }) => CaseOutcome::ok(),
+            other => CaseOutcome::fail(format!(
+                "expected KeyPressed{{Named(Enter)}}, got {other:?}"
+            )),
+        },
+        "mouse_down" => match win_button_down(MouseButton::Left, 3, 4, 1.0, Modifiers::default()) {
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } if position.x == 3.0 && position.y == 4.0 => CaseOutcome::ok(),
+            other => CaseOutcome::fail(format!("expected MouseDown at (3,4), got {other:?}")),
+        },
+        "mouse_up" => match win_button_up(MouseButton::Left, 3, 4, 1.0) {
+            UiEvent::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => CaseOutcome::ok(),
+            other => CaseOutcome::fail(format!("expected MouseUp, got {other:?}")),
+        },
+        "mouse_moved_drag" => {
+            let buttons = ButtonMask {
+                left: true,
+                ..Default::default()
+            };
+            match win_mouse_moved(5, 6, 1.0, buttons) {
+                UiEvent::MouseMoved { buttons, .. } if buttons.left => CaseOutcome::ok(),
+                other => {
+                    CaseOutcome::fail(format!("expected MouseMoved with left held, got {other:?}"))
+                }
+            }
+        }
+        // Win32's wheel delta needs no sign flip (`win_wheel_to_uievent`'s
+        // doc) — a backward/negative notch is already "down" in
+        // quadraui's convention, so -120 (one notch back) is the "down"
+        // input the other two backends reach via an explicit ScrollDown/
+        // negate step.
+        "scroll" => match win_wheel_to_uievent(-120, 1, 1, 1.0, false) {
+            UiEvent::Scroll { delta, .. } if delta.y < 0.0 => CaseOutcome::ok(),
+            other => CaseOutcome::fail(format!(
+                "expected Scroll with delta.y < 0.0 (down), got {other:?}"
+            )),
+        },
+        "window_resized" => match win_resize_to_uievent(1920, 1080, 2.0) {
+            UiEvent::WindowResized { viewport }
+                if viewport.width == 1920.0 && viewport.height == 1080.0 =>
+            {
+                CaseOutcome::ok()
+            }
+            other => CaseOutcome::fail(format!(
+                "expected WindowResized{{1920x1080}}, got {other:?}"
+            )),
+        },
+        "window_close" => {
+            // Same shape as GTK's `window_close` placeholder above: the
+            // real veto decision (`WM_CLOSE => if dispatch(...) ==
+            // Reaction::Exit { DestroyWindow }`) lives in `win::run`'s
+            // `wndproc`, which is `pub(crate)` and needs a live `HWND` —
+            // unreachable from this external test crate and unreachable
+            // headlessly either way. What *is* true and host-independent:
+            // Win32 decodes no payload for `WM_CLOSE` at all (unlike
+            // every other row here), so there is no native-injection
+            // recipe to run in the first place — `UiEvent::WindowClose`
+            // is the whole translation. Recorded as a `placeholder()`,
+            // not `ok()`, so the row appears in the matrix without
+            // reading as a verified assertion — the real coverage is
+            // Win-GUI's own live-window smoke tier (C4) once it exists,
+            // mirroring `gtk::run::window_close_tests` for GTK.
+            CaseOutcome::placeholder(
+                "no live-window assertion at this tier — WM_CLOSE carries no payload to \
+                 translate (UiEvent::WindowClose has no fields), and the real close veto \
+                 (win::run's wndproc: Reaction::Exit -> DestroyWindow) needs a live HWND, \
+                 unreachable from this external test crate — see the C4 live-window smoke \
+                 tier for the real coverage",
             )
         }
         other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
