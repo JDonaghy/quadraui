@@ -685,13 +685,20 @@ fn c0_paint_smoke() {
 /// host (see `c2.rs`'s module doc), so the `win` column here runs on the
 /// plain `ubuntu-latest --features win` compile-check leg, unlike the C0/
 /// C1 `WinFactory` registration above (which stays `target_os =
-/// "windows"`-gated because it drives a live `Backend`). The rest of the
-/// required matrix (`DoubleClick`/`Accelerator`/`ClipboardPaste`/
-/// `TextCopied`) is D-010 follow-up on every backend — each needs a
-/// dispatch-level fixture, not a bare translation-function call — and is
-/// tracked in `docs/BACKEND.md`'s emission matrix rather than silently
-/// missing from this tier.
+/// "windows"`-gated because it drives a live `Backend`).
+///
+/// `DoubleClick`/`Accelerator`/`ClipboardPaste` are required too, and
+/// #742 gives them declared `c2::DISPATCH_ROWS` entries on every column
+/// instead of leaving them out — they print `pass*` with a footnote
+/// naming the `dispatch_event` hook that produces them, since promoting
+/// them to real assertions needs a dispatch-level fixture rather than a
+/// translation-function call (D-010 follow-up). TUI's `clipboard_paste`
+/// is the exception and asserts for real. `TextCopied` isn't in the
+/// required set, so it has no row here; `docs/BACKEND.md`'s emission
+/// matrix stays the source of truth for production-wiring status.
 #[test]
+// See the `columns` builder below for why this can't be a `vec![…]`.
+#[allow(clippy::vec_init_then_push)]
 fn c2_event_parity() {
     struct Column {
         name: &'static str,
@@ -699,12 +706,22 @@ fn c2_event_parity() {
         case: fn(&str) -> c2::CaseOutcome,
     }
 
+    // Every push below is `cfg`-gated, so a single-backend feature set —
+    // `--features win`, exactly what the ubuntu win leg builds — leaves
+    // one push, making the `mut` look redundant and the builder look like
+    // it could be a `vec![…]` literal (hence this fn's
+    // `allow(clippy::vec_init_then_push)`). It can't: which columns exist
+    // is decided by feature flags at compile time, not by this expression.
     #[allow(unused_mut)]
     let mut columns: Vec<Column> = Vec::new();
     #[cfg(feature = "tui")]
     columns.push(Column {
         name: "tui",
-        rows: c2::CORE_ROWS.to_vec(),
+        rows: c2::CORE_ROWS
+            .iter()
+            .chain(c2::DISPATCH_ROWS)
+            .copied()
+            .collect(),
         case: c2::tui_case,
     });
     #[cfg(feature = "gtk")]
@@ -713,6 +730,7 @@ fn c2_event_parity() {
         rows: c2::CORE_ROWS
             .iter()
             .chain(c2::WINDOWED_ROWS)
+            .chain(c2::DISPATCH_ROWS)
             .copied()
             .collect(),
         case: c2::gtk_case,
@@ -725,6 +743,7 @@ fn c2_event_parity() {
         rows: c2::CORE_ROWS
             .iter()
             .chain(c2::WINDOWED_ROWS)
+            .chain(c2::DISPATCH_ROWS)
             .copied()
             .collect(),
         case: c2::win_case,
@@ -745,11 +764,16 @@ fn c2_event_parity() {
     }
 
     // Every row that at least one column declares, in a stable order:
-    // `CORE_ROWS` first (shared), then `WINDOWED_ROWS`. A column that
-    // doesn't declare a row prints `n/a` for it rather than a fabricated
-    // pass/fail — `WindowClose` genuinely does not apply to TUI (D-010).
+    // `CORE_ROWS` first (shared), then `WINDOWED_ROWS`, then
+    // `DISPATCH_ROWS`. A column that doesn't declare a row prints `n/a`
+    // for it rather than a fabricated pass/fail — `WindowClose` genuinely
+    // does not apply to TUI (D-010). Note `n/a` means *inapplicable*, not
+    // *unmeasured*: an event that applies but can't be asserted at this
+    // tier is a declared `pass*` placeholder row instead, which is why
+    // `DISPATCH_ROWS` is declared by every column.
     let mut all_rows: Vec<&'static str> = c2::CORE_ROWS.to_vec();
     all_rows.extend(c2::WINDOWED_ROWS);
+    all_rows.extend(c2::DISPATCH_ROWS);
 
     let row_w = all_rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut table = format!("{:<row_w$}", "event (tier 2)");
