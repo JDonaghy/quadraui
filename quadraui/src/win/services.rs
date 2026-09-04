@@ -547,6 +547,14 @@ fn win_show_message_dialog(
     owner: Option<HWND>,
     opts: &MessageDialogOptions,
 ) -> Option<MessageDialogChoice> {
+    // `TaskDialogIndirect` needs `CoInitializeEx`/`OleInitialize` to have
+    // run on this thread (Microsoft's own docs on the API), same
+    // requirement as the `IFileOpenDialog`/`IFileSaveDialog` calls below
+    // and the WIC decode path in `image.rs` — see `ensure_com_initialized`'s
+    // doc comment for why every native-dialog-style call on this thread
+    // goes through it first.
+    ensure_com_initialized();
+
     let ids = assign_button_ids(&opts.buttons);
 
     // Every wide buffer referenced by pointer below (`title_wide`,
