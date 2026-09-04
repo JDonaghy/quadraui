@@ -346,8 +346,14 @@ fn win_clipboard_write(text: &str) {
 /// surfaces on its own. Never paired with `CoUninitialize` — COM stays
 /// initialized for the rest of the thread's life, same posture as the
 /// GTK backend never tearing down its GLib main context.
+///
+/// `pub(crate)` (not private) since #739: `super::image`'s WIC decode
+/// path also needs COM ready (`CoCreateInstance(CLSID_WICImagingFactory,
+/// ..)`) before it can build a factory, same requirement as the file
+/// dialogs below — one thread-local init guard for both call sites
+/// rather than two copies of the same `Cell<bool>` dance.
 #[cfg(target_os = "windows")]
-fn ensure_com_initialized() {
+pub(crate) fn ensure_com_initialized() {
     thread_local! {
         static COM_INITIALIZED: Cell<bool> = const { Cell::new(false) };
     }

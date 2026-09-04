@@ -139,6 +139,18 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    # WIC (#739): `IWICImagingFactory`/`IWICBitmapDecoder`/
+    # `IWICFormatConverter` in `src/win/image.rs`'s `draw_image` — decodes
+    # PNG/JPEG/... bytes to a pixel buffer Direct2D can consume via
+    # `ID2D1RenderTarget::CreateBitmapFromWicBitmap` (that method, and
+    # `ID2D1DeviceContext::CreateBitmapFromWicBitmap`, are both cfg-gated
+    # inside the `windows` crate itself on this same feature — see that
+    # crate's `Direct2D/mod.rs`). `HeadlessSurface` (`src/win/testing.rs`)
+    # deliberately does *not* need this: its `ID2D1DCRenderTarget` is a
+    # paint destination built from a `CreateDIBSection` DC, not decoded
+    # image content — see that module's doc for why a WIC bitmap render
+    # target would have been the wrong (COM-heavier) tool for that job.
+    "Win32_Graphics_Imaging",
     "Win32_System_LibraryLoader",
     "Win32_UI_HiDpi",
     # `GetKeyState` + `VK_*` — issue #20's per-message modifier reads

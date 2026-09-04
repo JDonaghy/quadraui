@@ -2187,12 +2187,22 @@ impl Backend for WinBackend {
         }
     }
 
+    /// #739: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. Only needs `self.surface` (not
+    /// `self.dwrite` too) — WIC decoding and `DrawBitmap` are pure
+    /// Direct2D, no text measurement involved.
     fn draw_image(
         &mut self,
-        _rect: Rect,
-        _image: &crate::primitives::image::Image,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        todo!("Direct2D image rasteriser — out of scope per #662's first pass")
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            return super::image::draw_image(&surface.target, rect, image);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, image);
+        todo!("Direct2D image rasteriser (no surface attached yet)")
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
