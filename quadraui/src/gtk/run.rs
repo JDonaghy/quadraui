@@ -533,7 +533,7 @@ fn activate<A: AppLogic + 'static>(
                 let evs = dispatch_click(
                     &stack,
                     &[], // scroll surfaces not tracked in the runner
-                    &backend_mut.text_regions,
+                    backend_mut.text_regions(),
                     &mut drag,
                     position,
                     button,

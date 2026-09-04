@@ -31,12 +31,16 @@
 //!   equivalent internals.
 #![cfg(all(feature = "win", target_os = "windows"))]
 
-use quadraui::win::testing::driver_with_shell;
+use quadraui::win::testing::{driver_with_shell, WinDriver};
 use quadraui::{NamedKey, Reaction};
 
 #[path = "../examples/common/appshell_demo.rs"]
 mod appshell_demo;
 use appshell_demo::AppShellDemo;
+
+#[path = "../examples/common/panel_app.rs"]
+mod panel_app;
+use panel_app::PanelApp;
 
 // DIP canvas sized for the shell chrome (activity bar + sidebar + main
 // content) — same nominal size the GTK/macOS/TUI `appshell_demo_*` driver
@@ -140,4 +144,77 @@ fn appshell_demo_unintercepted_key_still_reaches_the_app() {
          so it must still reach AppShellDemo::handle and exit"
     );
     assert!(driver.exited());
+}
+
+// ─── PanelApp: drag text selection + Ctrl-C copy (#741) ────────────────────
+//
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `panel_drag_selects_text_and_ctrl_c_copies_it` — same `PanelApp`
+// `AppLogic`, same script (drag across two painted content lines, assert
+// selection feedback, Ctrl-C, assert the copy landed). `WinDriver::new`
+// (unlike `driver_with_shell`) enables painted-text-run recording
+// unconditionally (quadraui#721), so `find`/`screen_contains` resolve real
+// `StatusBar` text the same way `GtkDriver`'s do — the stale "no painted-text
+// lookup yet" caveat in this file's module doc predates that landing.
+//
+// Panel content pixel size for `PanelApp`'s five sample lines plus title
+// bar and status bar — comfortably larger than the painted content so
+// every line's `find` target has a real `TextRun` to hit.
+const PANEL_W: u32 = 800;
+const PANEL_H: u32 = 300;
+
+#[test]
+fn panel_drag_selects_text_and_ctrl_c_copies_it() {
+    let mut driver = WinDriver::new(PanelApp::new(), PANEL_W, PANEL_H);
+
+    // Two distinct painted content lines (substrings unique to lines 0 and 3
+    // of `PanelApp`'s `CONTENT_LINES` — see `examples/common/panel_app.rs`).
+    let (x0, y0) = driver
+        .find("brown")
+        .unwrap_or_else(|| panic!("content line 0 not painted"));
+    let (x1, y1) = driver
+        .find("wizards")
+        .unwrap_or_else(|| panic!("content line 3 not painted"));
+
+    // Drag down across the content lines → `route_mouse_down` begins a
+    // TextSelection drag on MouseDown and `route_mouse_move` emits
+    // TextSelectionChanged, which `dispatch_event` turns into an active
+    // selection (#741).
+    driver.mouse_down(x0, y0);
+    driver.mouse_move(x1, y1);
+    assert!(
+        driver.screen_contains("Selecting"),
+        "dragging over the content region should show selection feedback"
+    );
+    driver.mouse_up(x1, y1);
+
+    // Ctrl-C with an active selection → `dispatch_event` copies it and
+    // delivers TextCopied, which PanelApp echoes via its status bar.
+    driver.ctrl_char('c');
+    assert!(
+        driver.screen_contains("Copied:"),
+        "Ctrl-C after a selection should copy it"
+    );
+    assert!(
+        driver.screen_contains("quick"),
+        "the copied preview should contain selected text"
+    );
+}
+
+#[test]
+fn panel_ctrl_a_selects_the_sole_content_region_and_ctrl_c_copies_it() {
+    let mut driver = WinDriver::new(PanelApp::new(), PANEL_W, PANEL_H);
+
+    // No prior click — Ctrl-A must still resolve the sole registered
+    // `TextRegion` fallback path (`select_all_text_region`, #741).
+    driver.ctrl_char('a');
+    driver.ctrl_char('c');
+    assert!(
+        driver.screen_contains("Copied:"),
+        "Ctrl-A then Ctrl-C should copy the full selection"
+    );
+    assert!(
+        driver.screen_contains("quick") || driver.screen_contains("brown"),
+        "select-all should copy from the beginning of the content"
+    );
 }

@@ -139,7 +139,8 @@
 
 use crate::backend::Backend;
 use crate::desktop::{is_paste_keypress, PasteModifier};
-use crate::event::Viewport;
+use crate::dispatch::DragTarget;
+use crate::event::{Point, Viewport};
 use crate::runner::AppLogic;
 // `EventOutcome` — what the caller should do after `dispatch_event`
 // handles one event — is defined once in `crate::runtime` and shared by
@@ -148,7 +149,7 @@ use crate::runner::AppLogic;
 // `tui::run`/`macos::run`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::win::backend::WinBackend;
-use crate::{ActivityBarEvent, UiEvent};
+use crate::{ActivityBarEvent, ButtonMask, Key, Modifiers, MouseButton, UiEvent};
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the runner's built-in pre-processing first. This is the funnel both
@@ -180,6 +181,14 @@ use crate::{ActivityBarEvent, UiEvent};
 ///   `gtk::run::dispatch_event` / `macos::run::dispatch_event` use), so a
 ///   bound accelerator never steals a navigation key out from under a
 ///   keyboard-focused activity bar.
+/// - Ctrl-C with an active text selection (#741): copies the selection to
+///   the OS clipboard via [`WinBackend::extract_selection_text`], clears
+///   it, and delivers `UiEvent::TextCopied` instead of forwarding the raw
+///   key press — the C2 event `panel.drag_select_copy` requires. Mirrors
+///   `gtk::run::dispatch_event`/`TuiBackend::apply_dispatch`'s identical
+///   arm; ordered before Ctrl-V below since both start from `KeyPressed`
+///   but match disjoint keys, so order between the two doesn't matter in
+///   practice.
 /// - Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], shared with
 ///   `gtk::run`/`macos::run` since #728): reads the system clipboard via
 ///   [`WinBackend::services`] and delivers `UiEvent::ClipboardPaste`
@@ -189,6 +198,15 @@ use crate::{ActivityBarEvent, UiEvent};
 ///   for GTK's bespoke `DrawingArea`). See `docs/DECISIONS.md` D-011 for
 ///   the shift-tolerance contract this predicate settles once for every
 ///   backend.
+/// - Ctrl-A (#741): selects the entire content of the most-recently
+///   focused `TextRegion` via [`WinBackend::select_all_text_region`], if
+///   one is registered.
+/// - `MouseDown` (#741): clears the displayed selection highlight — a
+///   fresh drag may be starting. Does not end an in-progress
+///   `TextSelection` drag (that drag was just armed by [`route_mouse_down`],
+///   which called `dispatch_click` before this event ever reached here).
+/// - `TextSelectionChanged` (#741): updates the backend's active selection
+///   and forces a redraw.
 ///
 /// Anything not matched above falls through to `app.handle` unchanged.
 ///
@@ -260,6 +278,32 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         event
     };
 
+    // ── Ctrl-C interception (text selection, #741) ────────────────────
+    //
+    // Mirrors `gtk::run::dispatch_event`/`TuiBackend::apply_dispatch`'s
+    // identical Ctrl-C arm: copy the active selection to the OS clipboard,
+    // clear it, and deliver `TextCopied` instead of the raw key press —
+    // the C2 event `panel.drag_select_copy` requires.
+    if let UiEvent::KeyPressed {
+        key: Key::Char('c'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if backend.active_text_selection().is_some() {
+            let text = backend.extract_selection_text();
+            backend.services().clipboard().write_text(&text);
+            backend.clear_text_selection();
+            return app.handle(UiEvent::TextCopied(text), backend).into();
+        }
+    }
+
     // ── Ctrl-V / Ctrl-Shift-V interception (paste, #728) ─────────────
     if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
         if is_paste_keypress(key, modifiers, PasteModifier::Ctrl) {
@@ -271,7 +315,167 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         }
     }
 
-    app.handle(event, backend).into()
+    // ── Ctrl-A interception (select-all for text regions, #741) ──────
+    if let UiEvent::KeyPressed {
+        key: Key::Char('a') | Key::Char('A'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if backend.select_all_text_region() {
+            return EventOutcome::Redraw;
+        }
+    }
+
+    // ── MouseDown: clear the displayed selection highlight (#741) ────
+    //
+    // A fresh drag may be starting — mirrors `gtk::run::dispatch_event`.
+    // Does NOT end an in-progress `TextSelection` drag: that drag was
+    // just armed by `dispatch_click` (see `route_mouse_down` below),
+    // and ending it here would immediately cancel it.
+    if let UiEvent::MouseDown { .. } = &event {
+        backend.clear_selection_display();
+    }
+
+    // ── TextSelectionChanged: update active selection while dragging ──
+    let mut force_redraw = false;
+    if let UiEvent::TextSelectionChanged {
+        region,
+        anchor,
+        focus,
+    } = &event
+    {
+        backend.set_active_text_selection(region.clone(), *anchor, *focus);
+        force_redraw = true;
+    }
+
+    let outcome: EventOutcome = app.handle(event, backend).into();
+    if force_redraw && matches!(outcome, EventOutcome::Continue) {
+        EventOutcome::Redraw
+    } else {
+        outcome
+    }
+}
+
+/// Route a `MouseDown` through the shared text-selection/scrollbar-drag
+/// pipeline ([`crate::dispatch::dispatch_click`]) before handing the
+/// resulting event(s) to [`dispatch_event`] — the Win-GUI twin of
+/// `gtk::run`'s `connect_pressed` closure / `TuiBackend::apply_dispatch`'s
+/// `MouseDown` arm (#741). Also tracks the clicked region via
+/// [`WinBackend::track_focused_text_region`] so Ctrl-A can resolve it even
+/// before the first drag-move fires a `TextSelectionChanged` event.
+///
+/// Not itself `#[cfg(target_os = "windows")]`: same posture as
+/// [`dispatch_event`] — its only callers (`mod win32`'s `WM_*BUTTONDOWN`
+/// handler and `super::testing::WinDriver::mouse_down`) are both
+/// windows-gated, so this stays `#[allow(dead_code)]` on every other host
+/// rather than cfg-gated, keeping it type-checked (and unit-testable,
+/// below) everywhere — see `dispatch_event`'s doc for the identical
+/// rationale.
+#[allow(dead_code)]
+pub(crate) fn route_mouse_down<A: AppLogic>(
+    backend: &mut WinBackend,
+    app: &mut A,
+    position: Point,
+    button: MouseButton,
+    modifiers: Modifiers,
+) -> EventOutcome {
+    let events = {
+        let stack_rc = backend.modal_stack_handle();
+        let drag_rc = backend.drag_state_handle();
+        let stack = stack_rc.borrow();
+        let mut drag = drag_rc.borrow_mut();
+        let evs = crate::dispatch::dispatch_click(
+            &stack,
+            &[], // scroll surfaces not tracked by this runner yet — mirrors gtk::run/TuiBackend
+            backend.text_regions(),
+            &mut drag,
+            position,
+            button,
+            modifiers,
+        );
+        if let Some(DragTarget::TextSelection { region, .. }) = drag.target() {
+            backend.track_focused_text_region(region.clone());
+        }
+        evs
+    };
+
+    let mut outcome = EventOutcome::Continue;
+    for ev in events {
+        match dispatch_event(ev, backend, app) {
+            EventOutcome::Continue => {}
+            EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+            EventOutcome::Exit => return EventOutcome::Exit,
+        }
+    }
+    outcome
+}
+
+/// Route a `MouseMoved` (button held) through
+/// [`crate::dispatch::dispatch_mouse_drag`] so a `TextSelection`/scrollbar
+/// drag armed by [`route_mouse_down`] emits `TextSelectionChanged`/
+/// scroll events — the Win-GUI twin of `gtk::run`'s motion-controller
+/// closure. See [`route_mouse_down`]'s doc for why this isn't
+/// `#[cfg(target_os = "windows")]`-gated.
+#[allow(dead_code)]
+pub(crate) fn route_mouse_move<A: AppLogic>(
+    backend: &mut WinBackend,
+    app: &mut A,
+    position: Point,
+    buttons: ButtonMask,
+) -> EventOutcome {
+    let events = {
+        let drag_rc = backend.drag_state_handle();
+        let drag = drag_rc.borrow();
+        crate::dispatch::dispatch_mouse_drag(&drag, position, buttons)
+    };
+
+    let mut outcome = EventOutcome::Continue;
+    for ev in events {
+        match dispatch_event(ev, backend, app) {
+            EventOutcome::Continue => {}
+            EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+            EventOutcome::Exit => return EventOutcome::Exit,
+        }
+    }
+    outcome
+}
+
+/// Route a `MouseUp` through [`crate::dispatch::dispatch_mouse_up`] so an
+/// in-progress scrollbar/text-selection drag ends cleanly — the Win-GUI
+/// twin of `gtk::run`'s `connect_released` closure. See
+/// [`route_mouse_down`]'s doc for why this isn't
+/// `#[cfg(target_os = "windows")]`-gated.
+#[allow(dead_code)]
+pub(crate) fn route_mouse_up<A: AppLogic>(
+    backend: &mut WinBackend,
+    app: &mut A,
+    position: Point,
+    button: MouseButton,
+) -> EventOutcome {
+    let events = {
+        let stack_rc = backend.modal_stack_handle();
+        let drag_rc = backend.drag_state_handle();
+        let stack = stack_rc.borrow();
+        let mut drag = drag_rc.borrow_mut();
+        crate::dispatch::dispatch_mouse_up(&stack, &mut drag, position, button)
+    };
+
+    let mut outcome = EventOutcome::Continue;
+    for ev in events {
+        match dispatch_event(ev, backend, app) {
+            EventOutcome::Continue => {}
+            EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+            EventOutcome::Exit => return EventOutcome::Exit,
+        }
+    }
+    outcome
 }
 
 /// Render one frame: `begin_frame` + `app.render` + `end_frame` — the
@@ -289,6 +493,12 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewport: Viewport) {
     backend.begin_frame(viewport);
     app.render(backend, Default::default());
+    // After app.render: overlay the text-selection highlight on top of the
+    // rendered content (#741) — mirrors `gtk::run::render_frame`'s
+    // `apply_selection_highlight(cr)` call and `TuiBackend::run`'s
+    // `apply_selection_highlight(buf)` call, both made at this same point
+    // in the frame.
+    backend.apply_selection_highlight();
     backend.end_frame();
 }
 
@@ -784,9 +994,31 @@ mod win32 {
     /// no exit, matching every other message this `wndproc` doesn't
     /// otherwise handle.
     fn dispatch<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND, event: UiEvent) -> Reaction {
+        dispatch_with(ws, hwnd, |backend, app| {
+            super::dispatch_event(event, backend, app)
+        })
+    }
+
+    /// [`dispatch`]'s generalisation: runs `f` — any of `super::dispatch_event`,
+    /// [`super::route_mouse_down`], [`super::route_mouse_move`], or
+    /// [`super::route_mouse_up`] (#741) — under the same `guarded_call`
+    /// re-entrancy guard and `InvalidateRect`-on-redraw handling `dispatch`
+    /// already provided. `dispatch` itself is now a one-line wrapper around
+    /// this; the mouse handlers below call this directly so a `MouseDown`/
+    /// `MouseMoved`/`MouseUp` message routes through the shared
+    /// `dispatch_click`/`dispatch_mouse_drag`/`dispatch_mouse_up` pipeline
+    /// (text-region hit-testing, scrollbar drags) before any resulting
+    /// event reaches `dispatch_event` — the same split `gtk::run`'s signal
+    /// handlers keep between click-routing and `dispatch_event`'s own
+    /// pre-processing.
+    fn dispatch_with<A: AppLogic>(
+        ws: &WindowState<A>,
+        hwnd: HWND,
+        f: impl FnOnce(&mut WinBackend, &mut A) -> super::EventOutcome,
+    ) -> Reaction {
         let outcome = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
             let RunState { app, backend } = run_state;
-            super::dispatch_event(event, backend, app)
+            f(backend, app)
         });
         let Some(outcome) = outcome else {
             return Reaction::Continue;
@@ -997,7 +1229,18 @@ mod win32 {
                     let (x, y) = point_from_lparam(lparam.0);
                     let scale = ws.state.borrow().backend.viewport().scale;
                     let modifiers = win_key_modifiers();
-                    dispatch(ws, hwnd, win_button_down(button, x, y, scale, modifiers));
+                    // #741: route through `dispatch_click` (text-region/
+                    // scrollbar drag hit-testing) before `dispatch_event`'s
+                    // own pre-processing, instead of handing the raw
+                    // `MouseDown` straight to `dispatch` — see
+                    // `dispatch_with`'s doc.
+                    if let UiEvent::MouseDown { position, .. } =
+                        win_button_down(button, x, y, scale, modifiers)
+                    {
+                        dispatch_with(ws, hwnd, |backend, app| {
+                            super::route_mouse_down(backend, app, position, button, modifiers)
+                        });
+                    }
                 }
                 // `WM_XBUTTONDOWN`/`WM_XBUTTONUP` are the one pair in this
                 // group whose docs require returning `TRUE` when handled —
@@ -1013,7 +1256,14 @@ mod win32 {
                 if let Some(button) = win_mouse_button_for_message(msg, wparam.0) {
                     let (x, y) = point_from_lparam(lparam.0);
                     let scale = ws.state.borrow().backend.viewport().scale;
-                    dispatch(ws, hwnd, win_button_up(button, x, y, scale));
+                    // #741: route through `dispatch_mouse_up` (ends an
+                    // in-progress scrollbar/text-selection drag) — see
+                    // `dispatch_with`'s doc.
+                    if let UiEvent::MouseUp { position, .. } = win_button_up(button, x, y, scale) {
+                        dispatch_with(ws, hwnd, |backend, app| {
+                            super::route_mouse_up(backend, app, position, button)
+                        });
+                    }
                 }
                 if msg == WM_XBUTTONUP {
                     LRESULT(1)
@@ -1029,7 +1279,16 @@ mod win32 {
                     right: wparam.0 & MK_RBUTTON != 0,
                     middle: wparam.0 & MK_MBUTTON != 0,
                 };
-                dispatch(ws, hwnd, win_mouse_moved(x, y, scale, buttons));
+                // #741: route through `dispatch_mouse_drag` so a
+                // `TextSelection`/scrollbar drag armed by the button-down
+                // handler above emits `TextSelectionChanged`/scroll events
+                // — see `dispatch_with`'s doc.
+                if let UiEvent::MouseMoved { position, .. } = win_mouse_moved(x, y, scale, buttons)
+                {
+                    dispatch_with(ws, hwnd, |backend, app| {
+                        super::route_mouse_move(backend, app, position, buttons)
+                    });
+                }
                 LRESULT(0)
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
@@ -1515,5 +1774,220 @@ mod paste_dispatch_tests {
             vec![ev],
             "a non-paste keypress must fall through to app.handle unchanged"
         );
+    }
+}
+
+/// Coverage for #741: `dispatch_event`'s Ctrl-C/Ctrl-A/`MouseDown`/
+/// `TextSelectionChanged` text-selection pre-processing, plus
+/// [`route_mouse_down`]/[`route_mouse_move`]/[`route_mouse_up`]'s
+/// `dispatch_click`/`dispatch_mouse_drag`/`dispatch_mouse_up` routing.
+/// None of this depends on a live Direct2D surface or `target_os =
+/// "windows"` — the state machine, `dispatch_event`, and the three
+/// `route_mouse_*` helpers are all plain `WinBackend`/`crate::dispatch`
+/// logic — so, unlike the Direct2D paint half of #741
+/// (`WinBackend::apply_selection_highlight`'s `FillRectangle` call), this
+/// runs and is asserted on every host, exactly like
+/// `paste_dispatch_tests` above.
+#[cfg(test)]
+mod text_selection_dispatch_tests {
+    use super::*;
+    use crate::dispatch::TextRegion;
+    use crate::runner::Reaction;
+    use crate::types::WidgetId;
+    use crate::{ButtonMask, Key, Modifiers, MouseButton, UiEvent};
+
+    #[derive(Default)]
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            Reaction::Continue
+        }
+    }
+
+    fn region(id: &str, x: f32, y: f32, w: f32, h: f32, lines: &[&str]) -> TextRegion {
+        TextRegion {
+            id: WidgetId::new(id),
+            bounds: crate::event::Rect::new(x, y, w, h),
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn ctrl_char(c: char) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+            repeat: false,
+        }
+    }
+
+    /// End-to-end round trip: click-drag across a registered `TextRegion`,
+    /// then Ctrl-C — the exact sequence `panel.drag_select_copy` (the
+    /// Tier-1 scenario #741 unblocks) drives. `WinBackend::new()`'s
+    /// default metrics (16.0 line height, 8.0 char width) make the pixel
+    /// math easy to reason about: a region one line tall and 88 DIPs wide
+    /// covers exactly 11 columns — the length of "hello world".
+    #[test]
+    fn drag_select_then_ctrl_c_copies_the_selection() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        backend.register_text_region(region("body", 0.0, 0.0, 88.0, 16.0, &["hello world"]));
+
+        // Press inside the region (row 0, col 0).
+        let outcome = route_mouse_down(
+            &mut backend,
+            &mut app,
+            crate::event::Point::new(0.0, 4.0),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert!(matches!(
+            outcome,
+            EventOutcome::Continue | EventOutcome::Redraw
+        ));
+
+        // Drag to the far right of the region (row 0, col 11 — "hello world" in full).
+        let outcome = route_mouse_move(
+            &mut backend,
+            &mut app,
+            crate::event::Point::new(88.0, 4.0),
+            ButtonMask {
+                left: true,
+                ..ButtonMask::default()
+            },
+        );
+        assert!(
+            matches!(outcome, EventOutcome::Redraw),
+            "a TextSelectionChanged event must force a redraw"
+        );
+        assert!(
+            backend.active_text_selection().is_some(),
+            "dragging across a registered TextRegion must produce an active selection"
+        );
+
+        // Release — ends the drag, does not clear the selection.
+        let _ = route_mouse_up(
+            &mut backend,
+            &mut app,
+            crate::event::Point::new(88.0, 4.0),
+            MouseButton::Left,
+        );
+        assert!(
+            backend.active_text_selection().is_some(),
+            "MouseUp must not clear the finalised selection"
+        );
+
+        // Ctrl-C copies it, clears it, and delivers TextCopied.
+        let outcome = dispatch_event(ctrl_char('c'), &mut backend, &mut app);
+        assert!(matches!(
+            outcome,
+            EventOutcome::Redraw | EventOutcome::Continue
+        ));
+        assert!(
+            backend.active_text_selection().is_none(),
+            "Ctrl-C must clear the selection after copying it"
+        );
+        assert!(
+            app.events
+                .iter()
+                .any(|e| matches!(e, UiEvent::TextCopied(text) if text == "hello world")),
+            "Ctrl-C over a full-region selection must deliver TextCopied(\"hello world\"); \
+             got {:?}",
+            app.events
+        );
+    }
+
+    #[test]
+    fn ctrl_c_without_a_selection_falls_through_to_the_app() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = ctrl_char('c');
+        let _ = dispatch_event(ev.clone(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![ev],
+            "Ctrl-C with no active selection must fall through to app.handle unchanged, \
+             matching gtk::run::dispatch_event/TuiBackend::apply_dispatch"
+        );
+    }
+
+    #[test]
+    fn ctrl_a_selects_the_sole_registered_region() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        backend.register_text_region(region("body", 0.0, 0.0, 40.0, 16.0, &["hi"]));
+        let outcome = dispatch_event(ctrl_char('a'), &mut backend, &mut app);
+        assert!(matches!(outcome, EventOutcome::Redraw));
+        assert!(
+            backend.active_text_selection().is_some(),
+            "Ctrl-A must select the sole registered TextRegion"
+        );
+        assert!(
+            app.events.is_empty(),
+            "a recognised Ctrl-A must not also forward the raw KeyPressed to the app"
+        );
+    }
+
+    #[test]
+    fn ctrl_a_with_no_regions_falls_through_to_the_app() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = ctrl_char('a');
+        let _ = dispatch_event(ev.clone(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![ev],
+            "Ctrl-A with no registered TextRegion must fall through to app.handle unchanged"
+        );
+    }
+
+    #[test]
+    fn mouse_down_clears_the_displayed_selection() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        backend.set_active_text_selection(
+            WidgetId::new("r"),
+            crate::event::Point::new(0.0, 0.0),
+            crate::event::Point::new(10.0, 0.0),
+        );
+        assert!(backend.active_text_selection().is_some());
+        let ev = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: crate::event::Point::new(0.0, 0.0),
+            modifiers: Modifiers::default(),
+        };
+        let _ = dispatch_event(ev, &mut backend, &mut app);
+        assert!(
+            backend.active_text_selection().is_none(),
+            "a MouseDown reaching dispatch_event must clear the displayed selection"
+        );
+    }
+
+    #[test]
+    fn text_selection_changed_updates_active_selection_and_forces_redraw() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        backend.register_text_region(region("body", 0.0, 0.0, 40.0, 16.0, &["hi there"]));
+        let ev = UiEvent::TextSelectionChanged {
+            region: WidgetId::new("body"),
+            anchor: crate::event::Point::new(0.0, 0.0),
+            focus: crate::event::Point::new(40.0, 0.0),
+        };
+        let outcome = dispatch_event(ev, &mut backend, &mut app);
+        assert!(matches!(outcome, EventOutcome::Redraw));
+        assert!(backend.active_text_selection().is_some());
     }
 }

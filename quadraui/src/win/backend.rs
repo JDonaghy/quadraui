@@ -68,7 +68,7 @@ use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult, PlatformServices, PointerShape};
-use crate::dispatch::{DoubleClickDetector, DragState};
+use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -388,6 +388,14 @@ pub struct WinBackend {
     /// mirrors `MacBackend::text_runs`'s lifecycle. Not `target_os`-gated
     /// for the same reason as `painted_text_recording` above.
     text_runs: Vec<crate::testing::TextRun>,
+    /// Region registry + active-selection state shared by every
+    /// `text_selection: true` backend (#741) — see
+    /// [`crate::text_selection::TextSelectionState`]'s doc. Not
+    /// `target_os`-gated: the state machine itself has no WinAPI
+    /// dependency, only [`Self::apply_selection_highlight`]'s actual paint
+    /// call does (mirrors `painted_text_recording`/`current_pointer_shape`
+    /// above).
+    text_selection: crate::text_selection::TextSelectionState,
 }
 
 impl WinBackend {
@@ -425,6 +433,7 @@ impl WinBackend {
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
             text_runs: Vec::new(),
+            text_selection: crate::text_selection::TextSelectionState::default(),
         }
     }
 
@@ -774,6 +783,159 @@ impl WinBackend {
     pub(crate) fn text_runs(&self) -> &[crate::testing::TextRun] {
         &self.text_runs
     }
+
+    // ── Text selection (#741) ────────────────────────────────────────────
+    //
+    // The region registry + active-selection state machine lives in
+    // [`crate::text_selection::TextSelectionState`] — the same shared
+    // implementation `GtkBackend`/`TuiBackend` embed. Every method below
+    // except [`Self::apply_selection_highlight`]/[`Self::extract_selection_text`]
+    // (Direct2D painting / `TextRegion::lines` extraction, this backend's
+    // own — mirrors `GtkBackend`'s pixel-based twins via the shared
+    // `crate::text_selection::pixel_selection_ranges`/`extract_lines_pixel`
+    // helpers) is a thin delegation.
+
+    /// Every `TextRegion` registered so far this frame.
+    pub(crate) fn text_regions(&self) -> &[TextRegion] {
+        &self.text_selection.text_regions
+    }
+
+    /// Return the current active text selection, if any.
+    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.text_selection.active_text_selection()
+    }
+
+    /// Update (or start) the active text selection. Called by
+    /// `win::run::dispatch_event` when a [`UiEvent::TextSelectionChanged`]
+    /// event arrives, and by [`Self::select_all_text_region`].
+    pub(crate) fn set_active_text_selection(
+        &mut self,
+        region: WidgetId,
+        anchor: crate::event::Point,
+        focus: crate::event::Point,
+    ) {
+        self.text_selection
+            .set_active_text_selection(region, anchor, focus);
+    }
+
+    /// Clear the active text selection highlight only (does NOT end an
+    /// in-progress `TextSelection` drag). Called before dispatching a new
+    /// mouse-down so the old highlight disappears without interrupting the
+    /// drag that is about to start. Mirrors `GtkBackend::clear_selection_display`.
+    pub(crate) fn clear_selection_display(&mut self) {
+        self.text_selection.clear_selection_display();
+    }
+
+    /// Clear the active text selection and end any in-progress
+    /// `TextSelection` drag. Called after Ctrl-C copies the selection or
+    /// on a plain click outside any text region.
+    pub(crate) fn clear_text_selection(&mut self) {
+        let mut drag = self.drag_state.borrow_mut();
+        self.text_selection.clear_text_selection(&mut drag);
+    }
+
+    /// End any in-progress `TextSelection` drag without clearing the
+    /// displayed selection. Backs the `Backend` trait's
+    /// `cancel_text_selection_drag` override — apps hosting an embedded
+    /// terminal call it to abort a speculative drag before forwarding a
+    /// click to a PTY. Mirrors `GtkBackend::cancel_text_selection_drag_impl`/
+    /// `TuiBackend::cancel_text_selection_drag_impl`.
+    fn cancel_text_selection_drag_impl(&mut self) {
+        let mut drag = self.drag_state.borrow_mut();
+        self.text_selection.cancel_text_selection_drag(&mut drag);
+    }
+
+    /// Record that `id` is the most-recently focused/clicked `TextRegion`.
+    /// Called by `win::run`'s mouse-down handling after a `TextSelection`
+    /// drag begins, so [`Self::select_all_text_region`] can resolve the
+    /// correct target even before the first drag-move fires a
+    /// `TextSelectionChanged` event.
+    pub(crate) fn track_focused_text_region(&mut self, id: WidgetId) {
+        self.text_selection.track_focused_text_region(id);
+    }
+
+    /// Set the active selection to cover the entire visible content of the
+    /// most-recently focused `TextRegion` (the Ctrl-A target). See
+    /// [`crate::text_selection::TextSelectionState::select_all_text_region`]
+    /// for the resolution order and the viewport-only limitation.
+    pub(crate) fn select_all_text_region(&mut self) -> bool {
+        self.text_selection.select_all_text_region()
+    }
+
+    /// Extract the selected text from the active selection's `TextRegion`
+    /// using its stored `lines` (Win-GUI is pixel-based, like GTK — see
+    /// `TextRegion::lines`'s doc). Empty when there is no active selection,
+    /// the region isn't registered this frame, or it has no `lines`
+    /// content.
+    pub(crate) fn extract_selection_text(&self) -> String {
+        let Some(sel) = self.text_selection.active_text_selection() else {
+            return String::new();
+        };
+        let Some(region) = self.text_selection.find_region(&sel.region) else {
+            return String::new();
+        };
+        crate::text_selection::extract_lines_pixel(
+            region,
+            sel.anchor,
+            sel.focus,
+            self.current_line_height,
+            self.current_char_width,
+        )
+    }
+
+    /// Paint the active text-selection highlight on top of the frame's
+    /// already-painted content. Must be called after `app.render` inside
+    /// the same `begin_frame`/`end_frame` bracket (`win::run::render_frame`)
+    /// — mirrors `GtkBackend::apply_selection_highlight`'s Cairo twin and
+    /// `TuiBackend::apply_selection_highlight`'s cell-invert twin, except
+    /// Direct2D's `FillRectangle` paints directly onto `self.surface`
+    /// rather than needing an external target handle. No-op when there is
+    /// no active selection, the region isn't registered this frame, metrics
+    /// aren't known yet, or (off Windows / before a surface is attached)
+    /// there is nothing to paint into.
+    pub(crate) fn apply_selection_highlight(&self) {
+        let Some(sel) = self.text_selection.active_text_selection() else {
+            return;
+        };
+        let Some(region) = self.text_selection.find_region(&sel.region) else {
+            return;
+        };
+        let Some(ranges) = crate::text_selection::pixel_selection_ranges(
+            region.bounds,
+            sel.anchor,
+            sel.focus,
+            self.current_line_height,
+            self.current_char_width,
+        ) else {
+            return;
+        };
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let char_w = self.current_char_width;
+            let line_h = self.current_line_height;
+            // Same translucent-blue highlight `GtkBackend::apply_selection_highlight`
+            // paints (`rgba(0.39, 0.58, 1.0, 0.30)`), converted to `Color`'s
+            // 0-255 channels.
+            let highlight = crate::Color::rgba(100, 148, 255, 77);
+            for (row_cell, col_start, col_end) in ranges {
+                let width = col_end - col_start;
+                if width <= 0.0 {
+                    continue;
+                }
+                let rect = crate::event::Rect::new(
+                    region.bounds.x + col_start * char_w,
+                    region.bounds.y + row_cell as f32 * line_h,
+                    width * char_w,
+                    line_h,
+                );
+                let _ = super::text::fill_rect(&surface.target, rect, highlight);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = ranges;
+        }
+    }
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
@@ -844,6 +1006,10 @@ impl Backend for WinBackend {
         // lifecycle as `GtkBackend`/`MacBackend`'s `focused_activity_bar`
         // (quadraui#707).
         self.focused_activity_bar = None;
+        // Clear per-frame text regions so stale registrations from the
+        // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`'s
+        // identical `begin_frame` clear (#741).
+        self.text_selection.begin_frame();
         // Install the shared paint-time text-run recording sink for the
         // duration of this frame — drained into `self.text_runs` by
         // `end_frame` below. Mirrors `MacBackend::enter_frame_scope`'s
@@ -967,6 +1133,20 @@ impl Backend for WinBackend {
         self.parsed_accelerators.retain(|(_, eid)| eid != id);
     }
 
+    // ─── Text selection (#741) ──────────────────────────────────────────
+
+    /// Overrides the trait's no-op default — see [`Self::text_regions`]
+    /// and `crate::text_selection::TextSelectionState`.
+    fn register_text_region(&mut self, region: TextRegion) {
+        self.text_selection.register_text_region(region);
+    }
+
+    /// Overrides the trait's no-op default — see
+    /// [`Self::cancel_text_selection_drag_impl`].
+    fn cancel_text_selection_drag(&mut self) {
+        self.cancel_text_selection_drag_impl();
+    }
+
     // ─── Modal-overlay tracking ───────────────────────────────────────
 
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
@@ -1032,10 +1212,13 @@ impl Backend for WinBackend {
     /// `dispatch_event`, per #20/#707), and the painted-text sink prereq
     /// (verification spine step 1) means a scenario that now runs instead
     /// of skipping fails on real signal rather than panicking mid-scenario
-    /// on a missing text lookup. `text_selection` stays unset: win has no
-    /// text-selection core yet, so `panel.drag_select_copy` (which also
-    /// `requires: ["text_selection"]`) still skips — for that honest
-    /// reason, not for a missing `mouse`/`drag`.
+    /// on a missing text lookup.
+    ///
+    /// quadraui#741: `text_selection` is now declared `true` too —
+    /// `register_text_region`/`cancel_text_selection_drag` are both
+    /// overridden, backed by the same `crate::text_selection::TextSelectionState`
+    /// `GtkBackend`/`TuiBackend` embed, so `panel.drag_select_copy` (which
+    /// `requires: ["text_selection"]`) now runs instead of skipping.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         // A genuine struct literal (not `let mut caps = ...; caps.field =
         // true;`), matching every other backend's `backend_caps` shape —
@@ -1062,11 +1245,13 @@ impl Backend for WinBackend {
             // `dispatch_event` as `MouseDown`/`MouseUp`/`MouseMoved`, and
             // `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` reach it as `Scroll` (#20,
             // #707) — so a press → move → release sequence is a real
-            // drag. `text_selection` stays unset deliberately: win has no
-            // text-selection core yet (see the text-selection issue in
-            // this epic); declaring it here would make
-            // `panel.drag_select_copy` fail for the wrong reason instead
-            // of skipping for the honest one.
+            // drag.
+            //
+            // `text_selection` (#741): `register_text_region` and
+            // `cancel_text_selection_drag` are both overridden above,
+            // backed by the shared `crate::text_selection::TextSelectionState`
+            // GTK/TUI also embed — `panel.drag_select_copy` (which
+            // `requires: ["text_selection"]`) now runs instead of skipping.
             crate::backend::BackendCaps {
                 file_dialogs: true,
                 notifications: true,
@@ -1074,6 +1259,7 @@ impl Backend for WinBackend {
                 mouse: true,
                 scroll: true,
                 drag: true,
+                text_selection: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }

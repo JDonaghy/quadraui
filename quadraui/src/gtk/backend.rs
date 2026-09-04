@@ -160,10 +160,6 @@ pub struct GtkBackend {
     /// Editor font size in points, paired with `editor_font_family`.
     /// Defaults to `11.0` (the historical hardcoded value).
     editor_font_size_pt: f32,
-    /// Selectable text regions registered during the current frame via
-    /// [`Backend::register_text_region`]. Cleared at the start of each
-    /// frame by [`Self::begin_frame`]. Parallels `TuiBackend::text_regions`.
-    pub(crate) text_regions: Vec<TextRegion>,
     /// Widget zones registered during the current frame via
     /// [`Backend::register_zone`]. Cleared at the start of each frame by
     /// [`Self::begin_frame`]. Parallels `TuiBackend::zones`. Read by
@@ -195,21 +191,14 @@ pub struct GtkBackend {
     /// `String` per painted text run per frame.
     /// [`super::testing::GtkDriver`] turns it on.
     painted_text_recording: bool,
-    /// Active text selection (persists after mouse-up until a new click
-    /// clears it). Set by [`Self::set_active_text_selection`], cleared by
-    /// [`Self::clear_text_selection`] or [`Self::clear_selection_display`].
-    active_selection: Option<GtkTextSelection>,
-    /// The id of the most-recently focused/hovered `TextRegion` — used by
-    /// [`Self::select_all_text_region`] to resolve the Ctrl-A target.
-    /// Updated in two places:
-    ///   (a) [`Self::set_active_text_selection`] — when a drag produces
-    ///       a `TextSelectionChanged` event.
-    ///   (b) `gtk/run.rs::connect_pressed` — when a `MouseDown` starts
-    ///       a `DragTarget::TextSelection` drag.
-    /// Intentionally NOT cleared on `clear_text_selection` /
-    /// `clear_selection_display` so Ctrl-A still targets the right
-    /// region after Ctrl-C or a plain click.
-    last_text_region_id: Option<WidgetId>,
+    /// Region registry + active-selection state shared by every
+    /// `text_selection: true` backend (#741) — see
+    /// [`crate::text_selection::TextSelectionState`]'s doc. Replaces the
+    /// formerly GTK-local `text_regions`/`active_selection`/
+    /// `last_text_region_id` fields verbatim; `gtk/run.rs::connect_pressed`
+    /// (a `MouseDown` starting a `DragTarget::TextSelection` drag) is the
+    /// other call site that updates it, via [`Self::track_focused_text_region`].
+    text_selection: crate::text_selection::TextSelectionState,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
     /// during the most recent render pass. Cleared by `begin_frame` and
     /// re-set by `draw_activity_bar`. The GTK runner reads this in the
@@ -347,15 +336,6 @@ struct TermPaintCache {
     theme: crate::Theme,
 }
 
-/// Active text selection state for the GTK backend. Stores the region id
-/// and anchor/focus in pixel coordinates (native GTK units).
-#[derive(Debug, Clone)]
-pub(crate) struct GtkTextSelection {
-    pub region: WidgetId,
-    pub anchor: Point,
-    pub focus: Point,
-}
-
 /// Adapts a live `pango::Layout` (falling back to `char_w` when no
 /// Pango context is available, e.g. in headless tests) to the shared
 /// [`crate::primitives::layout_metrics::TextMeasure`] trait so
@@ -406,12 +386,10 @@ impl GtkBackend {
             ui_font: "Sans 11".to_string(),
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
-            text_regions: Vec::new(),
             zones: Vec::new(),
             painted_text: Vec::new(),
             painted_text_recording: false,
-            active_selection: None,
-            last_text_region_id: None,
+            text_selection: crate::text_selection::TextSelectionState::default(),
             focused_activity_bar: None,
             window: None,
             pending_window_press: None,
@@ -828,30 +806,38 @@ impl GtkBackend {
     }
 
     // ── Text selection ─────────────────────────────────────────────────────
+    //
+    // The region registry + active-selection state machine itself lives in
+    // [`crate::text_selection::TextSelectionState`] (#741) — every method
+    // below is a thin delegation, kept as inherent methods (rather than
+    // inlining `self.text_selection.foo()` at every call site) so
+    // `gtk/run.rs` and this file's own tests don't need to know the field
+    // exists. `apply_selection_highlight`/`extract_selection_text` stay
+    // GTK-specific bodies below (Cairo painting / lines-based extraction,
+    // shared with Win-GUI via [`crate::text_selection::pixel_selection_ranges`]/
+    // [`crate::text_selection::extract_lines_pixel`]).
+
+    /// Every `TextRegion` registered so far this frame.
+    pub(crate) fn text_regions(&self) -> &[TextRegion] {
+        &self.text_selection.text_regions
+    }
 
     /// Return the current active text selection, if any.
-    pub(crate) fn active_text_selection(&self) -> Option<&GtkTextSelection> {
-        self.active_selection.as_ref()
+    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.text_selection.active_text_selection()
     }
 
     /// Update (or start) the active text selection. Called by the runner
     /// when a [`UiEvent::TextSelectionChanged`] event arrives, and by
     /// [`Self::select_all_text_region`].
-    ///
-    /// Also updates [`Self::last_text_region_id`] so Ctrl-A can resolve
-    /// the correct target even after the drag has ended.
     pub(crate) fn set_active_text_selection(
         &mut self,
         region: WidgetId,
         anchor: Point,
         focus: Point,
     ) {
-        self.last_text_region_id = Some(region.clone());
-        self.active_selection = Some(GtkTextSelection {
-            region,
-            anchor,
-            focus,
-        });
+        self.text_selection
+            .set_active_text_selection(region, anchor, focus);
     }
 
     /// Clear the active text selection highlight only (does NOT end an
@@ -859,26 +845,20 @@ impl GtkBackend {
     /// mouse-down so the old highlight disappears without interrupting the
     /// drag that is about to start.
     pub(crate) fn clear_selection_display(&mut self) {
-        self.active_selection = None;
+        self.text_selection.clear_selection_display();
     }
 
     /// Clear the active text selection and end any in-progress
     /// `TextSelection` drag. Called after Ctrl-C copies the selection or
     /// on a plain click outside any text region.
     pub(crate) fn clear_text_selection(&mut self) {
-        self.active_selection = None;
         let mut drag = self.drag_state.borrow_mut();
-        if matches!(
-            drag.target(),
-            Some(crate::dispatch::DragTarget::TextSelection { .. })
-        ) {
-            drag.end();
-        }
+        self.text_selection.clear_text_selection(&mut drag);
     }
 
     /// End any in-progress `TextSelection` drag without clearing the
-    /// displayed `active_selection`. Mirrors [`Self::clear_text_selection`]
-    /// but preserves the highlight — called by the `Backend` trait impl of
+    /// displayed selection. Mirrors [`Self::clear_text_selection`] but
+    /// preserves the highlight — called by the `Backend` trait impl of
     /// [`crate::Backend::cancel_text_selection_drag`] so apps hosting an
     /// embedded terminal can abort a speculative drag (started by
     /// `apply_dispatch` before the app forwards the click to a PTY) while
@@ -887,12 +867,7 @@ impl GtkBackend {
     /// mirrors.
     pub(crate) fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        if matches!(
-            drag.target(),
-            Some(crate::dispatch::DragTarget::TextSelection { .. })
-        ) {
-            drag.end();
-        }
+        self.text_selection.cancel_text_selection_drag(&mut drag);
     }
 
     /// Record that `id` is the most-recently focused/clicked `TextRegion`.
@@ -900,12 +875,8 @@ impl GtkBackend {
     /// `dispatch_click` starts a `DragTarget::TextSelection` drag so that
     /// [`Self::select_all_text_region`] can resolve the correct target even
     /// before the first drag-move fires a `TextSelectionChanged` event.
-    ///
-    /// Kept as a method (rather than exposing `last_text_region_id` as
-    /// `pub(crate)`) so callers cannot bypass the encapsulation and set
-    /// stale or incorrect ids.
     pub(crate) fn track_focused_text_region(&mut self, id: WidgetId) {
-        self.last_text_region_id = Some(id);
+        self.text_selection.track_focused_text_region(id);
     }
 
     /// Record one painted label into [`Self::painted_text`] — the
@@ -948,43 +919,32 @@ impl GtkBackend {
     /// segment — the standard GTK-app selection look. No-op when there is
     /// no active selection or the region id is not registered this frame.
     pub(crate) fn apply_selection_highlight(&self, cr: &Context) {
-        let sel = match &self.active_selection {
+        let sel = match self.text_selection.active_text_selection() {
             Some(s) => s,
             None => return,
         };
-        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+        let region = match self.text_selection.find_region(&sel.region) {
             Some(r) => r,
             None => return,
         };
 
         let line_h = self.current_line_height as f32;
         let char_w = self.current_char_width as f32;
-        if line_h <= 0.0 || char_w <= 0.0 {
+        let Some(ranges) = crate::text_selection::pixel_selection_ranges(
+            region.bounds,
+            sel.anchor,
+            sel.focus,
+            line_h,
+            char_w,
+        ) else {
             return;
-        }
-
-        // Convert pixel anchor/focus to cell-relative coordinates so that
-        // `text_selection_line_range` can iterate row by row (it assumes
-        // row numbers are consecutive integers).
-        let bx = region.bounds.x;
-        let by = region.bounds.y;
-        let bw = region.bounds.width / char_w;
-        let bh = region.bounds.height / line_h;
-        let cell_bounds = crate::event::Rect::new(0.0, 0.0, bw, bh);
-        let anchor_cell = Point {
-            x: (sel.anchor.x - bx) / char_w,
-            y: (sel.anchor.y - by) / line_h,
         };
-        let focus_cell = Point {
-            x: (sel.focus.x - bx) / char_w,
-            y: (sel.focus.y - by) / line_h,
-        };
-
-        let ranges =
-            crate::dispatch::text_selection_line_range(anchor_cell, focus_cell, cell_bounds);
         if ranges.is_empty() {
             return;
         }
+
+        let bx = region.bounds.x;
+        let by = region.bounds.y;
 
         // Paint each selected row segment.
         cr.save().ok();
@@ -1010,61 +970,21 @@ impl GtkBackend {
     /// Converts pixel coordinates to row/column indices via `line_height` /
     /// `char_width`, then slices the stored `lines` accordingly.
     pub(crate) fn extract_selection_text(&self) -> String {
-        let sel = match &self.active_selection {
+        let sel = match self.text_selection.active_text_selection() {
             Some(s) => s,
             None => return String::new(),
         };
-        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+        let region = match self.text_selection.find_region(&sel.region) {
             Some(r) => r,
             None => return String::new(),
         };
-
-        if region.lines.is_empty() {
-            return String::new();
-        }
-
-        let line_h = self.current_line_height as f32;
-        let char_w = self.current_char_width as f32;
-        if line_h <= 0.0 || char_w <= 0.0 {
-            return String::new();
-        }
-
-        let bx = region.bounds.x;
-        let by = region.bounds.y;
-        let bw = region.bounds.width / char_w;
-        let bh = region.bounds.height / line_h;
-        let cell_bounds = crate::event::Rect::new(0.0, 0.0, bw, bh);
-        let anchor_cell = Point {
-            x: (sel.anchor.x - bx) / char_w,
-            y: (sel.anchor.y - by) / line_h,
-        };
-        let focus_cell = Point {
-            x: (sel.focus.x - bx) / char_w,
-            y: (sel.focus.y - by) / line_h,
-        };
-
-        let ranges =
-            crate::dispatch::text_selection_line_range(anchor_cell, focus_cell, cell_bounds);
-        let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
-        for (row_cell, col_start, col_end) in ranges {
-            let line_idx = row_cell as usize;
-            let src = match region.lines.get(line_idx) {
-                Some(l) => l,
-                None => continue,
-            };
-            let col_start = col_start as usize;
-            let col_end = col_end as usize;
-            // Extract by character index (col_start..col_end).
-            let chars: Vec<char> = src.chars().collect();
-            let s: String = chars
-                .get(col_start.min(chars.len())..col_end.min(chars.len()))
-                .unwrap_or(&[])
-                .iter()
-                .collect();
-            let trimmed = s.trim_end().to_string();
-            lines.push(trimmed);
-        }
-        lines.join("\n")
+        crate::text_selection::extract_lines_pixel(
+            region,
+            sel.anchor,
+            sel.focus,
+            self.current_line_height as f32,
+            self.current_char_width as f32,
+        )
     }
 
     /// Set the active selection to cover the entire visible content of the
@@ -1092,41 +1012,7 @@ impl GtkBackend {
     // total-content rows; for now this selects only the visible
     // viewport (bounds).
     pub(crate) fn select_all_text_region(&mut self) -> bool {
-        // Resolve the target region id.
-        let region_id = if let Some(ref id) = self.last_text_region_id {
-            if self.text_regions.iter().any(|r| &r.id == id) {
-                id.clone()
-            } else if self.text_regions.len() == 1 {
-                self.text_regions[0].id.clone()
-            } else {
-                return false;
-            }
-        } else if self.text_regions.len() == 1 {
-            self.text_regions[0].id.clone()
-        } else {
-            return false;
-        };
-
-        // Clone the bounds to release the borrow before calling
-        // `set_active_text_selection`, which needs `&mut self`.
-        let bounds = match self.text_regions.iter().find(|r| r.id == region_id) {
-            Some(r) => r.bounds,
-            None => return false,
-        };
-
-        // Anchor at top-left pixel; focus just past the bottom-right pixel
-        // so that `apply_selection_highlight` (and `extract_selection_text`)
-        // cover every row. The focus is clamped to the region bounds.
-        let anchor = Point {
-            x: bounds.x,
-            y: bounds.y,
-        };
-        let focus = Point {
-            x: bounds.x + bounds.width,
-            y: bounds.y + bounds.height,
-        };
-        self.set_active_text_selection(region_id, anchor, focus);
-        true
+        self.text_selection.select_all_text_region()
     }
 
     // ── Accelerators ────────────────────────────────────────────────────────
@@ -1297,7 +1183,7 @@ impl Backend for GtkBackend {
         self.frame_counter = self.frame_counter.wrapping_add(1);
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors TuiBackend::begin_frame.
-        self.text_regions.clear();
+        self.text_selection.begin_frame();
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
@@ -1317,7 +1203,7 @@ impl Backend for GtkBackend {
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
-        self.text_regions.push(region);
+        self.text_selection.register_text_region(region);
     }
 
     fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
@@ -4275,19 +4161,19 @@ mod tests {
         let mut backend = GtkBackend::new();
         backend.register_text_region(text_region("r1", 0.0, 0.0, 100.0, 50.0, vec![]));
         backend.register_text_region(text_region("r2", 0.0, 50.0, 100.0, 50.0, vec![]));
-        assert_eq!(backend.text_regions.len(), 2);
-        assert_eq!(backend.text_regions[0].id.as_str(), "r1");
-        assert_eq!(backend.text_regions[1].id.as_str(), "r2");
+        assert_eq!(backend.text_regions().len(), 2);
+        assert_eq!(backend.text_regions()[0].id.as_str(), "r1");
+        assert_eq!(backend.text_regions()[1].id.as_str(), "r2");
     }
 
     #[test]
     fn gtk_text_regions_cleared_on_begin_frame() {
         let mut backend = GtkBackend::new();
         backend.register_text_region(text_region("r", 0.0, 0.0, 200.0, 100.0, vec![]));
-        assert_eq!(backend.text_regions.len(), 1);
+        assert_eq!(backend.text_regions().len(), 1);
         backend.begin_frame(crate::Viewport::new(800.0, 600.0, 1.0));
         assert_eq!(
-            backend.text_regions.len(),
+            backend.text_regions().len(),
             0,
             "text_regions must be cleared on begin_frame"
         );
