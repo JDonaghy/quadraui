@@ -333,7 +333,7 @@ pub fn form_field_measure(
             FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
         }
         FieldKind::Toolbar(toolbar) => {
-            use crate::primitives::toolbar::ToolbarButton;
+            use crate::primitives::toolbar::{measure_button, ToolbarButton};
             let label = label_text(field);
             let start_x = items_start_x(&label, measure, true);
             let items = toolbar
@@ -344,29 +344,10 @@ pub fn form_field_measure(
                         ToolbarButton::Action { id, .. } => id.clone(),
                         _ => field.id.clone(),
                     };
-                    let width = match btn {
-                        ToolbarButton::Action {
-                            label,
-                            icon,
-                            key_hint,
-                            ..
-                        } => {
-                            let mut text = String::new();
-                            if let Some(ic) = icon {
-                                text.push_str(ic);
-                                text.push(' ');
-                            }
-                            text.push_str(label);
-                            if let Some(hint) = key_hint {
-                                text.push_str(" (");
-                                text.push_str(hint);
-                                text.push(')');
-                            }
-                            measure.width_of(&text) + 16.0
-                        }
-                        ToolbarButton::Separator => 12.0,
-                        ToolbarButton::Label { text, .. } => measure.width_of(text),
-                    };
+                    // Single button-measure formula shared with every
+                    // pixel rasteriser (#730) — see `measure_button`'s
+                    // doc.
+                    let width = measure_button(measure, btn);
                     FormItemMeasure { id, width }
                 })
                 .collect();

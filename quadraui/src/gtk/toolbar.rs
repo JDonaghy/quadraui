@@ -31,70 +31,40 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{rounded_rect_path, set_source};
-use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout};
+use crate::primitives::layout_metrics::TextMeasure;
+use crate::primitives::toolbar::{
+    action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
+};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-/// Horizontal padding inside each action button, in px.
-const ACTION_H_PAD: f64 = 8.0;
-/// Width of a separator slot in px.
-const SEPARATOR_PX: f64 = 12.0;
 /// Corner radius for action button highlight backgrounds.
 const CORNER_RADIUS: f64 = 4.0;
 
-/// Format an Action's rendered text: `"{icon} {label} ({hint})"` with
-/// optional sections trimmed when absent.
-fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> String {
-    let mut s = String::new();
-    if let Some(icon) = icon {
-        s.push_str(icon);
-        s.push(' ');
-    }
-    s.push_str(label);
-    if let Some(hint) = key_hint {
-        s.push_str(" (");
-        s.push_str(hint);
-        s.push(')');
-    }
-    s
-}
-
-/// Pixel width of `text` using `pango_layout` when available, or a
-/// `char_width`-based fallback otherwise. Mirrors the
-/// `pango_str_width` shape `GtkBackend` uses for status / tab bar
-/// fallback layouts.
-fn text_width_px(pango_layout: Option<&pango::Layout>, text: &str, char_width: f64) -> f64 {
-    if let Some(pl) = pango_layout {
-        pl.set_text(text);
-        pl.pixel_size().0.max(0) as f64
-    } else {
-        (text.chars().count() as f64 * char_width).ceil()
-    }
-}
-
-/// Compute the pixel width of a single toolbar item.
+/// Adapts a live `pango::Layout` (falling back to a `char_width`-based
+/// estimate when none is available, e.g. from a layout-only call between
+/// paint frames) to the shared [`TextMeasure`] trait so
+/// [`crate::primitives::toolbar::measure_button`] never has to name a
+/// Pango type — mirrors `macos::toolbar`'s / `win::toolbar`'s twin
+/// adapters (#730).
 ///
-/// Exposed as `pub(crate)` so `gtk::backend`'s `form_layout` measurer
-/// can reuse the same widths for `FieldKind::Toolbar` fields, guaranteeing
-/// that form paint and hit-test agree on item positions.
-pub(crate) fn measure_item(
-    pango_layout: Option<&pango::Layout>,
-    char_width: f64,
-    btn: &ToolbarButton,
-) -> f32 {
-    match btn {
-        ToolbarButton::Action {
-            label,
-            icon,
-            key_hint,
-            ..
-        } => {
-            let text = action_text(label, icon.as_deref(), key_hint.as_deref());
-            let text_w = text_width_px(pango_layout, &text, char_width);
-            (text_w + 2.0 * ACTION_H_PAD) as f32
+/// `pub(crate)` so `gtk::sidebar_panel`'s embedded toolbar header can
+/// build the exact same adapter for its own `measure_button` calls,
+/// guaranteeing paint and hit-test agree on item positions everywhere a
+/// `Toolbar` appears — with no separate per-caller measurer function.
+pub(crate) struct PangoMeasure<'a> {
+    pub(crate) pango_layout: Option<&'a pango::Layout>,
+    pub(crate) char_width: f64,
+}
+
+impl TextMeasure for PangoMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        if let Some(pl) = self.pango_layout {
+            pl.set_text(text);
+            pl.pixel_size().0.max(0) as f32
+        } else {
+            (text.chars().count() as f64 * self.char_width).ceil() as f32
         }
-        ToolbarButton::Separator => SEPARATOR_PX as f32,
-        ToolbarButton::Label { text, .. } => text_width_px(pango_layout, text, char_width) as f32,
     }
 }
 
@@ -112,8 +82,12 @@ pub fn gtk_toolbar_layout(
     w: f64,
     h: f64,
 ) -> ToolbarLayout {
+    let measure = PangoMeasure {
+        pango_layout,
+        char_width,
+    };
     bar.layout(x as f32, y as f32, w as f32, h as f32, |btn| {
-        ToolbarItemMeasure::new(measure_item(pango_layout, char_width, btn))
+        ToolbarItemMeasure::new(measure_button(&measure, btn))
     })
 }
 

@@ -179,6 +179,11 @@ mod text_display;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod toast;
+/// Direct2D / DirectWrite rasteriser for
+/// [`crate::primitives::toolbar::Toolbar`] (#730). Windows-only in full
+/// — see its module docs.
+#[cfg(target_os = "windows")]
+mod toolbar;
 /// Direct2D / DirectWrite rasteriser for [`crate::Tooltip`] (#28).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -245,6 +250,8 @@ pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 pub use text_display::{draw_text_display, win_text_display_layout};
 #[cfg(target_os = "windows")]
 pub use toast::{draw_toast_stack, win_toast_stack_layout};
+#[cfg(target_os = "windows")]
+pub use toolbar::{draw_toolbar, win_toolbar_layout};
 #[cfg(target_os = "windows")]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]
