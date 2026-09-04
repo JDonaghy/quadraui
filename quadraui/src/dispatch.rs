@@ -419,7 +419,7 @@ pub fn dispatch_mouse_up(
 /// # `lines` field
 ///
 /// Optional text content — one `String` per display row. Backends that
-/// cannot read text back from a cell buffer (GTK, macOS) use this to
+/// cannot read text back from a cell buffer (GTK, macOS, win) use this to
 /// extract the selected substring when the user copies (Ctrl-C). TUI
 /// ignores this field and reads cells from its ratatui buffer instead.
 /// Leave as `vec![]` for TUI-only apps or when text extraction is not
@@ -428,7 +428,7 @@ pub fn dispatch_mouse_up(
 pub struct TextRegion {
     pub id: WidgetId,
     pub bounds: crate::event::Rect,
-    /// Source text lines for pixel-based backends (GTK, macOS).
+    /// Source text lines for pixel-based backends (GTK, macOS, win).
     /// TUI ignores this (reads from the ratatui cell buffer).
     /// Empty means no text content is available for extraction.
     pub lines: Vec<String>,

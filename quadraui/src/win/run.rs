@@ -1234,13 +1234,17 @@ mod win32 {
                     // own pre-processing, instead of handing the raw
                     // `MouseDown` straight to `dispatch` — see
                     // `dispatch_with`'s doc.
-                    if let UiEvent::MouseDown { position, .. } =
+                    // `win_button_down` is an unconditional constructor —
+                    // it always returns `MouseDown` — so this destructure
+                    // can never take the `else` branch.
+                    let UiEvent::MouseDown { position, .. } =
                         win_button_down(button, x, y, scale, modifiers)
-                    {
-                        dispatch_with(ws, hwnd, |backend, app| {
-                            super::route_mouse_down(backend, app, position, button, modifiers)
-                        });
-                    }
+                    else {
+                        unreachable!("win_button_down always returns UiEvent::MouseDown")
+                    };
+                    dispatch_with(ws, hwnd, |backend, app| {
+                        super::route_mouse_down(backend, app, position, button, modifiers)
+                    });
                 }
                 // `WM_XBUTTONDOWN`/`WM_XBUTTONUP` are the one pair in this
                 // group whose docs require returning `TRUE` when handled —
@@ -1259,11 +1263,16 @@ mod win32 {
                     // #741: route through `dispatch_mouse_up` (ends an
                     // in-progress scrollbar/text-selection drag) — see
                     // `dispatch_with`'s doc.
-                    if let UiEvent::MouseUp { position, .. } = win_button_up(button, x, y, scale) {
-                        dispatch_with(ws, hwnd, |backend, app| {
-                            super::route_mouse_up(backend, app, position, button)
-                        });
-                    }
+                    // `win_button_up` is an unconditional constructor — it
+                    // always returns `MouseUp` — so this destructure can
+                    // never take the `else` branch.
+                    let UiEvent::MouseUp { position, .. } = win_button_up(button, x, y, scale)
+                    else {
+                        unreachable!("win_button_up always returns UiEvent::MouseUp")
+                    };
+                    dispatch_with(ws, hwnd, |backend, app| {
+                        super::route_mouse_up(backend, app, position, button)
+                    });
                 }
                 if msg == WM_XBUTTONUP {
                     LRESULT(1)
@@ -1283,12 +1292,16 @@ mod win32 {
                 // `TextSelection`/scrollbar drag armed by the button-down
                 // handler above emits `TextSelectionChanged`/scroll events
                 // — see `dispatch_with`'s doc.
-                if let UiEvent::MouseMoved { position, .. } = win_mouse_moved(x, y, scale, buttons)
-                {
-                    dispatch_with(ws, hwnd, |backend, app| {
-                        super::route_mouse_move(backend, app, position, buttons)
-                    });
-                }
+                // `win_mouse_moved` is an unconditional constructor — it
+                // always returns `MouseMoved` — so this destructure can
+                // never take the `else` branch.
+                let UiEvent::MouseMoved { position, .. } = win_mouse_moved(x, y, scale, buttons)
+                else {
+                    unreachable!("win_mouse_moved always returns UiEvent::MouseMoved")
+                };
+                dispatch_with(ws, hwnd, |backend, app| {
+                    super::route_mouse_move(backend, app, position, buttons)
+                });
                 LRESULT(0)
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
