@@ -122,7 +122,7 @@ use super::events::{
 };
 use crate::backend::Backend;
 use crate::desktop::{
-    is_paste_keypress, smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig,
+    is_paste_keypress, smoke_clipboard_round_trip_ok, smoke_size_ok, PasteModifier, SmokeConfig,
 };
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
@@ -1300,7 +1300,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 
     // ── Ctrl-V / Ctrl-Shift-V interception (paste) ────────────────────
     if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        if is_paste_keypress(key, modifiers) {
+        if is_paste_keypress(key, modifiers, PasteModifier::Ctrl) {
             if let Some(text) = backend.services().clipboard().read_text() {
                 return match app.handle(UiEvent::ClipboardPaste(text), backend) {
                     Reaction::Continue => EventOutcome::Continue,
@@ -1596,8 +1596,16 @@ mod paste_tests {
             ctrl: true,
             ..Modifiers::default()
         };
-        assert!(is_paste_keypress(&Key::Char('v'), &mods));
-        assert!(is_paste_keypress(&Key::Char('V'), &mods));
+        assert!(is_paste_keypress(
+            &Key::Char('v'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
+        assert!(is_paste_keypress(
+            &Key::Char('V'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
     }
 
     #[test]
@@ -1609,7 +1617,11 @@ mod paste_tests {
             shift: true,
             ..Modifiers::default()
         };
-        assert!(is_paste_keypress(&Key::Char('v'), &mods));
+        assert!(is_paste_keypress(
+            &Key::Char('v'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
     }
 
     #[test]
@@ -1619,7 +1631,11 @@ mod paste_tests {
             alt: true,
             ..Modifiers::default()
         };
-        assert!(!is_paste_keypress(&Key::Char('v'), &mods));
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
     }
 
     #[test]
@@ -1629,7 +1645,29 @@ mod paste_tests {
             cmd: true,
             ..Modifiers::default()
         };
-        assert!(!is_paste_keypress(&Key::Char('v'), &mods));
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
+    }
+
+    #[test]
+    fn plain_super_v_is_not_a_paste_keypress() {
+        // D-011 §4 regression check (#728 fix iteration 1): `modifiers.cmd`
+        // is Super/Meta on GTK (`gdk_modifiers_to_quadraui`), and plain
+        // Super+V must never trigger paste on GTK — that was true before
+        // `is_paste_keypress` was lifted into `desktop`, and passing
+        // `PasteModifier::Ctrl` here is what keeps it true afterward.
+        let mods = Modifiers {
+            cmd: true,
+            ..Modifiers::default()
+        };
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
     }
 
     #[test]
@@ -1638,12 +1676,20 @@ mod paste_tests {
             shift: true,
             ..Modifiers::default()
         };
-        assert!(!is_paste_keypress(&Key::Char('v'), &mods));
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &mods,
+            PasteModifier::Ctrl
+        ));
     }
 
     #[test]
     fn plain_v_is_not_a_paste_keypress() {
-        assert!(!is_paste_keypress(&Key::Char('v'), &Modifiers::default()));
+        assert!(!is_paste_keypress(
+            &Key::Char('v'),
+            &Modifiers::default(),
+            PasteModifier::Ctrl
+        ));
     }
 
     // ── `dispatch_event` wiring (GtkDriver, no display) ───────────────
