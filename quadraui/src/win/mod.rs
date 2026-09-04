@@ -101,6 +101,11 @@ mod menu_bar;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod message_list;
+/// Direct2D / DirectWrite rasteriser for
+/// [`crate::primitives::minimap::Minimap`] (#738). Windows-only in full —
+/// see its module docs.
+#[cfg(target_os = "windows")]
+mod minimap;
 /// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
 /// ratio). Crate-private and host-independent — it is the one part of this
 /// backend that is pure arithmetic, so it is the one part that can be
@@ -257,6 +262,8 @@ pub use list::{draw_list, win_list_layout};
 pub use menu_bar::{draw_menu_bar, win_menu_bar_layout};
 #[cfg(target_os = "windows")]
 pub use message_list::draw_message_list;
+#[cfg(target_os = "windows")]
+pub use minimap::{draw_minimap, win_minimap_layout};
 #[cfg(target_os = "windows")]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
 #[cfg(target_os = "windows")]

@@ -13,7 +13,8 @@
 //! silhouette VS Code's `renderCharacters: false` mode reads as (#667).
 //! [`MinimapRenderMode::Characters`] — real glyphs painted through Pango
 //! at a scaled-down **absolute** size (`FontDescription::set_absolute_size`)
-//! — is kept for pitches at or above [`LEGIBILITY_FLOOR_PX`] (not reached
+//! — is kept for pitches at or above
+//! [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`] (not reached
 //! by [`ROW_PITCH_PX`] today, but still a real, tested code path: nothing
 //! stops a future caller from requesting a taller fixed pitch). The mode
 //! switch ([`render_mode`]) is a pure function of the row pitch so it's
@@ -30,6 +31,16 @@
 //! itself always ascending in `start_line_idx`, so a single merge-walk
 //! is O(rows + spans) total rather than the old O(rows * spans) rescan
 //! (#667 pt. 4).
+//!
+//! #738: the legibility/render-mode thresholds (`is_legible`,
+//! `render_mode`, `minimap_font_px`), the shared `ROW_PITCH_PX` /
+//! `COLUMN_CAPACITY` geometry constants, and the span-lookup helpers
+//! (`SpanCursor`, `color_at_column`, `truncate_to_columns`) used to be
+//! defined in this module. They now live in
+//! [`crate::primitives::minimap`] so `win::minimap` (and, eventually, a
+//! macOS rasteriser) consume the exact same decision logic instead of
+//! growing an independent interpretation of either threshold — this
+//! module only imports them.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -37,35 +48,15 @@ use gtk4::pango;
 use super::{cairo_rgb, set_source};
 use crate::event::Rect as QRect;
 use crate::primitives::minimap::{
-    Minimap, MinimapLayout, MinimapSizing, MinimapSpan, VisibleMinimapLine,
+    color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
+    MinimapRenderMode, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine, COLUMN_CAPACITY,
+    ROW_PITCH_PX,
 };
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// GTK shows one buffer line per painted row — no cross-line colour
 /// reduction (see [`crate::MinimapGrid`]'s doc for why TUI differs).
 pub const LINES_PER_ROW: usize = 1;
-
-/// The fixed row pitch GTK tiles minimap rows at, in device pixels —
-/// independent of the file's length (#667). VS Code's default minimap
-/// pitch is in the same ~2px ballpark; below [`LEGIBILITY_FLOOR_PX`], so
-/// the default rasteriser always lands in
-/// [`MinimapRenderMode::ColumnBlocks`].
-pub const ROW_PITCH_PX: f64 = 2.0;
-
-/// Below this absolute pixel size, Pango glyph shaping reads as
-/// indistinct mush rather than recognisable code shapes — the
-/// rasteriser falls back to per-column colour blocks instead
-/// ([`render_mode`]).
-pub const LEGIBILITY_FLOOR_PX: f64 = 4.0;
-
-/// How many character columns a row's paint walk covers before stopping
-/// — bounds both [`MinimapRenderMode::ColumnBlocks`]'s per-column walk
-/// and how much of a line [`MinimapRenderMode::Characters`] hands to
-/// Pango, so a 10,000-character line costs no more than a short one
-/// (#667 pt. 2/3). Also doubles as the assumed "wide" line width a
-/// minimap strip is sized for.
-pub const COLUMN_CAPACITY: usize = 120;
 
 /// Compute the GTK pixel-unit layout for a [`Minimap`] without painting.
 pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> MinimapLayout {
@@ -74,44 +65,6 @@ pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> 
         LINES_PER_ROW,
         MinimapSizing::FixedPitch(ROW_PITCH_PX as f32),
     )
-}
-
-/// Render technique a row's pitch selects — see the module docs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MinimapRenderMode {
-    /// Real Pango glyphs at an absolute scaled-down size.
-    Characters,
-    /// One 1px-wide block per non-blank character column, coloured by
-    /// whichever span covers it.
-    ColumnBlocks,
-}
-
-/// Pure function of the row pitch: is `line_px` legible enough to shape
-/// real text? [`draw_minimap`] calls this exact function to pick a
-/// branch, so it is the one source of truth for the threshold — tests
-/// exercise it directly instead of needing a live Cairo surface.
-pub fn is_legible(line_px: f64) -> bool {
-    line_px >= LEGIBILITY_FLOOR_PX
-}
-
-/// [`MinimapRenderMode`] for a given row pitch. See [`is_legible`].
-pub fn render_mode(line_px: f64) -> MinimapRenderMode {
-    if is_legible(line_px) {
-        MinimapRenderMode::Characters
-    } else {
-        MinimapRenderMode::ColumnBlocks
-    }
-}
-
-/// The absolute Pango font size (in device pixels) for a row of pitch
-/// `line_px` — clamped to a sane band so a pathologically short or tall
-/// minimap doesn't request a zero or absurd font size. Only reachable
-/// when a row's pitch clears [`LEGIBILITY_FLOOR_PX`] — not the case for
-/// [`ROW_PITCH_PX`] today, but the function stays pitch-driven rather
-/// than a fixed constant in case a future caller requests a taller fixed
-/// pitch.
-pub fn minimap_font_px(line_px: f64) -> f64 {
-    line_px.clamp(1.0, 64.0)
 }
 
 /// Draw a [`Minimap`] onto `cr`. Returns the layout for host click
@@ -204,58 +157,6 @@ pub fn draw_minimap(
     cr.restore().ok();
 
     layout
-}
-
-/// Walks a [`MinimapSpan`] slice — sorted by `(line_idx, start_col)`, per
-/// [`crate::aggregate_spans`]'s documented output order — once across a
-/// caller-driven sequence of *non-decreasing* `line_idx` queries, hence
-/// one merge-walk in O(rows + spans) total rather than one `filter` scan
-/// of the whole slice per row (#667 pt. 4).
-struct SpanCursor<'a> {
-    spans: &'a [MinimapSpan],
-    pos: usize,
-}
-
-impl<'a> SpanCursor<'a> {
-    fn new(spans: &'a [MinimapSpan]) -> Self {
-        Self { spans, pos: 0 }
-    }
-
-    /// The contiguous run of spans covering `line_idx`. `line_idx` must
-    /// be non-decreasing across successive calls (true for `draw_minimap`'s
-    /// row loop) — an out-of-order query would silently miss spans the
-    /// cursor already walked past.
-    fn row_spans(&mut self, line_idx: usize) -> &'a [MinimapSpan] {
-        while self.pos < self.spans.len() && self.spans[self.pos].line_idx < line_idx {
-            self.pos += 1;
-        }
-        let start = self.pos;
-        let mut end = start;
-        while end < self.spans.len() && self.spans[end].line_idx == line_idx {
-            end += 1;
-        }
-        &self.spans[start..end]
-    }
-}
-
-/// The colour covering character column `col`, from a row's own span
-/// slice (already narrowed to that row by [`SpanCursor`]). Falls back to
-/// `default_fg` when no span covers it.
-fn color_at_column(row_spans: &[MinimapSpan], col: usize, default_fg: Color) -> Color {
-    row_spans
-        .iter()
-        .find(|s| col >= s.start_col && col < s.end_col)
-        .map(|s| s.color)
-        .unwrap_or(default_fg)
-}
-
-/// Truncate `text` to at most `n` characters, on a char boundary. Never
-/// allocates — returns a borrowed slice.
-fn truncate_to_columns(text: &str, n: usize) -> &str {
-    match text.char_indices().nth(n) {
-        Some((byte_idx, _)) => &text[..byte_idx],
-        None => text,
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -369,8 +270,8 @@ fn char_range_to_byte_range(text: &str, start_col: usize, end_col: usize) -> (u3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::minimap::{MinimapHit, MinimapLine, MinimapSpan};
-    use crate::types::WidgetId;
+    use crate::primitives::minimap::{MinimapHit, MinimapLine};
+    use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
 
     fn minimap_from(lines: Vec<&str>, total_buffer_lines: usize) -> Minimap {
@@ -457,22 +358,11 @@ mod tests {
     }
 
     // ── legibility floor ─────────────────────────────────────────────
-
-    #[test]
-    fn legibility_floor_switches_render_mode_on_both_sides() {
-        assert_eq!(
-            render_mode(LEGIBILITY_FLOOR_PX - 0.1),
-            MinimapRenderMode::ColumnBlocks
-        );
-        assert_eq!(
-            render_mode(LEGIBILITY_FLOOR_PX),
-            MinimapRenderMode::Characters
-        );
-        assert_eq!(
-            render_mode(LEGIBILITY_FLOOR_PX + 4.0),
-            MinimapRenderMode::Characters
-        );
-    }
+    //
+    // `is_legible`/`render_mode`'s own threshold behaviour is covered by
+    // `primitives::minimap::tests::legibility_floor_switches_render_mode_on_both_sides`
+    // (#738) — this module keeps only the paint-level regression that a
+    // real Cairo/Pango pass actually respects that threshold.
 
     #[test]
     fn default_fixed_pitch_stays_below_the_floor_and_never_shapes_text() {
@@ -619,83 +509,10 @@ mod tests {
         );
     }
 
-    // ── colour lookup (#667 pt. 4) ────────────────────────────────────
-
-    #[test]
-    fn color_at_column_picks_the_span_covering_that_column() {
-        let red = Color::rgb(255, 0, 0);
-        let blue = Color::rgb(0, 0, 255);
-        let spans = vec![
-            MinimapSpan {
-                line_idx: 0,
-                start_col: 0,
-                end_col: 1,
-                color: red,
-            },
-            MinimapSpan {
-                line_idx: 0,
-                start_col: 1,
-                end_col: 6,
-                color: blue,
-            },
-        ];
-        assert_eq!(color_at_column(&spans, 0, Color::rgb(1, 1, 1)), red);
-        assert_eq!(color_at_column(&spans, 3, Color::rgb(1, 1, 1)), blue);
-    }
-
-    #[test]
-    fn color_at_column_falls_back_to_default_outside_any_span() {
-        let fallback = Color::rgb(9, 9, 9);
-        assert_eq!(color_at_column(&[], 2, fallback), fallback);
-    }
-
-    #[test]
-    fn span_cursor_matches_a_full_linear_scan_per_row() {
-        // Same colours out as the old O(rows * spans) `filter` rescan,
-        // just walked once in O(rows + spans) total.
-        let red = Color::rgb(255, 0, 0);
-        let blue = Color::rgb(0, 0, 255);
-        let green = Color::rgb(0, 255, 0);
-        let spans = vec![
-            MinimapSpan {
-                line_idx: 0,
-                start_col: 0,
-                end_col: 2,
-                color: red,
-            },
-            MinimapSpan {
-                line_idx: 0,
-                start_col: 2,
-                end_col: 4,
-                color: blue,
-            },
-            MinimapSpan {
-                line_idx: 2,
-                start_col: 0,
-                end_col: 3,
-                color: green,
-            },
-            MinimapSpan {
-                line_idx: 5,
-                start_col: 1,
-                end_col: 2,
-                color: red,
-            },
-        ];
-        let mut cursor = SpanCursor::new(&spans);
-        for line_idx in 0..6 {
-            let via_cursor = cursor.row_spans(line_idx).to_vec();
-            let via_linear: Vec<MinimapSpan> = spans
-                .iter()
-                .filter(|s| s.line_idx == line_idx)
-                .cloned()
-                .collect();
-            assert_eq!(
-                via_cursor, via_linear,
-                "row {line_idx} spans must match a full linear scan"
-            );
-        }
-    }
+    // `color_at_column`/`SpanCursor`'s own behaviour is covered by
+    // `primitives::minimap::tests::color_at_column_*` /
+    // `span_cursor_matches_a_full_linear_scan_per_row` (#738) — nothing
+    // GTK-specific left to re-test here.
 
     // ── paint/click round trip ────────────────────────────────────────
 
