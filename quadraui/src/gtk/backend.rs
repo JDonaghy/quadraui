@@ -3426,21 +3426,22 @@ impl Backend for GtkBackend {
         rect: QRect,
         cc: &crate::primitives::command_center::CommandCenter,
     ) -> crate::primitives::command_center::CommandCenterLayout {
+        // #732: search-box width comes from the shared char-width formula
+        // (`CommandCenterMeasure::from_char_width`) rather than an inline
+        // copy — this no-paint query has no live Pango layout on hand
+        // (unlike `draw_command_center`'s `gtk_command_center_layout`,
+        // which measures the label's real pixel width), so it estimates
+        // from `current_char_width` exactly like `win::command_center`
+        // does from its own DirectWrite char width.
         let char_w = self.current_char_width as f32;
         let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-        let search_w = if cc.search_label.is_empty() {
-            0.0
-        } else {
-            (cc.search_label.len() as f32 * char_w + 16.0).max(280.0)
-        };
         cc.layout(
             bounds,
-            crate::primitives::command_center::CommandCenterMeasure {
-                arrow_width: 24.0,
-                gap: 8.0,
-                search_box_width: search_w,
-                height: rect.height,
-            },
+            crate::primitives::command_center::CommandCenterMeasure::from_char_width(
+                &cc.search_label,
+                char_w,
+                rect.height,
+            ),
         )
     }
 
@@ -5183,6 +5184,45 @@ mod tests {
             "changing ui_font alone must visibly widen the painted search box: \
              default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
         );
+    }
+
+    /// #732: `GtkBackend::command_center_layout` (the no-paint query
+    /// path, unlike the Pango-measured `draw_command_center`) must
+    /// delegate straight to `CommandCenterMeasure::from_char_width`
+    /// rather than keeping a private reimplementation of its formula —
+    /// that private-copy drift is exactly what #732 fixed. Asserting the
+    /// two agree here, and asserting the same thing for
+    /// `win::command_center::win_command_center_layout` against the
+    /// identical shared constructor (see that module's own
+    /// `win_command_center_layout_delegates_to_shared_char_width_formula`
+    /// test), is what makes gtk and win compute the same command-center
+    /// layout for the same char width even though the two can't run in
+    /// one process on this Linux host (`win`'s rasterisers are
+    /// `target_os = "windows"`-gated — see `quadraui/CLAUDE.md`'s Win-GUI
+    /// section).
+    #[test]
+    fn command_center_layout_delegates_to_shared_char_width_formula() {
+        let mut backend = GtkBackend::new();
+        backend.set_current_char_width(9.0);
+        let cc = crate::primitives::command_center::CommandCenter {
+            id: WidgetId::new("test:command-center"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "project-name".to_string(),
+        };
+        let rect = QRect::new(3.0, 5.0, 400.0, 24.0);
+
+        let layout = Backend::command_center_layout(&backend, rect, &cc);
+
+        let expected = crate::primitives::command_center::CommandCenterMeasure::from_char_width(
+            &cc.search_label,
+            9.0,
+            rect.height,
+        );
+        let search = layout
+            .search_bounds
+            .expect("non-empty search_label produces search_bounds");
+        assert_eq!(search.width, expected.search_box_width);
     }
 
     fn ui_font_test_toolbar() -> crate::primitives::toolbar::Toolbar {

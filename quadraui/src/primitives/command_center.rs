@@ -80,6 +80,61 @@ impl CommandCenterLayout {
     }
 }
 
+impl CommandCenterMeasure {
+    /// Standard nav-arrow width (px/DIPs) for every pixel backend that
+    /// measures the search box from a plain `char_width` average rather
+    /// than a live font layout — see [`Self::from_char_width`]. Matches
+    /// the value `gtk_command_center_layout` / `mac_command_center_layout`
+    /// use for their own (pixel-exact) measurement, so a command center
+    /// looks the same size across backends regardless of which
+    /// measurement path produced its layout.
+    pub const ARROW_WIDTH_PX: f32 = 24.0;
+    /// Gap (px/DIPs) between arrows and between the arrow group and the
+    /// search box. See [`Self::ARROW_WIDTH_PX`].
+    pub const GAP_PX: f32 = 8.0;
+    /// Horizontal padding added on top of the estimated search-label
+    /// width, in px/DIPs. See [`Self::from_char_width`].
+    const SEARCH_H_PAD_PX: f32 = 16.0;
+    /// Minimum search-box width (px/DIPs), regardless of how short the
+    /// label is. See [`Self::from_char_width`].
+    const SEARCH_MIN_WIDTH_PX: f32 = 280.0;
+
+    /// Build a [`CommandCenterMeasure`] from a plain average `char_width`
+    /// rather than a live per-glyph text layout — the shape a backend
+    /// needs when it has only a `char_width` number on hand (e.g. a
+    /// `*_layout` query made outside a frame, with no live font context
+    /// to measure against).
+    ///
+    /// Search-box width is `search_label.len() as f32 * char_width +
+    /// 16.0`, floored at `280.0`, or `0.0` when `search_label` is empty
+    /// (hides the search box — see [`CommandCenter::search_label`]'s
+    /// doc). This is the formula `GtkBackend::command_center_layout`
+    /// used to inline directly before quadraui#732 lifted it here, so
+    /// `win::command_center` (and any future char-width-only backend)
+    /// shares the exact same computation instead of writing a second
+    /// copy that only agrees with the first by luck.
+    ///
+    /// Distinct from `gtk_command_center_layout` / `mac_command_center_layout`
+    /// (the *pixel-exact* measurement path used when painting, which lays
+    /// the label out against a live Pango/Core Text font and reads back
+    /// its real width) — this constructor is deliberately the cheaper
+    /// approximation for callers without one.
+    pub fn from_char_width(search_label: &str, char_width: f32, height: f32) -> Self {
+        let search_box_width = if search_label.is_empty() {
+            0.0
+        } else {
+            (search_label.len() as f32 * char_width + Self::SEARCH_H_PAD_PX)
+                .max(Self::SEARCH_MIN_WIDTH_PX)
+        };
+        CommandCenterMeasure {
+            arrow_width: Self::ARROW_WIDTH_PX,
+            gap: Self::GAP_PX,
+            search_box_width,
+            height,
+        }
+    }
+}
+
 impl CommandCenter {
     /// Compute layout. The entire command center is centered within `bounds`.
     pub fn layout(&self, bounds: Rect, measure: CommandCenterMeasure) -> CommandCenterLayout {
@@ -129,5 +184,76 @@ impl CommandCenter {
             search_bounds: search_rect,
             hit_regions,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Shared char-width measure formula (#732) ───────────────────────
+
+    #[test]
+    fn from_char_width_empty_label_hides_search_box() {
+        let m = CommandCenterMeasure::from_char_width("", 8.0, 24.0);
+        assert_eq!(m.search_box_width, 0.0);
+        assert_eq!(m.arrow_width, CommandCenterMeasure::ARROW_WIDTH_PX);
+        assert_eq!(m.gap, CommandCenterMeasure::GAP_PX);
+        assert_eq!(m.height, 24.0);
+    }
+
+    #[test]
+    fn from_char_width_short_label_floors_at_min_width() {
+        // "hi" is nowhere near wide enough to clear the 280px floor at
+        // any sane char width.
+        let m = CommandCenterMeasure::from_char_width("hi", 8.0, 24.0);
+        assert_eq!(m.search_box_width, 280.0);
+    }
+
+    #[test]
+    fn from_char_width_long_label_exceeds_min_width() {
+        // 40 chars * 8.0 + 16.0 = 336.0, comfortably past the 280 floor —
+        // pins the exact formula, not just the floor clamp above.
+        let label = "x".repeat(40);
+        let m = CommandCenterMeasure::from_char_width(&label, 8.0, 24.0);
+        assert_eq!(m.search_box_width, 40.0 * 8.0 + 16.0);
+    }
+
+    /// Any backend that measures search width from a plain `char_width`
+    /// average (rather than a live per-glyph font layout) computes this
+    /// exact value for identical inputs — because they all call through
+    /// this one constructor rather than keeping a private copy of the
+    /// formula. This is what makes
+    /// `gtk::backend::GtkBackend::command_center_layout` and
+    /// `win::command_center::win_command_center_layout` agree on the
+    /// search-box width for the same char width (#732's acceptance bar):
+    /// each delegates straight to `from_char_width` (see their own
+    /// call-site tests: `gtk::backend::tests::
+    /// command_center_layout_delegates_to_shared_char_width_formula` and
+    /// `win::command_center::tests::
+    /// win_command_center_layout_delegates_to_shared_char_width_formula`),
+    /// so proving the formula once here proves it for both.
+    #[test]
+    fn from_char_width_is_deterministic_for_the_same_inputs() {
+        let label = "project-name";
+        let a = CommandCenterMeasure::from_char_width(label, 7.5, 20.0);
+        let b = CommandCenterMeasure::from_char_width(label, 7.5, 20.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn from_char_width_feeds_into_layout_consistently() {
+        let cc = CommandCenter {
+            id: WidgetId::new("cc"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "project".into(),
+        };
+        let measure = CommandCenterMeasure::from_char_width(&cc.search_label, 8.0, 24.0);
+        let layout = cc.layout(Rect::new(0.0, 0.0, 500.0, 24.0), measure);
+        let search = layout
+            .search_bounds
+            .expect("non-empty label has search bounds");
+        assert_eq!(search.width, measure.search_box_width);
     }
 }

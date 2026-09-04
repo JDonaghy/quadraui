@@ -2222,12 +2222,41 @@ impl Backend for WinBackend {
         todo!("DirectWrite spinner layout (no surface attached yet)")
     }
 
-    fn draw_command_center(&mut self, _rect: Rect, _cc: &CommandCenter) -> CommandCenterLayout {
-        todo!("Direct2D command center rasteriser")
+    /// #732: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
+    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::command_center::draw_command_center(
+                &surface.target,
+                dwrite,
+                self.current_char_width,
+                self.current_line_height,
+                rect,
+                cc,
+                &self.current_theme,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, cc);
+        todo!("Direct2D command center rasteriser (no surface attached yet)")
     }
 
-    fn command_center_layout(&self, _rect: Rect, _cc: &CommandCenter) -> CommandCenterLayout {
-        todo!("DirectWrite command center layout")
+    /// #732: pure `char_width` estimate (via the shared
+    /// [`crate::primitives::command_center::CommandCenterMeasure::from_char_width`]
+    /// formula) — no live `DWrite` measurer is needed, same posture as
+    /// [`Self::chart_layout`].
+    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
+        // See `progress_layout`'s comment on why this block has no `return`.
+        #[cfg(target_os = "windows")]
+        {
+            super::command_center::win_command_center_layout(self.current_char_width, rect, cc)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, cc);
+            todo!("DirectWrite command center layout (no surface attached yet)")
+        }
     }
 
     /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
