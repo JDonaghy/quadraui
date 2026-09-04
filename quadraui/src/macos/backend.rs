@@ -2271,13 +2271,24 @@ impl Backend for MacBackend {
         )
     }
 
-    /// #382 scopes the `Minimap` rasteriser to GTK (fixed-pitch colour
-    /// blocks, #667) and TUI (braille) only — macOS and Win-GUI
-    /// rasterisers are explicitly out
-    /// of scope until those backends carry the rest of the editor chrome.
-    /// The trait method itself is still mandatory here (rule 7: no
-    /// default impl, in-tree-only cost), so this is a deliberate `todo!`
-    /// rather than the `BoardModel`-style real implementation above.
+    /// #382 scoped the `Minimap` rasteriser to GTK (fixed-pitch colour
+    /// blocks, #667) and TUI (braille) only — macOS was explicitly out of
+    /// scope until this backend carries the rest of the editor chrome.
+    /// #738 added the third rasteriser (Win-GUI) and, along with it, lifted
+    /// the legibility/render-mode threshold and span-lookup helpers this
+    /// `todo!` would otherwise have had to reinvent
+    /// ([`crate::primitives::minimap::is_legible`] /
+    /// `render_mode` / `minimap_font_px` / `SpanCursor` / `color_at_column`
+    /// / `truncate_to_columns`) — a future macOS rasteriser consumes those
+    /// directly, same as `gtk::minimap` and `win::minimap` do. That does
+    /// **not** make this `todo!` trivially closable, though: what's left is
+    /// the actual Core Graphics/Core Text paint calls (fill rects, `CTLine`
+    /// glyph runs, the clip bracket) — the same shape and size of
+    /// backend-specific work #738 did for Win-GUI, not a shim over shared
+    /// logic. The trait method itself is still mandatory here (rule 7: no
+    /// default impl, in-tree-only cost), so this stays a deliberate
+    /// `todo!` rather than the `BoardModel`-style real implementation
+    /// above.
     fn draw_minimap(
         &mut self,
         _rect: Rect,

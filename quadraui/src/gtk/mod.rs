@@ -93,10 +93,15 @@ pub use list::{draw_list, gtk_list_layout};
 pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use menu_overlay::MenuOverlay;
 pub use message_list::draw_message_list;
-pub use minimap::{
-    draw_minimap, gtk_minimap_layout, is_legible, minimap_font_px, render_mode, MinimapRenderMode,
-    COLUMN_CAPACITY, LEGIBILITY_FLOOR_PX, ROW_PITCH_PX,
-};
+// #738: the legibility/render-mode thresholds (`is_legible`, `render_mode`,
+// `minimap_font_px`, `MinimapRenderMode`) and the shared `ROW_PITCH_PX` /
+// `COLUMN_CAPACITY` geometry constants moved to `primitives::minimap` so
+// `win::minimap` (and any future macOS rasteriser) consume the exact same
+// decision logic — see that module's docs. Zero hits for any of those
+// names in `~/src/coord-tui/src` or `~/src/vimcode/src`, so they're
+// dropped from this re-export list rather than kept as a stale alias
+// (CLAUDE.md's "Downstream consumers" rule 8: zero hits ⇒ free to move).
+pub use minimap::{draw_minimap, gtk_minimap_layout};
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };

@@ -518,6 +518,137 @@ pub fn reserved_width(cols_or_px: f32, has_minimap: bool) -> f32 {
     }
 }
 
+// ── Render technique: font-scaling vs colour-block (#738) ────────────────
+//
+// Only the "cell-native braille" technique (TUI) has no font to scale, so
+// it never faces this choice. Every pixel/DIP-unit backend that paints a
+// row of real text at a scaled-down size — GTK ([`crate::gtk::minimap`])
+// and now Win-GUI ([`crate::win::minimap`]) — needs the exact same
+// decision: below what pitch does shaping a font at that size stop
+// reading as recognisable glyphs and start reading as mush? Before #738
+// this threshold ([`is_legible`] / [`render_mode`] / [`minimap_font_px`])
+// existed only in `gtk::minimap`, so Win-GUI (and, eventually, macOS) would
+// each have had to invent their own answer rather than reuse GTK's
+// already-tuned one. `ROW_PITCH_PX` and `COLUMN_CAPACITY` move here for the
+// same reason `primitives::board`'s `BOARD_*_PX` constants did (#736): both
+// values are backend-agnostic DIP/pixel geometry (a DIP is a pixel at 100%
+// display scale, same convention as every other lifted `*_PX` constant in
+// this crate), and GTK's and Win-GUI's rasterisers want byte-for-byte the
+// same numbers rather than an independently-tuned copy each.
+
+/// Below this absolute pixel size, real glyph shaping reads as indistinct
+/// mush rather than recognisable code shapes — a rasteriser falls back to
+/// per-column colour blocks instead of real glyphs below this floor (see
+/// [`render_mode`]).
+pub const LEGIBILITY_FLOOR_PX: f64 = 4.0;
+
+/// The fixed row pitch a font-scaling-technique backend (GTK, Win-GUI)
+/// tiles minimap rows at, in device pixels/DIPs — independent of the
+/// file's length (#667). VS Code's default minimap pitch is in the same
+/// ~2px ballpark; below [`LEGIBILITY_FLOOR_PX`], so the default rasteriser
+/// always lands in [`MinimapRenderMode::ColumnBlocks`].
+pub const ROW_PITCH_PX: f64 = 2.0;
+
+/// How many character columns a row's paint walk covers before stopping —
+/// bounds both [`MinimapRenderMode::ColumnBlocks`]'s per-column walk and
+/// how much of a line [`MinimapRenderMode::Characters`] hands to its text
+/// shaper, so a 10,000-character line costs no more to paint than a short
+/// one (#667 pt. 2/3). Also doubles as the assumed "wide" line width a
+/// minimap strip is sized for.
+pub const COLUMN_CAPACITY: usize = 120;
+
+/// Render technique a row's pitch selects — see the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinimapRenderMode {
+    /// Real glyphs at a scaled-down absolute size.
+    Characters,
+    /// One narrow block per non-blank character column, coloured by
+    /// whichever span covers it.
+    ColumnBlocks,
+}
+
+/// Pure function of the row pitch: is `line_px` legible enough to shape
+/// real text? Every backend's `draw_minimap` calls this exact function to
+/// pick a branch, so it is the one source of truth for the threshold —
+/// tests exercise it directly instead of needing a live paint surface.
+pub fn is_legible(line_px: f64) -> bool {
+    line_px >= LEGIBILITY_FLOOR_PX
+}
+
+/// [`MinimapRenderMode`] for a given row pitch. See [`is_legible`].
+pub fn render_mode(line_px: f64) -> MinimapRenderMode {
+    if is_legible(line_px) {
+        MinimapRenderMode::Characters
+    } else {
+        MinimapRenderMode::ColumnBlocks
+    }
+}
+
+/// The absolute font size (in device pixels/DIPs) for a row of pitch
+/// `line_px` — clamped to a sane band so a pathologically short or tall
+/// minimap doesn't request a zero or absurd font size. Only reachable when
+/// a row's pitch clears [`LEGIBILITY_FLOOR_PX`] — not the case for
+/// [`ROW_PITCH_PX`] today, but the function stays pitch-driven rather than
+/// a fixed constant in case a future caller requests a taller fixed pitch.
+pub fn minimap_font_px(line_px: f64) -> f64 {
+    line_px.clamp(1.0, 64.0)
+}
+
+/// Truncate `text` to at most `n` characters, on a char boundary. Never
+/// allocates — returns a borrowed slice. Shared by every backend's
+/// `ColumnBlocks`/`Characters` row paint so a pathologically long line
+/// costs no more to walk or shape than a short one (#667 pt. 2/3).
+pub fn truncate_to_columns(text: &str, n: usize) -> &str {
+    match text.char_indices().nth(n) {
+        Some((byte_idx, _)) => &text[..byte_idx],
+        None => text,
+    }
+}
+
+/// The colour covering character column `col`, from a row's own span
+/// slice (already narrowed to that row by [`SpanCursor`]). Falls back to
+/// `default_fg` when no span covers it.
+pub fn color_at_column(row_spans: &[MinimapSpan], col: usize, default_fg: Color) -> Color {
+    row_spans
+        .iter()
+        .find(|s| col >= s.start_col && col < s.end_col)
+        .map(|s| s.color)
+        .unwrap_or(default_fg)
+}
+
+/// Walks a [`MinimapSpan`] slice — sorted by `(line_idx, start_col)`, per
+/// [`aggregate_spans`]'s documented output order — once across a
+/// caller-driven sequence of *non-decreasing* `line_idx` queries, hence one
+/// merge-walk in O(rows + spans) total rather than one `filter` scan of the
+/// whole slice per row (#667 pt. 4). Shared by every backend's
+/// `draw_minimap` row loop.
+pub struct SpanCursor<'a> {
+    spans: &'a [MinimapSpan],
+    pos: usize,
+}
+
+impl<'a> SpanCursor<'a> {
+    pub fn new(spans: &'a [MinimapSpan]) -> Self {
+        Self { spans, pos: 0 }
+    }
+
+    /// The contiguous run of spans covering `line_idx`. `line_idx` must be
+    /// non-decreasing across successive calls (true for every backend's
+    /// `draw_minimap` row loop) — an out-of-order query would silently
+    /// miss spans the cursor already walked past.
+    pub fn row_spans(&mut self, line_idx: usize) -> &'a [MinimapSpan] {
+        while self.pos < self.spans.len() && self.spans[self.pos].line_idx < line_idx {
+            self.pos += 1;
+        }
+        let start = self.pos;
+        let mut end = start;
+        while end < self.spans.len() && self.spans[end].line_idx == line_idx {
+            end += 1;
+        }
+        &self.spans[start..end]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,5 +1071,122 @@ mod tests {
     #[test]
     fn reserved_width_returns_the_width_with_a_minimap() {
         assert_eq!(reserved_width(20.0, true), 20.0);
+    }
+
+    // ── render-mode threshold (#738, moved from gtk::minimap) ─────────
+
+    #[test]
+    fn legibility_floor_switches_render_mode_on_both_sides() {
+        assert_eq!(
+            render_mode(LEGIBILITY_FLOOR_PX - 0.1),
+            MinimapRenderMode::ColumnBlocks
+        );
+        assert_eq!(
+            render_mode(LEGIBILITY_FLOOR_PX),
+            MinimapRenderMode::Characters
+        );
+        assert_eq!(
+            render_mode(LEGIBILITY_FLOOR_PX + 4.0),
+            MinimapRenderMode::Characters
+        );
+    }
+
+    #[test]
+    fn default_row_pitch_stays_below_the_legibility_floor() {
+        // The whole point of #738's shared constants: both GTK and Win-GUI
+        // key their default fixed pitch off `ROW_PITCH_PX`, and it must
+        // stay below `LEGIBILITY_FLOOR_PX` so the default rasteriser always
+        // lands in `ColumnBlocks` on either backend.
+        assert!(ROW_PITCH_PX < LEGIBILITY_FLOOR_PX);
+        assert_eq!(render_mode(ROW_PITCH_PX), MinimapRenderMode::ColumnBlocks);
+    }
+
+    #[test]
+    fn minimap_font_px_clamps_to_a_sane_band() {
+        assert_eq!(minimap_font_px(0.0), 1.0);
+        assert_eq!(minimap_font_px(1000.0), 64.0);
+        assert_eq!(minimap_font_px(10.0), 10.0);
+    }
+
+    // ── truncate_to_columns / color_at_column / SpanCursor ─────────────
+
+    #[test]
+    fn truncate_to_columns_cuts_on_a_char_boundary() {
+        assert_eq!(truncate_to_columns("café", 3), "caf");
+        assert_eq!(truncate_to_columns("ab", 10), "ab");
+        assert_eq!(truncate_to_columns("", 5), "");
+    }
+
+    // `red()`/`blue()` helpers already defined above for the
+    // `aggregate_spans` tests — reused here too.
+
+    #[test]
+    fn color_at_column_picks_the_span_covering_that_column() {
+        let spans = vec![
+            MinimapSpan {
+                line_idx: 0,
+                start_col: 0,
+                end_col: 1,
+                color: red(),
+            },
+            MinimapSpan {
+                line_idx: 0,
+                start_col: 1,
+                end_col: 6,
+                color: blue(),
+            },
+        ];
+        assert_eq!(color_at_column(&spans, 0, Color::rgb(1, 1, 1)), red());
+        assert_eq!(color_at_column(&spans, 3, Color::rgb(1, 1, 1)), blue());
+    }
+
+    #[test]
+    fn color_at_column_falls_back_to_default_outside_any_span() {
+        let fallback = Color::rgb(9, 9, 9);
+        assert_eq!(color_at_column(&[], 2, fallback), fallback);
+    }
+
+    #[test]
+    fn span_cursor_matches_a_full_linear_scan_per_row() {
+        let green = Color::rgb(0, 255, 0);
+        let spans = vec![
+            MinimapSpan {
+                line_idx: 0,
+                start_col: 0,
+                end_col: 2,
+                color: red(),
+            },
+            MinimapSpan {
+                line_idx: 0,
+                start_col: 2,
+                end_col: 4,
+                color: blue(),
+            },
+            MinimapSpan {
+                line_idx: 2,
+                start_col: 0,
+                end_col: 3,
+                color: green,
+            },
+            MinimapSpan {
+                line_idx: 5,
+                start_col: 1,
+                end_col: 2,
+                color: red(),
+            },
+        ];
+        let mut cursor = SpanCursor::new(&spans);
+        for line_idx in 0..6 {
+            let via_cursor = cursor.row_spans(line_idx).to_vec();
+            let via_linear: Vec<MinimapSpan> = spans
+                .iter()
+                .filter(|s| s.line_idx == line_idx)
+                .cloned()
+                .collect();
+            assert_eq!(
+                via_cursor, via_linear,
+                "row {line_idx} spans must match a full linear scan"
+            );
+        }
     }
 }

@@ -2142,20 +2142,49 @@ impl Backend for WinBackend {
         }
     }
 
+    /// #738: real Direct2D/DirectWrite rasteriser via `win::minimap` once a
+    /// surface is attached — see [`Self::draw_status_bar`]'s doc for the
+    /// "surface not attached yet" fallback posture.
     fn draw_minimap(
         &mut self,
-        _rect: Rect,
-        _minimap: &crate::primitives::minimap::Minimap,
+        rect: Rect,
+        minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::backend::MinimapPaintResult {
-        todo!("Direct2D minimap rasteriser — out of scope per #382")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let layout = super::minimap::draw_minimap(
+                &surface.target,
+                dwrite,
+                rect,
+                minimap,
+                &self.current_theme,
+            );
+            return crate::backend::MinimapPaintResult { layout };
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, minimap);
+        todo!("Direct2D minimap rasteriser (no surface attached yet)")
     }
 
+    /// #738: pure geometry — `minimap_layout` needs no measurer at all
+    /// (fixed DIP constants, same posture as
+    /// [`Self::board_layout`]'s doc), only kept behind the
+    /// `target_os = "windows"` gate for consistency with every other
+    /// method in this file.
     fn minimap_layout(
         &self,
-        _rect: Rect,
-        _minimap: &crate::primitives::minimap::Minimap,
+        rect: Rect,
+        minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::primitives::minimap::MinimapLayout {
-        todo!("Direct2D minimap layout — out of scope per #382")
+        #[cfg(target_os = "windows")]
+        {
+            super::minimap::win_minimap_layout(minimap, rect)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, minimap);
+            todo!("Direct2D minimap layout — no rasteriser to keep in sync with yet, see draw_minimap")
+        }
     }
 
     fn draw_image(

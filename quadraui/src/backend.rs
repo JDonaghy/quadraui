@@ -1848,14 +1848,16 @@ pub trait Backend {
     /// report an empty board's worth of hit regions.
     fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout;
 
-    /// Draw a [`Minimap`] (code-overview density view). GTK tiles rows at
-    /// a fixed pitch and paints one colour block per non-blank character
-    /// column ([`crate::MinimapSizing::FixedPitch`], #667); TUI packs
-    /// `U+2800`-block braille dots at a stretch-to-fill pitch
-    /// ([`crate::MinimapSizing::Fill`]). Both techniques consume the
-    /// exact same [`Minimap`] data — the primitive owns the sampling and
-    /// colour-aggregation math (`sample_lines` / `aggregate_spans`), so
-    /// no backend re-derives it (#382, #667).
+    /// Draw a [`Minimap`] (code-overview density view). GTK and Win-GUI
+    /// both tile rows at a fixed pitch and paint one colour block per
+    /// non-blank character column ([`crate::MinimapSizing::FixedPitch`],
+    /// #667, #738); TUI packs `U+2800`-block braille dots at a
+    /// stretch-to-fill pitch ([`crate::MinimapSizing::Fill`]). All three
+    /// techniques consume the exact same [`Minimap`] data — the primitive
+    /// owns the sampling and colour-aggregation math (`sample_lines` /
+    /// `aggregate_spans`), and, since #738, the legibility/render-mode
+    /// threshold and span-lookup helpers too (`crate::primitives::minimap`),
+    /// so no backend re-derives any of it (#382, #667, #738).
     ///
     /// Returns [`MinimapPaintResult`] carrying the resolved
     /// [`MinimapLayout`] so hosts can route clicks via
@@ -1864,7 +1866,10 @@ pub trait Backend {
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
-    /// rule 7).
+    /// rule 7). Still `todo!()` on macOS — out of scope per #382; #738
+    /// lifted the shared decision logic a future macOS rasteriser would
+    /// consume, but writing the actual Core Graphics/Core Text paint
+    /// calls is not part of that lift.
     fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
 
     /// Compute [`Minimap`] layout without painting — mirrors
@@ -1874,8 +1879,8 @@ pub trait Backend {
     /// against the same geometry the last paint used.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505). Not implemented on macOS (`todo!()`, out of scope
-    /// per #382) — do not call on that backend.
+    /// (issue #505). Real on GTK and Win-GUI (#738); still `todo!()` on
+    /// macOS (out of scope per #382) — do not call on that backend.
     fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
 
     /// Paint `image` within `rect`, honoring `image.fit` (see
