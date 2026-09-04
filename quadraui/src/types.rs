@@ -60,6 +60,47 @@ impl Color {
         Some(Self { r, g, b, a })
     }
 
+    /// Parse `"#rrggbbaa"` and alpha-composite it over `bg`, discarding the
+    /// alpha channel in the result (`a` is always `255`). Falls back to
+    /// [`Self::from_hex`] — including its 6-digit-only, no-alpha shape —
+    /// when `s` carries no alpha channel, so this is a strict superset of
+    /// `from_hex` for callers that always have a background to composite
+    /// against. Returns `None` on malformed input, same rules as
+    /// `from_hex`.
+    ///
+    /// Lifted from vimcode's `render::Color::try_from_hex_over` (#775),
+    /// where it exists because VS Code theme JSON commonly expresses
+    /// translucent overlay colours (`editor.lineHighlightBackground`,
+    /// diff backgrounds, bracket-match highlights) as `#rrggbbaa` meant
+    /// to be composited over the editor background — a rasteriser that
+    /// just took the raw (translucent) colour at face value would ignore
+    /// the intended blend.
+    pub fn try_from_hex_over(s: &str, bg: Self) -> Option<Self> {
+        let stripped = s.strip_prefix('#')?;
+        if stripped.len() != 8 {
+            return Self::from_hex(s);
+        }
+        // Same ASCII-hex-digit guard as `from_hex`, for the same reason:
+        // guarantees byte offsets below land on char boundaries.
+        if !stripped.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let r = u8::from_str_radix(&stripped[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&stripped[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&stripped[4..6], 16).ok()?;
+        let a = u8::from_str_radix(&stripped[6..8], 16).ok()?;
+        let alpha = a as f64 / 255.0;
+        let blend = |fg: u8, bg: u8| -> u8 {
+            (fg as f64 * alpha + bg as f64 * (1.0 - alpha)).round() as u8
+        };
+        Some(Self {
+            r: blend(r, bg.r),
+            g: blend(g, bg.g),
+            b: blend(b, bg.b),
+            a: 255,
+        })
+    }
+
     /// Linearly interpolate each channel toward white by `amount`
     /// (clamped to `[0.0, 1.0]`). Used by primitives that derive a
     /// hover/highlight tint from a base background colour.
@@ -464,6 +505,48 @@ mod tests {
         assert!(Color::from_hex("not a hex").is_none());
         assert!(Color::from_hex("#xyz").is_none());
         assert!(Color::from_hex("#12345").is_none()); // wrong length
+    }
+
+    #[test]
+    fn try_from_hex_over_blends_alpha_against_background() {
+        let bg = Color::rgb(0, 0, 0);
+        // Full alpha (`ff`) over black should equal the opaque colour.
+        let c = Color::try_from_hex_over("#ff008040", bg).unwrap();
+        // alpha byte 0x40 = 64/255 ≈ 0.251
+        let alpha = 0x40 as f64 / 255.0;
+        let blend = |fg: u8| -> u8 { (fg as f64 * alpha).round() as u8 };
+        assert_eq!(c, Color::rgba(blend(0xff), blend(0x00), blend(0x80), 255));
+    }
+
+    #[test]
+    fn try_from_hex_over_full_alpha_ignores_background() {
+        let bg = Color::rgb(10, 20, 30);
+        let c = Color::try_from_hex_over("#ff0080ff", bg).unwrap();
+        assert_eq!(c, Color::rgba(0xff, 0x00, 0x80, 255));
+    }
+
+    #[test]
+    fn try_from_hex_over_zero_alpha_equals_background() {
+        let bg = Color::rgb(10, 20, 30);
+        let c = Color::try_from_hex_over("#ff008000", bg).unwrap();
+        assert_eq!(c, Color::rgba(10, 20, 30, 255));
+    }
+
+    #[test]
+    fn try_from_hex_over_falls_back_to_from_hex_without_alpha() {
+        let bg = Color::rgb(10, 20, 30);
+        assert_eq!(
+            Color::try_from_hex_over("#1a2b3c", bg),
+            Color::from_hex("#1a2b3c")
+        );
+    }
+
+    #[test]
+    fn try_from_hex_over_rejects_malformed_input() {
+        let bg = Color::rgb(0, 0, 0);
+        assert_eq!(Color::try_from_hex_over("not a hex", bg), None);
+        assert_eq!(Color::try_from_hex_over("#zzzzzzzz", bg), None);
+        assert_eq!(Color::try_from_hex_over("#12345", bg), None);
     }
 
     #[test]

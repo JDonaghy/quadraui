@@ -60,6 +60,13 @@ macos = [
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+# Unconditional (not feature-gated): `Theme::from_vscode_json` (#775)
+# parses VS Code theme JSON in the core `theme` module, which every
+# backend feature builds — not just `tui`/`gtk`. Previously only a
+# dev-dependency (used by `#[cfg(test)]` round-trip tests across
+# `src/primitives/*`); this promotes it to a real dependency so the same
+# crate/version is available outside `#[cfg(test)]` too.
+serde_json = "1.0"
 # Optional — pulled in by the `gtk` / `gtk-example` features.
 gtk4 = { version = "0.7", features = ["v4_10"], optional = true }
 pangocairo = { version = "0.18", optional = true }
@@ -196,7 +203,6 @@ windows = { version = "0.62", optional = true, features = [
 windows-numerics = { version = "0.3", optional = true }
 
 [dev-dependencies]
-serde_json = "1.0"
 # For runnable examples that demonstrate the TUI backend pattern.
 crossterm = "0.29"
 # For isolated temp-directory creation in compose-controller tests
