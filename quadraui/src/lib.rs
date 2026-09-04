@@ -200,6 +200,12 @@ mod runtime;
 // free. See `desktop`'s module doc and `BACKEND.md` §10.
 mod desktop;
 
+// Shared text-selection state machine (#741): the region registry plus
+// active-selection tracking every `text_selection: true` backend embeds.
+// Compiled unconditionally — no toolkit dependency — same posture as
+// `desktop` above. See `text_selection`'s module doc.
+mod text_selection;
+
 pub use diff::compute_hunks;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,

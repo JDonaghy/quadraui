@@ -73,16 +73,6 @@ use super::text::display_width;
 /// `MIN_GAP_PX = 16.0`. Irrelevant for bars without right segments.
 const MIN_GAP_CELLS: f32 = 2.0;
 
-/// Finalised text selection held between frames. Persists after the
-/// mouse button is released until Ctrl-C copies the text or a new
-/// mouse-down clears it.
-#[derive(Debug, Clone)]
-pub(crate) struct TuiTextSelection {
-    pub region: WidgetId,
-    pub anchor: Point,
-    pub focus: Point,
-}
-
 /// TUI backend implementing [`crate::Backend`].
 ///
 /// Owns the persistent UI state the trait requires plus a transient
@@ -139,21 +129,20 @@ pub struct TuiBackend {
     /// (the live terminal runner) always fold, since a real user's two
     /// clicks should still coalesce.
     double_click_folding: bool,
-    /// Selectable text regions registered during the current frame via
-    /// [`crate::Backend::register_text_region`]. Cleared at the start
-    /// of each frame by [`Self::begin_frame`].
-    text_regions: Vec<TextRegion>,
     /// Widget zones registered during the current frame via
     /// [`crate::Backend::register_zone`]. Cleared at the start of each
     /// frame by [`Self::begin_frame`], mirroring `text_regions`. Read by
     /// [`crate::tui::testing::TuiDriver::inventory`] to populate
     /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
     zones: Vec<ZoneRec>,
-    /// Finalised selection (may persist after mouse-up). `None` when
-    /// no selection is active. Set by [`Self::set_active_text_selection`],
-    /// cleared by [`Self::clear_text_selection`] or on a new
-    /// `MouseDown`.
-    active_selection: Option<TuiTextSelection>,
+    /// Region registry + active-selection state shared by every
+    /// `text_selection: true` backend (#741) — see
+    /// [`crate::text_selection::TextSelectionState`]'s doc. Replaces the
+    /// formerly TUI-local `text_regions`/`active_selection`/
+    /// `last_text_region_id` fields verbatim; [`Self::apply_dispatch`] (a
+    /// `MouseDown` starting a `DragTarget::TextSelection` drag) is the
+    /// other call site that updates it, via `track_focused_text_region`.
+    text_selection: crate::text_selection::TextSelectionState,
     /// Text extracted from the last rendered buffer for the active
     /// selection. Populated by `apply_selection_highlight` (which has
     /// access to the live buffer inside `terminal.draw`). After the
@@ -161,17 +150,6 @@ pub struct TuiBackend {
     /// `terminal.current_buffer_mut()` would return an empty buffer —
     /// caching here is the only reliable way to get the text.
     cached_selection_text: String,
-    /// The id of the most-recently focused/hovered `TextRegion` — used
-    /// by [`Self::select_all_text_region`] to resolve the Ctrl-A target.
-    /// Updated in two places:
-    ///   (a) [`Self::set_active_text_selection`] — when a drag produces
-    ///       a `TextSelectionChanged` event.
-    ///   (b) [`Self::apply_dispatch`] — when a `MouseDown` starts a
-    ///       `DragTarget::TextSelection` drag.
-    /// Intentionally NOT cleared on `clear_text_selection` /
-    /// `clear_selection_display` so Ctrl-A still targets the right
-    /// region after Ctrl-C or a plain click.
-    last_text_region_id: Option<WidgetId>,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
     /// during the most recent render pass. Set by `draw_activity_bar`;
     /// cleared at the start of each frame by `begin_frame` (same lifecycle
@@ -235,11 +213,9 @@ impl TuiBackend {
             nerd_fonts_enabled: false,
             double_click: super::events::DoubleClickDetector::new(),
             double_click_folding: true,
-            text_regions: Vec::new(),
             zones: Vec::new(),
-            active_selection: None,
+            text_selection: crate::text_selection::TextSelectionState::default(),
             cached_selection_text: String::new(),
-            last_text_region_id: None,
             focused_activity_bar: None,
             last_cursor_position: None,
             tab_bar_layouts: HashMap::new(),
@@ -325,48 +301,53 @@ impl TuiBackend {
     }
 
     // ── Text selection ─────────────────────────────────────────────────────
+    //
+    // The region registry + active-selection state machine itself lives in
+    // [`crate::text_selection::TextSelectionState`] (#741) — every method
+    // below except `apply_selection_highlight`/`extract_selection_text`
+    // (live-ratatui-buffer extraction, TUI-only — see the module doc on
+    // `crate::text_selection`) is a thin delegation.
+
+    /// Every `TextRegion` registered so far this frame. Test-only: unlike
+    /// `GtkBackend`'s twin (read by `gtk::run`/`GtkDriver`), nothing in the
+    /// live TUI runner needs this outside `self` — [`Self::apply_dispatch`]
+    /// reads `self.text_selection.text_regions` directly.
+    #[cfg(test)]
+    pub(crate) fn text_regions(&self) -> &[TextRegion] {
+        &self.text_selection.text_regions
+    }
 
     /// Return the current active text selection, if any.
-    pub(crate) fn active_text_selection(&self) -> Option<&TuiTextSelection> {
-        self.active_selection.as_ref()
+    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.text_selection.active_text_selection()
     }
 
     /// Update (or start) the active text selection. Called by the runner
     /// when a [`UiEvent::TextSelectionChanged`] event arrives, and by
     /// [`Self::select_all_text_region`].
-    ///
-    /// Also updates [`Self::last_text_region_id`] so Ctrl-A can resolve
-    /// the correct target even after the drag has ended.
     pub(crate) fn set_active_text_selection(
         &mut self,
         region: WidgetId,
         anchor: Point,
         focus: Point,
     ) {
-        self.last_text_region_id = Some(region.clone());
-        self.active_selection = Some(TuiTextSelection {
-            region,
-            anchor,
-            focus,
-        });
+        self.text_selection
+            .set_active_text_selection(region, anchor, focus);
     }
 
     /// Clear the active text selection and, if a `TextSelection` drag is
     /// in progress, end it. Called by the runner on `MouseDown` or after
     /// Ctrl-C copies the selection.
     pub(crate) fn clear_text_selection(&mut self) {
-        self.active_selection = None;
         let mut drag_state = self.drag_state.borrow_mut();
-        if matches!(drag_state.target(), Some(DragTarget::TextSelection { .. })) {
-            drag_state.end();
-        }
+        self.text_selection.clear_text_selection(&mut drag_state);
     }
 
     /// Clear only the displayed selection highlight without touching drag
     /// state. Used by the run loop on `MouseDown` so that the drag just
     /// initiated by `dispatch_click` is not immediately cancelled.
     pub(crate) fn clear_selection_display(&mut self) {
-        self.active_selection = None;
+        self.text_selection.clear_selection_display();
     }
 
     /// End any in-progress `TextSelection` drag without clearing the
@@ -377,9 +358,8 @@ impl TuiBackend {
     /// previously finalised selection highlight on screen.
     fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag_state = self.drag_state.borrow_mut();
-        if matches!(drag_state.target(), Some(DragTarget::TextSelection { .. })) {
-            drag_state.end();
-        }
+        self.text_selection
+            .cancel_text_selection_drag(&mut drag_state);
     }
 
     /// Invert (highlight) the cells in the ratatui buffer that fall
@@ -391,11 +371,11 @@ impl TuiBackend {
     /// double-buffer after `draw` returns, so `terminal.current_buffer_mut()`
     /// would return an empty buffer by the time Ctrl-C fires.
     pub(crate) fn apply_selection_highlight(&mut self, buf: &mut ratatui::buffer::Buffer) {
-        let sel = match &self.active_selection {
+        let sel = match self.text_selection.active_text_selection() {
             Some(s) => s,
             None => return,
         };
-        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+        let region = match self.text_selection.find_region(&sel.region) {
             Some(r) => r,
             None => return,
         };
@@ -493,36 +473,7 @@ impl TuiBackend {
     // total-content rows; for now this selects only the visible
     // viewport (bounds).
     pub(crate) fn select_all_text_region(&mut self) -> bool {
-        // Resolve the target region id.
-        let region_id = if let Some(ref id) = self.last_text_region_id {
-            if self.text_regions.iter().any(|r| &r.id == id) {
-                id.clone()
-            } else if self.text_regions.len() == 1 {
-                self.text_regions[0].id.clone()
-            } else {
-                return false;
-            }
-        } else if self.text_regions.len() == 1 {
-            self.text_regions[0].id.clone()
-        } else {
-            return false;
-        };
-
-        // Clone the bounds to release the borrow before calling
-        // `set_active_text_selection`, which needs `&mut self`.
-        let bounds = match self.text_regions.iter().find(|r| r.id == region_id) {
-            Some(r) => r.bounds,
-            None => return false,
-        };
-
-        // Anchor at top-left; focus just past the bottom-right so that
-        // `text_selection_line_range` covers every row. The focus is
-        // clamped to the region bounds by that function, so placing it
-        // one unit outside is harmless.
-        let anchor = Point::new(bounds.x, bounds.y);
-        let focus = Point::new(bounds.x + bounds.width, bounds.y + bounds.height);
-        self.set_active_text_selection(region_id, anchor, focus);
-        true
+        self.text_selection.select_all_text_region()
     }
 
     /// Read the selected cells back from `buf`, trim trailing whitespace
@@ -536,11 +487,11 @@ impl TuiBackend {
     /// `terminal.draw` swaps ratatui's double-buffer).
     #[cfg(test)]
     pub(crate) fn extract_selection_text(&self, buf: &ratatui::buffer::Buffer) -> String {
-        let sel = match &self.active_selection {
+        let sel = match self.text_selection.active_text_selection() {
             Some(s) => s,
             None => return String::new(),
         };
-        let region = match self.text_regions.iter().find(|r| r.id == sel.region) {
+        let region = match self.text_selection.find_region(&sel.region) {
             Some(r) => r,
             None => return String::new(),
         };
@@ -611,7 +562,7 @@ impl TuiBackend {
                     out.extend(crate::dispatch::dispatch_click(
                         &modal_stack,
                         &[],
-                        &self.text_regions.clone(),
+                        &self.text_selection.text_regions,
                         &mut drag_state,
                         position,
                         button,
@@ -620,7 +571,8 @@ impl TuiBackend {
                     // Track which region was clicked so Ctrl-A can target
                     // the right region even before the first drag move.
                     if let Some(DragTarget::TextSelection { region, .. }) = drag_state.target() {
-                        self.last_text_region_id = Some(region.clone());
+                        self.text_selection
+                            .track_focused_text_region(region.clone());
                     }
                 }
                 UiEvent::MouseMoved { position, buttons } => {
@@ -804,7 +756,7 @@ impl Backend for TuiBackend {
         self.viewport = viewport;
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger.
-        self.text_regions.clear();
+        self.text_selection.begin_frame();
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
@@ -826,7 +778,7 @@ impl Backend for TuiBackend {
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
-        self.text_regions.push(region);
+        self.text_selection.register_text_region(region);
     }
 
     fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
@@ -3573,7 +3525,7 @@ mod tests {
         // Register text region and set selection: anchor at (0,0), focus at (0,2).
         // That covers rows 0–2, starting from col 0.
         let mut backend = TuiBackend::new();
-        backend.text_regions.push(crate::dispatch::TextRegion {
+        backend.register_text_region(crate::dispatch::TextRegion {
             id: WidgetId::new("log:body"),
             bounds: crate::event::Rect::new(0.0, 0.0, 10.0, 3.0),
             lines: vec![],
@@ -3634,10 +3586,10 @@ mod tests {
             bounds: crate::event::Rect::new(0.0, 0.0, 40.0, 20.0),
             lines: vec![],
         });
-        assert_eq!(backend.text_regions.len(), 1);
+        assert_eq!(backend.text_regions().len(), 1);
         backend.begin_frame(Viewport::default());
         assert_eq!(
-            backend.text_regions.len(),
+            backend.text_regions().len(),
             0,
             "text_regions must be cleared on begin_frame"
         );

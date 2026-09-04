@@ -234,7 +234,7 @@ impl<A: AppLogic> GtkDriver<A> {
             let evs = dispatch_click(
                 &stack,
                 &[], // scroll surfaces not tracked by the driver — mirrors gtk::run
-                &self.backend.text_regions,
+                self.backend.text_regions(),
                 &mut drag,
                 position,
                 MouseButton::Left,

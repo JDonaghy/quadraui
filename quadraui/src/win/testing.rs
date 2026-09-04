@@ -64,7 +64,9 @@ use crate::testing::{
 use crate::{ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 use super::backend::WinBackend;
-use super::run::{dispatch_event, render_frame, EventOutcome};
+use super::run::{
+    dispatch_event, render_frame, route_mouse_down, route_mouse_move, route_mouse_up, EventOutcome,
+};
 
 /// An offscreen `ID2D1DCRenderTarget` bound to a top-down 32bpp DIB
 /// section. Construct with [`Self::new`], paint with [`Self::paint`] (or
@@ -401,7 +403,15 @@ impl<A: AppLogic> WinDriver<A> {
         if self.exited {
             return Reaction::Exit;
         }
-        match dispatch_event(event, &mut self.backend, &mut self.app) {
+        let outcome = dispatch_event(event, &mut self.backend, &mut self.app);
+        self.apply_outcome(outcome)
+    }
+
+    /// Shared outcome→[`Reaction`] bookkeeping [`Self::dispatch`] and
+    /// [`Self::mouse_down`]/[`Self::mouse_move`]/[`Self::mouse_up`] (#741)
+    /// all need: repaint on redraw, latch `exited` on exit.
+    fn apply_outcome(&mut self, outcome: EventOutcome) -> Reaction {
+        match outcome {
             EventOutcome::Continue => Reaction::Continue,
             EventOutcome::Redraw => {
                 self.render();
@@ -449,34 +459,60 @@ impl<A: AppLogic> WinDriver<A> {
         DriverInput::drag(self, x0, y0, x1, y1)
     }
 
-    /// Press the left mouse button down at `(x, y)`.
+    /// Press the left mouse button down at `(x, y)`. Routes through
+    /// [`route_mouse_down`] (#741) — the same `dispatch_click` text-region/
+    /// scrollbar hit-testing the live `wndproc` runs — rather than handing
+    /// a raw `MouseDown` straight to [`Self::dispatch`], so a click into a
+    /// registered `TextRegion` starts a selection drag here exactly as it
+    /// does live.
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
-        self.dispatch(UiEvent::MouseDown {
-            widget: None,
-            button: MouseButton::Left,
-            position: Point::new(x, y),
-            modifiers: Modifiers::default(),
-        })
+        if self.exited {
+            return Reaction::Exit;
+        }
+        let outcome = route_mouse_down(
+            &mut self.backend,
+            &mut self.app,
+            Point::new(x, y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        self.apply_outcome(outcome)
     }
 
-    /// Move the cursor to `(x, y)` with the left button held.
+    /// Move the cursor to `(x, y)` with the left button held. Routes
+    /// through [`route_mouse_move`] (#741) so an in-progress
+    /// `TextSelection`/scrollbar drag emits `TextSelectionChanged`/scroll
+    /// events, mirroring the live `wndproc`.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
-        self.dispatch(UiEvent::MouseMoved {
-            position: Point::new(x, y),
-            buttons: ButtonMask {
+        if self.exited {
+            return Reaction::Exit;
+        }
+        let outcome = route_mouse_move(
+            &mut self.backend,
+            &mut self.app,
+            Point::new(x, y),
+            ButtonMask {
                 left: true,
                 ..ButtonMask::default()
             },
-        })
+        );
+        self.apply_outcome(outcome)
     }
 
-    /// Release the left mouse button at `(x, y)`.
+    /// Release the left mouse button at `(x, y)`. Routes through
+    /// [`route_mouse_up`] (#741) so an in-progress scrollbar/text-selection
+    /// drag ends cleanly, mirroring the live `wndproc`.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
-        self.dispatch(UiEvent::MouseUp {
-            widget: None,
-            button: MouseButton::Left,
-            position: Point::new(x, y),
-        })
+        if self.exited {
+            return Reaction::Exit;
+        }
+        let outcome = route_mouse_up(
+            &mut self.backend,
+            &mut self.app,
+            Point::new(x, y),
+            MouseButton::Left,
+        );
+        self.apply_outcome(outcome)
     }
 
     /// Whether the app has returned [`Reaction::Exit`].
