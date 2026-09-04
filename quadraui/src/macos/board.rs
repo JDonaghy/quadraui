@@ -30,24 +30,14 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::board::{board_layout, BadgeStatus, BoardLayout, BoardMeasure, BoardModel};
+use crate::primitives::board::{
+    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel,
+    BOARD_CARD_CORNER_RADIUS_PX, BOARD_CARD_GAP_PX, BOARD_CARD_H_PAD_PX, BOARD_CARD_H_PX,
+    BOARD_COL_GAP_PX, BOARD_COL_MIN_PX, BOARD_HEADER_H_PX,
+};
 use crate::theme::Theme;
 use crate::types::Color;
 
-/// Minimum column width in points.
-const MAC_BOARD_COL_MIN_PX: f32 = 200.0;
-/// Gap between adjacent columns in points.
-const MAC_BOARD_COL_GAP_PX: f32 = 8.0;
-/// Column header height in points.
-const MAC_BOARD_HEADER_H_PX: f32 = 24.0;
-/// Card height in points (title + badge row + optional hint).
-const MAC_BOARD_CARD_H_PX: f32 = 64.0;
-/// Vertical gap between cards in points.
-const MAC_BOARD_CARD_GAP_PX: f32 = 6.0;
-/// Corner radius for card boxes.
-const CARD_CORNER_RADIUS: f64 = 4.0;
-/// Horizontal text padding inside a card.
-const CARD_H_PAD: f64 = 8.0;
 /// Border stroke width for card boxes.
 const CARD_BORDER_W: f64 = 1.0;
 /// Title baseline offset from the card top.
@@ -72,11 +62,11 @@ pub fn mac_board_layout(model: &BoardModel, x: f64, y: f64, w: f64, h: f64) -> B
         w as f32,
         h as f32,
         BoardMeasure::new(
-            MAC_BOARD_COL_MIN_PX,
-            MAC_BOARD_COL_GAP_PX,
-            MAC_BOARD_HEADER_H_PX,
-            MAC_BOARD_CARD_H_PX,
-            MAC_BOARD_CARD_GAP_PX,
+            BOARD_COL_MIN_PX,
+            BOARD_COL_GAP_PX,
+            BOARD_HEADER_H_PX,
+            BOARD_CARD_H_PX,
+            BOARD_CARD_GAP_PX,
         ),
     )
 }
@@ -129,7 +119,7 @@ pub unsafe fn draw_board(
             ctx,
             font,
             &col.title,
-            hb.x as f64 + CARD_H_PAD,
+            hb.x as f64 + BOARD_CARD_H_PAD_PX,
             hb.y as f64 + HEADER_Y_OFF,
             color_to_cg(theme.header_fg),
         );
@@ -156,7 +146,7 @@ pub unsafe fn draw_board(
             } else {
                 theme.surface_bg
             };
-            add_rounded_rect_path(ctx, bx, by, bw, bh, CARD_CORNER_RADIUS);
+            add_rounded_rect_path(ctx, bx, by, bw, bh, BOARD_CARD_CORNER_RADIUS_PX);
             set_fill(ctx, card_bg);
             CGContextFillPath(ctx);
 
@@ -166,7 +156,7 @@ pub unsafe fn draw_board(
             } else {
                 theme.border_fg
             };
-            add_rounded_rect_path(ctx, bx, by, bw, bh, CARD_CORNER_RADIUS);
+            add_rounded_rect_path(ctx, bx, by, bw, bh, BOARD_CARD_CORNER_RADIUS_PX);
             set_stroke(ctx, border_col);
             CGContextSetLineWidth(ctx, CARD_BORDER_W);
             CGContextStrokePath(ctx);
@@ -188,14 +178,14 @@ pub unsafe fn draw_board(
                 ctx,
                 font,
                 &full_title,
-                bx + CARD_H_PAD,
+                bx + BOARD_CARD_H_PAD_PX,
                 by + TITLE_Y_OFF,
                 color_to_cg(theme.surface_fg),
             );
 
             // ── Badge row ────────────────────────────────────────────────
             let badge_y = by + BADGE_Y_OFF;
-            let mut badge_x = bx + CARD_H_PAD;
+            let mut badge_x = bx + BOARD_CARD_H_PAD_PX;
             for badge in &card.badges {
                 let badge_str = format!("{}{} ", badge_icon(badge.status), badge.label);
                 draw_text(
@@ -208,7 +198,7 @@ pub unsafe fn draw_board(
                 );
                 let (bw_text, _) = measure_text(font, &badge_str);
                 badge_x += bw_text;
-                if badge_x > bx + bw - CARD_H_PAD {
+                if badge_x > bx + bw - BOARD_CARD_H_PAD_PX {
                     break;
                 }
             }
@@ -229,7 +219,7 @@ pub unsafe fn draw_board(
                         ctx,
                         font,
                         hint,
-                        bx + CARD_H_PAD,
+                        bx + BOARD_CARD_H_PAD_PX,
                         hint_y,
                         color_to_cg(theme.card_hint_fg),
                     );
@@ -241,29 +231,6 @@ pub unsafe fn draw_board(
     }
 
     layout
-}
-
-/// Return the icon char for a badge status. Identical mapping to the GTK
-/// and TUI twins, so a board reads the same on every backend.
-fn badge_icon(status: BadgeStatus) -> char {
-    match status {
-        BadgeStatus::Passed => '✓',
-        BadgeStatus::Running => '●',
-        BadgeStatus::Warning => '↩',
-        BadgeStatus::Blocked => '✗',
-        BadgeStatus::Pending => '·',
-    }
-}
-
-/// Return the foreground colour for a badge icon.
-fn badge_fg_color(status: BadgeStatus, theme: &Theme) -> Color {
-    match status {
-        BadgeStatus::Passed => theme.badge_passed,
-        BadgeStatus::Running => theme.badge_running,
-        BadgeStatus::Warning => theme.badge_warning,
-        BadgeStatus::Blocked => theme.badge_blocked,
-        BadgeStatus::Pending => theme.muted_fg,
-    }
 }
 
 fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
@@ -368,7 +335,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::board::{BoardCard, BoardColumn, BoardHit, CardBadge};
+    use crate::primitives::board::{BadgeStatus, BoardCard, BoardColumn, BoardHit, CardBadge};
     use crate::types::WidgetId;
     use crate::Backend;
 
