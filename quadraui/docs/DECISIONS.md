@@ -1768,3 +1768,45 @@ accepting either.
 Future backends (or a fourth desktop toolkit) implementing copy/paste
 should read this decision rather than pattern-matching whichever
 existing backend they skim first.
+
+### §5 — a `win` paste test may not assert on the *host's* clipboard
+
+Landed as a CI fix on this same issue. The first cut of
+`win::run::paste_dispatch_tests` asserted that dispatching Ctrl-V left
+the app having received **nothing at all** — "empty clipboard ⇒ nothing
+to paste ⇒ the chord is simply swallowed." That is a compile-time truth
+off Windows, where `WinClipboard::read_text` is an unconditional `None`
+(`win::services`'s `Clipboard` impl), so it passed both locally and on
+the `ubuntu-latest` `--features win` leg. On the `windows-latest` leg the
+very same line is a real `CF_UNICODETEXT` read of the machine's live,
+systemwide clipboard — state no test in this repo owns or seeds — so the
+app legitimately received a `ClipboardPaste` and the assertion failed.
+`tui + win (build, test, clippy) — windows-latest` went red on a genuine
+defect in the test, not in `dispatch_event`.
+
+The rule this settles, for every `win` test and every future backend
+whose `PlatformServices` reach real OS resources: **assert on state the
+test owns.** Concretely, the three shapes now in that module:
+
+1. The invariant that holds on *every* host with *any* clipboard
+   contents gets an ungated test — here, "once `is_paste_keypress`
+   recognises the chord the raw `KeyPressed` is consumed; anything the
+   app sees is a `ClipboardPaste`, never the key event." That is what
+   #728 actually promises, and it is checkable without knowing what is
+   on the clipboard.
+2. A claim that is only true because of a `cfg`'d stub gets that same
+   `cfg`. "Nothing to paste" is `#[cfg(not(target_os = "windows"))]`.
+3. The real-OS branch gets a Windows-gated test that **seeds the
+   clipboard first** and asserts on its own payload — turning the
+   Windows leg from a hazard into the only coverage the
+   "read real text → deliver `ClipboardPaste`" path can ever get. It
+   self-guards on the write→read round-trip: a host whose clipboard the
+   test process cannot open (a non-interactive window station, say) is a
+   property of the environment, not of `dispatch_event`, so it reports
+   and returns rather than failing.
+
+The generalisation: a `--features win` test passing on `ubuntu-latest`
+proves only that the `todo!()`/`None` fallback bodies behave. Before
+adding one, ask which arm of every `cfg(target_os = "windows")` it
+actually exercises on each leg — see `CLAUDE.md`'s "Win-GUI: building and
+testing for real".
