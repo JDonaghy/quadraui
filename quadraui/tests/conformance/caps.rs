@@ -463,6 +463,28 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // reservation) and so have no default at all. Declaring all four
     // backends here for all three methods is the honest statement that the
     // default *is* the answer, not a stand-in for one.
+    //
+    // ── issue #737 revisit: `diff_view_layout`'s exemption above still
+    // holds after the row/pane geometry lift. Before #737 the row/pane
+    // math (pane widths, divider position, the scroll-clamped visible-line
+    // window) existed four times — once inline in this trait's own
+    // default body, and once more in each of gtk/macos/tui's own
+    // `draw_diff_view` — and this file's job was only ever "does a
+    // backend override the *trait method*", which was already true and
+    // stayed true. #737 didn't change that: it added
+    // `primitives::diff_view::DiffView::layout` as the *fifth* place that
+    // math could have lived and made it the *only* place it does — gtk,
+    // macos, tui, and win's `draw_diff_view` all call it now instead of
+    // re-deriving. `Backend::diff_view_layout`'s default body deliberately
+    // keeps its own compact copy rather than delegating to
+    // `DiffView::layout`: the two differ in one degenerate corner
+    // (`line_height <= 0` with unified rows present) that has never been
+    // observed from a real backend's `line_height()`, and collapsing them
+    // risked changing behaviour in that corner for a mechanical
+    // clarity-only refactor with no accompanying scenario to guard it.
+    // Still zero backends override the method, so the honesty check's
+    // verdict is unchanged — this note exists so the "revisit" isn't
+    // silent.
     // ── issue #506 review fix: `terminal_scrollbar_default_width` backs
     // `terminal_layout`'s scrollbar-gutter reservation (a `Terminal` with
     // `scrollbar: Some(TerminalScrollbar { width: None, .. })` needs a

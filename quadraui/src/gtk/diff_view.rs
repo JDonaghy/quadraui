@@ -2,9 +2,17 @@
 //!
 //! Paints a two-pane (side-by-side) or single-column (unified) diff onto a
 //! [`gtk4::cairo::Context`] using a [`pango::Layout`] for text rendering.
+//! Row/pane geometry and the scroll-clamped visible-line window come from
+//! [`DiffView::layout`] — the shared layout API lifted out of three
+//! near-identical backend copies (issue #737). This module only converts
+//! the resulting DIP-agnostic `f32` geometry to pixel `f64`s and paints;
+//! it does not re-derive positions.
 //!
-//! The visual contract mirrors the TUI rasteriser — same colour mapping,
-//! same row-kind semantics, same `DiffViewLayout` return value.
+//! The visual contract mirrors the TUI rasteriser — same colour mapping
+//! (via [`crate::primitives::diff_view::row_colors`] /
+//! [`crate::primitives::diff_view::unified_row_style`], also shared, not a
+//! third copy of the colour table), same row-kind semantics, same
+//! `DiffViewLayout` return value.
 //!
 //! # Side-by-side layout
 //!
@@ -22,8 +30,18 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
-use crate::primitives::diff_view::{DiffMode, DiffRowKind, DiffView, DiffViewLayout};
+use crate::event::Rect as ERect;
+use crate::primitives::diff_view::{
+    row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
+    DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
+};
 use crate::theme::Theme;
+
+/// Convert an `f32` DIP-agnostic rect from [`DiffView::layout`] to pixel
+/// `f64`s.
+fn px_rect(r: ERect) -> (f64, f64, f64, f64) {
+    (r.x as f64, r.y as f64, r.width as f64, r.height as f64)
+}
 
 /// Draw a [`DiffView`] into the region `(x, y, w, h)` on `cr`.
 ///
@@ -43,84 +61,68 @@ pub fn draw_diff_view(
     theme: &Theme,
     line_height: f64,
 ) -> DiffViewLayout {
+    let viewport = ERect::new(x as f32, y as f32, w as f32, h as f32);
+    let geometry = view.layout(viewport, line_height as f32);
+
     if w <= 0.0 || h <= 0.0 || line_height <= 0.0 {
-        return DiffViewLayout {
-            visible_rows: 0,
-            total_rows: view.total_rows(),
-        };
+        return geometry.as_layout();
     }
 
-    let total_rows = view.total_rows();
-
-    match view.mode {
-        DiffMode::SideBySide => {
-            draw_side_by_side(cr, layout, x, y, w, h, view, theme, line_height, total_rows)
-        }
-        DiffMode::Unified => draw_unified(cr, layout, x, y, w, h, view, theme, line_height),
-    }
-}
-
-// ── Side-by-side ─────────────────────────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn draw_side_by_side(
-    cr: &Context,
-    pango_layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    view: &DiffView,
-    theme: &Theme,
-    line_height: f64,
-    total_rows: usize,
-) -> DiffViewLayout {
-    let has_header = view.left_label.is_some() || view.right_label.is_some();
-    let header_h = if has_header { line_height } else { 0.0 };
-
-    let divider_px = 1.0_f64;
-    let left_w = ((w - divider_px) / 2.0).floor();
-    let right_w = (w - divider_px - left_w).max(0.0);
-    let divider_x = x + left_w;
-
-    // Fill total background.
+    // Total background.
     set_source(cr, theme.background);
     cr.rectangle(x, y, w, h);
     cr.fill().ok();
 
-    // Draw header row.
-    if has_header {
+    match view.mode {
+        DiffMode::SideBySide => draw_side_by_side(cr, layout, view, theme, &geometry),
+        DiffMode::Unified => draw_unified(cr, layout, view, theme, &geometry),
+    }
+
+    geometry.as_layout()
+}
+
+// ── Side-by-side ─────────────────────────────────────────────────────────────
+
+fn draw_side_by_side(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    view: &DiffView,
+    theme: &Theme,
+    geometry: &DiffViewGeometry,
+) {
+    let flat = view.flat_rows();
+
+    if let Some(header) = &geometry.header {
         let hdr_bg = cairo_rgb(theme.header_bg);
         let hdr_fg = cairo_rgb(theme.header_fg);
+        let (lx, ly, lw, lh) = px_rect(header.left);
+        let (rx, _ry, rw, _rh) = px_rect(header.right);
+        let (dx, dy, dw, dh) = px_rect(header.divider);
 
         cr.set_source_rgb(hdr_bg.0, hdr_bg.1, hdr_bg.2);
-        cr.rectangle(x, y, w, line_height);
+        cr.rectangle(lx, ly, lw + dw + rw, lh);
         cr.fill().ok();
 
-        // Divider in header.
         let div_bg = cairo_rgb(theme.border_fg);
         cr.set_source_rgb(div_bg.0, div_bg.1, div_bg.2);
-        cr.rectangle(divider_x, y, divider_px, line_height);
+        cr.rectangle(dx, dy, dw, dh);
         cr.fill().ok();
 
         cr.set_source_rgb(hdr_fg.0, hdr_fg.1, hdr_fg.2);
         if let Some(label) = &view.left_label {
             pango_layout.set_text(label);
-            pango_layout.set_width((left_w * pango::SCALE as f64) as i32);
+            pango_layout.set_width((lw * pango::SCALE as f64) as i32);
             pango_layout.set_ellipsize(pango::EllipsizeMode::End);
             let (_, text_h) = pango_layout.pixel_size();
-            cr.move_to(x + 4.0, y + (line_height - text_h as f64) / 2.0);
+            cr.move_to(lx + 4.0, ly + (lh - text_h as f64) / 2.0);
             super::painted_text::show_layout(cr, pango_layout);
         }
         if let Some(label) = &view.right_label {
             pango_layout.set_text(label);
-            pango_layout.set_width((right_w * pango::SCALE as f64) as i32);
+            pango_layout.set_width((rw * pango::SCALE as f64) as i32);
             pango_layout.set_ellipsize(pango::EllipsizeMode::End);
             let (_, text_h) = pango_layout.pixel_size();
-            cr.move_to(
-                divider_x + divider_px + 4.0,
-                y + (line_height - text_h as f64) / 2.0,
-            );
+            cr.move_to(rx + 4.0, ly + (lh - text_h as f64) / 2.0);
             super::painted_text::show_layout(cr, pango_layout);
         }
         // Reset ellipsize for content rows.
@@ -128,33 +130,37 @@ fn draw_side_by_side(
         pango_layout.set_width(-1);
     }
 
-    let content_y_start = y + header_h;
-    let content_h = (h - header_h).max(0.0);
-    let visible_rows = (content_h / line_height).floor() as usize;
+    for line in &geometry.lines {
+        let DiffLineContent::Row { row_idx } = line.content else {
+            continue;
+        };
+        let row = flat[row_idx];
+        let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
+        let (left_fg, left_bg, right_fg, right_bg) = (
+            cairo_rgb(left_fg),
+            cairo_rgb(left_bg),
+            cairo_rgb(right_fg),
+            cairo_rgb(right_bg),
+        );
 
-    let all_rows: Vec<_> = view.hunks.iter().flat_map(|h| h.rows.iter()).collect();
-    let start = view.scroll_offset.min(total_rows.saturating_sub(1));
-    let end = (start + visible_rows).min(total_rows);
-
-    for (row_idx, row) in all_rows.iter().enumerate().skip(start).take(end - start) {
-        let row_y = content_y_start + (row_idx - start) as f64 * line_height;
-
-        let (left_fg, left_bg, right_fg, right_bg) = row_colors_gtk(row.kind, theme);
+        let (lx, ly, lw, lh) = px_rect(line.left.expect("side-by-side row has left bounds"));
+        let (rx, ry, rw, rh) = px_rect(line.right.expect("side-by-side row has right bounds"));
+        let (dx, dy, dw, dh) = px_rect(line.divider.expect("side-by-side row has divider bounds"));
 
         // Left pane background.
         cr.set_source_rgb(left_bg.0, left_bg.1, left_bg.2);
-        cr.rectangle(x, row_y, left_w, line_height);
+        cr.rectangle(lx, ly, lw, lh);
         cr.fill().ok();
 
         // Right pane background.
         cr.set_source_rgb(right_bg.0, right_bg.1, right_bg.2);
-        cr.rectangle(divider_x + divider_px, row_y, right_w, line_height);
+        cr.rectangle(rx, ry, rw, rh);
         cr.fill().ok();
 
         // Divider.
         let div_c = cairo_rgb(theme.border_fg);
         cr.set_source_rgb(div_c.0, div_c.1, div_c.2);
-        cr.rectangle(divider_x, row_y, divider_px, line_height);
+        cr.rectangle(dx, dy, dw, dh);
         cr.fill().ok();
 
         // Left text.
@@ -165,9 +171,9 @@ fn draw_side_by_side(
             // Clip to left pane. NOTE: cr.clip() clears the current path
             // (including the current point), so move_to MUST come after clip.
             cr.save().ok();
-            cr.rectangle(x, row_y, left_w, line_height);
+            cr.rectangle(lx, ly, lw, lh);
             cr.clip();
-            cr.move_to(x + 4.0, row_y + (line_height - text_h as f64) / 2.0);
+            cr.move_to(lx + 4.0, ly + (lh - text_h as f64) / 2.0);
             super::painted_text::show_layout(cr, pango_layout);
             cr.restore().ok();
         }
@@ -178,112 +184,55 @@ fn draw_side_by_side(
             pango_layout.set_text(text);
             let (_, text_h) = pango_layout.pixel_size();
             cr.save().ok();
-            cr.rectangle(divider_x + divider_px, row_y, right_w, line_height);
+            cr.rectangle(rx, ry, rw, rh);
             cr.clip();
-            cr.move_to(
-                divider_x + divider_px + 4.0,
-                row_y + (line_height - text_h as f64) / 2.0,
-            );
+            cr.move_to(rx + 4.0, ry + (rh - text_h as f64) / 2.0);
             super::painted_text::show_layout(cr, pango_layout);
             cr.restore().ok();
         }
-    }
-
-    DiffViewLayout {
-        visible_rows,
-        total_rows,
     }
 }
 
 // ── Unified ───────────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn draw_unified(
     cr: &Context,
     pango_layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
     view: &DiffView,
     theme: &Theme,
-    line_height: f64,
-) -> DiffViewLayout {
-    // Fill background.
-    set_source(cr, theme.background);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
+    geometry: &DiffViewGeometry,
+) {
+    let flat = view.flat_rows();
 
-    #[derive(Clone)]
-    enum UnifiedLine<'a> {
-        Header(String),
-        Content(&'a crate::primitives::diff_view::DiffRow),
-    }
+    for line in &geometry.lines {
+        let (rx, ry, rw, rh) = px_rect(line.bounds);
 
-    let mut lines: Vec<UnifiedLine<'_>> = Vec::new();
-    for hunk in &view.hunks {
-        // Unified-diff header line counts: `-n` is the number of lines
-        // sourced from the LEFT file (rows where `left.is_some()`), `+m`
-        // is the number sourced from the RIGHT (`right.is_some()`).
-        // These differ from `hunk.rows.len()` whenever a change run
-        // produces padding rows (unequal removed/added counts).
-        let left_count = hunk.rows.iter().filter(|r| r.left.is_some()).count();
-        let right_count = hunk.rows.iter().filter(|r| r.right.is_some()).count();
-        let header = format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.left_start, left_count, hunk.right_start, right_count
-        );
-        lines.push(UnifiedLine::Header(header));
-        for row in &hunk.rows {
-            lines.push(UnifiedLine::Content(row));
-        }
-    }
-
-    let total_display = lines.len();
-    let visible_rows = (h / line_height).floor() as usize;
-    let start = view.scroll_offset.min(total_display.saturating_sub(1));
-    let end = (start + visible_rows).min(total_display);
-
-    for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
-        let row_y = y + (i - start) as f64 * line_height;
-
-        match line {
-            UnifiedLine::Header(header_text) => {
+        match line.content {
+            DiffLineContent::UnifiedHeader { hunk_idx } => {
+                let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
                 let fg = cairo_rgb(theme.accent_fg);
                 let bg = cairo_rgb(theme.background);
                 cr.set_source_rgb(bg.0, bg.1, bg.2);
-                cr.rectangle(x, row_y, w, line_height);
+                cr.rectangle(rx, ry, rw, rh);
                 cr.fill().ok();
                 cr.set_source_rgb(fg.0, fg.1, fg.2);
-                pango_layout.set_text(header_text);
+                pango_layout.set_text(&header_text);
                 let (_, text_h) = pango_layout.pixel_size();
                 cr.save().ok();
-                cr.rectangle(x, row_y, w, line_height);
+                cr.rectangle(rx, ry, rw, rh);
                 cr.clip();
-                cr.move_to(x + 2.0, row_y + (line_height - text_h as f64) / 2.0);
+                cr.move_to(rx + 2.0, ry + (rh - text_h as f64) / 2.0);
                 super::painted_text::show_layout(cr, pango_layout);
                 cr.restore().ok();
             }
-            UnifiedLine::Content(row) => {
-                let (prefix, fg, bg) = match row.kind {
-                    DiffRowKind::Same => {
-                        (' ', cairo_rgb(theme.muted_fg), cairo_rgb(theme.background))
-                    }
-                    DiffRowKind::Removed | DiffRowKind::Changed => (
-                        '-',
-                        cairo_rgb(theme.git_deleted),
-                        cairo_rgb(theme.diff_removed_bg),
-                    ),
-                    DiffRowKind::Added => (
-                        '+',
-                        cairo_rgb(theme.git_added),
-                        cairo_rgb(theme.diff_added_bg),
-                    ),
-                };
+            DiffLineContent::Row { row_idx } => {
+                let row = flat[row_idx];
+                let (prefix, fg, bg) = unified_row_style(row.kind, theme);
+                let (fg, bg) = (cairo_rgb(fg), cairo_rgb(bg));
 
                 // Row background.
                 cr.set_source_rgb(bg.0, bg.1, bg.2);
-                cr.rectangle(x, row_y, w, line_height);
+                cr.rectangle(rx, ry, rw, rh);
                 cr.fill().ok();
 
                 cr.set_source_rgb(fg.0, fg.1, fg.2);
@@ -292,66 +241,21 @@ fn draw_unified(
                 let prefix_str = prefix.to_string();
                 pango_layout.set_text(&prefix_str);
                 let (pw, text_h) = pango_layout.pixel_size();
-                cr.move_to(x + 2.0, row_y + (line_height - text_h as f64) / 2.0);
+                cr.move_to(rx + 2.0, ry + (rh - text_h as f64) / 2.0);
                 super::painted_text::show_layout(cr, pango_layout);
 
                 // Content text.
-                let text = match row.kind {
-                    DiffRowKind::Removed => row.left.as_deref().unwrap_or(""),
-                    _ => row.right.as_deref().or(row.left.as_deref()).unwrap_or(""),
-                };
+                let text = unified_row_text(row);
                 pango_layout.set_text(text);
                 let (_, text_h2) = pango_layout.pixel_size();
-                let text_x = x + 2.0 + pw as f64 + 4.0;
+                let text_x = rx + 2.0 + pw as f64 + 4.0;
                 cr.save().ok();
-                cr.rectangle(text_x, row_y, (w - (text_x - x)).max(0.0), line_height);
+                cr.rectangle(text_x, ry, (rw - (text_x - rx)).max(0.0), rh);
                 cr.clip();
-                cr.move_to(text_x, row_y + (line_height - text_h2 as f64) / 2.0);
+                cr.move_to(text_x, ry + (rh - text_h2 as f64) / 2.0);
                 super::painted_text::show_layout(cr, pango_layout);
                 cr.restore().ok();
             }
         }
-    }
-
-    // Return total_display (content rows + one @@ header per hunk) so
-    // callers can clamp scroll_offset correctly in unified mode.
-    DiffViewLayout {
-        visible_rows,
-        total_rows: total_display,
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Cairo RGB triple.
-type Rgb = (f64, f64, f64);
-
-/// Returns `(left_fg, left_bg, right_fg, right_bg)` for a given row kind.
-fn row_colors_gtk(kind: DiffRowKind, theme: &Theme) -> (Rgb, Rgb, Rgb, Rgb) {
-    match kind {
-        DiffRowKind::Same => (
-            cairo_rgb(theme.muted_fg),
-            cairo_rgb(theme.background),
-            cairo_rgb(theme.muted_fg),
-            cairo_rgb(theme.background),
-        ),
-        DiffRowKind::Changed => (
-            cairo_rgb(theme.git_deleted),
-            cairo_rgb(theme.diff_removed_bg),
-            cairo_rgb(theme.git_added),
-            cairo_rgb(theme.diff_added_bg),
-        ),
-        DiffRowKind::Removed => (
-            cairo_rgb(theme.git_deleted),
-            cairo_rgb(theme.diff_removed_bg),
-            cairo_rgb(theme.muted_fg),
-            cairo_rgb(theme.diff_padding_bg),
-        ),
-        DiffRowKind::Added => (
-            cairo_rgb(theme.muted_fg),
-            cairo_rgb(theme.diff_padding_bg),
-            cairo_rgb(theme.git_added),
-            cairo_rgb(theme.diff_added_bg),
-        ),
     }
 }

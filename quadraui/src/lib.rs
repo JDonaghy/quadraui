@@ -233,7 +233,8 @@ pub use primitives::dialog::{
     DialogMeasure, DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
 };
 pub use primitives::diff_view::{
-    DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewLayout,
+    DiffDisplayLine, DiffEditability, DiffHeaderGeometry, DiffHunk, DiffLineContent, DiffMode,
+    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewGeometry, DiffViewLayout,
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,

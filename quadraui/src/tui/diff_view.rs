@@ -1,8 +1,16 @@
 //! TUI rasteriser for [`crate::primitives::diff_view::DiffView`].
 //!
 //! Paints a two-pane (side-by-side) or single-column (unified) diff onto a
-//! [`ratatui::buffer::Buffer`]. Row backgrounds are driven by
-//! [`DiffRowKind`]:
+//! [`ratatui::buffer::Buffer`]. Row/pane geometry and the scroll-clamped
+//! visible-line window come from [`DiffView::layout`] — the shared layout
+//! API lifted out of three near-identical backend copies (issue #737).
+//! This module only converts the resulting DIP-agnostic `f32` geometry to
+//! cell coordinates and paints; it does not re-derive positions.
+//!
+//! Row backgrounds are driven by [`DiffRowKind`] via
+//! [`crate::primitives::diff_view::row_colors`] (side-by-side) /
+//! [`crate::primitives::diff_view::unified_row_style`] (unified) — also
+//! shared, not a third copy of the colour table:
 //!
 //! | Kind      | Left bg             | Right bg            |
 //! |-----------|---------------------|---------------------|
@@ -24,8 +32,21 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{qc, set_cell};
-use crate::primitives::diff_view::{DiffMode, DiffRowKind, DiffView, DiffViewLayout};
+use crate::event::Rect as ERect;
+use crate::primitives::diff_view::{
+    row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
+    DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
+};
 use crate::theme::Theme;
+
+/// Convert an `f32` DIP-agnostic rect from [`DiffView::layout`] to cell
+/// coordinates. Every input is exact-integer-valued by construction
+/// (`line_height` is always `1.0` on TUI and every viewport dimension
+/// starts as a whole cell count), so truncating casts never lose
+/// precision.
+fn cell_rect(r: ERect) -> Rect {
+    Rect::new(r.x as u16, r.y as u16, r.width as u16, r.height as u16)
+}
 
 /// Draw a [`DiffView`] into `area` on `buf`.
 ///
@@ -49,12 +70,20 @@ pub fn draw_diff_view(
         };
     }
 
-    let total_rows = view.total_rows();
+    let viewport = ERect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    let geometry = view.layout(viewport, 1.0);
 
     match view.mode {
-        DiffMode::SideBySide => draw_side_by_side(buf, area, view, theme, total_rows),
-        DiffMode::Unified => draw_unified(buf, area, view, theme),
+        DiffMode::SideBySide => draw_side_by_side(buf, area, view, theme, &geometry),
+        DiffMode::Unified => draw_unified(buf, area, view, theme, &geometry),
     }
+
+    geometry.as_layout()
 }
 
 // ── Side-by-side ─────────────────────────────────────────────────────────────
@@ -64,79 +93,95 @@ fn draw_side_by_side(
     area: Rect,
     view: &DiffView,
     theme: &Theme,
-    total_rows: usize,
-) -> DiffViewLayout {
-    let has_header = view.left_label.is_some() || view.right_label.is_some();
-    let header_rows: u16 = if has_header { 1 } else { 0 };
+    geometry: &DiffViewGeometry,
+) {
+    let flat = view.flat_rows();
 
-    let left_w = (area.width.saturating_sub(1)) / 2;
-    let right_w = area.width.saturating_sub(1).saturating_sub(left_w);
-    let divider_x = area.x + left_w;
-
-    // Draw header row.
-    if has_header {
-        let hy = area.y;
+    // Header row.
+    if let Some(header) = &geometry.header {
         let hdr_bg = qc(theme.header_bg);
         let hdr_fg = qc(theme.header_fg);
 
-        // Fill left header.
-        for col in 0..left_w {
-            set_cell(buf, area.x + col, hy, ' ', hdr_fg, hdr_bg);
-        }
-        // Fill right header.
-        for col in 0..right_w {
-            set_cell(buf, divider_x + 1 + col, hy, ' ', hdr_fg, hdr_bg);
-        }
-        // Divider in header.
-        set_cell(buf, divider_x, hy, '│', qc(theme.border_fg), hdr_bg);
+        let left_r = cell_rect(header.left);
+        let right_r = cell_rect(header.right);
+        let divider_r = cell_rect(header.divider);
 
-        // Draw labels (truncated to fit).
+        for col in 0..left_r.width {
+            set_cell(buf, left_r.x + col, left_r.y, ' ', hdr_fg, hdr_bg);
+        }
+        for col in 0..right_r.width {
+            set_cell(buf, right_r.x + col, right_r.y, ' ', hdr_fg, hdr_bg);
+        }
+        set_cell(
+            buf,
+            divider_r.x,
+            divider_r.y,
+            '│',
+            qc(theme.border_fg),
+            hdr_bg,
+        );
+
         if let Some(label) = &view.left_label {
-            draw_text_in(buf, area.x, hy, left_w, label, hdr_fg, hdr_bg);
+            draw_text_in(buf, left_r.x, left_r.y, left_r.width, label, hdr_fg, hdr_bg);
         }
         if let Some(label) = &view.right_label {
-            draw_text_in(buf, divider_x + 1, hy, right_w, label, hdr_fg, hdr_bg);
+            draw_text_in(
+                buf,
+                right_r.x,
+                right_r.y,
+                right_r.width,
+                label,
+                hdr_fg,
+                hdr_bg,
+            );
         }
     }
 
-    let content_area_h = area.height.saturating_sub(header_rows);
-    let visible_rows = content_area_h as usize;
-
-    // Collect all rows across hunks into a flat view.
-    let all_rows: Vec<_> = view.hunks.iter().flat_map(|h| h.rows.iter()).collect();
-
-    let start = view.scroll_offset.min(total_rows.saturating_sub(1));
-    let end = (start + visible_rows).min(total_rows);
-
-    for (row_idx, row) in all_rows.iter().enumerate().skip(start).take(end - start) {
-        let screen_y = area.y + header_rows + (row_idx - start) as u16;
-        if screen_y >= area.y + area.height {
-            break;
-        }
-
+    for line in &geometry.lines {
+        let DiffLineContent::Row { row_idx } = line.content else {
+            continue;
+        };
+        let row = flat[row_idx];
         let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
+        let (left_fg, left_bg, right_fg, right_bg) =
+            (qc(left_fg), qc(left_bg), qc(right_fg), qc(right_bg));
 
-        // Fill left pane.
-        for col in 0..left_w {
-            set_cell(buf, area.x + col, screen_y, ' ', left_fg, left_bg);
-        }
-        // Fill right pane.
-        for col in 0..right_w {
-            set_cell(buf, divider_x + 1 + col, screen_y, ' ', right_fg, right_bg);
-        }
-        // Divider.
-        set_cell(buf, divider_x, screen_y, '│', qc(theme.border_fg), left_bg);
+        let left_r = cell_rect(line.left.expect("side-by-side row has left bounds"));
+        let right_r = cell_rect(line.right.expect("side-by-side row has right bounds"));
+        let divider_r = cell_rect(line.divider.expect("side-by-side row has divider bounds"));
 
-        // Draw content text.
+        for col in 0..left_r.width {
+            set_cell(buf, left_r.x + col, left_r.y, ' ', left_fg, left_bg);
+        }
+        for col in 0..right_r.width {
+            set_cell(buf, right_r.x + col, right_r.y, ' ', right_fg, right_bg);
+        }
+        set_cell(
+            buf,
+            divider_r.x,
+            divider_r.y,
+            '│',
+            qc(theme.border_fg),
+            left_bg,
+        );
+
         if let Some(text) = &row.left {
-            draw_text_in(buf, area.x, screen_y, left_w, text, left_fg, left_bg);
+            draw_text_in(
+                buf,
+                left_r.x,
+                left_r.y,
+                left_r.width,
+                text,
+                left_fg,
+                left_bg,
+            );
         }
         if let Some(text) = &row.right {
             draw_text_in(
                 buf,
-                divider_x + 1,
-                screen_y,
-                right_w,
+                right_r.x,
+                right_r.y,
+                right_r.width,
                 text,
                 right_fg,
                 right_bg,
@@ -144,107 +189,76 @@ fn draw_side_by_side(
         }
     }
 
-    // Fill any trailing empty rows.
-    let rows_drawn = (end - start) as u16;
-    for blank_row in rows_drawn..content_area_h {
-        let screen_y = area.y + header_rows + blank_row;
-        let bg = qc(theme.background);
-        let fg = qc(theme.muted_fg);
-        for col in 0..left_w {
-            set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
+    // Fill any trailing empty rows (fewer display rows than fit on screen).
+    if let Some(panes) = &geometry.panes {
+        let header_rows: u16 = if geometry.header.is_some() { 1 } else { 0 };
+        let content_area_h = area.height.saturating_sub(header_rows);
+        let divider_x = panes.divider_x as u16;
+        let left_w = panes.left_w as u16;
+        let right_w = panes.right_w as u16;
+        let rows_drawn = geometry.lines.len() as u16;
+        for blank_row in rows_drawn..content_area_h {
+            let screen_y = area.y + header_rows + blank_row;
+            let bg = qc(theme.background);
+            let fg = qc(theme.muted_fg);
+            for col in 0..left_w {
+                set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
+            }
+            set_cell(buf, divider_x, screen_y, '│', qc(theme.border_fg), bg);
+            for col in 0..right_w {
+                set_cell(buf, divider_x + 1 + col, screen_y, ' ', fg, bg);
+            }
         }
-        set_cell(buf, divider_x, screen_y, '│', qc(theme.border_fg), bg);
-        for col in 0..right_w {
-            set_cell(buf, divider_x + 1 + col, screen_y, ' ', fg, bg);
-        }
-    }
-
-    DiffViewLayout {
-        visible_rows,
-        total_rows,
     }
 }
 
 // ── Unified ───────────────────────────────────────────────────────────────────
 
-fn draw_unified(buf: &mut Buffer, area: Rect, view: &DiffView, theme: &Theme) -> DiffViewLayout {
-    // In unified mode every hunk contributes its rows plus a `@@` header line.
-    // We build a flat list of "lines to display" (header or content).
-    #[derive(Clone)]
-    enum UnifiedLine<'a> {
-        Header(String),
-        Content(&'a crate::primitives::diff_view::DiffRow),
-    }
+fn draw_unified(
+    buf: &mut Buffer,
+    area: Rect,
+    view: &DiffView,
+    theme: &Theme,
+    geometry: &DiffViewGeometry,
+) {
+    let flat = view.flat_rows();
 
-    let mut lines: Vec<UnifiedLine<'_>> = Vec::new();
-    for hunk in &view.hunks {
-        // Unified-diff header line counts: `-n` is the number of lines
-        // sourced from the LEFT file (rows where `left.is_some()`), `+m`
-        // is the number sourced from the RIGHT (`right.is_some()`).
-        // These differ from `hunk.rows.len()` whenever a change run
-        // produces padding rows (unequal removed/added counts).
-        let left_count = hunk.rows.iter().filter(|r| r.left.is_some()).count();
-        let right_count = hunk.rows.iter().filter(|r| r.right.is_some()).count();
-        let header = format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.left_start, left_count, hunk.right_start, right_count
-        );
-        lines.push(UnifiedLine::Header(header));
-        for row in &hunk.rows {
-            lines.push(UnifiedLine::Content(row));
-        }
-    }
+    for line in &geometry.lines {
+        let screen = cell_rect(line.bounds);
 
-    let total_display = lines.len();
-    let visible_rows = area.height as usize;
-    let start = view.scroll_offset.min(total_display.saturating_sub(1));
-    let end = (start + visible_rows).min(total_display);
-
-    for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
-        let screen_y = area.y + (i - start) as u16;
-        if screen_y >= area.y + area.height {
-            break;
-        }
-
-        match line {
-            UnifiedLine::Header(h) => {
+        match line.content {
+            DiffLineContent::UnifiedHeader { hunk_idx } => {
+                let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
                 let bg = qc(theme.background);
                 let fg = qc(theme.accent_fg);
-                for col in 0..area.width {
-                    set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
+                for col in 0..screen.width {
+                    set_cell(buf, screen.x + col, screen.y, ' ', fg, bg);
                 }
-                draw_text_in(buf, area.x, screen_y, area.width, h, fg, bg);
+                draw_text_in(buf, screen.x, screen.y, screen.width, &header_text, fg, bg);
             }
-            UnifiedLine::Content(row) => {
-                let (prefix, fg, bg) = match row.kind {
-                    DiffRowKind::Same => (' ', qc(theme.muted_fg), qc(theme.background)),
-                    DiffRowKind::Removed | DiffRowKind::Changed => {
-                        ('-', qc(theme.git_deleted), qc(theme.diff_removed_bg))
-                    }
-                    DiffRowKind::Added => ('+', qc(theme.git_added), qc(theme.diff_added_bg)),
-                };
+            DiffLineContent::Row { row_idx } => {
+                let row = flat[row_idx];
+                let (prefix, fg, bg) = unified_row_style(row.kind, theme);
+                let (fg, bg) = (qc(fg), qc(bg));
 
                 // Fill row background.
-                for col in 0..area.width {
-                    set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
+                for col in 0..screen.width {
+                    set_cell(buf, screen.x + col, screen.y, ' ', fg, bg);
                 }
 
                 // Prefix character.
-                if area.width > 0 {
-                    set_cell(buf, area.x, screen_y, prefix, fg, bg);
+                if screen.width > 0 {
+                    set_cell(buf, screen.x, screen.y, prefix, fg, bg);
                 }
 
                 // Content text (shifted right by 1 for the prefix).
-                let text = match row.kind {
-                    DiffRowKind::Removed => row.left.as_deref().unwrap_or(""),
-                    _ => row.right.as_deref().or(row.left.as_deref()).unwrap_or(""),
-                };
-                if area.width > 1 {
+                let text = unified_row_text(row);
+                if screen.width > 1 {
                     draw_text_in(
                         buf,
-                        area.x + 1,
-                        screen_y,
-                        area.width.saturating_sub(1),
+                        screen.x + 1,
+                        screen.y,
+                        screen.width.saturating_sub(1),
                         text,
                         fg,
                         bg,
@@ -255,7 +269,7 @@ fn draw_unified(buf: &mut Buffer, area: Rect, view: &DiffView, theme: &Theme) ->
     }
 
     // Fill trailing blank rows.
-    let rows_drawn = (end - start) as u16;
+    let rows_drawn = geometry.lines.len() as u16;
     for blank in rows_drawn..area.height {
         let screen_y = area.y + blank;
         let bg = qc(theme.background);
@@ -264,54 +278,9 @@ fn draw_unified(buf: &mut Buffer, area: Rect, view: &DiffView, theme: &Theme) ->
             set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
         }
     }
-
-    // Return total_display (content rows + one @@ header per hunk) so
-    // callers can clamp scroll_offset correctly in unified mode.
-    DiffViewLayout {
-        visible_rows,
-        total_rows: total_display,
-    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Background and foreground colours for each pane given a row kind.
-fn row_colors(
-    kind: DiffRowKind,
-    theme: &Theme,
-) -> (
-    ratatui::style::Color,
-    ratatui::style::Color,
-    ratatui::style::Color,
-    ratatui::style::Color,
-) {
-    match kind {
-        DiffRowKind::Same => (
-            qc(theme.muted_fg),
-            qc(theme.background),
-            qc(theme.muted_fg),
-            qc(theme.background),
-        ),
-        DiffRowKind::Changed => (
-            qc(theme.git_deleted),
-            qc(theme.diff_removed_bg),
-            qc(theme.git_added),
-            qc(theme.diff_added_bg),
-        ),
-        DiffRowKind::Removed => (
-            qc(theme.git_deleted),
-            qc(theme.diff_removed_bg),
-            qc(theme.muted_fg),
-            qc(theme.diff_padding_bg),
-        ),
-        DiffRowKind::Added => (
-            qc(theme.muted_fg),
-            qc(theme.diff_padding_bg),
-            qc(theme.git_added),
-            qc(theme.diff_added_bg),
-        ),
-    }
-}
 
 /// Write `text` into `buf` starting at `(x, y)`, limited to `max_width`
 /// cells.  Characters beyond the limit are silently dropped.

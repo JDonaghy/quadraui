@@ -3,7 +3,12 @@
 //!
 //! Port of [`crate::gtk::diff_view::draw_diff_view`] — same colour
 //! mapping, same row-kind semantics, same [`DiffViewLayout`] return
-//! value, so scroll clamping behaves identically on both backends.
+//! value, so scroll clamping behaves identically on both backends. Row/
+//! pane geometry and the scroll-clamped visible-line window come from
+//! [`DiffView::layout`] — the shared layout API lifted out of three
+//! near-identical backend copies (issue #737). This module only converts
+//! the resulting DIP-agnostic `f32` geometry to `f64` points and paints;
+//! it does not re-derive positions.
 //!
 //! Before this landed, `MacBackend::draw_diff_view` painted nothing and
 //! returned `visible_rows: 0`, which silently pinned every host's scroll
@@ -26,16 +31,24 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::diff_view::{DiffMode, DiffRowKind, DiffView, DiffViewLayout};
+use crate::event::Rect as ERect;
+use crate::primitives::diff_view::{
+    row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
+    DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
+};
 use crate::theme::Theme;
 use crate::types::Color;
 
-/// Divider width between the two panes, in points.
-const DIVIDER_PX: f64 = 1.0;
 /// Text inset from a pane's left edge.
 const TEXT_PAD: f64 = 4.0;
 /// Text inset used in unified mode (tighter, matching the GTK twin).
 const UNIFIED_PAD: f64 = 2.0;
+
+/// Convert an `f32` DIP-agnostic rect from [`DiffView::layout`] to point
+/// `f64`s.
+fn pt_rect(r: ERect) -> (f64, f64, f64, f64) {
+    (r.x as f64, r.y as f64, r.width as f64, r.height as f64)
+}
 
 /// Draw a [`DiffView`] into the region `(x, y, w, h)` on `ctx`.
 ///
@@ -61,63 +74,53 @@ pub unsafe fn draw_diff_view(
     theme: &Theme,
     line_height: f64,
 ) -> DiffViewLayout {
+    let viewport = ERect::new(x as f32, y as f32, w as f32, h as f32);
+    let geometry = view.layout(viewport, line_height as f32);
+
     if w <= 0.0 || h <= 0.0 || line_height <= 0.0 {
-        return DiffViewLayout {
-            visible_rows: 0,
-            total_rows: view.total_rows(),
-        };
+        return geometry.as_layout();
     }
 
-    let total_rows = view.total_rows();
+    fill_rect(ctx, x, y, w, h, theme.background);
 
     match view.mode {
-        DiffMode::SideBySide => {
-            draw_side_by_side(ctx, font, x, y, w, h, view, theme, line_height, total_rows)
-        }
-        DiffMode::Unified => draw_unified(ctx, font, x, y, w, h, view, theme, line_height),
+        DiffMode::SideBySide => draw_side_by_side(ctx, font, view, theme, &geometry),
+        DiffMode::Unified => draw_unified(ctx, font, view, theme, &geometry),
     }
+
+    geometry.as_layout()
 }
 
 // ── Side-by-side ─────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 unsafe fn draw_side_by_side(
     ctx: CGContextRef,
     font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
     view: &DiffView,
     theme: &Theme,
-    line_height: f64,
-    total_rows: usize,
-) -> DiffViewLayout {
-    let has_header = view.left_label.is_some() || view.right_label.is_some();
-    let header_h = if has_header { line_height } else { 0.0 };
+    geometry: &DiffViewGeometry,
+) {
+    let flat = view.flat_rows();
 
-    let left_w = ((w - DIVIDER_PX) / 2.0).floor();
-    let right_w = (w - DIVIDER_PX - left_w).max(0.0);
-    let divider_x = x + left_w;
+    if let Some(header) = &geometry.header {
+        let (lx, ly, lw, lh) = pt_rect(header.left);
+        let (rx, _ry, rw, _rh) = pt_rect(header.right);
+        let (dx, dy, dw, dh) = pt_rect(header.divider);
 
-    // Total background.
-    fill_rect(ctx, x, y, w, h, theme.background);
-
-    if has_header {
-        fill_rect(ctx, x, y, w, line_height, theme.header_bg);
-        fill_rect(ctx, divider_x, y, DIVIDER_PX, line_height, theme.border_fg);
+        fill_rect(ctx, lx, ly, lw + dw + rw, lh, theme.header_bg);
+        fill_rect(ctx, dx, dy, dw, dh, theme.border_fg);
 
         if let Some(label) = &view.left_label {
             clipped_text(
                 ctx,
                 font,
                 label,
-                x + TEXT_PAD,
-                y,
-                x,
-                y,
-                left_w,
-                line_height,
+                lx + TEXT_PAD,
+                ly,
+                lx,
+                ly,
+                lw,
+                lh,
                 theme.header_fg,
             );
         }
@@ -126,205 +129,105 @@ unsafe fn draw_side_by_side(
                 ctx,
                 font,
                 label,
-                divider_x + DIVIDER_PX + TEXT_PAD,
-                y,
-                divider_x + DIVIDER_PX,
-                y,
-                right_w,
-                line_height,
+                rx + TEXT_PAD,
+                ly,
+                rx,
+                ly,
+                rw,
+                lh,
                 theme.header_fg,
             );
         }
     }
 
-    let content_y_start = y + header_h;
-    let content_h = (h - header_h).max(0.0);
-    let visible_rows = (content_h / line_height).floor() as usize;
-
-    let all_rows: Vec<_> = view.hunks.iter().flat_map(|hk| hk.rows.iter()).collect();
-    let start = view.scroll_offset.min(total_rows.saturating_sub(1));
-    let end = (start + visible_rows).min(total_rows);
-
-    for (row_idx, row) in all_rows
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(end.saturating_sub(start))
-    {
-        let row_y = content_y_start + (row_idx - start) as f64 * line_height;
-
+    for line in &geometry.lines {
+        let DiffLineContent::Row { row_idx } = line.content else {
+            continue;
+        };
+        let row = flat[row_idx];
         let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
 
-        fill_rect(ctx, x, row_y, left_w, line_height, left_bg);
-        fill_rect(
-            ctx,
-            divider_x + DIVIDER_PX,
-            row_y,
-            right_w,
-            line_height,
-            right_bg,
-        );
-        fill_rect(
-            ctx,
-            divider_x,
-            row_y,
-            DIVIDER_PX,
-            line_height,
-            theme.border_fg,
-        );
+        let (lx, ly, lw, lh) = pt_rect(line.left.expect("side-by-side row has left bounds"));
+        let (rx, ry, rw, rh) = pt_rect(line.right.expect("side-by-side row has right bounds"));
+        let (dx, dy, dw, dh) = pt_rect(line.divider.expect("side-by-side row has divider bounds"));
+
+        fill_rect(ctx, lx, ly, lw, lh, left_bg);
+        fill_rect(ctx, rx, ry, rw, rh, right_bg);
+        fill_rect(ctx, dx, dy, dw, dh, theme.border_fg);
 
         if let Some(text) = &row.left {
-            clipped_text(
-                ctx,
-                font,
-                text,
-                x + TEXT_PAD,
-                row_y,
-                x,
-                row_y,
-                left_w,
-                line_height,
-                left_fg,
-            );
+            clipped_text(ctx, font, text, lx + TEXT_PAD, ly, lx, ly, lw, lh, left_fg);
         }
         if let Some(text) = &row.right {
-            clipped_text(
-                ctx,
-                font,
-                text,
-                divider_x + DIVIDER_PX + TEXT_PAD,
-                row_y,
-                divider_x + DIVIDER_PX,
-                row_y,
-                right_w,
-                line_height,
-                right_fg,
-            );
+            clipped_text(ctx, font, text, rx + TEXT_PAD, ry, rx, ry, rw, rh, right_fg);
         }
-    }
-
-    DiffViewLayout {
-        visible_rows,
-        total_rows,
     }
 }
 
 // ── Unified ──────────────────────────────────────────────────────────────────
 
-/// One rendered line in unified mode: either a synthesised `@@` header or
-/// a real diff row.
-enum UnifiedLine<'a> {
-    Header(String),
-    Content(&'a crate::primitives::diff_view::DiffRow),
-}
-
-#[allow(clippy::too_many_arguments)]
 unsafe fn draw_unified(
     ctx: CGContextRef,
     font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
     view: &DiffView,
     theme: &Theme,
-    line_height: f64,
-) -> DiffViewLayout {
-    fill_rect(ctx, x, y, w, h, theme.background);
+    geometry: &DiffViewGeometry,
+) {
+    let flat = view.flat_rows();
 
-    let mut lines: Vec<UnifiedLine<'_>> = Vec::new();
-    for hunk in &view.hunks {
-        // `-n` counts lines sourced from the LEFT file, `+m` from the
-        // RIGHT — these differ from `hunk.rows.len()` whenever a change
-        // run produces padding rows. Identical to the GTK twin.
-        let left_count = hunk.rows.iter().filter(|r| r.left.is_some()).count();
-        let right_count = hunk.rows.iter().filter(|r| r.right.is_some()).count();
-        lines.push(UnifiedLine::Header(format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.left_start, left_count, hunk.right_start, right_count
-        )));
-        for row in &hunk.rows {
-            lines.push(UnifiedLine::Content(row));
-        }
-    }
+    for line in &geometry.lines {
+        let (rx, ry, rw, rh) = pt_rect(line.bounds);
 
-    let total_display = lines.len();
-    let visible_rows = (h / line_height).floor() as usize;
-    let start = view.scroll_offset.min(total_display.saturating_sub(1));
-    let end = (start + visible_rows).min(total_display);
-
-    for (i, line) in lines
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(end.saturating_sub(start))
-    {
-        let row_y = y + (i - start) as f64 * line_height;
-
-        match line {
-            UnifiedLine::Header(header_text) => {
-                fill_rect(ctx, x, row_y, w, line_height, theme.background);
+        match line.content {
+            DiffLineContent::UnifiedHeader { hunk_idx } => {
+                let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
+                fill_rect(ctx, rx, ry, rw, rh, theme.background);
                 clipped_text(
                     ctx,
                     font,
-                    header_text,
-                    x + UNIFIED_PAD,
-                    row_y,
-                    x,
-                    row_y,
-                    w,
-                    line_height,
+                    &header_text,
+                    rx + UNIFIED_PAD,
+                    ry,
+                    rx,
+                    ry,
+                    rw,
+                    rh,
                     theme.accent_fg,
                 );
             }
-            UnifiedLine::Content(row) => {
-                let (prefix, fg, bg) = match row.kind {
-                    DiffRowKind::Same => (' ', theme.muted_fg, theme.background),
-                    DiffRowKind::Removed | DiffRowKind::Changed => {
-                        ('-', theme.git_deleted, theme.diff_removed_bg)
-                    }
-                    DiffRowKind::Added => ('+', theme.git_added, theme.diff_added_bg),
-                };
+            DiffLineContent::Row { row_idx } => {
+                let row = flat[row_idx];
+                let (prefix, fg, bg) = unified_row_style(row.kind, theme);
 
-                fill_rect(ctx, x, row_y, w, line_height, bg);
+                fill_rect(ctx, rx, ry, rw, rh, bg);
 
                 let prefix_str = prefix.to_string();
                 draw_text(
                     ctx,
                     font,
                     &prefix_str,
-                    x + UNIFIED_PAD,
-                    row_y,
+                    rx + UNIFIED_PAD,
+                    ry,
                     color_to_cg(fg),
                 );
                 let (prefix_w, _) = measure_text(font, &prefix_str);
 
-                let text = match row.kind {
-                    DiffRowKind::Removed => row.left.as_deref().unwrap_or(""),
-                    _ => row.right.as_deref().or(row.left.as_deref()).unwrap_or(""),
-                };
-                let text_x = x + UNIFIED_PAD + prefix_w + TEXT_PAD;
+                let text = unified_row_text(row);
+                let text_x = rx + UNIFIED_PAD + prefix_w + TEXT_PAD;
                 clipped_text(
                     ctx,
                     font,
                     text,
                     text_x,
-                    row_y,
+                    ry,
                     text_x,
-                    row_y,
-                    (w - (text_x - x)).max(0.0),
-                    line_height,
+                    ry,
+                    (rw - (text_x - rx)).max(0.0),
+                    rh,
                     fg,
                 );
             }
         }
-    }
-
-    // Return `total_display` (content rows + one `@@` header per hunk) so
-    // callers clamp `scroll_offset` correctly in unified mode.
-    DiffViewLayout {
-        visible_rows,
-        total_rows: total_display,
     }
 }
 
@@ -354,37 +257,6 @@ unsafe fn clipped_text(
     CGContextClipToRect(ctx, CGRect::new_xywh(cx, cy, cw, ch));
     draw_text(ctx, font, text, tx, ty, color_to_cg(color));
     CGContextRestoreGState(ctx);
-}
-
-/// `(left_fg, left_bg, right_fg, right_bg)` for a row kind. Mirrors the
-/// GTK twin's `row_colors_gtk` exactly.
-fn row_colors(kind: DiffRowKind, theme: &Theme) -> (Color, Color, Color, Color) {
-    match kind {
-        DiffRowKind::Same => (
-            theme.muted_fg,
-            theme.background,
-            theme.muted_fg,
-            theme.background,
-        ),
-        DiffRowKind::Changed => (
-            theme.git_deleted,
-            theme.diff_removed_bg,
-            theme.git_added,
-            theme.diff_added_bg,
-        ),
-        DiffRowKind::Removed => (
-            theme.git_deleted,
-            theme.diff_removed_bg,
-            theme.muted_fg,
-            theme.diff_padding_bg,
-        ),
-        DiffRowKind::Added => (
-            theme.muted_fg,
-            theme.diff_padding_bg,
-            theme.git_added,
-            theme.diff_added_bg,
-        ),
-    }
 }
 
 fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
@@ -442,6 +314,10 @@ mod tests {
     const W: u32 = 400;
     const H: u32 = 200;
 
+    /// Divider width in points — mirrors the shared
+    /// `primitives::diff_view::DIFF_DIVIDER_W` value the geometry uses.
+    const DIVIDER_PX: f64 = crate::primitives::diff_view::DIFF_DIVIDER_W as f64;
+
     fn sample_view(mode: DiffMode) -> DiffView {
         let left = "one\ntwo\nthree\n";
         let right = "one\nTWO\nthree\n";
@@ -462,7 +338,7 @@ mod tests {
 
     /// Index of the first row of `kind` in the flattened row list, i.e.
     /// the screen row it lands on when `scroll_offset == 0`.
-    fn first_row_of(view: &DiffView, kind: DiffRowKind) -> usize {
+    fn first_row_of(view: &DiffView, kind: crate::primitives::diff_view::DiffRowKind) -> usize {
         view.hunks
             .iter()
             .flat_map(|h| h.rows.iter())
@@ -509,7 +385,7 @@ mod tests {
 
         // No labels, so no header row offsets the content rows: screen
         // row N sits at `N * line_height`.
-        let changed = first_row_of(&view, DiffRowKind::Changed);
+        let changed = first_row_of(&view, crate::primitives::diff_view::DiffRowKind::Changed);
         let row_y = (lh * (changed as f64 + 0.5)) as u32;
         let left_w = ((W as f64 - DIVIDER_PX) / 2.0).floor();
 
