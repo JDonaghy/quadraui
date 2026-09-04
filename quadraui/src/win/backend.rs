@@ -848,14 +848,16 @@ impl Backend for WinBackend {
     /// `poll_events`/`wait_events`, which stay `todo!("PeekMessage loop →
     /// translate WM_* → UiEvent")` since they're not on that hot path).
     ///
-    /// `mouse`/`scroll`/`drag` still read `false` here despite that
-    /// translation existing: every `draw_*`/`*_layout` rasteriser below is
-    /// still a `todo!()` stub, so a conformance scenario that declares
-    /// `requires: ["mouse"]` and then exercises a click against a real
-    /// widget would panic mid-scenario rather than the named `skip`
-    /// `BackendCaps` exists to produce (`docs/TESTING.md`'s coverage
-    /// taxonomy). Flip these once the rasterisers they'd actually be
-    /// clicking on land.
+    /// quadraui#723: `mouse`/`scroll`/`drag` are now declared `true` — the
+    /// translators are wired (`WM_LBUTTONDOWN`/`WM_LBUTTONUP`/
+    /// `WM_MOUSEMOVE`/`WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` all reach
+    /// `dispatch_event`, per #20/#707), and the painted-text sink prereq
+    /// (verification spine step 1) means a scenario that now runs instead
+    /// of skipping fails on real signal rather than panicking mid-scenario
+    /// on a missing text lookup. `text_selection` stays unset: win has no
+    /// text-selection core yet, so `panel.drag_select_copy` (which also
+    /// `requires: ["text_selection"]`) still skips — for that honest
+    /// reason, not for a missing `mouse`/`drag`.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         // A genuine struct literal (not `let mut caps = ...; caps.field =
         // true;`), matching every other backend's `backend_caps` shape —
@@ -867,21 +869,33 @@ impl Backend for WinBackend {
         {
             // #23: file dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
             // notifications (`Shell_NotifyIconW`) go through COM/Shell
-            // APIs independent of the Direct2D rasteriser work above —
-            // unlike `mouse`/`scroll`/`drag`, there is no unfinished
-            // rasteriser gating these on, so they're honestly `true` on
-            // Windows itself. `native_dialogs` (message/alert dialogs)
-            // stays unset — that's still a `None`-returning stub pending
-            // quadraui#666.
+            // APIs independent of the Direct2D rasteriser work above, so
+            // they're honestly `true` on Windows itself. `native_dialogs`
+            // (message/alert dialogs) stays unset — that's still a
+            // `None`-returning stub pending quadraui#666.
             //
             // `pointer_cursor` (#702): `set_cursor` now drives a real
             // `SetCursor`/`WM_SETCURSOR` round-trip instead of the
             // trait's no-op default — see `Self::set_cursor` /
             // `Self::apply_current_cursor`.
+            //
+            // `mouse`/`scroll`/`drag` (#723): the translators are wired —
+            // `WM_LBUTTONDOWN`/`WM_LBUTTONUP`/`WM_MOUSEMOVE` reach
+            // `dispatch_event` as `MouseDown`/`MouseUp`/`MouseMoved`, and
+            // `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` reach it as `Scroll` (#20,
+            // #707) — so a press → move → release sequence is a real
+            // drag. `text_selection` stays unset deliberately: win has no
+            // text-selection core yet (see the text-selection issue in
+            // this epic); declaring it here would make
+            // `panel.drag_select_copy` fail for the wrong reason instead
+            // of skipping for the honest one.
             crate::backend::BackendCaps {
                 file_dialogs: true,
                 notifications: true,
                 pointer_cursor: true,
+                mouse: true,
+                scroll: true,
+                drag: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }
