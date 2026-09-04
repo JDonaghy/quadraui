@@ -38,10 +38,14 @@
 //! [`UiEvent::WindowClose`]. Issue #20 adds the rest of the input table
 //! this `wndproc` dispatches: mouse buttons/motion/wheel, `WM_KEYDOWN` +
 //! `WM_CHAR`, and focus — decoded by [`super::msg`], translated by
-//! [`super::events`]. `WM_KEYUP` and the `WM_SYSKEY*`/double-click
-//! families remain unhandled (no quadraui `UiEvent` counterpart exists
-//! yet for the former; see `super::events`' module docs for the latter
-//! two).
+//! [`super::events`]. Issue #743 adds `WM_SYSKEYDOWN` + `WM_SYSCHAR` (the
+//! Alt-held twins of `WM_KEYDOWN`/`WM_CHAR` — Alt+F4, menu mnemonics,
+//! app-registered Alt accelerators), reusing the exact same translators —
+//! see the `WM_SYSKEYDOWN`/`WM_SYSCHAR` arms below for the Alt+F4
+//! dispatch-vs-`DefWindowProcW` decision. `WM_KEYUP`/`WM_SYSKEYUP` and the
+//! double-click family remain unhandled (no quadraui `UiEvent` counterpart
+//! exists yet for the former pair; see `super::events`' module docs for
+//! the latter).
 //!
 //! # Dispatch model: direct, not `poll_events`/`wait_events`
 //!
@@ -619,8 +623,8 @@ mod win32 {
         SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY,
         WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
         WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_TIMER, WM_XBUTTONDOWN,
-        WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
+        WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
 
     use crate::backend::Backend;
@@ -1370,6 +1374,50 @@ mod win32 {
                 }
                 LRESULT(0)
             }
+            WM_SYSKEYDOWN => {
+                // Alt-held twin of `WM_KEYDOWN` (#743) — fires for Alt+F4,
+                // menu mnemonics, and any Alt accelerator an app
+                // registers. Reuses the exact same translator; the only
+                // new decision is what to do about `DefWindowProcW`.
+                //
+                // Deliberately forwarded to `DefWindowProcW` (not
+                // swallowed by returning `LRESULT(0)`, unlike every other
+                // handled arm in this `wndproc`): `DefWindowProcW`'s own
+                // `WM_SYSKEYDOWN` handling is what turns Alt+F4 into
+                // `WM_SYSCOMMAND(SC_CLOSE)` -> `WM_CLOSE` (see the
+                // `WM_CLOSE` arm below, which owns the actual close/veto
+                // decision via `UiEvent::WindowClose`) and what opens the
+                // system menu on Alt+Space — this runner reimplements
+                // neither. So `Alt+F4` reaches the app as a `KeyPressed`
+                // (`NamedKey::F(4)`, `modifiers.alt == true`) *and* still
+                // closes the window through the normal `WM_CLOSE` veto
+                // path — an app that wants to prevent the close does so
+                // there, exactly as it already vetoes a mouse-driven
+                // close, not by intercepting this message.
+                let vk = (wparam.0 & 0xFF) as u32;
+                let repeat = is_repeat_from_lparam(lparam.0);
+                let modifiers = win_key_modifiers();
+                if let Some(event) = wm_keydown_to_uievent(vk, modifiers, repeat) {
+                    dispatch(ws, hwnd, event);
+                }
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+            WM_SYSCHAR => {
+                // Alt-held twin of `WM_CHAR` (#743) — menu-mnemonic
+                // characters (Alt+letter). Same translator, same
+                // forward-to-`DefWindowProcW` reasoning as `WM_SYSKEYDOWN`
+                // above (this runner has no menu, so `DefWindowProcW`'s
+                // own handling here is just the system beep for an
+                // unmatched mnemonic — harmless).
+                let repeat = is_repeat_from_lparam(lparam.0);
+                if let Some(c) = char::from_u32((wparam.0 & 0xFFFF) as u32) {
+                    let modifiers = win_key_modifiers();
+                    if let Some(event) = wm_char_to_uievent(c, modifiers, repeat) {
+                        dispatch(ws, hwnd, event);
+                    }
+                }
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
             WM_SETFOCUS => {
                 dispatch(ws, hwnd, win_focus_to_uievent(true));
                 LRESULT(0)
@@ -1453,6 +1501,13 @@ mod win32 {
                 }
             }
             WM_CLOSE => {
+                // Reached both from the title bar's close button and
+                // (since #743) from Alt+F4: `WM_SYSKEYDOWN`'s arm above
+                // forwards to `DefWindowProcW`, whose own `VK_F4` handling
+                // posts `WM_SYSCOMMAND(SC_CLOSE)`, which `DefWindowProcW`
+                // in turn resolves to this same `WM_CLOSE` — so the veto
+                // decision below is Alt+F4's veto decision too, with no
+                // separate Alt+F4 code path to keep in sync.
                 if dispatch(ws, hwnd, UiEvent::WindowClose) == Reaction::Exit {
                     unsafe {
                         let _ = DestroyWindow(hwnd);
