@@ -9,9 +9,11 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
-use crate::primitives::toolbar::ToolbarItemMeasure;
+use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 use crate::theme::Theme;
 use crate::types::WidgetId;
+
+use super::toolbar::PangoMeasure;
 
 /// Compute the GTK pixel-unit layout for a `SidebarPanel`. Uses Pango
 /// for accurate text measurement when `pango_layout` is provided; falls
@@ -29,54 +31,15 @@ pub fn gtk_sidebar_panel_layout(
     h: f64,
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    let measure = PangoMeasure {
+        pango_layout,
+        char_width,
+    };
     panel.layout(
         bounds,
         SidebarPanelMeasure::new(line_height as f32, char_width as f32),
-        |btn| ToolbarItemMeasure::new(item_width_px(pango_layout, char_width, btn) as f32),
+        |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
     )
-}
-
-fn item_width_px(
-    pango_layout: Option<&pango::Layout>,
-    char_width: f64,
-    btn: &crate::primitives::toolbar::ToolbarButton,
-) -> f64 {
-    // Mirror gtk::toolbar::measure_item, but inlined here so we don't
-    // export that helper just for this caller.
-    use crate::primitives::toolbar::ToolbarButton;
-    const ACTION_H_PAD: f64 = 8.0;
-    const SEPARATOR_PX: f64 = 12.0;
-    let text_width = |text: &str| -> f64 {
-        if let Some(pl) = pango_layout {
-            pl.set_text(text);
-            pl.pixel_size().0.max(0) as f64
-        } else {
-            (text.chars().count() as f64 * char_width).ceil()
-        }
-    };
-    match btn {
-        ToolbarButton::Action {
-            label,
-            icon,
-            key_hint,
-            ..
-        } => {
-            let mut s = String::new();
-            if let Some(icon) = icon {
-                s.push_str(icon);
-                s.push(' ');
-            }
-            s.push_str(label);
-            if let Some(hint) = key_hint {
-                s.push_str(" (");
-                s.push_str(hint);
-                s.push(')');
-            }
-            text_width(&s) + 2.0 * ACTION_H_PAD
-        }
-        ToolbarButton::Separator => SEPARATOR_PX,
-        ToolbarButton::Label { text, .. } => text_width(text),
-    }
 }
 
 /// Draw a `SidebarPanel` onto `cr`. Returns the resolved layout for

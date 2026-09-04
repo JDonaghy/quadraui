@@ -224,6 +224,81 @@ impl ToolbarItemMeasure {
     }
 }
 
+// ── Shared button-measure formula (#730) ────────────────────────────────────
+
+/// Horizontal padding inside each [`ToolbarButton::Action`] button, in
+/// px/DIPs. Shared by every pixel rasteriser via [`measure_button`] — see
+/// that function's doc for why this used to be five separately
+/// maintained copies.
+pub const ACTION_H_PAD: f32 = 8.0;
+
+/// Width of a [`ToolbarButton::Separator`] slot, in px/DIPs. See
+/// [`ACTION_H_PAD`] / [`measure_button`].
+pub const SEPARATOR_PX: f32 = 12.0;
+
+/// Format an `Action`'s rendered text: `"{icon} {label} ({hint})"`, with
+/// the icon and/or key-hint sections dropped when absent.
+///
+/// Shared by every pixel rasteriser's paint AND measure paths (#730) so
+/// the text a button paints and the text [`measure_button`] measured
+/// against can never disagree.
+pub fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> String {
+    let mut s = String::new();
+    if let Some(icon) = icon {
+        s.push_str(icon);
+        s.push(' ');
+    }
+    s.push_str(label);
+    if let Some(hint) = key_hint {
+        s.push_str(" (");
+        s.push_str(hint);
+        s.push(')');
+    }
+    s
+}
+
+/// Compute the pixel/DIP width of a single toolbar item via `measure`.
+///
+/// This is the **single** button-measure formula for every pixel
+/// backend. Before #730 it existed independently in
+/// `gtk::toolbar::measure_item`, `macos::toolbar::measure_item`,
+/// `gtk::sidebar_panel::item_width_px`, `macos::sidebar_panel::item_width_px`,
+/// and inline in
+/// [`crate::primitives::layout_metrics::form_field_measure`]'s `Toolbar`
+/// field arm — five copies that agreed with each other only by luck, not
+/// construction (see `PRIMITIVE_RULES.md`'s primitive-first rule, #713).
+/// `win::toolbar` and every future pixel backend call this instead of
+/// writing a sixth.
+///
+/// Each backend supplies `measure` via a thin [`crate::primitives::layout_metrics::TextMeasure`]
+/// adapter over its own live font/context (a `pango::Layout`, a `CTFont`,
+/// DirectWrite metrics, …) — see e.g. `gtk::toolbar`'s `PangoMeasure`,
+/// `macos::toolbar`'s `CtFontMeasure`, `win::toolbar`'s `DWriteMeasure`.
+///
+/// TUI does **not** call this: its cell-based `[ icon label (hint) ]`
+/// bracket format — with icon-only compaction and double-width-glyph
+/// awareness (`tui::toolbar::tui_item_width`) — is a genuinely different
+/// formula, not a drifted copy of this pixel one, so folding it in here
+/// would be a silent behaviour change rather than a dedup.
+pub fn measure_button(
+    measure: &dyn crate::primitives::layout_metrics::TextMeasure,
+    btn: &ToolbarButton,
+) -> f32 {
+    match btn {
+        ToolbarButton::Action {
+            label,
+            icon,
+            key_hint,
+            ..
+        } => {
+            let text = action_text(label, icon.as_deref(), key_hint.as_deref());
+            measure.width_of(&text) + 2.0 * ACTION_H_PAD
+        }
+        ToolbarButton::Separator => SEPARATOR_PX,
+        ToolbarButton::Label { text, .. } => measure.width_of(text),
+    }
+}
+
 impl Toolbar {
     /// Compute the full rendering + hit-test layout for this toolbar.
     ///
@@ -514,6 +589,56 @@ mod tests {
         let json = serde_json::to_string(&bar).unwrap();
         let back: Toolbar = serde_json::from_str(&json).unwrap();
         assert_eq!(bar, back);
+    }
+
+    // ── Shared measure formula (#730) ───────────────────────────────────
+
+    /// Fixed-width stand-in for a real font: `6.0` px per char — the
+    /// same convention `primitives::layout_metrics`'s own `FakeMeasure`
+    /// uses, since a real per-backend measurer (Pango / Core Text /
+    /// DirectWrite) can't run on every CI host. Because `gtk::toolbar`,
+    /// `macos::toolbar`, and `win::toolbar` all measure by calling
+    /// [`measure_button`] through their own thin adapter over this exact
+    /// trait, proving the formula once here is proving it for every
+    /// pixel backend at once — there is no second implementation left to
+    /// drift (the "identical widths across pixel backends" acceptance
+    /// bar for #730).
+    struct FakeMeasure;
+    impl crate::primitives::layout_metrics::TextMeasure for FakeMeasure {
+        fn width_of(&self, text: &str) -> f32 {
+            text.chars().count() as f32 * 6.0
+        }
+    }
+
+    #[test]
+    fn action_text_formats_icon_label_hint() {
+        assert_eq!(action_text("Refine", None, None), "Refine");
+        assert_eq!(action_text("Refine", Some("▶"), None), "▶ Refine");
+        assert_eq!(action_text("Refine", None, Some("r")), "Refine (r)");
+        assert_eq!(action_text("Refine", Some("▶"), Some("r")), "▶ Refine (r)");
+    }
+
+    #[test]
+    fn measure_button_action_is_text_width_plus_double_pad() {
+        let btn = mk_action("a", "Go", true); // 2 chars * 6.0 = 12.0
+        let w = measure_button(&FakeMeasure, &btn);
+        assert_eq!(w, 12.0 + 2.0 * ACTION_H_PAD);
+    }
+
+    #[test]
+    fn measure_button_separator_is_fixed_width() {
+        let w = measure_button(&FakeMeasure, &ToolbarButton::Separator);
+        assert_eq!(w, SEPARATOR_PX);
+    }
+
+    #[test]
+    fn measure_button_label_is_unpadded_text_width() {
+        let btn = ToolbarButton::Label {
+            text: "2 of 5".into(), // 6 chars * 6.0 = 36.0
+            fg: None,
+        };
+        let w = measure_button(&FakeMeasure, &btn);
+        assert_eq!(w, 36.0);
     }
 
     #[test]

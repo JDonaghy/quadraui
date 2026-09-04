@@ -2230,22 +2230,45 @@ impl Backend for WinBackend {
         todo!("DirectWrite command center layout")
     }
 
+    /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
     fn draw_toolbar(
         &mut self,
-        _rect: Rect,
-        _bar: &crate::primitives::toolbar::Toolbar,
-        _hovered_id: Option<&crate::types::WidgetId>,
-        _pressed_id: Option<&crate::types::WidgetId>,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
     ) -> crate::primitives::toolbar::ToolbarLayout {
-        todo!("Direct2D toolbar rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::toolbar::draw_toolbar(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                hovered_id,
+                pressed_id,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, hovered_id, pressed_id);
+        todo!("Direct2D toolbar rasteriser (no surface attached yet)")
     }
 
+    /// #730: see [`Self::status_bar_layout`]'s doc for why this only
+    /// needs `self.dwrite`.
     fn toolbar_layout(
         &self,
-        _rect: Rect,
-        _bar: &crate::primitives::toolbar::Toolbar,
+        rect: Rect,
+        bar: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
-        todo!("DirectWrite toolbar layout")
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::toolbar::win_toolbar_layout(dwrite, rect, bar);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar);
+        todo!("DirectWrite toolbar layout (no surface attached yet)")
     }
 
     fn draw_sidebar_panel(

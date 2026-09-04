@@ -9,11 +9,11 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
-use crate::primitives::toolbar::ToolbarItemMeasure;
+use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-use super::text::measure_text;
+use super::toolbar::CtFontMeasure;
 
 /// Compute the macOS pixel-unit layout for a `SidebarPanel`. `font`
 /// is required for accurate text measurement.
@@ -27,41 +27,12 @@ pub fn mac_sidebar_panel_layout(
     h: f64,
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    let measure = CtFontMeasure(font);
     panel.layout(
         bounds,
         SidebarPanelMeasure::new(line_height as f32, 8.0),
-        |btn| ToolbarItemMeasure::new(item_width_px(font, btn) as f32),
+        |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
     )
-}
-
-fn item_width_px(font: &CTFont, btn: &crate::primitives::toolbar::ToolbarButton) -> f64 {
-    use crate::primitives::toolbar::ToolbarButton;
-    const ACTION_H_PAD: f64 = 8.0;
-    const SEPARATOR_PX: f64 = 12.0;
-    match btn {
-        ToolbarButton::Action {
-            label,
-            icon,
-            key_hint,
-            ..
-        } => {
-            let mut s = String::new();
-            if let Some(icon) = icon {
-                s.push_str(icon);
-                s.push(' ');
-            }
-            s.push_str(label);
-            if let Some(hint) = key_hint {
-                s.push_str(" (");
-                s.push_str(hint);
-                s.push(')');
-            }
-            let (w, _) = measure_text(font, &s);
-            w + 2.0 * ACTION_H_PAD
-        }
-        ToolbarButton::Separator => SEPARATOR_PX,
-        ToolbarButton::Label { text, .. } => measure_text(font, text).0,
-    }
 }
 
 /// Paint a `SidebarPanel` onto `ctx`. Returns the resolved layout

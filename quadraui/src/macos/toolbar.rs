@@ -20,47 +20,28 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout};
+use crate::primitives::layout_metrics::TextMeasure;
+use crate::primitives::toolbar::{
+    action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
+};
 use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 
-/// Horizontal padding inside each action button, in px.
-const ACTION_H_PAD: f64 = 8.0;
-/// Width of a separator slot in px.
-const SEPARATOR_PX: f64 = 12.0;
+/// Adapts a live `CTFont` to the shared [`TextMeasure`] trait so
+/// [`crate::primitives::toolbar::measure_button`] never has to name a
+/// Core Text type — mirrors `macos::form::CtFontMeasure` /
+/// `gtk::toolbar`'s `PangoMeasure` / `win::toolbar`'s `DWriteMeasure`,
+/// which exist for exactly this reason (#730).
+///
+/// `pub(crate)` so `macos::sidebar_panel`'s embedded toolbar header can
+/// build the exact same adapter for its own `measure_button` calls,
+/// guaranteeing paint and hit-test agree on item positions everywhere a
+/// `Toolbar` appears — with no separate per-caller measurer function.
+pub(crate) struct CtFontMeasure<'a>(pub(crate) &'a CTFont);
 
-fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> String {
-    let mut s = String::new();
-    if let Some(icon) = icon {
-        s.push_str(icon);
-        s.push(' ');
-    }
-    s.push_str(label);
-    if let Some(hint) = key_hint {
-        s.push_str(" (");
-        s.push_str(hint);
-        s.push(')');
-    }
-    s
-}
-
-fn measure_item(font: &CTFont, btn: &ToolbarButton) -> f32 {
-    match btn {
-        ToolbarButton::Action {
-            label,
-            icon,
-            key_hint,
-            ..
-        } => {
-            let text = action_text(label, icon.as_deref(), key_hint.as_deref());
-            let (w, _) = measure_text(font, &text);
-            (w + 2.0 * ACTION_H_PAD) as f32
-        }
-        ToolbarButton::Separator => SEPARATOR_PX as f32,
-        ToolbarButton::Label { text, .. } => {
-            let (w, _) = measure_text(font, text);
-            w as f32
-        }
+impl TextMeasure for CtFontMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        measure_text(self.0, text).0 as f32
     }
 }
 
@@ -74,8 +55,9 @@ pub fn mac_toolbar_layout(
     w: f64,
     h: f64,
 ) -> ToolbarLayout {
+    let measure = CtFontMeasure(font);
     bar.layout(x as f32, y as f32, w as f32, h as f32, |btn| {
-        ToolbarItemMeasure::new(measure_item(font, btn))
+        ToolbarItemMeasure::new(measure_button(&measure, btn))
     })
 }
 
