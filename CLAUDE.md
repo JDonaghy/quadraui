@@ -210,17 +210,6 @@ time — none of them produces an error that points at its own cause:
 4. **`WNDCLASSW` / `RegisterClassW` need the `Win32_Graphics_Gdi` feature**, not just
    `Win32_UI_WindowsAndMessaging` — the struct carries `HBRUSH`/`HICON`. The error is
    a bare "cannot find struct ... in this scope", which does not name the feature.
-5. **Common-controls v6 APIs need an embedded side-by-side manifest, or nothing runs.**
-   `System32\comctl32.dll` is still 5.82; `TaskDialogIndirect` and friends live only in
-   the WinSxS `…common-controls…_6.0.*` assembly. The `windows` crate imports them
-   *statically*, so without a manifest the loader **kills every `--features win` binary
-   before `main`** — including `cargo test`'s harness exes — with no output and no
-   backtrace, which looks exactly like trap 1. `quadraui/build.rs` emits
-   `/MANIFEST:EMBED` + `/MANIFESTDEPENDENCY:` for `windows`+`msvc`+`win`; don't delete
-   it (`tests/win_sxs_manifest.rs` guards it on every leg). Note this does **not**
-   propagate to downstream crates linking quadraui — they need their own manifest.
-   Also note `RUSTFLAGS` does not reach doctests: cross-running them needs
-   `RUSTDOCFLAGS="-C target-feature=+crt-static"` too, or every doctest exits 53.
 
 **No interactive Windows desktop is required** for rasteriser work. `src/win/testing.rs`
 `HeadlessSurface` is `ID2D1DCRenderTarget` + `CreateDIBSection` with
