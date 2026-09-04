@@ -147,6 +147,43 @@ use super::text::DWrite;
 #[cfg(target_os = "windows")]
 const DEFAULT_EDITOR_FONT_FAMILY: &str = "Consolas";
 
+/// Default chrome (UI) font family for the Win-GUI backend until
+/// [`Backend::set_ui_font`] overrides it (#724) — the system UI font on
+/// every Windows version since Vista, same role as GTK's `"Sans 11"`
+/// fallback for `ui_font`.
+#[cfg(target_os = "windows")]
+const DEFAULT_UI_FONT_FAMILY: &str = "Segoe UI";
+
+/// Default chrome font size in points, paired with
+/// [`DEFAULT_UI_FONT_FAMILY`] — matches [`WinBackend::editor_font_size_pt`]'s
+/// default.
+#[cfg(target_os = "windows")]
+const DEFAULT_UI_FONT_SIZE_PT: f32 = 11.0;
+
+/// Parse a Pango-style font description (`Backend::set_ui_font`'s
+/// documented shape, e.g. `"Segoe UI 11"`) into a DirectWrite-ready
+/// `(family, size_pt)` pair. Win-GUI has no Pango parser to reuse the way
+/// `gtk::chrome_font_description` reuses `pango::FontDescription::from_string`,
+/// so this only understands the one convention that doc names: a
+/// trailing whitespace-separated numeric token is the point size, and
+/// everything before it is the family. Falls back to
+/// `(DEFAULT_UI_FONT_FAMILY, DEFAULT_UI_FONT_SIZE_PT)` wholesale — rather
+/// than guessing at a partial split — if `desc` doesn't parse that way,
+/// same "don't fail, degrade" posture `super::text`'s font-metrics lookup
+/// takes when a requested family isn't installed.
+#[cfg(target_os = "windows")]
+fn parse_ui_font_desc(desc: &str) -> (String, f32) {
+    let desc = desc.trim();
+    if let Some(idx) = desc.rfind(' ') {
+        let (family, size_str) = desc.split_at(idx);
+        let family = family.trim();
+        if let (false, Ok(size)) = (family.is_empty(), size_str.trim().parse::<f32>()) {
+            return (family.to_string(), size);
+        }
+    }
+    (DEFAULT_UI_FONT_FAMILY.to_string(), DEFAULT_UI_FONT_SIZE_PT)
+}
+
 /// A live Direct2D render target: either a window-bound
 /// `ID2D1HwndRenderTarget` ([`WinBackend::attach_surface`], a real
 /// window) or an offscreen `ID2D1DCRenderTarget`
@@ -269,6 +306,35 @@ pub struct WinBackend {
     /// Defaults to `11.0`, matching GTK's default.
     #[cfg(target_os = "windows")]
     editor_font_size_pt: f32,
+    /// DirectWrite factory + `IDWriteTextFormat` for the current chrome
+    /// (UI) font (`ui_font_family`/`ui_font_size_pt`) — the chrome twin
+    /// of `dwrite` above. `None` until [`Self::attach_surface`] creates
+    /// it; recreated alongside it the same way (#724). Read via
+    /// [`Self::chrome_dwrite`]; no `draw_*` rasteriser paints chrome text
+    /// with it yet — wiring individual rasterisers off `dwrite` (the
+    /// editor font) onto this is a follow-up, same posture as macOS's
+    /// still-open `set_ui_font` gap (`ACCEPTED_DEFAULTS`, #624).
+    #[cfg(target_os = "windows")]
+    chrome_dwrite: Option<DWrite>,
+    /// Chrome font family, parsed from the Pango-style description
+    /// [`Backend::set_ui_font`] receives via [`parse_ui_font_desc`].
+    /// Defaults to [`DEFAULT_UI_FONT_FAMILY`]. `cfg`-gated like
+    /// `editor_font_family`: nothing outside the `target_os = "windows"`
+    /// methods reads or writes it.
+    #[cfg(target_os = "windows")]
+    ui_font_family: String,
+    /// Chrome font size in points, paired with `ui_font_family`. Defaults
+    /// to [`DEFAULT_UI_FONT_SIZE_PT`].
+    #[cfg(target_os = "windows")]
+    ui_font_size_pt: f32,
+    /// The active [`crate::Theme`], set via [`Backend::set_theme`] and
+    /// read by every `draw_*` rasteriser that used to fall back to
+    /// `Theme::default()` regardless of what the app configured (#724).
+    /// Not `cfg`-gated like `surface`/`dwrite` above: `Theme` is a plain,
+    /// portable value with no WinAPI dependency — same rationale as
+    /// `current_pointer_shape` below — so `set_theme`/`current_theme`
+    /// stay testable on every host, not only `target_os = "windows"`.
+    current_theme: crate::theme::Theme,
     /// The `PointerShape` [`Backend::set_cursor`] last applied — read back
     /// by `win::run`'s `WM_SETCURSOR` handler (#702) so the pointer glyph
     /// stays put across every `WM_SETCURSOR` Windows sends for the
@@ -325,6 +391,13 @@ impl WinBackend {
             editor_font_family: DEFAULT_EDITOR_FONT_FAMILY.to_string(),
             #[cfg(target_os = "windows")]
             editor_font_size_pt: 11.0,
+            #[cfg(target_os = "windows")]
+            chrome_dwrite: None,
+            #[cfg(target_os = "windows")]
+            ui_font_family: DEFAULT_UI_FONT_FAMILY.to_string(),
+            #[cfg(target_os = "windows")]
+            ui_font_size_pt: DEFAULT_UI_FONT_SIZE_PT,
+            current_theme: crate::theme::Theme::default(),
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
             text_runs: Vec::new(),
@@ -344,6 +417,30 @@ impl WinBackend {
     /// Mirrors `GtkBackend::set_current_char_width`.
     pub fn set_current_char_width(&mut self, char_width: f32) {
         self.current_char_width = char_width;
+    }
+
+    /// Update the cached theme. Ergonomic concrete-type sibling of
+    /// [`Backend::set_theme`] — mirrors `GtkBackend::set_current_theme`
+    /// (#724).
+    pub fn set_current_theme(&mut self, theme: crate::theme::Theme) {
+        self.current_theme = theme;
+    }
+
+    /// Read-only accessor for the cached theme. Mirrors
+    /// `GtkBackend::current_theme`.
+    pub fn current_theme(&self) -> &crate::theme::Theme {
+        &self.current_theme
+    }
+
+    /// Live DirectWrite handles for the current chrome (UI) font, once
+    /// [`Self::attach_surface`]/[`Self::attach_headless`] has built them —
+    /// `None` beforehand, same lifecycle as the editor `dwrite` field.
+    /// No `draw_*` rasteriser consumes this yet (see `chrome_dwrite`'s
+    /// field doc); exposed now so a follow-up wiring chrome text onto it
+    /// doesn't also need to add the accessor.
+    #[cfg(target_os = "windows")]
+    pub fn chrome_dwrite(&self) -> Option<&DWrite> {
+        self.chrome_dwrite.as_ref()
     }
 
     /// Create a single-threaded `ID2D1Factory` and an `ID2D1HwndRenderTarget`
@@ -408,6 +505,14 @@ impl WinBackend {
         self.current_line_height = line_height;
         self.current_char_width = char_width;
 
+        // Chrome (UI) font bootstrap (#724) — same DirectWrite dance as
+        // the editor font above, but for `ui_font_family`/`ui_font_size_pt`.
+        // `line_height`/`char_width` from this format aren't needed:
+        // those are always resolved from the editor font, so they're
+        // discarded here rather than overwriting `self.current_line_height`.
+        let (chrome_dwrite, _, _) = DWrite::new(&self.ui_font_family, self.ui_font_size_pt)?;
+        self.chrome_dwrite = Some(chrome_dwrite);
+
         Ok(())
     }
 
@@ -451,6 +556,10 @@ impl WinBackend {
         self.dwrite = Some(dwrite);
         self.current_line_height = line_height;
         self.current_char_width = char_width;
+
+        // Chrome (UI) font bootstrap — see `attach_surface`'s comment.
+        let (chrome_dwrite, _, _) = DWrite::new(&self.ui_font_family, self.ui_font_size_pt)?;
+        self.chrome_dwrite = Some(chrome_dwrite);
 
         Ok(())
     }
@@ -758,6 +867,35 @@ impl Backend for WinBackend {
         }
         #[cfg(not(target_os = "windows"))]
         todo!("ID2D1RenderTarget::EndDraw()")
+    }
+
+    // ─── Theming ────────────────────────────────────────────────────────
+
+    /// Store the theme so the `draw_*` rasterisers below stop falling
+    /// back to `Theme::default()` regardless of what the app configured
+    /// (#724 — quadraui#492's headline example). Mirrors
+    /// `GtkBackend::set_theme`/`MacBackend::set_theme`.
+    fn set_theme(&mut self, theme: crate::Theme) {
+        self.set_current_theme(theme);
+    }
+
+    /// Store the chrome font description for the next
+    /// [`Self::attach_surface`]/[`Self::attach_headless`] call to build a
+    /// chrome `IDWriteTextFormat` from (#724), parsed via
+    /// [`parse_ui_font_desc`]. Same "doesn't rebuild a live surface's
+    /// text format immediately" limitation as [`Self::set_editor_font`] —
+    /// see that method's doc.
+    fn set_ui_font(&mut self, font_desc: &str) {
+        #[cfg(target_os = "windows")]
+        {
+            let (family, size_pt) = parse_ui_font_desc(font_desc);
+            self.ui_font_family = family;
+            self.ui_font_size_pt = size_pt;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = font_desc;
+        }
     }
 
     // ─── Events + keybindings ─────────────────────────────────────────
@@ -1326,7 +1464,7 @@ impl Backend for WinBackend {
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let lh = self.current_line_height;
             let cw = self.current_char_width;
-            let theme = crate::theme::Theme::default();
+            let theme = &self.current_theme;
 
             let sb_width = match &term.scrollbar {
                 Some(sb) => sb.width.map(|w| w as f32).unwrap_or(8.0),
@@ -1344,7 +1482,7 @@ impl Backend for WinBackend {
                 rect.height,
                 lh,
                 cw,
-                &theme,
+                theme,
             );
 
             if let Some(ref sb_state) = term.scrollbar {
@@ -1356,7 +1494,7 @@ impl Backend for WinBackend {
                     sb_state.visible_lines as f32,
                     lh,
                 );
-                super::scrollbar::draw_scrollbar(&surface.target, &sb, &theme);
+                super::scrollbar::draw_scrollbar(&surface.target, &sb, theme);
             }
             return;
         }
@@ -1377,7 +1515,7 @@ impl Backend for WinBackend {
                 rect.x,
                 rect.y,
                 rect.height,
-                &crate::theme::Theme::default(),
+                &self.current_theme,
             );
             return;
         }
@@ -1397,7 +1535,7 @@ impl Backend for WinBackend {
                 dwrite,
                 rect,
                 td,
-                &crate::theme::Theme::default(),
+                &self.current_theme,
                 self.current_line_height,
             );
             return;
@@ -1744,11 +1882,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             let _ = rect;
-            super::scrollbar::draw_scrollbar(
-                &surface.target,
-                scrollbar,
-                &crate::theme::Theme::default(),
-            );
+            super::scrollbar::draw_scrollbar(&surface.target, scrollbar, &self.current_theme);
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -2360,5 +2494,58 @@ mod tests {
         {
             assert_eq!(pointer_shape_to_win32_cursor(*shape), *expected);
         }
+    }
+
+    /// #724 acceptance: `Backend::set_theme` must actually reach the
+    /// rasterisers, not just be stored and ignored — a real
+    /// `HeadlessSurface` pixel probe, not a source-parse check (that's
+    /// `tests/conformance/caps.rs`'s job). Probes
+    /// [`super::terminal::draw_terminal_divider`]'s painted pixel: a
+    /// single flat `theme.separator` fill with no blending
+    /// (`super::scrollbar`/`super::multi_section_view`'s translucency
+    /// premixes would make the expected colour only approximate), so a
+    /// non-default theme's colour must come through pixel-exact if
+    /// `set_theme` is wired at all. Before #724 this rasteriser always
+    /// painted `Theme::default().separator` regardless of what was set.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_rasterisers() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 32;
+        const H: u32 = 32;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_separator = Color::rgb(0x12, 0x34, 0x56);
+        assert_ne!(
+            custom_separator,
+            Theme::default().separator,
+            "test fixture bug: the probe colour must differ from the default theme's, or a \
+             hardcoded `Theme::default()` would pass this test too"
+        );
+        backend.set_theme(Theme {
+            separator: custom_separator,
+            ..Theme::default()
+        });
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        // 1 DIP wide at x=0, spanning the full probe height — see
+        // `crate::terminal_style::divider_geometry`.
+        backend.draw_terminal_divider(Rect::new(0.0, 0.0, 1.0, H as f32));
+        backend.end_frame();
+
+        let px = surface.pixel_at(0, H / 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_separator.r, custom_separator.g, custom_separator.b),
+            "painted pixel must reflect the theme set via `set_theme`, not `Theme::default()`",
+        );
     }
 }

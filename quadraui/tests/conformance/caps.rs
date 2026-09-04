@@ -427,20 +427,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     // ── Win: every method is a `todo!()` stub (#19). Listed one by one
     // anyway — "the whole backend is a stub" is exactly the kind of
-    // blanket excuse that outlives the stub.
-    (
-        "win",
-        "set_theme",
-        "quadraui#492's headline example: the Win stub silently discards the theme. Unblocked \
-         by #19 (Direct2D/DirectWrite)",
-    ),
+    // blanket excuse that outlives the stub. `set_theme`/`set_ui_font`
+    // are no longer here (#724): both are now overridden — `set_theme`
+    // stores `current_theme` for every `draw_*` rasteriser that used to
+    // fall back to `Theme::default()`, and `set_ui_font` builds a chrome
+    // `IDWriteTextFormat` alongside the editor one.
     ("win", "set_nerd_fonts", "stub backend — see #19"),
-    (
-        "win",
-        "set_ui_font",
-        "editor font is now wired via DirectWrite (#21), but the chrome font override isn't — \
-         Win chrome still paints with the renderer's own font (#624)",
-    ),
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
     ("win", "register_zone", "stub backend — see #19"),
