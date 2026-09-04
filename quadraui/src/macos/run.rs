@@ -60,7 +60,7 @@ use super::backend::MacBackend;
 use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
 use super::text::make_font;
 use crate::backend::Backend;
-use crate::desktop::is_paste_keypress;
+use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink};
@@ -260,7 +260,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // Cmd-V / Cmd-Shift-V paste interception — shared predicate, #728
     // (see this function's doc comment and D-011 in `docs/DECISIONS.md`).
     if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        if is_paste_keypress(key, modifiers) {
+        if is_paste_keypress(key, modifiers, PasteModifier::Cmd) {
             return if let Some(text) = backend.services().clipboard().read_text() {
                 app.handle(UiEvent::ClipboardPaste(text), backend).into()
             } else {

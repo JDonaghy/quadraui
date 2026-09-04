@@ -1617,7 +1617,7 @@ have GitHub write access, coordinator: please open against #481)
    for the one updated example — not end-to-end for the example set as
    a whole.
 
-## D-011 — Clipboard paste/copy keypress contract: shift tolerance, letter case, forced redraw (issue #728)
+## D-011 — Clipboard paste/copy keypress contract: shift tolerance, letter case, forced redraw, native modifier (issue #728)
 
 ### Question
 
@@ -1690,6 +1690,41 @@ axes.** For every backend, present and future:
    whatever the app decided. A `Reaction::Continue` app's intent should
    survive the round trip.
 
+4. **Exactly one platform modifier is native per backend, and the shared
+   predicate enforces *that specific one* — never "whichever of
+   `ctrl`/`cmd` happens to be held."** [`crate::Modifiers::cmd`] is the
+   crate-wide abstraction for "this platform's OS-level modifier key":
+   GTK maps `SUPER_MASK`/`META_MASK` → `cmd` (`gtk::events`), Win32 maps
+   the Windows key → `cmd` (`win::events::win_modifiers`), and macOS maps
+   ⌘ → `cmd`. A first mechanical lift of GTK's `is_paste_keypress` used
+   `(modifiers.ctrl ^ modifiers.cmd) && !modifiers.alt` — accept
+   whichever single one of `ctrl`/`cmd` is held, reject both/neither —
+   reasoning that XOR alone was enough because "exactly one platform
+   modifier" sounded backend-neutral. It wasn't: `cmd` means *Super* on
+   GTK and *the Windows key* on `win`, not "the OS-native modifier
+   restricted to the modifier that's actually native to the running
+   platform." That XOR silently made plain **Super+V trigger paste on
+   GTK** (GTK's own pre-lift predicate required `ctrl` unconditionally
+   and explicitly rejected `cmd` being held at all: `ctrl && !alt &&
+   !cmd`) and made plain **Ctrl+V trigger paste on macOS** (whose pre-lift
+   inline guard required `ctrl: false` exactly) — a real behavior change
+   on both existing backends introduced by the "generalisation" itself,
+   caught at review before merge rather than recorded here up front as
+   this section's own rule requires.
+
+   The fix: [`crate::desktop::is_paste_keypress`] takes a third
+   parameter, `PasteModifier` (`Ctrl` or `Cmd`), that each backend's
+   `dispatch_event` passes explicitly — GTK and `win` both pass
+   `PasteModifier::Ctrl`, macOS passes `PasteModifier::Cmd`. The
+   predicate then requires that specific modifier to be held **and** the
+   *other* one to be explicitly absent (not merely unchecked), restoring
+   both backends' original, narrower pre-lift behavior exactly while
+   still sharing one function body. This is the "parameter" option, not
+   the `target_os`/feature-branch option — a parameter keeps the
+   predicate itself platform-agnostic (still zero toolkit dependency,
+   still unit-testable for both arms on any host) and pushes the
+   platform fact to the one place that already knows it: the call site.
+
 This is a decision about the *contract*, not a code change to
 `tui::run`/`gtk::run` in this PR: #728's own scope is landing the paste
 half for `win` (see its issue body — "the `TextCopied` half needs a text
@@ -1704,7 +1739,9 @@ not this one's. What #728 *does* land now, consistent with point 1 above:
 [`crate::desktop::is_paste_keypress`], the shared Ctrl-V/Cmd-V predicate
 every backend's `dispatch_event` calls, is shift-tolerant on every
 adopter (including macOS's Cmd-V, which used to require `shift: false`
-before adopting the shared predicate in this PR).
+before adopting the shared predicate in this PR) — and, per point 4,
+requires each backend to name its own native modifier rather than
+accepting either.
 
 ### What this does NOT mean
 
@@ -1720,6 +1757,13 @@ before adopting the shared predicate in this PR).
 - It does not retroactively bless "any modifier goes" — Alt and holding
   both `ctrl`+`cmd` at once are still rejected everywhere; only `shift`
   moved from "must be absent" to "don't care."
+- It does not mean `ctrl` and `cmd` are interchangeable paste triggers on
+  any given backend, even though both exist as fields on every
+  `Modifiers` value regardless of platform. Per point 4, exactly one is
+  native to each backend and the *other* must be absent, not merely
+  unchecked — plain Super+V on GTK and plain Ctrl+V on macOS are both
+  still rejected, exactly as they were before `is_paste_keypress` was
+  shared.
 
 Future backends (or a fourth desktop toolkit) implementing copy/paste
 should read this decision rather than pattern-matching whichever

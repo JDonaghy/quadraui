@@ -121,9 +121,14 @@
 //!   #728 gave `dispatch_event` a real Ctrl-V → `ClipboardPaste`
 //!   interception path — dispatches a synthetic Ctrl-V `KeyPressed`
 //!   through it, mirroring `gtk::run::schedule_smoke_check`'s identical
-//!   round-trip-then-replay sequence. A regression in the interception
-//!   wiring itself now fails the smoke too, not just a raw clipboard
-//!   failure.
+//!   round-trip-then-replay sequence. Note this replay's `dispatch`
+//!   return value is never inspected here (same as GTK's equivalent
+//!   fire-and-forget call) — it exercises the interception code path so
+//!   a panic there would fail the smoke, but on its own it cannot tell
+//!   "recognised as paste" apart from "fell through to `app.handle`
+//!   unchanged," since nothing asserts on the outcome. Real coverage of
+//!   `is_paste_keypress` matching is `crate::desktop`'s pure-predicate
+//!   unit tests, not this smoke check.
 //!
 //! Any assertion failure is printed to stderr (`win32::run_smoke_check`
 //! is exempted from the crate-wide `print_stderr` deny for the same
@@ -133,7 +138,7 @@
 //! `QUADRAUI_WIN_SMOKE_MS` is set.
 
 use crate::backend::Backend;
-use crate::desktop::is_paste_keypress;
+use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::event::Viewport;
 use crate::runner::AppLogic;
 // `EventOutcome` — what the caller should do after `dispatch_event`
@@ -240,7 +245,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 
     // ── Ctrl-V / Ctrl-Shift-V interception (paste, #728) ─────────────
     if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        if is_paste_keypress(key, modifiers) {
+        if is_paste_keypress(key, modifiers, PasteModifier::Ctrl) {
             return if let Some(text) = backend.services().clipboard().read_text() {
                 app.handle(UiEvent::ClipboardPaste(text), backend).into()
             } else {
@@ -830,11 +835,15 @@ mod win32 {
                 ws.smoke_failed.set(true);
             } else {
                 // #728: also exercise the real Ctrl-V interception path
-                // (the exact code `WM_CHAR`'s live dispatch calls), so a
-                // regression there — not just in the raw OS clipboard —
-                // fails the smoke too. Mirrors
-                // `gtk::run::schedule_smoke_check`'s identical follow-up
-                // dispatch.
+                // (the exact code `WM_CHAR`'s live dispatch calls) —
+                // mirrors `gtk::run::schedule_smoke_check`'s identical
+                // follow-up dispatch. Note: the return value below isn't
+                // inspected, so this alone can't distinguish "recognised
+                // as paste" from "fell through to `app.handle`
+                // unchanged" — it only guards against a panic in the
+                // interception path itself. The predicate's actual
+                // matching behavior is covered by `crate::desktop`'s
+                // pure-predicate unit tests, not here.
                 dispatch(
                     ws,
                     hwnd,
