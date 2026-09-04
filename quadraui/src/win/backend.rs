@@ -2205,20 +2205,50 @@ impl Backend for WinBackend {
         todo!("DirectWrite toast stack layout (no surface attached yet)")
     }
 
+    /// #735: real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
+    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
+    /// the "surface not attached yet" fallback posture.
     fn draw_pipeline_view(
         &mut self,
-        _rect: Rect,
-        _view: &crate::primitives::pipeline_view::PipelineView,
+        rect: Rect,
+        view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        todo!("Direct2D pipeline view rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::pipeline_view::draw_pipeline_view(
+                &surface.target,
+                dwrite,
+                rect,
+                view,
+                &self.current_theme,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, view);
+        todo!("Direct2D pipeline view rasteriser (no surface attached yet)")
     }
 
+    /// #735: pure geometry — `PipelineView::layout` needs no measurer at
+    /// all (fixed DIP constants for arrow/action-height), so unlike most
+    /// `*_layout` siblings this doesn't even need `self.dwrite`, only
+    /// kept behind the `target_os = "windows"` gate for consistency with
+    /// every other method in this file (mirrors
+    /// [`Self::progress_layout`]'s doc). No `return` in the `windows`
+    /// arm — see [`Self::activity_bar_layout`]'s doc for why.
     fn pipeline_view_layout(
         &self,
-        _rect: Rect,
-        _view: &crate::primitives::pipeline_view::PipelineView,
+        rect: Rect,
+        view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        todo!("DirectWrite pipeline view layout")
+        #[cfg(target_os = "windows")]
+        {
+            super::pipeline_view::win_pipeline_view_layout(view, rect)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, view);
+            todo!("DirectWrite pipeline view layout")
+        }
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not

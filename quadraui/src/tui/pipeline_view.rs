@@ -21,11 +21,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color as RatatuiColor;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::pipeline_view::{
-    PipelineView, PipelineViewLayout, PipelineViewMeasure, StageStatus,
+    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
 };
 use crate::theme::Theme;
 
@@ -84,14 +83,10 @@ pub fn draw_pipeline_view(
         let is_focused = view.focused_stage == Some(sb.index);
         // Per-status border colour. Focus no longer overrides it — a ▼
         // indicator drawn in the reserved row above the box signals focus.
-        let border_col = match stage.status {
-            StageStatus::Active => ratatui_color(theme.accent_bg),
-            StageStatus::Done => ratatui_color(theme.git_added),
-            StageStatus::Failed => ratatui_color(theme.error_fg),
-            // Stale gets a dim border so it visually retreats — the prior
-            // verdict is shown but de-emphasised to signal "no longer trusted."
-            StageStatus::Stale | StageStatus::Pending | StageStatus::Skipped => muted,
-        };
+        // Stale gets the same dim (muted) border as Pending/Skipped so it
+        // visually retreats — the prior verdict is shown but de-emphasised
+        // to signal "no longer trusted."
+        let border_col = ratatui_color(status_color(&stage.status, theme));
 
         let bx = sb.box_bounds.x.round() as u16;
         let by = sb.box_bounds.y.round() as u16;
@@ -141,7 +136,11 @@ pub fn draw_pipeline_view(
         }
 
         // ── Status icon (row 1 inside box, or centred if single-row) ─────
-        let (icon, icon_color) = status_icon(stage, theme);
+        // Skipped's glyph is a single-line dash (─) drawn dim like
+        // Pending; Stale's `↻` also renders dim so its prior verdict
+        // doesn't compete visually with a fresh Done downstream.
+        let icon = status_glyph(&stage.status).chars().next().unwrap_or(' ');
+        let icon_color = ratatui_color(status_color(&stage.status, theme));
         let icon_row = by + 1;
         if icon_row < by + bh.saturating_sub(1) {
             let icon_col = bx + bw / 2;
@@ -224,26 +223,10 @@ pub fn draw_pipeline_view(
     layout
 }
 
-fn status_icon(
-    stage: &crate::primitives::pipeline_view::PipelineStage,
-    theme: &Theme,
-) -> (char, RatatuiColor) {
-    match stage.status {
-        StageStatus::Done => ('✓', ratatui_color(theme.git_added)),
-        StageStatus::Active => ('●', ratatui_color(theme.accent_bg)),
-        StageStatus::Failed => ('✗', ratatui_color(theme.error_fg)),
-        StageStatus::Pending => ('·', ratatui_color(theme.muted_fg)),
-        StageStatus::Skipped => ('─', ratatui_color(theme.muted_fg)),
-        // ↻ suggests re-running. Stale renders dim like Pending so its
-        // prior verdict doesn't compete with a fresh Done downstream.
-        StageStatus::Stale => ('↻', ratatui_color(theme.muted_fg)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::pipeline_view::{PipelineHit, PipelineStage};
+    use crate::primitives::pipeline_view::{PipelineHit, PipelineStage, StageStatus};
     use crate::types::WidgetId;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {

@@ -108,6 +108,11 @@ mod palette;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod panel;
+/// Direct2D / DirectWrite rasteriser for
+/// [`crate::primitives::pipeline_view::PipelineView`] (#735). Windows-only
+/// in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod pipeline_view;
 /// Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`] (#29).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -244,6 +249,8 @@ pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_me
 pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
 pub use panel::{draw_panel, win_panel_layout, ACTION_BUTTON_DIP};
+#[cfg(target_os = "windows")]
+pub use pipeline_view::{draw_pipeline_view, win_pipeline_view_layout};
 #[cfg(target_os = "windows")]
 pub use progress::{draw_progress, win_progress_layout, CANCEL_WIDTH_DIP};
 #[cfg(target_os = "windows")]
