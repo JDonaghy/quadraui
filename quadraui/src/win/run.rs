@@ -158,6 +158,13 @@ use crate::{ActivityBarEvent, UiEvent};
 /// [`crate::gtk::run::dispatch_event`] / [`crate::macos::run::dispatch_event`].
 ///
 /// Pre-processing handled here, in priority order:
+/// - `MouseDown` ([`WinBackend::fold_double_click`], #729): folds into
+///   `UiEvent::DoubleClick` when it lands within the shared
+///   `dispatch::DoubleClickDetector`'s time/position window of the
+///   previous click. Independent of every other arm below (those only
+///   ever match `KeyPressed`), so its position in the list doesn't
+///   interact with them — listed first because it's the first check this
+///   function performs.
 /// - `KeyPressed` while an `ActivityBar` declared
 ///   `is_keyboard_focused = true` (tracked by
 ///   [`WinBackend::draw_activity_bar`] into
@@ -215,6 +222,16 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     backend: &mut WinBackend,
     app: &mut A,
 ) -> EventOutcome {
+    // ── Double-click folding (#729) ───────────────────────────────────
+    //
+    // Folds a `MouseDown` into `DoubleClick` when it lands within the
+    // shared `dispatch::DoubleClickDetector`'s time/position window of the
+    // previous click — the same synthesis-from-`MouseDown`-stream pattern
+    // `MacBackend::fold_double_click` uses, not a new `WM_*BUTTONDBLCLK`
+    // translator. Every other variant (including plain `MouseDown` that
+    // didn't fold) passes through unchanged.
+    let event = backend.fold_double_click(event);
+
     // ── ActivityBar keyboard focus intercept (#707) ──────────────────
     if let UiEvent::KeyPressed {
         ref key, modifiers, ..

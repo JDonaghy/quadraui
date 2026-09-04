@@ -24,9 +24,13 @@
 //!   `WM_CHAR` never fire for those combinations on real Windows, so
 //!   wiring this up needs an extra `wndproc` arm reusing the same
 //!   translators here.
-//! - `WM_*BUTTONDBLCLK` isn't dispatched, so [`UiEvent::DoubleClick`]
-//!   (which GTK's translator supports via `GestureClick`'s `n_press ==
-//!   2`) has no Win-GUI producer yet.
+//! - `WM_*BUTTONDBLCLK` is deliberately never dispatched here.
+//!   [`UiEvent::DoubleClick`] is instead synthesized from repeated
+//!   `MouseDown`s by the shared `dispatch::DoubleClickDetector`, folded
+//!   in by `WinBackend::fold_double_click` from `win::run::dispatch_event`
+//!   (#729) — the same pattern `MacBackend::fold_double_click` uses, not
+//!   a native translator. Adding a `WM_*BUTTONDBLCLK` arm here would be a
+//!   second, redundant double-click producer.
 //!
 //! # Coordinate convention
 //!
