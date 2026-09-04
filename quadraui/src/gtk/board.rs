@@ -14,24 +14,13 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{rounded_rect_path, set_source};
-use crate::primitives::board::{board_layout, BadgeStatus, BoardLayout, BoardMeasure, BoardModel};
+use crate::primitives::board::{
+    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel,
+    BOARD_CARD_CORNER_RADIUS_PX, BOARD_CARD_GAP_PX, BOARD_CARD_H_PAD_PX, BOARD_CARD_H_PX,
+    BOARD_COL_GAP_PX, BOARD_COL_MIN_PX, BOARD_HEADER_H_PX,
+};
 use crate::theme::Theme;
-use crate::types::Color;
 
-/// Minimum column width in pixels.
-pub(crate) const GTK_BOARD_COL_MIN_PX: f32 = 200.0;
-/// Gap between adjacent columns in pixels.
-const GTK_BOARD_COL_GAP_PX: f32 = 8.0;
-/// Column header height in pixels.
-const GTK_BOARD_HEADER_H_PX: f32 = 24.0;
-/// Card height in pixels (title + badge + optional hint).
-const GTK_BOARD_CARD_H_PX: f32 = 64.0;
-/// Vertical gap between cards in pixels.
-const GTK_BOARD_CARD_GAP_PX: f32 = 6.0;
-/// Corner radius for card boxes.
-const CARD_CORNER_RADIUS: f64 = 4.0;
-/// Horizontal text padding inside a card.
-const CARD_H_PAD: f64 = 8.0;
 /// Font size for card title text (in Pango units = 1024 * pt).
 const TITLE_FONT_SIZE: f64 = 11.0;
 /// Font size for badge text.
@@ -48,11 +37,11 @@ pub fn gtk_board_layout(model: &BoardModel, x: f64, y: f64, w: f64, h: f64) -> B
         w as f32,
         h as f32,
         BoardMeasure::new(
-            GTK_BOARD_COL_MIN_PX,
-            GTK_BOARD_COL_GAP_PX,
-            GTK_BOARD_HEADER_H_PX,
-            GTK_BOARD_CARD_H_PX,
-            GTK_BOARD_CARD_GAP_PX,
+            BOARD_COL_MIN_PX,
+            BOARD_COL_GAP_PX,
+            BOARD_HEADER_H_PX,
+            BOARD_CARD_H_PX,
+            BOARD_CARD_GAP_PX,
         ),
     )
 }
@@ -96,7 +85,7 @@ pub fn draw_board(
         pango_layout.set_text(&col.title);
         set_pango_size(pango_layout, TITLE_FONT_SIZE);
         set_source(cr, theme.header_fg);
-        cr.move_to(hb.x as f64 + CARD_H_PAD, hb.y as f64 + 4.0);
+        cr.move_to(hb.x as f64 + BOARD_CARD_H_PAD_PX, hb.y as f64 + 4.0);
         super::painted_text::show_layout(cr, pango_layout);
 
         // ── Cards ────────────────────────────────────────────────────────
@@ -125,7 +114,7 @@ pub fn draw_board(
                 theme.surface_bg
             };
             set_source(cr, card_bg);
-            rounded_rect_path(cr, bx, by, bw, bh, CARD_CORNER_RADIUS);
+            rounded_rect_path(cr, bx, by, bw, bh, BOARD_CARD_CORNER_RADIUS_PX);
             let _ = cr.fill();
 
             // Card border.
@@ -136,7 +125,7 @@ pub fn draw_board(
             };
             set_source(cr, border_col);
             cr.set_line_width(1.0);
-            rounded_rect_path(cr, bx, by, bw, bh, CARD_CORNER_RADIUS);
+            rounded_rect_path(cr, bx, by, bw, bh, BOARD_CARD_CORNER_RADIUS_PX);
             let _ = cr.stroke();
 
             let text_fg = theme.surface_fg;
@@ -150,14 +139,14 @@ pub fn draw_board(
             let full_title = format!("{}{}", prefix, card.title);
             pango_layout.set_text(&full_title);
             set_pango_size(pango_layout, TITLE_FONT_SIZE);
-            set_pango_width(pango_layout, (bw - CARD_H_PAD * 2.0) as f32);
+            set_pango_width(pango_layout, (bw - BOARD_CARD_H_PAD_PX * 2.0) as f32);
             set_source(cr, text_fg);
-            cr.move_to(bx + CARD_H_PAD, by + 6.0);
+            cr.move_to(bx + BOARD_CARD_H_PAD_PX, by + 6.0);
             super::painted_text::show_layout(cr, pango_layout);
 
             // ── Badge row ────────────────────────────────────────────────
             let badge_y = by + 26.0;
-            let mut badge_x = bx + CARD_H_PAD;
+            let mut badge_x = bx + BOARD_CARD_H_PAD_PX;
             for badge in &card.badges {
                 let icon = badge_icon(badge.status);
                 let badge_str = format!("{}{} ", icon, badge.label);
@@ -170,7 +159,7 @@ pub fn draw_board(
                 super::painted_text::show_layout(cr, pango_layout);
                 let (pw, _) = pango_layout.pixel_size();
                 badge_x += pw as f64;
-                if badge_x > bx + bw - CARD_H_PAD {
+                if badge_x > bx + bw - BOARD_CARD_H_PAD_PX {
                     break;
                 }
             }
@@ -186,9 +175,9 @@ pub fn draw_board(
                     // Text.
                     pango_layout.set_text(hint);
                     set_pango_size(pango_layout, HINT_FONT_SIZE);
-                    set_pango_width(pango_layout, (bw - CARD_H_PAD * 2.0) as f32);
+                    set_pango_width(pango_layout, (bw - BOARD_CARD_H_PAD_PX * 2.0) as f32);
                     set_source(cr, theme.card_hint_fg);
-                    cr.move_to(bx + CARD_H_PAD, hint_y);
+                    cr.move_to(bx + BOARD_CARD_H_PAD_PX, hint_y);
                     super::painted_text::show_layout(cr, pango_layout);
                 }
             }
@@ -196,28 +185,6 @@ pub fn draw_board(
     }
 
     layout
-}
-
-/// Return the icon char for a badge status.
-fn badge_icon(status: BadgeStatus) -> char {
-    match status {
-        BadgeStatus::Passed => '✓',
-        BadgeStatus::Running => '●',
-        BadgeStatus::Warning => '↩',
-        BadgeStatus::Blocked => '✗',
-        BadgeStatus::Pending => '·',
-    }
-}
-
-/// Return the foreground colour for a badge icon.
-fn badge_fg_color(status: BadgeStatus, theme: &Theme) -> Color {
-    match status {
-        BadgeStatus::Passed => theme.badge_passed,
-        BadgeStatus::Running => theme.badge_running,
-        BadgeStatus::Warning => theme.badge_warning,
-        BadgeStatus::Blocked => theme.badge_blocked,
-        BadgeStatus::Pending => theme.muted_fg,
-    }
 }
 
 /// Set the font size on a Pango layout (in points).

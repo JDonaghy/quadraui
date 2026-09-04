@@ -30,7 +30,7 @@ use ratatui::style::Color as RatatuiColor;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::board::{
-    board_layout, BadgeStatus, BoardLayout, BoardMeasure, BoardModel, CardBadge,
+    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel, CardBadge,
 };
 use crate::theme::Theme;
 
@@ -265,17 +265,6 @@ fn draw_card_border(
     }
 }
 
-/// Return the icon character for a [`BadgeStatus`].
-fn badge_icon(status: BadgeStatus) -> char {
-    match status {
-        BadgeStatus::Passed => '✓',
-        BadgeStatus::Running => '●',
-        BadgeStatus::Warning => '↩',
-        BadgeStatus::Blocked => '✗',
-        BadgeStatus::Pending => '·',
-    }
-}
-
 /// Paint the badge row in a single pass: `✓Passed ●Running ·Pending`
 /// (icon + host-supplied label, space-separated), each badge coloured by
 /// its status.
@@ -308,7 +297,7 @@ fn paint_badges(
                 break;
             }
         }
-        let color = badge_color(badge.status, theme);
+        let color = ratatui_color(badge_fg_color(badge.status, theme));
         set_cell(buf, x, row, badge_icon(badge.status), color, bg);
         x += 1;
         for ch in badge.label.chars() {
@@ -322,23 +311,12 @@ fn paint_badges(
     x
 }
 
-/// Return the foreground colour for a badge icon.
-fn badge_color(status: BadgeStatus, theme: &Theme) -> RatatuiColor {
-    match status {
-        BadgeStatus::Passed => ratatui_color(theme.badge_passed),
-        BadgeStatus::Running => ratatui_color(theme.badge_running),
-        BadgeStatus::Warning => ratatui_color(theme.badge_warning),
-        BadgeStatus::Blocked => ratatui_color(theme.badge_blocked),
-        BadgeStatus::Pending => ratatui_color(theme.muted_fg),
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::board::{BoardCard, BoardColumn, BoardHit, MoveDir};
+    use crate::primitives::board::{BadgeStatus, BoardCard, BoardColumn, BoardHit, MoveDir};
     use crate::types::WidgetId;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {

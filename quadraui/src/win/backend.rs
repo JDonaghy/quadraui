@@ -2105,12 +2105,41 @@ impl Backend for WinBackend {
         todo!("DirectWrite split-tree layout")
     }
 
-    fn draw_board(&mut self, _rect: Rect, _model: &crate::BoardModel) -> crate::BoardLayout {
-        todo!("Direct2D board rasteriser")
+    /// #736: real Direct2D/DirectWrite rasteriser via `win::board` once a
+    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
+    /// "surface not attached yet" fallback posture.
+    fn draw_board(&mut self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::board::draw_board(
+                &surface.target,
+                dwrite,
+                rect,
+                model,
+                &self.current_theme,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, model);
+        todo!("Direct2D board rasteriser (no surface attached yet)")
     }
 
-    fn board_layout(&self, _rect: Rect, _model: &crate::BoardModel) -> crate::BoardLayout {
-        todo!("Direct2D board layout — no rasteriser to keep in sync with yet, see draw_board")
+    /// #736: pure geometry — `board_layout` needs no measurer at all
+    /// (fixed DIP constants, same posture as
+    /// [`Self::pipeline_view_layout`]'s doc), only kept behind the
+    /// `target_os = "windows"` gate for consistency with every other
+    /// method in this file. No `return` in the `windows` arm — see
+    /// [`Self::activity_bar_layout`]'s doc for why.
+    fn board_layout(&self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
+        #[cfg(target_os = "windows")]
+        {
+            super::board::win_board_layout(model, rect)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, model);
+            todo!("Direct2D board layout — no rasteriser to keep in sync with yet, see draw_board")
+        }
     }
 
     fn draw_minimap(

@@ -27,6 +27,11 @@
 #[cfg(target_os = "windows")]
 mod activity_bar;
 pub mod backend;
+/// Direct2D / DirectWrite rasteriser for
+/// [`crate::primitives::board::BoardModel`] (#736). Windows-only in full —
+/// see its module docs.
+#[cfg(target_os = "windows")]
+mod board;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`]
 /// (#26). Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -215,6 +220,8 @@ mod tree;
 #[cfg(target_os = "windows")]
 pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};
 pub use backend::WinBackend;
+#[cfg(target_os = "windows")]
+pub use board::{draw_board, win_board_layout};
 #[cfg(target_os = "windows")]
 pub use chart::{draw_chart, win_chart_layout};
 #[cfg(target_os = "windows")]

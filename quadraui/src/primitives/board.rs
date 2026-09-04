@@ -39,8 +39,40 @@
 //! backend's rasteriser as it lands.
 
 use crate::event::{Point, Rect};
-use crate::types::{Modifiers, WidgetId};
+use crate::theme::Theme;
+use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
+
+// ── Shared layout constants ─────────────────────────────────────────────────
+//
+// #736: `gtk::board` and `macos::board` each carried their own copy of these
+// seven geometry constants (`GTK_BOARD_*_PX` / `MAC_BOARD_*_PX`), byte-for-
+// byte identical in every value. Per #713's primitive-first rule, a third
+// (`win::board`) or fourth copy is exactly the duplication that rule exists
+// to stop, so all three pixel/DIP-unit backends (gtk, macos, win — a DIP is
+// a pixel at 100% display scale, the same convention `win::board`'s module
+// doc uses) now share one definition. `tui::board` keeps its own
+// `TUI_BOARD_*_CELLS`/`TUI_BOARD_CARD_H` constants — cells are a genuinely
+// different unit with different natural values, not a fourth copy of these.
+
+/// Minimum column width in pixel/DIP-unit backends' native units.
+pub const BOARD_COL_MIN_PX: f32 = 200.0;
+/// Gap between adjacent columns.
+pub const BOARD_COL_GAP_PX: f32 = 8.0;
+/// Column header height (title row).
+pub const BOARD_HEADER_H_PX: f32 = 24.0;
+/// Card height (title + badge row + optional hint).
+pub const BOARD_CARD_H_PX: f32 = 64.0;
+/// Vertical gap between adjacent cards within a column.
+pub const BOARD_CARD_GAP_PX: f32 = 6.0;
+/// Corner radius for card boxes. `f64` — matches Cairo's/Core Graphics'
+/// path-construction APIs, which both `gtk::board` and `macos::board` feed
+/// this straight into. `win::board` has no rounded-rect primitive (see its
+/// module doc) so it doesn't consume this constant.
+pub const BOARD_CARD_CORNER_RADIUS_PX: f64 = 4.0;
+/// Horizontal text padding inside a card. `f64` for the same Cairo/Core
+/// Graphics reason as [`BOARD_CARD_CORNER_RADIUS_PX`].
+pub const BOARD_CARD_H_PAD_PX: f64 = 8.0;
 
 // ── Identifiers ───────────────────────────────────────────────────────────────
 
@@ -66,6 +98,33 @@ pub enum BadgeStatus {
     Warning,
     /// Blocked on an upstream condition — rendered error colour (✗).
     Blocked,
+}
+
+/// The `status → icon` table for a badge — shared by every backend's
+/// rasteriser (gtk, macos, tui, win). #736: previously duplicated
+/// verbatim as a private `badge_icon` in `gtk::board`, `macos::board`, and
+/// `tui::board`; #713's primitive-first rule forbids a fourth copy in
+/// `win::board`, so this is the one definition all four call.
+pub fn badge_icon(status: BadgeStatus) -> char {
+    match status {
+        BadgeStatus::Passed => '✓',
+        BadgeStatus::Running => '●',
+        BadgeStatus::Warning => '↩',
+        BadgeStatus::Blocked => '✗',
+        BadgeStatus::Pending => '·',
+    }
+}
+
+/// The `status → colour` table for a badge icon — shared by every
+/// backend's rasteriser (#736, same rationale as [`badge_icon`]).
+pub fn badge_fg_color(status: BadgeStatus, theme: &Theme) -> Color {
+    match status {
+        BadgeStatus::Passed => theme.badge_passed,
+        BadgeStatus::Running => theme.badge_running,
+        BadgeStatus::Warning => theme.badge_warning,
+        BadgeStatus::Blocked => theme.badge_blocked,
+        BadgeStatus::Pending => theme.muted_fg,
+    }
 }
 
 /// A single inline badge on a card (e.g. one step of a host-defined
