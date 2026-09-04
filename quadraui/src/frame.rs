@@ -30,6 +30,83 @@
 //! `quadraui/docs/PRIMITIVE_RULES.md` "One primitive, one canonical
 //! paint path" for the authoring rule this implies for new primitives.
 
+//! ## Presence gating + the paint/hit-test order invariant (issue #774)
+//!
+//! `Surface`/`ScreenLayout` above answer "what does a frame look
+//! like" for the primitives quadraui already knows about. They don't
+//! answer a question every non-trivial app also has: "which of *my*
+//! app-specific rungs (an editor pane, a bottom panel, an overlay
+//! stack) exist this frame, and in what back-to-front order do they
+//! have to be visited — identically — whether you're painting them or
+//! resolving a click?"
+//!
+//! Left unanswered, that question gets reinvented per app, per
+//! backend, as two independently-maintained lists that are supposed
+//! to agree: vimcode's `FRAME_Z_ORDER` (paint) and
+//! `MOUSE_ARBITRATION_ORDER` (hit-test) drifted exactly once —
+//! vimcode#587/#592 — and the fix was a `debug_assert!` comparing the
+//! two lists after the fact, not a structural guarantee.
+//!
+//! [`FrameRung`] + [`FramePresence`] + [`check_frame_order`] make that
+//! drift impossible instead of merely detectable:
+//!
+//! - An app defines one small `enum` for its rungs and implements
+//!   [`FrameRung::z_order`] **once** — the single source of truth for
+//!   "what's on top of what."
+//! - [`FramePresence::from_fn`] evaluates a presence predicate against
+//!   every rung **once per frame**, so "is the palette even open right
+//!   now" is computed a single time and consulted by both painting and
+//!   hit-testing, rather than re-derived (and potentially
+//!   re-diverging) at each call site.
+//! - [`compose_frame`] walks present rungs in canonical order with a
+//!   single non-branching callback — no `match` over paint-operation
+//!   variants, because the order comes from `z_order()`, not from the
+//!   shape of the walk.
+//! - [`check_frame_order`] asserts that some *other*, independently
+//!   produced sequence (e.g. a hit-test walk, or a legacy per-backend
+//!   paint routine mid-migration to [`compose_frame`]) is consistent
+//!   with `z_order()`. This is the guard that would have caught
+//!   vimcode#587/#592 as a compile-time-adjacent test failure instead
+//!   of a months-later bug report.
+//!
+//! This machinery is deliberately independent of [`Surface`]/
+//! [`ScreenLayout`]: the rungs it orders are app-defined (an app's own
+//! enum), not quadraui's primitive set, so it composes with either the
+//! `Surface` path or a bespoke per-backend paint routine equally well.
+//!
+//! ```
+//! use quadraui::frame::{check_frame_order, compose_frame, FramePresence, FrameRung};
+//!
+//! #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+//! enum Rung {
+//!     Editor,
+//!     BottomPanel,
+//!     Palette,
+//! }
+//!
+//! impl FrameRung for Rung {
+//!     fn z_order() -> &'static [Self] {
+//!         // Back-to-front: Editor paints first, Palette paints (and
+//!         // hit-tests) last, i.e. "on top".
+//!         &[Rung::Editor, Rung::BottomPanel, Rung::Palette]
+//!     }
+//! }
+//!
+//! // Computed once: bottom panel is closed, palette is open.
+//! let presence = FramePresence::from_fn(|r| !matches!(r, Rung::BottomPanel));
+//!
+//! let mut painted = Vec::new();
+//! compose_frame(&presence, |r| painted.push(r));
+//! assert_eq!(painted, vec![Rung::Editor, Rung::Palette]);
+//!
+//! // A hit-test walk built the same order independently — still valid.
+//! assert!(check_frame_order(&[Rung::Editor, Rung::Palette]).is_ok());
+//!
+//! // A hit-test walk that regressed to checking the palette before the
+//! // editor is caught immediately, not months later.
+//! assert!(check_frame_order(&[Rung::Palette, Rung::Editor]).is_err());
+//! ```
+
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::chart::Chart;
@@ -439,6 +516,122 @@ impl<'a> Default for ScreenLayout<'a> {
     }
 }
 
+/// A typed, app-defined z-order rung (issue #774). Implement this once
+/// per app-specific "what can appear in a frame" enum (an editor pane,
+/// a bottom panel, an overlay stack, ...) to get a single declared
+/// back-to-front order that both painting ([`compose_frame`]) and
+/// hit-testing can consult — see the module docs above for the
+/// vimcode#587/#592 drift this exists to make structurally impossible.
+pub trait FrameRung: Copy + Eq + std::fmt::Debug + 'static {
+    /// Every variant, back-to-front (bottom of the stack first, i.e.
+    /// painted first / hit-tested last). The single source of truth —
+    /// define it once, consult it from both paint and hit-test code.
+    fn z_order() -> &'static [Self]
+    where
+        Self: Sized;
+
+    /// This rung's position in [`Self::z_order`]. Panics if the rung
+    /// is missing from `z_order()` — that is always a programmer
+    /// error (an unlisted variant), not a runtime condition to handle.
+    fn rank(&self) -> usize
+    where
+        Self: Sized,
+    {
+        Self::z_order()
+            .iter()
+            .position(|r| r == self)
+            .unwrap_or_else(|| panic!("{self:?} is missing from FrameRung::z_order()"))
+    }
+}
+
+/// Presence gate for a frame: which rungs of `R` exist right now,
+/// evaluated once and reused by both the paint walk ([`compose_frame`])
+/// and hit-testing, so "is this even open" can't be answered two
+/// different ways in the same frame.
+pub struct FramePresence<R> {
+    present: Vec<(R, bool)>,
+}
+
+impl<R: FrameRung> FramePresence<R> {
+    /// Evaluate `predicate` once per rung in [`FrameRung::z_order`].
+    pub fn from_fn(predicate: impl Fn(R) -> bool) -> Self {
+        let present = R::z_order().iter().map(|&r| (r, predicate(r))).collect();
+        Self { present }
+    }
+
+    /// Whether `rung` is present this frame. Rungs not covered by
+    /// [`Self::from_fn`]'s `z_order()` scan (impossible in practice,
+    /// since it's derived from `z_order()` itself) are absent.
+    pub fn is_present(&self, rung: R) -> bool {
+        self.present
+            .iter()
+            .any(|(r, present)| *r == rung && *present)
+    }
+
+    /// Rungs that are present this frame, in canonical [`FrameRung::z_order`] order.
+    pub fn present_rungs(&self) -> impl Iterator<Item = R> + '_ {
+        self.present.iter().filter(|(_, p)| *p).map(|(r, _)| *r)
+    }
+}
+
+/// Walk every present rung of `R`, back-to-front, invoking `paint`
+/// once per rung. This is the non-branching frame composer: an app
+/// supplies `presence` (from [`FramePresence::from_fn`]) and a
+/// callback keyed by rung — no `match` over paint-operation variants,
+/// and the walk order is [`FrameRung::z_order`] by construction, so it
+/// cannot drift from what a `z_order()`-derived hit-test walk expects.
+///
+/// Returns the visited rungs in the order `paint` was called, e.g. to
+/// feed to [`check_frame_order`] when composing the same order a
+/// second time via an independent path (see module docs).
+pub fn compose_frame<R: FrameRung>(
+    presence: &FramePresence<R>,
+    mut paint: impl FnMut(R),
+) -> Vec<R> {
+    let mut visited = Vec::new();
+    for rung in presence.present_rungs() {
+        paint(rung);
+        visited.push(rung);
+    }
+    visited
+}
+
+/// Two rungs visited out of the order [`FrameRung::z_order`] declares:
+/// `after` was visited following `before`, despite ranking lower (i.e.
+/// further from "on top") in the canonical order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameOrderViolation<R> {
+    pub before: R,
+    pub after: R,
+}
+
+/// Assert that `visited` — some sequence of rungs actually painted or
+/// hit-tested, produced however the caller likes — is consistent with
+/// [`FrameRung::z_order`]: no rung may appear after a rung that ranks
+/// higher has already appeared. Duplicates and gaps (rungs absent this
+/// frame) are fine; the invariant is purely the *relative* order among
+/// whatever was visited.
+///
+/// This is the guard that turns a `FRAME_Z_ORDER` vs.
+/// `MOUSE_ARBITRATION_ORDER`-style drift (vimcode#587/#592) into a
+/// failing assertion instead of a silent, months-later bug.
+pub fn check_frame_order<R: FrameRung>(visited: &[R]) -> Result<(), FrameOrderViolation<R>> {
+    let mut last: Option<(R, usize)> = None;
+    for &rung in visited {
+        let rank = rung.rank();
+        if let Some((before, before_rank)) = last {
+            if rank < before_rank {
+                return Err(FrameOrderViolation {
+                    before,
+                    after: rung,
+                });
+            }
+        }
+        last = Some((rung, rank));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,5 +755,124 @@ mod tests {
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
         assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TestRung {
+        Editor,
+        BottomPanel,
+        StatusBar,
+        Palette,
+    }
+
+    impl FrameRung for TestRung {
+        fn z_order() -> &'static [Self] {
+            &[
+                TestRung::Editor,
+                TestRung::BottomPanel,
+                TestRung::StatusBar,
+                TestRung::Palette,
+            ]
+        }
+    }
+
+    #[test]
+    fn frame_rung_rank_matches_z_order_position() {
+        assert_eq!(TestRung::Editor.rank(), 0);
+        assert_eq!(TestRung::BottomPanel.rank(), 1);
+        assert_eq!(TestRung::StatusBar.rank(), 2);
+        assert_eq!(TestRung::Palette.rank(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "missing from FrameRung::z_order()")]
+    fn frame_rung_rank_panics_for_unlisted_variant() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct Rogue;
+        impl FrameRung for Rogue {
+            fn z_order() -> &'static [Self] {
+                &[]
+            }
+        }
+        Rogue.rank();
+    }
+
+    #[test]
+    fn frame_presence_gates_rungs_computed_once() {
+        let presence = FramePresence::from_fn(|r| r != TestRung::BottomPanel);
+
+        assert!(presence.is_present(TestRung::Editor));
+        assert!(!presence.is_present(TestRung::BottomPanel));
+        assert!(presence.is_present(TestRung::StatusBar));
+        assert!(presence.is_present(TestRung::Palette));
+
+        assert_eq!(
+            presence.present_rungs().collect::<Vec<_>>(),
+            vec![TestRung::Editor, TestRung::StatusBar, TestRung::Palette]
+        );
+    }
+
+    #[test]
+    fn compose_frame_visits_only_present_rungs_in_z_order() {
+        let presence = FramePresence::<TestRung>::from_fn(|r| r != TestRung::Palette);
+
+        let mut painted = Vec::new();
+        let visited = compose_frame(&presence, |r| painted.push(r));
+
+        let expected = vec![TestRung::Editor, TestRung::BottomPanel, TestRung::StatusBar];
+        assert_eq!(painted, expected);
+        assert_eq!(visited, expected);
+    }
+
+    #[test]
+    fn check_frame_order_accepts_canonical_and_gapped_sequences() {
+        // Exact canonical order.
+        assert!(check_frame_order(&[
+            TestRung::Editor,
+            TestRung::BottomPanel,
+            TestRung::StatusBar,
+            TestRung::Palette,
+        ])
+        .is_ok());
+
+        // A rung absent this frame just leaves a gap — still fine.
+        assert!(check_frame_order(&[TestRung::Editor, TestRung::Palette]).is_ok());
+
+        // Repeated visits to the same rung don't violate order.
+        assert!(
+            check_frame_order(&[TestRung::Editor, TestRung::Editor, TestRung::StatusBar]).is_ok()
+        );
+
+        // Empty and single-element sequences are trivially ordered.
+        assert!(check_frame_order::<TestRung>(&[]).is_ok());
+        assert!(check_frame_order(&[TestRung::Palette]).is_ok());
+    }
+
+    #[test]
+    fn check_frame_order_rejects_out_of_order_visits() {
+        // This is the vimcode#587/#592-shaped bug: a hit-test walk
+        // (or a paint routine mid-migration to `compose_frame`) that
+        // visits the palette before the editor, when `z_order()` says
+        // the palette is on top.
+        let err = check_frame_order(&[TestRung::Palette, TestRung::Editor]).unwrap_err();
+        assert_eq!(
+            err,
+            FrameOrderViolation {
+                before: TestRung::Palette,
+                after: TestRung::Editor,
+            }
+        );
+    }
+
+    #[test]
+    fn compose_frame_output_always_satisfies_check_frame_order() {
+        // By construction: compose_frame walks z_order() directly, so
+        // whatever it visits must already be in-order. This is the
+        // structural half of the #774 guarantee — the assertion in
+        // `check_frame_order` is the guard for code paths that don't
+        // go through `compose_frame`.
+        let presence = FramePresence::<TestRung>::from_fn(|r| r != TestRung::StatusBar);
+        let visited = compose_frame(&presence, |_| {});
+        assert!(check_frame_order(&visited).is_ok());
     }
 }
