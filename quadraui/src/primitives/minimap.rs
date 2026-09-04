@@ -204,6 +204,71 @@ pub enum MinimapSizing {
     /// shows a sliding window onto the map — see the module docs — instead
     /// of shrinking the pitch to compress everything in.
     FixedPitch(f32),
+    /// VS Code-parity minimap **width** policy (issue #776) — orthogonal
+    /// to `Fill` / `FixedPitch`, which size row *pitch* (vertical). This
+    /// variant sizes the strip's overall width (horizontal) and is
+    /// resolved with [`Self::resolve_width`], not consumed here.
+    ///
+    /// Before #776, a caller wanting VS Code parity kept two separate
+    /// constant sets — one in raw pixels for a pixel backend, one in
+    /// character columns for a cell-native backend — and picked between
+    /// them with a backend sniff (`if char_width > 1.0`). This variant
+    /// states the bounds once, in character columns, and
+    /// [`Self::resolve_width`] converts them into whichever native unit
+    /// the caller's own [`crate::backend::Backend::char_width`] implies,
+    /// so no call site needs to know which backend it's talking to.
+    ///
+    /// - `target_cols` — the width the minimap holds steady at once the
+    ///   pane can afford it (VS Code parity: the strip does not grow
+    ///   with the window).
+    /// - `fraction` — cap on how much of the pane's own width the
+    ///   minimap may claim before `target_cols` is affordable, so a
+    ///   narrow or split pane still narrows the strip instead of
+    ///   clipping it.
+    /// - `min` / `max` — floor and ceiling the resolved width clamps to,
+    ///   in the same column unit as `target_cols`.
+    VsCodeParity {
+        target_cols: f32,
+        fraction: f32,
+        min: f32,
+        max: f32,
+    },
+}
+
+impl MinimapSizing {
+    /// Resolve a [`Self::VsCodeParity`] width policy against the pane's
+    /// own width and the caller's character metric, in one unit system
+    /// (character columns) instead of two backend-specific constant sets
+    /// (issue #776).
+    ///
+    /// `pane_width` and `char_width` are expected to be the same pair a
+    /// [`crate::backend::Backend`] impl already exposes:
+    /// `backend.char_width()` and a pane width in that backend's own
+    /// native unit. A cell-native backend's `char_width() == 1.0` makes
+    /// `pane_width` a column count outright, so `target_cols`/`min`/`max`
+    /// apply unconverted; a pixel backend's `char_width()` is the
+    /// resolved pixel width of one character, which turns the same
+    /// column-denominated bounds into pixels. Callers never branch on
+    /// which backend they're talking to — they just forward its
+    /// `char_width()`.
+    ///
+    /// Returns `None` for [`Self::Fill`] / [`Self::FixedPitch`], which
+    /// size row pitch, not width.
+    pub fn resolve_width(&self, pane_width: f32, char_width: f32) -> Option<f32> {
+        let MinimapSizing::VsCodeParity {
+            target_cols,
+            fraction,
+            min,
+            max,
+        } = *self
+        else {
+            return None;
+        };
+        let cw = if char_width > 0.0 { char_width } else { 1.0 };
+        let pane_width_cols = pane_width / cw;
+        let want_cols = target_cols.min(pane_width_cols * fraction).clamp(min, max);
+        Some(want_cols * cw)
+    }
 }
 
 /// Classification of a minimap hit-test result.
@@ -290,6 +355,16 @@ impl Minimap {
                 let rows_shown = rows_that_fit.min(row_count);
                 let window_start_row = self.slide_window_start_row(row_count, rows_shown);
                 (row_h, window_start_row, rows_shown)
+            }
+            // `VsCodeParity` sizes the strip's *width*, an orthogonal axis
+            // to row pitch — see its doc and `resolve_width`. No caller
+            // should reach row-pitch layout with it; this arm exists only
+            // to keep the match exhaustive, and falls back to `Fill`'s
+            // behaviour rather than panicking on a value that carries no
+            // meaningful pitch of its own.
+            MinimapSizing::VsCodeParity { .. } => {
+                let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
+                (row_h, 0usize, row_count)
             }
         };
 
@@ -1071,6 +1146,113 @@ mod tests {
     #[test]
     fn reserved_width_returns_the_width_with_a_minimap() {
         assert_eq!(reserved_width(20.0, true), 20.0);
+    }
+
+    // ── MinimapSizing::VsCodeParity / resolve_width (#776) ─────────────
+
+    #[test]
+    fn resolve_width_returns_none_for_fill_and_fixed_pitch() {
+        assert_eq!(MinimapSizing::Fill.resolve_width(800.0, 8.0), None);
+        assert_eq!(
+            MinimapSizing::FixedPitch(2.0).resolve_width(800.0, 8.0),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_width_holds_steady_at_target_cols_for_a_wide_pane() {
+        // Wide pane, pixel ("GTK-shaped") metric: `fraction` of the pane
+        // comfortably affords `target_cols`, so `want` is the fixed
+        // target — VS Code parity, the strip doesn't grow with the
+        // window.
+        let sizing = MinimapSizing::VsCodeParity {
+            target_cols: 15.0,
+            fraction: 0.15,
+            min: 6.0,
+            max: 30.0,
+        };
+        // char_width = 8.0px, pane = 1600px -> 200 cols; 0.15 * 200 = 30
+        // cols affordable, target 15 wins the min().
+        let got = sizing.resolve_width(1600.0, 8.0).unwrap();
+        assert_eq!(got, 15.0 * 8.0);
+    }
+
+    #[test]
+    fn resolve_width_shrinks_with_a_narrow_pane_down_to_the_floor() {
+        let sizing = MinimapSizing::VsCodeParity {
+            target_cols: 15.0,
+            fraction: 0.15,
+            min: 6.0,
+            max: 30.0,
+        };
+        // char_width = 1.0 (cell-native), pane = 20 cols -> 0.15 * 20 = 3
+        // cols wanted, floored to `min` (6.0).
+        let got = sizing.resolve_width(20.0, 1.0).unwrap();
+        assert_eq!(got, 6.0);
+    }
+
+    #[test]
+    fn resolve_width_is_the_same_formula_across_native_units() {
+        // The whole point of #776: one formula, no `if char_width > 1.0`
+        // backend sniff. A cell-native call (char_width == 1.0, pane in
+        // columns) and a pixel call (char_width == 8.0, pane scaled up by
+        // the same factor) must agree once converted back to columns.
+        let sizing = MinimapSizing::VsCodeParity {
+            target_cols: 15.0,
+            fraction: 0.2,
+            min: 6.0,
+            max: 30.0,
+        };
+        let cols_native = sizing.resolve_width(50.0, 1.0).unwrap();
+        let px_native = sizing.resolve_width(50.0 * 8.0, 8.0).unwrap();
+        assert_eq!(cols_native * 8.0, px_native);
+    }
+
+    #[test]
+    fn resolve_width_treats_non_positive_char_width_as_one() {
+        let sizing = MinimapSizing::VsCodeParity {
+            target_cols: 15.0,
+            fraction: 0.15,
+            min: 6.0,
+            max: 30.0,
+        };
+        assert_eq!(
+            sizing.resolve_width(200.0, 0.0),
+            sizing.resolve_width(200.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn vscode_parity_in_row_layout_falls_back_to_fill_behavior() {
+        // Not a real usage pattern (VsCodeParity governs width, not row
+        // pitch) but must not panic — the match arm exists purely to
+        // stay exhaustive, and should behave exactly like `Fill`.
+        let mm = Minimap {
+            id: WidgetId::new("mm"),
+            lines: (0..8)
+                .map(|i| MinimapLine {
+                    text: String::new(),
+                    line_idx: i,
+                })
+                .collect(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 8,
+            total_buffer_lines: 8,
+        };
+        let bounds = Rect::new(0.0, 0.0, 10.0, 40.0);
+        let via_fill = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill);
+        let via_vscode_parity = mm.layout_with_sizing(
+            bounds,
+            2,
+            MinimapSizing::VsCodeParity {
+                target_cols: 15.0,
+                fraction: 0.15,
+                min: 6.0,
+                max: 30.0,
+            },
+        );
+        assert_eq!(via_fill, via_vscode_parity);
     }
 
     // ── render-mode threshold (#738, moved from gtk::minimap) ─────────
