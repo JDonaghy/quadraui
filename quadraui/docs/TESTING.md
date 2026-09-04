@@ -753,6 +753,164 @@ logic* is unit-tested in-repo (`gtk::run::smoke_tests`, no display
 required); the live launch itself needs a human or an operator-run box
 to actually invoke `scripts/gtk_smoke.sh`.
 
+## Win-GUI C4 playbook (native residue, operator-run, quadraui#746)
+
+C4 ("Native residue — never shared" in the [tiers table above](#the-tiers-a-new-backends-burn-down-checklist))
+is exact colours, font rendering, wide-glyph pixels and live-window
+smoke — none of it assertable from shared code by design. This section
+is the manual pass an operator runs on `dell64` (see CLAUDE.md's
+"Win-GUI: building and testing for real"), plus the one-time question
+that motivated writing it down.
+
+### Step 1 (done, 2026-09-04): the Wine question, settled
+
+The concern going in: `dell64`'s automated `cargo xwin test ...`
+path runs the cross-compiled `.exe` through *something* other than a
+human logging into Windows, so a green run there might be an artifact
+of emulation rather than proof the rasteriser works — Direct2D/
+DirectWrite support under a generic Linux binfmt+Wine setup is
+partial, and a red *or* green result under Wine wouldn't say much
+about real Windows either way.
+
+**That premise doesn't hold on this box, and it's worth recording why
+rather than re-asking the question per issue.** `dell64` has no Wine
+installed at all:
+
+```console
+$ which wine wine64
+wine not found
+wine64 not found
+```
+
+The binfmt interpreter CLAUDE.md's trap #2 refers to
+(`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env`, letting
+`binfmt_misc` "do the exec directly") is **WSL2's own interop
+handler**, not a userspace PE loader:
+
+```console
+$ cat /proc/sys/fs/binfmt_misc/WSLInterop
+enabled
+interpreter /init
+flags: P
+offset 0
+magic 4d5a
+```
+
+`/init` hands the process to the real Windows host over the WSL
+interop pipe — confirmed by shelling out to the actual Windows side
+(`/mnt/c/Windows/System32/cmd.exe`, not a wrapper) and reading back
+its own idea of itself:
+
+```console
+$ /mnt/c/Windows/System32/cmd.exe /c "ver & hostname"
+Microsoft Windows [Version 10.0.26200.9168]
+dell64
+```
+
+That's a real, installed Windows 11 build on real hardware named
+`dell64` — the same host CLAUDE.md already names as "physically to
+hand." **So the `cargo xwin test --target x86_64-pc-windows-msvc
+-p quadraui --features win` / `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env`
+path is not an emulator run to be distrusted — it already executes
+the compiled binary against the genuine NT kernel and the genuine
+Direct2D/DirectWrite stack.** A pass there (re-run today as this
+issue's step 1, same command CLAUDE.md documents):
+
+```console
+$ RUSTFLAGS="-C target-feature=+crt-static" \
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
+  cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
+...
+test result: ok. 1760 passed; 0 failed; ...           # lib unit tests
+     Running tests/conformance.rs
+test result: ok. 39 passed; 0 failed; ...              # C0 + C1, win burn-down column
+     Running tests/win_example_driver.rs
+test result: ok. 5 passed; 0 failed; ...
+     Running tests/win_sxs_manifest.rs
+test result: ok. 3 passed; 0 failed; ...
+```
+
+**Consequence: C0–C3 numbers gathered via the documented `dell64`
+runner are real-Windows evidence already — they do not need a second,
+separate "was that actually Windows" re-check.** What that run
+*cannot* prove is anything requiring a visible window or an
+interactive desktop: `HeadlessSurface` never creates an `HWND`, and a
+`cargo xwin test`-launched process may run outside the interactive
+window station even though it's genuine native code. That residual
+gap — not "is it Wine", but "is there a window and a human looking at
+it" — is exactly C4, and is what the checklist below covers. (Aside,
+found while re-running this: `cargo xwin test`'s **doctest** binaries
+fail with exit 53, the same "missing vcruntime" signature as
+CLAUDE.md's trap #1, on this run even with `crt-static` set — looks
+like `rustdoc`'s own doctest harness doesn't inherit `RUSTFLAGS` the
+same way `cargo test`'s regular targets do. Unrelated to the Wine
+question and not a C4/Direct2D fidelity issue; flagged here rather
+than chased, since it's outside this issue's scope.)
+
+### Manual pass checklist
+
+Run after any change touching `src/win/backend.rs`'s rasterisers, and
+otherwise periodically as a spot-check. Needs an interactive `dell64`
+desktop session (RDP or console) — `cargo xwin run`, not `xwin test`,
+so a real `HWND` opens:
+
+```sh
+RUSTFLAGS="-C target-feature=+crt-static" \
+  cargo xwin run --target x86_64-pc-windows-msvc --example win_appshell_demo --features win
+```
+
+1. **Theme colours actually applied.** `WinBackend::set_theme` is
+   wired (#724), but individual rasterisers are migrated
+   piecemeal — `grep -rn "Theme::default()" src/win/*.rs` shows which
+   ones still ignore the live theme and paint fallback colours instead
+   (`activity_bar.rs`, `chart.rs` as of this writing). Confirm chrome
+   painted by an already-migrated rasteriser (e.g. the tab bar, status
+   bar) visibly reflects a non-default theme; confirm anything still on
+   the `grep` list is a *known* gap, not a surprise.
+2. **Font rendering and hinting.** Compare label and editor text at
+   100% and 150% Windows display scaling (Settings → System → Display)
+   against the same text on the `tui`/`gtk` backends run side by side.
+   Look for: correct weight (no accidental bold/thin substitution),
+   no clipped descenders/ascenders, hinting that doesn't blur at
+   small sizes.
+3. **Wide-glyph / CJK / emoji advance** (pairs with #703's shared
+   scale logic, `src/win/text.rs`). No dedicated `win_terminal`
+   example exists yet (`win`'s terminal rasteriser is
+   headless-tested only — `win::terminal::tests`), so use
+   `win_appshell_demo`'s editor pane: type or paste a line mixing
+   ASCII with CJK (`" 1: 日本語.rs "`, the same fixture
+   `tabbar.wide_label_text_fidelity` uses) and an emoji. Confirm each
+   wide glyph occupies two cell-widths' worth of advance with no
+   overlap into the next character and no stray gap — the exact
+   failure mode #703 fixed for `gtk`/`macos`/`tui`.
+4. **Live-window resize / DPI-change behaviour.** Drag-resize the
+   window across a wide range (including down to something absurdly
+   small) and confirm chrome relayouts without artifacts or a crash.
+   Drag the window between two monitors at different scale factors (or
+   change scaling live via Settings while the window is focused) and
+   confirm text/chrome re-rasterises crisply at the new DPI rather than
+   staying blurry-scaled from the old one.
+5. **Cursor shapes.** Hover each interactive zone (resize edges, text
+   inputs, buttons, splitters if the example under test has any) and
+   confirm the OS pointer glyph changes appropriately (I-beam over
+   text, resize arrows over splits/edges, hand/pointer over buttons)
+   and reverts on leave.
+
+### Where to record results
+
+Log a dated entry **in this section** (not a separate file — a later
+reader should not have to hunt) each time the manual pass above is
+run, so "verified natively" is distinguishable from "green in CI" at a
+glance:
+
+| Date | Rev | Run by | Result |
+|---|---|---|---|
+| 2026-09-04 | `9452d50` | operator (dell64) | Step 1 (Wine question) done — see above. Manual checklist (1–5) not yet run; no interactive `dell64` session available for this pass. |
+
+CI's `windows-latest` leg and `cargo xwin test` on `dell64` both prove
+"compiles and runs headless" — neither is a substitute for a row in
+this table. Only a row here means a human actually watched the window.
+
 ## What unit tests don't cover
 
 Animation cadence, font-rendering quirks across host platforms,
