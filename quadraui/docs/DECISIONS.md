@@ -1810,3 +1810,79 @@ proves only that the `todo!()`/`None` fallback bodies behave. Before
 adding one, ask which arm of every `cfg(target_os = "windows")` it
 actually exercises on each leg — see `CLAUDE.md`'s "Win-GUI: building and
 testing for real".
+
+## D-012 — `FrameRung`/`FramePresence`/`check_frame_order`: presence gating + paint/hit-test order invariant (issue #774)
+
+### Question
+
+`frame.rs`'s `Surface`/`ScreenLayout` (D-006) answer "what does a frame
+look like" for the primitives quadraui already ships. They don't answer
+the question a non-trivial *app* also has: "which of my own rungs (an
+editor pane, a bottom panel, an overlay stack) exist this frame, and in
+what back-to-front order must they be visited — identically — whether
+you're painting them or resolving a click?"
+
+A vimcode platform-neutrality audit (`develop @ ee26268`, filed as
+quadraui#774) found that question answered twice, independently, in
+vimcode: `FRAME_Z_ORDER` (paint, `src/render.rs`) and
+`MOUSE_ARBITRATION_ORDER` (hit-test) — ~1,000 lines plus 978 lines of
+per-backend walkers. The two lists drifted exactly once
+(vimcode#587/#592: `ScreenLayout.picker` painted on no backend for
+months while still occupying a hit-test rung) and the fix at the time
+was a `debug_assert!` comparing the two lists after the fact — a
+detector, not a preventer.
+
+### Decision
+
+Add three small, backend-independent pieces to `frame.rs`, orthogonal to
+`Surface`/`ScreenLayout` (they order an app's *own* rung enum, not
+quadraui's primitive set, so they compose with either the `Surface` path
+or a bespoke per-backend paint routine):
+
+1. **`FrameRung`** — a trait an app implements once per rung enum,
+   supplying `z_order() -> &'static [Self]`: the single declared
+   back-to-front order. `rank()` (a provided method) turns a rung into
+   its position in that order, panicking if a variant was left out of
+   `z_order()` — a programmer error, not a runtime condition.
+2. **`FramePresence<R>`** — evaluates a presence predicate against
+   every rung in `R::z_order()` exactly once per frame
+   (`FramePresence::from_fn`), so "is the palette even open" is
+   computed a single time and consulted by both painting and
+   hit-testing rather than re-derived (and potentially re-diverging) at
+   each call site.
+3. **`compose_frame`** + **`check_frame_order`** — `compose_frame` walks
+   present rungs in `z_order()` with one non-branching callback (no
+   `match` over paint-operation variants: the order comes from
+   `z_order()`, not from the shape of the walk), so anything driven
+   through it cannot be out of order by construction.
+   `check_frame_order` is the guard for code that *isn't* driven through
+   `compose_frame` yet (a hit-test walk, or a legacy per-backend paint
+   routine mid-migration): it asserts an independently-produced sequence
+   of visited rungs is consistent with `z_order()`, turning a
+   `FRAME_Z_ORDER`-vs-`MOUSE_ARBITRATION_ORDER`-style drift into a
+   failing test instead of a months-later bug report.
+
+This lands only the pure, self-contained mechanism in quadraui — no
+backend code, no new `Surface` variants, no vimcode call-site changes.
+vimcode's own adoption (deleting `FrameOp`/`FramePresence`/
+`compose_frame`/`FRAME_Z_ORDER`/`check_frame_order` from `render.rs` and
+the 978 lines of per-backend walkers, in favor of these) is tracked
+against vimcode milestone #7 "Platform-Neutral", left open behind this
+issue and out of scope here.
+
+### What this does NOT mean
+
+- It does not mean every quadraui primitive now has a `FrameRung`
+  variant, or that `Surface`/`ScreenLayout` gained rung-awareness —
+  `FrameRung` is an app-defined enum an app implements for its *own*
+  rungs; quadraui ships the trait and the three functions that operate
+  on it, nothing more.
+- It does not migrate vimcode. `FrameOp` (29 variants), `FramePresence`
+  (the vimcode-local, pre-existing struct of the same name), `EditorOp`/
+  `BottomOp`, and the two per-backend walkers all still exist in
+  vimcode's `render.rs`/`app.rs`/`tui_main/shell_app.rs` until that
+  cross-referenced follow-up lands.
+- It does not resolve the `ScreenLayout` name collision the issue notes
+  (vimcode declares its own `pub struct ScreenLayout` at
+  `src/render.rs:10098`) — that's a vimcode-side rename, not something
+  quadraui's API can fix from this side.

@@ -366,7 +366,10 @@ pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
     MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, Viewport,
 };
-pub use frame::{FrameHitMap, FrameZone, ScreenLayout, Surface};
+pub use frame::{
+    check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
+    FrameZone, ScreenLayout, Surface,
+};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
