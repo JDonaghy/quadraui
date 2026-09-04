@@ -165,6 +165,21 @@ pub struct DropOverlay {
     pub ghost_position: Option<(f32, f32)>,
 }
 
+impl DropOverlay {
+    /// Alpha applied to the highlight tint. Shared by every backend
+    /// rasteriser (`gtk::drop_overlay`, `macos::drop_overlay`,
+    /// `win::drop_overlay`) so they agree on a value by construction
+    /// rather than by three separately-copied literals — see
+    /// `PRIMITIVE_RULES.md`'s primitive-first rule (#713).
+    pub const HIGHLIGHT_ALPHA: f32 = 0.15;
+
+    /// Minimum insertion-bar thickness (px on GTK/macOS, DIPs on
+    /// Win-GUI), applied when [`DropOverlay::insertion_bar`]'s computed
+    /// width/height would otherwise be thinner (e.g. a zero-width bar
+    /// from [`drop_zone_overlay`]).
+    pub const MIN_BAR_THICKNESS: f32 = 2.0;
+}
+
 /// Compute overlay geometry for a drop zone.
 ///
 /// `bar_height` is the thickness of the insertion bar (typically 2–3

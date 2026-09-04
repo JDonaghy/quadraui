@@ -16,7 +16,7 @@ pub fn draw_drop_overlay(cr: &Context, overlay: &DropOverlay, theme: &Theme) {
     );
 
     if let Some(h) = overlay.highlight {
-        cr.set_source_rgba(ar, ag, ab, 0.15);
+        cr.set_source_rgba(ar, ag, ab, DropOverlay::HIGHLIGHT_ALPHA as f64);
         cr.rectangle(h.x as f64, h.y as f64, h.width as f64, h.height as f64);
         cr.fill().ok();
     }
@@ -26,7 +26,7 @@ pub fn draw_drop_overlay(cr: &Context, overlay: &DropOverlay, theme: &Theme) {
         cr.rectangle(
             bar.x as f64,
             bar.y as f64,
-            (bar.width as f64).max(2.0),
+            (bar.width as f64).max(DropOverlay::MIN_BAR_THICKNESS as f64),
             bar.height as f64,
         );
         cr.fill().ok();
