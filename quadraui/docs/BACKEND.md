@@ -260,11 +260,11 @@ independently of the process).
 | `KeyPressed` | ✅ | ✅ | ✅ | ✅ | Canonical text-input path — see `CharTyped` below. |
 | `MouseDown` / `MouseUp` / `MouseMoved` | ✅ | ✅ | ✅ | ✅ | |
 | `Scroll` | ✅ | ✅ | ✅ | ✅ | |
-| `DoubleClick` | ✅ | ✅ | ✅ (`MacBackend::fold_double_click`, #486) | ❌ | Win: `WM_*BUTTONDBLCLK` documented as "not dispatched" (`win/events.rs`); Win-GUI milestone in progress, not this issue's scope. |
+| `DoubleClick` | ✅ | ✅ | ✅ (`MacBackend::fold_double_click`, #486) | ✅ (`WinBackend::fold_double_click`, #729) | Win: still *not* `WM_*BUTTONDBLCLK` — #729 folds two `MouseDown`s in `win::run::dispatch_event` via the shared `DoubleClickDetector`, the same pattern macOS uses. The `❌` here was stale as of quadraui#742. |
 | `WindowResized` | ✅ | ✅ | ✅ (`macos/run.rs:560`, #486) | ✅ | |
 | `WindowClose` | N/A (no OS window) | ✅ (this issue — `gtk::run::activate`'s `connect_close_request`) | ❌ | ✅ (`WM_CLOSE`, pre-existing) | Veto mechanism: app returns `Reaction::Exit` to allow, anything else vetoes. macOS wiring is a D-010 follow-up (may fold into #486). The ✅ here is proven end-to-end for `gtk_terminal` only (`examples/common/terminal_app.rs`'s `WindowClose` arm); the rest of `examples/gtk_*` have no opinion on it yet, so their catch-all's `Reaction::Continue` vetoes their own "×" button until D-010 follow-up 5 lands — `gtk::run::window_close_tests` proves the `dispatch_event` funnel itself is correct regardless. |
-| `Accelerator` | ✅ | ✅ | ✅ (`MacBackend::match_keypress`, #486) | ✅ (`WinBackend::match_keypress`, #707) | Win: wired via `win::run::dispatch_event`'s global-accelerator rewrite (#707) — the "no accelerator matching wired yet" note here was stale as of quadraui#742; C2 (`tests/conformance/c2.rs`) still doesn't exercise it on any backend, since `match_keypress`/`dispatch_event` need a live backend + `AppLogic`, not a bare translation-function call — see the "Conformance tier C2" section below. |
-| `ClipboardPaste` | ✅ | ✅ | ✅ (`macos/run.rs:266`, #486) | ❌ | Win: not wired yet; Win-GUI milestone in progress. |
+| `Accelerator` | ✅ | ✅ | ✅ (`MacBackend::match_keypress`, #486) | ✅ (`WinBackend::match_keypress`, #707) | Win: wired via `win::run::dispatch_event`'s global-accelerator rewrite (#707) — the "no accelerator matching wired yet" note here was stale as of quadraui#742. |
+| `ClipboardPaste` | ✅ | ✅ | ✅ (`macos/run.rs:266`, #486) | ✅ (`win::run::dispatch_event`'s Ctrl-V branch, #728) | Win: Ctrl-V reads `CF_UNICODETEXT` through `WinBackend::services` and delivers `ClipboardPaste` instead of the raw key event. The `❌` here was stale as of quadraui#742. |
 | `TextCopied` | ✅ | ✅ | ❌ | ❌ | Neither macOS nor Win wire a Ctrl-C-with-selection → `TextCopied` path yet. Out of this issue's scope. |
 
 Verified directly against `quadraui/src/{tui,gtk,macos,win}` on this
@@ -297,20 +297,38 @@ is the executable half of this table: per-backend "native-injection
 recipes" that call each backend's real native→`UiEvent` translation
 function (not the Tier-1 scenario suite's higher-level `AppLogic`
 replay) with a synthetic native input and assert the resulting
-`UiEvent` has the expected shape. It currently covers the mouse/key/
-scroll/resize core plus `WindowClose` on TUI+GTK+Win —
-`win::events`'s translators are plain host-independent functions (no
-WinAPI call in sight), so `win_case`/the `win` column run on the
-`ubuntu-latest --features win` leg with no live `HWND` required, unlike
-Tier C0/C1's `WinFactory` registration which stays `target_os =
-"windows"`-gated. `DoubleClick`/`Accelerator`/`ClipboardPaste`/
-`TextCopied` rows are D-010 follow-up work on every backend, Win
-included — each needs a dispatch-level fixture (a live backend +
-`AppLogic`, e.g. `WinBackend::match_keypress`/`dispatch_event`, both
-`pub(crate)`) rather than a bare translation-function call, regardless
-of whether the underlying production wiring itself has landed (see the
-`Accelerator` row above). See `docs/TESTING.md`'s "Conformance tiers"
-section for how C2 relates to C0/C1/C3/C4.
+`UiEvent` has the expected shape. It covers the mouse/key/scroll/resize
+core on TUI+GTK+Win — `win::events`'s translators are plain
+host-independent functions (no WinAPI call in sight), so `win_case`/the
+`win` column run on the `ubuntu-latest --features win` leg with no live
+`HWND` required, unlike Tier C0/C1's `WinFactory` registration, which
+stays `target_os = "windows"`-gated.
+
+Every **required** row of the table above appears in the printed matrix.
+Cells fall into three kinds, and the distinction matters when reading it:
+
+- `pass` — a real native-injection assertion ran.
+- `n/a` — the variant is *inapplicable* to that backend class
+  (`window_close` on TUI: no OS window, D-010).
+- `pass*` — declared but *unmeasurable at this tier*, with a footnote
+  naming the production wiring and where its real coverage lives. Two
+  groups: `window_close` on GTK/Win (needs a live window/`wndproc`), and
+  `c2.rs`'s `DISPATCH_ROWS` — `double_click`, `accelerator`,
+  `clipboard_paste` — which no backend produces from a native→`UiEvent`
+  translator at all. They're synthesised one layer up in each backend's
+  `pub(crate)` `dispatch_event` (fold two `MouseDown`s; rewrite a
+  `KeyPressed` against the accelerator registry; swallow Ctrl-V and read
+  the system clipboard), so they need a live backend + `AppLogic`, not a
+  translation-function call. TUI's `clipboard_paste` is the one
+  exception and is a real `pass`: crossterm surfaces bracketed paste as a
+  native `Event::Paste`, which `crossterm_to_uievents` translates
+  directly.
+
+`TextCopied` is not in the required set and has no row. Promoting any
+`pass*` to a real assertion is D-010 follow-up work, and needs a
+dispatch-level fixture — it is *not* blocked on production wiring, which
+has landed on every backend the table marks ✅. See `docs/TESTING.md`'s
+"Conformance tiers" section for how C2 relates to C0/C1/C3/C4.
 
 ## Glossary
 

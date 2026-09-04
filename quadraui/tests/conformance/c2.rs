@@ -35,23 +35,26 @@
 //! plain `ubuntu-latest --features win` leg, same as `tui_case`/
 //! `gtk_case` run wherever their own feature is enabled.
 //!
-//! **Scope of this pass**: the mouse/key/scroll/resize core, plus
-//! `WindowClose` on the two backends with a real OS window (GTK — this
-//! issue's own wiring, see `gtk::run`'s `connect_close_request`; Win —
-//! pre-existing `WM_CLOSE` handling, see `win::run`'s `wndproc`).
-//! `DoubleClick`, `Accelerator`, `ClipboardPaste`, and `TextCopied` are
-//! required too (per the matrix) but need dispatch-level fixtures
-//! (`DoubleClickDetector`, an accelerator registry, a backend +
-//! clipboard) rather than a bare translation-function call, and are
-//! tracked as D-010 follow-up rather than added here — true for Win as
-//! much as TUI/GTK: `WinBackend::match_keypress`/`dispatch_event` are
-//! `pub(crate)` and need a live `WinBackend` + `AppLogic`, not a bare
-//! native-input-in/`UiEvent`-out call, even though the underlying
-//! wiring itself has landed (`WinBackend::match_keypress`, #707;
-//! `WinBackend::fold_double_click`, #729; Ctrl-V paste, #728) — see
-//! `docs/BACKEND.md`'s emission matrix for the production-wiring status
-//! and this file's `WINDOWED_ROWS` doc for why `window_close` is the one
-//! exception that *can* still appear as a (placeholder) row.
+//! **Row groups.** Every variant `docs/BACKEND.md`'s emission matrix
+//! marks *required* has a row here, so the printed table shows gaps
+//! rather than hiding them by omission:
+//!
+//! - [`CORE_ROWS`] — mouse/key/scroll/resize, real assertions on every
+//!   backend.
+//! - [`WINDOWED_ROWS`] — `window_close`, on the backends with a real OS
+//!   window (GTK's `connect_close_request`, Win's `WM_CLOSE`); `n/a` on
+//!   TUI (D-010).
+//! - [`DISPATCH_ROWS`] — `double_click`/`accelerator`/`clipboard_paste`,
+//!   which (except TUI's bracketed paste) no backend produces from a
+//!   native→`UiEvent` translator at all; declared as `pass*` placeholders
+//!   naming the `dispatch_event` hook that does produce them.
+//!
+//! `TextCopied` is not in the required set, so it has no row. Promoting
+//! a placeholder to a real assertion needs a dispatch-level fixture (a
+//! live backend + `AppLogic`) and is D-010 follow-up — *not* blocked on
+//! production wiring, which has landed on Win too
+//! (`WinBackend::match_keypress` #707, `fold_double_click` #729, Ctrl-V
+//! paste #728).
 
 /// Outcome of one C2 case.
 pub struct CaseOutcome {
@@ -82,20 +85,21 @@ impl CaseOutcome {
     /// distinctly marked so it isn't read as equivalent to a verified
     /// `ok()`.
     ///
-    /// The only placeholder row today is `window_close`, on GTK and Win
-    /// (quadraui#742) — the two backends with a real OS window whose
-    /// close veto only round-trips through a live window/`wndproc`, not
-    /// a bare translation call — so on a `--features tui` build (neither
-    /// `gtk` nor `win`) this constructor has no caller. CI sets
-    /// `RUSTFLAGS: -D warnings` workflow-wide, which promotes that to a
-    /// hard `dead_code` build failure on the tui leg — the same shape as
-    /// this file's crate-root `cfg_attr(not(any(tui, gtk)), allow(dead_code))`
-    /// in `conformance.rs`, and allowed for the same reason: the item is
-    /// unreachable *from this feature set*, not unused. Scoped to
-    /// `not(any(gtk, win))` rather than blanket-allowed so that if every
-    /// `window_close` call below ever goes away, a `tui`-only leg still
-    /// reports this as genuinely dead.
-    #[cfg_attr(not(any(feature = "gtk", feature = "win")), allow(dead_code))]
+    /// Two kinds of placeholder row exist today, both reached through
+    /// this constructor:
+    ///
+    /// - `window_close`, on GTK and Win (quadraui#742) — the backends
+    ///   with a real OS window, whose close veto only round-trips through
+    ///   a live window/`wndproc`, not a bare translation call.
+    /// - every [`DISPATCH_ROWS`] cell (via [`dispatch_row`]) that the
+    ///   backend synthesises in `dispatch_event` rather than translating
+    ///   from a native event.
+    ///
+    /// Since `DISPATCH_ROWS` is declared by *every* column including TUI,
+    /// this constructor now has a caller in every feature set that builds
+    /// this file at all, so it needs no `cfg_attr(…, allow(dead_code))` —
+    /// unlike before quadraui#742, when a `--features tui` build (CI runs
+    /// it with a workflow-wide `RUSTFLAGS: -D warnings`) had none.
     fn placeholder(detail: impl Into<String>) -> Self {
         Self {
             pass: true,
@@ -132,6 +136,51 @@ pub const CORE_ROWS: &[&str] = &[
 /// terminal viewport, which the process doesn't close independently of
 /// itself).
 pub const WINDOWED_ROWS: &[&str] = &["window_close"];
+
+/// The remaining rows `docs/BACKEND.md`'s emission matrix marks
+/// **required** for every backend (quadraui#742). Their *production
+/// wiring* has landed everywhere the matrix says ✅ — including Win
+/// (`fold_double_click` #729, `match_keypress` #707, Ctrl-V paste #728) —
+/// but with one exception they are not produced by a native→`UiEvent`
+/// *translator*, which is the only thing tier C2 can call. They're
+/// synthesised one layer up, in each backend's `dispatch_event`:
+///
+/// - `double_click` — folded from two `MouseDown`s by a
+///   `DoubleClickDetector`, not decoded from a native double-click
+///   message (Win deliberately ignores `WM_*BUTTONDBLCLK`).
+/// - `accelerator` — a `KeyPressed` rewritten against the registered
+///   accelerator table (`match_keypress`).
+/// - `clipboard_paste` — on GTK/Win/macOS, a Ctrl-V `KeyPressed`
+///   swallowed and replaced by a system-clipboard read. **TUI is the
+///   exception**: crossterm delivers bracketed paste as a native
+///   `Event::Paste`, so `crossterm_to_uievents` translates it directly
+///   and `tui_case` asserts that row for real.
+///
+/// Everything else here needs a live backend + `AppLogic` behind
+/// `pub(crate)` hooks, unreachable from this external test crate. Those
+/// cells are explicit [`CaseOutcome::placeholder`] rows rather than
+/// omitted, so the matrix shows the tier gap instead of hiding it — the
+/// real coverage is each backend's in-crate `dispatch_event` tests (e.g.
+/// `win::run`'s Ctrl-V paste tests, `win::backend`'s `match_keypress` /
+/// `fold_double_click` tests) plus the C4 live tier.
+pub const DISPATCH_ROWS: &[&str] = &["double_click", "accelerator", "clipboard_paste"];
+
+/// Shared body for a [`DISPATCH_ROWS`] cell this tier can't reach.
+/// `wiring` names the backend-specific production hook that *does* emit
+/// the event, so the footnote points a reader at the real coverage
+/// instead of just saying "not tested".
+#[cfg_attr(
+    not(any(feature = "tui", feature = "gtk", feature = "win")),
+    allow(dead_code)
+)]
+fn dispatch_row(row: &str, wiring: &str) -> CaseOutcome {
+    CaseOutcome::placeholder(format!(
+        "{row} is not produced by a native→UiEvent translator here — it is synthesised in \
+         the backend's pub(crate) dispatch_event, which needs a live backend + AppLogic and \
+         is unreachable from this external test crate. Production wiring (landed): {wiring}. \
+         See DISPATCH_ROWS' doc and docs/BACKEND.md's emission matrix."
+    ))
+}
 
 #[cfg(feature = "tui")]
 pub fn tui_case(row: &str) -> CaseOutcome {
@@ -225,6 +274,24 @@ pub fn tui_case(row: &str) -> CaseOutcome {
                 }
             }
         }
+        // TUI is the one backend where paste *is* a native translation:
+        // crossterm surfaces bracketed paste as `Event::Paste`, so this
+        // row is a real assertion, not a `dispatch_row` placeholder (see
+        // `DISPATCH_ROWS`' doc).
+        "clipboard_paste" => {
+            use quadraui::tui::events::crossterm_to_uievents;
+            match crossterm_to_uievents(CtEvent::Paste("hello".into())).as_slice() {
+                [UiEvent::ClipboardPaste(text)] if text == "hello" => CaseOutcome::ok(),
+                other => CaseOutcome::fail(format!(
+                    "expected [ClipboardPaste(\"hello\")], got {other:?}"
+                )),
+            }
+        }
+        "double_click" => dispatch_row(
+            row,
+            "TuiBackend's DoubleClickDetector fold in translate_injected",
+        ),
+        "accelerator" => dispatch_row(row, "TuiBackend::apply_accelerators / match_keypress"),
         other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
     }
 }
@@ -327,6 +394,9 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
                  real close-request/veto coverage",
             )
         }
+        "double_click" => dispatch_row(row, "gtk::run's n_press == 2 branch on GestureClick"),
+        "accelerator" => dispatch_row(row, "GtkBackend::match_keypress, applied in gtk::run"),
+        "clipboard_paste" => dispatch_row(row, "gtk::run's Ctrl-V clipboard-read branch"),
         other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
     }
 }
@@ -443,6 +513,23 @@ pub fn win_case(row: &str) -> CaseOutcome {
                  tier for the real coverage",
             )
         }
+        // All three landed on Win during this epic — `docs/BACKEND.md`'s
+        // `❌` cells for them were stale, and are corrected by
+        // quadraui#742 alongside these rows. What's still missing is a
+        // *tier-C2* recipe, not the wiring: none of them is a `WM_*` →
+        // `UiEvent` translation (Win deliberately ignores
+        // `WM_*BUTTONDBLCLK`), so there is nothing in `win::events` to
+        // call.
+        "double_click" => dispatch_row(row, "WinBackend::fold_double_click, quadraui#729"),
+        "accelerator" => dispatch_row(
+            row,
+            "WinBackend::match_keypress + win::run::dispatch_event's Accelerator rewrite, \
+             quadraui#707",
+        ),
+        "clipboard_paste" => dispatch_row(
+            row,
+            "win::run::dispatch_event's Ctrl-V CF_UNICODETEXT read, quadraui#728",
+        ),
         other => CaseOutcome::fail(format!("unknown C2 row {other:?}")),
     }
 }
