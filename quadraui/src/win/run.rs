@@ -1323,21 +1323,40 @@ mod tests {
 /// `WinDriver`, by contrast, only exists under `target_os = "windows"` —
 /// see that module's doc — so it can't be used here).
 ///
-/// `WinPlatformServices::clipboard().read_text()` is an unconditional
-/// `None` off Windows (`win::services`'s `Clipboard` impl) — there is no
-/// test-clipboard seam to seed a "there IS something to paste" case from
-/// this host, unlike `gtk::testing::GtkDriver::new`'s in-memory fake. This
-/// module covers the branch that *is* observable everywhere: an
-/// intercepted paste keypress with nothing to paste is fully consumed
-/// (never forwarded to the app as a raw `KeyPressed`) and produces
-/// `EventOutcome::Continue`. The "reads real clipboard text and delivers
-/// `ClipboardPaste`" branch needs a live Windows host to exercise for
-/// real — see `CLAUDE.md`'s "Win-GUI: building and testing for real".
+/// **Which assertions are host-independent, and why that matters here.**
+/// `WinPlatformServices::clipboard()` has no test seam (unlike
+/// `gtk::testing::GtkDriver::new`'s in-memory fake): `read_text()` is an
+/// unconditional `None` off Windows and a *real, uncontrolled* Win32
+/// `CF_UNICODETEXT` read on Windows — the machine's live systemwide
+/// clipboard, whatever some other process happened to leave on it. So
+/// "the app received nothing at all" is a claim only the non-Windows
+/// hosts can make, and asserting it unconditionally makes the outcome of
+/// this test depend on CI-runner clipboard state nothing in this repo
+/// owns. The tests below are split accordingly:
+///
+/// - `ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress` runs on
+///   every host and asserts the invariant #728 actually promises and
+///   that holds for *both* clipboard branches: once `is_paste_keypress`
+///   recognises the chord, the raw `KeyPressed` is consumed — anything
+///   the app does see is a `ClipboardPaste`, never the key event.
+/// - `ctrl_v_with_nothing_to_paste_is_consumed_not_forwarded` is gated
+///   to non-Windows, where "nothing to paste" is a compile-time property
+///   of `WinClipboard::read_text` rather than a guess about the host.
+/// - `ctrl_v_delivers_real_clipboard_text_as_clipboard_paste` is gated to
+///   Windows and seeds the clipboard first, so it covers the "reads real
+///   clipboard text and delivers `ClipboardPaste`" branch for real on the
+///   one CI leg that can — see `CLAUDE.md`'s "Win-GUI: building and
+///   testing for real".
 #[cfg(test)]
 mod paste_dispatch_tests {
     use super::*;
     use crate::runner::Reaction;
     use crate::{Key, Modifiers, UiEvent};
+
+    /// Payload for the Windows-only round-trip below. Distinctive enough
+    /// that a stale clipboard entry can't be mistaken for it.
+    #[cfg(target_os = "windows")]
+    const PASTE_PAYLOAD: &str = "quadraui#728 ctrl-v round trip";
 
     /// Records every event `handle` receives, so tests can assert an
     /// intercepted paste trigger does NOT also forward the raw key event
@@ -1371,6 +1390,34 @@ mod paste_dispatch_tests {
         }
     }
 
+    /// The one paste-interception claim that is true on every host, with
+    /// any clipboard contents: `dispatch_event` swallows the recognised
+    /// chord. Whether the clipboard had text (Windows, maybe) or not
+    /// (everywhere else, always) only changes *what else* the app sees —
+    /// a `ClipboardPaste`, or nothing — never whether the raw key event
+    /// leaks through underneath it.
+    #[test]
+    fn ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        let _ = dispatch_event(ctrl_v(), &mut backend, &mut app);
+        assert!(
+            app.events
+                .iter()
+                .all(|e| matches!(e, UiEvent::ClipboardPaste(_))),
+            "once is_paste_keypress recognises the chord, the raw Ctrl-V \
+             KeyPressed must never reach the app — the only thing that may \
+             is a ClipboardPaste; got {:?}",
+            app.events
+        );
+    }
+
+    /// The "nothing to paste" branch, asserted only where it is a
+    /// compile-time property rather than a guess about the host:
+    /// `WinClipboard::read_text` is an unconditional `None` off Windows
+    /// (`win::services`'s `Clipboard` impl), so the app must see nothing
+    /// at all and the outcome must be `Continue`.
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn ctrl_v_with_nothing_to_paste_is_consumed_not_forwarded() {
         let mut backend = WinBackend::new();
@@ -1386,6 +1433,53 @@ mod paste_dispatch_tests {
             "the raw Ctrl-V KeyPressed must never reach the app once \
              is_paste_keypress recognises it — got {:?}",
             app.events
+        );
+    }
+
+    /// The branch that only a live Windows host can reach: a real
+    /// `CF_UNICODETEXT` clipboard read feeding `UiEvent::ClipboardPaste`.
+    /// Seeds the clipboard itself rather than assuming what is on it, so
+    /// this asserts on state the test owns.
+    ///
+    /// Self-guarding: if the round-trip write→read doesn't come back
+    /// intact, this host's clipboard is unavailable to the process
+    /// (`OpenClipboard` fails on a non-interactive window station, for
+    /// one), which is a property of the environment and not of
+    /// `dispatch_event` — there is nothing left for the assertions below
+    /// to prove, so say so on stderr and stop rather than reporting an
+    /// interception bug that isn't there. The
+    /// `ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress` test
+    /// above still covers the interception path unconditionally on this
+    /// same host.
+    ///
+    /// `#[allow(clippy::print_stderr)]`: same #619-style exemption
+    /// `run_smoke_check` above carries — this is test-harness diagnostic
+    /// output, never reached by a host embedding a live quadraui backend,
+    /// so it doesn't fight the crate-wide deny's purpose of keeping the
+    /// *library* silent.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn ctrl_v_delivers_real_clipboard_text_as_clipboard_paste() {
+        let mut backend = WinBackend::new();
+        backend.services().clipboard().write_text(PASTE_PAYLOAD);
+        let seeded = backend.services().clipboard().read_text();
+        if seeded.as_deref() != Some(PASTE_PAYLOAD) {
+            eprintln!(
+                "quadraui: skipping ctrl_v_delivers_real_clipboard_text_as_clipboard_paste — \
+                 this host's clipboard is not usable from the test process (wrote \
+                 {PASTE_PAYLOAD:?}, read back {seeded:?})"
+            );
+            return;
+        }
+
+        let mut app = RecordingApp::default();
+        let _ = dispatch_event(ctrl_v(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![UiEvent::ClipboardPaste(PASTE_PAYLOAD.to_string())],
+            "Ctrl-V with text on the clipboard must deliver exactly one \
+             ClipboardPaste carrying that text, and no raw KeyPressed"
         );
     }
 
