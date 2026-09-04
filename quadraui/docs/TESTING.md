@@ -861,12 +861,26 @@ RUSTFLAGS="-C target-feature=+crt-static" \
 
 1. **Theme colours actually applied.** `WinBackend::set_theme` is
    wired (#724), but individual rasterisers are migrated
-   piecemeal — `grep -rn "Theme::default()" src/win/*.rs` shows which
-   ones still ignore the live theme and paint fallback colours instead
-   (`activity_bar.rs`, `chart.rs` as of this writing). Confirm chrome
-   painted by an already-migrated rasteriser (e.g. the tab bar, status
-   bar) visibly reflects a non-default theme; confirm anything still on
-   the `grep` list is a *known* gap, not a surprise.
+   piecemeal, and the *majority* still aren't. Run
+   `grep -rln "Theme::default()" src/win/*.rs` yourself before relying
+   on any specific file list here — it goes stale fast and a wrong
+   worked example is worse than none. As of `680d7ce`, that grep
+   returns ~38 of the ~40 files in `src/win/`, including `tab_bar.rs`
+   and `status_bar.rs` (whose module doc says outright that
+   `WinBackend` has no live-theme wiring yet) — **those are not
+   migrated**, don't use them as the "known good" reference. The
+   rasterisers `WinBackend::draw_*` genuinely calls with
+   `&self.current_theme` (check `backend.rs`, not the per-file grep,
+   since a file can define both a themed production path and an
+   unthemed `#[cfg(test)]` fixture that also calls `Theme::default()`)
+   include `draw_text_input`, `draw_scrollbar`, `draw_command_line`,
+   `draw_terminal`, `draw_text_display`, `draw_drop_overlay`,
+   `draw_board`, `draw_minimap`, `draw_pipeline_view`,
+   `draw_command_center`, and `draw_diff_view`. Confirm chrome painted
+   by one of *those* (e.g. the text input caret/selection colours, or
+   the scrollbar thumb) visibly reflects a non-default theme; confirm
+   everything else — including the tab bar and status bar — is a
+   *known* gap, not a surprise.
 2. **Font rendering and hinting.** Compare label and editor text at
    100% and 150% Windows display scaling (Settings → System → Display)
    against the same text on the `tui`/`gtk` backends run side by side.
@@ -905,7 +919,7 @@ glance:
 
 | Date | Rev | Run by | Result |
 |---|---|---|---|
-| 2026-09-04 | `9452d50` | operator (dell64) | Step 1 (Wine question) done — see above. Manual checklist (1–5) not yet run; no interactive `dell64` session available for this pass. |
+| 2026-09-04 | `9452d50` (branch tip before this doc commit — the code state actually exercised by the `cargo xwin test` run below) | operator (dell64) | Step 1 (Wine question) done — see above. Manual checklist (1–5) not yet run; no interactive `dell64` session available for this pass. |
 
 CI's `windows-latest` leg and `cargo xwin test` on `dell64` both prove
 "compiles and runs headless" — neither is a substitute for a row in
