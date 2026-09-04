@@ -1305,15 +1305,33 @@ impl Backend for WinBackend {
         todo!("Direct2D palette rasteriser (no surface attached yet)")
     }
 
+    /// #734: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture.
     fn draw_settings_chrome(
         &mut self,
-        _rect: Rect,
-        _header_text: &str,
-        _query: &str,
-        _placeholder: &str,
-        _active: bool,
+        rect: Rect,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
     ) {
-        todo!("Direct2D settings chrome rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            super::form::draw_settings_chrome(
+                &surface.target,
+                dwrite,
+                rect,
+                self.current_line_height,
+                header_text,
+                query,
+                placeholder,
+                active,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, header_text, query, placeholder, active);
+        todo!("Direct2D settings chrome rasteriser (no surface attached yet)")
     }
 
     /// #25: real Direct2D/DirectWrite rasteriser via `win::status_bar`
