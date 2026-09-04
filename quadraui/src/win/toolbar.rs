@@ -61,7 +61,12 @@ use crate::types::WidgetId;
 /// DirectWrite type — mirrors `macos::toolbar::CtFontMeasure` /
 /// `gtk::toolbar::PangoMeasure` / `win::form::DWriteMeasure`, which all
 /// exist for exactly this reason (#730).
-struct DWriteMeasure<'a>(&'a DWrite);
+///
+/// `pub(crate)` (not private) so `win::sidebar_panel` — which embeds a
+/// [`Toolbar`] and needs the same measurer for its nested
+/// `Toolbar::layout` call — can reuse it rather than defining its own
+/// copy (#731; mirrors `gtk::sidebar_panel` reusing `gtk::toolbar::PangoMeasure`).
+pub(crate) struct DWriteMeasure<'a>(pub(crate) &'a DWrite);
 
 impl TextMeasure for DWriteMeasure<'_> {
     fn width_of(&self, text: &str) -> f32 {

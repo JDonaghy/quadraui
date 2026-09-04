@@ -2271,22 +2271,56 @@ impl Backend for WinBackend {
         todo!("DirectWrite toolbar layout (no surface attached yet)")
     }
 
+    /// #731: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. `SidebarPanel` embeds a
+    /// [`crate::primitives::toolbar::Toolbar`] header — `win::sidebar_panel`
+    /// delegates the slot to `super::toolbar::draw_toolbar` rather than
+    /// re-deriving toolbar geometry, mirroring `gtk::sidebar_panel` /
+    /// `macos::sidebar_panel`.
     fn draw_sidebar_panel(
         &mut self,
-        _rect: Rect,
-        _panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        _hovered_toolbar_id: Option<&crate::types::WidgetId>,
-        _pressed_toolbar_id: Option<&crate::types::WidgetId>,
+        rect: Rect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        hovered_toolbar_id: Option<&crate::types::WidgetId>,
+        pressed_toolbar_id: Option<&crate::types::WidgetId>,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        todo!("Direct2D sidebar-panel rasteriser")
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::sidebar_panel::draw_sidebar_panel(
+                &surface.target,
+                dwrite,
+                self.current_line_height,
+                rect,
+                panel,
+                hovered_toolbar_id,
+                pressed_toolbar_id,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, panel, hovered_toolbar_id, pressed_toolbar_id);
+        todo!("Direct2D sidebar-panel rasteriser (no surface attached yet)")
     }
 
+    /// #731: see [`Self::toolbar_layout`]'s doc for why this only needs
+    /// `self.dwrite` (text measurement for the nested toolbar's button
+    /// widths), not a live render target.
     fn sidebar_panel_layout(
         &self,
-        _rect: Rect,
-        _panel: &crate::primitives::sidebar_panel::SidebarPanel,
+        rect: Rect,
+        panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        todo!("DirectWrite sidebar-panel layout")
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::sidebar_panel::win_sidebar_panel_layout(
+                dwrite,
+                self.current_line_height,
+                rect,
+                panel,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, panel);
+        todo!("DirectWrite sidebar-panel layout (no surface attached yet)")
     }
 
     fn draw_diff_view(

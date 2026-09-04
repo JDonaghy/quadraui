@@ -125,6 +125,11 @@ pub mod services;
 /// "compiles everywhere, only *works* on Windows" reason as `run`/`mod
 /// run` above — see this module's own doc.
 pub mod shell_runner;
+/// Direct2D / DirectWrite rasteriser for
+/// [`crate::primitives::sidebar_panel::SidebarPanel`] (#731). Windows-only
+/// in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod sidebar_panel;
 /// Direct2D / DirectWrite rasteriser for [`crate::Spinner`] (#29).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -236,6 +241,8 @@ pub use run::{run, run_with, RunConfig};
 #[cfg(target_os = "windows")]
 pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
+#[cfg(target_os = "windows")]
+pub use sidebar_panel::{draw_sidebar_panel, win_sidebar_panel_layout};
 #[cfg(target_os = "windows")]
 pub use spinner::{draw_spinner, win_spinner_layout};
 #[cfg(target_os = "windows")]
