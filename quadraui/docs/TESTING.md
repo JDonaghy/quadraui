@@ -789,3 +789,16 @@ toward "things that genuinely need eyes".
      hanging (the `TuiDriver` tests in `tests/tui_example_driver.rs`
      already pin this contract headlessly; this step is just the human
      sanity check that the real terminal binary matches).
+  5. **Windows** (quadraui#744 — `show_message_dialog` is real here,
+     `native_dialogs: true`): `cargo run --example win_platform_services
+     --features win` on `dell64` (see this doc's "Win-GUI: building and
+     testing for real" note in the repo's `CLAUDE.md`) and press `m`.
+     Confirm a real `TaskDialogIndirect` alert titled "Save changes?"
+     appears with Save/Don't Save/Cancel buttons (Save bold/default).
+     Click Save and Don't Save in turn (re-pressing `m` between clicks)
+     and confirm stderr reports `chose WidgetId("save")` /
+     `chose WidgetId("dont_save")` matching the click. Press `m` again
+     and dismiss via Escape or the dialog's close box; confirm stderr
+     reports `chose WidgetId("cancel")` both times — that button is
+     marked `is_cancel`, so the dismissal gesture round-trips to it
+     rather than reporting "dismissed with no choice".

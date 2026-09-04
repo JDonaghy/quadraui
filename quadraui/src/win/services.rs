@@ -16,6 +16,14 @@
 //!   later from a spawned thread (a balloon has no lifetime of its own
 //!   independent of the icon it's attached to, and this backend has no
 //!   persistent tray icon to hang it off).
+//! - **Message dialogs** (#744) — `TaskDialogIndirect`, the modern
+//!   common-controls v6 alert (preferred over the legacy `MessageBoxW`
+//!   for its richer, arbitrarily-labelled button row — `MessageDialogOptions`
+//!   carries caller-declared buttons, not a fixed OK/Cancel/Yes/No set).
+//!   Blocking and synchronous, same as the file dialogs above, so it
+//!   needs no [`crate::desktop::ModalPumpGuard`] of its own either — see
+//!   this module's `#702` audit note below, which applies identically
+//!   here.
 //! - **`open_url`** — `ShellExecuteW(NULL, "open", url, ...)`.
 //!
 //! Real WinAPI/COM calls are gated on `cfg(target_os = "windows")` —
@@ -32,16 +40,17 @@
 //! [`crate::desktop::ModalPumpDepth`]/[`crate::desktop::ModalPumpGuard`]
 //! exist to guard (mirroring `GtkPlatformServices`'s async-`FileDialog`
 //! pump, #427) — so it's worth being explicit about why
-//! `show_file_open_dialog`/`show_file_save_dialog` below take no new
+//! `show_file_open_dialog`/`show_file_save_dialog` (and, since #744,
+//! `show_message_dialog`'s `TaskDialogIndirect` call) below take no new
 //! guard of their own, rather than the omission looking like an
-//! oversight. Both are only ever called from inside `app.handle`
+//! oversight. All three are only ever called from inside `app.handle`
 //! (`Backend::services()` is the only way to reach them), and `win::run`'s
 //! `dispatch` (`src/win/run.rs`) already wraps *all* of `app.handle` in a
 //! `super::guarded_call(&ws.state, &ws.pump_depth, …)` — so
 //! `ws.pump_depth` is already incremented for the *entire* duration of
 //! whatever `app.handle` does, including a synchronous, blocking
-//! `IFileOpenDialog::Show` call made from inside it. Any `wndproc`
-//! message that re-enters during that blocking `Show()` call (a
+//! `IFileOpenDialog::Show`/`TaskDialogIndirect` call made from inside it.
+//! Any `wndproc` message that re-enters during that blocking call (a
 //! `WM_PAINT` for an exposed region, say — Win32 still paints disabled
 //! owner windows) already sees `ws.pump_depth.is_pumping()` and cedes to
 //! `DefWindowProcW`, purely as a side effect of `dispatch`'s existing
@@ -51,10 +60,14 @@
 
 use std::path::PathBuf;
 
+#[cfg(target_os = "windows")]
+use crate::backend::MessageDialogButton;
 use crate::backend::{
     Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
     PlatformServices,
 };
+#[cfg(target_os = "windows")]
+use crate::primitives::dialog::DialogSeverity;
 
 #[cfg(target_os = "windows")]
 use std::cell::Cell;
@@ -80,6 +93,11 @@ use windows::Win32::System::Memory::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Ole::CF_UNICODETEXT;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Controls::{
+    TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOG_BUTTON,
+    TDF_ALLOW_DIALOG_CANCELLATION, TD_ERROR_ICON, TD_INFORMATION_ICON, TD_WARNING_ICON,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 #[cfg(target_os = "windows")]
@@ -197,12 +215,18 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// Not yet implemented — no `native_dialogs` capability declared
-    /// (`WinBackend::backend_caps`). A real `TaskDialogIndirect`-backed
-    /// implementation is follow-up work (quadraui#666), same posture as
-    /// `MacPlatformServices::show_message_dialog` today.
-    fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-        None
+    /// `TaskDialogIndirect` (#744) — see this module's doc comment for
+    /// why `TaskDialog` over the legacy `MessageBoxW`.
+    fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+        #[cfg(target_os = "windows")]
+        {
+            win_show_message_dialog(self.window.get(), &opts)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = opts;
+            None
+        }
     }
 
     fn send_notification(&self, n: Notification) {
@@ -466,6 +490,132 @@ fn win_show_save_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option
     }
 }
 
+// ─── Message dialog (#744) ──────────────────────────────────────────────
+
+/// Win32 reserves ids 1–11 for its own common-button set (`IDOK` = 1,
+/// `IDCANCEL` = 2, `IDABORT` = 3, …, `IDCONTINUE` = 11 — see
+/// `Win32_UI_WindowsAndMessaging`'s `MESSAGEBOX_RESULT` constants).
+/// `MessageDialogOptions::buttons` is an arbitrary caller-declared set
+/// with no relation to that table, so every custom
+/// [`TASKDIALOG_BUTTON::nButtonID`] below starts past it — the range
+/// Microsoft's own `TaskDialogIndirect` docs recommend for
+/// application-defined buttons.
+#[cfg(target_os = "windows")]
+const FIRST_CUSTOM_BUTTON_ID: i32 = 100;
+
+/// The reserved id `TaskDialogIndirect` resolves Escape / Alt-F4 / the
+/// window's close box to, when [`TDF_ALLOW_DIALOG_CANCELLATION`] is set
+/// and no button already owns it (`TaskDialogIndirect`'s own docs on
+/// `IDCANCEL`). [`win_show_message_dialog`] assigns this id to the first
+/// [`MessageDialogButton::is_cancel`] button (if any) so that dismissal
+/// gesture round-trips to the caller's own cancel button instead of a
+/// raw id `opts.buttons` has no entry for.
+#[cfg(target_os = "windows")]
+const TASKDIALOG_IDCANCEL: i32 = 2;
+
+/// Assign each of `opts.buttons` a `TASKDIALOG_BUTTON` id: the first
+/// `is_cancel` button (if any) gets [`TASKDIALOG_IDCANCEL`] so Escape/the
+/// close box maps back to it; every other button gets a sequential id
+/// from [`FIRST_CUSTOM_BUTTON_ID`]. Mirrors
+/// `gtk::services::hig_button_order`'s job of reconciling
+/// `MessageDialogOptions`' caller-declared button list with a native
+/// widget's own id/ordering scheme, minus the reordering GNOME HIG
+/// wants and Win32 doesn't.
+#[cfg(target_os = "windows")]
+fn assign_button_ids(buttons: &[MessageDialogButton]) -> Vec<i32> {
+    let mut cancel_assigned = false;
+    buttons
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            if b.is_cancel && !cancel_assigned {
+                cancel_assigned = true;
+                TASKDIALOG_IDCANCEL
+            } else {
+                FIRST_CUSTOM_BUTTON_ID + i as i32
+            }
+        })
+        .collect()
+}
+
+/// `TaskDialogIndirect` (issue #744) — the common-controls v6 alert,
+/// preferred over the legacy `MessageBoxW` per this module's doc
+/// comment. Blocking: returns once the user picks a button or dismisses
+/// the dialog.
+#[cfg(target_os = "windows")]
+fn win_show_message_dialog(
+    owner: Option<HWND>,
+    opts: &MessageDialogOptions,
+) -> Option<MessageDialogChoice> {
+    let ids = assign_button_ids(&opts.buttons);
+
+    // Every wide buffer referenced by pointer below (`title_wide`,
+    // `body_wide`, `label_wides`) must outlive the `TaskDialogIndirect`
+    // call — kept alive as locals for the rest of this function, same
+    // contract as `configure_file_dialog`'s `buffers`.
+    let title_wide = wide_nul_terminated(&opts.title);
+    let body_wide = wide_nul_terminated(&opts.body);
+    let label_wides: Vec<Vec<u16>> = opts
+        .buttons
+        .iter()
+        .map(|b| wide_nul_terminated(&b.label))
+        .collect();
+    let button_specs: Vec<TASKDIALOG_BUTTON> = ids
+        .iter()
+        .zip(label_wides.iter())
+        .map(|(&id, wide)| TASKDIALOG_BUTTON {
+            nButtonID: id,
+            pszButtonText: PCWSTR::from_raw(wide.as_ptr()),
+        })
+        .collect();
+
+    let default_id = opts
+        .buttons
+        .iter()
+        .zip(ids.iter())
+        .find(|(b, _)| b.is_default)
+        .map(|(_, &id)| id)
+        .unwrap_or(0);
+
+    // `TaskDialogIndirect` has no question-mark icon slot at all — the
+    // Vista UX guidelines that introduced it deliberately dropped the
+    // classic `MB_ICONQUESTION` mark, so `Question` degrades to neutral
+    // here (same as `None`).
+    let icon = match opts.severity {
+        Some(DialogSeverity::Error) => TD_ERROR_ICON,
+        Some(DialogSeverity::Warning) => TD_WARNING_ICON,
+        Some(DialogSeverity::Info) => TD_INFORMATION_ICON,
+        Some(DialogSeverity::Question) | None => PCWSTR::null(),
+    };
+
+    let config = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: owner.unwrap_or_default(),
+        // Always on: this is what makes `TaskDialogIndirect` resolve
+        // Escape / Alt-F4 / the close box to `TASKDIALOG_IDCANCEL`
+        // rather than leaving the dialog unclosable — see
+        // `TASKDIALOG_IDCANCEL`'s doc comment for how that then maps
+        // back to a caller button (or `None`, matching this trait
+        // method's documented "dismissed without choosing" contract).
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
+        pszMainInstruction: PCWSTR::from_raw(title_wide.as_ptr()),
+        pszContent: PCWSTR::from_raw(body_wide.as_ptr()),
+        cButtons: button_specs.len() as u32,
+        pButtons: button_specs.as_ptr(),
+        nDefaultButton: default_id,
+        Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: icon },
+        ..Default::default()
+    };
+
+    let mut chosen: i32 = 0;
+    unsafe {
+        TaskDialogIndirect(&config, Some(&mut chosen), None, None).ok()?;
+    }
+    ids.iter()
+        .position(|&id| id == chosen)
+        .map(|i| opts.buttons[i].id.clone())
+}
+
 // ─── Notifications (#23) ────────────────────────────────────────────────
 
 /// Monotonic per-process tray-icon id, so two notifications fired close
@@ -623,6 +773,63 @@ mod tests {
             body: "b".to_string(),
             urgent: false,
         });
+        assert!(svc
+            .show_message_dialog(MessageDialogOptions {
+                title: "t".to_string(),
+                body: "b".to_string(),
+                buttons: Vec::new(),
+                severity: None,
+            })
+            .is_none());
         svc.open_url("https://example.com");
+    }
+
+    /// `assign_button_ids` is pure id-assignment logic, host-independent
+    /// in principle, but gated on `target_os = "windows"` anyway since
+    /// it's only compiled in under that cfg (see the `#[cfg(target_os =
+    /// "windows")]` on its own definition) — these run on the
+    /// `windows-latest` CI leg alongside the rest of this module's
+    /// WinAPI-backed tests.
+    #[cfg(target_os = "windows")]
+    fn win_button(id: &str, is_default: bool, is_cancel: bool) -> MessageDialogButton {
+        MessageDialogButton {
+            id: crate::types::WidgetId::new(id),
+            label: id.to_string(),
+            is_default,
+            is_cancel,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn assign_button_ids_starts_at_100_with_no_cancel_button() {
+        let buttons = [
+            win_button("ok", true, false),
+            win_button("retry", false, false),
+        ];
+        assert_eq!(assign_button_ids(&buttons), vec![100, 101]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn assign_button_ids_gives_the_first_cancel_button_idcancel() {
+        let buttons = [
+            win_button("save", false, false),
+            win_button("dont_save", false, false),
+            win_button("cancel", false, true),
+        ];
+        assert_eq!(
+            assign_button_ids(&buttons),
+            vec![100, 101, TASKDIALOG_IDCANCEL]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn assign_button_ids_only_the_first_cancel_button_gets_idcancel() {
+        // A second `is_cancel` button is unusual input, but must still
+        // resolve to a distinct id rather than colliding with the first.
+        let buttons = [win_button("a", false, true), win_button("b", false, true)];
+        assert_eq!(assign_button_ids(&buttons), vec![TASKDIALOG_IDCANCEL, 101]);
     }
 }

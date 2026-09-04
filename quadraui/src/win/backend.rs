@@ -1231,9 +1231,16 @@ impl Backend for WinBackend {
             // #23: file dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
             // notifications (`Shell_NotifyIconW`) go through COM/Shell
             // APIs independent of the Direct2D rasteriser work above, so
-            // they're honestly `true` on Windows itself. `native_dialogs`
-            // (message/alert dialogs) stays unset — that's still a
-            // `None`-returning stub pending quadraui#666.
+            // they're honestly `true` on Windows itself.
+            //
+            // `native_dialogs` (#744): `show_message_dialog` now shows a
+            // real `TaskDialogIndirect` alert and returns the chosen
+            // button's id — see `src/win/services.rs::win_show_message_dialog`.
+            // `CAP_CONTRACTS`'s `native_dialogs` entry is `Unprovable`
+            // (there is no no-op default `show_message_dialog` diverges
+            // from — every backend implements it), so this declaration
+            // isn't source-checked by the honesty test; it's true because
+            // the alert is real, not because anything can parse that.
             //
             // `pointer_cursor` (#702): `set_cursor` now drives a real
             // `SetCursor`/`WM_SETCURSOR` round-trip instead of the
@@ -1254,6 +1261,7 @@ impl Backend for WinBackend {
             // `requires: ["text_selection"]`) now runs instead of skipping.
             crate::backend::BackendCaps {
                 file_dialogs: true,
+                native_dialogs: true,
                 notifications: true,
                 pointer_cursor: true,
                 mouse: true,
