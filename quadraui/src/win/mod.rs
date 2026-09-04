@@ -231,7 +231,7 @@ pub use editor::draw_editor;
 #[cfg(target_os = "windows")]
 pub use find_replace::draw_find_replace;
 #[cfg(target_os = "windows")]
-pub use form::{draw_form, win_form_layout};
+pub use form::{draw_form, draw_settings_chrome, win_form_layout};
 #[cfg(target_os = "windows")]
 pub use list::{draw_list, win_list_layout};
 #[cfg(target_os = "windows")]

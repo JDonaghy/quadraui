@@ -460,6 +460,105 @@ pub fn draw_form(
     layout
 }
 
+/// Cursor width in DIPs for the settings-chrome search row — matches the
+/// GTK/macOS twins' 1.5px caret.
+const SETTINGS_CURSOR_W: f32 = 1.5;
+/// Prefix rendered before the settings search query — same string the
+/// GTK/macOS twins use.
+const SETTINGS_SEARCH_PREFIX: &str = " /  ";
+
+/// Draw settings-panel chrome: a 2-row strip with a header row and a
+/// search input row, designed to sit immediately above a [`Form`] body.
+///
+/// Port of [`crate::gtk::form::draw_settings_chrome`] (and
+/// [`crate::macos::form::draw_settings_chrome`]) — same two-row layout,
+/// same `" /  "` prefix, same placeholder rule (shown only when the
+/// query is empty *and* the row is inactive), same accent caret when
+/// active.
+///
+/// Chrome only: the form body and any scrollbar layered below are
+/// painted separately by the caller. `rect.height` is not consulted —
+/// total chrome height is always `2 * line_height`, matching both twins.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_settings_chrome(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    line_height: f32,
+    header_text: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+) {
+    if rect.width <= 0.0 || line_height <= 0.0 {
+        return;
+    }
+
+    let theme = Theme::default();
+
+    // Row 0: header bar.
+    let _ = fill_rect(
+        target,
+        Rect::new(rect.x, rect.y, rect.width, line_height),
+        theme.header_bg,
+    );
+    let (header_w, header_h) = dwrite.measure_text(header_text).unwrap_or((0.0, 0.0));
+    let header_y = rect.y + (line_height - header_h) / 2.0;
+    let _ = dwrite.draw_text(
+        target,
+        header_text,
+        Rect::new(rect.x + 2.0, header_y, header_w, header_h),
+        theme.header_fg,
+    );
+
+    // Row 1: search input.
+    let search_y = rect.y + line_height;
+    let row_bg = if active {
+        theme.selected_bg
+    } else {
+        theme.tab_bar_bg
+    };
+    let _ = fill_rect(
+        target,
+        Rect::new(rect.x, search_y, rect.width, line_height),
+        row_bg,
+    );
+
+    let (prefix_w, prefix_h) = dwrite
+        .measure_text(SETTINGS_SEARCH_PREFIX)
+        .unwrap_or((0.0, 0.0));
+    let prefix_y = search_y + (line_height - prefix_h) / 2.0;
+    let _ = dwrite.draw_text(
+        target,
+        SETTINGS_SEARCH_PREFIX,
+        Rect::new(rect.x + 2.0, prefix_y, prefix_w, prefix_h),
+        theme.muted_fg,
+    );
+
+    let q_x = rect.x + 2.0 + prefix_w;
+    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+    let (text, color) = if show_placeholder {
+        (placeholder, theme.muted_fg)
+    } else if query.is_empty() {
+        (query, theme.muted_fg)
+    } else {
+        (query, theme.foreground)
+    };
+    let (text_w, text_h) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
+    let text_y = search_y + (line_height - text_h) / 2.0;
+    let _ = dwrite.draw_text(target, text, Rect::new(q_x, text_y, text_w, text_h), color);
+
+    if active {
+        let (query_w, _) = dwrite.measure_text(query).unwrap_or((0.0, 0.0));
+        let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
+        let _ = fill_rect(
+            target,
+            Rect::new(cur_x, search_y + 2.0, SETTINGS_CURSOR_W, line_height - 4.0),
+            theme.accent_fg,
+        );
+    }
+}
+
 /// Shift an item-local `Rect` (relative to the field row's own bounds)
 /// into surface-absolute coordinates via `row_rect`'s origin.
 fn shift(row_rect: Rect, item_rect: &Rect) -> Rect {
@@ -773,5 +872,87 @@ mod tests {
             .expect("paint");
         let no_paint = win_form_layout(&dwrite, rect, &form, LINE_HEIGHT);
         assert_eq!(painted, no_paint);
+    }
+
+    /// [`draw_settings_chrome`]'s two rows must paint at the geometry the
+    /// GTK twin (`gtk::form::draw_settings_chrome`) uses for the same
+    /// inputs: row 0 (`y in [0, line_height)`) is `header_bg`, row 1
+    /// (`y in [line_height, 2*line_height)`) is `tab_bar_bg` when
+    /// `active` is `false`. Probed away from the left-aligned text (issue
+    /// #734).
+    #[test]
+    fn settings_chrome_paints_header_and_inactive_search_rows() {
+        let surface = HeadlessSurface::new(200, 60).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_settings_chrome(
+                    target,
+                    &dwrite,
+                    rect,
+                    line_height,
+                    "Settings",
+                    "",
+                    "search…",
+                    false,
+                );
+            })
+            .expect("paint settings chrome");
+
+        let theme = Theme::default();
+        let header_px = surface.pixel_at(150, 2);
+        assert_eq!(
+            (header_px.r, header_px.g, header_px.b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "header row paints header_bg"
+        );
+
+        let search_px = surface.pixel_at(150, line_height as u32 + 2);
+        assert_eq!(
+            (search_px.r, search_px.g, search_px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "inactive search row paints tab_bar_bg"
+        );
+    }
+
+    /// The search row switches to `selected_bg` while `active` — same
+    /// active/inactive contract as `gtk::form::draw_settings_chrome` and
+    /// `macos::form::draw_settings_chrome`.
+    #[test]
+    fn settings_chrome_active_search_row_paints_selected_bg() {
+        let surface = HeadlessSurface::new(200, 60).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_settings_chrome(
+                    target,
+                    &dwrite,
+                    rect,
+                    line_height,
+                    "Settings",
+                    "op",
+                    "",
+                    true,
+                );
+            })
+            .expect("paint settings chrome");
+
+        let theme = Theme::default();
+        let search_px = surface.pixel_at(150, line_height as u32 + 2);
+        assert_eq!(
+            (search_px.r, search_px.g, search_px.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "active search row paints selected_bg"
+        );
     }
 }
