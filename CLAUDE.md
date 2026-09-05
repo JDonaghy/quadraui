@@ -60,7 +60,7 @@ quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a pu
 | Consumer | Declaration | Its CI |
 |---|---|---|
 | `coord-tui` — `JDonaghy/coord-tui` (repo root *is* the crate root) | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", features = ["tui","terminal"] }` | its own CI builds against the pinned rev, **not** `develop`'s tip |
-| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop`, hard-pinned further by `build.rs` against `quadraui-pin.txt` (vimcode#638) |
+| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` — vimcode's own `Cargo.toml` also still carries a `[patch.crates-io] vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` stanza mirroring this repo's *former* vendored patch (removed here by #795; vimcode's copy now points at a path that no longer exists and needs its own issue to delete, see README-PATCH.md) | `ci.yml` clones `--branch develop`, hard-pinned further by `build.rs` against `quadraui-pin.txt` (vimcode#638) |
 
 Consequences, all of which have already bitten:
 

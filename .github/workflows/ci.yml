@@ -24,6 +24,40 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  patch-guard:
+    # #795: quadraui used to carry a `[patch.crates-io]` stanza (root
+    # Cargo.toml) vendoring a locally-patched vt100 0.16.2 to loosen its
+    # unicode-width bound — see README-PATCH.md for the full history. That
+    # reason expired once quadraui's own `ratatui` dependency moved to
+    # "0.30" (no exact unicode-width pin anywhere in the graph any more),
+    # and the stanza was removed. A live `[patch.crates-io]` entry is a
+    # hard, silent blocker to `cargo publish` ever working for this crate —
+    # `[patch]` never propagates to a published crate's own consumers, it
+    # only takes effect for builds that include quadraui's own workspace
+    # manifest — so this job exists purely to keep it from being
+    # reintroduced without anyone noticing. Two checks:
+    #   1. grep every Cargo.toml in the repo for a `[patch` table header
+    #      and fail loudly if one is found.
+    #   2. `cargo package`, which (unlike `cargo publish`) works even
+    #      though `quadraui` sets `publish = false`, to prove the manifest
+    #      + Cargo.lock resolve `vt100` (and everything else) straight off
+    #      crates.io with no local path override. `--locked` is load-bearing
+    #      here: without it cargo would silently re-resolve and paper over
+    #      a stale/patched Cargo.lock instead of failing on it.
+    name: patch-guard (no vendored crates-io patches)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fail if any [patch.*] stanza exists
+        run: |
+          if grep -rn --include='Cargo.toml' -E '^\s*\[patch' .; then
+            echo "::error::A [patch.*] stanza was found in a Cargo.toml. [patch] never propagates to consumers of a published crate (see README-PATCH.md) and is a hard blocker to 'cargo publish'. Remove it, or update this guard and README-PATCH.md together if a patch is genuinely unavoidable again."
+            exit 1
+          fi
+      - name: cargo package resolves with no patch (resolution proof)
+        run: cargo package -p quadraui --no-verify --locked
+
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the
     # matching driver test in `quadraui/tests/tui_example_driver.rs`. #A1
