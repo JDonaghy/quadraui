@@ -12,9 +12,9 @@
 //! `#[cfg(target_os = "windows")] mod activity_bar;` and `backend.rs`'s
 //! module docs.
 //!
-//! See `win::status_bar`'s module doc for why colours come from
-//! [`Theme::default`] rather than a live `WinBackend` theme field —
-//! nothing has wired real theme plumbing through to this backend yet.
+//! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
+//! caller ([`crate::win::WinBackend::draw_activity_bar`]) passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -56,8 +56,8 @@ pub fn draw_activity_bar(
     rect: Rect,
     bar: &ActivityBar,
     hovered_idx: Option<usize>,
+    theme: &Theme,
 ) -> Vec<ActivityBarRowHit> {
-    let theme = Theme::default();
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
     let layout = win_activity_bar_layout(rect, bar);
@@ -182,7 +182,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_activity_bar(target, &dwrite, rect, &bar, None);
+                draw_activity_bar(target, &dwrite, rect, &bar, None, &Theme::default());
             })
             .expect("paint activity bar");
 
@@ -234,7 +234,14 @@ mod tests {
         let mut hits = None;
         surface
             .paint(|target| {
-                hits = Some(draw_activity_bar(target, &dwrite, rect, &bar, None));
+                hits = Some(draw_activity_bar(
+                    target,
+                    &dwrite,
+                    rect,
+                    &bar,
+                    None,
+                    &Theme::default(),
+                ));
             })
             .expect("paint");
         let hits = hits.expect("draw_activity_bar ran");
