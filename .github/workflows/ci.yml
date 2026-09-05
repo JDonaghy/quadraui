@@ -175,19 +175,25 @@ jobs:
       # `--all-targets` — its `#[cfg(test)]` blocks, which is where
       # `-D warnings`' `dead_code` failures surface.
       #
-      # Why this step exists: `.github/workflows/macos.yml` is
-      # `paths`-filtered to `quadraui/src/macos/**`, so a PR that touches
-      # *shared* code can make the macOS build unbuildable and no gate
-      # notices until the next PR that happens to touch `src/macos/` — at
-      # which point the break lands on an unrelated author at the merge
-      # gate. That is precisely what happened between #741 (added
-      # `mod text_selection`, consumed by tui/gtk/win but not macos, so
-      # dead code under `--features macos` alone → hard error under
-      # `-D warnings`) and #780, which paid for it. The `-D warnings`
-      # difference between "warning" and "error" is what makes this a
-      # blocking-class problem rather than noise, and this ~20s step is
-      # the cheapest place in the fleet to catch it: no macos-latest
-      # minutes, no new runner, no `paths` filter.
+      # Why this step exists, and why it still pulls its weight after #792:
+      # before #792, `.github/workflows/macos.yml` was `paths`-filtered to
+      # `quadraui/src/macos/**` alone, so a PR that touched *shared* code
+      # could make the macOS build unbuildable with no macOS gate running
+      # at all — the break then landed on an unrelated author at the merge
+      # gate, whichever PR next happened to touch `src/macos/`. That is
+      # precisely what happened between #741 (added `mod text_selection`,
+      # consumed by tui/gtk/win but not macos, so dead code under
+      # `--features macos` alone → hard error under `-D warnings`) and
+      # #780, which paid for it. #792 widened macos.yml's `paths` filter to
+      # `quadraui/src/**`, so that specific gap — a shared-code PR getting
+      # *no* macOS signal — is closed at the source now. This step stays
+      # anyway, blocking on the same ubuntu leg as every other feature-gate
+      # check here rather than only on a separate `macos-latest` job: it's
+      # ~20s and needs no macos-latest minutes, so it gives the fastest
+      # possible compile-truth signal on a PR that touches `src/macos/`
+      # directly, before the slower `macos-latest` job (which now also
+      # installs GTK4 via Homebrew for the cross-backend-parity leg, see
+      # macos.yml) even starts.
       #
       # What it still cannot do is *run* anything — macos.yml's
       # `macos-latest` job remains the only place `src/macos`'s tests

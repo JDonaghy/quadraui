@@ -6,15 +6,15 @@ name: macOS
 # being all-Linux (precision / elitebook / dellserver) — worth stating
 # plainly since that blocker doesn't apply here.
 #
-# Wired to `pull_request` ONLY through a path filter (#598). The original
-# #483 posture was schedule/manual-only, for a sound reason: `lib.rs` gates
-# `mod macos` on `target_os = "macos"`, so this job is red on arrival (#484
-# reports `MacBackend` missing 7 trait methods plus degenerate rasterisers),
-# and a permanently-red check would block `coord merge` on EVERY quadraui
-# PR. claude-coordinator#581 established that `continue-on-error: true`
-# does not rescue that: it keeps the *workflow run* green, but the *job's
-# own check* still reports `failure`, and coord's merge gate reads
-# per-check conclusions.
+# Wired to `pull_request` through a `paths` filter (#598, widened by
+# #792). The original #483 posture was schedule/manual-only, for a sound
+# reason: `lib.rs` gates `mod macos` on `target_os = "macos"`, so this job
+# is red on arrival (#484 reports `MacBackend` missing 7 trait methods
+# plus degenerate rasterisers), and a permanently-red check would block
+# `coord merge` on EVERY quadraui PR. claude-coordinator#581 established
+# that `continue-on-error: true` does not rescue that: it keeps the
+# *workflow run* green, but the *job's own check* still reports `failure`,
+# and coord's merge gate reads per-check conclusions.
 #
 # What that posture could not do is let #484 ever be verified. The fleet
 # (precision / elitebook / dellserver) is all Linux and advertises no
@@ -45,24 +45,43 @@ name: macOS
 #
 # Since #780 that exact command is also a CI step — "Compile check (macos
 # feature, cross-target)" on `ci.yml`'s ubuntu leg, unfiltered by paths.
-# It exists because the `paths` filter below (correct on its own terms,
-# see the next paragraph) leaves a gap: a PR touching only *shared* code
-# can break the macOS build with no macOS check running at all, and the
-# break then lands on whichever unrelated PR next touches `src/macos/`.
-# #741 did exactly that (`mod text_selection`, unused under
-# `--features macos` → `dead_code` → hard error under `-D warnings`) and
-# #780 paid for it at the merge gate. That step is compile-truth only and
-# does not replace this job; it just means a shared-code regression is
-# caught by its own author instead of the next macOS PR's.
+# It exists because a `paths` filter scoped to `src/macos/**` alone (the
+# original #598 shape) leaves a gap: a PR touching only *shared* code can
+# break the macOS build with no macOS check running at all, and the break
+# then lands on whichever unrelated PR next touches `src/macos/`. #741 did
+# exactly that (`mod text_selection`, unused under `--features macos` →
+# `dead_code` → hard error under `-D warnings`) and #780 paid for it at the
+# merge gate. That step is compile-truth only and does not replace this
+# job — it only proves `--target aarch64-apple-darwin` type-checks, never
+# runs a single AppKit call.
 #
-# The path filter resolves both at once, and is load-bearing:
+# #792 widened the trigger below from `quadraui/src/macos/**` to
+# `quadraui/src/**` for exactly that reason, applied one layer up: the
+# `ci.yml` cross-target compile check is compile-truth, not run-truth, and
+# a shared-code change (`backend.rs`, `primitives/`, `compose/`,
+# `frame.rs`, `shell.rs`, `dispatch.rs`, `runtime.rs`) that breaks
+# `MacBackend`'s *behaviour* rather than its *compilation* could merge and
+# sit undiscovered until the next Monday cron — up to six days (the #537
+# failure mode, per #792). Narrowing the trigger to `src/macos/**` was
+# correct in #598 for cost reasons that no longer outweigh that gap: this
+# is a GitHub-hosted runner (no fleet cost), and a shared-code PR that
+# doesn't touch macOS at all still gets this job now — that is the point,
+# not a regression of #598's intent. If macos-latest minutes become a real
+# concern, prefer trimming cost here (the `concurrency` group below already
+# cancels a superseded run's job rather than narrowing the trigger back —
+# a stale push getting cancelled costs nothing, a stale trigger silently
+# skipping a real regression costs #537 again) over re-narrowing `paths`.
 #
-#   * A PR touching nothing under `quadraui/src/macos/**` gets NO macOS
-#     check — not a passing one, not a failing one, none at all. Unrelated
-#     work is untouched, exactly as #483 intended.
-#   * A PR touching macOS gets a real macos-latest build + test, where a
-#     red check is CORRECT: it is #484's progress bar and should hold the
-#     merge until the backend actually compiles.
+# The path filter still resolves the original #483/#598 tension:
+#
+#   * A PR touching neither `quadraui/src/**` nor this workflow file gets
+#     NO macOS check — not a passing one, not a failing one, none at all.
+#     Unrelated work (docs, other-workspace-member changes, CI files
+#     outside this one) is untouched, exactly as #483 intended.
+#   * A PR touching `quadraui/src/**` — macOS-specific or not — gets a
+#     real macos-latest build + test + clippy, where a red check is
+#     CORRECT: it is #484's progress bar and should hold the merge until
+#     the backend actually compiles and behaves.
 #
 # Do NOT add `continue-on-error` here, and do NOT "restore" the
 # schedule-only trigger — that re-creates the circularity above.
@@ -71,14 +90,30 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
-      - "quadraui/src/macos/**"
+      - "quadraui/src/**"
       - ".github/workflows/macos.yml"
   schedule:
     # Mondays 06:00 UTC. Arbitrary but deliberate: frequent enough that a
     # regression in `src/macos` (193 tests, only ever run here) doesn't sit
     # undiscovered for a long stretch, infrequent enough not to burn
-    # macos-latest minutes on a lane nobody's iterating on day-to-day.
+    # macos-latest minutes on a lane nobody's iterating on day-to-day. Now
+    # a backstop rather than the primary signal — the widened `paths`
+    # filter above catches shared-code breakage on the PR that causes it —
+    # but kept for the same reason ci.yml's cross-target compile check is
+    # kept alongside it: compile-truth and schedule-truth are each cheap
+    # insurance against the other's blind spot.
     - cron: "0 6 * * 1"
+
+# #792: cancel a superseded run's job rather than letting the trigger
+# widen above translate into runner cost from every force-push/rebase on
+# an open PR piling up queued macos-latest minutes. This is the
+# "path-filtered concurrency group" alternative the issue names in place
+# of re-narrowing the trigger — scoped per-PR (`github.ref` is the PR's
+# head ref for `pull_request` events) so unrelated PRs never cancel each
+# other's runs.
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -86,7 +121,7 @@ env:
 
 jobs:
   macos:
-    name: macos (build, test)
+    name: macos (build, test, clippy)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +129,8 @@ jobs:
       # for why); rustup's own override resolution honors that file
       # regardless of what this action installs as its "default".
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Build (macos feature)
         run: cargo build -p quadraui --features macos
@@ -103,3 +140,52 @@ jobs:
       # they run at all.
       - name: Test (macos feature)
         run: cargo test -p quadraui --features macos
+      # #792: matching the `tui`/`gtk`/`win` legs in ci.yml, none of which
+      # ship a build+test with no clippy pass. `-p quadraui` (not
+      # `--workspace`) mirrors the build/test steps above: `kubeui*`'s
+      # demo crates have no `macos` feature to lint here.
+      - name: Clippy (macos feature)
+        run: cargo clippy -p quadraui --features macos -- -D warnings
+      # Tier-1 conformance matrix (quadraui#491, epic #480), matching the
+      # artifact the `tui`/`gtk`/`win` legs upload in ci.yml. `backends()`
+      # in `tests/conformance.rs` already registers `MacFactory` blocking
+      # (`Gating::Blocking`, not burn-down) under
+      # `all(feature = "macos", target_os = "macos")`, so this actually
+      # gates on macOS conformance rather than just reporting it — unlike
+      # the `win` column, which stays `register_burn_down` until #792 item
+      # 4's promotion criterion (a burn-down column that stops failing)
+      # is met. C0 (`c0_paint_smoke`) has no macOS driver yet (see that
+      # test's doc — `MacBackend` has no `ConformanceDriver` wired into
+      # Tier 0), so there is no `conformance-matrix-c0-*.txt` to upload
+      # here; only the Tier-1 matrix exists for this backend today.
+      - name: Conformance matrix (macos)
+        run: cargo test -p quadraui --features macos --test conformance -- --nocapture
+      - name: Upload conformance matrix (macos)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-matrix-macos
+          path: target/conformance-matrix.txt
+          if-no-files-found: warn
+      # Cross-backend parity (quadraui#448/#493, #792 item 3).
+      # `tests/cross_backend_parity.rs` is file-level gated
+      # `cfg(all(feature = "tui", feature = "gtk"))` — every test in it,
+      # including the macOS twin
+      # (`pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state`,
+      # additionally gated `cfg(all(feature = "macos", target_os =
+      # "macos"))`), needs `tui` *and* `gtk` compiled in just for the file
+      # to exist, because `GtkDriver`/`gtk_driver_with_shell` are used
+      # unconditionally throughout the rest of the file. So the macOS body
+      # never ran anywhere: the `gtk`/`tui` CI job builds on Linux (no
+      # `target_os = "macos"`), and this job never enabled `gtk`. `gtk4`
+      # isn't installed on `macos-latest` by default the way `libgtk-4-dev`
+      # is apt-installed on the ubuntu `gtk` job, so Homebrew provides it
+      # here — same trade-off ci.yml's `gtk` job makes for its own apt
+      # install, paid once per run and cached by `Swatinem/rust-cache`'s
+      # target-dir cache on the Cargo side (Homebrew itself isn't cached;
+      # `macos-latest` images ship a recent `gtk4` bottle so this is
+      # normally a fast, no-compile install).
+      - name: Install GTK4 (Homebrew)
+        run: brew install gtk4
+      - name: Cross-backend parity (macos, tui, gtk)
+        run: cargo test -p quadraui --features macos,tui,gtk --test cross_backend_parity
