@@ -8,8 +8,13 @@ This repo is **self-contained at design time**: no consumer depends on
 quadraui from inside the repo at compile time except the demo apps
 (`kubeui*`), and no primitive should encode a specific consumer's domain
 model. **It is not self-contained at delivery time** — two external
-consumers build against this repo's `develop` tip with no version pin.
-Read *Downstream consumers* below before changing any `pub` item.
+consumers build against this repo, and **both now pin a git revision**
+(`coord-tui` since `claude-coordinator#1973`, `vimcode` since
+`vimcode#691`) rather than floating on `develop`'s tip. A breaking
+change on `develop` no longer reaches either consumer until someone
+bumps that pin, in a reviewable diff that's the natural place to carry
+the migration — but a stale pin is its own hazard. Read *Downstream
+consumers* below before changing any `pub` item.
 
 ## Codebase navigation — query the graph first
 
@@ -53,22 +58,25 @@ If you're tempted to take a shortcut — bypass the runner, copy-paste an exampl
 
 ## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
 
-quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** `vimcode` depends on it by *relative path to a sibling checkout*, and its CI clones `develop`. `coord-tui` used to as well, but since `claude-coordinator#1973` (2026-08-10) it pins `quadraui` to a fixed git rev instead — a *deliberate, reviewable* dependency bump on coord-tui's side, not automatic drift:
+quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published *version* of this crate** — but both consumers now pin a specific *git revision*, so neither floats on `develop`'s tip. `coord-tui` pinned first: since `claude-coordinator#1973` (2026-08-10) it declares `quadraui = { git = "...", rev = "<fixed sha>" }` instead of the path dependency it used to carry. `vimcode` followed later (`vimcode#691`): a git dependency with `rev` in `Cargo.toml`, plus a matching `[patch.crates-io]` entry pinning the vendored `vt100` fork the same way, both resolved and locked in `Cargo.lock` — superseding the old `path = "../quadraui/quadraui"` dependency and its `build.rs`/`quadraui-pin.txt` mismatch check (`vimcode#638`). Verified on vimcode `develop @ ee26268` (2026-09-04): `~/src/quadraui` is not consulted by a normal vimcode build at all, and `vimcode --version` prints the resolved rev. Both pins are *deliberate, reviewable* dependency bumps on the consumer's own side, not automatic drift:
 
 **coord-tui moved repos on 2026-08-29.** `claude-coordinator#2899` deleted `tui/` from the coordinator repo and split it into a standalone `JDonaghy/coord-tui` (the coordinator repo itself was renamed `claude-coordinator` → `code-coordinator`; GitHub still redirects the old URL). Anything in this repo that referenced `claude-coordinator/tui` as a *path* — the blast-radius grep below, `ci.yml`'s `downstream` job — had to move with it. `JDonaghy/coord-tui` is **not anonymously readable**, so the `downstream` job's coord-tui leg only runs when a repo secret `COORD_TUI_TOKEN` (read-only, `contents:read` on coord-tui) is present; without it that leg skips with a loud `::warning::` and **only vimcode is compile-checked**. Until that secret exists, treat coord-tui's compile status as *unverified by CI* and do the blast-radius grep by hand.
 
 | Consumer | Declaration | Its CI |
 |---|---|---|
 | `coord-tui` — `JDonaghy/coord-tui` (repo root *is* the crate root) | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", features = ["tui","terminal"] }` | its own CI builds against the pinned rev, **not** `develop`'s tip |
-| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop`, hard-pinned further by `build.rs` against `quadraui-pin.txt` (vimcode#638) |
+| `vimcode` — `JDonaghy/vimcode` | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", … }` (`vimcode#691`) **plus** a `[patch.crates-io]` entry pinning the vendored `vt100` fork the same way, both locked in `Cargo.lock` | its own CI builds against the pinned rev, **not** `develop`'s tip |
 
-Consequences, all of which have already bitten:
+Consequences of pinning, replacing the old floating-tip risk that used to live here:
 
-- A breaking change is **live in vimcode's CI the instant it merges to `develop`** (coord-tui is insulated from this by its rev pin, but only until someone bumps that rev). Not at their next release — at their next `cargo build`.
-- It turns **every open vimcode PR red**, including PRs that touch nothing related, retroactively.
-- There is **no version bump to blame**, so a breaking merge can't be spotted by "which release did this."
+- A breaking change on `develop` does **not** reach either consumer until someone bumps their pin — that bump is itself a normal, reviewable dependency-update PR in the consumer's own repo, and it's the natural place to carry the migration (adopting the new shape a deprecation shim pointed at, etc.).
+- It no longer turns unrelated open consumer PRs red retroactively — merging to quadraui's `develop` has zero effect on either consumer's CI until their pin actually moves.
+- There **is** a version bump to blame now: the pin-bump commit/PR in the consumer repo is exactly "which change did this."
+- The hazard this doesn't remove: **pin lag.** A pin can sit stale indefinitely with nothing forcing it to move. Verified 2026-09-04: vimcode's pinned rev was **44 commits behind** quadraui's `develop` tip. A stale pin means the eventual bump lands a bigger, riskier jump all at once — which is exactly why the deprecation-shim discipline below (rule 3) still matters: it's what keeps that eventual bump cheap instead of a scramble, even though the "this breaks two repos the moment it merges" urgency no longer applies.
 
 `ci.yml`'s `downstream` job (#528) now `cargo check --all-targets`s both consumers against every PR's quadraui — for coord-tui this means overriding its git-rev pin with a `.cargo/config.toml` `paths` override onto the PR's checkout (the same mechanism coord-tui documents for local co-development in `cargo-config-local-quadraui.toml.example`, written with an absolute path so it can't drift when their checkout layout moves — as it did in #2899), and for vimcode it means setting `VIMCODE_QUADRAUI_UNPINNED=1` so `build.rs`'s pin-mismatch check downgrades to a warning instead of aborting the build before any real compilation happens — with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing." You are still the gate for everything the compiler can't see.
+
+**Known gap as of `quadraui#782`:** the vimcode override described above (`VIMCODE_QUADRAUI_UNPINNED` + `build.rs`'s `quadraui-pin.txt` check) targets the *old* `path = "../quadraui/quadraui"` dependency shape. `vimcode#691` replaced that with a git+rev pin the same shape as coord-tui's, which this job has not been updated to match — so treat the vimcode leg's current behavior as unverified against vimcode's actual `develop` until someone re-points it at a `.cargo/config.toml` `paths` override the way the coord-tui leg already works. File/track that as its own issue rather than guessing at the fix here.
 
 Three details in that job are load-bearing and easy to "tidy" into a permanently-green no-op — if you touch it, keep all three:
 
@@ -102,7 +110,7 @@ This is not hypothetical. #476 ("de-coord board.rs") replaced `Stage` with `Card
    **The `deprecated` lint is denied in-repo and allowed downstream — deliberately, and the two must not drift together.**
    `ci.yml` sets `RUSTFLAGS: "-D warnings"` workflow-wide, so the instant PR 1 lands, `#[deprecated]` turns every remaining in-repo call site into a build failure. That split is intentional, not a bug to "fix" by relaxing this repo's lint:
    - **In-repo (this repo's `ci.yml`): `deprecated` stays denied.** quadraui migrates its own call sites (examples, `kubeui*` demo apps, tests) in the *same* PR that adds the `#[deprecated]` attribute — PR 1 doesn't merge with a warning still live in-tree. That's what forces the shim to actually compile clean here rather than just existing on paper.
-   - **Downstream (the consumer lint gate, #543): `deprecated` is allowed.** `coord-tui` and `vimcode` build against this repo's `develop` tip with no version pin (see *Downstream consumers* above), so a consumer mid-migration is expected to keep calling the old shape for a while after PR 1 merges — that's the whole point of deprecate-then-remove instead of a hard break. If the downstream gate denies `deprecated` too, a rule-3-compliant PR 1 turns both consumers' CI red on merge, which is exactly the failure this rule exists to prevent, and indistinguishable from just breaking the API outright. Worse: the non-compliant path (skip the deprecation shim, break it directly) would stay green under a `-D warnings` downstream gate, since there's no warning to deny — so a strict downstream gate quietly *punishes* following this rule and rewards skipping it.
+   - **Downstream (the consumer lint gate, #543): `deprecated` is allowed.** `coord-tui` and `vimcode` each pin quadraui to a git rev now (see *Downstream consumers* above), so PR 1 landing on `develop` doesn't reach either consumer until someone bumps that pin — but when they do, mid-migration is expected: a consumer is meant to keep calling the old shape for a while after its pin bump, which is the whole point of deprecate-then-remove instead of a hard break. If the downstream gate denies `deprecated` too, a rule-3-compliant PR 1 turns a consumer's CI red the moment its pin moves onto it, which is exactly the failure this rule exists to prevent, and indistinguishable from just breaking the API outright. Worse: the non-compliant path (skip the deprecation shim, break it directly) would stay green under a `-D warnings` downstream gate, since there's no warning to deny — so a strict downstream gate quietly *punishes* following this rule and rewards skipping it.
    - Consequence: **a `deprecated` warning must never fail CI in `coord-tui` or `vimcode`** on account of a quadraui shim. If it does, the downstream gate has drifted from this policy — fix the gate (#543), don't stop deprecating.
 4. **Don't batch unrelated removals.** #476 removed a type, renamed a variant, deleted two fields and gutted a keymap in one commit, so the consumer migration was all-or-nothing with no partially-compiling state to bisect from. One breaking change per PR.
 5. **Declare it.** Any PR touching a `pub` item gets a `## Downstream impact` section naming each consumer file that must move (or stating "no consumer hits", with the grep). **A public-API PR without that section should be sent back at review.**
