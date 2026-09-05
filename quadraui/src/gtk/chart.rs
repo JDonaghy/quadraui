@@ -64,6 +64,19 @@ pub fn draw_chart(
 ) -> ChartLayout {
     let layout = gtk_chart_layout(chart, x, y, w, h, line_height, char_width);
 
+    if w <= 0.0 || h <= 0.0 {
+        return layout;
+    }
+
+    // Clip to the chart's own rect so the legend, crosshair and hover
+    // marker (all painted outside `plot_area`, but still meant to stay
+    // inside the chart's bounds) can't bleed onto whatever is painted
+    // beside this chart. Mirrors `macos::chart::draw_chart`'s
+    // `CGContextSaveGState` / `CGContextClipToRect` bracket (quadraui#791).
+    cr.save().ok();
+    cr.rectangle(x, y, w, h);
+    cr.clip();
+
     match chart.kind {
         ChartKind::Sparkline => paint_sparkline(cr, &layout, chart, theme),
         ChartKind::Line => paint_line(cr, pango_layout, &layout, chart, theme),
@@ -79,6 +92,8 @@ pub fn draw_chart(
     if let Some((si, di)) = hovered_point {
         paint_hover_marker_gtk(cr, &layout, si, di, chart);
     }
+
+    cr.restore().ok();
 
     layout
 }
@@ -659,6 +674,76 @@ mod tests {
             pixel(&data, stride, 23, probe_y),
             (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b),
             "rightmost sub-bar should be series 2"
+        );
+    }
+
+    /// Regression for quadraui#791: `draw_chart` had no clip, so overlay
+    /// elements painted outside `plot_area` on purpose (legend,
+    /// crosshair, hover marker) could bleed past the chart's *own* rect
+    /// onto whatever is painted beside it. Paint a sparkline (whose
+    /// `plot_area` equals its full `bounds`, per
+    /// `chart_layout_sparkline_plot_area_equals_bounds` in
+    /// `primitives::chart`) inset in a larger canvas filled with a
+    /// sentinel colour, with a hovered data point sitting exactly at the
+    /// chart's top-left corner — the hover marker's 8px-radius ring is
+    /// centred there, so half of it lands outside the chart's rect
+    /// unless clipped.
+    #[test]
+    fn hover_marker_does_not_escape_chart_rect() {
+        // origin=1.0 at index 0 → top edge; 0.0 at index 1 → bottom edge.
+        // n=2 → index 0's x is the plot area's left edge. So data point
+        // (0, 0) sits exactly at the chart's top-left corner.
+        let chart = bar_chart(
+            ChartKind::Sparkline,
+            vec![series("a", vec![10.0, 0.0])],
+            (0.0, 10.0),
+        );
+
+        let canvas_w = 40;
+        let canvas_h = 40;
+        let sentinel: (u8, u8, u8) = (0, 0, 0);
+        let (chart_x, chart_y, chart_w, chart_h) = (10.0, 10.0, 20.0, 20.0);
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, canvas_w, canvas_h).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(
+                sentinel.0 as f64 / 255.0,
+                sentinel.1 as f64 / 255.0,
+                sentinel.2 as f64 / 255.0,
+            );
+            cr.rectangle(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+            cr.fill().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let theme = Theme::default();
+            draw_chart(
+                &cr,
+                &pango_layout,
+                chart_x,
+                chart_y,
+                chart_w,
+                chart_h,
+                &chart,
+                &theme,
+                12.0,
+                8.0,
+                Some((0, 0)),
+                None,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // Inside the marker's radius-8 ring, centred at the chart's own
+        // top-left corner (10, 10), but outside the chart's rect.
+        let probe = (5, 5);
+        assert_eq!(
+            pixel(&data, stride, probe.0, probe.1),
+            sentinel,
+            "hover marker must not paint outside the chart's own rect",
         );
     }
 

@@ -7,6 +7,14 @@
 //! [`DWrite::draw_text_styled`]). Paint and hit-test both derive from one
 //! `StatusBar::layout` call, so they can't drift apart.
 //!
+//! [`draw_status_bar`] clips to its own `rect` and short-circuits on a
+//! non-positive width/height (quadraui#791), matching
+//! `macos::status_bar::draw_status_bar` — segments can legitimately
+//! overflow their own bounds (`StatusBar::layout` keeps at least the
+//! highest-priority right segment "even if it alone overflows"), so
+//! without the clip that overflow painted straight past the bar's edge
+//! on narrow windows.
+//!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod status_bar;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
@@ -23,7 +31,7 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::status_bar::{StatusBarSegment, StatusSegmentMeasure};
 use crate::theme::Theme;
@@ -68,6 +76,11 @@ fn measure_segment(dwrite: &DWrite, seg: &StatusBarSegment) -> StatusSegmentMeas
 /// `theme`'s background when the bar has no segments at all), then each
 /// visible segment paints its own `fg`/`bg`, honouring `bold` via
 /// [`DWrite::draw_text_styled`].
+///
+/// Zero-size guard and clip mirror `macos::status_bar::draw_status_bar`
+/// (quadraui#791): a degenerate `rect` short-circuits to the no-paint
+/// layout, and painting is clipped to `rect` so segment text can't
+/// overflow the bar on narrow windows.
 pub fn draw_status_bar(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -77,6 +90,12 @@ pub fn draw_status_bar(
     pressed_id: Option<&WidgetId>,
     theme: &Theme,
 ) -> StatusBarLayout {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return win_status_bar_layout(dwrite, rect, bar);
+    }
+
+    push_clip(target, rect);
+
     let layout = win_status_bar_layout(dwrite, rect, bar);
 
     let fill = bar
@@ -117,6 +136,8 @@ pub fn draw_status_bar(
         let _ = fill_rect(target, seg_rect, effective_bg);
         let _ = dwrite.draw_text_styled(target, &seg.text, seg_rect, seg.fg, seg.bold);
     }
+
+    pop_clip(target);
 
     layout
 }
@@ -261,5 +282,83 @@ mod tests {
         let no_paint = win_status_bar_layout(&dwrite, rect, &bar);
 
         assert_eq!(painted, no_paint);
+    }
+
+    /// Regression for quadraui#791: `draw_status_bar` had no clip and no
+    /// zero-size guard, so a bar narrower than its segments' measured
+    /// text let that text overflow the bar's own rect (segments never
+    /// priority-drop on the left, and the right side always keeps at
+    /// least its highest-priority segment "even if it alone overflows" —
+    /// see `StatusBar::layout`'s doc). Paint a status bar inset in a
+    /// larger canvas, deliberately narrower than its segment text, and
+    /// assert every pixel outside the bar's own rect stays untouched.
+    #[test]
+    fn paint_does_not_escape_rect_bounds() {
+        let canvas_w = 240u32;
+        let canvas_h = 40u32;
+        let sentinel = Color::rgb(1, 2, 3);
+        // Narrow enough that "NORMAL" alone overflows it.
+        let bar_rect = Rect::new(20.0, 10.0, 40.0, H);
+        let bar = bar();
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+
+        let surface = HeadlessSurface::new(canvas_w, canvas_h).expect("create surface");
+        surface
+            .fill_rect(
+                Rect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
+                sentinel,
+            )
+            .expect("fill sentinel");
+        surface
+            .paint(|target| {
+                draw_status_bar(
+                    target,
+                    &dwrite,
+                    bar_rect,
+                    &bar,
+                    None,
+                    None,
+                    &Theme::default(),
+                );
+            })
+            .expect("paint status bar");
+
+        for y in 0..canvas_h {
+            for x in 0..canvas_w {
+                let inside = (x as f32) >= bar_rect.x
+                    && (x as f32) < bar_rect.x + bar_rect.width
+                    && (y as f32) >= bar_rect.y
+                    && (y as f32) < bar_rect.y + bar_rect.height;
+                if inside {
+                    continue;
+                }
+                let px = surface.pixel_at(x, y);
+                assert_eq!(
+                    (px.r, px.g, px.b),
+                    (sentinel.r, sentinel.g, sentinel.b),
+                    "pixel ({x}, {y}) outside the bar's own rect should stay untouched",
+                );
+            }
+        }
+    }
+
+    /// A zero-size rect must not panic (no degenerate clip pushed) and
+    /// paint must agree with the no-paint layout — mirrors
+    /// `macos::status_bar`'s zero-size guard.
+    #[test]
+    fn zero_size_rect_is_a_no_op() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let bar = bar();
+        let rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+
+        let surface = HeadlessSurface::new(10, 10).expect("create surface");
+        let painted = surface
+            .paint(|target| {
+                draw_status_bar(target, &dwrite, rect, &bar, None, None, &Theme::default());
+            })
+            .map(|_| win_status_bar_layout(&dwrite, rect, &bar))
+            .expect("paint must not panic on zero size");
+
+        assert_eq!(painted, win_status_bar_layout(&dwrite, rect, &bar));
     }
 }

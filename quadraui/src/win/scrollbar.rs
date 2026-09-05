@@ -9,13 +9,20 @@
 //! whether `thumb_start`/`thumb_len` are applied vertically or
 //! horizontally.
 //!
-//! Unlike the GTK/macOS twins (which paint a real alpha-blended overlay
-//! straight onto whatever is already on screen), this rasteriser
-//! premixes track/thumb colours against `theme.background` via
-//! [`super::text::blend`] before filling — see `super::text::blend`'s
-//! doc and `super::multi_section_view`'s module doc for why every
-//! translucency in this backend goes through a CPU premix rather than a
-//! native Direct2D alpha-blended fill.
+//! Matches the GTK/macOS twins (quadraui#791): track and thumb paint a
+//! real alpha-blended overlay via a translucent `ID2D1SolidColorBrush`
+//! (see [`with_alpha`]) straight onto whatever is already on the
+//! target, instead of premixing against `theme.background` via
+//! [`super::text::blend`]. A scrollbar drawn over an editor, terminal
+//! or panel header previously got a `theme.background`-coloured halo
+//! rather than blending with the content underneath — the brush's own
+//! alpha channel still blends correctly against the render target's
+//! existing pixels even though the target itself is created with
+//! `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN` (that mode only forces the
+//! target's *own* stored alpha to opaque; it doesn't disable source-over
+//! blending for a fill). `super::multi_section_view`'s embedded
+//! scrollbar still uses the CPU-premix convention — out of scope here,
+//! see that module's doc.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod scrollbar;` and `backend.rs`'s
@@ -24,10 +31,11 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{blend, fill_rect};
+use super::text::fill_rect;
 use crate::event::Rect;
 use crate::primitives::scrollbar::{ScrollAxis, Scrollbar};
 use crate::theme::Theme;
+use crate::types::Color;
 
 /// Paint `scrollbar` onto `target`.
 pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: &Theme) {
@@ -49,8 +57,11 @@ pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: 
         0.50
     };
 
-    let track_color = blend(theme.background, theme.scrollbar_track, track_alpha);
-    let _ = fill_rect(target, track, track_color);
+    let _ = fill_rect(
+        target,
+        track,
+        with_alpha(theme.scrollbar_track, track_alpha),
+    );
 
     let thumb_rect = match scrollbar.axis {
         ScrollAxis::Vertical => Rect::new(
@@ -66,8 +77,24 @@ pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: 
             track.height,
         ),
     };
-    let thumb_color = blend(track_color, theme.scrollbar_thumb, thumb_alpha);
-    let _ = fill_rect(target, thumb_rect, thumb_color);
+    let _ = fill_rect(
+        target,
+        thumb_rect,
+        with_alpha(theme.scrollbar_thumb, thumb_alpha),
+    );
+}
+
+/// `color` with its alpha channel replaced by `alpha` (`0.0`–`1.0`),
+/// so [`fill_rect`]'s `ID2D1SolidColorBrush` blends natively against
+/// whatever is already on the target instead of painting an opaque
+/// fill. Mirrors `macos::scrollbar::with_alpha` / `macos::palette::with_alpha`.
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color::rgba(
+        color.r,
+        color.g,
+        color.b,
+        (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
+    )
 }
 
 #[cfg(test)]
@@ -106,6 +133,69 @@ mod tests {
             visible,
             20.0,
         )
+    }
+
+    /// Reference alpha blend, independent of production code, for
+    /// computing the expected pixel colour in
+    /// [`track_blends_with_real_background_not_theme_background`].
+    fn expected_alpha_blend(base: Color, over: Color, alpha: f32) -> Color {
+        let mix =
+            |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
+        Color::rgb(
+            mix(base.r, over.r),
+            mix(base.g, over.g),
+            mix(base.b, over.b),
+        )
+    }
+
+    /// Regression for quadraui#791: `draw_scrollbar` used to premix the
+    /// track colour against `theme.background` via `super::text::blend`
+    /// regardless of what was already painted underneath, so a
+    /// scrollbar drawn over an editor/terminal/panel header (anything
+    /// other than the bare theme background) got a
+    /// `theme.background`-coloured halo instead of blending with the
+    /// real content beneath it. Paint over a background that's
+    /// deliberately far from `theme.background` and assert the result
+    /// is the real alpha blend of *that* background with the track
+    /// colour — not the old premixed halo.
+    #[test]
+    fn track_blends_with_real_background_not_theme_background() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let real_bg = Color::rgb(200, 30, 30);
+        assert_ne!(
+            (real_bg.r, real_bg.g, real_bg.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "test fixture must differ from theme.background to be a meaningful probe",
+        );
+
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        surface
+            .fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), real_bg)
+            .expect("fill bg");
+        surface
+            .paint(|target| {
+                draw_scrollbar(target, &sb, &theme);
+            })
+            .expect("paint scrollbar");
+
+        // Not hovered/dragging: track_alpha = 0.20 (see draw_scrollbar).
+        let track_alpha = 0.20;
+        let expected = expected_alpha_blend(real_bg, theme.scrollbar_track, track_alpha);
+        let old_halo = expected_alpha_blend(theme.background, theme.scrollbar_track, track_alpha);
+
+        // Probe mid-track, below the thumb (thumb_len ≈ 50px at scroll=0).
+        let c = surface.pixel_at(4, 120);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (expected.r, expected.g, expected.b),
+            "track should alpha-blend with the real background beneath it",
+        );
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (old_halo.r, old_halo.g, old_halo.b),
+            "track must not premix against theme.background regardless of what's painted underneath",
+        );
     }
 
     #[test]
