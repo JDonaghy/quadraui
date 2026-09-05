@@ -43,6 +43,18 @@ name: macOS
 # only place `cargo test` executes, so an AppKit call in a `#[test]` is
 # still invisible until this job runs it (see `BACKEND.md` §7).
 #
+# Since #780 that exact command is also a CI step — "Compile check (macos
+# feature, cross-target)" on `ci.yml`'s ubuntu leg, unfiltered by paths.
+# It exists because the `paths` filter below (correct on its own terms,
+# see the next paragraph) leaves a gap: a PR touching only *shared* code
+# can break the macOS build with no macOS check running at all, and the
+# break then lands on whichever unrelated PR next touches `src/macos/`.
+# #741 did exactly that (`mod text_selection`, unused under
+# `--features macos` → `dead_code` → hard error under `-D warnings`) and
+# #780 paid for it at the merge gate. That step is compile-truth only and
+# does not replace this job; it just means a shared-code regression is
+# caught by its own author instead of the next macOS PR's.
+#
 # The path filter resolves both at once, and is load-bearing:
 #
 #   * A PR touching nothing under `quadraui/src/macos/**` gets NO macOS

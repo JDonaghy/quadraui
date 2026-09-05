@@ -204,8 +204,20 @@ mod desktop;
 
 // Shared text-selection state machine (#741): the region registry plus
 // active-selection tracking every `text_selection: true` backend embeds.
-// Compiled unconditionally — no toolkit dependency — same posture as
-// `desktop` above. See `text_selection`'s module doc.
+// No toolkit dependency of its own, but — unlike `desktop` above — it is
+// gated on the backends that actually embed it (`TuiBackend`,
+// `GtkBackend`, `WinBackend`) rather than compiled unconditionally.
+// macOS is the one backend that does *not* declare
+// `BackendCaps::text_selection` (see `macos::backend`'s caps doc), so a
+// `--features macos` build has no consumer for any of it, and with
+// `RUSTFLAGS: -D warnings` the whole module lands as a hard `dead_code`
+// error rather than a warning — which is exactly how the `macos (build,
+// test)` job failed the first time a PR touched `quadraui/src/macos/**`
+// after #741 (that job is `paths`-filtered, so nothing ran it in
+// between). When macOS grows text selection, add `all(feature = "macos",
+// target_os = "macos")` to this gate alongside the other three; the
+// module itself needs no change.
+#[cfg(any(feature = "tui", feature = "gtk", feature = "win"))]
 mod text_selection;
 
 pub use diff::compute_hunks;
