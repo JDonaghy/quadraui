@@ -912,18 +912,13 @@ impl Backend for MacBackend {
         let char_w = self.current_char_width as f32;
         let max_w_chars = list.max_content_width? as f32;
         let content_px = max_w_chars * char_w;
-        // macOS list does not implement bordered rendering yet; treat inset as 0.
-        let visible_px = rect.width;
+        let border_inset = if list.bordered { char_w } else { 0.0 };
+        let visible_px = (rect.width - 2.0 * border_inset).max(0.0);
         if content_px <= visible_px {
             return None;
         }
         let row_h = self.line_height();
-        let track = Rect::new(
-            rect.x,
-            rect.y + (rect.height - row_h).max(0.0),
-            rect.width,
-            row_h,
-        );
+        let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
             list.id.clone(),
             track,
@@ -2873,5 +2868,69 @@ mod tests {
         let caps = b.backend_caps();
         assert!(caps.window_chrome);
         assert!(caps.pointer_cursor);
+    }
+
+    /// Build a flat `ListView` whose widest row is `content_width` chars
+    /// wide, scrolled to `h_scroll`, with `max_content_width` populated so
+    /// it always overflows a narrow viewport. Mirrors
+    /// `primitives::list::hscrollbar_tests::list`.
+    fn bordered_overflow_list(content_width: usize, h_scroll: usize, bordered: bool) -> ListView {
+        ListView {
+            id: crate::types::WidgetId::new("l"),
+            title: None,
+            items: vec![crate::ListItem {
+                text: crate::types::StyledText::plain("x".repeat(content_width)),
+                detail: None,
+                icon: None,
+                decoration: crate::types::Decoration::default(),
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered,
+            h_scroll,
+            max_content_width: Some(content_width),
+            show_v_scrollbar: false,
+        }
+    }
+
+    /// #790: `MacBackend::list_hscrollbar` used to ignore `list.bordered`
+    /// entirely, so a bordered list's horizontal scrollbar overpainted its
+    /// own border and the thumb hit-rect was off by one cell at each end
+    /// — the vertical sibling of this exact bug was fixed for GTK/macOS
+    /// layout reservation in #712, but the horizontal `list_hscrollbar`
+    /// geometry API was missed because GTK/Windows/macOS each carried
+    /// their own copy of the track math. Both now delegate to
+    /// [`crate::primitives::list::hscrollbar_track`], so this asserts the
+    /// macOS column of the fix directly: track inset matches the shared
+    /// helper (and GTK/Windows' `list_hscrollbar`, which already had this
+    /// right) rather than the flat, un-inset track the old macOS copy
+    /// produced.
+    #[test]
+    fn list_hscrollbar_insets_track_for_bordered_list() {
+        let mut b = MacBackend::new();
+        b.current_char_width = 8.0;
+        b.current_line_height = 16.0;
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        let flat = bordered_overflow_list(40, 0, false);
+        let flat_sb = b
+            .list_hscrollbar(rect, &flat)
+            .expect("overflowing content should yield a scrollbar");
+        assert_eq!(flat_sb.track.x, 0.0);
+        assert_eq!(flat_sb.track.width, 200.0);
+
+        let bordered = bordered_overflow_list(40, 0, true);
+        let bordered_sb = b
+            .list_hscrollbar(rect, &bordered)
+            .expect("overflowing content should yield a scrollbar");
+        // Inset by one char width (8px) on each side, and the thumb
+        // (contained within the track) must therefore sit strictly inside
+        // the border rather than overpainting it.
+        assert_eq!(bordered_sb.track.x, 8.0);
+        assert_eq!(bordered_sb.track.width, 184.0);
+        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * 16.0);
+        assert!(bordered_sb.track.x >= rect.x + 8.0);
+        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
     }
 }
