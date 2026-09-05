@@ -88,3 +88,15 @@ Both of those conditions are moot now: condition 2 became true when
 quadraui's own `ratatui` dependency moved to `"0.30"` (no exact
 `unicode-width` pin anywhere in the graph any more), which is what made
 this removal safe.
+
+## vimcode still carries its own copy of this patch
+
+`vimcode`'s own `Cargo.toml` (not this repo) still has a
+`[patch.crates-io] vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }`
+stanza mirroring the one removed here. As of this commit that path no
+longer exists in this repo, so vimcode's copy is now dangling and needs
+its own vimcode-repo issue to delete — that issue is tracked and filed
+separately by the coordinator, not as an edit to this repo or to
+vimcode's repo from here. Do not edit `CLAUDE.md`'s downstream-consumers
+table to describe vimcode's dangling patch; this note is the record of
+that fact instead.
