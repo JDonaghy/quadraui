@@ -784,7 +784,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 
             let mut backend_mut = backend.borrow_mut();
             let app_ref = app.borrow();
-            render_frame(&mut *backend_mut, &*app_ref, viewport, cg_ref);
+            render_frame(&mut backend_mut, &*app_ref, viewport, cg_ref);
         })
     };
     // Caret-blink state is shared between the backend (read each
@@ -803,7 +803,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
             let mut app_mut = app.borrow_mut();
             match dispatch_event(
                 ev,
-                &mut *backend_mut,
+                &mut backend_mut,
                 &mut *app_mut,
                 &caret_visible,
                 &caret_pause,
