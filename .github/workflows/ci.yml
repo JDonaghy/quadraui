@@ -44,6 +44,13 @@ jobs:
     #      crates.io with no local path override. `--locked` is load-bearing
     #      here: without it cargo would silently re-resolve and paper over
     #      a stale/patched Cargo.lock instead of failing on it.
+    # These two steps are complementary, not redundant: step 1 catches a
+    # reintroduced [patch] stanza textually (fast, works even if the patch
+    # target doesn't build); step 2 is the resolution proof that publish
+    # actually works without one. Step 1 runs first in this same job on a
+    # fresh `actions/checkout` — before any build step exists to populate
+    # `target/` — so the grep below walks only source files, not build
+    # output; keep it that way if this job's step order ever changes.
     name: patch-guard (no vendored crates-io patches)
     runs-on: ubuntu-latest
     steps:
