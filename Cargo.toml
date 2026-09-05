@@ -7,13 +7,3 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/JDonaghy/quadraui"
 
-# Patch vt100 0.16.2 to loosen its unicode-width bound from upstream's
-# "0.2.1" to "0.2" (no source changes — see
-# vendor/vt100-0.16.2-patched/README-PATCH.md). Upstream's ^0.2.1 floor is
-# incompatible with any consumer graph that exactly-pins unicode-width to
-# 0.2.0 (e.g. ratatui 0.29, which vimcode pins directly) — issue #452.
-# DO NOT remove this without reading the README-PATCH.md checklist first;
-# quadraui already hit this exact conflict once (commit 96bfafe).
-[patch.crates-io]
-vt100 = { path = "vendor/vt100-0.16.2-patched" }
-
