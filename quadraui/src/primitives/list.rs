@@ -89,6 +89,39 @@ pub struct ListItem {
 // TreeView — same vertical-stacking layout, minus indent and chevrons.
 // An optional title row always renders at the top (outside scroll).
 
+/// Horizontal-scrollbar track geometry, shared by every backend's
+/// `list_hscrollbar` rasteriser so `bordered` handling can't drift
+/// between them (#790 — the macOS copy had silently dropped it while
+/// GTK and Windows stayed in sync as 0.98-similarity twins).
+///
+/// `char_w` and `row_h` are the caller's native horizontal/vertical
+/// units: `1.0` / `1.0` on TUI (a cell), `current_char_width` /
+/// `current_line_height` in pixels on GTK, Windows, and macOS.
+///
+/// When `bordered`, the track insets by one `char_w` on the left and
+/// right and moves up one `row_h` so it sits inside the box, above the
+/// bottom border, rather than overpainting it — matching
+/// [`ListView::layout`]'s `inner_w` and the vertical-scrollbar twin's
+/// border handling. When not bordered, the track spans the full width
+/// on the bottom row.
+pub fn hscrollbar_track(rect: Rect, bordered: bool, char_w: f32, row_h: f32) -> Rect {
+    if bordered {
+        Rect::new(
+            rect.x + char_w,
+            rect.y + (rect.height - 2.0 * row_h).max(0.0),
+            (rect.width - 2.0 * char_w).max(0.0),
+            row_h,
+        )
+    } else {
+        Rect::new(
+            rect.x,
+            rect.y + (rect.height - row_h).max(0.0),
+            rect.width,
+            row_h,
+        )
+    }
+}
+
 /// Per-item measurement supplied by the backend.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListItemMeasure {
@@ -305,21 +338,9 @@ impl ListView {
             return None;
         }
         // Track sits on the bottom row; in bordered mode it moves up one
-        // row so it stays inside the box, above the bottom border.
-        let (track_x, track_w, track_y) = if self.bordered {
-            (
-                area.x + 1.0,
-                (area.width - 2.0).max(0.0),
-                area.y + (area.height - 2.0 * row_height).max(0.0),
-            )
-        } else {
-            (
-                area.x,
-                area.width,
-                area.y + (area.height - row_height).max(0.0),
-            )
-        };
-        let track = Rect::new(track_x, track_y, track_w, row_height);
+        // row and insets 1 cell on each side so it stays inside the box,
+        // above the bottom border, rather than overpainting it.
+        let track = hscrollbar_track(area, self.bordered, 1.0, row_height);
         Some(Scrollbar::horizontal(
             self.id.clone(),
             track,
@@ -485,6 +506,58 @@ mod hscrollbar_tests {
             scrolled.thumb_start > at_zero.thumb_start,
             "scrolling right should move the thumb right"
         );
+    }
+}
+
+#[cfg(test)]
+mod hscrollbar_track_tests {
+    use super::*;
+
+    /// Pixel-unit regression for #790: every pixel backend
+    /// (GTK/Windows/macOS) calls `hscrollbar_track` with `char_w`/`row_h`
+    /// in real pixels, not the `1.0`/`1.0` TUI-cell units the
+    /// `ListView::hscrollbar` wrapper above exercises. Assert the inset
+    /// math holds at those units too, since a bug that only shows up when
+    /// `char_w != 1.0` would slip past `hscrollbar_tests` entirely — which
+    /// is exactly how the macOS `list_hscrollbar` bug (dropping `bordered`
+    /// altogether) went unnoticed: nothing exercised the pixel-unit path.
+    #[test]
+    fn flat_track_spans_full_width_bottom_row() {
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let track = hscrollbar_track(rect, false, 8.0, 16.0);
+        assert_eq!(track.x, 0.0);
+        assert_eq!(track.width, 200.0);
+        assert_eq!(track.y, 84.0); // 100 - 16
+        assert_eq!(track.height, 16.0);
+    }
+
+    #[test]
+    fn bordered_track_insets_one_char_width_each_side_and_sits_above_border() {
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let track = hscrollbar_track(rect, true, 8.0, 16.0);
+        // Inset by one char width (8px) on each side — not a hardcoded
+        // 1.0, which is what the pre-fix macOS copy effectively used (it
+        // ignored `bordered` entirely and always produced the flat track,
+        // overpainting the right border by a full char width and the
+        // bottom border by a full row).
+        assert_eq!(track.x, 8.0);
+        assert_eq!(track.width, 184.0); // 200 - 2*8
+                                        // Moves up one row so it sits above the bottom border instead of
+                                        // overpainting it.
+        assert_eq!(track.y, 68.0); // 100 - 2*16
+        assert_eq!(track.height, 16.0);
+    }
+
+    #[test]
+    fn bordered_track_never_overlaps_border_columns() {
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let track = hscrollbar_track(rect, true, 8.0, 16.0);
+        // The thumb bounds (contained within `track`) must sit strictly
+        // inside the border on both sides — the acceptance criterion from
+        // #790: "thumb bounds sit inside the border on a bordered list."
+        assert!(track.x >= rect.x + 8.0);
+        assert!(track.x + track.width <= rect.x + rect.width - 8.0);
+        assert!(track.y + track.height <= rect.y + rect.height - 16.0);
     }
 }
 

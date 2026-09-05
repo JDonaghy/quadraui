@@ -1652,16 +1652,7 @@ impl Backend for GtkBackend {
             return None;
         }
         let row_h = self.line_height();
-        let (track_x, track_w, track_y) = if list.bordered {
-            (
-                rect.x + char_w,
-                (rect.width - 2.0 * char_w).max(0.0),
-                rect.y + (rect.height - 2.0 * row_h).max(0.0),
-            )
-        } else {
-            (rect.x, rect.width, rect.y + (rect.height - row_h).max(0.0))
-        };
-        let track = QRect::new(track_x, track_y, track_w, row_h);
+        let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
             list.id.clone(),
             track,
@@ -3685,6 +3676,53 @@ mod tests {
         h1.borrow_mut()
             .push(WidgetId::new("test:popup"), QRect::new(0.0, 0.0, 10.0, 5.0));
         assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// #790: pins the GTK column of the shared `hscrollbar_track` helper
+    /// as the reference behaviour the macOS `list_hscrollbar` copy had
+    /// silently dropped — a `bordered` list insets the track by one char
+    /// width on each side (and moves it up one row) so the thumb sits
+    /// inside the border rather than overpainting it.
+    #[test]
+    fn gtk_backend_list_hscrollbar_insets_track_for_bordered_list() {
+        let mut b = GtkBackend::new();
+        b.set_current_char_width(8.0);
+        b.set_current_line_height(16.0);
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+        let list = |bordered: bool| -> ListView {
+            ListView {
+                id: WidgetId::new("l"),
+                title: None,
+                items: vec![crate::ListItem {
+                    text: crate::types::StyledText::plain(&"x".repeat(40)),
+                    detail: None,
+                    icon: None,
+                    decoration: crate::types::Decoration::default(),
+                }],
+                selected_idx: 0,
+                scroll_offset: 0,
+                has_focus: true,
+                bordered,
+                h_scroll: 0,
+                max_content_width: Some(40),
+                show_v_scrollbar: false,
+            }
+        };
+
+        let flat_sb = b
+            .list_hscrollbar(rect, &list(false))
+            .expect("overflowing content should yield a scrollbar");
+        assert_eq!(flat_sb.track.x, 0.0);
+        assert_eq!(flat_sb.track.width, 200.0);
+
+        let bordered_sb = b
+            .list_hscrollbar(rect, &list(true))
+            .expect("overflowing content should yield a scrollbar");
+        assert_eq!(bordered_sb.track.x, 8.0);
+        assert_eq!(bordered_sb.track.width, 184.0);
+        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * 16.0);
+        assert!(bordered_sb.track.x >= rect.x + 8.0);
+        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
     }
 
     #[test]
