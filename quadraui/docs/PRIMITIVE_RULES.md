@@ -100,17 +100,26 @@ Read this when adding or changing a primitive.
 ## Rule 8 — public-API lifecycle
 
 `quadraui` is `publish = false` at `version = "0.0.1"`. Nothing pins a
-published version. `vimcode` path-deps a sibling checkout and its CI
-clones `develop`, so a breaking change is live there the moment it
-merges, turning every open PR red with no version bump to blame.
-`coord-tui` — `JDonaghy/coord-tui`, a standalone repo since
-`claude-coordinator#2899` (2026-08-29) — pins a git rev instead, which
-delays the same break to whenever someone bumps that pin. quadraui's CI
-does carry a `downstream` compile-truth job (#528), but its coord-tui
-leg is currently skipped for lack of a read token on that repo, so
-coord-tui breakage will *not* show up here. See the *Downstream
-consumers* section of `CLAUDE.md` for the declarations, the token, and
-the #476 post-mortem.
+published *version* — but both consumers now pin a git *revision*, so
+neither floats on `develop`'s tip. `coord-tui` — `JDonaghy/coord-tui`, a
+standalone repo since `claude-coordinator#2899` (2026-08-29) — pinned
+first, via `claude-coordinator#1973`. `vimcode` followed via
+`vimcode#691`, replacing its old path dependency with a git+rev pin the
+same shape as coord-tui's. A breaking change on `develop` reaches
+either consumer only when someone bumps its pin, in a reviewable diff
+that's the natural place to carry the migration — the urgency framing
+of "this breaks two repos the moment it merges" no longer applies. The
+deprecation-shim discipline below still matters, though: it's what
+keeps that eventual pin bump cheap. And pinning trades floating for a
+different hazard, **pin lag** — a pin can sit stale indefinitely with
+nothing forcing it to move; vimcode's was 44 commits behind quadraui's
+`develop` tip as of 2026-09-04 (`quadraui#782`). quadraui's CI does
+carry a `downstream` compile-truth job (#528) that overrides both pins
+to check every PR's quadraui against both consumers before merge, but
+its coord-tui leg is currently skipped for lack of a read token on that
+repo, so coord-tui breakage will *not* show up here. See the
+*Downstream consumers* section of `CLAUDE.md` for the declarations, the
+token, and the #476 post-mortem.
 
 **What is breaking here vs. what isn't.** Consumers implement `ShellApp`
 and `AppLogic` — never `Backend`. So:
