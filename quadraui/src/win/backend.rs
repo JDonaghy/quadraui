@@ -3272,9 +3272,11 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_context_menu() {
-        use crate::primitives::context_menu::{ContextMenuItemMeasure, ContextMenuPlacement};
+        use crate::primitives::context_menu::{
+            ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
+        };
         use crate::theme::Theme;
-        use crate::types::Color;
+        use crate::types::{Color, StyledText};
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 100;
@@ -3297,11 +3299,25 @@ mod tests {
             ..Theme::default()
         });
 
-        // No `bg` override, so the fill falls back to `theme.hover_bg` —
-        // and no items, so nothing else paints over the background.
+        // Two real items, because `ContextMenu::layout_at` derives the
+        // popup's height from the summed per-item measures: an empty
+        // `items` gives `bounds.height == 0`, `draw_context_menu`
+        // early-returns without painting a single pixel, and the probe
+        // reads `begin_frame`'s clear colour instead of the fill under
+        // test. Each item carries an `id` (an `id`-less item *is* the
+        // separator — `ContextMenuItem::is_separator`), a one-char label
+        // so no glyph reaches the probe column, and no
+        // `detail`/`key_equivalent` so no right-aligned shortcut paints
+        // either. `bg` stays `None` so the fill falls back to
+        // `theme.hover_bg`.
+        let item = |id: &str, label: &str| ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(label),
+            ..Default::default()
+        };
         let menu = ContextMenu {
             id: WidgetId::new("ctx"),
-            items: Vec::new(),
+            items: vec![item("a", "A"), item("b", "B")],
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
@@ -3315,12 +3331,24 @@ mod tests {
         backend.draw_context_menu(&menu, &layout);
         backend.end_frame();
 
-        let b = layout.bounds;
         assert!(
-            b.width > 0.0 && b.height > 0.0,
+            layout.bounds.width > 0.0 && layout.bounds.height > 0.0,
             "test fixture bug: empty menu bounds"
         );
-        let px = surface.pixel_at((b.x + b.width / 2.0) as u32, (b.y + b.height / 2.0) as u32);
+        // Probe the *second* row: `selected_idx` is 0, so row 0 is
+        // covered by the `theme.selected_bg` highlight. Three-quarters
+        // across the row keeps clear of the left-aligned label and of
+        // the border stroke on either edge. Derived from the layout, not
+        // hardcoded.
+        let row = layout
+            .visible_items
+            .get(1)
+            .expect("test fixture bug: second menu row not visible")
+            .bounds;
+        let px = surface.pixel_at(
+            (row.x + row.width * 0.75) as u32,
+            (row.y + row.height / 2.0) as u32,
+        );
         assert_eq!(
             (px.r, px.g, px.b),
             (custom_bg.r, custom_bg.g, custom_bg.b),
@@ -3331,9 +3359,9 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_completions() {
-        use crate::primitives::completions::CompletionItemMeasure;
+        use crate::primitives::completions::{CompletionItem, CompletionItemMeasure};
         use crate::theme::Theme;
-        use crate::types::Color;
+        use crate::types::{Color, StyledText};
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 200;
@@ -3356,11 +3384,22 @@ mod tests {
             ..Theme::default()
         });
 
-        // No items, so only the background fill + border stroke paint —
-        // nothing to obscure the centre-of-popup probe.
+        // Two real items, because `Completions::layout` sums the
+        // per-item measures to size the popup: an empty `items` gives
+        // `bounds.height == 0`, `draw_completions` early-returns without
+        // painting anything, and the probe reads `begin_frame`'s clear
+        // colour instead of the fill under test. `detail` stays `None`
+        // so no right-aligned text paints into the probe column.
+        let item = |label: &str| CompletionItem {
+            label: StyledText::plain(label),
+            detail: None,
+            documentation: None,
+            kind: Default::default(),
+            icon: None,
+        };
         let completions = Completions {
             id: WidgetId::new("comp"),
-            items: Vec::new(),
+            items: vec![item("alpha"), item("beta")],
             selected_idx: 0,
             scroll_offset: 0,
             has_focus: true,
@@ -3374,12 +3413,24 @@ mod tests {
         backend.draw_completions(&completions, &layout);
         backend.end_frame();
 
-        let b = layout.bounds;
         assert!(
-            b.width > 0.0 && b.height > 0.0,
+            layout.bounds.width > 0.0 && layout.bounds.height > 0.0,
             "test fixture bug: empty popup bounds"
         );
-        let px = surface.pixel_at((b.x + b.width / 2.0) as u32, (b.y + b.height / 2.0) as u32);
+        // Probe the *second* row: `selected_idx` is 0, so row 0 carries
+        // the `theme.completion_selected_bg` highlight. Three-quarters
+        // across the row clears the left-aligned `" {label}"` text and
+        // the border stroke on either edge. Derived from the layout, not
+        // hardcoded.
+        let row = layout
+            .visible_items
+            .get(1)
+            .expect("test fixture bug: second completion row not visible")
+            .bounds;
+        let px = surface.pixel_at(
+            (row.x + row.width * 0.75) as u32,
+            (row.y + row.height / 2.0) as u32,
+        );
         assert_eq!(
             (px.r, px.g, px.b),
             (custom_bg.r, custom_bg.g, custom_bg.b),
@@ -3437,19 +3488,40 @@ mod tests {
         };
 
         // Mirrors `win::find_replace`'s own
-        // `paints_panel_background_and_border` test's geometry — the
-        // default `current_line_height`/`current_char_width` (16.0/8.0)
-        // match its hardcoded values.
-        let popup_w = panel.panel_width as f32 * 8.0;
-        let popup_h = 3.0 * 16.0;
+        // `paints_panel_background_and_border` test's geometry, but reads
+        // the cell metrics off the backend rather than assuming
+        // `WinBackend::new`'s 16.0/8.0 defaults: `attach_headless`
+        // overwrites `current_line_height`/`current_char_width` with the
+        // *measured* DirectWrite metrics of the editor font, and those
+        // are what `Backend::draw_find_replace` then hands
+        // `win::find_replace::draw_find_replace`. Hardcoding 16.0/8.0
+        // here would put the probe at coordinates the rasteriser never
+        // painted on any host whose font measures differently.
+        let cw = backend.char_width().max(1.0);
+        let lh = backend.line_height().max(1.0);
+        let popup_w = panel.panel_width as f32 * cw;
+        // `show_replace` is false, so one input row + 2 rows of chrome.
+        let popup_h = 3.0 * lh;
         let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
             .max(panel.group_bounds.x);
         let popup_y = panel.group_bounds.y + 2.0;
+        assert!(
+            popup_w > 8.0
+                && popup_h > 8.0
+                && popup_x + popup_w <= W as f32
+                && popup_y + popup_h <= H as f32,
+            "test fixture bug: popup {popup_w}x{popup_h} at ({popup_x}, {popup_y}) (cell \
+             {cw}x{lh}) does not fit the {W}x{H} probe surface",
+        );
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.draw_find_replace(Rect::new(0.0, 0.0, W as f32, H as f32), &panel);
         backend.end_frame();
 
+        // 4 DIPs inside the popup's bottom-right corner: past the border
+        // stroke, and below the single (`show_replace == false`) row of
+        // hit regions, which all sit at `row == 0` — so nothing but the
+        // background fill can have painted here.
         let px = surface.pixel_at(
             (popup_x + popup_w - 4.0) as u32,
             (popup_y + popup_h - 4.0) as u32,
