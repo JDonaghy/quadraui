@@ -1551,6 +1551,7 @@ impl Backend for WinBackend {
                 bar,
                 hovered_id,
                 pressed_id,
+                &self.current_theme,
             );
         }
         #[cfg(not(target_os = "windows"))]
@@ -1620,6 +1621,7 @@ impl Backend for WinBackend {
                 rect,
                 bar,
                 hovered_idx,
+                &self.current_theme,
             );
         }
         #[cfg(not(target_os = "windows"))]
@@ -1966,7 +1968,13 @@ impl Backend for WinBackend {
     ) -> Vec<(Rect, WidgetId)> {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::context_menu::draw_context_menu(&surface.target, dwrite, menu, layout);
+            return super::context_menu::draw_context_menu(
+                &surface.target,
+                dwrite,
+                menu,
+                layout,
+                &self.current_theme,
+            );
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (menu, layout);
@@ -2170,6 +2178,7 @@ impl Backend for WinBackend {
                 panel,
                 self.current_line_height,
                 self.current_char_width,
+                &self.current_theme,
             );
             return;
         }
@@ -2184,7 +2193,13 @@ impl Backend for WinBackend {
     fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            super::completions::draw_completions(&surface.target, dwrite, completions, layout);
+            super::completions::draw_completions(
+                &surface.target,
+                dwrite,
+                completions,
+                layout,
+                &self.current_theme,
+            );
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -2228,7 +2243,13 @@ impl Backend for WinBackend {
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::menu_bar::draw_menu_bar(&surface.target, dwrite, rect, bar);
+            return super::menu_bar::draw_menu_bar(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &self.current_theme,
+            );
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, bar);
@@ -3140,6 +3161,303 @@ mod tests {
             (px.r, px.g, px.b),
             (custom_separator.r, custom_separator.g, custom_separator.b),
             "painted pixel must reflect the theme set via `set_theme`, not `Theme::default()`",
+        );
+    }
+
+    /// quadraui#789 acceptance: `activity_bar`/`menu_bar`/`context_menu`/
+    /// `completions`/`find_replace` used to each build their own
+    /// `Theme::default()` instead of reading `WinBackend::current_theme`
+    /// — a dark-themed app got a light activity bar, menu bar, context
+    /// menu, completions popup and find/replace panel regardless of
+    /// `set_theme`. Same pixel-probe pattern
+    /// [`set_theme_reaches_the_rasterisers`] established for #724: paint
+    /// with a theme colour that differs from the default, and demand the
+    /// non-default colour show up pixel-exact. Confirmed to fail against
+    /// unfixed `develop @ a9104f5` (each rasteriser painted
+    /// `Theme::default()`'s colour instead).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_activity_bar() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0x11, 0x22, 0x33);
+        assert_ne!(
+            custom_bg,
+            Theme::default().tab_bar_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            tab_bar_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        let bar = ActivityBar {
+            id: WidgetId::new("bar"),
+            top_items: Vec::new(),
+            bottom_items: Vec::new(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_activity_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+        backend.end_frame();
+
+        let px = surface.pixel_at(W / 2, H / 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "activity bar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_menu_bar() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 24;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0x44, 0x55, 0x66);
+        assert_ne!(
+            custom_bg,
+            Theme::default().tab_bar_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            tab_bar_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        let bar = MenuBar {
+            id: WidgetId::new("bar"),
+            items: Vec::new(),
+            open_item: None,
+            focused_item: None,
+        };
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_menu_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        backend.end_frame();
+
+        let px = surface.pixel_at(W / 2, H / 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "menu bar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_context_menu() {
+        use crate::primitives::context_menu::{ContextMenuItemMeasure, ContextMenuPlacement};
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 100;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0x77, 0x88, 0x99);
+        assert_ne!(
+            custom_bg,
+            Theme::default().hover_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            hover_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        // No `bg` override, so the fill falls back to `theme.hover_bg` —
+        // and no items, so nothing else paints over the background.
+        let menu = ContextMenu {
+            id: WidgetId::new("ctx"),
+            items: Vec::new(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = menu.layout(4.0, 4.0, viewport, 60.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_context_menu(&menu, &layout);
+        backend.end_frame();
+
+        let b = layout.bounds;
+        assert!(
+            b.width > 0.0 && b.height > 0.0,
+            "test fixture bug: empty menu bounds"
+        );
+        let px = surface.pixel_at((b.x + b.width / 2.0) as u32, (b.y + b.height / 2.0) as u32);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "context menu background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_completions() {
+        use crate::primitives::completions::CompletionItemMeasure;
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 100;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0xaa, 0xbb, 0xcc);
+        assert_ne!(
+            custom_bg,
+            Theme::default().completion_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            completion_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        // No items, so only the background fill + border stroke paint —
+        // nothing to obscure the centre-of-popup probe.
+        let completions = Completions {
+            id: WidgetId::new("comp"),
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = completions.layout(10.0, 10.0, 16.0, viewport, 120.0, 60.0, |_| {
+            CompletionItemMeasure::new(16.0)
+        });
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_completions(&completions, &layout);
+        backend.end_frame();
+
+        let b = layout.bounds;
+        assert!(
+            b.width > 0.0 && b.height > 0.0,
+            "test fixture bug: empty popup bounds"
+        );
+        let px = surface.pixel_at((b.x + b.width / 2.0) as u32, (b.y + b.height / 2.0) as u32);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "completions popup background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_find_replace() {
+        use crate::primitives::find_replace::compute_hit_regions;
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 600;
+        const H: u32 = 200;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0x22, 0x44, 0x66);
+        assert_ne!(
+            custom_bg,
+            Theme::default().surface_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            surface_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
+        let panel = FindReplacePanel {
+            query: "needle".into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor: 3,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: Rect::new(0.0, 0.0, W as f32, H as f32),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        };
+
+        // Mirrors `win::find_replace`'s own
+        // `paints_panel_background_and_border` test's geometry — the
+        // default `current_line_height`/`current_char_width` (16.0/8.0)
+        // match its hardcoded values.
+        let popup_w = panel.panel_width as f32 * 8.0;
+        let popup_h = 3.0 * 16.0;
+        let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
+            .max(panel.group_bounds.x);
+        let popup_y = panel.group_bounds.y + 2.0;
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_find_replace(Rect::new(0.0, 0.0, W as f32, H as f32), &panel);
+        backend.end_frame();
+
+        let px = surface.pixel_at(
+            (popup_x + popup_w - 4.0) as u32,
+            (popup_y + popup_h - 4.0) as u32,
+        );
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "find/replace panel background must reflect the live theme, not `Theme::default()`",
         );
     }
 }

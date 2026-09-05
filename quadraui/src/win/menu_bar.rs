@@ -14,8 +14,11 @@
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod menu_bar;` and `backend.rs`'s
-//! module docs. See `win::status_bar`'s module doc for why colours come
-//! from `Theme::default()` rather than a live `WinBackend` theme field.
+//! module docs.
+//!
+//! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
+//! caller ([`crate::win::WinBackend::draw_menu_bar`]) passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -76,8 +79,8 @@ pub fn draw_menu_bar(
     dwrite: &DWrite,
     rect: Rect,
     bar: &MenuBar,
+    theme: &Theme,
 ) -> MenuBarLayout {
-    let theme = Theme::default();
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
     let layout = win_menu_bar_layout(dwrite, rect, bar);
@@ -171,17 +174,17 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
+        let theme = Theme::default();
 
         surface
             .paint(|target| {
-                draw_menu_bar(target, &dwrite, rect, &bar);
+                draw_menu_bar(target, &dwrite, rect, &bar, &theme);
             })
             .expect("paint menu bar");
 
         let layout = win_menu_bar_layout(&dwrite, rect, &bar);
         assert_eq!(layout.visible_items.len(), 2, "both items should fit");
 
-        let theme = Theme::default();
         for vi in &layout.visible_items {
             let cx = vi.bounds.x + vi.bounds.width / 2.0;
             let cy = vi.bounds.y + vi.bounds.height / 2.0;
@@ -218,7 +221,13 @@ mod tests {
         let mut painted = None;
         surface
             .paint(|target| {
-                painted = Some(draw_menu_bar(target, &dwrite, rect, &bar));
+                painted = Some(draw_menu_bar(
+                    target,
+                    &dwrite,
+                    rect,
+                    &bar,
+                    &Theme::default(),
+                ));
             })
             .expect("paint");
         let painted = painted.expect("draw_menu_bar ran");

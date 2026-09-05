@@ -28,12 +28,12 @@ pub fn draw_find_replace(
     panel: &FindReplacePanel,
     line_height: f32,
     char_width: f32,
+    theme: &Theme,
 ) {
     use FindReplaceClickTarget as T;
 
     let cw = char_width.max(1.0);
     let lh = line_height.max(1.0);
-    let theme = Theme::default();
 
     let popup_w = panel.panel_width as f32 * cw;
     let row_count = if panel.show_replace { 2.0 } else { 1.0 };
@@ -266,7 +266,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_find_replace(target, &dwrite, &panel, 16.0, 8.0);
+                draw_find_replace(target, &dwrite, &panel, 16.0, 8.0, &theme);
             })
             .expect("paint find/replace");
 
@@ -297,7 +297,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_find_replace(target, &dwrite, &panel, 16.0, 8.0);
+                draw_find_replace(target, &dwrite, &panel, 16.0, 8.0, &Theme::default());
             })
             .expect("paint find/replace");
     }

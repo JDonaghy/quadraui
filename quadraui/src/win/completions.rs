@@ -24,13 +24,13 @@ pub fn draw_completions(
     dwrite: &DWrite,
     completions: &Completions,
     layout: &CompletionsLayout,
+    theme: &Theme,
 ) {
     let bounds = layout.bounds;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
 
-    let theme = Theme::default();
     let _ = fill_rect(target, bounds, theme.completion_bg);
     let _ = stroke_rect(target, bounds, theme.completion_border, 1.0);
 
@@ -108,7 +108,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_completions(target, &dwrite, &c, &layout);
+                draw_completions(target, &dwrite, &c, &layout, &Theme::default());
             })
             .expect("paint completions");
 

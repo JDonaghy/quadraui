@@ -14,12 +14,12 @@
 //!
 //! # Theme
 //!
-//! `WinBackend` does not yet carry a live [`Theme`] the way `GtkBackend`'s
-//! `current_theme` does — no issue has wired that through yet. Callers
-//! that don't have segment-level colours to fall back on (the bar's own
-//! background, when it has no segments) get [`Theme::default`], the same
-//! "placeholder until a later issue wires the app's real theme through"
-//! posture `WinBackend::begin_frame`'s clear colour already documents.
+//! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
+//! caller ([`crate::win::WinBackend::draw_status_bar`]) passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes.
+//! Callers that don't have segment-level colours to fall back on (the
+//! bar's own background, when it has no segments) get that live theme's
+//! background, not [`Theme::default`].
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -65,9 +65,9 @@ fn measure_segment(dwrite: &DWrite, seg: &StatusBarSegment) -> StatusSegmentMeas
 /// carries no mouse state).
 ///
 /// The bar is filled with the first segment's `bg` (falling back to
-/// [`Theme::default`]'s background when the bar has no segments at all),
-/// then each visible segment paints its own `fg`/`bg`, honouring `bold`
-/// via [`DWrite::draw_text_styled`].
+/// `theme`'s background when the bar has no segments at all), then each
+/// visible segment paints its own `fg`/`bg`, honouring `bold` via
+/// [`DWrite::draw_text_styled`].
 pub fn draw_status_bar(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -75,6 +75,7 @@ pub fn draw_status_bar(
     bar: &StatusBar,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
+    theme: &Theme,
 ) -> StatusBarLayout {
     let layout = win_status_bar_layout(dwrite, rect, bar);
 
@@ -83,7 +84,7 @@ pub fn draw_status_bar(
         .first()
         .or(bar.right_segments.first())
         .map(|s| s.bg)
-        .unwrap_or(Theme::default().background);
+        .unwrap_or(theme.background);
     let _ = fill_rect(target, rect, fill);
 
     for vs in &layout.visible_segments {
@@ -184,7 +185,7 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                draw_status_bar(target, &dwrite, rect, &bar, None, None);
+                draw_status_bar(target, &dwrite, rect, &bar, None, None, &Theme::default());
             })
             .map(|_| win_status_bar_layout(&dwrite, rect, &bar))
             .expect("paint status bar");
@@ -253,7 +254,7 @@ mod tests {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let painted = surface
             .paint(|target| {
-                draw_status_bar(target, &dwrite, rect, &bar, None, None);
+                draw_status_bar(target, &dwrite, rect, &bar, None, None, &Theme::default());
             })
             .map(|_| win_status_bar_layout(&dwrite, rect, &bar))
             .expect("paint");

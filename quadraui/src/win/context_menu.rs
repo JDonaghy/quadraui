@@ -40,13 +40,13 @@ pub fn draw_context_menu(
     dwrite: &DWrite,
     menu: &ContextMenu,
     menu_layout: &ContextMenuLayout,
+    theme: &Theme,
 ) -> Vec<(Rect, WidgetId)> {
     let bounds = menu_layout.bounds;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return Vec::new();
     }
 
-    let theme = Theme::default();
     let bg = menu.bg.unwrap_or(theme.hover_bg);
     let border = theme.hover_border;
     let fg = theme.foreground;
@@ -183,7 +183,7 @@ mod tests {
         let mut hits = Vec::new();
         surface
             .paint(|target| {
-                hits = draw_context_menu(target, &dwrite, &m, &layout);
+                hits = draw_context_menu(target, &dwrite, &m, &layout, &Theme::default());
             })
             .expect("paint context menu");
 
