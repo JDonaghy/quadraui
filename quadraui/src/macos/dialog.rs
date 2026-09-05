@@ -24,6 +24,11 @@ fn flatten(text: &StyledText) -> String {
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of the call.
+// Mirrors `gtk::dialog::draw_table_gtk`, which carries the same allow: a
+// rasteriser signature is context (ctx, font) + geometry + palette, and
+// bundling those into a struct would diverge the two backends' shapes for
+// no reader benefit.
+#[allow(clippy::too_many_arguments)]
 unsafe fn draw_table_macos(
     ctx: CGContextRef,
     font: &CTFont,
