@@ -126,6 +126,12 @@ pub use sidebar_panel::{draw_sidebar_panel, mac_sidebar_panel_layout};
 pub use spinner::{draw_spinner, mac_spinner_layout};
 pub use split::{draw_split, mac_split_layout};
 pub use split_tree::{draw_split_tree, mac_split_tree_layout};
+// #860: `draw_status_bar` is `#[deprecated]` — see
+// `status_bar::draw_status_bar`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
 pub use status_bar::{draw_status_bar, mac_status_bar_layout};
 pub use tab_bar::{draw_tab_bar, mac_tab_bar_layout};
 pub use text_display::mac_text_display_layout;

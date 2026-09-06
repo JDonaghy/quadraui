@@ -1,62 +1,199 @@
 //! GTK rasteriser for [`crate::StatusBar`].
 //!
-//! Paints a status bar onto a [`Context`] using a
-//! [`pango::Layout`] for text measurement. Computes the primitive's
-//! [`crate::StatusBarLayout`] internally — Pango measurement and
-//! rendering both go through the same `pango::Layout` handle, so
-//! splitting the work across the call boundary would force callers to
-//! plumb the handle through twice. The hit regions the layout would
-//! have produced are returned so callers can dispatch clicks.
-//!
-//! Per D6: layout policy (priority drop, gap rules, …) lives in
-//! [`crate::StatusBar::layout`]; this rasteriser just paints what
-//! that returns.
+//! Painting moved to the shared
+//! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
+//! `NativeSurface` Phase 2d slice 3/9) — see that fn's doc for the named
+//! divergences (bold-aware measurement: GTK/Win measured a segment's own
+//! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
+//! applying the already-fixed quadraui#791 shape uniformly) found while
+//! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
+//! and `win::status_bar::draw_status_bar` into one implementation. This
+//! module now only carries the deprecated [`draw_status_bar`]
+//! compatibility shim over [`RawGtkStatusBarSurface`], mirroring
+//! `gtk::panel`'s identical #859 shape. `MIN_GAP_PX` stays put — it's
+//! still `GtkBackend::status_bar_layout`'s own no-paint measurer
+//! constant, untouched by this migration.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::{cairo_rgb, set_source};
-use crate::primitives::status_bar::{
-    StatusBar, StatusBarLayout, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
-};
+use crate::native_surface::NativeSurface;
+use crate::primitives::status_bar::{StatusBar, StatusBarLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
 /// 16-pixel minimum gap between left and right segment groups, matching
-/// the existing vimcode GTK behaviour. Right segments are dropped from
-/// the front (least important first) until they fit while preserving
-/// this gap.
+/// the existing vimcode GTK behaviour. Still used by
+/// `GtkBackend::status_bar_layout`'s own no-paint measurer — the shared
+/// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
+/// its own independent copy of the same value (see that module's doc).
 pub const MIN_GAP_PX: f32 = 16.0;
 
-/// Draw a [`StatusBar`] into `(x, y, width, line_height)` on `cr`.
-///
-/// `layout` is the shared `pango::Layout` the caller uses for text
-/// rendering on this surface. The rasteriser temporarily mutates its
-/// `text` and `attributes` while measuring + painting and resets
-/// `attributes` to `None` before returning — but **does not** restore
-/// the previous text. (Caller doesn't typically depend on the layout's
-/// text after a draw call returns.)
-///
-/// Status segments are chrome, not editor content — per #624, the
-/// caller is responsible for setting `layout`'s font description to the
-/// desired UI font (`GtkBackend::ui_font`) before calling and restoring
-/// whatever it was afterward (`GtkBackend::draw_status_bar` does this).
-/// This rasteriser has no separate "editor font" concept of its own; it
-/// measures and paints with whatever font is current on `layout`.
-///
-/// Returns hit regions in **bar-local coordinates** (relative to `x`).
-/// Caller pushes them into its per-window segment map for click
-/// resolution. Widths are clamped to `u16::MAX` to match the existing
-/// `StatusBarHitRegion` shape.
-///
-/// The bar is filled with the first segment's `bg` (or
-/// [`Theme::background`] when the bar has no segments), then each
-/// resolved visible segment is painted in its own `fg` / `bg` with
-/// `bold` honoured via Pango's bold weight attribute.
+/// Minimal [`NativeSurface`] adapter over a bare Cairo context + Pango
+/// layout, used only by the deprecated [`draw_status_bar`] shim below —
+/// mirrors `gtk::panel::RawPanelSurface`'s identical pattern (#859).
+struct RawGtkStatusBarSurface<'a> {
+    cr: &'a Context,
+    pango_layout: &'a pango::Layout,
+}
+
+impl NativeSurface for RawGtkStatusBarSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawGtkStatusBarSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawGtkStatusBarSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawGtkStatusBarSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawGtkStatusBarSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawGtkStatusBarSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        self.pango_layout.set_text(text);
+        self.pango_layout.set_attributes(None);
+        let (w, h) = self.pango_layout.pixel_size();
+        (w as f32, h as f32)
+    }
+
+    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        self.pango_layout.set_text(text);
+        if bold {
+            let attrs = pango::AttrList::new();
+            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
+            self.pango_layout.set_attributes(Some(&attrs));
+        } else {
+            self.pango_layout.set_attributes(None);
+        }
+        let (w, h) = self.pango_layout.pixel_size();
+        self.pango_layout.set_attributes(None);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        super::set_source_rgba(self.cr, color);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.fill().ok();
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("StatusBar::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        self.pango_layout.set_text(text);
+        self.pango_layout.set_attributes(None);
+        super::set_source(self.cr, color);
+        self.cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(self.cr, self.pango_layout);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: crate::Rect,
+        text: &str,
+        color: crate::Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        self.pango_layout.set_text(text);
+        let attrs = pango::AttrList::new();
+        if bold {
+            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
+        }
+        if italic {
+            attrs.insert(pango::AttrInt::new_style(pango::Style::Italic));
+        }
+        if underline {
+            attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
+        }
+        self.pango_layout.set_attributes(Some(&attrs));
+        super::set_source(self.cr, color);
+        if (scale_x - 1.0).abs() > f32::EPSILON {
+            self.cr.save().ok();
+            self.cr.translate(rect.x as f64, rect.y as f64);
+            self.cr.scale(scale_x as f64, 1.0);
+            self.cr.move_to(0.0, 0.0);
+            super::painted_text::show_layout(self.cr, self.pango_layout);
+            self.cr.restore().ok();
+        } else {
+            self.cr.move_to(rect.x as f64, rect.y as f64);
+            super::painted_text::show_layout(self.cr, self.pango_layout);
+        }
+        self.pango_layout.set_attributes(None);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("StatusBar::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, rect: crate::Rect) {
+        self.cr.save().ok();
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.clip();
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.cr.restore().ok();
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("StatusBar::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
+/// the pre-#860 signature exactly for any external caller that held a
+/// direct `quadraui::gtk::draw_status_bar` reference rather than going
+/// through [`crate::Backend::draw_status_bar`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D warnings`-denied
+/// `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_status_bar` instead — this free function is a compatibility shim over the shared #860 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_status_bar(
     cr: &Context,
-    layout: &pango::Layout,
+    pango_layout: &pango::Layout,
     x: f64,
     y: f64,
     width: f64,
@@ -66,94 +203,24 @@ pub fn draw_status_bar(
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
 ) -> StatusBarLayout {
-    // Reset layout state.
-    layout.set_attributes(None);
-    layout.set_width(-1);
-    layout.set_ellipsize(pango::EllipsizeMode::None);
-
-    // Clip to the bar's rect so right-aligned segments that overflow
-    // are truncated at the right edge instead of painting past it.
-    cr.save().ok();
-    cr.rectangle(x, y, width, line_height);
-    cr.clip();
-
-    // Background fill: first segment's bg, else theme bg.
-    let fill = bar
-        .left_segments
-        .first()
-        .or(bar.right_segments.first())
-        .map(|s| cairo_rgb(s.bg))
-        .unwrap_or_else(|| cairo_rgb(theme.background));
-    cr.set_source_rgb(fill.0, fill.1, fill.2);
-    cr.rectangle(x, y, width, line_height);
-    cr.fill().ok();
-
-    let apply_bold = |layout: &pango::Layout, bold: bool| {
-        if bold {
-            let attrs = pango::AttrList::new();
-            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
-            layout.set_attributes(Some(&attrs));
-        } else {
-            layout.set_attributes(None);
-        }
-    };
-
-    // Pango pixel-width measurer.
-    let measure = |seg: &StatusBarSegment| -> StatusSegmentMeasure {
-        layout.set_text(&seg.text);
-        apply_bold(layout, seg.bold);
-        let w_px = layout.pixel_size().0.max(0) as f32;
-        StatusSegmentMeasure::new(w_px)
-    };
-    let bar_layout = bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure);
-
-    for vs in &bar_layout.visible_segments {
-        let seg = match vs.side {
-            StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
-            StatusSegmentSide::Right => &bar.right_segments[vs.segment_idx],
-        };
-        layout.set_text(&seg.text);
-        apply_bold(layout, seg.bold);
-
-        let seg_x = x + vs.bounds.x as f64;
-        let seg_w = vs.bounds.width as f64;
-
-        // Segment background fill (with hover/pressed tint for interactive segments).
-        let effective_bg = if seg
-            .action_id
-            .as_ref()
-            .is_some_and(|id| Some(id) == pressed_id)
-        {
-            seg.bg.darken(0.05)
-        } else if seg
-            .action_id
-            .as_ref()
-            .is_some_and(|id| Some(id) == hovered_id)
-        {
-            seg.bg.lighten(0.05)
-        } else {
-            seg.bg
-        };
-        set_source(cr, effective_bg);
-        cr.rectangle(seg_x, y, seg_w, line_height);
-        cr.fill().ok();
-
-        // Segment foreground text.
-        set_source(cr, seg.fg);
-        cr.move_to(seg_x, y);
-        super::painted_text::show_layout(cr, layout);
-    }
-
-    layout.set_attributes(None);
-    cr.restore().ok();
-
-    bar_layout
+    let mut surface = RawGtkStatusBarSurface { cr, pango_layout };
+    crate::primitives::status_bar::native_surface_paint::paint(
+        bar,
+        &mut surface,
+        theme,
+        x as f32,
+        y as f32,
+        width as f32,
+        line_height as f32,
+        hovered_id,
+        pressed_id,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::status_bar::StatusBarHit;
+    use crate::primitives::status_bar::{StatusBarHit, StatusBarSegment};
     use crate::types::Color;
     use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
 
@@ -179,44 +246,40 @@ mod tests {
     }
 
     /// `status_bar_layout` is documented **LOCAL** (issue #505):
-    /// `StatusBar::layout` (called by `draw_status_bar` internally) only
-    /// ever receives `width`/`line_height` — the `x`/`y` this function
-    /// paints at are used purely to offset the Cairo drawing calls, never
-    /// folded into the returned `StatusBarLayout`. Painting at a
-    /// non-zero origin must therefore produce byte-identical segment
-    /// bounds / hit regions to painting at the origin — the same
-    /// "ignores origin" shape `data_table_layout`/`form_layout` already
-    /// guard on GTK (`gtk::backend` tests), which `status_bar_layout`
-    /// had no equivalent for.
+    /// `StatusBar::layout` (called by `paint` internally) only ever
+    /// receives `width`/`line_height` — the `x`/`y` this function paints
+    /// at are used purely to offset the drawing calls, never folded into
+    /// the returned `StatusBarLayout`. Painting at a non-zero origin must
+    /// therefore produce byte-identical segment bounds / hit regions to
+    /// painting at the origin — the same "ignores origin" shape
+    /// `data_table_layout`/`form_layout` already guard on GTK
+    /// (`gtk::backend` tests), which `status_bar_layout` had no
+    /// equivalent for.
+    ///
+    /// Exercises the shared paint through [`RawGtkStatusBarSurface`]
+    /// directly rather than the deprecated [`draw_status_bar`] shim, so
+    /// this test doesn't trip the `-D warnings`-denied `deprecated` lint
+    /// (CLAUDE.md rule 3; mirrors `gtk::panel`'s identical test-migration
+    /// note).
     fn round_trip_at(x: f64, y: f64) {
         let (surface, pango_layout) = headless_cairo_and_pango();
         let cr = CairoContext::new(&surface).expect("Context::new");
         let theme = Theme::default();
         let bar = test_bar();
 
-        let at_origin = draw_status_bar(
-            &cr,
-            &pango_layout,
-            0.0,
-            0.0,
-            100.0,
-            20.0,
-            &bar,
-            &theme,
-            None,
-            None,
+        let mut raw = RawGtkStatusBarSurface {
+            cr: &cr,
+            pango_layout: &pango_layout,
+        };
+        let at_origin = crate::primitives::status_bar::native_surface_paint::paint(
+            &bar, &mut raw, &theme, 0.0, 0.0, 100.0, 20.0, None, None,
         );
-        let shifted = draw_status_bar(
-            &cr,
-            &pango_layout,
-            x,
-            y,
-            100.0,
-            20.0,
-            &bar,
-            &theme,
-            None,
-            None,
+        let mut raw = RawGtkStatusBarSurface {
+            cr: &cr,
+            pango_layout: &pango_layout,
+        };
+        let shifted = crate::primitives::status_bar::native_surface_paint::paint(
+            &bar, &mut raw, &theme, x as f32, y as f32, 100.0, 20.0, None, None,
         );
 
         assert_eq!(

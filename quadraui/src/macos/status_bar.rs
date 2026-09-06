@@ -1,40 +1,51 @@
 //! macOS rasteriser for [`crate::StatusBar`].
 //!
-//! Mirrors [`crate::gtk::status_bar::draw_status_bar`]: the rasteriser
-//! computes the layout internally because Core Text measurement and
-//! glyph rendering both require the same `CTFont` handle, so splitting
-//! the work across the call boundary would force callers to plumb the
-//! font through twice. The resolved [`StatusBarLayout`] is returned so
-//! the host (or the [`Backend`] adapter on top) can dispatch clicks.
-//!
-//! Per D6: layout policy (priority drop, gap rules, …) lives in
-//! [`StatusBar::layout`]; this rasteriser paints whatever that returns.
+//! Painting moved to the shared
+//! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
+//! `NativeSurface` Phase 2d slice 3/9) — see that fn's doc for the named
+//! divergences (bold-aware measurement: GTK/Win measured a segment's own
+//! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
+//! applying the already-fixed quadraui#791 shape uniformly) found while
+//! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
+//! and `win::status_bar::draw_status_bar` into one implementation. This
+//! module now only carries [`mac_status_bar_layout`] (pure layout, still
+//! needed by `MacBackend::status_bar_layout` for no-paint hit-test
+//! queries) and the deprecated [`draw_status_bar`] compatibility shim over
+//! [`RawMacStatusBarSurface`], mirroring `macos::panel`'s identical #859
+//! shape. `MIN_GAP_PX` stays put — it's still [`mac_status_bar_layout`]'s
+//! own measurer constant, untouched by this migration.
 //!
 //! ## Bold segments
 //!
-//! Tracked separately — `bold` on a segment is currently ignored. Bold
-//! support requires materialising a bold variant of the active font
-//! via `CTFontCreateCopyWithSymbolicTraits` and is out of scope for
-//! #38; follow-up after the chrome batch lands.
+//! Tracked separately — `bold` on a segment was, and remains, ignored on
+//! this backend: [`NativeSurface::surface_measure_text_styled`]'s default
+//! (drop `bold`, forward to [`NativeSurface::surface_measure_text`])
+//! reproduces this file's pre-#860 measurement exactly, so `MacBackend`
+//! needed no override. Bold support requires materialising a bold
+//! variant of the active font via `CTFontCreateCopyWithSymbolicTraits`
+//! and is out of scope for #38; follow-up after the chrome batch lands.
 //!
 //! [`Backend`]: crate::Backend
+//! [`NativeSurface`]: crate::native_surface::NativeSurface
+//! [`NativeSurface::surface_measure_text_styled`]: crate::native_surface::NativeSurface::surface_measure_text_styled
+//! [`NativeSurface::surface_measure_text`]: crate::native_surface::NativeSurface::surface_measure_text
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
-use crate::primitives::status_bar::{
-    StatusBar, StatusBarLayout, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
-};
+use crate::native_surface::NativeSurface;
+use crate::primitives::status_bar::StatusSegmentMeasure;
 use crate::theme::Theme;
-use crate::types::{Color, WidgetId};
+use crate::types::WidgetId;
+use crate::{StatusBar, StatusBarLayout};
 
-/// 16-point minimum gap between left and right segment groups. Matches
-/// the GTK rasteriser and the vimcode native-backend behaviour.
+/// 16-point minimum gap between left and right segment groups. Still
+/// used by [`mac_status_bar_layout`] — the shared
+/// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
+/// its own independent copy of the same value (see that module's doc).
 pub(crate) const MIN_GAP_PX: f32 = 16.0;
 
-/// Compute the layout [`draw_status_bar`] would produce for `bar` at
+/// Compute the layout the shared `paint` would produce for `bar` at
 /// `width` × `line_height`, without painting.
 ///
 /// This is the no-paint twin backing [`crate::Backend::status_bar_layout`].
@@ -49,7 +60,7 @@ pub fn mac_status_bar_layout(
     line_height: f64,
     bar: &StatusBar,
 ) -> StatusBarLayout {
-    // Degenerate rect: reproduce exactly what `draw_status_bar` returns
+    // Degenerate rect: reproduce exactly what the shared `paint` returns
     // so the paint and no-paint paths never disagree.
     if width <= 0.0 || line_height <= 0.0 {
         return bar.layout(
@@ -59,25 +70,127 @@ pub fn mac_status_bar_layout(
             |_| StatusSegmentMeasure::new(0.0),
         );
     }
-    // Measure each visible segment via Core Text. `measure_text` returns
-    // (width, height) in points; the primitive only needs the width.
-    let measure = |seg: &StatusBarSegment| -> StatusSegmentMeasure {
-        let (w, _) = measure_text(font, &seg.text);
+    // Measure each visible segment via Core Text. `bold` is ignored — see
+    // this module's doc, "Bold segments".
+    let measure = |seg: &crate::primitives::status_bar::StatusBarSegment| -> StatusSegmentMeasure {
+        let (w, _) = super::text::measure_text(font, &seg.text);
         StatusSegmentMeasure::new(w as f32)
     };
     bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure)
 }
 
-/// Paint `bar` into the rect `(x, y, width, line_height)` on `ctx`
-/// using `font` for text measurement + glyph rendering. Returns the
-/// resolved layout — hit regions are in **bar-local coordinates**
-/// (relative to `x`), matching `gtk::draw_status_bar`.
+/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
+/// used only by the deprecated [`draw_status_bar`] shim below — mirrors
+/// `macos::panel::RawPanelSurface`'s identical pattern (#859), extended
+/// with clip push/pop, which this primitive's paint actually uses.
+/// `surface_measure_text_styled`/`surface_draw_text_run_styled` take the
+/// trait's default (drop `bold`) — see this module's doc, "Bold segments".
+struct RawMacStatusBarSurface<'a> {
+    ctx: CGContextRef,
+    font: &'a CTFont,
+}
+
+impl NativeSurface for RawMacStatusBarSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawMacStatusBarSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawMacStatusBarSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawMacStatusBarSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawMacStatusBarSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawMacStatusBarSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (w, h) = super::text::measure_text(self.font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
+        // pass — see this struct's construction site.
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("StatusBar::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        // SAFETY: `self.ctx` is the caller-supplied context passed to
+        // `draw_status_bar`, valid for the duration of the shim call.
+        unsafe {
+            super::text::draw_text(
+                self.ctx,
+                self.font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                super::backend::ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("StatusBar::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, rect: crate::Rect) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
+    }
+
+    fn surface_pop_clip(&mut self) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_pop_clip(self.ctx) };
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("StatusBar::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
+/// the pre-#860 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_status_bar` reference rather than going
+/// through [`crate::Backend::draw_status_bar`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call (typical: the frame-scope pointer stashed on
-/// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
+/// the call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_status_bar` instead — this free function is a compatibility shim over the shared #860 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_status_bar(
     ctx: CGContextRef,
@@ -91,118 +204,18 @@ pub unsafe fn draw_status_bar(
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
 ) -> StatusBarLayout {
-    // Empty rect — return the layout the primitive would have produced
-    // for a zero-width bar so callers' hit dispatch behaves predictably.
-    if width <= 0.0 || line_height <= 0.0 {
-        return mac_status_bar_layout(font, width, line_height, bar);
-    }
-
-    CGContextSaveGState(ctx);
-
-    // Clip to the bar rect so right-aligned segments that overflow are
-    // truncated cleanly at the right edge instead of painting past it.
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, width, line_height));
-
-    // Background fill: first segment's bg, falling through to theme bg.
-    let fill = bar
-        .left_segments
-        .first()
-        .or(bar.right_segments.first())
-        .map(|s| s.bg)
-        .unwrap_or(theme.background);
-    fill_rect(ctx, x, y, width, line_height, fill);
-
-    // Single source of truth for measurement: the same function
-    // `Backend::status_bar_layout` calls, so paint and no-paint agree.
-    let bar_layout = mac_status_bar_layout(font, width, line_height, bar);
-
-    for vs in &bar_layout.visible_segments {
-        let seg = match vs.side {
-            StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
-            StatusSegmentSide::Right => &bar.right_segments[vs.segment_idx],
-        };
-        let seg_x = x + vs.bounds.x as f64;
-        let seg_w = vs.bounds.width as f64;
-
-        // Hover/press tint — applied only to interactive segments to
-        // match the TUI + GTK convention. `action_id.is_some_and(...)`
-        // is false for both non-clickable segments and segments whose
-        // id doesn't match `hovered_id` / `pressed_id`.
-        let effective_bg = if seg
-            .action_id
-            .as_ref()
-            .is_some_and(|id| Some(id) == pressed_id)
-        {
-            seg.bg.darken(0.05)
-        } else if seg
-            .action_id
-            .as_ref()
-            .is_some_and(|id| Some(id) == hovered_id)
-        {
-            seg.bg.lighten(0.05)
-        } else {
-            seg.bg
-        };
-        fill_rect(ctx, seg_x, y, seg_w, line_height, effective_bg);
-
-        let fg = color_to_cg(seg.fg);
-        draw_text(ctx, font, &seg.text, seg_x, y, fg);
-    }
-
-    CGContextRestoreGState(ctx);
-
-    bar_layout
-}
-
-/// Convert a `quadraui::Color` (0–255 RGBA) into CG's normalised
-/// `(r, g, b, a)` tuple expected by [`super::text::draw_text`] and
-/// the local `fill_rect`.
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
+    let mut surface = RawMacStatusBarSurface { ctx, font };
+    crate::primitives::status_bar::native_surface_paint::paint(
+        bar,
+        &mut surface,
+        theme,
+        x as f32,
+        y as f32,
+        width as f32,
+        line_height as f32,
+        hovered_id,
+        pressed_id,
     )
-}
-
-/// Set the fill colour and emit a `CGContextFillRect`. Convenience for
-/// the rasteriser's repeated background-fill pattern.
-///
-/// # Safety
-///
-/// Same contract as the caller — `ctx` must be a valid CG context
-/// borrowed for the duration of the call.
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-// Small convenience extension for building `CGRect` in (x, y, w, h)
-// form. Keeps call sites scannable.
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -214,6 +227,7 @@ mod tests {
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::status_bar::StatusBarHit;
     use crate::primitives::status_bar::StatusBarSegment;
+    use crate::primitives::status_bar::StatusSegmentSide;
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::Backend;

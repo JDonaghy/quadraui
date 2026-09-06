@@ -477,6 +477,520 @@ impl StatusBar {
     }
 }
 
+// ── NativeSurface paint (#860, Phase 2d slice 3/9 of the NativeSurface
+// milestone) ─────────────────────────────────────────────────────────────
+//
+// Before this, `gtk::status_bar::draw_status_bar` (Cairo/Pango),
+// `macos::status_bar::draw_status_bar` (Core Graphics/Core Text) and
+// `win::status_bar::draw_status_bar` (Direct2D/DirectWrite) each
+// independently painted the same bar-fill + per-segment chrome with
+// their own drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
+// §5). `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API.
+//
+// # Divergences found — reported, not silently resolved
+//
+// 1. **Bold-aware measurement.** `gtk::status_bar::draw_status_bar` and
+//    `win::status_bar::draw_status_bar` both measured a segment's width
+//    against its own `bold` flag (a Pango `AttrList` weight / DirectWrite
+//    `measure_text_styled`); `macos::status_bar::draw_status_bar` measured
+//    (and rendered) every segment at the same non-bold weight — its own
+//    module doc names this explicitly ("Bold segments — Tracked
+//    separately... bold is currently ignored"). This migration adds
+//    [`NativeSurface::surface_measure_text_styled`] (mirroring
+//    [`NativeSurface::surface_draw_text_run_styled`]'s #810 shape), whose
+//    default drops `bold` — exactly macOS's existing behaviour, so
+//    `MacBackend` needs no override — while `GtkBackend` and `WinBackend`
+//    override it to measure the real bold weight, preserving what they
+//    already painted. No behaviour changes on any of the three backends;
+//    the divergence itself is left unresolved and reported here, per this
+//    issue's instructions.
+//
+// 2. **Zero-size guard + clip.** `macos::status_bar::draw_status_bar` and
+//    `win::status_bar::draw_status_bar` already short-circuited to the
+//    no-paint layout on a non-positive `width`/`line_height`
+//    (quadraui#791 — re-verified while migrating, per this issue's
+//    "re-verify before you implement": both already carried the fix,
+//    contrary to this issue's own text, which claimed only `macos` had
+//    it — reported here rather than assumed).
+//    `gtk::status_bar::draw_status_bar` had no such guard: it still
+//    clipped (so the fill/segments stayed invisible) but continued to
+//    measure every segment's real text width regardless. `paint` below
+//    applies the #791-fixed shape (early return, matching mac/win)
+//    uniformly, which changes GTK's zero-size behaviour from "measure
+//    real widths, paint nothing visible" to "measure nothing, paint
+//    nothing" — invisible either way, so no observable regression, and
+//    it's what #791 already established as the correct shape for the
+//    other two backends.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_status_bar` call site plus this
+// module's own `RecordingSurface` tests on every leg that enables one of
+// the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{StatusBar, StatusBarLayout, StatusSegmentMeasure, StatusSegmentSide};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+
+    /// Minimum gap (surface-native units — px on every pixel backend)
+    /// reserved between the left and right segment groups. All three
+    /// pre-#860 per-backend copies agreed on `16.0`
+    /// (`gtk::status_bar::MIN_GAP_PX`, `macos::status_bar::MIN_GAP_PX`,
+    /// `win::status_bar::MIN_GAP_DIP`) — those stay put (each backend's
+    /// own no-paint `*_status_bar_layout` twin still uses its own copy
+    /// for `Backend::status_bar_layout`); this is `paint`'s independent
+    /// copy of the same value.
+    const MIN_GAP: f32 = 16.0;
+
+    /// Paint a [`StatusBar`] into `(x, y, width, line_height)` on
+    /// `surface`, returning the resolved [`StatusBarLayout`] for the
+    /// caller's click dispatch — same contract as
+    /// [`crate::Backend::draw_status_bar`]: hit regions are **bar-local**
+    /// (relative to `x`/`y`), matching every backend's pre-#860
+    /// rasteriser.
+    ///
+    /// `hovered_id` / `pressed_id` tint the matching clickable segment's
+    /// background (lighten on hover, darken on press) — the primitive
+    /// itself carries no mouse state.
+    ///
+    /// A non-positive `width`/`line_height` short-circuits to the
+    /// no-paint layout without touching `surface` at all — see this
+    /// module's doc, divergence 2, for why this is applied uniformly
+    /// (including to GTK, which never had this guard pre-#860).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        bar: &StatusBar,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        x: f32,
+        y: f32,
+        width: f32,
+        line_height: f32,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) -> StatusBarLayout {
+        if width <= 0.0 || line_height <= 0.0 {
+            return bar.layout(width.max(0.0), line_height.max(0.0), MIN_GAP, |_| {
+                StatusSegmentMeasure::new(0.0)
+            });
+        }
+
+        let rect = Rect::new(x, y, width, line_height);
+        surface.surface_push_clip(rect);
+
+        // Background fill: first segment's bg, else theme bg — matches
+        // every pre-#860 per-backend copy.
+        let fill = bar
+            .left_segments
+            .first()
+            .or(bar.right_segments.first())
+            .map(|s| s.bg)
+            .unwrap_or(theme.background);
+        surface.surface_fill_rect(rect, fill);
+
+        // See this module's doc, divergence 1: bold-aware measurement is
+        // per-backend (`surface_measure_text_styled`'s default/override
+        // split), not decided here.
+        let bar_layout = bar.layout(width, line_height, MIN_GAP, |seg| {
+            let (w, _) = surface.surface_measure_text_styled(&seg.text, seg.bold);
+            StatusSegmentMeasure::new(w)
+        });
+
+        for vs in &bar_layout.visible_segments {
+            let seg = match vs.side {
+                StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
+                StatusSegmentSide::Right => &bar.right_segments[vs.segment_idx],
+            };
+            let seg_rect = Rect::new(
+                x + vs.bounds.x,
+                y + vs.bounds.y,
+                vs.bounds.width,
+                vs.bounds.height,
+            );
+
+            // Hover/press tint — applied only to interactive segments,
+            // matching every pre-#860 per-backend copy.
+            // `action_id.is_some_and(...)` is false for both
+            // non-clickable segments and segments whose id doesn't match
+            // `hovered_id` / `pressed_id`.
+            let effective_bg = if seg
+                .action_id
+                .as_ref()
+                .is_some_and(|id| Some(id) == pressed_id)
+            {
+                seg.bg.darken(0.05)
+            } else if seg
+                .action_id
+                .as_ref()
+                .is_some_and(|id| Some(id) == hovered_id)
+            {
+                seg.bg.lighten(0.05)
+            } else {
+                seg.bg
+            };
+            surface.surface_fill_rect(seg_rect, effective_bg);
+            surface.surface_draw_text_run_styled(
+                seg_rect, &seg.text, seg.fg, seg.bold, false, false, 1.0,
+            );
+        }
+
+        surface.surface_pop_clip();
+        bar_layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::status_bar::{StatusBarHit, StatusBarSegment};
+        use crate::types::Color;
+        use crate::Image;
+
+        /// Records every surface verb this primitive's paint uses —
+        /// mirrors `primitives::panel`'s `RecordingSurface` test double,
+        /// so this test runs on any host without Cairo/Core
+        /// Graphics/Direct2D. `surface_measure_text_styled` adds a fixed
+        /// bonus width for `bold` text so tests can assert `paint`
+        /// actually threads a segment's `bold` flag through to
+        /// measurement (divergence 1 above), not just to painting.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            /// `(rect, text, color, bold)` — every text run this test
+            /// double sees goes through `surface_draw_text_run_styled`
+            /// (`paint` never calls the unstyled `surface_draw_text_run`).
+            text_runs: Vec<(Rect, String, Color, bool)>,
+            clip_pushes: Vec<Rect>,
+            clip_pops: usize,
+        }
+
+        const BOLD_BONUS_PX: f32 = 100.0;
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+                let (w, h) = self.surface_measure_text(text);
+                (w + if bold { BOLD_BONUS_PX } else { 0.0 }, h)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color, false));
+            }
+            #[allow(clippy::too_many_arguments)]
+            fn surface_draw_text_run_styled(
+                &mut self,
+                rect: Rect,
+                text: &str,
+                color: Color,
+                bold: bool,
+                _italic: bool,
+                _underline: bool,
+                _scale_x: f32,
+            ) {
+                self.text_runs.push((rect, text.to_string(), color, bold));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample_bar() -> StatusBar {
+            StatusBar {
+                id: WidgetId::new("sb"),
+                left_segments: vec![StatusBarSegment {
+                    text: "NORMAL".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(10, 20, 30),
+                    bold: true,
+                    action_id: Some(WidgetId::new("sb:mode")),
+                }],
+                right_segments: vec![StatusBarSegment {
+                    text: "Ln 1, Col 1".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(40, 50, 60),
+                    bold: false,
+                    action_id: Some(WidgetId::new("sb:cursor")),
+                }],
+            }
+        }
+
+        #[test]
+        fn bar_background_falls_back_to_theme_when_no_segments() {
+            let bar = StatusBar {
+                id: WidgetId::new("empty"),
+                left_segments: vec![],
+                right_segments: vec![],
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+            assert_eq!(surface.fills[0].1, theme.background);
+        }
+
+        #[test]
+        fn bar_background_uses_first_segment_bg_when_present() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+            assert_eq!(surface.fills[0].1, bar.left_segments[0].bg);
+        }
+
+        /// Regression for the already-fixed quadraui#791 shape (divergence
+        /// 2 above): a degenerate rect must not touch `surface` at all,
+        /// on every backend — including GTK, which had no such guard
+        /// pre-#860.
+        #[test]
+        fn zero_width_short_circuits_without_touching_surface() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&bar, &mut surface, &theme, 0.0, 0.0, 0.0, 20.0, None, None);
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+            assert!(surface.clip_pushes.is_empty());
+            assert_eq!(surface.clip_pops, 0);
+            // The primitive's own "always keep the last segment" rule
+            // still resolves *some* layout even at zero width — it's just
+            // never painted.
+            assert!(!layout.visible_segments.is_empty());
+        }
+
+        #[test]
+        fn clip_is_pushed_and_popped_around_the_bar_rect() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                5.0,
+                3.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+            assert_eq!(surface.clip_pushes, vec![Rect::new(5.0, 3.0, 200.0, 20.0)]);
+            assert_eq!(surface.clip_pops, 1);
+        }
+
+        /// Regression for divergence 1 above: `paint` must measure (and
+        /// therefore lay out) a bold segment wider than the identical
+        /// text at regular weight, proving `seg.bold` actually reaches
+        /// `surface_measure_text_styled` rather than the plain
+        /// `surface_measure_text`.
+        #[test]
+        fn bold_segment_measured_wider_than_the_same_text_plain() {
+            let mut bar = sample_bar();
+            bar.left_segments[0].bold = false;
+            let theme = Theme::default();
+            let mut plain_surface = RecordingSurface::default();
+            let plain_layout = paint(
+                &bar,
+                &mut plain_surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+
+            bar.left_segments[0].bold = true;
+            let mut bold_surface = RecordingSurface::default();
+            let bold_layout = paint(
+                &bar,
+                &mut bold_surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+
+            let plain_w = plain_layout.visible_segments[0].bounds.width;
+            let bold_w = bold_layout.visible_segments[0].bounds.width;
+            assert!(
+                (bold_w - plain_w - BOLD_BONUS_PX).abs() < 0.01,
+                "bold width {bold_w} should exceed plain width {plain_w} by exactly the bold bonus"
+            );
+        }
+
+        #[test]
+        fn text_drawn_via_styled_run_with_segment_bold_flag() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+
+            let (_, _, _, left_bold) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t == "NORMAL")
+                .expect("left segment text drawn");
+            assert!(*left_bold, "left segment is bold=true");
+
+            let (_, _, _, right_bold) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t == "Ln 1, Col 1")
+                .expect("right segment text drawn");
+            assert!(!*right_bold, "right segment is bold=false");
+        }
+
+        #[test]
+        fn hover_lightens_and_press_darkens_clickable_segment_bg() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let base = bar.left_segments[0].bg;
+
+            let hovered = WidgetId::new("sb:mode");
+            let mut hovered_surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut hovered_surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                Some(&hovered),
+                None,
+            );
+            // fills[0] = bar bg, fills[1] = left "mode" segment.
+            assert_eq!(hovered_surface.fills[1].1, base.lighten(0.05));
+
+            let pressed = WidgetId::new("sb:mode");
+            let mut pressed_surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut pressed_surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                Some(&pressed),
+            );
+            assert_eq!(pressed_surface.fills[1].1, base.darken(0.05));
+        }
+
+        #[test]
+        fn paint_and_click_round_trip() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            // Wide enough that the bold-inflated left segment
+            // (`BOLD_BONUS_PX`) and the right segment don't overlap —
+            // this test is about hit-test dispatch, not priority-drop.
+            let layout = paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                400.0,
+                20.0,
+                None,
+                None,
+            );
+
+            let mode = layout
+                .visible_segments
+                .iter()
+                .find(|vs| vs.side == StatusSegmentSide::Left)
+                .expect("mode segment visible");
+            let hit = layout.hit_test(mode.bounds.x + 1.0, mode.bounds.y + 1.0);
+            assert_eq!(hit, StatusBarHit::Segment(WidgetId::new("sb:mode")));
+
+            let cursor = layout
+                .visible_segments
+                .iter()
+                .find(|vs| vs.side == StatusSegmentSide::Right)
+                .expect("cursor segment visible");
+            let hit = layout.hit_test(cursor.bounds.x + 1.0, cursor.bounds.y + 1.0);
+            assert_eq!(hit, StatusBarHit::Segment(WidgetId::new("sb:cursor")));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
