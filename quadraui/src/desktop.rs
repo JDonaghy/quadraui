@@ -435,20 +435,22 @@ pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&st
 /// convention).
 ///
 /// `#[allow(dead_code)]`: each variant is constructed in production code
-/// by exactly one backend's `dispatch_event` (`Ctrl` by `gtk::run`/
-/// `win::run`, `Cmd` by `macos::run`), and this module compiles under
-/// `any(gtk, macos, win)` — the same single-backend feature-gate shape
-/// `win::run::dispatch_event`'s own `#[allow(dead_code)]` documents.
-/// Building with only one of those features active (e.g. the
-/// `ubuntu-latest` `--features win` leg, which has no `gtk`/`macos`) so
-/// only one variant is ever constructed outside `#[cfg(test)]` would
-/// otherwise trip `-D warnings`' dead-code lint on the other variant —
-/// despite both being genuinely constructed on the CI legs where their
-/// respective backend feature is active, and both being exercised
-/// unconditionally by `is_paste_keypress_tests` below, which is what
-/// actually proves out D-011 §4's contract for every backend on any
-/// host.
+/// by exactly one backend (`Ctrl` by TUI/GTK/Windows via
+/// [`crate::runtime::preprocess_event`], `Cmd` by macOS via the same
+/// function's `PreprocessBackend::paste_modifier` override), and this
+/// module compiles under `any(tui, gtk, macos, win)` — the same
+/// single-backend feature-gate shape `win::run::dispatch_event`'s own
+/// `#[allow(dead_code)]` documents. Building with only one of those
+/// features active (e.g. the `ubuntu-latest` `--features win` leg, which
+/// has no `tui`/`gtk`/`macos`) so only one variant is ever constructed
+/// outside `#[cfg(test)]` would otherwise trip `-D warnings`' dead-code
+/// lint on the other variant — despite both being genuinely constructed
+/// on the CI legs where their respective backend feature is active, and
+/// both being exercised unconditionally by `is_paste_keypress_tests`
+/// below, which is what actually proves out D-011 §4's contract for
+/// every backend on any host.
 #[cfg(any(
+    feature = "tui",
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
     feature = "win"
@@ -456,7 +458,7 @@ pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&st
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum PasteModifier {
-    /// Ctrl-V / Ctrl-Shift-V — GTK (Linux) and Win32.
+    /// Ctrl-V / Ctrl-Shift-V — TUI, GTK (Linux), and Win32.
     Ctrl,
     /// Cmd-V / Cmd-Shift-V (⌘V / ⌘⇧V) — macOS.
     Cmd,
@@ -490,6 +492,7 @@ pub(crate) enum PasteModifier {
 /// this was already true everywhere a paste chord existed, so unifying
 /// the predicate doesn't change it.
 #[cfg(any(
+    feature = "tui",
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
     feature = "win"
@@ -828,6 +831,7 @@ mod smoke_config_tests {
 #[cfg(all(
     test,
     any(
+        feature = "tui",
         feature = "gtk",
         all(feature = "macos", target_os = "macos"),
         feature = "win"
@@ -835,8 +839,10 @@ mod smoke_config_tests {
 ))]
 mod is_paste_keypress_tests {
     //! Coverage for [`is_paste_keypress`] (#728) — the single predicate
-    //! `gtk::run`, `macos::run`, and `win::run`'s `dispatch_event`s all
-    //! now call, each passing its own [`PasteModifier`]. Pure/display-
+    //! `tui::run`, `gtk::run`, `macos::run`, and `win::run`'s
+    //! `dispatch_event`s all now call (via
+    //! `crate::runtime::preprocess_event`), each backend supplying its
+    //! own [`PasteModifier`]. Pure/display-
     //! free: no live backend needed to exercise every branch of the
     //! contract D-011 (`docs/decisions/DECISIONS.md`) records.
     use super::*;

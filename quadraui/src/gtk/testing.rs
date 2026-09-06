@@ -194,6 +194,20 @@ impl<A: AppLogic> GtkDriver<A> {
         }
     }
 
+    /// Toggle whether [`Self::dispatch`] (and every click helper built on
+    /// it) folds a `MouseDown` into `DoubleClick` when it lands at the
+    /// same spot as the previous one within [`crate::dispatch::DoubleClickDetector`]'s
+    /// window (quadraui#813). Defaults to `true` — real folding, matching
+    /// the live GTK app and `TuiDriver`'s own default. Pass `false` when
+    /// a test dispatches two deliberate single clicks at the same
+    /// position in immediate succession (no real GDK press-count or
+    /// wall-clock gap between them) and needs two `MouseDown`s rather
+    /// than a coin-flip on wall-clock timing. Mirrors
+    /// `TuiDriver::set_double_click_folding` exactly.
+    pub fn set_double_click_folding(&mut self, enabled: bool) {
+        self.backend.set_double_click_folding(enabled);
+    }
+
     /// Press a key (no modifiers).
     pub fn press(&mut self, key: Key) -> Reaction {
         DriverInput::press(self, key)

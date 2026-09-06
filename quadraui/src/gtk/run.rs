@@ -121,9 +121,7 @@ use super::events::{
     gdk_scroll_to_uievent_with_direction,
 };
 use crate::backend::Backend;
-use crate::desktop::{
-    is_paste_keypress, smoke_clipboard_round_trip_ok, smoke_size_ok, PasteModifier, SmokeConfig,
-};
+use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
@@ -474,7 +472,7 @@ fn activate<A: AppLogic + 'static>(
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         let pump_depth = pump_depth.clone();
-        click.connect_pressed(move |gesture, n_press, x, y| {
+        click.connect_pressed(move |gesture, _n_press, x, y| {
             // #427 re-entrancy guard — see the key-press handler above.
             if pump_depth.is_pumping() {
                 return;
@@ -506,33 +504,16 @@ fn activate<A: AppLogic + 'static>(
                 }
             }
 
-            if n_press == 2 {
-                // Double-click: clear selection and deliver DoubleClick directly.
-                // (Not a `MouseDown`, so `dispatch_event`'s selection-display
-                // clear doesn't fire for it — do it explicitly here, same as
-                // before the refactor.)
-                let mut backend_mut = backend.borrow_mut();
-                backend_mut.clear_selection_display();
-                let ev = UiEvent::DoubleClick {
-                    widget: None,
-                    position,
-                };
-                let outcome = {
-                    let mut app_mut = app.borrow_mut();
-                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
-                };
-                drop(backend_mut);
-                apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
-                return;
-            }
-
             let mut backend_mut = backend.borrow_mut();
 
             // Route through dispatch_click so text-region clicks begin a
-            // TextSelection drag and scrollbar clicks begin scrollbar drags.
-            // The resulting `MouseDown` event(s) go through `dispatch_event`
-            // below, which clears the previous selection-highlight display
-            // (mirrors the TUI runner's own `MouseDown` pre-processing).
+            // TextSelection drag and scrollbar clicks begin scrollbar drags —
+            // regardless of GDK's own press count. Double-click folding used
+            // to be decided right here from `n_press == 2`, bypassing
+            // `dispatch_click` (and so `TextRegion`/modal routing) for the
+            // second press entirely; #813 moves it into `dispatch_event`'s
+            // shared `fold_double_click` step below, applied uniformly to
+            // whatever `dispatch_click` returns, the same as macOS/Windows.
             let events = {
                 let stack_rc = backend_mut.modal_stack_handle();
                 let drag_rc = backend_mut.drag_state_handle();
@@ -559,8 +540,9 @@ fn activate<A: AppLogic + 'static>(
 
             let mut needs_redraw = false;
             for ev in events {
-                // Only `MouseDown` events are emitted by dispatch_click;
-                // pass them to the app.
+                // `dispatch_event` folds the double-click itself (as its
+                // first pre-processing step) — pass the raw `MouseDown`
+                // dispatch_click returned straight through.
                 let outcome = {
                     let mut app_mut = app.borrow_mut();
                     dispatch_event(ev, &mut backend_mut, &mut *app_mut)
@@ -1205,189 +1187,27 @@ pub(crate) fn render_frame<A: AppLogic>(
 // every backend runner (quadraui#496); imported at the top of this file.
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
-/// the runner's built-in pre-processing first. This is the single funnel
-/// every GTK signal closure above routes through (key press, click
-/// press/release, motion, scroll, resize, idle-drain) — see the module
-/// doc's "Shared with the headless test driver" section for why that
-/// matters.
+/// the shared runner pre-processing pipeline first. This is the single
+/// funnel every GTK signal closure above routes through (key press,
+/// click press/release, motion, scroll, resize, idle-drain) — see the
+/// module doc's "Shared with the headless test driver" section for why
+/// that matters.
 ///
-/// Pre-processing handled here (before — or instead of — the app's
-/// `handle`), in priority order:
-/// - `KeyPressed` while an `ActivityBar` declared
-///   `is_keyboard_focused = true`: redirect to
-///   `UiEvent::ActivityBar(id, KeyPressed { … })` instead of the app's
-///   normal `handle` (#445 review — must win over accelerators below).
-/// - `KeyPressed` matching a registered `Global` accelerator: rewrite to
-///   `UiEvent::Accelerator`.
-/// - Ctrl-C with an active text selection: copy to the clipboard and
-///   deliver `TextCopied` instead of forwarding the raw key press.
-/// - Ctrl-V or Ctrl-Shift-V: read the system clipboard and deliver
-///   `ClipboardPaste` (GTK has no native paste signal on a bespoke
-///   `DrawingArea`, unlike TUI's crossterm bracketed paste). Ctrl-Shift-V
-///   is accepted alongside plain Ctrl-V because several terminal
-///   emulators reserve Ctrl-V for a control byte and use Shift as the
-///   paste-disambiguator (quadraui#415) — quadraui treats them
-///   identically since there's no "paste without formatting" distinction
-///   for a terminal grid.
-/// - Middle-click (`MouseDown` with `MouseButton::Middle`): read the
-///   X11/Wayland PRIMARY selection and deliver `ClipboardPaste` — the
-///   platform convention for "paste what was last selected", distinct
-///   from the CLIPBOARD selection Ctrl-V reads (quadraui#415).
-/// - Ctrl-A: select the entire content of the most-recently focused
-///   `TextRegion`, if one is registered.
-/// - `MouseDown`: clear the displayed selection highlight (a fresh drag
-///   may be starting).
-/// - `TextSelectionChanged`: update the backend's active selection and
-///   force a redraw.
-///
-/// Anything not matched above falls through to `app.handle` unchanged.
+/// The pre-processing itself — ActivityBar keyboard-focus redirect,
+/// global accelerator rewrite, Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
+/// middle-click PRIMARY-selection paste, Ctrl-A select-all, selection-
+/// display clearing, `TextSelectionChanged` — lives in
+/// [`crate::runtime::preprocess_event`] (quadraui#813), shared with
+/// TUI/macOS/Windows; see that function's doc for the exact priority
+/// order. This wrapper exists only because `preprocess_event` is
+/// generic and GTK's signal closures call a concretely-typed
+/// `dispatch_event(UiEvent, &mut GtkBackend, &mut A)`.
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
     backend: &mut GtkBackend,
     app: &mut A,
 ) -> EventOutcome {
-    // ── ActivityBar keyboard focus intercept ────────────────────────
-    if let UiEvent::KeyPressed {
-        ref key, modifiers, ..
-    } = event
-    {
-        let focused_bar = backend.focused_activity_bar_id().cloned();
-        if let Some(bar_id) = focused_bar {
-            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
-            let bar_ev = UiEvent::ActivityBar(
-                bar_id,
-                crate::ActivityBarEvent::KeyPressed {
-                    key: key_str,
-                    modifiers,
-                },
-            );
-            return match app.handle(bar_ev, backend) {
-                Reaction::Continue => EventOutcome::Continue,
-                Reaction::Redraw => EventOutcome::Redraw,
-                Reaction::Exit => EventOutcome::Exit,
-            };
-        }
-    }
-
-    // ── Global accelerator dispatch (#445) ───────────────────────────
-    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        match backend.match_keypress(key, *modifiers) {
-            Some(id) => UiEvent::Accelerator(id, *modifiers),
-            None => event,
-        }
-    } else {
-        event
-    };
-
-    // ── Ctrl-C interception (text selection) ─────────────────────────
-    if let UiEvent::KeyPressed {
-        key: Key::Char('c'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
-        ..
-    } = &event
-    {
-        if backend.active_text_selection().is_some() {
-            let text = backend.extract_selection_text();
-            backend.services().clipboard().write_text(&text);
-            backend.clear_text_selection();
-            // Deliver TextCopied so the app can confirm (e.g. update a
-            // status bar message). Mirrors the TUI runner.
-            return match app.handle(UiEvent::TextCopied(text), backend) {
-                Reaction::Continue => EventOutcome::Continue,
-                Reaction::Redraw => EventOutcome::Redraw,
-                Reaction::Exit => EventOutcome::Exit,
-            };
-        }
-    }
-
-    // ── Ctrl-V / Ctrl-Shift-V interception (paste) ────────────────────
-    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        if is_paste_keypress(key, modifiers, PasteModifier::Ctrl) {
-            if let Some(text) = backend.services().clipboard().read_text() {
-                return match app.handle(UiEvent::ClipboardPaste(text), backend) {
-                    Reaction::Continue => EventOutcome::Continue,
-                    Reaction::Redraw => EventOutcome::Redraw,
-                    Reaction::Exit => EventOutcome::Exit,
-                };
-            }
-            return EventOutcome::Continue;
-        }
-    }
-
-    // ── Middle-click interception (PRIMARY-selection paste) ───────────
-    //
-    // X11/Wayland convention: middle-click pastes the PRIMARY selection
-    // (whatever text was last selected anywhere), independent of the
-    // CLIPBOARD selection Ctrl-V reads. Falls through to ordinary
-    // `MouseDown` handling (scrollbar drags, text-selection start, …)
-    // when there's no primary selection to paste (quadraui#415).
-    if let UiEvent::MouseDown {
-        button: MouseButton::Middle,
-        ..
-    } = &event
-    {
-        if let Some(text) = backend.services().clipboard().read_primary_selection() {
-            return match app.handle(UiEvent::ClipboardPaste(text), backend) {
-                Reaction::Continue => EventOutcome::Continue,
-                Reaction::Redraw => EventOutcome::Redraw,
-                Reaction::Exit => EventOutcome::Exit,
-            };
-        }
-    }
-
-    // ── Ctrl-A interception (select-all for text regions) ────────────
-    if let UiEvent::KeyPressed {
-        key: Key::Char('a') | Key::Char('A'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
-        ..
-    } = &event
-    {
-        if backend.select_all_text_region() {
-            return EventOutcome::Redraw;
-        }
-    }
-
-    // ── MouseDown: clear the displayed selection highlight ────────────
-    if let UiEvent::MouseDown { .. } = &event {
-        backend.clear_selection_display();
-    }
-
-    // ── TextSelectionChanged: update active selection while dragging ──
-    let mut force_redraw = false;
-    if let UiEvent::TextSelectionChanged {
-        region,
-        anchor,
-        focus,
-    } = &event
-    {
-        backend.set_active_text_selection(region.clone(), *anchor, *focus);
-        force_redraw = true;
-    }
-
-    // ── Normal app dispatch ────────────────────────────────────────────
-    match app.handle(event, backend) {
-        Reaction::Continue => {
-            if force_redraw {
-                EventOutcome::Redraw
-            } else {
-                EventOutcome::Continue
-            }
-        }
-        Reaction::Redraw => EventOutcome::Redraw,
-        Reaction::Exit => EventOutcome::Exit,
-    }
+    crate::runtime::preprocess_event(event, backend, app)
 }
 
 #[cfg(test)]
@@ -1573,6 +1393,7 @@ mod paste_tests {
     //! `arboard::Clipboard::new()` fails, red on a developer machine or a
     //! CI runner with a live display and a non-empty clipboard.
     use super::*;
+    use crate::desktop::{is_paste_keypress, PasteModifier};
     use crate::gtk::services::TestClipboardContents;
     use crate::gtk::testing::GtkDriver;
 
@@ -1877,6 +1698,83 @@ mod paste_tests {
                 }
             ),
             "middle-click with no PRIMARY selection should fall through, got {:?}",
+            driver.app().events
+        );
+    }
+
+    // ── Double-click folding (quadraui#813) ───────────────────────────
+
+    /// Before #813, `GtkDriver::dispatch` (which calls `dispatch_event`
+    /// directly, the same path `GtkDriver::mouse_down`/click helpers use)
+    /// had **no** double-click folding at all — GTK only folded from
+    /// native `GdkEventType`/`GestureClick` press-count inside
+    /// `gtk/run.rs`'s own `connect_pressed` closure, a real GDK signal
+    /// `GtkDriver` never fires. Two scripted `MouseDown`s at the same
+    /// spot were always delivered as two separate `MouseDown`s to the
+    /// app — this is the RED #813's acceptance bar calls for: GTK could
+    /// not be driver-tested for double-click before this function moved
+    /// the fold into the shared `dispatch_event`/`preprocess_event` path
+    /// every backend now uses.
+    #[test]
+    fn second_mouse_down_at_same_spot_folds_into_double_click() {
+        let mut driver = driver_with_clipboard(None, None);
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        });
+
+        assert_eq!(
+            driver.app().events.len(),
+            2,
+            "expected exactly two events (MouseDown, DoubleClick), got {:?}",
+            driver.app().events
+        );
+        assert!(
+            matches!(driver.app().events[0], UiEvent::MouseDown { .. }),
+            "first press should reach the app as a plain MouseDown, got {:?}",
+            driver.app().events[0]
+        );
+        assert!(
+            matches!(driver.app().events[1], UiEvent::DoubleClick { .. }),
+            "second press at the same spot should fold to DoubleClick, got {:?}",
+            driver.app().events[1]
+        );
+    }
+
+    /// A second click far from the first must stay two plain
+    /// `MouseDown`s — the position-tolerance half of the same contract.
+    #[test]
+    fn second_mouse_down_far_away_stays_two_mouse_downs() {
+        let mut driver = driver_with_clipboard(None, None);
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(80.0, 40.0),
+            modifiers: Modifiers::default(),
+        });
+
+        assert_eq!(driver.app().events.len(), 2);
+        assert!(
+            driver
+                .app()
+                .events
+                .iter()
+                .all(|e| matches!(e, UiEvent::MouseDown { .. })),
+            "clicks far apart must never fold into a DoubleClick, got {:?}",
             driver.app().events
         );
     }

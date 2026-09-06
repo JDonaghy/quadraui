@@ -156,7 +156,6 @@
 //! `QUADRAUI_WIN_SMOKE_MS` is set.
 
 use crate::backend::Backend;
-use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::dispatch::DragTarget;
 use crate::event::{Point, Viewport};
 use crate::runner::AppLogic;
@@ -167,79 +166,38 @@ use crate::runner::AppLogic;
 // `tui::run`/`macos::run`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::win::backend::WinBackend;
-use crate::{ActivityBarEvent, ButtonMask, Key, Modifiers, MouseButton, UiEvent};
+use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
-/// the runner's built-in pre-processing first. This is the funnel both
-/// the live `wndproc`'s `dispatch` helper (`mod win32`, below) and
+/// the shared runner pre-processing pipeline first. This is the funnel
+/// both the live `wndproc`'s `dispatch` helper (`mod win32`, below) and
 /// [`super::testing::WinDriver`] (quadraui#707) route through, so a test
-/// exercises the exact pre-processing a real keypress gets — mirrors
-/// [`crate::gtk::run::dispatch_event`] / [`crate::macos::run::dispatch_event`].
+/// exercises the exact pre-processing a real keypress gets.
 ///
-/// Pre-processing handled here, in priority order:
-/// - `MouseDown` ([`WinBackend::fold_double_click`], #729): folds into
-///   `UiEvent::DoubleClick` when it lands within the shared
-///   `dispatch::DoubleClickDetector`'s time/position window of the
-///   previous click. Independent of every other arm below (those only
-///   ever match `KeyPressed`), so its position in the list doesn't
-///   interact with them — listed first because it's the first check this
-///   function performs.
-/// - `KeyPressed` while an `ActivityBar` declared
-///   `is_keyboard_focused = true` (tracked by
-///   [`WinBackend::draw_activity_bar`] into
-///   `WinBackend::focused_activity_bar_id`): redirect to
-///   `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`
-///   instead of the app's normal `handle`. `ShellAdapter`'s built-in
-///   activity-bar keyboard cursor (#409) depends on this — without it,
-///   every `ShellApp` on Win-GUI would silently lose keyboard navigation
-///   the other three backends already have.
-/// - `KeyPressed` matching a registered `Global`-scope accelerator
-///   ([`WinBackend::match_keypress`]): rewrite to `UiEvent::Accelerator`.
-///   Ordered *after* the activity-bar intercept above (same priority
-///   `gtk::run::dispatch_event` / `macos::run::dispatch_event` use), so a
-///   bound accelerator never steals a navigation key out from under a
-///   keyboard-focused activity bar.
-/// - Ctrl-C with an active text selection (#741): copies the selection to
-///   the OS clipboard via [`WinBackend::extract_selection_text`], clears
-///   it, and delivers `UiEvent::TextCopied` instead of forwarding the raw
-///   key press — the C2 event `panel.drag_select_copy` requires. Mirrors
-///   `gtk::run::dispatch_event`/`TuiBackend::apply_dispatch`'s identical
-///   arm; ordered before Ctrl-V below since both start from `KeyPressed`
-///   but match disjoint keys, so order between the two doesn't matter in
-///   practice.
-/// - Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], shared with
-///   `gtk::run`/`macos::run` since #728): reads the system clipboard via
-///   [`WinBackend::services`] and delivers `UiEvent::ClipboardPaste`
-///   instead of forwarding the raw key press — Win-GUI's first paste
-///   support at all (#728; Win32 has no native paste signal on a bespoke
-///   `HWND` client area, same reasoning `gtk::run`'s doc comment gives
-///   for GTK's bespoke `DrawingArea`). See `docs/decisions/DECISIONS.md` D-011 for
-///   the shift-tolerance contract this predicate settles once for every
-///   backend.
-/// - Ctrl-A (#741): selects the entire content of the most-recently
-///   focused `TextRegion` via [`WinBackend::select_all_text_region`], if
-///   one is registered.
-/// - `MouseDown` (#741): clears the displayed selection highlight — a
-///   fresh drag may be starting. Does not end an in-progress
-///   `TextSelection` drag (that drag was just armed by [`route_mouse_down`],
-///   which called `dispatch_click` before this event ever reached here).
-/// - `TextSelectionChanged` (#741): updates the backend's active selection
-///   and forces a redraw.
+/// The pre-processing itself — double-click folding, ActivityBar
+/// keyboard-focus redirect, global accelerator rewrite, Ctrl-C copy,
+/// Ctrl-V/Ctrl-Shift-V paste, middle-click PRIMARY-selection paste
+/// (a no-op on Windows — see
+/// [`crate::backend::Clipboard::read_primary_selection`]'s default),
+/// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
+/// — lives in [`crate::runtime::preprocess_event`] (quadraui#813), shared
+/// with TUI/GTK/macOS; see that function's doc for the exact priority
+/// order.
 ///
-/// Anything not matched above falls through to `app.handle` unchanged.
-///
-/// Not `target_os`-gated: neither `WinBackend::focused_activity_bar_id`
-/// nor `WinBackend::match_keypress` touch Direct2D/Win32 directly (they
-/// read plain `Option`/`Vec` fields populated by `register_accelerator`
-/// and `draw_activity_bar`), so this compiles and behaves identically on
-/// every host — same "compiles everywhere" posture as [`RunConfig`]
-/// above. The new paste arm keeps that posture too:
-/// `WinPlatformServices::clipboard()`'s `read_text()` is a real Win32
-/// clipboard read under `target_os = "windows"` and an unconditional
-/// `None` everywhere else (see `win::services`'s `Clipboard` impl), so
-/// off-Windows this arm always falls through to `EventOutcome::Continue`
-/// with nothing forwarded to the app — never a compile-time or
-/// behavioral surprise on the `ubuntu-latest` `--features win` leg.
+/// Not `target_os`-gated: none of `WinBackend`'s `PreprocessBackend`
+/// methods touch Direct2D/Win32 directly (they read plain `Option`/`Vec`
+/// fields populated by `register_accelerator`/`draw_activity_bar`, or
+/// forward to `dispatch::DoubleClickDetector`/`text_selection`, neither
+/// of which has a WinAPI dependency), so this compiles and behaves
+/// identically on every host — same "compiles everywhere" posture as
+/// [`RunConfig`] above. The paste/middle-click steps keep that posture
+/// too: `WinPlatformServices::clipboard()`'s `read_text()`/
+/// `read_primary_selection()` are real Win32 clipboard reads under
+/// `target_os = "windows"` and an unconditional `None` everywhere else
+/// (see `win::services`'s `Clipboard` impl), so off-Windows those arms
+/// always fall through to `EventOutcome::Continue` with nothing
+/// forwarded to the app — never a compile-time or behavioral surprise on
+/// the `ubuntu-latest` `--features win` leg.
 ///
 /// `#[allow(dead_code)]`: this function's only callers — `mod win32`'s
 /// live `wndproc`/`dispatch` and [`super::testing::WinDriver`] — are both
@@ -258,127 +216,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     backend: &mut WinBackend,
     app: &mut A,
 ) -> EventOutcome {
-    // ── Double-click folding (#729) ───────────────────────────────────
-    //
-    // Folds a `MouseDown` into `DoubleClick` when it lands within the
-    // shared `dispatch::DoubleClickDetector`'s time/position window of the
-    // previous click — the same synthesis-from-`MouseDown`-stream pattern
-    // `MacBackend::fold_double_click` uses, not a new `WM_*BUTTONDBLCLK`
-    // translator. Every other variant (including plain `MouseDown` that
-    // didn't fold) passes through unchanged.
-    let event = backend.fold_double_click(event);
-
-    // ── ActivityBar keyboard focus intercept (#707) ──────────────────
-    if let UiEvent::KeyPressed {
-        ref key, modifiers, ..
-    } = event
-    {
-        if let Some(bar_id) = backend.focused_activity_bar_id().cloned() {
-            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
-            let bar_ev = UiEvent::ActivityBar(
-                bar_id,
-                ActivityBarEvent::KeyPressed {
-                    key: key_str,
-                    modifiers,
-                },
-            );
-            return app.handle(bar_ev, backend).into();
-        }
-    }
-
-    // ── Global accelerator dispatch (#707) ───────────────────────────
-    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        match backend.match_keypress(key, *modifiers) {
-            Some(id) => UiEvent::Accelerator(id, *modifiers),
-            None => event,
-        }
-    } else {
-        event
-    };
-
-    // ── Ctrl-C interception (text selection, #741) ────────────────────
-    //
-    // Mirrors `gtk::run::dispatch_event`/`TuiBackend::apply_dispatch`'s
-    // identical Ctrl-C arm: copy the active selection to the OS clipboard,
-    // clear it, and deliver `TextCopied` instead of the raw key press —
-    // the C2 event `panel.drag_select_copy` requires.
-    if let UiEvent::KeyPressed {
-        key: Key::Char('c'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
-        ..
-    } = &event
-    {
-        if backend.active_text_selection().is_some() {
-            let text = backend.extract_selection_text();
-            backend.services().clipboard().write_text(&text);
-            backend.clear_text_selection();
-            return app.handle(UiEvent::TextCopied(text), backend).into();
-        }
-    }
-
-    // ── Ctrl-V / Ctrl-Shift-V interception (paste, #728) ─────────────
-    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        if is_paste_keypress(key, modifiers, PasteModifier::Ctrl) {
-            return if let Some(text) = backend.services().clipboard().read_text() {
-                app.handle(UiEvent::ClipboardPaste(text), backend).into()
-            } else {
-                EventOutcome::Continue
-            };
-        }
-    }
-
-    // ── Ctrl-A interception (select-all for text regions, #741) ──────
-    if let UiEvent::KeyPressed {
-        key: Key::Char('a') | Key::Char('A'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
-        ..
-    } = &event
-    {
-        if backend.select_all_text_region() {
-            return EventOutcome::Redraw;
-        }
-    }
-
-    // ── MouseDown: clear the displayed selection highlight (#741) ────
-    //
-    // A fresh drag may be starting — mirrors `gtk::run::dispatch_event`.
-    // Does NOT end an in-progress `TextSelection` drag: that drag was
-    // just armed by `dispatch_click` (see `route_mouse_down` below),
-    // and ending it here would immediately cancel it.
-    if let UiEvent::MouseDown { .. } = &event {
-        backend.clear_selection_display();
-    }
-
-    // ── TextSelectionChanged: update active selection while dragging ──
-    let mut force_redraw = false;
-    if let UiEvent::TextSelectionChanged {
-        region,
-        anchor,
-        focus,
-    } = &event
-    {
-        backend.set_active_text_selection(region.clone(), *anchor, *focus);
-        force_redraw = true;
-    }
-
-    let outcome: EventOutcome = app.handle(event, backend).into();
-    if force_redraw && matches!(outcome, EventOutcome::Continue) {
-        EventOutcome::Redraw
-    } else {
-        outcome
-    }
+    crate::runtime::preprocess_event(event, backend, app)
 }
 
 /// Route a `MouseDown` through the shared text-selection/scrollbar-drag
@@ -2118,5 +1956,33 @@ mod text_selection_dispatch_tests {
         let outcome = dispatch_event(ev, &mut backend, &mut app);
         assert!(matches!(outcome, EventOutcome::Redraw));
         assert!(backend.active_text_selection().is_some());
+    }
+
+    /// quadraui#813: before this, `win::run::dispatch_event` had no
+    /// middle-click step at all — only GTK read the PRIMARY selection.
+    /// `WinClipboard` never overrides
+    /// [`crate::backend::Clipboard::read_primary_selection`] (Windows has
+    /// no PRIMARY-selection concept), so the shared
+    /// `preprocess_event` step this backend now runs is always the
+    /// "nothing to paste" branch — the middle-click event must fall
+    /// through unchanged, on *every* host including a real
+    /// `windows-latest` run, not just off-Windows.
+    #[test]
+    fn middle_click_falls_through_to_the_app_no_primary_selection_on_windows() {
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Middle,
+            position: crate::event::Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        };
+        let _ = dispatch_event(ev.clone(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![ev],
+            "middle-click must fall through to app.handle unchanged when there is no \
+             PRIMARY selection to paste, matching gtk::run's identical fallthrough branch"
+        );
     }
 }

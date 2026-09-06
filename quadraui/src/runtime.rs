@@ -1,14 +1,15 @@
 //! Shared plumbing for the per-backend runners (`tui::run`, `gtk::run`,
-//! `macos::run`) — quadraui#496.
+//! `macos::run`, `win::run`) — quadraui#496, finished by #813.
 //!
 //! Each backend's `run.rs` drives a live event source (crossterm poll
-//! loop, GTK signal closures, AppKit responder methods) through
-//! [`crate::AppLogic`]. Three small pieces of that plumbing were
-//! duplicated verbatim (or near-verbatim) across all three runners
-//! before this module existed:
+//! loop, GTK signal closures, AppKit responder methods, a Win32
+//! `wndproc`) through [`crate::AppLogic`]. Four pieces of that plumbing
+//! were duplicated — or, worse, present in some runners and silently
+//! missing from others — across the four runners before this module
+//! existed:
 //!
 //! - [`EventOutcome`] — what the loop should do after one event (or the
-//!   periodic `tick`) has been handled. Declared three times, byte-for-
+//!   periodic `tick`) has been handled. Declared four times, byte-for-
 //!   byte identical modulo doc comments.
 //! - "Apply an outcome to the live window" — GTK had two near-duplicate
 //!   functions (`apply_reaction` for `Reaction`, `apply_event_outcome`
@@ -36,63 +37,54 @@
 //!   store, decoupled from any particular platform timer so its
 //!   coalescing behavior stays unit-testable here even though the
 //!   `NSTimer`/`SetTimer` plumbing that drives it isn't.
+//! - [`preprocess_event`] (quadraui#813, finishing what #496 scoped but
+//!   never wrote) — the copy/paste/selection/double-click/accelerator
+//!   pipeline every `dispatch_event` ran ahead of `AppLogic::handle`.
+//!   #496 shipped only the three pieces above and left four independent
+//!   `dispatch_event` ladders in place; #813's audit measured their
+//!   pairwise similarity at 0.21–0.77 — each a different *subset* of one
+//!   ladder, not a stylistic rewrite of the same one. Concretely, before
+//!   this function existed: Windows folded double-clicks inline while
+//!   GTK did it from native `GdkEventType` press-count in two different
+//!   places; only GTK read the PRIMARY selection on middle-click; TUI
+//!   never intercepted Ctrl-V at all (it has bracketed paste instead,
+//!   which most terminals use to deliver `ClipboardPaste` directly — see
+//!   `TuiBackend`'s `PreprocessBackend` impl); and TUI forced
+//!   `EventOutcome::Redraw` after Ctrl-C regardless of the app's own
+//!   `Reaction`, where GTK/macOS/Windows folded it through unchanged.
+//!   All of that is now one function every backend's `dispatch_event`
+//!   routes through — see [`preprocess_event`]'s own doc for the unified
+//!   priority order.
 //!
-//! ## What this module deliberately does *not* unify yet
+//!   Two of the divergences #496's original audit found really were
+//!   load-bearing, not accidental, and stay preserved as documented
+//!   per-backend overrides on [`PreprocessBackend`] rather than being
+//!   normalised away:
 //!
-//! The issue that motivated this module (#496) also scoped in a shared,
-//! capability-aware `preprocess_event` covering the Ctrl-C-copy /
-//! Ctrl-A-select-all / click-clears-selection / `TextSelectionChanged`
-//! pipeline that both `tui::run::dispatch_event` and
-//! `gtk::run::dispatch_event` implement. Comparing the two bodies
-//! line-by-line (rather than assuming they match because they look
-//! similar) turned up real, load-bearing divergences that a shared
-//! function would either have to paper over — changing observable
-//! behavior on one backend — or thread through as extra parameters:
+//!   - [`PreprocessBackend::is_copy_keypress`] — TUI's Ctrl-C guard
+//!     tolerates a stray Shift and matches `'C'` (CapsLock) as well as
+//!     `'c'`; real terminals attach modifier noise to Ctrl-C that a
+//!     strict guard would silently drop. GTK/macOS/Windows keep the
+//!     strict default (exactly Ctrl, lowercase `'c'`).
+//!   - [`PreprocessBackend::paste_modifier`] — macOS pastes on
+//!     Cmd-V/Cmd-Shift-V, the platform convention; every other backend
+//!     uses the default, Ctrl-V/Ctrl-Shift-V.
 //!
-//! - TUI's Ctrl-C guard accepts Shift as a stray modifier
-//!   (`modifiers.ctrl && !modifiers.alt && !modifiers.cmd`, no `shift`
-//!   check) and matches both `'c'` and `'C'`. GTK's requires
-//!   `Modifiers { ctrl: true, shift: false, alt: false, cmd: false }`
-//!   exactly and matches only lowercase `'c'`.
-//! - TUI's Ctrl-C handler *forces* `EventOutcome::Redraw` after
-//!   `app.handle(TextCopied, …)` regardless of the app's own
-//!   `Reaction` (`Reaction::Exit => Exit, _ => Redraw`). GTK instead
-//!   folds the app's `Reaction` through unchanged
-//!   (`Continue => Continue, Redraw => Redraw, Exit => Exit`) — a
-//!   `Reaction::Continue` app stays `EventOutcome::Continue` on GTK but
-//!   would become `EventOutcome::Redraw` on TUI if it ran through TUI's
-//!   fold.
-//! - GTK's pipeline is also interleaved with GTK-only steps that have
-//!   no TUI equivalent at all (ActivityBar keyboard-focus redirect,
-//!   global-accelerator rewrite, Ctrl-V/Ctrl-Shift-V paste, middle-click
-//!   PRIMARY-selection paste) in a specific priority order that a
-//!   shared call has to preserve exactly.
-//!
-//! Silently normalising either divergence would violate this issue's
-//! own acceptance bar ("No behavior change on TUI/GTK — driver suites
-//! green"), and the 84+4 driver tests back that guarantee: an
-//! unnoticed change here fails as a test regression, not a review
-//! comment. Unifying the pipeline *bodies* safely needs each divergence
-//! either confirmed intentional-and-preserved (parameterised) or
-//! confirmed accidental-and-fixed (a behavior change of its own, needing
-//! its own review) — that's follow-up work, not a mechanical extraction,
-//! and is being left for a separate pass rather than guessed at here.
-//!
-//! Separately: `macos::run::dispatch_event` has *no* selection pipeline
-//! to extract in the first place — `MacBackend`'s `BackendCaps` declares
-//! `text_selection: false` (it doesn't track `TextRegion`s or drag-based
-//! selection state at all yet), so there is nothing to make
-//! capability-aware here beyond "don't call selection-pipeline code
-//! against a backend that has none." When `MacBackend` gains
-//! `text_selection` support, the trio above is the first thing to lift
-//! into a shared, capability-gated helper in this module (e.g. a
-//! `SelectionBackend` trait implemented only by backends whose
-//! `BackendCaps::text_selection` is `true`), following the same
-//! `ReactionSink`-style pattern already established here.
-//!
-//! macOS *does* adopt [`EventOutcome`] and [`ReactionSink`] in this
-//! pass — those two have no such divergence (see
-//! `macos::run::QuadraView`'s `ReactionSink` impl).
+//!   Everything else the original audit flagged — the outcome-fold after
+//!   Ctrl-C, the missing middle-click/Ctrl-V/double-click coverage named
+//!   above — was accidental, not a platform requirement, and is fixed by
+//!   routing every backend through this one function instead of
+//!   preserved as a quirk. That is a deliberate, reviewable behavior
+//!   change on TUI (Ctrl-C's outcome-fold) and on TUI/macOS/Windows
+//!   (middle-click paste, and Ctrl-V on TUI) — see #813's PR body for
+//!   the full list and the driver-tier tests that pin each one down.
+
+use crate::desktop::{is_paste_keypress, PasteModifier};
+use crate::runner::AppLogic;
+use crate::text_selection::TextSelection;
+use crate::{
+    AcceleratorId, ActivityBarEvent, Key, Modifiers, MouseButton, Point, UiEvent, WidgetId,
+};
 
 #[cfg(any(
     feature = "tui",
@@ -162,6 +154,282 @@ pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl Reacti
         EventOutcome::Continue => {}
         EventOutcome::Redraw => sink.request_redraw(),
         EventOutcome::Exit => sink.request_exit(),
+    }
+}
+
+// ── preprocess_event (quadraui#813, finishing #496) ─────────────────────────
+
+/// The capability surface [`preprocess_event`] needs from a concrete
+/// backend to run the shared copy/paste/selection/double-click/
+/// accelerator pipeline. One `impl` per concrete backend (`TuiBackend`,
+/// `GtkBackend`, `MacBackend`, `WinBackend`), each defined next to the
+/// type in its own `backend.rs` so the method bodies can delegate to
+/// that backend's existing (often private) helpers without new
+/// crate-visible surface.
+///
+/// Every method has a concrete counterpart that already existed on at
+/// least one backend before #813 — this trait doesn't invent new
+/// behavior, it names the shared shape four different `dispatch_event`s
+/// converged on independently. The two methods with default bodies
+/// ([`Self::paste_modifier`], [`Self::is_copy_keypress`]) are the two
+/// spots #496's original audit found a *platform* reason for one backend
+/// to answer differently — see this module's doc for which backend
+/// overrides which and why.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) trait PreprocessBackend {
+    /// The currently active text selection, if any.
+    fn active_text_selection(&self) -> Option<&TextSelection>;
+
+    /// Update (or start) the active text selection — called on
+    /// `UiEvent::TextSelectionChanged`.
+    fn set_active_text_selection(&mut self, region: WidgetId, anchor: Point, focus: Point);
+
+    /// Clear the active selection and end any in-progress drag — called
+    /// after Ctrl-C copies it.
+    fn clear_text_selection(&mut self);
+
+    /// Clear the *displayed* selection highlight only, without ending an
+    /// in-progress drag — called on a fresh `MouseDown`/`DoubleClick` so
+    /// the old highlight doesn't linger over whatever the new press
+    /// starts.
+    fn clear_selection_display(&mut self);
+
+    /// Select the entire content of the most-recently focused
+    /// `TextRegion` (the Ctrl-A target). Returns whether one resolved.
+    fn select_all_text_region(&mut self) -> bool;
+
+    /// The text to copy for the active selection. Already backend-
+    /// extracted: TUI serves its `Buffer`-cached copy
+    /// (`TuiBackend::cached_selection_text`), GTK/macOS/Win-GUI compute
+    /// it pixel-wise from `TextRegion::lines`
+    /// (`{Gtk,Mac,Win}Backend::extract_selection_text`).
+    fn selection_text_for_copy(&self) -> String;
+
+    /// `WidgetId` of the `ActivityBar` that declared
+    /// `is_keyboard_focused = true` during the most recent
+    /// `Backend::draw_activity_bar` call, if any.
+    fn focused_activity_bar_id(&self) -> Option<&WidgetId>;
+
+    /// Look up a registered `Global`-scope accelerator for `key`+`modifiers`.
+    fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId>;
+
+    /// Fold a `MouseDown` into `DoubleClick` when it lands within this
+    /// backend's double-click detector's time/position window of the
+    /// previous click at the same button. Every other event passes
+    /// through unchanged.
+    ///
+    /// TUI's implementation is a documented no-op passthrough — TUI
+    /// folds double-clicks earlier, in `TuiBackend::apply_dispatch`
+    /// (called once per batch of translated crossterm events, before any
+    /// individual event reaches `dispatch_event`/`preprocess_event`), so
+    /// calling its detector a second time here would double-consume the
+    /// same state. See `TuiBackend`'s `PreprocessBackend` impl.
+    fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent;
+
+    /// Which platform modifier this backend's paste chord treats as
+    /// native — Ctrl everywhere except macOS (Cmd). See
+    /// [`PasteModifier`].
+    fn paste_modifier(&self) -> PasteModifier {
+        PasteModifier::Ctrl
+    }
+
+    /// Does `key`+`modifiers` count as "Ctrl-C, copy the active
+    /// selection" for this backend? Default: exactly `ctrl` held with no
+    /// `shift`/`alt`/`cmd`, and lowercase `'c'` — what GTK, macOS, and
+    /// Windows all required before #813. TUI overrides this (see
+    /// `TuiBackend`'s impl) to also tolerate a stray Shift and accept
+    /// `'C'` (CapsLock) — real terminals attach modifier noise to Ctrl-C
+    /// that this stricter default would silently drop.
+    fn is_copy_keypress(&self, key: &Key, modifiers: &Modifiers) -> bool {
+        matches!(key, Key::Char('c'))
+            && modifiers.ctrl
+            && !modifiers.shift
+            && !modifiers.alt
+            && !modifiers.cmd
+    }
+}
+
+/// Dispatch one already-translated [`UiEvent`] through the app, applying
+/// the shared runner pre-processing pipeline first (quadraui#813,
+/// finishing #496). This is the single function every backend's
+/// `dispatch_event` now funnels through for the steps below — see this
+/// module's doc for the full history and the two documented per-backend
+/// exceptions.
+///
+/// Pre-processing handled here, in priority order (anything not matched
+/// falls through to `app.handle` unchanged):
+///
+/// 1. [`UiEvent::MouseDown`] → [`PreprocessBackend::fold_double_click`]:
+///    fold into [`UiEvent::DoubleClick`] if it lands in the backend's
+///    double-click window.
+/// 2. `KeyPressed` while an `ActivityBar` declared
+///    `is_keyboard_focused = true`: redirect to
+///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
+///    normal `handle` — `ShellAdapter`'s built-in activity-bar keyboard
+///    cursor depends on this.
+/// 3. `KeyPressed` matching a registered `Global`-scope accelerator:
+///    rewrite to `UiEvent::Accelerator`.
+/// 4. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
+///    text selection: copy it to the clipboard, clear it, and deliver
+///    `UiEvent::TextCopied` instead of forwarding the raw key press —
+///    forwarding it could trigger quit/copy-all handlers, and
+///    `ClipboardPaste` would wrongly insert text. The app's own
+///    `Reaction` to `TextCopied` is folded through unchanged.
+/// 5. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
+///    [`PreprocessBackend::paste_modifier`]): read the clipboard and
+///    deliver `UiEvent::ClipboardPaste` instead of forwarding the raw key
+///    press.
+/// 6. Middle-click (`MouseDown` with `MouseButton::Middle`): read the
+///    PRIMARY selection and deliver `UiEvent::ClipboardPaste` — the
+///    X11/Wayland "paste what was last selected" convention, distinct
+///    from the CLIPBOARD selection Ctrl-V reads. Every backend but GTK's
+///    `Clipboard` impl answers `None` here (see
+///    [`crate::backend::Clipboard::read_primary_selection`]'s default),
+///    so this step is a safe no-op everywhere else.
+/// 7. Ctrl-A: select the entire content of the most-recently focused
+///    `TextRegion`, if one is registered.
+/// 8. `MouseDown` or `DoubleClick`: clear the displayed selection
+///    highlight — a fresh drag (or a folded double-click landing on the
+///    same spot) may be starting/finishing and shouldn't show a stale
+///    highlight from the previous interaction. Never cancels an
+///    in-progress drag — `clear_selection_display` only clears the
+///    rendered overlay (see its doc).
+/// 9. `TextSelectionChanged`: update the backend's active selection and
+///    force a redraw.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn preprocess_event<B, A>(event: UiEvent, backend: &mut B, app: &mut A) -> EventOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    // ── 1. Double-click folding ────────────────────────────────────────
+    let event = backend.fold_double_click(event);
+
+    // ── 2. ActivityBar keyboard focus intercept ─────────────────────
+    if let UiEvent::KeyPressed {
+        ref key, modifiers, ..
+    } = event
+    {
+        if let Some(bar_id) = backend.focused_activity_bar_id().cloned() {
+            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
+            let bar_ev = UiEvent::ActivityBar(
+                bar_id,
+                ActivityBarEvent::KeyPressed {
+                    key: key_str,
+                    modifiers,
+                },
+            );
+            return app.handle(bar_ev, backend).into();
+        }
+    }
+
+    // ── 3. Global accelerator dispatch ─────────────────────────────────
+    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        match backend.match_keypress(key, *modifiers) {
+            Some(id) => UiEvent::Accelerator(id, *modifiers),
+            None => event,
+        }
+    } else {
+        event
+    };
+
+    // ── 4. Ctrl-C interception (copy active text selection) ────────────
+    if let UiEvent::KeyPressed {
+        ref key,
+        ref modifiers,
+        ..
+    } = event
+    {
+        if backend.is_copy_keypress(key, modifiers) && backend.active_text_selection().is_some() {
+            let text = backend.selection_text_for_copy();
+            backend.services().clipboard().write_text(&text);
+            backend.clear_text_selection();
+            return app.handle(UiEvent::TextCopied(text), backend).into();
+        }
+    }
+
+    // ── 5. Ctrl-V / Ctrl-Shift-V interception (paste) ───────────────────
+    if let UiEvent::KeyPressed {
+        ref key,
+        ref modifiers,
+        ..
+    } = event
+    {
+        if is_paste_keypress(key, modifiers, backend.paste_modifier()) {
+            return match backend.services().clipboard().read_text() {
+                Some(text) => app.handle(UiEvent::ClipboardPaste(text), backend).into(),
+                None => EventOutcome::Continue,
+            };
+        }
+    }
+
+    // ── 6. Middle-click interception (PRIMARY-selection paste) ──────────
+    if let UiEvent::MouseDown {
+        button: MouseButton::Middle,
+        ..
+    } = &event
+    {
+        if let Some(text) = backend.services().clipboard().read_primary_selection() {
+            return app.handle(UiEvent::ClipboardPaste(text), backend).into();
+        }
+    }
+
+    // ── 7. Ctrl-A interception (select-all for text regions) ────────────
+    if let UiEvent::KeyPressed {
+        key: Key::Char('a') | Key::Char('A'),
+        modifiers,
+        ..
+    } = &event
+    {
+        if modifiers.ctrl
+            && !modifiers.shift
+            && !modifiers.alt
+            && !modifiers.cmd
+            && backend.select_all_text_region()
+        {
+            return EventOutcome::Redraw;
+        }
+    }
+
+    // ── 8. MouseDown / DoubleClick: clear the displayed selection ───────
+    if matches!(
+        event,
+        UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
+    ) {
+        backend.clear_selection_display();
+    }
+
+    // ── 9. TextSelectionChanged: update active selection while dragging ─
+    let mut force_redraw = false;
+    if let UiEvent::TextSelectionChanged {
+        ref region,
+        anchor,
+        focus,
+    } = event
+    {
+        backend.set_active_text_selection(region.clone(), anchor, focus);
+        force_redraw = true;
+    }
+
+    // ── Normal app dispatch ──────────────────────────────────────────────
+    let outcome: EventOutcome = app.handle(event, backend).into();
+    if force_redraw {
+        match outcome {
+            EventOutcome::Continue => EventOutcome::Redraw,
+            other => other,
+        }
+    } else {
+        outcome
     }
 }
 

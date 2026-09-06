@@ -59,7 +59,6 @@ use super::backend::MacBackend;
 use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
 use super::text::make_font;
 use crate::backend::Backend;
-use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::dispatch::DragTarget;
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
@@ -69,7 +68,7 @@ use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // module — keeps working unchanged after the type moved to
 // `crate::runtime` (quadraui#496).
 pub(crate) use crate::runtime::EventOutcome;
-use crate::{ButtonMask, Key, Modifiers, UiEvent};
+use crate::{ButtonMask, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -115,72 +114,52 @@ type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 // (re-exported so `macos::testing` keeps reaching it through this path).
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
-/// the runner's built-in pre-processing first — same funnel both the live
-/// `QuadraView` responder methods (via [`run`]'s `handle` closure) and
-/// [`super::testing::MacDriver`] (quadraui#493) route through, so a test
-/// exercises the exact pre-processing a real keypress/click gets. Mirrors
-/// [`crate::gtk::run::dispatch_event`].
+/// the shared runner pre-processing pipeline first — same funnel both the
+/// live `QuadraView` responder methods (via [`run`]'s `handle` closure)
+/// and [`super::testing::MacDriver`] (quadraui#493) route through, so a
+/// test exercises the exact pre-processing a real keypress/click gets.
 ///
 /// Pre-processing handled here, in order:
 /// - Caret-blink bump: any `KeyPressed`/`CharTyped` makes the caret solid
 ///   for ~500ms (`caret_visible`/`caret_pause`), matching AppKit's
-///   text-field typing convention.
+///   text-field typing convention. macOS-only — no other backend paints
+///   a blinking caret through this mechanism.
 /// - Modal click dispatch (#493): `MouseDown` routes through
 ///   [`crate::dispatch::dispatch_click`] so the backend's `ModalStack`
 ///   arbitrates first — a click inside an open modal is tagged with the
 ///   modal's `WidgetId`, and a click outside every modal dismisses the
 ///   topmost instead of falling through to the widget underneath.
-///   Scroll surfaces and text regions are not tracked by `MacBackend`
-///   yet (see its `capabilities` doc), hence the empty slices. Mirrors
+///   Scroll surfaces are not tracked by `MacBackend` yet (see its
+///   `capabilities` doc), hence the empty slice. Mirrors
 ///   `TuiBackend::apply_dispatch` and `gtk::run`'s `connect_pressed`
-///   closure.
-/// - Double-click folding (#486): `MouseDown` → `DoubleClick` within the
-///   detector's time/position window. Runs on the *dispatched* events,
-///   after modal arbitration — same relative order as
-///   `TuiBackend::translate_events`.
-/// - ActivityBar keyboard-focus redirect (#465): while the last painted
-///   frame contained an `ActivityBar` with `is_keyboard_focused = true`,
-///   every `KeyPressed` becomes
-///   `UiEvent::ActivityBar(bar_id, ActivityBarEvent::KeyPressed { … })`
-///   instead of reaching the app as a raw key. This must win over
-///   accelerator dispatch below (same ordering `gtk::run::dispatch_event`
-///   uses), otherwise a bound accelerator would steal a navigation key
-///   out from under the focused bar.
-/// - Global accelerator dispatch (#486): a `KeyPressed` matching a
-///   registered `Global`-scope accelerator becomes `UiEvent::Accelerator`.
-/// - Cmd-V / Cmd-Shift-V paste interception (#486, predicate shared via
-///   [`crate::desktop::is_paste_keypress`] since #728): AppKit has no
-///   native paste signal on a bespoke `NSView`, so a matching keypress
-///   reads the system clipboard directly and delivers `ClipboardPaste`
-///   instead of forwarding the raw key press. `Shift` is tolerated (not
-///   just plain Cmd-V) — see `docs/decisions/DECISIONS.md` D-011 for why this
-///   matches Ctrl-Shift-V's already-shipped GTK/Linux tolerance instead
-///   of the stricter `shift: false` this match guard used to require.
-/// - Ctrl-C with an active text selection (#803): copies the selection to
-///   the OS clipboard via [`MacBackend::extract_selection_text`], clears
-///   it, and delivers `UiEvent::TextCopied` instead of forwarding the raw
-///   key press — the C2 event `panel.drag_select_copy` requires. Mirrors
-///   `gtk::run::dispatch_event`/`win::run::dispatch_event`'s identical
-///   arm. Deliberately still literal Ctrl (not remapped to Cmd the way
-///   [`macos_universal_binding_modifiers`] rewrites *registered*
-///   accelerators) — this is the same cross-platform shared-pipeline
-///   convention GTK/TUI/Win-GUI all use, adopted as-is per #803's brief
-///   rather than inventing a macOS-specific Cmd-C path.
-/// - Ctrl-A (#803): selects the entire content of the most-recently
-///   focused `TextRegion` via [`MacBackend::select_all_text_region`], if
-///   one is registered.
-/// - `MouseDown` (#803): routes through [`crate::dispatch::dispatch_click`]
-///   with the backend's registered [`MacBackend::text_regions`] (previously
-///   an empty slice — text regions were never tracked) so a click inside
-///   one begins a `TextSelection` drag, and clears the displayed selection
-///   highlight beforehand (a fresh drag may be starting).
+///   closure. Each resulting event (e.g. dismiss emits `MouseDown` +
+///   `Palette(Closed)`) is routed through [`crate::runtime::preprocess_event`]
+///   (quadraui#813) — the same shared pipeline every other backend's
+///   `MouseDown` routing uses — and the outcomes are folded the way
+///   `gtk::run`'s click loop folds them: `Exit` wins immediately, else
+///   `Redraw` wins over `Continue`.
 /// - `MouseMoved` (#803): routes through
 ///   [`crate::dispatch::dispatch_mouse_drag`] so an in-progress
-///   `TextSelection` drag emits `TextSelectionChanged`.
+///   `TextSelection`/scrollbar/split-divider drag (armed by the
+///   `MouseDown` branch above) emits its synthetic event alongside the
+///   plain `MouseMoved`, mirroring `gtk::run`'s motion controller /
+///   `win::run::route_mouse_move`.
 /// - `MouseUp` (#803): routes through [`crate::dispatch::dispatch_mouse_up`]
 ///   so an in-progress drag ends cleanly.
-/// - `TextSelectionChanged` (#803): updates the backend's active selection
-///   and forces a redraw.
+///
+/// Everything else — double-click folding, ActivityBar keyboard-focus
+/// redirect, global accelerator rewrite, Ctrl-C copy, Cmd-V/Cmd-Shift-V
+/// paste, middle-click PRIMARY-selection paste (a no-op on macOS — see
+/// [`crate::backend::Clipboard::read_primary_selection`]'s default),
+/// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
+/// — lives in [`crate::runtime::preprocess_event`] (quadraui#813), shared
+/// with TUI/GTK/Windows; see that function's doc for the exact priority
+/// order and `MacBackend`'s `PreprocessBackend` impl for macOS's one
+/// documented difference: pasting on Cmd-V rather than Ctrl-V, the
+/// platform convention. Ctrl-C stays literal Ctrl everywhere (not
+/// remapped to Cmd the way [`macos_universal_binding_modifiers`] rewrites
+/// *registered* accelerators) — a deliberate cross-platform choice per
+/// #803's brief, not an oversight.
 ///
 /// Anything not matched above falls through to `app.handle` unchanged.
 pub(crate) fn dispatch_event<A: AppLogic>(
@@ -201,9 +180,11 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // click outside dismisses it — instead of falling straight through
     // to whatever widget is underneath. `dispatch_click` may return 0..n
     // events (e.g. dismiss emits `MouseDown` + `Palette(Closed)`); each
-    // is double-click-folded, handed to the app, and the outcomes are
-    // folded the way `gtk::run`'s click loop folds them: `Exit` wins
-    // immediately, else `Redraw` wins over `Continue`.
+    // goes through the shared `preprocess_event` (which folds double-
+    // clicks, clears the selection display, etc. — see this function's
+    // doc), and the outcomes are folded the way `gtk::run`'s click loop
+    // folds them: `Exit` wins immediately, else `Redraw` wins over
+    // `Continue`.
     if let UiEvent::MouseDown {
         button,
         position,
@@ -212,11 +193,6 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     } = &event
     {
         let (button, position, modifiers) = (*button, *position, *modifiers);
-        // #803: clear the displayed selection highlight before a fresh
-        // drag begins — mirrors gtk::run/win::run's identical MouseDown
-        // pre-processing. Runs once per raw MouseDown regardless of
-        // whether `fold_double_click` below turns it into a `DoubleClick`.
-        backend.clear_selection_display();
         let dispatched = {
             let stack_rc = backend.modal_stack_handle();
             let drag_rc = backend.drag_state_handle();
@@ -241,8 +217,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         };
         let mut outcome = EventOutcome::Continue;
         for ev in dispatched {
-            let ev = backend.fold_double_click(ev);
-            match app.handle(ev, backend).into() {
+            match runtime::preprocess_event(ev, backend, app) {
                 EventOutcome::Exit => return EventOutcome::Exit,
                 EventOutcome::Redraw => outcome = EventOutcome::Redraw,
                 EventOutcome::Continue => {}
@@ -257,11 +232,12 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // (`TextSelectionChanged`/`ScrollOffsetChanged`/`SplitDividerDragged`)
     // alongside the plain `MouseMoved` — mirrors gtk::run's motion
     // controller / win::run::route_mouse_move. The plain `MouseMoved`
-    // goes straight to `app.handle` (nothing else in this function's
-    // pre-processing chain matches it); the extra event, if any, recurses
-    // into `dispatch_event` so its own pre-processing (`TextSelectionChanged`
-    // below) applies uniformly — safe because `dispatch_mouse_drag` never
-    // emits a second `MouseMoved`, so this can't loop.
+    // goes straight to `app.handle` (nothing in the shared pipeline
+    // matches it); the extra event, if any, recurses into `dispatch_event`
+    // so its own pre-processing (`TextSelectionChanged`, via
+    // `preprocess_event`) applies uniformly — safe because
+    // `dispatch_mouse_drag` never emits a second `MouseMoved`, so this
+    // can't loop.
     if let UiEvent::MouseMoved { position, buttons } = &event {
         let (position, buttons) = (*position, *buttons);
         let events = {
@@ -308,124 +284,11 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         return app.handle(ev, backend).into();
     }
 
-    // `MouseDown` is the only variant `fold_double_click` acts on, and
-    // every `MouseDown` returned above — so the remaining pipeline
-    // (activity-bar redirect, accelerators, Cmd-V paste, plain forward)
-    // skips the fold.
-
-    // ── ActivityBar keyboard focus intercept (#465) ──────────────────
-    //
-    // `AppShell`/`ShellAdapter`'s built-in activity-bar keyboard cursor
-    // (#409) is driven by `UiEvent::ActivityBar(id, KeyPressed { … })`,
-    // which is *synthesized by the backend* — `TuiBackend::apply_dispatch`
-    // and `gtk::run::dispatch_event` both do it. Without this arm the
-    // macOS backend delivered the raw `KeyPressed` instead, so `j`/`k`/
-    // `Enter` fell through to `ShellApp::handle` and the shell's cursor
-    // never moved: every `ShellApp` on macOS (#465's `run_with_shell`)
-    // silently lost keyboard navigation the other two backends have.
-    //
-    // Ordered before accelerator matching, matching `gtk::run`.
-    if let UiEvent::KeyPressed {
-        ref key, modifiers, ..
-    } = event
-    {
-        if let Some(bar_id) = backend.focused_activity_bar_id().cloned() {
-            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
-            let bar_ev = UiEvent::ActivityBar(
-                bar_id,
-                crate::ActivityBarEvent::KeyPressed {
-                    key: key_str,
-                    modifiers,
-                },
-            );
-            return app.handle(bar_ev, backend).into();
-        }
-    }
-
-    let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        match backend.match_keypress(key, *modifiers) {
-            Some(id) => UiEvent::Accelerator(id, *modifiers),
-            None => event,
-        }
-    } else {
-        event
-    };
-
-    // ── Ctrl-C interception (text selection, #803) ────────────────────
-    //
-    // Mirrors gtk::run/win::run's identical Ctrl-C arm: copy the active
-    // selection to the OS clipboard, clear it, and deliver `TextCopied`
-    // instead of the raw key press — the C2 event `panel.drag_select_copy`
-    // requires. See this function's doc comment for why this stays
-    // literal Ctrl rather than the Cmd macOS accelerators normally use.
-    if let UiEvent::KeyPressed {
-        key: Key::Char('c'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
-        ..
-    } = &event
-    {
-        if backend.active_text_selection().is_some() {
-            let text = backend.extract_selection_text();
-            backend.services().clipboard().write_text(&text);
-            backend.clear_text_selection();
-            return app.handle(UiEvent::TextCopied(text), backend).into();
-        }
-    }
-
-    // Cmd-V / Cmd-Shift-V paste interception — shared predicate, #728
-    // (see this function's doc comment and D-011 in `docs/decisions/DECISIONS.md`).
-    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-        if is_paste_keypress(key, modifiers, PasteModifier::Cmd) {
-            return if let Some(text) = backend.services().clipboard().read_text() {
-                app.handle(UiEvent::ClipboardPaste(text), backend).into()
-            } else {
-                EventOutcome::Continue
-            };
-        }
-    }
-
-    // ── Ctrl-A interception (select-all for text regions, #803) ──────
-    if let UiEvent::KeyPressed {
-        key: Key::Char('a') | Key::Char('A'),
-        modifiers:
-            Modifiers {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                cmd: false,
-            },
-        ..
-    } = &event
-    {
-        if backend.select_all_text_region() {
-            return EventOutcome::Redraw;
-        }
-    }
-
-    // ── TextSelectionChanged: update active selection while dragging (#803) ──
-    let mut force_redraw = false;
-    if let UiEvent::TextSelectionChanged {
-        region,
-        anchor,
-        focus,
-    } = &event
-    {
-        backend.set_active_text_selection(region.clone(), *anchor, *focus);
-        force_redraw = true;
-    }
-
-    let outcome: EventOutcome = app.handle(event, backend).into();
-    if force_redraw && matches!(outcome, EventOutcome::Continue) {
-        EventOutcome::Redraw
-    } else {
-        outcome
-    }
+    // Everything else — double-click folding, ActivityBar redirect,
+    // accelerators, Ctrl-C/Cmd-V/middle-click/Ctrl-A, selection-display
+    // clearing, TextSelectionChanged — is the shared pipeline. See this
+    // function's doc.
+    runtime::preprocess_event(event, backend, app)
 }
 
 /// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
@@ -1277,5 +1140,39 @@ mod text_selection_dispatch_tests {
         let outcome = dispatch(ev, &mut backend, &mut app);
         assert!(matches!(outcome, EventOutcome::Redraw));
         assert!(backend.active_text_selection().is_some());
+    }
+
+    /// quadraui#813: before this, `macos::run::dispatch_event` had no
+    /// middle-click step at all — only GTK read the PRIMARY selection.
+    /// `MacClipboard` never overrides
+    /// [`crate::backend::Clipboard::read_primary_selection`] (macOS has
+    /// no PRIMARY-selection concept), so the shared `preprocess_event`
+    /// step this backend now runs via `dispatch_event`'s `MouseDown`
+    /// routing is always the "nothing to paste" branch — the click must
+    /// still reach the app as an ordinary `MouseDown`, matching
+    /// `gtk::run`/`win::run`'s identical fallthrough.
+    #[test]
+    fn middle_click_falls_through_to_the_app_no_primary_selection_on_macos() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Middle,
+            position: Point::new(5.0, 5.0),
+            modifiers: Modifiers::default(),
+        };
+        let _ = dispatch(ev, &mut backend, &mut app);
+        assert!(
+            app.events.iter().any(|e| matches!(
+                e,
+                UiEvent::MouseDown {
+                    button: MouseButton::Middle,
+                    ..
+                }
+            )),
+            "middle-click must fall through to app.handle as an ordinary MouseDown when \
+             there is no PRIMARY selection to paste, got {:?}",
+            app.events
+        );
     }
 }

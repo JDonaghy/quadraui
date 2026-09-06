@@ -26,7 +26,7 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use crate::{Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+use crate::{Key, Modifiers, MouseButton, NamedKey, UiEvent};
 
 /// Translate a GDK key event from `EventControllerKey::connect_key_pressed`
 /// into a [`UiEvent::KeyPressed`]. Returns `None` for keysyms that
@@ -290,17 +290,31 @@ pub fn wire_da_events_with_scroll_direction<F>(
     let click = GestureClick::builder().button(0).build();
     {
         let on_event = on_event.clone();
-        click.connect_pressed(move |gesture, n_press, x, y| {
+        // Double-click folding used to read GDK's own `n_press` here —
+        // native OS double-click timing, independent of (and
+        // inconsistent with) the `crate::dispatch::DoubleClickDetector`
+        // every other double-click-folding call site in the crate uses
+        // (`gtk::run::dispatch_event` via `GtkBackend::fold_double_click`,
+        // and macOS/Windows/TUI via `crate::runtime::preprocess_event`).
+        // #813 moves this bespoke helper onto the same shared detector so
+        // "what counts as a double-click" has one definition crate-wide,
+        // not two. Each call to this function gets its own detector
+        // instance, scoped to the one `DrawingArea` it wires — this
+        // function has no backend/app to store shared state on the way
+        // `gtk::run` does.
+        let double_click = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::dispatch::DoubleClickDetector::with_radius(
+                super::backend::GTK_DOUBLE_CLICK_RADIUS,
+            ),
+        ));
+        click.connect_pressed(move |gesture, _n_press, x, y| {
             let button = gesture.current_button();
             let modifier = gesture.current_event_state();
-            if n_press == 2 {
-                on_event(UiEvent::DoubleClick {
-                    widget: None,
-                    position: Point::new(x as f32, y as f32),
-                });
-            } else {
-                on_event(gdk_button_to_mouse_down(button, x, y, modifier));
-            }
+            let mut ev = gdk_button_to_mouse_down(button, x, y, modifier);
+            double_click
+                .borrow_mut()
+                .process(std::slice::from_mut(&mut ev));
+            on_event(ev);
         });
     }
     {
