@@ -2297,33 +2297,25 @@ impl Backend for MacBackend {
         hovered_toolbar_id: Option<&crate::types::WidgetId>,
         pressed_toolbar_id: Option<&crate::types::WidgetId>,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let ctx = self.current_cg();
         debug_assert!(
-            !ctx.is_null(),
+            !self.current_cg().is_null(),
             "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_sidebar_panel requires set_current_font");
+        debug_assert!(
+            self.current_font.is_some(),
+            "MacBackend::draw_sidebar_panel requires set_current_font",
+        );
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::sidebar_panel::draw_sidebar_panel(
-                ctx,
-                font,
-                line_height,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                panel,
-                &theme,
-                hovered_toolbar_id,
-                pressed_toolbar_id,
-            )
-        }
+        let line_height = self.current_line_height as f32;
+        crate::primitives::sidebar_panel::native_surface_paint::paint(
+            panel,
+            self,
+            &theme,
+            rect,
+            line_height,
+            hovered_toolbar_id,
+            pressed_toolbar_id,
+        )
     }
 
     fn draw_diff_view(

@@ -132,7 +132,14 @@ pub use run::{run, run_with, RunConfig};
 // same reason as `form::draw_form`'s re-export above.
 #[allow(deprecated)]
 pub use scrollbar::draw_scrollbar;
-pub use sidebar_panel::{draw_sidebar_panel, gtk_sidebar_panel_layout};
+pub use sidebar_panel::gtk_sidebar_panel_layout;
+// #862: `draw_sidebar_panel` is `#[deprecated]` — see
+// `sidebar_panel::draw_sidebar_panel`'s doc for why the shim exists and
+// why re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
+pub use sidebar_panel::draw_sidebar_panel;
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::{draw_split, gtk_split_layout};
 pub use split_tree::{draw_split_tree, gtk_split_tree_layout};

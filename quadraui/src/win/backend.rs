@@ -2983,12 +2983,12 @@ impl Backend for WinBackend {
         todo!("DirectWrite toolbar layout (no surface attached yet)")
     }
 
-    /// #731: see [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. `SidebarPanel` embeds a
-    /// [`crate::primitives::toolbar::Toolbar`] header — `win::sidebar_panel`
-    /// delegates the slot to `super::toolbar::draw_toolbar` rather than
-    /// re-deriving toolbar geometry, mirroring `gtk::sidebar_panel` /
-    /// `macos::sidebar_panel`.
+    /// #731 / #862: see [`Self::draw_status_bar`]'s doc for the "surface
+    /// not attached yet" fallback posture. `SidebarPanel` embeds a
+    /// [`crate::primitives::toolbar::Toolbar`] header, painted here via
+    /// the shared
+    /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
+    /// (#862) rather than a per-backend `toolbar::draw_toolbar` call.
     fn draw_sidebar_panel(
         &mut self,
         rect: Rect,
@@ -2997,13 +2997,21 @@ impl Backend for WinBackend {
         pressed_toolbar_id: Option<&crate::types::WidgetId>,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::sidebar_panel::draw_sidebar_panel(
-                &surface.target,
-                dwrite,
-                self.current_line_height,
-                rect,
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let line_height = self.current_line_height;
+            // `Theme::default()`, not `self.current_theme` — preserves
+            // the pre-#862 `win::sidebar_panel::draw_sidebar_panel`
+            // behaviour exactly (it delegated to `win::toolbar::draw_toolbar`,
+            // which has never taken a live theme — see this primitive's
+            // `native_surface_paint` module doc, divergence 4, and
+            // `WinBackend::draw_panel`'s identical note).
+            let theme = crate::theme::Theme::default();
+            return crate::primitives::sidebar_panel::native_surface_paint::paint(
                 panel,
+                self,
+                &theme,
+                rect,
+                line_height,
                 hovered_toolbar_id,
                 pressed_toolbar_id,
             );
