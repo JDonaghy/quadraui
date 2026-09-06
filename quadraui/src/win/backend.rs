@@ -2769,7 +2769,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
-            let line_height = self.current_line_height as f32;
+            let line_height = self.current_line_height;
             return crate::primitives::toast::native_surface_paint::paint(
                 stack,
                 self,
