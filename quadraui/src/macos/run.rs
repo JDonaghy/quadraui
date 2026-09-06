@@ -11,7 +11,7 @@
 //!
 //! ## Type-erasure shape
 //!
-//! `QuadraView` is declared via [`objc2::declare_class!`], which
+//! `QuadraView` is declared via [`objc2::define_class!`], which
 //! doesn't accept generic parameters. So we type-erase `A` through
 //! two closures stored on the view's ivars:
 //!
@@ -36,16 +36,15 @@ use std::rc::Rc;
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
-use objc2::declare_class;
+// objc2 0.6 (#796) removed `declare_class!` in favour of `define_class!`
+// (superclass/mutability move from a `ClassType` impl block onto struct
+// attributes), renamed `DeclaredClass` to `DefinedClass`, and deprecated
+// `msg_send_id!` in favour of `msg_send!` (which now performs the same
+// `Retained` conversion itself — see that macro's own doc).
 use objc2::encode::{Encoding, RefEncode};
-use objc2::msg_send;
-use objc2::msg_send_id;
-use objc2::mutability;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::sel;
-use objc2::ClassType;
-use objc2::DeclaredClass;
+use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
     NSEvent, NSGraphicsContext, NSView, NSViewFrameDidChangeNotification, NSWindow,
@@ -104,7 +103,7 @@ extern "C" {
 
 /// Type-erased closures the view invokes from its responder + draw
 /// callbacks. Built once per [`run`] call from the concrete `A:
-/// AppLogic`; from `declare_class!`'s perspective they're just two
+/// AppLogic`; from `define_class!`'s perspective they're just two
 /// `Box<dyn Fn>` smart pointers.
 type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
 type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
@@ -319,15 +318,14 @@ pub(crate) struct QuadraViewIvars {
     resize_timer: RefCell<Option<Retained<NSTimer>>>,
 }
 
-declare_class!(
+define_class!(
     /// Quadraui's custom `NSView`. `drawRect:` resolves viewport +
     /// CG context, paints a debug background (theme-defaulted grey
     /// + a #34 smoke label), then delegates to the stored `paint`
     /// closure so the active [`AppLogic`] can render on top.
     /// Responder methods translate `NSEvent` → [`UiEvent`] and route
     /// through the stored `handle` closure for `AppLogic::handle`.
-    pub(crate) struct QuadraView;
-
+    //
     // SAFETY:
     // - NSView is documented to be subclassable for custom drawing.
     // - MainThreadOnly: AppKit views must be created + used on the
@@ -336,18 +334,14 @@ declare_class!(
     // - `QuadraView` doesn't implement Drop — its ivars hold owned
     //   `Box<dyn Fn>` smart pointers that drop cleanly when the
     //   class instance is finalized by the Obj-C runtime.
-    unsafe impl ClassType for QuadraView {
-        type Super = NSView;
-        type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "QuadraUiView";
-    }
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "QuadraUiView"]
+    #[ivars = QuadraViewIvars]
+    pub(crate) struct QuadraView;
 
-    impl DeclaredClass for QuadraView {
-        type Ivars = QuadraViewIvars;
-    }
-
-    unsafe impl QuadraView {
-        #[method(drawRect:)]
+    impl QuadraView {
+        #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty: NSRect) {
             let bounds = self.bounds();
             let scale = self
@@ -362,9 +356,10 @@ declare_class!(
             );
             self.ivars().last_viewport.set(viewport);
 
-            // SAFETY: `drawRect:` is always invoked inside a valid
-            // graphics scope, so `currentContext` returns `Some`.
-            let Some(gctx) = (unsafe { NSGraphicsContext::currentContext() }) else {
+            // `currentContext` is a safe method as of objc2-app-kit 0.3
+            // (#796 bump). `drawRect:` is always invoked inside a valid
+            // graphics scope, so it always returns `Some` here.
+            let Some(gctx) = NSGraphicsContext::currentContext() else {
                 return;
             };
             // Custom opaque return type makes objc2's encoding check
@@ -404,20 +399,20 @@ declare_class!(
         }
 
         /// Top-left origin to match TUI + GTK conventions.
-        #[method(isFlipped)]
+        #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             true
         }
 
         /// Required so AppKit routes `keyDown:` here.
-        #[method(acceptsFirstResponder)]
+        #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
         }
 
         // ── Mouse press / release ────────────────────────────────
 
-        #[method(mouseDown:)]
+        #[unsafe(method(mouseDown:))]
         fn objc_mouse_down(&self, event: &NSEvent) {
             // #498: stash the raw press before it's translated to a
             // portable `UiEvent`, so `Backend::begin_window_drag` (called
@@ -435,54 +430,54 @@ declare_class!(
             self.ivars().backend.borrow_mut().stash_window_press(retained);
 
             let (x, y, flags) = self.locate(event);
-            let button = unsafe { event.buttonNumber() } as i64;
+            let button = event.buttonNumber() as i64;
             self.dispatch(ns_mouse_down(button, x, y, flags));
         }
 
-        #[method(rightMouseDown:)]
+        #[unsafe(method(rightMouseDown:))]
         fn objc_right_mouse_down(&self, event: &NSEvent) {
             let (x, y, flags) = self.locate(event);
-            let button = unsafe { event.buttonNumber() } as i64;
+            let button = event.buttonNumber() as i64;
             self.dispatch(ns_mouse_down(button, x, y, flags));
         }
 
-        #[method(otherMouseDown:)]
+        #[unsafe(method(otherMouseDown:))]
         fn objc_other_mouse_down(&self, event: &NSEvent) {
             let (x, y, flags) = self.locate(event);
-            let button = unsafe { event.buttonNumber() } as i64;
+            let button = event.buttonNumber() as i64;
             self.dispatch(ns_mouse_down(button, x, y, flags));
         }
 
-        #[method(mouseUp:)]
+        #[unsafe(method(mouseUp:))]
         fn objc_mouse_up(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
-            let button = unsafe { event.buttonNumber() } as i64;
+            let button = event.buttonNumber() as i64;
             self.dispatch(ns_mouse_up(button, x, y));
         }
 
-        #[method(rightMouseUp:)]
+        #[unsafe(method(rightMouseUp:))]
         fn objc_right_mouse_up(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
-            let button = unsafe { event.buttonNumber() } as i64;
+            let button = event.buttonNumber() as i64;
             self.dispatch(ns_mouse_up(button, x, y));
         }
 
-        #[method(otherMouseUp:)]
+        #[unsafe(method(otherMouseUp:))]
         fn objc_other_mouse_up(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
-            let button = unsafe { event.buttonNumber() } as i64;
+            let button = event.buttonNumber() as i64;
             self.dispatch(ns_mouse_up(button, x, y));
         }
 
         // ── Mouse move / drag ────────────────────────────────────
 
-        #[method(mouseMoved:)]
+        #[unsafe(method(mouseMoved:))]
         fn objc_mouse_moved(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
             self.dispatch(ns_mouse_moved(x, y, ButtonMask::default()));
         }
 
-        #[method(mouseDragged:)]
+        #[unsafe(method(mouseDragged:))]
         fn objc_mouse_dragged(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
             self.dispatch(ns_mouse_moved(
@@ -495,7 +490,7 @@ declare_class!(
             ));
         }
 
-        #[method(rightMouseDragged:)]
+        #[unsafe(method(rightMouseDragged:))]
         fn objc_right_mouse_dragged(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
             self.dispatch(ns_mouse_moved(
@@ -508,7 +503,7 @@ declare_class!(
             ));
         }
 
-        #[method(otherMouseDragged:)]
+        #[unsafe(method(otherMouseDragged:))]
         fn objc_other_mouse_dragged(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
             self.dispatch(ns_mouse_moved(
@@ -523,21 +518,21 @@ declare_class!(
 
         // ── Scroll wheel + key down ──────────────────────────────
 
-        #[method(scrollWheel:)]
+        #[unsafe(method(scrollWheel:))]
         fn objc_scroll_wheel(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
             // SAFETY: scrollingDeltaX/Y are safe on a scroll event.
-            let dx = unsafe { event.scrollingDeltaX() };
-            let dy = unsafe { event.scrollingDeltaY() };
+            let dx = event.scrollingDeltaX();
+            let dy = event.scrollingDeltaY();
             self.dispatch(ns_scroll(dx, dy, x, y));
         }
 
-        #[method(keyDown:)]
+        #[unsafe(method(keyDown:))]
         fn objc_key_down(&self, event: &NSEvent) {
-            let flags = unsafe { event.modifierFlags() }.0;
-            let key_code = unsafe { event.keyCode() };
-            let repeat = unsafe { event.isARepeat() };
-            let chars_ns = unsafe { event.characters() };
+            let flags = event.modifierFlags().0;
+            let key_code = event.keyCode();
+            let repeat = event.isARepeat();
+            let chars_ns = event.characters();
             let chars_str = chars_ns.as_ref().map(|s| s.to_string());
             if let Some(ev) = ns_key_to_uievent(chars_str.as_deref(), key_code, flags, repeat) {
                 self.dispatch(ev);
@@ -564,7 +559,7 @@ declare_class!(
         /// than dispatching immediately. Painting stays live regardless
         /// — `drawRect:` re-resolves the view's real `bounds` every
         /// frame independent of whether the debounced event has fired.
-        #[method(viewFrameDidChange:)]
+        #[unsafe(method(viewFrameDidChange:))]
         fn view_frame_did_change(&self, _note: &NSNotification) {
             let bounds = self.bounds();
             let scale = self
@@ -586,7 +581,7 @@ declare_class!(
             // notification in this same burst, then arm a fresh one —
             // the drag keeps pushing the deadline out until it settles.
             if let Some(old) = self.ivars().resize_timer.borrow_mut().take() {
-                unsafe { old.invalidate() };
+                old.invalidate();
             }
             // SAFETY: `self` is a valid, live `QuadraView` (an `NSObject`
             // subclass via `NSView`/`NSResponder`) for at least as long as
@@ -608,7 +603,7 @@ declare_class!(
         /// Fires once `RESIZE_SETTLE` after the last `viewFrameDidChange:`
         /// in a burst — see that method's doc. Dispatches the coalesced
         /// size, if any, as a single `WindowResized`.
-        #[method(resizeDebounceFired:)]
+        #[unsafe(method(resizeDebounceFired:))]
         fn resize_debounce_fired(&self, _timer: &NSTimer) {
             self.ivars().resize_timer.borrow_mut().take();
             if let Some(viewport) = self.ivars().resize_debouncer.borrow_mut().take() {
@@ -634,7 +629,7 @@ impl QuadraView {
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             resize_timer: RefCell::new(None),
         });
-        unsafe { msg_send_id![super(this), init] }
+        unsafe { msg_send![super(this), init] }
     }
 
     /// Convert `NSEvent.locationInWindow` into view-local coordinates
@@ -643,9 +638,9 @@ impl QuadraView {
     fn locate(&self, event: &NSEvent) -> (f64, f64, usize) {
         // SAFETY: NSResponder callbacks run on the main thread inside
         // an active event scope.
-        let win_pt = unsafe { event.locationInWindow() };
+        let win_pt = event.locationInWindow();
         let view_pt = self.convertPoint_fromView(win_pt, None);
-        let flags = unsafe { event.modifierFlags() }.0;
+        let flags = event.modifierFlags().0;
         (view_pt.x, view_pt.y, flags)
     }
 
@@ -668,7 +663,7 @@ impl ReactionSink for QuadraView {
     fn request_redraw(&self) {
         // SAFETY: `setNeedsDisplay:` on the main thread is the documented
         // way to schedule a repaint.
-        unsafe { self.setNeedsDisplay(true) }
+        self.setNeedsDisplay(true)
     }
 
     fn request_exit(&self) {
@@ -676,28 +671,23 @@ impl ReactionSink for QuadraView {
         let app = NSApplication::sharedApplication(mtm);
         // SAFETY: `terminate:` on NSApp on the main thread is the
         // documented exit path.
-        unsafe { app.terminate(None) };
+        app.terminate(None);
     }
 }
 
-declare_class!(
+define_class!(
     /// Minimal `NSApplicationDelegate` — terminate the process when
     /// the last window closes (red traffic-light → exit). #36 may
     /// extend this with notification + URL-scheme handling.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "QuadraUiAppDelegate"]
     pub(crate) struct QuadraAppDelegate;
-
-    unsafe impl ClassType for QuadraAppDelegate {
-        type Super = NSObject;
-        type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "QuadraUiAppDelegate";
-    }
-
-    impl DeclaredClass for QuadraAppDelegate {}
 
     unsafe impl NSObjectProtocol for QuadraAppDelegate {}
 
     unsafe impl NSApplicationDelegate for QuadraAppDelegate {
-        #[method(applicationShouldTerminateAfterLastWindowClosed:)]
+        #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate_after_last_window(&self, _sender: &NSApplication) -> bool {
             true
         }
@@ -708,7 +698,7 @@ impl QuadraAppDelegate {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(());
-        unsafe { msg_send_id![super(this), init] }
+        unsafe { msg_send![super(this), init] }
     }
 }
 
@@ -829,11 +819,11 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
         | NSWindowStyleMask::Resizable
         | NSWindowStyleMask::Miniaturizable;
     let window: Retained<NSWindow> = unsafe {
-        msg_send_id![
+        msg_send![
             mtm.alloc::<NSWindow>(),
             initWithContentRect: content_rect,
             styleMask: style,
-            backing: NSBackingStoreType::NSBackingStoreBuffered,
+            backing: NSBackingStoreType::Buffered,
             defer: false,
         ]
     };
@@ -885,7 +875,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 
     // SAFETY: blocks on AppKit run loop; returns when the last
     // window closes or `[NSApp terminate:]` is invoked.
-    unsafe { ns_app.run() };
+    ns_app.run();
 
     std::process::ExitCode::SUCCESS
 }

@@ -20,6 +20,9 @@ kubeui-core = { path = "../kubeui-core" }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
 anyhow = "1.0"
 
-# GTK + Pango/Cairo for rasterisation. Same versions as vimcode.
-gtk4 = { version = "0.7", features = ["v4_10"] }
-pangocairo = "0.18"
+# GTK + Pango/Cairo for rasterisation. Must track quadraui's `gtk4`/
+# `pangocairo` versions exactly (#796): gtk4-sys sets `links = "gtk-4"`,
+# so cargo's resolver hard-errors if this workspace ever carries two
+# incompatible gtk4 majors at once.
+gtk4 = { version = "0.11", features = ["v4_10"] }
+pangocairo = "0.22"

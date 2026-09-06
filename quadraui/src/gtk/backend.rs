@@ -507,15 +507,20 @@ impl GtkBackend {
         };
         // `ApplicationWindow` implements `Native` directly (gtk4-rs
         // `@implements Native` on both `Window` and `ApplicationWindow`),
-        // so `.surface()` is reachable without an upcast. Only an actual
-        // toplevel surface implements the `Toplevel` interface `begin_move`
-        // lives on — downcast can fail if the surface isn't realized yet.
-        match window.surface().downcast::<gdk::Toplevel>() {
-            Ok(toplevel) => {
+        // so `.surface()` is reachable without an upcast. `surface()`
+        // returns `None` when the window isn't realized yet (gtk4 0.11,
+        // #796); when it is, only an actual toplevel surface implements
+        // the `Toplevel` interface `begin_move` lives on — downcast can
+        // fail if the surface isn't a toplevel.
+        match window
+            .surface()
+            .and_then(|s| s.downcast::<gdk::Toplevel>().ok())
+        {
+            Some(toplevel) => {
                 toplevel.begin_move(&device, button, press_x, press_y, time);
                 true
             }
-            Err(_) => false,
+            None => false,
         }
     }
 
@@ -1392,8 +1397,11 @@ impl Backend for GtkBackend {
         let Some((device, button, x, y, time)) = self.pending_window_press.take() else {
             return false;
         };
-        match window.surface().downcast::<gdk::Toplevel>() {
-            Ok(toplevel) => {
+        match window
+            .surface()
+            .and_then(|s| s.downcast::<gdk::Toplevel>().ok())
+        {
+            Some(toplevel) => {
                 toplevel.begin_resize(
                     resize_edge_to_surface_edge(edge),
                     Some(&device),
@@ -1404,7 +1412,7 @@ impl Backend for GtkBackend {
                 );
                 true
             }
-            Err(_) => false,
+            None => false,
         }
     }
 
@@ -4509,11 +4517,16 @@ mod tests {
         let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
 
+        // pango 0.22 (gtk4 0.11 bump, #796) tightened
+        // `Context::set_font_description` from `Option<&FontDescription>`
+        // to `&FontDescription` — every call site below through this test
+        // module drops the now-redundant `Some(...)` wrapper.
+        // `Layout::set_font_description` is unaffected and keeps `Option`.
         let small_ctx = pangocairo::functions::create_context(&cr);
-        small_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 8")));
+        small_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
 
         let large_ctx = pangocairo::functions::create_context(&cr);
-        large_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 40")));
+        large_ctx.set_font_description(&pango::FontDescription::from_string("Sans 40"));
         let large_layout = pango::Layout::new(&large_ctx);
 
         let mut backend = GtkBackend::new();
@@ -4572,7 +4585,7 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
 
         let large_ctx = pangocairo::functions::create_context(&cr);
-        large_ctx.set_font_description(Some(&pango::FontDescription::from_string("Sans 40")));
+        large_ctx.set_font_description(&pango::FontDescription::from_string("Sans 40"));
         let large_layout = pango::Layout::new(&large_ctx);
 
         let mut backend = GtkBackend::new();
@@ -4703,7 +4716,7 @@ mod tests {
 
         let width_at = |editor_font: &pango::FontDescription| {
             let pango_ctx = pangocairo::functions::create_context(&cr);
-            pango_ctx.set_font_description(Some(editor_font));
+            pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             backend.enter_frame_scope(&cr, &layout, |b| {
@@ -4723,7 +4736,7 @@ mod tests {
 
         let ui_font_width = {
             let pango_ctx = pangocairo::functions::create_context(&cr);
-            pango_ctx.set_font_description(Some(&small_editor_font));
+            pango_ctx.set_font_description(&small_editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             Backend::set_ui_font(&mut backend, "Sans 40");
@@ -4764,7 +4777,7 @@ mod tests {
 
         let width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
             let pango_ctx = pangocairo::functions::create_context(&cr);
-            pango_ctx.set_font_description(Some(editor_font));
+            pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             if let Some(f) = ui_font {
@@ -4832,7 +4845,7 @@ mod tests {
                 cr.set_source_rgb(1.0, 1.0, 1.0);
                 cr.paint().ok();
                 let pango_ctx = pangocairo::functions::create_context(&cr);
-                pango_ctx.set_font_description(Some(editor_font));
+                pango_ctx.set_font_description(editor_font);
                 let layout = pango::Layout::new(&pango_ctx);
                 let mut backend = GtkBackend::new();
                 // White `tab_bar_bg` so the row's own background fill
@@ -4928,7 +4941,7 @@ mod tests {
                 cr.set_source_rgb(1.0, 1.0, 1.0);
                 cr.paint().ok();
                 let pango_ctx = pangocairo::functions::create_context(&cr);
-                pango_ctx.set_font_description(Some(editor_font));
+                pango_ctx.set_font_description(editor_font);
                 let layout = pango::Layout::new(&pango_ctx);
                 let mut backend = GtkBackend::new();
                 // White `background` so the row's own fill doesn't itself
@@ -5026,7 +5039,7 @@ mod tests {
                 cr.set_source_rgb(1.0, 1.0, 1.0);
                 cr.paint().ok();
                 let pango_ctx = pangocairo::functions::create_context(&cr);
-                pango_ctx.set_font_description(Some(editor_font));
+                pango_ctx.set_font_description(editor_font);
                 let layout = pango::Layout::new(&pango_ctx);
                 let mut backend = GtkBackend::new();
                 // White menu chrome so the box's own fill/border doesn't
@@ -5101,7 +5114,7 @@ mod tests {
 
         let search_width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
             let pango_ctx = pangocairo::functions::create_context(&cr);
-            pango_ctx.set_font_description(Some(editor_font));
+            pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             if let Some(f) = ui_font {
@@ -5203,7 +5216,7 @@ mod tests {
 
         let width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
             let pango_ctx = pangocairo::functions::create_context(&cr);
-            pango_ctx.set_font_description(Some(editor_font));
+            pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             if let Some(f) = ui_font {
@@ -5251,7 +5264,7 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
 
         let pango_ctx = pangocairo::functions::create_context(&cr);
-        pango_ctx.set_font_description(Some(&editor_font));
+        pango_ctx.set_font_description(&editor_font);
         let layout = pango::Layout::new(&pango_ctx);
         let mut backend = GtkBackend::new();
         // Stable click-time context, as `gtk::run::activate` seeds it on
@@ -5259,7 +5272,7 @@ mod tests {
         // hit-test path can only agree with paint by swapping onto
         // `ui_font` itself.
         let stable_ctx = pangocairo::functions::create_context(&cr);
-        stable_ctx.set_font_description(Some(&editor_font));
+        stable_ctx.set_font_description(&editor_font);
         backend.set_pango_context(stable_ctx);
         Backend::set_ui_font(&mut backend, "Sans 40");
 
@@ -5813,7 +5826,7 @@ mod tests {
 
         let width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
             let pango_ctx = pangocairo::functions::create_context(&cr);
-            pango_ctx.set_font_description(Some(editor_font));
+            pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             if let Some(f) = ui_font {

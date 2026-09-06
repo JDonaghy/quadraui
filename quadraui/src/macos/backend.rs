@@ -320,6 +320,16 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
 /// [`mac_cursor_kind`] (#498). The only AppKit-touching half of the
 /// mapping; see [`MacCursorKind`] for why the two halves are separate.
 fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
+    // `resizeUpDownCursor`/`resizeLeftRightCursor` were deprecated in the
+    // AppKit SDK objc2-app-kit 0.3 (#796 bump) now ships bindings for, in
+    // favour of `rowResizeCursorInDirections:`/`columnResizeCursorInDirections:`
+    // (divider-drag) or `frameResizeCursorFromPosition:inDirections:`
+    // (rectangular-frame resize) — neither is a drop-in replacement (both
+    // take a directions argument this call site has no opinion on), so
+    // this keeps the simple singleton for now rather than guessing at the
+    // right direction set. The legacy cursors still work on every macOS
+    // version quadraui supports.
+    #[allow(deprecated)]
     match mac_cursor_kind(shape) {
         MacCursorKind::Arrow => NSCursor::arrowCursor(),
         MacCursorKind::ResizeUpDown => NSCursor::resizeUpDownCursor(),
@@ -780,15 +790,12 @@ impl Backend for MacBackend {
         if self.window.is_none() {
             return false;
         }
-        // SAFETY: `NSCursor::set` is documented safe to call any time
-        // this view's window is key; called from `AppLogic::handle`
-        // (via `Backend::set_cursor`), which only ever runs on the main
-        // thread inside the live AppKit run loop, same precondition
-        // every other `unsafe` AppKit call in this file already relies
-        // on.
-        unsafe {
-            mac_cursor_for_shape(shape).set();
-        }
+        // `NSCursor::set` is a safe method as of objc2-app-kit 0.3 (#796
+        // bump) — previously `unsafe`, documented safe to call any time
+        // this view's window is key; called from `AppLogic::handle` (via
+        // `Backend::set_cursor`), which only ever runs on the main thread
+        // inside the live AppKit run loop.
+        mac_cursor_for_shape(shape).set();
         true
     }
 
@@ -2832,6 +2839,10 @@ mod tests {
     /// host; the mapping itself is covered unconditionally by
     /// `mac_cursor_kind_maps_every_variant` above.
     #[test]
+    // `NSCursor::resizeUpDownCursor`/`resizeLeftRightCursor` are deprecated
+    // (see `mac_cursor_for_shape`'s comment) — this test asserts against
+    // the exact singletons that function still (deliberately) vends.
+    #[allow(deprecated)]
     fn mac_cursor_for_shape_vends_the_kind_it_maps_to() {
         if objc2_foundation::MainThreadMarker::new().is_none() {
             return;
