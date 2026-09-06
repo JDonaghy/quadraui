@@ -199,7 +199,7 @@ use crate::{ActivityBarEvent, ButtonMask, Key, Modifiers, MouseButton, UiEvent};
 ///   instead of forwarding the raw key press — Win-GUI's first paste
 ///   support at all (#728; Win32 has no native paste signal on a bespoke
 ///   `HWND` client area, same reasoning `gtk::run`'s doc comment gives
-///   for GTK's bespoke `DrawingArea`). See `docs/DECISIONS.md` D-011 for
+///   for GTK's bespoke `DrawingArea`). See `docs/decisions/DECISIONS.md` D-011 for
 ///   the shift-tolerance contract this predicate settles once for every
 ///   backend.
 /// - Ctrl-A (#741): selects the entire content of the most-recently

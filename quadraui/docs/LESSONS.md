@@ -193,7 +193,7 @@ and every `*_layout` method needs a non-zero-origin regression test —
 `area=(0, 0)` is exactly the case that hides a mixup, as it did here.
 The "which frame" decision itself now lives in
 `PRIMITIVE_RULES.md`'s "Coordinate frames for `*_layout` methods" and
-`DECISIONS.md` D-005, not in a blanket "local by default" claim.
+`docs/decisions/DECISIONS.md` D-005, not in a blanket "local by default" claim.
 
 ## Dropdown item sizing must use backend-native units
 

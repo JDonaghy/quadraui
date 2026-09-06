@@ -615,7 +615,7 @@ in increasing scope:
    a new primitive. The bar for "this is reusable across multiple
    apps" should be high.
 
-When in doubt, look at `quadraui/docs/DECISIONS.md` for the
+When in doubt, look at `quadraui/docs/decisions/DECISIONS.md` for the
 existing rationale on which primitives shipped, which were deferred,
 and why. Add to that log when adding new ones.
 
@@ -680,7 +680,7 @@ None of this is optional plumbing you can skip past — `Backend::begin_window_d
 
 - [`docs/UI_CRATE_DESIGN.md`](docs/UI_CRATE_DESIGN.md) — full design
   rationale, the 13 §7 decisions, the §10 plugin invariants.
-- [`docs/DECISIONS.md`](docs/DECISIONS.md) — running log of
+- [`docs/decisions/DECISIONS.md`](docs/decisions/DECISIONS.md) — running log of
   primitive decisions (which shipped, which deferred, why).
 - vimcode's `docs/NATIVE_GUI_LESSONS.md` — production lessons from
   shipping three backends. §12-14 cover the unit-mismatch / idle-add

@@ -7,7 +7,7 @@
 //! existing per-primitive rasterisers (`draw_tree`, `draw_list`, etc.)
 //! using the body bounds returned by the layout.
 //!
-//! Vertical-only in v1 (per #294 / D-003 in `quadraui/docs/DECISIONS.md`);
+//! Vertical-only in v1 (per #294 / D-003 in `quadraui/docs/decisions/DECISIONS.md`);
 //! horizontal sections fall through to a no-op until the horizontal
 //! rasteriser ships.
 

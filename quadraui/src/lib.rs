@@ -75,7 +75,7 @@
 //!   plugin invariants every primitive must honour. Predates
 //!   implementation (see its own status banner) — treat it as a decision
 //!   record, not a live status page.
-//! - **`docs/DECISIONS.md`** — running log of API decisions
+//! - **`docs/decisions/DECISIONS.md`** — running log of API decisions
 //!   (which primitives, why this shape, what was deferred).
 //!
 //! ## Status
@@ -145,6 +145,7 @@
 pub mod diagnostics;
 pub mod diff;
 pub mod frame;
+pub mod prelude;
 pub mod primitives;
 pub mod shell;
 pub mod terminal_style;
@@ -188,7 +189,7 @@ pub mod win;
 pub mod compose;
 
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
-// See quadraui/docs/BACKEND_TRAIT_PROPOSAL.md for design. These modules add
+// See quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md for design. These modules add
 // the unified cross-backend surface alongside the existing per-backend
 // free-function draw pattern; no migration yet (that's Phase B.2).
 pub mod accelerator;

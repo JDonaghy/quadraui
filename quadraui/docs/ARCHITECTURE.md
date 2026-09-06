@@ -38,7 +38,7 @@ multi-primitive compositions so consumers don't reimplement them:
 
 **Backend trait** in `quadraui/src/backend.rs` plumbs frame state, the
 `set_theme` / `set_nerd_fonts` setters hosts call once per frame, *and*
-one `draw_*` method per primitive (`BACKEND_TRAIT_PROPOSAL.md` §4,
+one `draw_*` method per primitive (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4,
 Decision 2 = B) — adding a primitive is a breaking change to the trait,
 intentionally. Each backend's `draw_*` method is a thin wrapper around
 that backend module's own internal `pub fn draw_*` free function (e.g.
@@ -59,6 +59,6 @@ and derives the click hit-map from the same data that was painted.
 `Backend::draw_*` methods remain the public, low-level rasteriser entry
 point underneath — `ScreenLayout::draw` calls them internally, and
 they're the only path for primitives that don't have a `Surface`
-variant yet. See `docs/DECISIONS.md` D-006 and
+variant yet. See `docs/decisions/DECISIONS.md` D-006 and
 `docs/PRIMITIVE_RULES.md` "One primitive, one canonical paint path"
 (issue #456).

@@ -70,9 +70,34 @@ release time.
   CI; see that job's comment in `.github/workflows/ci.yml` for the narrow,
   named exception carved out for pre-existing intra-doc-link debt).
 - This file.
+- `quadraui::prelude` — a curated subset of the crate's ~500 flat
+  crate-root exports (the two runner traits, event/geometry types, and a
+  representative sample of primitives) for a first `AppLogic` app.
+  `quadraui/docs/GUIDE.md` (new) walks through building a two-pane app
+  with it, including a "which runner do I want?" (`AppLogic` vs
+  `ShellApp`) comparison.
+- `quadraui::testing::RecordingBackend` — a public, fully-implemented
+  `Backend` for unit tests that need *some* backend to hand a
+  controller (e.g. `TreeController`, `ChatController`), not a specific
+  backend's real rendering. Replaces three private, near-identical
+  `MockBackend` copies previously duplicated across
+  `compose::{tree_controller, chat_controller, app_shell}`'s own test
+  modules.
+- `quadraui/examples/hello.rs` — a standalone, under-60-line "hello
+  world" example with no `examples/common/` dependency (`cargo run
+  --example hello --features tui`), plus its `TuiDriver` end-to-end
+  test in `quadraui/tests/tui_example_driver.rs`.
+- `CONTRIBUTING.md` — human-oriented contributor guide (project layout,
+  local setup, the quality-gate commands, PR expectations).
 
 ### Changed
 
 - `publish = false` removed from `quadraui/Cargo.toml` — `quadraui` is now
   publishable to crates.io. (The actual `v0.1.0` tag and `cargo publish` are
   a separate, coordinator-run release step — see `quadraui#797`.)
+- `quadraui/docs/DECISIONS.md` and `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md`
+  moved to `quadraui/docs/decisions/` — archived design-history documents,
+  separated from the "read on demand" reference docs `CLAUDE.md` points
+  contributors at (`ARCHITECTURE.md`, `PRIMITIVE_RULES.md`,
+  `CONSUMER_PATTERNS.md`, `TESTING.md`, `LESSONS.md`). All internal links
+  updated; no content changed.

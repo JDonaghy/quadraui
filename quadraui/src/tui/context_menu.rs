@@ -180,7 +180,7 @@ pub fn draw_context_menu(
 /// production call sites today (no compose helper or example wires it
 /// up), so there's no live consumer being asked to route around a
 /// missing trait method. Revisit once #371 gives GTK a real cascading
-/// rasteriser to pair it with. See `quadraui/docs/DECISIONS.md` D-007
+/// rasteriser to pair it with. See `quadraui/docs/decisions/DECISIONS.md` D-007
 /// for the full write-up.
 ///
 /// # Arguments

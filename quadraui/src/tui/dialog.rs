@@ -35,7 +35,7 @@ fn flatten(text: &StyledText) -> String {
 /// function is TUI's own internal default measurer for dialogs painted
 /// without a caller-supplied `DialogMeasure` — a backend-private
 /// convenience, not a missing trait method. See
-/// `quadraui/docs/DECISIONS.md` D-007 for the full write-up.
+/// `quadraui/docs/decisions/DECISIONS.md` D-007 for the full write-up.
 pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> DialogLayout {
     use super::toolbar::tui_item_width;
     use crate::primitives::dialog::DialogMeasure;

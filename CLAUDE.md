@@ -23,8 +23,8 @@ line-level confirmation — not the first move.
 ## Session Start Protocol
 
 1. Read `README.md` for the high-level shape (workspace, primitives, status).
-2. Read `quadraui/docs/DECISIONS.md` for primitive-distinctness principles.
-3. Read `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §4 (Backend trait shape) and §9 (resolved decisions log).
+2. Read `quadraui/docs/decisions/DECISIONS.md` for primitive-distinctness principles.
+3. Read `quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4 (Backend trait shape) and §9 (resolved decisions log).
 4. Read the *Cross-backend portability commitment* below.
 5. Run `gh issue list --state open` to see active work.
 

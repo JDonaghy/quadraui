@@ -1,7 +1,7 @@
 //! Tier C2 — event-emission conformance (quadraui#501, epic #480).
 //!
 //! `docs/BACKEND.md`'s "UiEvent emission matrix" is the published
-//! required/optional table per backend; `docs/DECISIONS.md` D-010 has
+//! required/optional table per backend; `docs/decisions/DECISIONS.md` D-010 has
 //! the full per-variant disposition. This file is the *executable* half
 //! of that table for the "mouse/key/scroll/resize core" the issue's
 //! acceptance bar names — a **native-injection recipe** per required

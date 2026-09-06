@@ -5,7 +5,7 @@
 //! primitives onto a [`gtk4::cairo::Context`] using a
 //! [`pango::Layout`] for text measurement.
 //!
-//! Per D6 (see `docs/BACKEND_TRAIT_PROPOSAL.md` §9): primitives own
+//! Per D6 (see `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9): primitives own
 //! layout, backends rasterise. Most GTK rasterisers in this module
 //! compute the primitive's `*Layout` internally because Pango
 //! measurement requires the live `pango::Layout` — taking the layout

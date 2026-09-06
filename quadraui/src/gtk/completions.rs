@@ -6,7 +6,7 @@
 //! selected-row highlight, candidate label rendered as `" {label}"`
 //! via Pango.
 //!
-//! Per D6 (`docs/BACKEND_TRAIT_PROPOSAL.md` §9): the host invokes
+//! Per D6 (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9): the host invokes
 //! `Completions::layout(...)` with the cursor anchor, viewport,
 //! popup width / max height, and a per-item measure closure; this
 //! rasteriser then paints the resolved [`crate::CompletionsLayout`]

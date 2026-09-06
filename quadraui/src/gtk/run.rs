@@ -1197,7 +1197,7 @@ pub(crate) fn render_frame<A: AppLogic>(
 // be defined here; lifted to the backend-neutral `desktop` module (#728)
 // so `macos::run` and `win::run` share the exact same predicate instead
 // of each reimplementing (or, for `win`, never implementing) it — see
-// that module's doc and `docs/DECISIONS.md` D-011 for the shift-
+// that module's doc and `docs/decisions/DECISIONS.md` D-011 for the shift-
 // tolerance contract this settles once for every adopter.
 
 // `EventOutcome` — what the caller should do after [`dispatch_event`]
@@ -1558,7 +1558,7 @@ mod paste_tests {
     //! `is_paste_keypress` (shared with `macos::run`/`win::run` since
     //! #728 — see `crate::desktop`) is a pure predicate, tested directly
     //! with no display required; its full cross-backend contract
-    //! (Shift/Cmd tolerance, D-011 in `docs/DECISIONS.md`) has its own
+    //! (Shift/Cmd tolerance, D-011 in `docs/decisions/DECISIONS.md`) has its own
     //! coverage in `crate::desktop`'s test module, so the pure-predicate
     //! tests below stick to GTK's own Ctrl-based cases. The
     //! `GtkDriver`-based tests below exercise the actual

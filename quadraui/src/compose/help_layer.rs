@@ -29,7 +29,7 @@
 //! content" shape, backed by a primitive that actually renders. `Modal`
 //! itself was deleted as dead API in #509 (zero consumers in-repo or in
 //! either downstream consumer, and no rasteriser ever arrived to give
-//! it one) — see `docs/DECISIONS.md`.
+//! it one) — see `docs/decisions/DECISIONS.md`.
 //!
 //! # Cross-backend portability
 //!

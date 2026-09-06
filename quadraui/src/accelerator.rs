@@ -13,7 +13,7 @@
 //! App-specific bindings use [`KeyBinding::Literal`], which accepts both
 //! vim-style (`<C-S-t>`) and plus-style (`Ctrl+Shift+T`) input.
 //!
-//! See `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §3 for the full rationale.
+//! See `quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §3 for the full rationale.
 
 use serde::{Deserialize, Serialize};
 

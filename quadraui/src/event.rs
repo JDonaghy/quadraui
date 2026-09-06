@@ -10,7 +10,7 @@
 //!
 //! Every `UiEvent` satisfies:
 //! - `Debug + Clone + PartialEq + Serialize + Deserialize` — see
-//!   `BACKEND_TRAIT_PROPOSAL.md` §2 for rationale.
+//!   `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §2 for rationale.
 //! - Owned data only — no closures, no non-`'static` references. A `UiEvent`
 //!   can be logged, replayed, serialised for a plugin boundary, or sent
 //!   across threads with no ceremony.
@@ -39,7 +39,7 @@
 //! to be emitted by every backend to be conformant. `docs/BACKEND.md`'s
 //! "UiEvent emission matrix" is the published required/optional table
 //! per backend, kept in sync with `docs/TESTING.md`'s C2 conformance
-//! tier; `docs/DECISIONS.md`'s D-010 records the per-variant disposition
+//! tier; `docs/decisions/DECISIONS.md`'s D-010 records the per-variant disposition
 //! (wire / optional-capability / keep-undocumented-no-longer) this doc
 //! comment reflects. Two variants get their own doc-comment note below
 //! because the matrix alone doesn't explain *why*: [`Self::CharTyped`]

@@ -307,7 +307,7 @@ impl TabBar {
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
-// Per Decision D6 in `docs/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
+// Per Decision D6 in `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
 // fully-resolved `Layout` structs; backends rasterise verbatim. A backend
 // that fails to consume a field (e.g. doesn't iterate `visible_tabs`)
 // produces visibly broken output on its own platform — not silent

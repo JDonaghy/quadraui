@@ -274,6 +274,11 @@ path = "examples/tui_demo.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "hello"
+path = "examples/hello.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_app"
 path = "examples/tui_app.rs"
 required-features = ["tui"]

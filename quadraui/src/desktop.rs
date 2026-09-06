@@ -54,7 +54,7 @@
 //!   (quadraui#415) and generalised to also cover macOS's Cmd-V, which
 //!   used to be an inline `match` guard in `macos::run::dispatch_event`
 //!   instead of a named, independently-testable predicate. See
-//!   `docs/DECISIONS.md` D-011 for the shift-tolerance contract this
+//!   `docs/decisions/DECISIONS.md` D-011 for the shift-tolerance contract this
 //!   settles once for every adopter instead of each backend picking its
 //!   own, and D-011 §4 specifically for why the predicate takes a
 //!   [`PasteModifier`] parameter naming *which* platform modifier is
@@ -429,7 +429,7 @@ pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&st
 /// only on macOS. [`is_paste_keypress`] takes this enum so each backend
 /// tells the predicate which one of `ctrl`/`cmd` is *its* paste modifier,
 /// instead of the predicate accepting either interchangeably — see
-/// D-011 §4 (`docs/DECISIONS.md`) for the regression this fixes (plain
+/// D-011 §4 (`docs/decisions/DECISIONS.md`) for the regression this fixes (plain
 /// Super+V used to trigger paste on GTK, and plain Ctrl+V used to
 /// trigger paste on macOS, neither of which is that platform's actual
 /// convention).
@@ -472,7 +472,7 @@ pub(crate) enum PasteModifier {
 /// Super+V (GTK, where `modifiers.cmd` is Super) and plain Ctrl+V
 /// (macOS) are both rejected exactly as they were before this predicate
 /// was lifted out of `gtk::run`/inlined in `macos::run` — see D-011 §4
-/// (`docs/DECISIONS.md`) for why "either modifier alone" was wrong.
+/// (`docs/decisions/DECISIONS.md`) for why "either modifier alone" was wrong.
 /// `alt` is never a valid paste chord on any backend.
 ///
 /// `shift` is deliberately **not** checked either way — Ctrl-Shift-V and
@@ -480,7 +480,7 @@ pub(crate) enum PasteModifier {
 /// too. This was already GTK's behavior (quadraui#415: some terminal
 /// emulators reserve plain Ctrl-V for a literal control byte and use
 /// Ctrl-Shift-V as the paste shortcut instead), and D-011
-/// (`docs/DECISIONS.md`) extends the same shift-tolerant contract to
+/// (`docs/decisions/DECISIONS.md`) extends the same shift-tolerant contract to
 /// every adopter — including macOS, which used to require `shift: false`
 /// in its inline Cmd-V match guard before this predicate replaced it.
 /// See D-011 for why this settles the contract once instead of letting
@@ -838,7 +838,7 @@ mod is_paste_keypress_tests {
     //! `gtk::run`, `macos::run`, and `win::run`'s `dispatch_event`s all
     //! now call, each passing its own [`PasteModifier`]. Pure/display-
     //! free: no live backend needed to exercise every branch of the
-    //! contract D-011 (`docs/DECISIONS.md`) records.
+    //! contract D-011 (`docs/decisions/DECISIONS.md`) records.
     use super::*;
     use crate::{Key, Modifiers};
 

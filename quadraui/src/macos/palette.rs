@@ -51,7 +51,7 @@ const SCROLLBAR_PX: f32 = 8.0;
 /// tests. `Backend::palette_layout` was deliberately **not** added
 /// alongside `list_layout` / `board_layout` in #506 because exposing
 /// this function through the trait would make that drift externally
-/// visible. See `quadraui/docs/DECISIONS.md` D-007, "Palette: deferred,
+/// visible. See `quadraui/docs/decisions/DECISIONS.md` D-007, "Palette: deferred,
 /// not missed."
 pub fn mac_palette_layout(
     palette: &Palette,

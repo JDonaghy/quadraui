@@ -16,6 +16,16 @@ use quadraui::{Backend, ButtonMask, Key, Modifiers, NamedKey, Point, Reaction, U
 mod shell_app_ex;
 use shell_app_ex::ShellApp as ShellAppEx;
 
+// `hello.rs` (quadraui#799) has no `examples/common/` module by design —
+// it's the single-file "hello world" onboarding is supposed to have. Its
+// own `fn main()` comes along for the ride under this `#[path]` include
+// (the same trick used everywhere else in this file) and is never called
+// from the test binary, hence `#[allow(dead_code)]`.
+#[path = "../examples/hello.rs"]
+#[allow(dead_code)]
+mod hello_ex;
+use hello_ex::Hello;
+
 #[path = "../examples/common/toolbar_app.rs"]
 mod toolbar_app;
 use toolbar_app::ToolbarApp;
@@ -281,6 +291,52 @@ fn mini_renders_cleanly_and_ctrl_q_exits() {
     let reaction = driver.ctrl_char('q');
     assert_eq!(reaction, Reaction::Exit, "Ctrl-Q should exit");
     assert!(driver.exited(), "Ctrl-Q should make the app exit");
+}
+
+// ─── Hello: the standalone `examples/hello.rs` onboarding app ──────────────
+//
+// quadraui#799: unlike every other app in this file, `Hello` has no
+// `examples/common/` module — see the `#[path = "../examples/hello.rs"]`
+// include above. Observed RED before `RecordingBackend`/`prelude`/`Hello`
+// existed (there was no `hello_ex` module to include and no `Hello` type
+// to drive); GREEN once `examples/hello.rs` landed.
+
+#[test]
+fn hello_renders_the_greeting_and_quit_hint_on_the_first_frame() {
+    let driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("Hello, quadraui!"),
+        "greeting segment should render cleanly on the first frame:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("keys: 0"),
+        "counter should start at 0:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("q to quit"),
+        "quit hint should render cleanly on the first frame:\n{screen}"
+    );
+}
+
+#[test]
+fn hello_counts_keystrokes() {
+    let mut driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    driver.type_char('a');
+    driver.type_char('b');
+    assert!(
+        driver.screen_contains("keys: 2"),
+        "counter should read 2 after two keystrokes:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn hello_q_exits() {
+    let mut driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    let reaction = driver.type_char('q');
+    assert_eq!(reaction, Reaction::Exit, "'q' should exit");
+    assert!(driver.exited());
 }
 
 // ─── TextInputDemo: character typing + editing ──────────────────────────────

@@ -411,7 +411,7 @@ behind `dialog.blocks_click_through` — ships both: see the
   Key/Char/MouseDown/Up/Moved/Scroll/DoubleClick/WindowResized/
   WindowClose/Accelerator/ClipboardPaste/TextCopied. TUI has no OS
   window, so `WindowClose` doesn't apply there — see
-  `quadraui/docs/DECISIONS.md` D-010. Optional (declare, don't fake):
+  `quadraui/docs/decisions/DECISIONS.md` D-010. Optional (declare, don't fake):
   FilesDropped, MouseEntered/Left, DpiChanged, native menu events. The
   full required/optional-per-backend table, with current pass/fail per
   cell, lives in `quadraui/docs/BACKEND.md`'s "UiEvent emission matrix".
