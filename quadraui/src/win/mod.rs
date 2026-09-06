@@ -307,7 +307,15 @@ pub use run::{run, run_with, RunConfig};
 pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
-pub use sidebar_panel::{draw_sidebar_panel, win_sidebar_panel_layout};
+pub use sidebar_panel::win_sidebar_panel_layout;
+// #862: `draw_sidebar_panel` is `#[deprecated]` — see
+// `sidebar_panel::draw_sidebar_panel`'s doc for why the shim exists and
+// why re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use sidebar_panel::draw_sidebar_panel;
 #[cfg(target_os = "windows")]
 pub use spinner::{draw_spinner, win_spinner_layout};
 #[cfg(target_os = "windows")]

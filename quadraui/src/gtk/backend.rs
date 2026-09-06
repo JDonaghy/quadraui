@@ -3573,34 +3573,37 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
-        // #416: `SidebarPanel` composes a `Toolbar` header internally
-        // (`gtk::sidebar_panel::draw_sidebar_panel` calls
-        // `gtk::toolbar::draw_toolbar` directly, not through
-        // `Self::draw_toolbar`), so the same save/swap/restore has to
-        // happen here too or its icon glyphs inherit the same gap
-        // `Self::draw_toolbar` had.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let layout = crate::gtk::draw_sidebar_panel(
-            cr,
-            pango_layout,
-            line_height,
-            char_width,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
+        // #416 / #862: `SidebarPanel` composes a `Toolbar` header — its
+        // icon glyphs are chrome, not editor content — so the same
+        // save/swap/restore `Self::draw_toolbar` does has to happen here
+        // too (the shared `native_surface_paint::paint` below measures
+        // and draws text via `Self::surface_measure_text`/
+        // `surface_draw_text_run`, which just use whatever font is live
+        // on this shared `pango_layout`).
+        let saved_font = {
+            let (_cr, pango_layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
+            let saved = pango_layout.font_description();
+            pango_layout.set_font_description(Some(&ui_font_desc));
+            saved
+        };
+        let layout = crate::primitives::sidebar_panel::native_surface_paint::paint(
             panel,
+            self,
             &theme,
+            rect,
+            line_height as f32,
             hovered_toolbar_id,
             pressed_toolbar_id,
         );
-        pango_layout.set_font_description(saved_font.as_ref());
+        {
+            let (_cr, pango_layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
+            pango_layout.set_font_description(saved_font.as_ref());
+        }
         layout
     }
 
@@ -6239,10 +6242,12 @@ mod tests {
     }
 
     /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
-    /// internally (`gtk::sidebar_panel::draw_sidebar_panel` calls
-    /// `gtk::toolbar::draw_toolbar` directly, bypassing
-    /// `GtkBackend::draw_toolbar`), so the same editor-font leak the
-    /// previous test guards against propagates here too unless
+    /// internally — its button text is measured/drawn via
+    /// `NativeSurface::surface_measure_text`/`surface_draw_text_run`
+    /// (`crate::primitives::sidebar_panel::native_surface_paint::paint`,
+    /// #862), which just uses whatever font is live on the shared
+    /// `pango_layout` — so the same editor-font leak the previous test
+    /// guards against propagates here too unless
     /// `GtkBackend::draw_sidebar_panel` does its own save/swap/restore.
     #[test]
     fn gtk_backend_draw_sidebar_panel_toolbar_uses_ui_font_not_editor_font() {
