@@ -50,8 +50,9 @@ use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::TextRegion;
 use crate::event::Point;
+use crate::native_surface::NativeSurface;
 use crate::testing::ZoneRec;
-use crate::types::WidgetId;
+use crate::types::{Color, WidgetId};
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
@@ -3653,6 +3654,128 @@ impl Backend for GtkBackend {
     }
 }
 
+// ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────
+//
+// The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
+// helpers this backend already had privately: `set_source`/`cr.rectangle`/
+// `super::painted_text::show_layout`. Phase 1 is a pure extraction — every
+// verb below either forwards to the identically-named `Backend` method
+// (frame lifecycle, measurement, image) or does exactly what the private
+// helpers already did, so no `draw_*` call site's behaviour changes. See
+// `native_surface`'s module doc for the full scope note and why these
+// methods are `surface_`-prefixed instead of colliding with `Backend`'s.
+impl NativeSurface for GtkBackend {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        Backend::begin_frame(self, viewport);
+    }
+
+    fn surface_end_frame(&mut self) {
+        Backend::end_frame(self);
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        Backend::viewport(self)
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        Backend::line_height(self)
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        Backend::char_width(self)
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (_cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_measure_text called outside enter_frame_scope");
+        layout.set_text(text);
+        layout.set_attributes(None);
+        let (w, h) = layout.pixel_size();
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: QRect, color: Color) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_fill_rect called outside enter_frame_scope");
+        crate::gtk::set_source(cr, color);
+        cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        cr.fill().ok();
+    }
+
+    fn surface_stroke_rect(&mut self, rect: QRect, color: Color, stroke_width: f32) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_stroke_rect called outside enter_frame_scope");
+        crate::gtk::set_source(cr, color);
+        cr.set_line_width(stroke_width as f64);
+        cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        cr.stroke().ok();
+    }
+
+    fn surface_draw_text_run(&mut self, rect: QRect, text: &str, color: Color) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_draw_text_run called outside enter_frame_scope");
+        layout.set_text(text);
+        layout.set_attributes(None);
+        crate::gtk::set_source(cr, color);
+        cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(cr, layout);
+    }
+
+    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_draw_line called outside enter_frame_scope");
+        crate::gtk::set_source(cr, color);
+        cr.set_line_width(stroke_width as f64);
+        cr.move_to(from.x as f64, from.y as f64);
+        cr.line_to(to.x as f64, to.y as f64);
+        cr.stroke().ok();
+    }
+
+    fn surface_push_clip(&mut self, rect: QRect) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_push_clip called outside enter_frame_scope");
+        cr.save().ok();
+        cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        cr.clip();
+    }
+
+    fn surface_pop_clip(&mut self) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_pop_clip called outside enter_frame_scope");
+        cr.restore().ok();
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: QRect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        Backend::draw_image(self, rect, image)
+    }
+}
+
 // ─── Cross-backend validation tests ──────────────────────────────────────────
 //
 // Phase B.5 Stage 2: prove the same generic `<B: Backend>` paint
@@ -6431,5 +6554,104 @@ mod tests {
             "a theme change must force a full repaint even with unchanged \
              cell content, so theme-derived overlay colours never go stale"
         );
+    }
+
+    // ── NativeSurface (#807, Phase 1) ────────────────────────────────
+
+    #[test]
+    fn gtk_backend_native_surface_fill_rect_paints_solid_color() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let red = Color::rgb(200, 20, 20);
+
+        {
+            // `cr`/`pango_layout` must drop before `surface.data()` below —
+            // cairo's `ImageSurface::data()` needs an exclusive reference,
+            // which a live `Context` still borrowing `surface` denies
+            // (mirrors `gtk_backend_theme_change_forces_full_repaint...`'s
+            // block-scoped `cr` a few tests up).
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_fill_rect(QRect::new(0.0, 0.0, 40.0, 40.0), red);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, 5),
+            (red.r, red.g, red.b),
+            "surface_fill_rect must paint the solid color it was given"
+        );
+    }
+
+    /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
+    /// above) — this exercises every remaining `NativeSurface` method at
+    /// least once end-to-end (frame lifecycle, measurement, stroke, line,
+    /// clip push/pop, text run, image) so the trait has a real caller
+    /// (dead_code would otherwise fire — nothing else calls
+    /// `NativeSurface` methods yet, by Phase 1's design) and so an
+    /// implementation bug (wrong arg order, a swapped field, a panic
+    /// inside the frame-scope guard) fails a test instead of shipping
+    /// silently.
+    #[test]
+    fn gtk_backend_native_surface_verbs_do_not_panic() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 100, 60).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+        let mut backend = GtkBackend::new();
+        let viewport = Viewport::new(100.0, 60.0, 1.0);
+
+        backend.surface_begin_frame(viewport);
+        assert_eq!(
+            backend.surface_viewport(),
+            viewport,
+            "surface_viewport must forward to Backend::begin_frame's stored value"
+        );
+        assert_eq!(
+            backend.surface_line_height(),
+            Backend::line_height(&backend)
+        );
+        assert_eq!(backend.surface_char_width(), Backend::char_width(&backend));
+
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let blue = Color::rgb(20, 20, 200);
+            let white = Color::rgb(255, 255, 255);
+            b.surface_stroke_rect(QRect::new(0.0, 0.0, 40.0, 40.0), blue, 2.0);
+            b.surface_draw_line(Point::new(0.0, 0.0), Point::new(40.0, 40.0), blue, 1.0);
+            b.surface_push_clip(QRect::new(0.0, 0.0, 40.0, 40.0));
+            b.surface_draw_text_run(QRect::new(2.0, 2.0, 30.0, 10.0), "hi", white);
+            b.surface_pop_clip();
+
+            let (w, h) = b.surface_measure_text("hi");
+            assert!(
+                w > 0.0 && h > 0.0,
+                "surface_measure_text must report a nonzero footprint for \
+                 non-empty text: got ({w}, {h})"
+            );
+
+            let image = crate::primitives::image::Image {
+                id: WidgetId::new("test:native-surface-image"),
+                source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
+                intrinsic_size: Some((8, 8)),
+                fit: crate::primitives::image::ImageFit::Contain,
+                fallback_text: "[i]".to_string(),
+            };
+            // Empty bytes decode-fail on the real GTK path too — this call
+            // only needs to prove it reaches the same code `Backend::
+            // draw_image` does, not any particular decode outcome.
+            let _ = b.surface_draw_image(QRect::new(0.0, 40.0, 8.0, 8.0), &image);
+        });
+
+        backend.surface_end_frame();
     }
 }
