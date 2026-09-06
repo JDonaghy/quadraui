@@ -565,6 +565,8 @@ impl Default for MacBackend {
     }
 }
 
+impl crate::backend::sealed::Sealed for MacBackend {}
+
 impl Backend for MacBackend {
     fn viewport(&self) -> Viewport {
         self.viewport

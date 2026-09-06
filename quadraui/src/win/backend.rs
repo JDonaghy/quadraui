@@ -992,6 +992,8 @@ impl Default for WinBackend {
     }
 }
 
+impl crate::backend::sealed::Sealed for WinBackend {}
+
 impl Backend for WinBackend {
     // ─── Frame + viewport ─────────────────────────────────────────────
 

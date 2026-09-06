@@ -747,6 +747,8 @@ fn coalesce_mouse_moved(raw: Vec<UiEvent>) -> Vec<UiEvent> {
     out
 }
 
+impl crate::backend::sealed::Sealed for TuiBackend {}
+
 impl Backend for TuiBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -2262,6 +2264,8 @@ mod tests {
             }
         }
     }
+
+    impl crate::backend::sealed::Sealed for MockBackend {}
 
     impl Backend for MockBackend {
         fn viewport(&self) -> Viewport {

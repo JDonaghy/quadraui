@@ -743,6 +743,8 @@ mod tests {
         }
     }
 
+    impl crate::backend::sealed::Sealed for MockBackend {}
+
     impl crate::backend::Backend for MockBackend {
         fn viewport(&self) -> crate::event::Viewport {
             crate::event::Viewport::new(80.0, 24.0, 1.0)

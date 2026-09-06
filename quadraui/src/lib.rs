@@ -51,16 +51,31 @@
 //!     right_segments: vec![lsp_segment(), cursor_segment()],
 //! };
 //!
-//! // Backend (yours or one of the existing ones) — measure + paint:
+//! // Backend (one of the four in-tree ones — see "Backend implementors"
+//! // below) — measure + paint:
 //! draw_status_bar(cr, &bar, &theme);
 //! ```
+//!
+//! ## Backend implementors
+//!
+//! [`Backend`] is `pub` but **sealed** — TUI, GTK, Win-GUI, and macOS are
+//! the only implementations that will ever exist, and the trait enforces
+//! that rather than just documenting it (quadraui#800). See [`Backend`]'s
+//! own rustdoc for the mechanism (a private supertrait, plus a
+//! `compile_fail` doctest proving an out-of-crate `impl Backend` doesn't
+//! compile) and the reasoning: a required method can be added to
+//! `Backend` in an ordinary PR, with no default and no version bump,
+//! whenever a new primitive ships — sealing is what makes that safe
+//! rather than a silent trap for a downstream implementor. Want to
+//! render onto a target none of the four cover? Contribute a fifth
+//! in-tree backend — see `BACKEND.md` and `docs/BACKEND.md`.
 //!
 //! ## Documentation
 //!
 //! - **`README.md`** (repository root — this crate is a workspace member,
 //!   not a standalone `cargo package` with its own README) — quick start,
 //!   full primitive list, per-backend status.
-//! - **`BACKEND.md`** — implementing a new render backend: mental
+//! - **`BACKEND.md`** — contributing a new in-tree render backend: mental
 //!   model, the three contracts (owned data, measurer-parameterised
 //!   algorithms, per-primitive contracts), two-pass paint pattern,
 //!   click-intercept hierarchy, implementer checklist.

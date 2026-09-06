@@ -1175,6 +1175,8 @@ fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
     }
 }
 
+impl crate::backend::sealed::Sealed for GtkBackend {}
+
 impl Backend for GtkBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
