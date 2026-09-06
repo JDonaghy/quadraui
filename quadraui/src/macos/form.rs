@@ -688,6 +688,20 @@ mod tests {
         // `primitives::form::paint` was written from the Windows copy,
         // which never painted this pill, so unifying the three
         // rasterisers silently dropped macOS's on-state affordance.
+        //
+        // This test stays macOS-only (#857) because `region_has_color`
+        // scans real `BitmapSurface` pixels for glyph-free ground —
+        // which pixels a Core Text-rasterised glyph does or doesn't
+        // touch is genuinely host-specific, not arithmetic. The
+        // widget-state → "does this item get the pill" decision this
+        // test is actually exercising is not host-specific, and has its
+        // own host-independent coverage: `paint_geometry::
+        // selected_item_fill`'s tests (every host, no features — the
+        // pure decision) and `native_surface_paint::tests::
+        // toggle_group_fills_selected_bg_behind_on_items_only` (the full
+        // `paint()` pipeline via a `RecordingSurface` mock, needs
+        // `--features {gtk,win,macos}`). See `paint_geometry`'s module
+        // doc for the full layered-coverage rationale.
         let form = search_flags_form();
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
@@ -731,6 +745,11 @@ mod tests {
 
     #[test]
     fn segmented_control_selected_paints_selected_bg() {
+        // Stays macOS-only for the same reason as
+        // `toggle_group_on_item_paints_selected_bg` above — a real
+        // pixel/glyph probe, not compositing arithmetic. See that
+        // test's comment and `paint_geometry`'s module doc for the
+        // layered, host-independent coverage of the decision itself.
         let form = Form {
             id: WidgetId::new("seg-form"),
             fields: vec![FormField {
