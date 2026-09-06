@@ -191,31 +191,60 @@ backend uses).
 minimal stub set; real backends will replace each method with a
 platform-native call.
 
-## Error reporting: no `Result` on the trait today (design only — issue #507)
+## Error reporting: `BackendError` + polled `last_error()` (issue #507/#805)
 
-The `Backend` trait has no `Result` anywhere, on any method, in the
-shipped code — `begin_frame`, `end_frame`, `poll_events`, `wait_events`,
-every `draw_*`, and the four CSD `bool` methods (`begin_window_drag`,
-`toggle_window_maximize`, `begin_window_resize`, `set_cursor`) are all
-infallible today. If your backend hits a native failure (a lost D3D
-device, a Cairo error, a closed terminal file descriptor), there is
-currently no channel to report it through — swallow it or panic, per
-your backend's own judgment.
+`begin_frame`, `poll_events`, `wait_events`, every `draw_*`, and the four
+CSD `bool` methods (`begin_window_drag`, `toggle_window_maximize`,
+`begin_window_resize`, `set_cursor`) stay exactly as designed in D-009
+(`docs/decisions/DECISIONS.md`) — infallible, by deliberate choice, not
+because nothing has landed yet. What *did* land, minimal and additive,
+per D-009's two seams:
 
-**This section previously documented a `BackendError` type,
-`Backend::last_error()`, and `_result`-suffixed `PlatformServices`
-methods as if they were shipped API.** None of them exist in `src/` —
-grep finds zero occurrences of `BackendError` anywhere in the crate.
-That was aspirational text for the minimal-error-channel design in
-`docs/decisions/DECISIONS.md` D-009 (issue #507), written before the design was
-implemented, and it drifted into looking like an implementer reference
-for API that was never built. Removed here rather than left to mislead
-the next backend author; see D-009 for the actual design (`Unsupported`
-vs `PlatformFailure` vs `SurfaceLost`, the `last_error()` polling shape,
-the `_result`-twin pattern for `PlatformServices` dialogs) if you are
-picking that issue up. Coordinate with #507 before re-adding this
-section — it should describe real, shipped API when it comes back, not
-the plan for one.
+- **`BackendError`** (`src/backend.rs`) — a three-variant `Clone`,
+  `PartialEq` enum: `Unsupported` (this backend has no way to service a
+  request `BackendCaps` otherwise says it supports), `PlatformFailure {
+  context: String }` (a native call failed; `context` names it, e.g.
+  `"SetClipboardData"`), and `SurfaceLost` (the render surface/device
+  was lost mid-frame and must be recreated before the next
+  `begin_frame`).
+- **`Backend::last_error(&mut self) -> Option<BackendError>`** — a
+  polled, clear-on-read method, *not* a `Result`-returning
+  `begin_frame`/`end_frame`/`poll_events`/`wait_events`. Default: always
+  `None`. `TuiBackend`/`GtkBackend`/`MacBackend` all use the default —
+  none of them has a concrete producer yet. `WinBackend` overrides it:
+  `end_frame` sets an internal field to `Some(BackendError::SurfaceLost)`
+  whenever `ID2D1RenderTarget::EndDraw` fails (`D2DERR_RECREATE_TARGET`
+  or anything else — both are treated the same, since either way the
+  target must be rebuilt) and drops the render target; `last_error()`
+  hands that back to a caller and clears it. `end_frame` also routes the
+  same event through `crate::diagnostics::emit` so a host with a sink
+  installed sees it even if nothing ever calls `last_error()`.
+  Recreation itself isn't part of this method — `WinBackend::ensure_surface`
+  (called from `win::run`'s `WM_PAINT`/`WM_SIZE` handlers, and from
+  `WinDriver::render` in tests) lazily rebuilds the dropped surface
+  before the next frame paints, whether that surface was a real `HWND`
+  or (since #805) a headless `WinDriver` target.
+- **`Clipboard::write_text_result(&self, text: &str) -> ServiceResult<()>`**
+  — the one Seam-2-shaped twin that shipped so far (D-009's other two,
+  the three `PlatformServices` dialog `_result` methods, remain
+  follow-up scope — see below). Default body calls the existing
+  infallible `write_text` and returns `Ok(())`, so no implementor needed
+  to change to keep compiling. `WinClipboard` overrides it with the real
+  `OpenClipboard`/`GlobalAlloc`/`SetClipboardData` failure it can now
+  tell apart from success; `write_text` itself is unchanged and still
+  discards it, for callers that don't care.
+
+**What's still design-only, per D-009's follow-up list**: the three
+`PlatformServices::show_*_dialog_result` twins, and wiring GTK's ~25
+swallowed `cr.fill().ok()`/`cr.stroke().ok()` call sites
+(`gtk/activity_bar.rs`, `chart.rs`, `command_center.rs`, `panel.rs`,
+`status_bar.rs`) through `last_error()`. Neither exists in `src/` yet;
+don't assume either from this section without checking.
+
+See D-009 for the full design rationale (why `begin_frame`/`end_frame`
+stay infallible instead of `Result`-returning, why `draw_*`/the CSD
+`bool`s were rejected for migration, the `BackendCaps`-vs-`BackendError`
+split) — this section only tracks what's actually in the tree.
 
 ## `UiEvent` emission matrix (issue #501)
 

@@ -349,6 +349,32 @@ pub fn defaulted_trait_methods() -> Vec<&'static str> {
 /// override landed. The `draw_*` defaults are absent on purpose: C0 owns
 /// those, and it is a hard failure there rather than an entry here.
 pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
+    // ── `last_error` (issue #507/#805, D-009 in DECISIONS.md): `WinBackend`
+    // is the one backend with a concrete producer today (`end_frame`
+    // recording `BackendError::SurfaceLost` on a failed `EndDraw`), so it's
+    // the only one that overrides this. TUI/GTK/macOS never set an internal
+    // error field — the always-`None` default answers exactly like the
+    // method doesn't exist, at zero cost, per the trait doc's own "Default:
+    // always None" note. Not a gap to close; these three backends simply
+    // have nothing to report yet.
+    (
+        "tui",
+        "last_error",
+        "crossterm has no concrete BackendError producer yet — the default answers exactly like \
+         the method doesn't exist, per Backend::last_error's own doc",
+    ),
+    (
+        "gtk",
+        "last_error",
+        "no concrete BackendError producer yet — D-009's follow-up 4 (wiring the ~25 swallowed \
+         `cr.fill().ok()`/`cr.stroke().ok()` call sites through last_error) is unstarted",
+    ),
+    (
+        "macos",
+        "last_error",
+        "no concrete BackendError producer yet — Cocoa/CoreGraphics failures aren't wired to \
+         this channel",
+    ),
     // ── TUI: a fixed-cell backend, so the font-shaped methods have no
     // meaning rather than being unfinished.
     (

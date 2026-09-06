@@ -435,8 +435,9 @@ pub use accelerator::{
     AcceleratorScope, KeyBinding, ParsedBinding, Platform,
 };
 pub use backend::{
-    Backend, BackendCaps, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
-    MessageDialogOptions, Notification, PlatformServices, PointerShape, ResizeEdge,
+    Backend, BackendCaps, BackendError, Clipboard, FileDialogOptions, MessageDialogButton,
+    MessageDialogChoice, MessageDialogOptions, Notification, PlatformServices, PointerShape,
+    ResizeEdge, ServiceResult,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,

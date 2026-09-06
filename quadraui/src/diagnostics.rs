@@ -94,29 +94,37 @@ pub fn clear_sink() {
 ///
 /// Library-internal call sites only (not `pub`): the small, named set of
 /// places listed in #619 — modal-paint tracking, vt100 panic recovery,
-/// the GTK/macOS siblings of the same modal-paint check. Genuinely
-/// CLI-shaped tools (examples, the GTK headless-smoke harness) print
-/// directly and carry their own justified `#[allow(clippy::print_stderr)]`
-/// instead of going through this sink — they *are* the host, not a
-/// library embedded in one.
+/// the GTK/macOS siblings of the same modal-paint check — plus, since
+/// issue #805, `win/backend.rs`'s `end_frame` reporting a dropped render
+/// target. Genuinely CLI-shaped tools (examples, the GTK headless-smoke
+/// harness) print directly and carry their own justified
+/// `#[allow(clippy::print_stderr)]` instead of going through this sink —
+/// they *are* the host, not a library embedded in one.
 ///
 /// Every one of those call sites lives in a feature-gated module —
 /// `tui/backend.rs`, `gtk/backend.rs`, `macos/backend.rs` (itself
 /// additionally `target_os = "macos"`-gated in `lib.rs`, so on Linux the
-/// `macos` feature compiles none of it) and `terminal_engine.rs`. This
-/// module is not gated, so a configuration that enables none of them —
-/// CI's `cargo check -p quadraui --features win` gate is exactly that
-/// one — compiles `emit` with zero callers and trips `dead_code` under
-/// the workflow's `-D warnings`. The allow is scoped by `cfg_attr` to
-/// precisely that case rather than applied unconditionally, so
-/// dead-code detection stays live in every configuration where a call
-/// site actually compiles.
+/// `macos` feature compiles none of it), `win/backend.rs`'s `end_frame`
+/// (itself additionally `target_os = "windows"`-gated, so on Linux the
+/// `win` feature compiles none of it either — mirrors the `macos` case
+/// exactly), and `terminal_engine.rs`. This module is not gated, so a
+/// configuration that enables none of them — CI's `cargo check -p
+/// quadraui --features win` gate on Linux is exactly that one, since
+/// `win`'s only call site needs `target_os = "windows"` too — compiles
+/// `emit` with zero callers and trips `dead_code` under the workflow's
+/// `-D warnings`. The allow is scoped by `cfg_attr` to precisely that
+/// case rather than applied unconditionally, so dead-code detection
+/// stays live in every configuration where a call site actually
+/// compiles, including a real `--features win` build on Windows itself
+/// (`cargo xwin`'s `target_os = "windows"` — see `docs/BACKEND.md`'s
+/// Win-GUI testing section), which does have one.
 #[cfg_attr(
     not(any(
         feature = "tui",
         feature = "gtk",
         feature = "terminal",
-        all(feature = "macos", target_os = "macos")
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
     )),
     allow(dead_code)
 )]

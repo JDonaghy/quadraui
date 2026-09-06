@@ -392,7 +392,16 @@ impl<A: AppLogic> WinDriver<A> {
     }
 
     /// Repaint one frame through the shared production render path.
+    ///
+    /// Calls [`WinBackend::ensure_surface`] first, mirroring `win::run`'s
+    /// live `WM_PAINT`/`WM_SIZE` handlers (issue #805): without this, a
+    /// surface `end_frame` dropped after a failed `EndDraw` (device
+    /// lost / `D2DERR_RECREATE_TARGET`) stayed `None` forever in a
+    /// headless driver, since nothing else in this type's call path ever
+    /// recreated it — the exact gap that made the render-target recovery
+    /// path unreachable from a test.
     pub fn render(&mut self) {
+        let _ = self.backend.ensure_surface();
         let viewport = Viewport::new(self.width as f32, self.height as f32, 1.0);
         render_frame(&mut self.backend, &self.app, viewport);
     }
@@ -534,6 +543,13 @@ impl<A: AppLogic> WinDriver<A> {
     /// Access the backend for test assertions.
     pub fn backend(&self) -> &WinBackend {
         &self.backend
+    }
+
+    /// Mutable access to the backend — needed for `&mut self` trait
+    /// methods like [`Backend::last_error`] that a test wants to poll
+    /// directly rather than through a scripted event (issue #805).
+    pub fn backend_mut(&mut self) -> &mut WinBackend {
+        &mut self.backend
     }
 
     /// Access the underlying offscreen surface.
@@ -807,5 +823,156 @@ mod tests {
             "inventory().text_runs() should be non-empty after a status-bar paint"
         );
         assert!(inventory.screen_has("NORMAL"));
+    }
+
+    /// Issue #805 acceptance: force a real `EndDraw` failure and assert
+    /// the *next* frame still paints — the black-box proof that
+    /// `WinBackend::end_frame`'s device-lost recovery (drop the surface,
+    /// report `BackendError::SurfaceLost`, let `ensure_surface` rebuild
+    /// it) actually round-trips, including the headless case this test
+    /// runs in.
+    ///
+    /// ## Forcing a genuine `EndDraw` failure, not a fake one
+    ///
+    /// `DrawBitmap` returns `void` in the Direct2D API — any failure it
+    /// hits is recorded internally and only reported later, by `EndDraw`.
+    /// Drawing an [`ID2D1Bitmap`] created against a *different*
+    /// `ID2D1DCRenderTarget`'s resource domain (a second, independent
+    /// [`HeadlessSurface`], its own `D2D1CreateFactory` call) is a
+    /// well-defined Direct2D error (`D2DERR_WRONG_RESOURCE_DOMAIN`) —
+    /// this reaches `WinBackend::end_frame`'s real `EndDraw(None,
+    /// None)` call through the same deferred-error path a genuine
+    /// `D2DERR_RECREATE_TARGET` device-loss would, without corrupting
+    /// any OS resource the recovery path then has to fake its way
+    /// around. `HeadlessSurface::paint`'s own doc already calls out
+    /// this pattern ("`Err` on device loss or an invalid drawing
+    /// call") — this test is the "invalid drawing call" half of it,
+    /// driven through the real `Backend::end_frame`/`last_error`
+    /// wiring instead of `HeadlessSurface::paint` directly.
+    ///
+    /// Observed RED before issue #805's `ensure_surface` headless-recovery
+    /// fix landed: `WinBackend::headless_target` didn't exist, so once
+    /// `end_frame` dropped `self.surface`, `ensure_surface` had no `hwnd`
+    /// to reattach through and stayed a permanent no-op — the recovered
+    /// frame below painted nothing (`pixel_at` stayed the frame-1 clear
+    /// colour) instead of the frame-1 divider colour.
+    #[test]
+    fn end_frame_recovers_the_next_frame_after_a_forced_end_draw_failure() {
+        use windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U;
+        use windows::Win32::Graphics::Direct2D::{
+            ID2D1Bitmap, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_BITMAP_PROPERTIES,
+        };
+
+        const W: u32 = 32;
+        const H: u32 = 32;
+        let divider_color = Color::rgb(0x22, 0x66, 0xaa);
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let paint_divider = |backend: &mut WinBackend| {
+            use crate::Backend;
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.set_theme(crate::theme::Theme {
+                separator: divider_color,
+                ..crate::theme::Theme::default()
+            });
+            backend.draw_terminal_divider(Rect::new(0.0, 0.0, W as f32, H as f32));
+            backend.end_frame();
+        };
+
+        // Frame 1: baseline — confirm painting works before anything is
+        // forced to fail.
+        paint_divider(&mut backend);
+        assert_eq!(
+            (
+                surface.pixel_at(0, H / 2).r,
+                surface.pixel_at(0, H / 2).g,
+                surface.pixel_at(0, H / 2).b,
+            ),
+            (divider_color.r, divider_color.g, divider_color.b),
+            "sanity: frame 1 must paint the divider before we force anything to fail"
+        );
+
+        // A second, independent headless surface purely to manufacture a
+        // bitmap in a different Direct2D resource domain — see the
+        // module doc above for why this reliably forces a deferred
+        // `EndDraw` failure.
+        let foreign_surface = HeadlessSurface::new(4, 4).expect("create foreign headless surface");
+        let bitmap_props = D2D1_BITMAP_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_IGNORE,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+        };
+        let foreign_bitmap: ID2D1Bitmap = unsafe {
+            foreign_surface
+                .target()
+                .CreateBitmap(
+                    D2D_SIZE_U {
+                        width: 1,
+                        height: 1,
+                    },
+                    None,
+                    0,
+                    &bitmap_props,
+                )
+                .expect("create foreign-domain bitmap")
+        };
+
+        // Frame 2: draw the foreign-domain bitmap into the surface under
+        // test — `end_frame`'s `EndDraw` must now fail for real.
+        {
+            use crate::Backend;
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            unsafe {
+                surface.target().DrawBitmap(
+                    &foreign_bitmap,
+                    None,
+                    1.0,
+                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                    None,
+                );
+            }
+            backend.end_frame();
+
+            assert_eq!(
+                backend.last_error(),
+                Some(crate::backend::BackendError::SurfaceLost),
+                "end_frame must report SurfaceLost once EndDraw genuinely fails"
+            );
+            assert_eq!(
+                backend.last_error(),
+                None,
+                "last_error() must clear on read — a second call must not repeat the same error"
+            );
+        }
+
+        // Frame 3 — the acceptance criterion: painting must still work
+        // after the forced failure. `ensure_surface` before
+        // `paint_divider` mirrors exactly what `WinDriver::render` (and
+        // `win::run`'s live `WM_PAINT`/`WM_SIZE` handlers) do before
+        // every real frame (issue #805) — this test calls it explicitly
+        // since it drives `WinBackend` directly rather than through
+        // `WinDriver`.
+        {
+            let _ = backend.ensure_surface();
+            paint_divider(&mut backend);
+        }
+        assert_eq!(
+            (
+                surface.pixel_at(0, H / 2).r,
+                surface.pixel_at(0, H / 2).g,
+                surface.pixel_at(0, H / 2).b,
+            ),
+            (divider_color.r, divider_color.g, divider_color.b),
+            "frame 3 (after recovery) must still paint the divider — the render target must have \
+             been rebuilt by ensure_surface, not left permanently dropped"
+        );
     }
 }
