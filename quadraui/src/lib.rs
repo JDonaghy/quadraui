@@ -3,15 +3,22 @@
 //! Cross-platform UI primitives for keyboard-driven desktop and terminal apps.
 //!
 //! Targets four rendering backends with a single declarative API:
-//! - **Windows** (Direct2D + DirectWrite) — `windows-rs`
-//! - **Linux** (GTK4 + Cairo + Pango) — `gtk4`
-//! - **macOS** (Core Graphics + Core Text) — *planned, v1.x*
-//! - **TUI** (ratatui + crossterm) — works everywhere as a fallback
+//! - **TUI** (ratatui + crossterm) — full feature parity, works everywhere.
+//! - **Linux** (GTK4 + Cairo + Pango) — `gtk4`, full feature parity.
+//! - **macOS** (Core Graphics + Core Text) — `objc2`/AppKit. Every
+//!   in-window rasteriser shipped; see the crate root `README.md`'s
+//!   *Status* section for the two documented divergences from GTK.
+//! - **Windows** (Direct2D + DirectWrite) — `windows-rs`. Window creation,
+//!   event translation, and platform services are real and exercised by
+//!   blocking CI on `windows-latest`; most per-primitive rasterisers are
+//!   still `todo!()` stubs, tracked as a non-gating "burn-down" column in
+//!   the conformance matrix (see `tests/conformance.rs` and issue #708).
 //!
 //! ## What's in the box
 //!
-//! Nine primitives, each declarative + serde-friendly so apps and Lua
-//! plugins can describe UI as data:
+//! 40 primitives (one module each under `src/primitives/`), each
+//! declarative + serde-friendly so apps and Lua plugins can describe UI
+//! as data. A representative sample:
 //!
 //! | Primitive | Use for |
 //! |-----------|---------|
@@ -24,6 +31,10 @@
 //! | [`ActivityBar`] | Vertical icon strips (VSCode-style) |
 //! | [`Terminal`] | Cell grids for terminal emulators |
 //! | [`TextDisplay`] | Streaming logs, AI chat output |
+//!
+//! See the crate root `README.md`'s *Primitives* section for the fuller
+//! (still not exhaustive) list, or `src/primitives/mod.rs` for the
+//! authoritative one.
 //!
 //! ## How it works
 //!
@@ -46,7 +57,9 @@
 //!
 //! ## Documentation
 //!
-//! - **`README.md`** (in this crate) — quick start, primitive guide.
+//! - **`README.md`** (repository root — this crate is a workspace member,
+//!   not a standalone `cargo package` with its own README) — quick start,
+//!   full primitive list, per-backend status.
 //! - **`BACKEND.md`** — implementing a new render backend: mental
 //!   model, the three contracts (owned data, measurer-parameterised
 //!   algorithms, per-primitive contracts), two-pass paint pattern,
@@ -58,18 +71,25 @@
 //!   Cairo + Pango (pixel units, two-pass paint). Requires the
 //!   `gtk-example` feature: `cargo run --example gtk_demo
 //!   --features gtk-example`.
-//! - **`docs/UI_CRATE_DESIGN.md`** — full design rationale and the §10
-//!   plugin invariants every primitive must honour.
+//! - **`docs/UI_CRATE_DESIGN.md`** — original design sketch and the §10
+//!   plugin invariants every primitive must honour. Predates
+//!   implementation (see its own status banner) — treat it as a decision
+//!   record, not a live status page.
 //! - **`docs/DECISIONS.md`** — running log of API decisions
 //!   (which primitives, why this shape, what was deferred).
 //!
 //! ## Status
 //!
-//! Pre-1.0 (`v0.1.x`). API will stabilise before publishing to crates.io.
-//! All nine primitives shipped; the TUI and GTK backends are battle-tested
-//! by vimcode (5000+ tests), the Win-GUI backend ships SC + explorer panel
-//! migrations and is queued for tab/status/activity bar parity. macOS is
-//! v1.x.
+//! `0.0.x` — pre-1.0, not yet published to crates.io, breaking changes
+//! allowed. 40 primitives shipped. The TUI and GTK backends have full
+//! feature parity and are battle-tested by vimcode (5000+ tests). The
+//! macOS backend implements the whole `Backend` trait and is built/tested
+//! for real on `macos-latest` CI. The Windows backend's window/event/
+//! platform-services infrastructure is real and CI-blocking on
+//! `windows-latest`; most per-primitive rasterisers are still unwritten
+//! (`todo!()` stubs), tracked as a non-gating conformance-matrix column.
+//! See the root `README.md`'s *Status* section for the specifics and
+//! issue links.
 //!
 //! ## Plugin invariants (briefly)
 //!

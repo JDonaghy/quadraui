@@ -2,8 +2,9 @@
 
 Cross-platform UI primitives with native rendering backends for **TUI**
 (via ratatui), **GTK4** (via gtk4-rs + Cairo + Pango), **macOS** (Core
-Graphics + Core Text), and — designed-for, not-yet-implemented —
-**Windows** (Direct2D + DirectWrite).
+Graphics + Core Text), and **Windows** (Direct2D + DirectWrite via
+`windows-rs`) — see *Status* below for how far each backend actually
+gets.
 
 The premise: declarative widget descriptions (`TreeView`, `MultiSectionView`,
 `TabBar`, etc.) are produced once by the host app, and each backend
@@ -16,7 +17,22 @@ This rules out the "paint and click drift" bug class structurally.
 
 `0.0.x` — pre-1.0, breaking changes allowed. The TUI and GTK backends
 are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
-The Windows backend is scaffolded but not implemented yet.
+
+**The Windows backend is further along than "scaffolded, no code" — its
+window/event infrastructure is real and blocking on CI.** `.github/workflows/ci.yml`'s
+`tui` job runs a `[ubuntu-latest, windows-latest]` matrix where *both*
+legs are blocking (#590): on `windows-latest` it builds and clippy-checks
+every `win_*` example against the real `windows` crate, and runs `cargo
+test -p quadraui --features win` for real on that host — including the
+headless `ID2D1DCRenderTarget` surface in `src/win/testing.rs`, which
+needs no `HWND`, GPU, or desktop session. What's still incomplete: most
+`Backend::draw_*`/`*_layout` methods on `WinBackend` are `todo!()` stubs
+(`quadraui/src/win/backend.rs`) — the window, event-translation, and
+platform-services layers work, but per-primitive rasterisers are largely
+unwritten. This is tracked honestly rather than silently: the conformance
+matrix (`quadraui/tests/conformance.rs`) registers `win` as a **burn-down**
+column (quadraui#708/#722) — its cells are reported in the artifact but
+don't gate CI, precisely because the rasterisers aren't done yet.
 
 **The macOS backend implements the whole `Backend` trait, and
 `macos-latest` CI builds and tests it** (`.github/workflows/macos.yml`,
@@ -65,11 +81,18 @@ real apps under development.
 - `tui` — TUI rasteriser (`quadraui::tui::draw_*`).
 - `gtk` — GTK4 rasteriser (`quadraui::gtk::draw_*`).
 
-A consumer that needs both:
+quadraui is not published to crates.io — a bare `version = "0.0.1"` crates.io
+dependency line will not resolve for anyone. Consumers pin it either by git rev or by
+relative path, the same two shapes this repo's own downstream consumers
+use (see `CLAUDE.md`'s *Downstream consumers* table):
 
 ```toml
 [dependencies]
-quadraui = { version = "0.0.1", features = ["tui", "gtk"] }
+# Pin to a commit (coord-tui's approach):
+quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = ["tui", "gtk"] }
+
+# Or, for in-tree/sibling-checkout development (vimcode's approach):
+quadraui = { path = "../quadraui/quadraui", features = ["tui", "gtk"] }
 ```
 
 Backend-specific tests are gated on the corresponding feature. CI builds
@@ -77,7 +100,8 @@ both sets.
 
 ## Primitives
 
-Current set (declarative descriptions + layout + dual rasterisers):
+40 primitives (one module each under `quadraui/src/primitives/`),
+declarative descriptions + layout + dual rasterisers. The most-used ones:
 
 - `TreeView` — flat-rendered, scroll-aware, hit-testable.
 - `ListView` — single-column scrollable list.
