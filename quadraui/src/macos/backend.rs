@@ -3426,6 +3426,20 @@ mod tests {
     /// `apply_selection_highlight`, and asserts the pixel at the
     /// selection's location shifted toward the translucent-blue highlight
     /// instead of staying the plain background colour.
+    ///
+    /// ## Why the probe column is derived, not hardcoded
+    ///
+    /// The blend is `bg + 0.30 * (highlight - bg)`, so the size of the
+    /// blue-channel rise depends entirely on what was underneath. A
+    /// fixed `x = 2` probe lands on the antialiased stem of the first
+    /// glyph (~`(206, 206, 206)` for white-on-dark Menlo), where the
+    /// rise shrinks to `0.30 * (255 - 206) ≈ 15` and a
+    /// "blue must rise noticeably" threshold fails even though the
+    /// paint is perfectly correct. So the probe is taken from the
+    /// **painted `StatusBarLayout`** — just past the text segment's
+    /// right edge, where the bar fill is still `BG` and no glyph can
+    /// reach — the same glyph-free-padding trick
+    /// `macos::status_bar`'s own tests use.
     #[test]
     fn mac_apply_selection_highlight_paints_over_the_background() {
         use super::super::headless::BitmapSurface;
@@ -3435,18 +3449,20 @@ mod tests {
         const W: u32 = 200;
         const H: u32 = 32;
         const BG: Color = Color::rgb(10, 10, 10);
+        const TEXT: &str = "hello world";
 
         let surface = BitmapSurface::new(W, H);
         let mut b = MacBackend::new();
         b.set_current_font(font());
         b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |bk| {
-            bk.draw_status_bar(
+            let l = bk.draw_status_bar(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("bg"),
                     left_segments: vec![StatusBarSegment {
-                        text: "hello world".into(),
+                        text: TEXT.into(),
                         fg: Color::rgb(255, 255, 255),
                         bg: BG,
                         bold: false,
@@ -3457,15 +3473,35 @@ mod tests {
                 None,
                 None,
             );
+            *layout.borrow_mut() = Some(l);
         });
-        b.register_text_region(text_region(
-            "bg",
-            0.0,
-            0.0,
-            W as f32,
-            H as f32,
-            vec!["hello world"],
-        ));
+        let layout = layout.into_inner().expect("draw_status_bar ran");
+        let seg = layout
+            .visible_segments
+            .first()
+            .expect("the single left segment is visible in a 200pt-wide bar");
+
+        // Glyph-free background column: two points past the text
+        // segment's right edge, still inside the bar's full-width fill.
+        let probe_x = (seg.bounds.x + seg.bounds.width) as u32 + 2;
+        assert!(
+            probe_x < W,
+            "probe column {probe_x} must stay inside the {W}pt surface — the \
+             '{TEXT}' segment measured wider than expected ({seg:?})"
+        );
+        let probe_y = 2;
+        // A row below the single selected row: still inside the surface
+        // but outside the highlight, so it proves the fill is clipped to
+        // the selection instead of flooding the region.
+        let line_h = b.line_height();
+        let unselected_y = line_h as u32 + 2;
+        assert!(
+            unselected_y < H,
+            "the unselected probe row {unselected_y} must stay inside the \
+             {H}pt surface (line_height = {line_h})"
+        );
+
+        b.register_text_region(text_region("bg", 0.0, 0.0, W as f32, H as f32, vec![TEXT]));
         b.set_active_text_selection(
             WidgetId::new("bg"),
             Point::new(0.0, 0.0),
@@ -3473,22 +3509,43 @@ mod tests {
         );
 
         // Sample before painting the highlight, then paint it and sample
-        // again — same probe pixel, so the diff isolates exactly what
+        // again — same probe pixels, so the diff isolates exactly what
         // `apply_selection_highlight` changed.
-        let before = surface.pixel(2, 2);
+        let before = surface.pixel(probe_x, probe_y);
+        let before_unselected = surface.pixel(probe_x, unselected_y);
+        assert_eq!(
+            before,
+            (BG.r, BG.g, BG.b, 255),
+            "the probe pixel must sit on the bar's flat background fill, not on \
+             a glyph — otherwise the blend below is measured against the wrong base"
+        );
         b.enter_frame_scope(surface.context_ptr(), |bk| {
             bk.apply_selection_highlight();
         });
-        let after = surface.pixel(2, 2);
+        let after = surface.pixel(probe_x, probe_y);
+        let after_unselected = surface.pixel(probe_x, unselected_y);
 
         assert_ne!(
             before, after,
             "apply_selection_highlight must paint over the background at a selected pixel"
         );
+        // i32 arithmetic so an unexpected sample can never overflow a u8
+        // and panic *before* the assertion message gets to print it.
+        let (ar, ag, ab) = (after.0 as i32, after.1 as i32, after.2 as i32);
         assert!(
-            after.2 > before.2 + 20,
+            ab > before.2 as i32 + 20,
             "the highlight is translucent blue, so the blue channel must rise \
              noticeably at a selected pixel: before={before:?} after={after:?}"
+        );
+        assert!(
+            ab > ar + 20 && ab > ag + 20,
+            "blue must end up the dominant channel after a translucent-blue \
+             highlight: after={after:?}"
+        );
+        assert_eq!(
+            before_unselected, after_unselected,
+            "the highlight must be clipped to the selected row — row at y={unselected_y} \
+             is outside the one-row selection and must be untouched"
         );
     }
 }
