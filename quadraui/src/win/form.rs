@@ -83,7 +83,7 @@ impl NativeSurface for RawFormSurface<'_> {
 
     /// #810: overrides the default (which drops styling and scale) —
     /// mirrors `WinBackend::surface_draw_text_run_styled`'s `bold`-only
-    /// + `scale_x` support, needed so
+    /// plus `scale_x` support, needed so
     /// [`crate::win::multi_section_view`]'s embedded `Terminal` section
     /// body (the one production call site that reaches this through
     /// `RawFormSurface` rather than a live `WinBackend`) doesn't lose
