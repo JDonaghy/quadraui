@@ -5,7 +5,7 @@
 //! per-section scrollbars, optional dividers) onto an `ID2D1RenderTarget`
 //! and dispatches each section's body to the appropriate quadraui body
 //! rasteriser (`super::tree::draw_tree`, `super::list::draw_list`,
-//! `super::form::draw_form`, `super::chart::draw_chart`,
+//! `draw_form_body`, `super::chart::draw_chart`,
 //! `super::terminal::draw_terminal_cells`,
 //! `super::message_list::draw_message_list`) using the body bounds
 //! returned by the primitive's [`crate::MultiSectionView::layout`].
@@ -365,7 +365,7 @@ fn paint_body(
             let _ = super::list::draw_list(target, dwrite, bounds, l, line_height);
         }
         SectionBody::Form(f) => {
-            let _ = super::form::draw_form(target, dwrite, bounds, f, line_height);
+            draw_form_body(target, dwrite, bounds, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
             let _ = super::chart::draw_chart(
@@ -415,6 +415,70 @@ fn paint_body(
         }
     }
     pop_clip(target);
+}
+
+/// Paint an embedded [`crate::Form`] section body. #808: field-kind
+/// painting goes through the shared [`crate::primitives::form::paint`]
+/// via [`super::form::RawFormSurface`] (this call site has only a raw
+/// `target`/`dwrite`, not a live [`super::WinBackend`]) —
+/// `FieldKind::Toolbar` is painted separately below, same as
+/// `WinBackend::draw_form`, for the same reason (see that fn's doc).
+fn draw_form_body(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    bounds: Rect,
+    form: &crate::Form,
+    theme: &Theme,
+    line_height: f32,
+) {
+    let flayout = super::form::win_form_layout(dwrite, bounds, form, line_height);
+    let origin = crate::Point::new(bounds.x, bounds.y);
+    let mut surface = super::form::RawFormSurface { target, dwrite };
+    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
+
+    for vf in &flayout.visible_fields {
+        let Some(field) = form.fields.get(vf.field_idx) else {
+            continue;
+        };
+        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
+            continue;
+        };
+        let field_fg = if field.disabled {
+            theme.muted_fg
+        } else {
+            theme.foreground
+        };
+        for (item_id, item_rect) in &vf.item_bounds {
+            let btn = toolbar.buttons.iter().find_map(|b| {
+                super::form::toolbar_item(&field.id, b)
+                    .filter(|(id, _)| id == item_id)
+                    .map(|_| b)
+            });
+            let r = Rect::new(
+                origin.x + item_rect.x,
+                origin.y + item_rect.y,
+                item_rect.width,
+                item_rect.height,
+            );
+            match btn {
+                Some(crate::primitives::toolbar::ToolbarButton::Action {
+                    label, enabled, ..
+                }) => {
+                    let fg = if *enabled { field_fg } else { theme.muted_fg };
+                    let (tw, th) = dwrite.measure_text(label).unwrap_or((0.0, 0.0));
+                    let ty = r.y + (r.height - th) / 2.0;
+                    let _ = dwrite.draw_text(target, label, Rect::new(r.x, ty, tw, th), fg);
+                }
+                Some(crate::primitives::toolbar::ToolbarButton::Label { text, fg }) => {
+                    let color = fg.unwrap_or(field_fg);
+                    let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
+                    let ty = r.y + (r.height - th) / 2.0;
+                    let _ = dwrite.draw_text(target, text, Rect::new(r.x, ty, tw, th), color);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn paint_text_lines(

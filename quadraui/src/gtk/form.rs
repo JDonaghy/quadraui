@@ -1,27 +1,156 @@
-//! GTK rasteriser for [`crate::Form`].
+//! GTK settings-chrome rasteriser for [`crate::Form`], plus
+//! [`RawFormSurface`].
 //!
-//! Cairo + Pango equivalent of `quadraui::tui::draw_form`. Per-field
-//! row height is `(line_height * 1.4).round()` (the established GTK
-//! convention shared with `TreeView` leaves and `ListView` items).
+//! Field-kind *painting* moved to the shared
+//! [`crate::primitives::form::paint`] (#808, NativeSurface Phase 2a) —
+//! this module now only carries `draw_settings_chrome` (unrelated: form
+//! *body* chrome, not field painting) and `RawFormSurface`, the
+//! [`crate::native_surface::NativeSurface`] adapter over a raw
+//! `(&Context, &pango::Layout)` pair for call sites that have only
+//! those — not a live [`super::backend::GtkBackend`] — such as
+//! [`crate::gtk::multi_section_view`]'s embedded-`Form` section body.
 //!
-//! The new `#143` field kinds (`Slider` / `ColorPicker` / `Dropdown`)
-//! are not yet rendered — those land with their own migration. For
-//! now the row is blank on the right side, so existing forms keep
-//! working.
+//! Before #808, this module's own `draw_form` painted from an ad-hoc
+//! running cursor independent of the shared [`crate::Form::layout`]
+//! geometry `GtkBackend::form_layout` used for hit-testing, and left
+//! `Slider` / `ColorPicker` / `Dropdown` blank. The shared `paint`
+//! fixes both: it paints from the same `FormLayout` hit-testing uses,
+//! and handles all 14 `FieldKind` variants.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::primitives::form::{FieldKind, Form, ValidationState};
-use crate::text_util::{safe_prefix, snap_to_char_boundary};
+use crate::native_surface::NativeSurface;
 use crate::theme::Theme;
+use crate::Form;
 
-/// Draw a [`Form`] into `(x, y, w, h)` on `cr` using `layout` for text
-/// measurement.
+/// See this module's doc.
 ///
-/// Visual contract mirrors `quadraui::tui::draw_form` — see that
-/// module's docs. Per-row height = `(line_height * 1.4).round()`.
+/// Frame-lifecycle / metrics verbs are unreachable from a raw
+/// `(&Context, &pango::Layout)` pair (there is no backend to ask);
+/// `paint` never calls them (it only fills, draws text, and measures
+/// text), so they panic if ever called — a latent contract, not a live
+/// gap.
+pub(crate) struct RawFormSurface<'a> {
+    pub(crate) cr: &'a Context,
+    pub(crate) layout: &'a pango::Layout,
+}
+
+impl NativeSurface for RawFormSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawFormSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawFormSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawFormSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawFormSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawFormSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        self.layout.set_text(text);
+        self.layout.set_attributes(None);
+        let (w, h) = self.layout.pixel_size();
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        super::set_source(self.cr, color);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.fill().ok();
+    }
+
+    fn surface_stroke_rect(&mut self, rect: crate::Rect, color: crate::Color, stroke_width: f32) {
+        super::set_source(self.cr, color);
+        self.cr.set_line_width(stroke_width as f64);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.stroke().ok();
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        self.layout.set_text(text);
+        self.layout.set_attributes(None);
+        super::set_source(self.cr, color);
+        self.cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(self.cr, self.layout);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        from: crate::Point,
+        to: crate::Point,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        super::set_source(self.cr, color);
+        self.cr.set_line_width(stroke_width as f64);
+        self.cr.move_to(from.x as f64, from.y as f64);
+        self.cr.line_to(to.x as f64, to.y as f64);
+        self.cr.stroke().ok();
+    }
+
+    fn surface_push_clip(&mut self, rect: crate::Rect) {
+        self.cr.save().ok();
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.clip();
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.cr.restore().ok();
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        crate::backend::ImagePaintResult::Unsupported
+    }
+}
+
+/// Deprecated free-function shim (#808, CLAUDE.md rule 8): `draw_form`
+/// used to be this module's whole reason to exist — every `FieldKind`
+/// match arm lived directly in its body. Painting now goes through
+/// [`crate::primitives::form::paint`] via [`RawFormSurface`]; this
+/// wrapper reproduces the old signature exactly (same geometry, same
+/// paint contract) for any external caller that held a direct
+/// `quadraui::gtk::draw_form` reference rather than going through
+/// [`crate::Backend::draw_form`] — the sanctioned entry point, and the
+/// one every in-tree call site already uses, which is why this shim has
+/// no in-repo caller left to trip the `-D warnings`-denied `deprecated`
+/// lint. `FieldKind::Toolbar` renders through the full toolbar
+/// rasteriser here too, matching pre-#808 behaviour, for the same
+/// reason `GtkBackend::draw_form` does (see that method's doc).
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `RawFormSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_form(
     cr: &Context,
@@ -37,527 +166,55 @@ pub fn draw_form(
     if w <= 0.0 || h <= 0.0 {
         return;
     }
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
+    let measure = super::toolbar::PangoMeasure {
+        pango_layout: Some(layout),
+        char_width: 8.0,
+    };
+    let flayout = form.layout(w as f32, h as f32, |i| {
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+    });
+    let origin = crate::Point::new(x as f32, y as f32);
+    let mut surface = RawFormSurface { cr, layout };
+    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
-    let bg = cairo_rgb(theme.tab_bar_bg);
-    let hdr_bg = cairo_rgb(theme.header_bg);
-    let hdr_fg = cairo_rgb(theme.header_fg);
-    let fg = cairo_rgb(theme.foreground);
-    let dim = cairo_rgb(theme.muted_fg);
-    let sel = cairo_rgb(theme.selected_bg);
-    let text_sel = cairo_rgb(theme.selection_bg);
-    let accent = cairo_rgb(theme.accent_fg);
-    let error = cairo_rgb(theme.error_fg);
-    let warning = cairo_rgb(theme.warning_fg);
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-    layout.set_attributes(None);
-
-    let row_h = (line_height * 1.4).round();
-    let mut y_off = y.round();
-    let y_end = y + h;
-
-    // Clamp the same way `Form::layout` does (see
-    // `crate::primitives::scrollbar::clamp_scroll_offset`) so a
-    // `scroll_offset` past the end of `fields` still paints the last
-    // page instead of an empty body — otherwise this raw `.skip()`
-    // and `GtkBackend::form_layout`'s hit regions can disagree on
-    // which field occupies a given row (issue #710).
-    let resolved_scroll_offset =
-        crate::primitives::scrollbar::clamp_scroll_offset(form.scroll_offset, form.fields.len());
-
-    for field in form.fields.iter().skip(resolved_scroll_offset) {
-        if y_off + row_h > y_end {
-            break;
-        }
-
-        let is_focused = form.has_focus
-            && form
-                .focused_field
-                .as_ref()
-                .is_some_and(|id| id == &field.id);
-        let is_header = matches!(field.kind, FieldKind::Label);
-
-        let (default_fg, row_bg) = if is_focused {
-            (fg, sel)
-        } else if is_header {
-            (hdr_fg, hdr_bg)
-        } else {
-            (fg, bg)
+    for vf in &flayout.visible_fields {
+        let Some(field) = form.fields.get(vf.field_idx) else {
+            continue;
         };
-
-        cr.set_source_rgb(row_bg.0, row_bg.1, row_bg.2);
-        cr.rectangle(x, y_off, w, row_h);
-        cr.fill().ok();
-
-        let field_fg = if field.disabled { dim } else { default_fg };
-
+        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
+            continue;
+        };
         let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-        cr.set_source_rgb(field_fg.0, field_fg.1, field_fg.2);
-        layout.set_text(&label_text);
-        let (label_w, label_h) = layout.pixel_size();
-        let label_x = x + 6.0;
-        cr.move_to(label_x, (y_off + (row_h - label_h as f64) / 2.0).round());
-        super::painted_text::show_layout(cr, layout);
-        let label_right = label_x + label_w as f64;
         let no_label = label_text.is_empty();
-
-        let input_right = x + w - 8.0;
-        match &field.kind {
-            FieldKind::Label => {}
-            FieldKind::Toggle { value } => {
-                let glyph = if *value { "[x]" } else { "[ ]" };
-                let fg_color = if *value && !field.disabled {
-                    accent
-                } else {
-                    field_fg
-                };
-                cr.set_source_rgb(fg_color.0, fg_color.1, fg_color.2);
-                layout.set_text(glyph);
-                let (iw, ih) = layout.pixel_size();
-                let ix = if no_label {
-                    label_x
-                } else {
-                    input_right - iw as f64
-                };
-                if no_label || ix > label_right + 8.0 {
-                    cr.move_to(ix, (y_off + (row_h - ih as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                }
-            }
-            FieldKind::TextInput {
-                value,
-                placeholder,
-                cursor,
-                selection_anchor,
-            } => {
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    value.as_str()
-                };
-                let input_fg = if value.is_empty() { dim } else { field_fg };
-
-                layout.set_text(shown);
-                let (shown_w, shown_h) = layout.pixel_size();
-
-                let (ix, _, bracket_right) = if no_label {
-                    let ix = label_x;
-                    let bracket_r = input_right - 4.0;
-                    let avail = bracket_r - ix - 8.0;
-                    let dw = (shown_w as f64).min(avail.max(0.0));
-                    (ix, dw, bracket_r)
-                } else {
-                    let max_width = (w * 0.6).max(80.0);
-                    let dw = (shown_w as f64).min(max_width);
-                    let ix = input_right - dw - 14.0;
-                    (ix, dw, ix + 8.0 + dw + 2.0)
-                };
-                if no_label || ix > label_right + 8.0 {
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    layout.set_text("[");
-                    cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    let text_y = (y_off + (row_h - shown_h as f64) / 2.0).round();
-                    let has_sel = matches!(
-                        (cursor, selection_anchor),
-                        (Some(c), Some(a)) if *c != *a && !value.is_empty()
-                    );
-
-                    if has_sel {
-                        let cur = cursor.unwrap();
-                        let anchor = selection_anchor.unwrap();
-                        let (lo, hi) = (cur.min(anchor), cur.max(anchor));
-                        let lo = snap_to_char_boundary(shown, lo);
-                        let hi = snap_to_char_boundary(shown, hi);
-
-                        let prefix = &shown[..lo];
-                        let sel_text = &shown[lo..hi];
-                        let suffix = &shown[hi..];
-
-                        layout.set_text(prefix);
-                        let (prefix_w, _) = layout.pixel_size();
-                        layout.set_text(sel_text);
-                        let (sel_w, _) = layout.pixel_size();
-
-                        cr.set_source_rgb(text_sel.0, text_sel.1, text_sel.2);
-                        cr.rectangle(
-                            ix + 8.0 + prefix_w as f64,
-                            y_off + 2.0,
-                            sel_w as f64,
-                            row_h - 4.0,
-                        );
-                        cr.fill().ok();
-
-                        // Prefix
-                        cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
-                        layout.set_text(prefix);
-                        cr.move_to(ix + 8.0, text_y);
-                        super::painted_text::show_layout(cr, layout);
-
-                        cr.set_source_rgb(fg.0, fg.1, fg.2);
-                        layout.set_text(sel_text);
-                        cr.move_to(ix + 8.0 + prefix_w as f64, text_y);
-                        super::painted_text::show_layout(cr, layout);
-
-                        // Suffix
-                        cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
-                        layout.set_text(suffix);
-                        cr.move_to(ix + 8.0 + prefix_w as f64 + sel_w as f64, text_y);
-                        super::painted_text::show_layout(cr, layout);
-                    } else {
-                        cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
-                        layout.set_text(shown);
-                        cr.move_to(ix + 8.0, text_y);
-                        super::painted_text::show_layout(cr, layout);
-                    }
-
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    layout.set_text("]");
-                    cr.move_to(
-                        bracket_right,
-                        (y_off + (row_h - shown_h as f64) / 2.0).round(),
-                    );
-                    super::painted_text::show_layout(cr, layout);
-
-                    if let Some(cur) = cursor {
-                        let prefix = safe_prefix(shown, *cur);
-                        layout.set_text(prefix);
-                        let (prefix_w, _) = layout.pixel_size();
-                        let cx = ix + 8.0 + prefix_w as f64;
-                        cr.set_source_rgb(accent.0, accent.1, accent.2);
-                        cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
-                        cr.fill().ok();
-                    }
-                }
-            }
-            FieldKind::Button => {
-                cr.set_source_rgb(row_bg.0, row_bg.1, row_bg.2);
-                cr.rectangle(x, y_off, label_right - x + 1.0, row_h);
-                cr.fill().ok();
-
-                let cap_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-                layout.set_text(&cap_text);
-                let (cap_w, cap_h) = layout.pixel_size();
-                let total_w = cap_w as f64 + 24.0;
-                let ix = if no_label {
-                    label_x
-                } else {
-                    input_right - total_w
-                };
-                if no_label || ix > x + 8.0 {
-                    let brk = if is_focused { accent } else { dim };
-                    cr.set_source_rgb(brk.0, brk.1, brk.2);
-                    layout.set_text("<");
-                    cr.move_to(ix, (y_off + (row_h - cap_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    cr.set_source_rgb(field_fg.0, field_fg.1, field_fg.2);
-                    layout.set_text(&cap_text);
-                    cr.move_to(ix + 12.0, (y_off + (row_h - cap_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    cr.set_source_rgb(brk.0, brk.1, brk.2);
-                    layout.set_text(">");
-                    cr.move_to(
-                        ix + 12.0 + cap_w as f64 + 4.0,
-                        y_off + (row_h - cap_h as f64) / 2.0,
-                    );
-                    super::painted_text::show_layout(cr, layout);
-                }
-            }
-            FieldKind::ReadOnly { value } => {
-                let value_text: String = value.spans.iter().map(|s| s.text.as_str()).collect();
-                layout.set_text(&value_text);
-                let (vw, vh) = layout.pixel_size();
-                let ix = if no_label {
-                    label_x
-                } else {
-                    input_right - vw as f64
-                };
-                if no_label || ix > label_right + 8.0 {
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    cr.move_to(ix, (y_off + (row_h - vh as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                }
-            }
-            FieldKind::Slider { .. }
-            | FieldKind::ColorPicker { .. }
-            | FieldKind::Dropdown { .. } => {}
-            FieldKind::Toolbar(toolbar) => {
-                // Render the embedded toolbar left-aligned starting at
-                // `label_right + 12.0` (same start as ToggleGroup / ButtonRow).
-                let toolbar_x = if no_label {
-                    x + 6.0
-                } else {
-                    label_right + 12.0
-                };
-                let toolbar_w = x + w - toolbar_x;
-                if toolbar_w > 0.0 {
-                    super::toolbar::draw_toolbar(
-                        cr, layout, toolbar_x, y_off, toolbar_w, row_h, toolbar, theme, None, None,
-                    );
-                    // Restore Pango state — draw_toolbar may have changed
-                    // text width / attributes.
-                    layout.set_attributes(None);
-                }
-            }
-            FieldKind::ToggleGroup { toggles } => {
-                let mut ix = label_right + 12.0;
-                for toggle in toggles {
-                    let toggle_fg = if toggle.value && !field.disabled {
-                        accent
-                    } else {
-                        dim
-                    };
-                    cr.set_source_rgb(toggle_fg.0, toggle_fg.1, toggle_fg.2);
-                    layout.set_text(&toggle.label);
-                    let (tw, th) = layout.pixel_size();
-                    cr.move_to(ix, (y_off + (row_h - th as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                    ix += tw as f64 + 8.0;
-                }
-            }
-            FieldKind::ButtonRow { buttons } => {
-                let mut ix = label_right + 12.0;
-                for button in buttons {
-                    let btn_fg = if button.disabled || field.disabled {
-                        dim
-                    } else {
-                        field_fg
-                    };
-                    let brk_fg = if button.disabled || field.disabled {
-                        dim
-                    } else {
-                        accent
-                    };
-                    cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
-                    layout.set_text("[");
-                    let (bw, bh) = layout.pixel_size();
-                    cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                    ix += bw as f64;
-
-                    cr.set_source_rgb(btn_fg.0, btn_fg.1, btn_fg.2);
-                    if let Some(ref icon) = button.icon {
-                        layout.set_text(icon.fallback.as_str());
-                        let (iw, ih) = layout.pixel_size();
-                        cr.move_to(ix, (y_off + (row_h - ih as f64) / 2.0).round());
-                        super::painted_text::show_layout(cr, layout);
-                        ix += iw as f64;
-                        if !button.label.is_empty() {
-                            ix += 4.0;
-                        }
-                    }
-                    layout.set_text(&button.label);
-                    let (lw, lh) = layout.pixel_size();
-                    cr.move_to(ix, (y_off + (row_h - lh as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                    ix += lw as f64;
-
-                    cr.set_source_rgb(brk_fg.0, brk_fg.1, brk_fg.2);
-                    layout.set_text("]");
-                    let (rw, _) = layout.pixel_size();
-                    cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                    ix += rw as f64 + 8.0;
-                }
-            }
-            FieldKind::PasswordInput {
-                value,
-                placeholder,
-                cursor,
-                mask_char,
-            } => {
-                let masked: String = value.chars().map(|_| *mask_char).collect();
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    masked.as_str()
-                };
-                let input_fg = if value.is_empty() { dim } else { field_fg };
-
-                layout.set_text(shown);
-                let (shown_w, shown_h) = layout.pixel_size();
-
-                let (ix, _, bracket_right) = if no_label {
-                    let ix = label_x;
-                    let bracket_r = input_right - 4.0;
-                    let avail = bracket_r - ix - 8.0;
-                    let dw = (shown_w as f64).min(avail.max(0.0));
-                    (ix, dw, bracket_r)
-                } else {
-                    let max_width = (w * 0.6).max(80.0);
-                    let dw = (shown_w as f64).min(max_width);
-                    let ix = input_right - dw - 14.0;
-                    (ix, dw, ix + 8.0 + dw + 2.0)
-                };
-                if no_label || ix > label_right + 8.0 {
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    layout.set_text("[");
-                    cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
-                    layout.set_text(shown);
-                    cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    layout.set_text("]");
-                    cr.move_to(
-                        bracket_right,
-                        (y_off + (row_h - shown_h as f64) / 2.0).round(),
-                    );
-                    super::painted_text::show_layout(cr, layout);
-
-                    if let Some(cur) = cursor {
-                        // Cursor position: each original char maps to one
-                        // mask char, so measure the masked prefix up to
-                        // the byte-offset translated cursor.
-                        let char_pos = safe_prefix(value, *cur).chars().count();
-                        let mask_prefix: String = masked.chars().take(char_pos).collect();
-                        layout.set_text(&mask_prefix);
-                        let (prefix_w, _) = layout.pixel_size();
-                        let cx = ix + 8.0 + prefix_w as f64;
-                        cr.set_source_rgb(accent.0, accent.1, accent.2);
-                        cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
-                        cr.fill().ok();
-                    }
-                }
-            }
-            FieldKind::TextArea {
-                value,
-                placeholder,
-                cursor,
-                ..
-            } => {
-                // For now, render as a single-line input showing the
-                // first line of value. Multi-row GTK rendering is a
-                // future enhancement.
-                let first_line = value.lines().next().unwrap_or("");
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    first_line
-                };
-                let input_fg = if value.is_empty() { dim } else { field_fg };
-
-                layout.set_text(shown);
-                let (shown_w, shown_h) = layout.pixel_size();
-
-                let (ix, _, bracket_right) = if no_label {
-                    let ix = label_x;
-                    let bracket_r = input_right - 4.0;
-                    let avail = bracket_r - ix - 8.0;
-                    let dw = (shown_w as f64).min(avail.max(0.0));
-                    (ix, dw, bracket_r)
-                } else {
-                    let max_width = (w * 0.6).max(80.0);
-                    let dw = (shown_w as f64).min(max_width);
-                    let ix = input_right - dw - 14.0;
-                    (ix, dw, ix + 8.0 + dw + 2.0)
-                };
-                if no_label || ix > label_right + 8.0 {
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    layout.set_text("[");
-                    cr.move_to(ix, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    cr.set_source_rgb(input_fg.0, input_fg.1, input_fg.2);
-                    layout.set_text(shown);
-                    cr.move_to(ix + 8.0, (y_off + (row_h - shown_h as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-
-                    cr.set_source_rgb(dim.0, dim.1, dim.2);
-                    layout.set_text("]");
-                    cr.move_to(
-                        bracket_right,
-                        (y_off + (row_h - shown_h as f64) / 2.0).round(),
-                    );
-                    super::painted_text::show_layout(cr, layout);
-
-                    if let Some(cur) = cursor {
-                        // Clamp cursor to first line length for display.
-                        let clamped = (*cur).min(first_line.len());
-                        let prefix = safe_prefix(shown, clamped);
-                        layout.set_text(prefix);
-                        let (prefix_w, _) = layout.pixel_size();
-                        let cx = ix + 8.0 + prefix_w as f64;
-                        cr.set_source_rgb(accent.0, accent.1, accent.2);
-                        cr.rectangle(cx, y_off + 3.0, 1.5, row_h - 6.0);
-                        cr.fill().ok();
-                    }
-                }
-            }
-            FieldKind::SegmentedControl {
-                options,
-                selected_idx,
-            } => {
-                let mut ix = label_right + 12.0;
-                // Opening bracket.
-                cr.set_source_rgb(dim.0, dim.1, dim.2);
-                layout.set_text("[");
-                let (bw, bh) = layout.pixel_size();
-                cr.move_to(ix, (y_off + (row_h - bh as f64) / 2.0).round());
-                super::painted_text::show_layout(cr, layout);
-                ix += bw as f64;
-
-                for (i, opt) in options.iter().enumerate() {
-                    if i > 0 {
-                        cr.set_source_rgb(dim.0, dim.1, dim.2);
-                        layout.set_text("|");
-                        let (sw, sh) = layout.pixel_size();
-                        cr.move_to(ix, (y_off + (row_h - sh as f64) / 2.0).round());
-                        super::painted_text::show_layout(cr, layout);
-                        ix += sw as f64;
-                    }
-                    let opt_fg = if i == *selected_idx { accent } else { dim };
-                    cr.set_source_rgb(opt_fg.0, opt_fg.1, opt_fg.2);
-                    layout.set_text(opt);
-                    let (ow, oh) = layout.pixel_size();
-                    cr.move_to(ix, (y_off + (row_h - oh as f64) / 2.0).round());
-                    super::painted_text::show_layout(cr, layout);
-                    ix += ow as f64;
-                }
-
-                // Closing bracket.
-                cr.set_source_rgb(dim.0, dim.1, dim.2);
-                layout.set_text("]");
-                let (_, rh) = layout.pixel_size();
-                cr.move_to(ix, (y_off + (row_h - rh as f64) / 2.0).round());
-                super::painted_text::show_layout(cr, layout);
-            }
+        layout.set_text(&label_text);
+        let (label_w, _) = layout.pixel_size();
+        let row_x = x + vf.bounds.x as f64;
+        let row_y = y + vf.bounds.y as f64;
+        let row_w = vf.bounds.width as f64;
+        let toolbar_row_h = vf.bounds.height as f64;
+        let toolbar_x = if no_label {
+            row_x + 6.0
+        } else {
+            row_x + 6.0 + label_w as f64 + 12.0
+        };
+        let toolbar_w = row_x + row_w - toolbar_x;
+        if toolbar_w > 0.0 {
+            super::toolbar::draw_toolbar(
+                cr,
+                layout,
+                toolbar_x,
+                row_y,
+                toolbar_w,
+                toolbar_row_h,
+                toolbar,
+                theme,
+                None,
+                None,
+            );
+            layout.set_attributes(None);
         }
-
-        // ── Validation indicator ────────────────────────────────────────
-        if let Some(ref vs) = field.validation {
-            let (indicator_color, msg) = match vs {
-                ValidationState::Error(msg) => (error, msg.as_str()),
-                ValidationState::Warning(msg) => (warning, msg.as_str()),
-            };
-            // Small 3x3 px colored rectangle at the left edge, vertically centered.
-            cr.set_source_rgb(indicator_color.0, indicator_color.1, indicator_color.2);
-            cr.rectangle(x + 2.0, y_off + (row_h - 3.0) / 2.0, 3.0, 3.0);
-            cr.fill().ok();
-
-            // Render error/warning message text in the indicator color.
-            if !msg.is_empty() {
-                layout.set_text(msg);
-                let (_, msg_h) = layout.pixel_size();
-                let msg_x = x + 8.0;
-                let msg_y = (y_off + (row_h + msg_h as f64) / 2.0 + 1.0).round();
-                cr.move_to(msg_x, msg_y);
-                super::painted_text::show_layout(cr, layout);
-            }
-        }
-
-        y_off += row_h;
     }
-
-    layout.set_attributes(None);
 }
 
 /// Settings panel chrome: a 2-row strip with a header row and a search
@@ -661,25 +318,41 @@ pub fn draw_settings_chrome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::form::{Form, FormField};
+    use crate::gtk::toolbar::PangoMeasure;
+    use crate::primitives::form::{FieldKind, Form, FormField};
     use crate::types::{StyledText, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
+    /// Paint `form` via the shared [`crate::primitives::form::paint`]
+    /// through a [`RawFormSurface`] over a fresh in-memory
+    /// `ImageSurface` — the same adapter `gtk::multi_section_view`'s
+    /// embedded-`Form` body uses. Builds its own [`crate::FormLayout`]
+    /// with the shared `form_field_measure` (the same measurer
+    /// `GtkBackend::form_layout` uses) so painted rows match what
+    /// hit-testing would resolve.
     fn paint(form: &Form) {
         let surface = ImageSurface::create(Format::ARgb32, 320, 160).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
         let theme = Theme::default();
-        draw_form(
-            &cr,
-            &pango_layout,
-            0.0,
-            0.0,
-            320.0,
-            160.0,
+        let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
+        let measure = PangoMeasure {
+            pango_layout: Some(&pango_layout),
+            char_width: 8.0,
+        };
+        let flayout = form.layout(320.0, 160.0, |i| {
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        });
+        let mut raw = RawFormSurface {
+            cr: &cr,
+            layout: &pango_layout,
+        };
+        crate::primitives::form::paint(
             form,
+            &flayout,
+            &mut raw,
             &theme,
-            14.0,
+            crate::Point::new(0.0, 0.0),
         );
     }
 
@@ -738,16 +411,28 @@ mod tests {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
             let theme = Theme::default();
-            draw_form(
-                &cr,
-                &pango_layout,
-                0.0,
-                0.0,
-                320.0,
-                160.0,
+            let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
+            let measure = PangoMeasure {
+                pango_layout: Some(&pango_layout),
+                char_width: 8.0,
+            };
+            let flayout = form.layout(320.0, 160.0, |i| {
+                crate::primitives::layout_metrics::form_field_measure(
+                    &form.fields[i],
+                    row_h,
+                    &measure,
+                )
+            });
+            let mut raw = RawFormSurface {
+                cr: &cr,
+                layout: &pango_layout,
+            };
+            crate::primitives::form::paint(
                 &form,
+                &flayout,
+                &mut raw,
                 &theme,
-                14.0,
+                crate::Point::new(0.0, 0.0),
             );
         }
 

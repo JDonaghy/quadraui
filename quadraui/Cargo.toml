@@ -399,6 +399,16 @@ path = "examples/gtk_form_groups.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_form_all_fields"
+path = "examples/tui_form_all_fields.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_all_fields"
+path = "examples/gtk_form_all_fields.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_chart"
 path = "examples/tui_chart.rs"
 required-features = ["tui"]

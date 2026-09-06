@@ -55,7 +55,7 @@ use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    CommandLine, DragState, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
+    CommandLine, DragState, FieldKind, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
     ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, StatusBar,
     TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView,
     UiEvent, Viewport,
@@ -1691,21 +1691,48 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// #808: shared field-kind painting lives in
+    /// [`crate::primitives::form::paint`] now — see that fn's doc for why
+    /// `FieldKind::Toolbar` is the one variant painted here instead,
+    /// after `paint` releases its exclusive borrow of `self`.
     fn draw_form(&mut self, rect: QRect, form: &Form) {
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_form called outside enter_frame_scope");
-        crate::gtk::draw_form(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            form,
-            &self.current_theme,
-            self.current_line_height,
-        );
+        let theme = self.current_theme;
+        let flayout = self.form_layout(rect, form);
+        let origin = Point::new(rect.x, rect.y);
+        crate::primitives::form::paint(form, &flayout, self, &theme, origin);
+
+        for vf in &flayout.visible_fields {
+            let Some(field) = form.fields.get(vf.field_idx) else {
+                continue;
+            };
+            let FieldKind::Toolbar(toolbar) = &field.kind else {
+                continue;
+            };
+            let row_x = (origin.x + vf.bounds.x) as f64;
+            let row_y = (origin.y + vf.bounds.y) as f64;
+            let row_w = vf.bounds.width as f64;
+            let row_h = vf.bounds.height as f64;
+
+            let (cr, layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_form called outside enter_frame_scope");
+            let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
+            let no_label = label_text.is_empty();
+            layout.set_text(&label_text);
+            let (label_w, _) = layout.pixel_size();
+            let toolbar_x = if no_label {
+                row_x + 6.0
+            } else {
+                row_x + 6.0 + label_w as f64 + 12.0
+            };
+            let toolbar_w = row_x + row_w - toolbar_x;
+            if toolbar_w > 0.0 {
+                crate::gtk::toolbar::draw_toolbar(
+                    cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                );
+                layout.set_attributes(None);
+            }
+        }
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {

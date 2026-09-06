@@ -366,7 +366,7 @@ unsafe fn paint_body(
             super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height);
         }
         SectionBody::Form(f) => {
-            super::form::draw_form(ctx, font, bx, by, bw, bh, f, theme, line_height);
+            draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
             super::chart::draw_chart(
@@ -399,6 +399,58 @@ unsafe fn paint_body(
         }
     }
     CGContextRestoreGState(ctx);
+}
+
+/// Paint an embedded [`crate::Form`] section body. #808: field-kind
+/// painting goes through the shared [`crate::primitives::form::paint`]
+/// via [`super::form::RawFormSurface`] (this call site has only a raw
+/// `CGContextRef`, not a live [`super::MacBackend`]) — `FieldKind::
+/// Toolbar` is painted separately below, same as
+/// `MacBackend::draw_form`, for the same reason (see that fn's doc).
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_form_body(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    form: &crate::Form,
+    theme: &Theme,
+    line_height: f64,
+) {
+    let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let flayout = super::form::mac_form_layout(form, area, line_height, font);
+    let origin = crate::Point::new(x as f32, y as f32);
+    let mut surface = super::form::RawFormSurface { ctx, font };
+    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
+
+    for vf in &flayout.visible_fields {
+        let Some(field) = form.fields.get(vf.field_idx) else {
+            continue;
+        };
+        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
+            continue;
+        };
+        let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
+        let no_label = label_text.is_empty();
+        let (label_w, _) = measure_text(font, &label_text);
+        let row_x = x + vf.bounds.x as f64;
+        let row_y = y + vf.bounds.y as f64;
+        let row_w = vf.bounds.width as f64;
+        let row_h = vf.bounds.height as f64;
+        let toolbar_x = if no_label {
+            row_x + 6.0
+        } else {
+            row_x + 6.0 + label_w + 12.0
+        };
+        let toolbar_w = row_x + row_w - toolbar_x;
+        if toolbar_w > 0.0 {
+            super::toolbar::draw_toolbar(
+                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

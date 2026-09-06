@@ -95,6 +95,8 @@ use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
+#[cfg(target_os = "windows")]
+use crate::primitives::toolbar::ToolbarButton;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
@@ -102,6 +104,8 @@ use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Key, ListView, Modifiers, Palette,
     ParsedBinding, StatusBar, TabBar, Terminal, TextDisplay, TooltipChrome, TreeView,
 };
+#[cfg(target_os = "windows")]
+use crate::{FieldKind, Theme};
 
 use super::services::WinPlatformServices;
 
@@ -1637,16 +1641,68 @@ impl Backend for WinBackend {
     }
 
     /// #26: see [`Self::draw_tree`]'s doc.
+    ///
+    /// #808: shared field-kind painting lives in
+    /// [`crate::primitives::form::paint`] now — see that fn's doc for
+    /// why `FieldKind::Toolbar` is painted here instead (as plain
+    /// per-button text, matching this backend's pre-#808 behaviour —
+    /// `win::toolbar`'s full chrome isn't wired into `Form` fields; see
+    /// `win::form`'s module doc), after `paint` releases its exclusive
+    /// borrow of `self`.
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            super::form::draw_form(
-                &surface.target,
-                dwrite,
-                rect,
-                form,
-                self.current_line_height,
-            );
+        if self.dwrite.is_some() && self.surface.is_some() {
+            let dwrite = self
+                .dwrite
+                .as_ref()
+                .expect("checked Some by the `if` guard above");
+            let flayout =
+                super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
+            let theme = Theme::default();
+            let origin = Point::new(rect.x, rect.y);
+            crate::primitives::form::paint(form, &flayout, self, &theme, origin);
+
+            for vf in &flayout.visible_fields {
+                let Some(field) = form.fields.get(vf.field_idx) else {
+                    continue;
+                };
+                let FieldKind::Toolbar(toolbar) = &field.kind else {
+                    continue;
+                };
+                let field_fg = if field.disabled {
+                    theme.muted_fg
+                } else {
+                    theme.foreground
+                };
+                for (item_id, item_rect) in &vf.item_bounds {
+                    let btn = toolbar.buttons.iter().find_map(|b| {
+                        super::form::toolbar_item(&field.id, b)
+                            .filter(|(id, _)| id == item_id)
+                            .map(|_| b)
+                    });
+                    let r = Rect::new(
+                        origin.x + item_rect.x,
+                        origin.y + item_rect.y,
+                        item_rect.width,
+                        item_rect.height,
+                    );
+                    match btn {
+                        Some(ToolbarButton::Action { label, enabled, .. }) => {
+                            let fg = if *enabled { field_fg } else { theme.muted_fg };
+                            let (tw, th) = self.measure_text(label);
+                            let ty = r.y + (r.height - th) / 2.0;
+                            self.draw_text(label, Rect::new(r.x, ty, tw, th), fg);
+                        }
+                        Some(ToolbarButton::Label { text, fg }) => {
+                            let color = fg.unwrap_or(field_fg);
+                            let (tw, th) = self.measure_text(text);
+                            let ty = r.y + (r.height - th) / 2.0;
+                            self.draw_text(text, Rect::new(r.x, ty, tw, th), color);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             return;
         }
         #[cfg(not(target_os = "windows"))]

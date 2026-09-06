@@ -263,7 +263,17 @@ pub use editor::draw_editor;
 #[cfg(target_os = "windows")]
 pub use find_replace::draw_find_replace;
 #[cfg(target_os = "windows")]
-pub use form::{draw_form, draw_settings_chrome, win_form_layout};
+pub use form::{draw_settings_chrome, win_form_layout};
+// #808: `draw_form` is `#[deprecated]` — see `form::draw_form`'s doc for
+// why the shim exists and why re-exporting it here (rather than dropping
+// the re-export) is the point. `#[allow(deprecated)]` because a `pub
+// use` of a deprecated item is itself a `deprecated`-lint use site, and
+// this crate denies that lint in-repo (`RUSTFLAGS: -D warnings`) — see
+// CLAUDE.md's "the `deprecated` lint is denied in-repo and allowed
+// downstream" section for why that split is deliberate.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use form::draw_form;
 #[cfg(target_os = "windows")]
 pub use image::draw_image;
 #[cfg(target_os = "windows")]

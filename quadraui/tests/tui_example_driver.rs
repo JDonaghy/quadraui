@@ -60,6 +60,8 @@ mod dialog_table_demo;
 mod file_dialog_demo;
 #[path = "../examples/common/folder_picker_app.rs"]
 mod folder_picker_app;
+#[path = "../examples/common/form_all_fields.rs"]
+mod form_all_fields;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
 #[path = "../examples/common/frame_demo.rs"]
@@ -145,6 +147,7 @@ use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use file_dialog_demo::FileDialogDemo;
 use folder_picker_app::FolderPickerApp;
+use form_all_fields::FormAllFieldsApp;
 use form_groups::FormGroupsApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
@@ -3404,6 +3407,41 @@ fn form_groups_click_toggle_flips_rendered_value() {
         "clicking the case-sensitive toggle (starts true) should flip it and show \
          case=false in the status bar:\n{after}"
     );
+}
+
+// ─── FormAllFieldsApp (quadraui#808): every FieldKind variant paints ──────
+//
+// Baseline for the shared `tests/cross_backend_parity.rs` needle set:
+// TUI's `tui::form` rasteriser is untouched by #808 (NativeSurface
+// deliberately excludes TUI — see `native_surface.rs`'s module doc), so
+// every one of these has always painted here. The value is asserting it
+// as a fixed baseline other backends are checked against, not finding a
+// TUI regression.
+
+#[test]
+fn form_all_fields_paints_every_field_kind_value() {
+    let driver = TuiDriver::new(FormAllFieldsApp::new(), 100, 30);
+    let screen = driver.screen();
+    for needle in [
+        "Editor",
+        "line numbers",
+        "quadraui",
+        "Save settings",
+        "v0zerodotonezero",
+        "14.00",
+        "#7ab4ff",
+        "Solarizedlight",
+        "releasenotesgohere",
+        "Filescope",
+        "Casesens",
+        "Runaction",
+        "Buildaction",
+    ] {
+        assert!(
+            screen.contains(needle),
+            "expected {needle:?} painted somewhere on screen:\n{screen}"
+        );
+    }
 }
 
 // ─── ChartApp (issue #308): state-derived axis labels + gridlines ─────────
