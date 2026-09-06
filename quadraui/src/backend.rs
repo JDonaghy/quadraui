@@ -430,6 +430,34 @@ pub enum BackendError {
 /// seam 2) and any future one like them.
 pub type ServiceResult<T> = Result<T, BackendError>;
 
+/// Bundled font metrics for one call to [`Backend::measure`] — the two
+/// numbers ([`Backend::char_width`] and [`Backend::line_height`]) every
+/// primitive's `*Measure` type is actually built from.
+///
+/// Before this existed, an app that needed both numbers called
+/// `backend.line_height()` and `backend.char_width()` separately and
+/// threaded them into its own hand-built `*Measure` literal — every
+/// caller re-deriving the same two-field bundle the backend already
+/// knows how to hand back in one call (quadraui#817). `Metrics` is that
+/// bundle; a primitive's `XMeasure::from_metrics(&Metrics)` constructor
+/// (see [`crate::TextInputMeasure::from_metrics`] for the pattern) turns
+/// it into that primitive's own measure shape without the app touching
+/// `char_width` / `line_height` by name.
+///
+/// `#[non_exhaustive]`: this is in-tree-only today (no external `Backend`
+/// implementors construct it — only [`Backend::measure`]'s default body
+/// does), but consumers (`coord-tui`, `vimcode`) *do* read the two public
+/// fields, so a later field addition should stay source-compatible with
+/// field-access call sites instead of becoming a silent breaking change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Metrics {
+    /// Same value [`Backend::char_width`] returns.
+    pub char_width: f32,
+    /// Same value [`Backend::line_height`] returns.
+    pub line_height: f32,
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 ///
 /// # Sealed — no implementations outside this crate
@@ -893,6 +921,27 @@ pub trait Backend: sealed::Sealed {
     /// horizontal layout. Example:
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
+
+    /// [`Self::char_width`] and [`Self::line_height`] bundled into one
+    /// [`Metrics`] value, for apps that need both instead of calling each
+    /// method separately (quadraui#817).
+    ///
+    /// Default impl composes the two required methods above, so it
+    /// returns each backend's real metrics automatically — no backend
+    /// needs to override this to get real numbers instead of defaults.
+    /// A primitive's `XMeasure::from_metrics(&backend.measure())` replaces
+    /// the old pattern of an app hand-building that `*Measure` literal
+    /// from `backend.line_height()` / `backend.char_width()` itself (or,
+    /// worse, approximating one of them — see
+    /// `examples/common/dialog_table_demo.rs`'s pre-#817 `char_w = lh *
+    /// 0.6` guess, replaced with the real [`Self::char_width`] via this
+    /// method once it existed).
+    fn measure(&self) -> Metrics {
+        Metrics {
+            char_width: self.char_width(),
+            line_height: self.line_height(),
+        }
+    }
 
     /// Width this backend reserves for its own native scrollbar overlay
     /// alongside scrollable content — e.g. a GTK `ScrolledWindow`'s

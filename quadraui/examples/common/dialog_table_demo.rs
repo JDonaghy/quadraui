@@ -7,8 +7,9 @@
 //!
 //! The demo exercises:
 //! - [`DialogTable`] with headers and multi-row data
-//! - Generic layout using `backend.line_height()` so the dialog renders at the
-//!   right scale on both TUI (1.0 = one cell) and GTK (pixel line height).
+//! - Generic layout using `backend.measure()` (quadraui#817) so the dialog
+//!   renders at the right scale on both TUI (1.0 = one cell) and GTK (real
+//!   pixel line height / char width, not an approximation of either).
 //! - The `draw_dialog` table rendering path (column separators + header row)
 
 use quadraui::{
@@ -55,21 +56,27 @@ impl DialogTableDemo {
         Self { dialog }
     }
 
-    /// Compute a generic [`DialogMeasure`] from `backend.line_height()` and the
+    /// Compute a generic [`DialogMeasure`] from `backend.measure()` and the
     /// table's auto-sized column widths.
     ///
     /// `line_height` is 1.0 on TUI (one character cell) and the pixel line
     /// height on GTK/macOS. Column widths from `tui_total_width()` are in
-    /// character cells; on pixel backends we approximate char pixel width as
-    /// `line_height * 0.6`.
+    /// character cells, so a pixel backend's `char_width` (also bundled into
+    /// [`crate::Backend::measure`]'s [`crate::Metrics`]) converts them to
+    /// pixels directly.
+    ///
+    /// Pre-#817 this approximated `char_width` as `line_height * 0.6`
+    /// instead of asking the backend for the real value — exactly the
+    /// duplicated-font-metric-knowledge issue #817 exists to remove. On
+    /// TUI the two happened to agree (both `1.0`), which is why the
+    /// approximation went unnoticed here; on a pixel backend they don't,
+    /// and `backend.measure().char_width` is the actual glyph width, not
+    /// a guess.
     fn measure(&self, backend: &dyn Backend) -> DialogMeasure {
-        let lh = backend.line_height();
+        let m = backend.measure();
+        let lh = m.line_height;
+        let char_w = m.char_width;
         let viewport = backend.viewport();
-
-        // On TUI lh == 1.0: char-cell widths are already in the right unit.
-        // On pixel backends lh is the pixel line-height; approximate char
-        // width as lh × 0.6.
-        let char_w = if lh > 1.0 { lh * 0.6 } else { 1.0 };
 
         let table = self.dialog.table.as_ref();
         let table_total_h = table
@@ -136,5 +143,77 @@ impl AppLogic for DialogTableDemo {
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use super::*;
+    use quadraui::testing::RecordingBackend;
+    use quadraui::Viewport;
+
+    /// TUI-shaped metrics: `line_height == char_width == 1.0`, matching
+    /// what `tests/tui_example_driver.rs`'s `TuiDriver`-based
+    /// `dialog_table_*` tests actually exercise.
+    fn tui_shaped() -> RecordingBackend {
+        RecordingBackend::with_viewport(Viewport::new(100.0, 30.0, 1.0), 1.0, 1.0)
+    }
+
+    /// A pixel-shaped backend (GTK-ish numbers): `line_height` and
+    /// `char_width` are independent, unlike TUI where both are `1.0`.
+    fn pixel_shaped() -> RecordingBackend {
+        RecordingBackend::with_viewport(Viewport::new(800.0, 600.0, 1.0), 20.0, 9.0)
+    }
+
+    /// Pre-#817 this file approximated `char_width` as `line_height *
+    /// 0.6` instead of asking the backend. Reproduced here only to prove
+    /// the two formulas coincide on TUI metrics -- the switch to
+    /// `backend.measure().char_width` does not move
+    /// `DialogTableDemo`'s TUI layout (the layout every
+    /// `dialog_table_*` driver test in `tests/tui_example_driver.rs`
+    /// actually paints and asserts against).
+    fn pre_817_char_width_approximation(line_height: f32) -> f32 {
+        if line_height > 1.0 {
+            line_height * 0.6
+        } else {
+            1.0
+        }
+    }
+
+    #[test]
+    fn measure_matches_pre_817_approximation_on_tui_metrics() {
+        let backend = tui_shaped();
+        let demo = DialogTableDemo::new();
+        let m = demo.measure(&backend);
+        let legacy_char_w = pre_817_char_width_approximation(backend.line_height);
+        assert_eq!(
+            m.button_width,
+            legacy_char_w * 8.0,
+            "on TUI metrics, backend.measure().char_width and the pre-#817 \
+             approximation must agree -- this is what makes the switch a \
+             no-op for every TUI driver test"
+        );
+    }
+
+    /// On a pixel backend the pre-#817 approximation and the real
+    /// `char_width` diverge (12.0 guessed vs. 9.0 real) -- this is the
+    /// duplicated-font-metric-knowledge bug #817 exists to remove.
+    /// Asserts `measure()` now reports the real value.
+    #[test]
+    fn measure_uses_real_char_width_not_the_pre_817_approximation_on_pixel_metrics() {
+        let backend = pixel_shaped();
+        let demo = DialogTableDemo::new();
+        let m = demo.measure(&backend);
+        let legacy_char_w = pre_817_char_width_approximation(backend.line_height);
+        assert_ne!(
+            legacy_char_w, backend.char_width,
+            "test setup should pick metrics where the approximation is wrong"
+        );
+        assert_eq!(
+            m.button_width,
+            backend.char_width * 8.0,
+            "measure() should use the backend's real char_width, not the \
+             line_height * 0.6 guess"
+        );
     }
 }

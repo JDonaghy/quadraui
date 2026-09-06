@@ -930,17 +930,11 @@ impl crate::Backend for RecordingBackend {
     /// real layout, so its behaviour wins.
     fn draw_text_input(&mut self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
         self.record("draw_text_input");
-        ti.layout(
-            r,
-            crate::TextInputMeasure::new(self.line_height(), self.char_width()),
-        )
+        ti.layout(r, crate::TextInputMeasure::from_metrics(&self.measure()))
     }
     /// Union note: see `draw_text_input` above.
     fn text_input_layout(&self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
-        ti.layout(
-            r,
-            crate::TextInputMeasure::new(self.line_height(), self.char_width()),
-        )
+        ti.layout(r, crate::TextInputMeasure::from_metrics(&self.measure()))
     }
     fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {
         self.record("draw_tooltip");

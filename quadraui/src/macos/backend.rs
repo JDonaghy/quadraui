@@ -1637,9 +1637,7 @@ impl Backend for MacBackend {
     ) -> crate::primitives::command_line::CommandLineLayout {
         cmd.layout(
             rect,
-            crate::primitives::command_line::CommandLineMeasure::new(
-                self.current_char_width as f32,
-            ),
+            crate::primitives::command_line::CommandLineMeasure::from_metrics(&self.measure()),
         )
     }
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
@@ -1653,10 +1651,7 @@ impl Backend for MacBackend {
         // macOS TextInput rasteriser: future work. Return layout only.
         ti.layout(
             rect,
-            crate::primitives::text_input::TextInputMeasure::new(
-                self.current_line_height as f32,
-                self.current_char_width as f32,
-            ),
+            crate::primitives::text_input::TextInputMeasure::from_metrics(&self.measure()),
         )
     }
     fn text_input_layout(
@@ -1666,10 +1661,7 @@ impl Backend for MacBackend {
     ) -> crate::primitives::text_input::TextInputLayout {
         ti.layout(
             rect,
-            crate::primitives::text_input::TextInputMeasure::new(
-                self.current_line_height as f32,
-                self.current_char_width as f32,
-            ),
+            crate::primitives::text_input::TextInputMeasure::from_metrics(&self.measure()),
         )
     }
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {

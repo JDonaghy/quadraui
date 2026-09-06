@@ -129,6 +129,15 @@ impl TextInputMeasure {
             char_width,
         }
     }
+
+    /// Build from the backend's own [`crate::backend::Metrics`]
+    /// (`backend.measure()`) instead of hand-threading
+    /// `backend.line_height()` / `backend.char_width()` through
+    /// [`Self::new`] — the two are identical, this just names the
+    /// intent (quadraui#817).
+    pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
+        Self::new(m.line_height, m.char_width)
+    }
 }
 
 impl TextInput {
