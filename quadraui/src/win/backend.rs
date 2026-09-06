@@ -4446,19 +4446,77 @@ mod tests {
     /// paints the same text through the real `Backend::draw_status_bar`
     /// path once bold, once not, and asserts the bold segment's resolved
     /// (painted) width is strictly wider.
+    ///
+    /// **The editor font is overridden on purpose — don't drop that call.**
+    /// `NativeSurface::surface_measure_text_styled` on this backend
+    /// measures through `self.dwrite`, i.e. the *editor* font, which
+    /// defaults to `DEFAULT_EDITOR_FONT_FAMILY` (`"Consolas"`). Consolas
+    /// is monospaced, and a monospaced family shares **one advance width
+    /// across every weight** by design (that's the whole point — bold code
+    /// must not reflow columns), so `measure_text_styled(t, true)` and
+    /// `measure_text_styled(t, false)` return byte-identical widths there
+    /// no matter how faithfully the `bold` flag is threaded through. This
+    /// test first landed against the default font and went red on
+    /// `windows-latest` for exactly that reason: `bold_width >
+    /// regular_width` is unsatisfiable under Consolas. Driving the backend
+    /// with a *proportional* editor font (`"Segoe UI"` — already this
+    /// backend's `DEFAULT_UI_FONT_FAMILY`, so it ships on every supported
+    /// Windows) makes "bold is wider" a property the font can actually
+    /// express, which is what lets this test observe the override at all.
+    ///
+    /// (That this chrome primitive measures through the *editor* handle
+    /// rather than `chrome_dwrite` is a pre-existing Win-GUI gap versus
+    /// GTK's #624 `ui_font` swap — orthogonal to #860's paint unification,
+    /// which preserved the pre-existing choice exactly, and deliberately
+    /// not changed here.)
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_status_bar_bold_segment_measures_wider() {
+        // `DWrite` (and `DEFAULT_UI_FONT_FAMILY` below) come from this
+        // module's own `use super::*` — both are `cfg(target_os =
+        // "windows")` items, same as this test.
         use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
         use crate::win::testing::HeadlessSurface;
         use crate::Color;
 
-        const W: u32 = 200;
+        const W: u32 = 400;
         const H: u32 = 20;
+        const TEXT: &str = "READY";
+        // Proportional, and present on every supported Windows — see this
+        // test's doc for why the default (monospaced) editor font cannot
+        // express the property under test.
+        const FONT: &str = DEFAULT_UI_FONT_FAMILY;
+        // Deliberately larger than `DEFAULT_UI_FONT_SIZE_PT`: the
+        // bold/regular advance-width delta scales with the em size, so a
+        // bigger size keeps the difference comfortably above float noise.
+        const SIZE_PT: f32 = 20.0;
+
+        // Fixture guard: if DirectWrite itself reports the same width for
+        // both weights of `FONT`, the assertion below would be
+        // unsatisfiable and its failure would say nothing about the
+        // override under test. Fail with a message that names *that*
+        // instead.
+        let (probe, _, _) = DWrite::new(FONT, SIZE_PT).expect("create probe DWrite");
+        let (probe_regular, _) = probe
+            .measure_text_styled(TEXT, false)
+            .expect("measure regular");
+        let (probe_bold, _) = probe.measure_text_styled(TEXT, true).expect("measure bold");
+        assert!(
+            probe_bold > probe_regular,
+            "test fixture bug: `{FONT}` must measure bold text wider than regular for this \
+             assertion to mean anything (regular={probe_regular}, bold={probe_bold}) — pick a \
+             proportional font that distinguishes weights"
+        );
 
         let width_for = |bold: bool| {
             let surface = HeadlessSurface::new(W, H).expect("create headless surface");
             let mut backend = WinBackend::new();
+            // Must precede `attach_headless`: that's where the
+            // `IDWriteTextFormat` pair `self.dwrite` wraps is built from
+            // `editor_font_family`/`editor_font_size_pt` (see
+            // `set_editor_font`'s doc — a live surface doesn't rebuild
+            // them on a later font change).
+            backend.set_editor_font(FONT, SIZE_PT);
             backend
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
@@ -4468,7 +4526,7 @@ mod tests {
                 &StatusBar {
                     id: WidgetId::new("test:status-bar"),
                     left_segments: vec![StatusBarSegment {
-                        text: "READY".into(),
+                        text: TEXT.into(),
                         fg: Color::rgb(255, 255, 255),
                         bg: Color::rgb(0, 0, 0),
                         bold,
@@ -4489,6 +4547,15 @@ mod tests {
             bold_width > regular_width,
             "a bold segment must measure (and paint) wider than the same text non-bold: \
              regular={regular_width}, bold={bold_width}"
+        );
+        // …and the widths that reached the layout are the *same* ones
+        // DirectWrite reports for each weight — proves the override
+        // forwards to `measure_text_styled` rather than merely producing
+        // some pair of different numbers.
+        assert_eq!(
+            (regular_width, bold_width),
+            (probe_regular, probe_bold),
+            "resolved segment widths must match DirectWrite's own per-weight measurement"
         );
     }
 
