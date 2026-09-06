@@ -493,6 +493,38 @@ mod native_surface_paint {
         Rect::new(origin.x + r.x, origin.y + r.y, r.width, r.height)
     }
 
+    /// Vertical inset applied to a selected `ToggleGroup` /
+    /// `SegmentedControl` item's background pill, in points.
+    const PILL_INSET_Y: f32 = 2.0;
+
+    /// Shrink an item rect into the "pill" the *on* / *selected* state
+    /// paints its background into: full item width, inset
+    /// [`PILL_INSET_Y`] at top and bottom so consecutive items keep a
+    /// visible gap between their highlights.
+    ///
+    /// Ports `macos::form::draw_form`'s pre-#808 `iy + 2.0` /
+    /// `ih - 4.0` fill — the one selected-state affordance the three
+    /// deleted per-backend copies disagreed about (macOS painted it,
+    /// GTK painted nothing, Windows painted `hover_bg` at full row
+    /// height). Unifying on macOS's shape gives every pixel backend the
+    /// same at-a-glance "which toggle is on" cue; TUI keeps signalling
+    /// it with `accent_fg` alone, since a cell grid has no sub-cell
+    /// inset to give.
+    ///
+    /// Degenerate rows (height <= `2 * PILL_INSET_Y`) fall back to the
+    /// un-inset rect rather than producing a negative height.
+    fn selection_pill(r: Rect) -> Rect {
+        if r.height <= PILL_INSET_Y * 2.0 {
+            return r;
+        }
+        Rect::new(
+            r.x,
+            r.y + PILL_INSET_Y,
+            r.width,
+            r.height - PILL_INSET_Y * 2.0,
+        )
+    }
+
     fn plain_text(t: &StyledText) -> String {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
@@ -791,12 +823,12 @@ mod native_surface_paint {
                 FieldKind::ToggleGroup { toggles } => {
                     for (item_id, item_rect) in &vf.item_bounds {
                         if let Some(t) = toggles.iter().find(|t| &t.id == item_id) {
-                            let fg = if t.value && !field.disabled {
-                                theme.accent_fg
-                            } else {
-                                theme.muted_fg
-                            };
+                            let on = t.value && !field.disabled;
+                            let fg = if on { theme.accent_fg } else { theme.muted_fg };
                             let r = translate(item_rect, origin);
+                            if on {
+                                surface.surface_fill_rect(selection_pill(r), theme.selected_bg);
+                            }
                             surface.surface_draw_text_run(r, &t.label, fg);
                         }
                     }
@@ -839,7 +871,7 @@ mod native_surface_paint {
                         };
                         let r = translate(item_rect, origin);
                         if i == *selected_idx {
-                            surface.surface_fill_rect(r, theme.hover_bg);
+                            surface.surface_fill_rect(selection_pill(r), theme.selected_bg);
                         }
                         let (tw, th) = surface.surface_measure_text(opt);
                         let ty = r.y + (r.height - th) / 2.0;
@@ -990,6 +1022,230 @@ mod native_surface_paint {
                     accent_fg,
                 );
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::form::{FormField, ToggleGroupItem};
+        use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues, so a paint
+        /// assertion can run on any host — no cairo, Core Graphics or
+        /// Direct2D needed. The pixel backends' own probes
+        /// (`macos::form`'s `BitmapSurface`, `gtk::form`'s
+        /// `ImageSurface`) still cover "the verb reached real pixels";
+        /// this covers "the shared painter emits the right verb at all",
+        /// on every leg of the quality gate rather than only the macOS
+        /// one.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+        }
+
+        /// 6 units per character — same fixed-width stand-in the
+        /// `layout_metrics` tests use, so item widths stay predictable.
+        struct FixedMeasure;
+
+        impl TextMeasure for FixedMeasure {
+            fn width_of(&self, text: &str) -> f32 {
+                text.chars().count() as f32 * 6.0
+            }
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(320.0, 160.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                14.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                6.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (FixedMeasure.width_of(text), 12.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        /// Lay `form` out the way every pixel backend's `form_layout`
+        /// does, paint it through the shared painter, and hand back the
+        /// recorded fills alongside the layout.
+        fn paint_recorded(form: &Form) -> (RecordingSurface, FormLayout) {
+            let row_h = form_row_height(14.0);
+            let flayout = form.layout(320.0, 160.0, |i| {
+                form_field_measure(&form.fields[i], row_h, &FixedMeasure)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+            (surface, flayout)
+        }
+
+        fn one_field_form(id: &str, kind: FieldKind) -> Form {
+            Form {
+                id: WidgetId::new("form"),
+                fields: vec![FormField {
+                    id: WidgetId::new(id),
+                    label: StyledText::default(),
+                    kind,
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                }],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+            }
+        }
+
+        /// The pill a selected item paints: full item width, inset 2 at
+        /// top and bottom.
+        fn expected_pill(item: &Rect) -> Rect {
+            Rect::new(item.x, item.y + 2.0, item.width, item.height - 4.0)
+        }
+
+        /// Regression for the #808 unification: the shared painter was
+        /// written from the Windows copy, which never painted an
+        /// on-toggle background — so adopting it silently dropped the
+        /// `selected_bg` pill macOS had behind every *on* toggle, and
+        /// `macos::form`'s `toggle_group_on_item_paints_selected_bg`
+        /// caught it only on the macOS CI leg.
+        #[test]
+        fn toggle_group_fills_selected_bg_behind_on_items_only() {
+            let form = one_field_form(
+                "flags",
+                FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("case"),
+                            label: "Aa".into(),
+                            value: false,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("regex"),
+                            label: ".*".into(),
+                            value: true,
+                        },
+                    ],
+                },
+            );
+            let (surface, flayout) = paint_recorded(&form);
+            let theme = Theme::default();
+            let items = &flayout.visible_fields[0].item_bounds;
+            let on = &items
+                .iter()
+                .find(|(id, _)| id == &WidgetId::new("regex"))
+                .expect("on toggle laid out")
+                .1;
+            let off = &items
+                .iter()
+                .find(|(id, _)| id == &WidgetId::new("case"))
+                .expect("off toggle laid out")
+                .1;
+
+            assert!(
+                surface
+                    .fills
+                    .contains(&(expected_pill(on), theme.selected_bg)),
+                "on toggle should fill selected_bg inset 2 vertically; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| r.x == off.x && *c == theme.selected_bg),
+                "off toggle must not paint a selected_bg pill; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// Same regression on the sibling variant: the selected segment
+        /// used to fill `hover_bg` at full row height (the Windows
+        /// copy's shape), which reads as a hover cue rather than a
+        /// selection one and mismatched macOS's `selected_bg` pill.
+        #[test]
+        fn segmented_control_fills_selected_bg_behind_the_selected_segment_only() {
+            let form = one_field_form(
+                "scope",
+                FieldKind::SegmentedControl {
+                    options: vec!["File".into(), "Folder".into(), "Project".into()],
+                    selected_idx: 1,
+                },
+            );
+            let (surface, flayout) = paint_recorded(&form);
+            let theme = Theme::default();
+            let items = &flayout.visible_fields[0].item_bounds;
+            assert_eq!(items.len(), 3, "three segments should be laid out");
+
+            assert!(
+                surface
+                    .fills
+                    .contains(&(expected_pill(&items[1].1), theme.selected_bg)),
+                "selected segment should fill selected_bg inset 2 vertically; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            for idx in [0usize, 2] {
+                let seg = &items[idx].1;
+                assert!(
+                    !surface
+                        .fills
+                        .iter()
+                        .any(|(r, c)| r.x == seg.x && *c == theme.selected_bg),
+                    "unselected segment {idx} must not paint a selected_bg pill; \
+                     fills were {:?}",
+                    surface.fills,
+                );
+            }
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == theme.hover_bg),
+                "no segment should paint hover_bg — nothing is hovered; \
+                 fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// A row too short to inset falls back to the un-inset rect
+        /// rather than producing a negative height (which every backend
+        /// would either clamp, drop, or paint as an inverted rect).
+        #[test]
+        fn selection_pill_does_not_invert_on_degenerate_rows() {
+            let flat = Rect::new(10.0, 20.0, 30.0, 3.0);
+            assert_eq!(selection_pill(flat), flat);
+            let tall = Rect::new(10.0, 20.0, 30.0, 20.0);
+            assert_eq!(selection_pill(tall), Rect::new(10.0, 22.0, 30.0, 16.0));
         }
     }
 }
