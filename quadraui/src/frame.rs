@@ -26,7 +26,7 @@
 //! remains public, low-level API — `ScreenLayout::draw` calls it
 //! internally, some primitives have no `Surface` variant yet, and
 //! rasteriser tests / compose helpers call it directly by design. See
-//! `quadraui/docs/DECISIONS.md` D-006 for the full decision and
+//! `quadraui/docs/decisions/DECISIONS.md` D-006 for the full decision and
 //! `quadraui/docs/PRIMITIVE_RULES.md` "One primitive, one canonical
 //! paint path" for the authoring rule this implies for new primitives.
 

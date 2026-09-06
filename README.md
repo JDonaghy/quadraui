@@ -136,9 +136,9 @@ declarative descriptions + layout + dual rasterisers. The most-used ones:
 
 ## Design
 
-- [`quadraui/docs/DECISIONS.md`](quadraui/docs/DECISIONS.md) — primitive
+- [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md) — primitive
   distinctness principles and architectural decision log.
-- [`quadraui/docs/BACKEND_TRAIT_PROPOSAL.md`](quadraui/docs/BACKEND_TRAIT_PROPOSAL.md) §9 —
+- [`quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md`](quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md) §9 —
   resolved decisions log.
 - [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) —
   pitfalls discovered while building the Win-GUI backend; apply when

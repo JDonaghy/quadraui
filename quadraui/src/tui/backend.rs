@@ -82,7 +82,7 @@ const MIN_GAP_CELLS: f32 = 2.0;
 /// only while the scope is active.
 ///
 /// The ratatui `Terminal` is **not** owned here — it stays as a local
-/// in [`super::event_loop`]. See `BACKEND_TRAIT_PROPOSAL.md` §11 for
+/// in [`super::event_loop`]. See `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §11 for
 /// rationale and the eventual migration plan.
 pub struct TuiBackend {
     viewport: Viewport,
@@ -1082,11 +1082,11 @@ impl Backend for TuiBackend {
     //
     // These take a pre-computed `*Layout` in their existing TUI
     // shims. Migrating them through the trait needs either the
-    // trait to take `&Layout` (per `BACKEND_TRAIT_PROPOSAL.md` §6.2)
+    // trait to take `&Layout` (per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2)
     // or a per-method recompute. Deferred until Stage 3.
 
     // Phase B.5b Stage 9: trait extended with `&Layout` parameters
-    // per `BACKEND_TRAIT_PROPOSAL.md` §6.2. The TUI free functions
+    // per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. The TUI free functions
     // for these primitives take `&Layout` directly — the trait impls
     // are now thin pass-throughs, mirroring the GTK impls in
     // `gtk/backend.rs`.

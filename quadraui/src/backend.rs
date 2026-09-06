@@ -5,7 +5,7 @@
 //! and every supported platform rasterises the same primitive descriptions
 //! with platform-native drawing + input.
 //!
-//! See `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §4 for design rationale.
+//! See `quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4 for design rationale.
 //!
 //! ## `draw_*` here vs. `Surface` in `frame.rs` (issue #456)
 //!
@@ -18,7 +18,7 @@
 //! cannot silently paint the same primitive two different ways (the
 //! drift #456 documents). `ScreenLayout::draw` calls these `draw_*`
 //! methods internally — see `frame.rs`'s module doc and
-//! `quadraui/docs/DECISIONS.md` D-006 for the full picture, including
+//! `quadraui/docs/decisions/DECISIONS.md` D-006 for the full picture, including
 //! the primitives that have no `Surface` variant yet and must still be
 //! painted via `draw_*` directly.
 //!
@@ -55,7 +55,7 @@
 //! Both frames are legitimate — the rule this file enforces is that the
 //! frame is *stated on the method's doc comment* and *matches what every
 //! backend implementation actually returns* (see
-//! `quadraui/docs/DECISIONS.md` D-005 for why the split exists and why
+//! `quadraui/docs/decisions/DECISIONS.md` D-005 for why the split exists and why
 //! it isn't collapsed to one frame; `quadraui/docs/PRIMITIVE_RULES.md`
 //! "Coordinate frames for `*_layout` methods" for the authoring rule).
 //! `quadraui/docs/LESSONS.md` "Layout helpers must return coords in the
@@ -849,7 +849,7 @@ pub trait Backend {
     //   }
     //
     // Adding a primitive is a breaking change to this trait — intentional
-    // (see `BACKEND_TRAIT_PROPOSAL.md` §4). Backends opt in to the new
+    // (see `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4). Backends opt in to the new
     // primitive in the same PR that adds it to the trait.
     /// Paint `tree` into `rect`. Non-header row height defaults to a
     /// backend-native derivation from `line_height` (GTK/macOS:
@@ -919,7 +919,7 @@ pub trait Backend {
     /// placeholder logic.
     ///
     /// No default impl — every backend implementer sees this as a compile
-    /// error and fills in a real rasteriser (`BACKEND_TRAIT_PROPOSAL.md`
+    /// error and fills in a real rasteriser (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`
     /// §4, `PRIMITIVE_RULES.md` rule 7). Do not add a no-op default here;
     /// see `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
     /// portability risk, not a precedent to follow.
@@ -932,7 +932,7 @@ pub trait Backend {
         active: bool,
     );
 
-    // Layout-passthrough primitives (per BACKEND_TRAIT_PROPOSAL.md
+    // Layout-passthrough primitives (per docs/decisions/BACKEND_TRAIT_PROPOSAL.md
     // §6.2). Each backend computes the primitive's layout internally
     // using its native measurer (cells for TUI, Pango / DirectWrite /
     // Core Text pixels for the others) — apps don't have access to
@@ -993,7 +993,7 @@ pub trait Backend {
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser
-    /// (`BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -1277,7 +1277,7 @@ pub trait Backend {
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser
-    /// (`BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     /// Do not add a no-op default here; see
     /// `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
     /// portability risk, not a precedent to follow.

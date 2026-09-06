@@ -179,7 +179,7 @@ conversions. Don't duplicate the arithmetic; backends should
 yourself wanting to add a `maximized: bool` to a quadraui primitive,
 stop. The primitive's field is for *rendering only* (e.g. flipping
 an icon); the state itself belongs on the app's `Engine`. See
-`DECISIONS.md` D-001 principle: "One primitive per UX concept, not
+`docs/decisions/DECISIONS.md` D-001 principle: "One primitive per UX concept, not
 per algebraic reduction."
 
 **6. Primitive-owned state is only scroll + text input.** Everything
@@ -233,7 +233,7 @@ Before wiring any non-trivial feature:
 
 - `quadraui/docs/UI_CRATE_DESIGN.md` — the vision (primitives +
   backend trait + layout primitives, most of it still roadmapped)
-- `quadraui/docs/DECISIONS.md` — primitive-distinctness decisions
+- `quadraui/docs/decisions/DECISIONS.md` — primitive-distinctness decisions
   and the "One primitive per UX concept" principle
 - `docs/NATIVE_GUI_LESSONS.md` — backend-implementer counterpart to
   this file (geometry bugs, multi-group testing, hit-test parity)

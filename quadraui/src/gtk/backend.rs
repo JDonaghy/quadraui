@@ -1755,14 +1755,14 @@ impl Backend for GtkBackend {
     // ─── Layout-passthrough primitives ─────────────────────────────────────
     //
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter per
-    // `BACKEND_TRAIT_PROPOSAL.md` §6.2. The current GTK rasterisers
+    // `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. The current GTK rasterisers
     // (`quadraui_gtk::draw_status_bar` etc.) recompute their own
     // layout internally, so the `_layout` parameter is currently
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
 
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter
-    // per `BACKEND_TRAIT_PROPOSAL.md` §6.2. Three of the five
+    // per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. Three of the five
     // primitives (status_bar, tab_bar, text_display) have
     // quadraui-side rasterisers that already accept a `crate::Theme`,
     // so the trait impls below route through them. The remaining two

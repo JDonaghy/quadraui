@@ -28,7 +28,7 @@
 //! #701) rather than a third hand-derived copy of the GTK/macOS math.
 //!
 //! Vertical-only in v1 (per #294 / D-003 in
-//! `quadraui/docs/DECISIONS.md`); horizontal sections fall through to a
+//! `quadraui/docs/decisions/DECISIONS.md`); horizontal sections fall through to a
 //! no-op, same as the GTK/macOS twins.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s

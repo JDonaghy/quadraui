@@ -1296,448 +1296,13 @@ fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::RecordingBackend;
 
-    // ── MockBackend ──────────────────────────────────────────────────────────
-    // Mirrors tree_controller::tests::MockBackend exactly, with two overrides:
-    //  - draw_text_input / text_input_layout return a real layout (needed for
-    //    click-routing tests that call handle()).
-    //  - draw_spinner / spinner_layout return a trivial SpinnerLayout instead
-    //    of panicking.
-
-    struct MockBackend;
-
-    impl crate::Backend for MockBackend {
-        fn viewport(&self) -> crate::Viewport {
-            crate::Viewport {
-                width: 80.0,
-                height: 24.0,
-                scale: 1.0,
-            }
-        }
-        fn begin_frame(&mut self, _v: crate::Viewport) {}
-        fn end_frame(&mut self) {}
-        fn poll_events(&mut self) -> Vec<UiEvent> {
-            Vec::new()
-        }
-        fn wait_events(&mut self, _t: std::time::Duration) -> Vec<UiEvent> {
-            Vec::new()
-        }
-        fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
-        fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
-        fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
-            unimplemented!()
-        }
-        fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
-            unimplemented!()
-        }
-        fn services(&self) -> &dyn crate::backend::PlatformServices {
-            unimplemented!()
-        }
-        fn backend_caps(&self) -> crate::backend::BackendCaps {
-            crate::backend::BackendCaps::empty()
-        }
-        fn line_height(&self) -> f32 {
-            1.0
-        }
-        fn char_width(&self) -> f32 {
-            1.0
-        }
-        fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
-        fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
-        fn draw_data_table(
-            &mut self,
-            _r: Rect,
-            _t: &crate::DataTable,
-            _h: Option<usize>,
-        ) -> crate::DataTableLayout {
-            unimplemented!()
-        }
-        fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
-            unimplemented!()
-        }
-        fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_layout(&self, r: Rect, l: &crate::ListView) -> crate::ListViewLayout {
-            l.layout(r.width, r.height, 0.0, |_| {
-                crate::primitives::list::ListItemMeasure::new(1.0)
-            })
-        }
-        fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
-        fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
-        fn draw_settings_chrome(
-            &mut self,
-            _r: Rect,
-            _header_text: &str,
-            _query: &str,
-            _placeholder: &str,
-            _active: bool,
-        ) {
-        }
-        fn draw_status_bar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::status_bar::StatusBar,
-            _hovered_id: Option<&WidgetId>,
-            _pressed_id: Option<&WidgetId>,
-        ) -> crate::StatusBarLayout {
-            unimplemented!()
-        }
-        fn draw_tab_bar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::TabBar,
-            _h: Option<usize>,
-        ) -> crate::TabBarHits {
-            unimplemented!()
-        }
-        fn draw_tab_bar_icons(
-            &mut self,
-            _r: Rect,
-            _b: &crate::TabBar,
-            _icons: &[Option<crate::TabIcon>],
-            _h: Option<usize>,
-        ) -> crate::TabBarHits {
-            unimplemented!()
-        }
-        fn draw_activity_bar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::activity_bar::ActivityBar,
-            _h: Option<usize>,
-        ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
-            unimplemented!()
-        }
-        fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
-        fn draw_terminal_divider(&mut self, _r: Rect) {}
-        fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
-        fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
-        fn command_line_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandLine,
-        ) -> crate::primitives::command_line::CommandLineLayout {
-            Default::default()
-        }
-        fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
-            crate::StatusBarLayout {
-                bar_width: 0.0,
-                bar_height: 0.0,
-                visible_segments: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_right_start: 0,
-            }
-        }
-        fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn tab_bar_layout_icons(
-            &self,
-            _r: Rect,
-            _b: &crate::TabBar,
-            _icons: &[Option<crate::TabIcon>],
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn activity_bar_layout(
-            &self,
-            _r: Rect,
-            _b: &crate::primitives::activity_bar::ActivityBar,
-        ) -> Vec<crate::ActivityBarRowHit> {
-            Vec::new()
-        }
-        fn text_display_layout(
-            &self,
-            _r: Rect,
-            _t: &crate::TextDisplay,
-        ) -> crate::TextDisplayLayout {
-            unimplemented!()
-        }
-        /// Override: return a real layout so click-routing tests don't panic.
-        fn draw_text_input(&mut self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
-            ti.layout(
-                r,
-                crate::TextInputMeasure::new(self.line_height(), self.char_width()),
-            )
-        }
-        /// Override: return a real layout so click-routing tests don't panic.
-        fn text_input_layout(&self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
-            ti.layout(
-                r,
-                crate::TextInputMeasure::new(self.line_height(), self.char_width()),
-            )
-        }
-        fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
-        fn draw_context_menu(
-            &mut self,
-            _m: &crate::ContextMenu,
-            _l: &crate::ContextMenuLayout,
-        ) -> Vec<(Rect, WidgetId)> {
-            unimplemented!()
-        }
-        fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
-            unimplemented!()
-        }
-        fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
-        fn msv_layout(
-            &self,
-            _r: Rect,
-            _v: &crate::MultiSectionView,
-        ) -> crate::MultiSectionViewLayout {
-            unimplemented!()
-        }
-        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
-            unimplemented!()
-        }
-        fn tree_layout(
-            &self,
-            rect: Rect,
-            tree: &crate::TreeView,
-        ) -> crate::primitives::tree::TreeViewLayout {
-            let lh = self.line_height();
-            let visible: usize = if lh > 0.0 {
-                (rect.height / lh).floor() as usize
-            } else {
-                0
-            };
-            let end = tree.scroll_offset + visible;
-            let rows: Vec<crate::primitives::tree::VisibleTreeRow> = (tree.scroll_offset
-                ..end.min(tree.rows.len()))
-                .enumerate()
-                .map(|(vi, ri)| crate::primitives::tree::VisibleTreeRow {
-                    row_idx: ri,
-                    bounds: Rect::new(0.0, vi as f32 * lh, rect.width, lh),
-                })
-                .collect();
-            crate::primitives::tree::TreeViewLayout {
-                viewport_width: rect.width,
-                viewport_height: rect.height,
-                visible_rows: rows,
-                hit_regions: Vec::new(),
-                resolved_scroll_offset: tree.scroll_offset,
-            }
-        }
-        fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
-            unimplemented!()
-        }
-        fn draw_editor(
-            &mut self,
-            _r: Rect,
-            _e: &crate::primitives::editor::Editor,
-        ) -> crate::backend::EditorPaintResult {
-            Default::default()
-        }
-        fn draw_message_list(
-            &mut self,
-            _r: Rect,
-            _l: &crate::primitives::message_list::MessageList,
-        ) {
-        }
-        fn draw_rich_text_popup(
-            &mut self,
-            _p: &crate::RichTextPopup,
-            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-        ) {
-        }
-        fn draw_find_replace(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
-        fn draw_completions(
-            &mut self,
-            _c: &crate::Completions,
-            _l: &crate::primitives::completions::CompletionsLayout,
-        ) {
-        }
-        fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
-        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
-        fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-            unimplemented!()
-        }
-        fn menu_bar_layout(&self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-            unimplemented!()
-        }
-        fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-            unimplemented!()
-        }
-        fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-            unimplemented!()
-        }
-        fn draw_split_tree(&mut self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-            unimplemented!()
-        }
-        fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-            unimplemented!()
-        }
-        fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
-            unimplemented!()
-        }
-        fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
-            unimplemented!()
-        }
-        fn draw_toast_stack(
-            &mut self,
-            _r: Rect,
-            _s: &crate::ToastStack,
-        ) -> crate::ToastStackLayout {
-            unimplemented!()
-        }
-        fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
-            unimplemented!()
-        }
-        fn draw_pipeline_view(
-            &mut self,
-            _r: Rect,
-            _v: &crate::PipelineView,
-        ) -> crate::PipelineViewLayout {
-            unimplemented!()
-        }
-        fn pipeline_view_layout(
-            &self,
-            _r: Rect,
-            _v: &crate::PipelineView,
-        ) -> crate::PipelineViewLayout {
-            unimplemented!()
-        }
-        fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-            unimplemented!()
-        }
-        fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-            unimplemented!()
-        }
-        /// Override: return a real layout so render tests don't panic.
-        fn draw_spinner(&mut self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            crate::SpinnerLayout { bounds: r }
-        }
-        /// Override: return a real layout so render tests don't panic.
-        fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            crate::SpinnerLayout { bounds: r }
-        }
-        fn draw_command_center(
-            &mut self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
-        fn command_center_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
-        fn draw_chart(
-            &mut self,
-            _r: Rect,
-            _c: &crate::primitives::chart::Chart,
-            _h: Option<(usize, usize)>,
-            _x: Option<f64>,
-        ) -> crate::primitives::chart::ChartLayout {
-            unimplemented!()
-        }
-        fn chart_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::primitives::chart::Chart,
-        ) -> crate::primitives::chart::ChartLayout {
-            unimplemented!()
-        }
-        fn draw_toolbar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::toolbar::Toolbar,
-            _h: Option<&crate::types::WidgetId>,
-            _p: Option<&crate::types::WidgetId>,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            unimplemented!()
-        }
-        fn toolbar_layout(
-            &self,
-            _r: Rect,
-            _b: &crate::primitives::toolbar::Toolbar,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            unimplemented!()
-        }
-        fn draw_sidebar_panel(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-            _h: Option<&crate::types::WidgetId>,
-            _pr: Option<&crate::types::WidgetId>,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
-        fn sidebar_panel_layout(
-            &self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
-
-        fn draw_diff_view(
-            &mut self,
-            _r: Rect,
-            view: &crate::primitives::diff_view::DiffView,
-        ) -> crate::primitives::diff_view::DiffViewLayout {
-            crate::primitives::diff_view::DiffViewLayout {
-                visible_rows: 0,
-                total_rows: view.total_rows(),
-            }
-        }
-
-        fn draw_board(
-            &mut self,
-            _r: Rect,
-            _m: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::BoardLayout {
-                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                columns: vec![],
-            }
-        }
-
-        fn board_layout(
-            &self,
-            _r: Rect,
-            _m: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::BoardLayout {
-                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                columns: vec![],
-            }
-        }
-
-        fn draw_minimap(
-            &mut self,
-            _r: Rect,
-            _m: &crate::primitives::minimap::Minimap,
-        ) -> crate::backend::MinimapPaintResult {
-            crate::backend::MinimapPaintResult::default()
-        }
-
-        fn minimap_layout(
-            &self,
-            _r: Rect,
-            _m: &crate::primitives::minimap::Minimap,
-        ) -> crate::primitives::minimap::MinimapLayout {
-            crate::primitives::minimap::MinimapLayout::default()
-        }
-
-        fn draw_image(
-            &mut self,
-            _r: Rect,
-            _i: &crate::primitives::image::Image,
-        ) -> crate::backend::ImagePaintResult {
-            crate::backend::ImagePaintResult::Unsupported
-        }
-    }
+    // Tests below drive `ChatController` against `RecordingBackend`
+    // (quadraui#799, replacing a private `MockBackend` copy of the same
+    // shape) — its `draw_text_input`/`text_input_layout` and
+    // `draw_spinner`/`spinner_layout` all return real layouts rather than
+    // panicking, which the click-routing and render tests here depend on.
 
     fn make_rect() -> Rect {
         Rect::new(0.0, 0.0, 80.0, 24.0)
@@ -1803,7 +1368,7 @@ mod tests {
             },
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             ev,
             ChatControllerEvent::Submit {
@@ -1825,7 +1390,7 @@ mod tests {
             },
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             ev,
             ChatControllerEvent::Submit {
@@ -1846,7 +1411,7 @@ mod tests {
             },
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Ignored);
     }
 
@@ -1863,7 +1428,7 @@ mod tests {
             },
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             ev,
             ChatControllerEvent::Submit {
@@ -1884,7 +1449,7 @@ mod tests {
             },
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Ignored);
     }
 
@@ -1901,7 +1466,7 @@ mod tests {
             },
             repeat: false,
         };
-        cc.handle(&event, &MockBackend, rect);
+        cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(cc.history.len(), 1);
         assert_eq!(cc.history[0], "hello");
     }
@@ -1925,7 +1490,7 @@ mod tests {
         cc.input_insert_str("hello");
         // Cursor sits at end of "hello" after insertion.
         assert_eq!(cc.input_cursor, 5);
-        let ev = cc.handle(&ctrl_key('a'), &MockBackend, make_rect());
+        let ev = cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_cursor, 0);
     }
@@ -1935,9 +1500,9 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hello");
         // Move to the start first so Ctrl+E has somewhere to travel.
-        cc.handle(&ctrl_key('a'), &MockBackend, make_rect());
+        cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
         assert_eq!(cc.input_cursor, 0);
-        let ev = cc.handle(&ctrl_key('e'), &MockBackend, make_rect());
+        let ev = cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_cursor, 5);
     }
@@ -1949,11 +1514,11 @@ mod tests {
         // Cursor is on the second line, at its end (byte index 11).
         assert_eq!(cc.input_cursor, 11);
         // Ctrl+A moves to the start of the *current* line, not the buffer.
-        cc.handle(&ctrl_key('a'), &MockBackend, make_rect());
+        cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
         // Cursor lands just after the '\n' (start of "world").
         assert_eq!(cc.input_cursor, 6);
         // Ctrl+E moves to the end of the current line (end of buffer here).
-        cc.handle(&ctrl_key('e'), &MockBackend, make_rect());
+        cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
         assert_eq!(cc.input_cursor, 11);
     }
 
@@ -1994,7 +1559,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Cancelled);
     }
 
@@ -2010,7 +1575,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_text(), "hello\n");
     }
@@ -2091,7 +1656,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_text(), "prev");
     }
@@ -2109,7 +1674,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let ev = cc.handle(&event, &MockBackend, rect);
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Consumed);
         let (new_line, _) = cursor_byte_to_line_col(cc.input_text(), cc.input_cursor);
         assert_eq!(new_line, 0);
@@ -2153,7 +1718,7 @@ mod tests {
     /// beyond the visible window, `render()` must advance `transcript_scroll_top`
     /// so the newest rows are visible.
     ///
-    /// Geometry with `MockBackend` (line_height=1, char_width=1) + `make_rect`
+    /// Geometry with `RecordingBackend` (line_height=1, char_width=1) + `make_rect`
     /// (80 × 24):
     ///   status_h = 1, input_h = 4×1+2 = 6, middle_h = 17,
     ///   scrollbar_width = 1  →  transcript_rect = 79 × 17,
@@ -2168,7 +1733,7 @@ mod tests {
             cc.push_turn(ChatRole::User, StyledText::plain(&format!("m{i}")));
         }
         assert_eq!(cc.transcript_scroll_top(), 0, "scroll_top must start at 0");
-        cc.render(&mut MockBackend, make_rect());
+        cc.render(&mut RecordingBackend::new(), make_rect());
         assert!(
             cc.transcript_scroll_top() > 0,
             "follow-tail must advance scroll_top when content exceeds the visible window; \
@@ -2194,7 +1759,7 @@ mod tests {
         // Append new content.
         cc.push_turn(ChatRole::Assistant, StyledText::plain("new reply"));
         // render() must leave scroll_top unchanged because follow-tail is off.
-        cc.render(&mut MockBackend, make_rect());
+        cc.render(&mut RecordingBackend::new(), make_rect());
         assert_eq!(
             cc.transcript_scroll_top(),
             3,
@@ -2665,7 +2230,7 @@ mod tests {
     #[test]
     fn layout_status_at_top() {
         let cc = ChatController::new("c");
-        let layout = cc.compute_layout(&MockBackend, make_rect());
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert_eq!(layout.status.y, 0.0);
         assert_eq!(layout.status.height, 1.0); // line_height = 1.0
     }
@@ -2673,7 +2238,7 @@ mod tests {
     #[test]
     fn layout_input_at_bottom() {
         let cc = ChatController::new("c");
-        let layout = cc.compute_layout(&MockBackend, make_rect());
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         // input_height_rows=4, lh=1, border=2 → input_h = 6
         let expected_input_y = make_rect().height - (4.0 * 1.0 + 2.0);
         assert_eq!(layout.input.y, expected_input_y);
@@ -2682,7 +2247,7 @@ mod tests {
     #[test]
     fn layout_no_scrollbar_when_transcript_empty() {
         let cc = ChatController::new("c");
-        let layout = cc.compute_layout(&MockBackend, make_rect());
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.scrollbar.is_none());
     }
 
@@ -2690,7 +2255,7 @@ mod tests {
     fn layout_scrollbar_present_when_transcript_nonempty() {
         let mut cc = ChatController::new("c");
         cc.set_transcript(vec![make_turn(ChatRole::User, "hello")]);
-        let layout = cc.compute_layout(&MockBackend, make_rect());
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.scrollbar.is_some());
         // Transcript rect should be narrower than full width.
         assert!(layout.transcript.width < make_rect().width);
@@ -2700,20 +2265,20 @@ mod tests {
     fn layout_spinner_present_when_busy() {
         let mut cc = ChatController::new("c");
         cc.set_busy(true);
-        let layout = cc.compute_layout(&MockBackend, make_rect());
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.spinner.is_some());
     }
 
     #[test]
     fn layout_spinner_absent_when_not_busy() {
         let cc = ChatController::new("c");
-        let layout = cc.compute_layout(&MockBackend, make_rect());
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.spinner.is_none());
     }
 
     // ── Backend rendering tests ───────────────────────────────────────
     //
-    // The tests above exercise state/layout against a `MockBackend` whose
+    // The tests above exercise state/layout against a `RecordingBackend` whose
     // draw calls are no-ops. These two paint the controller through the
     // real `TuiBackend` / `GtkBackend` trait impls into a backend-owned
     // headless surface (a `ratatui::Buffer` / `cairo::ImageSurface`) and

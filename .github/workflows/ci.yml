@@ -228,7 +228,7 @@ jobs:
       # `win` module the way `macos` is gated in `lib.rs`) specifically so
       # this still type-checks on Linux with no new runner. That's what
       # keeps this step free to run here. Its entire purpose is to keep the
-      # `Backend` trait's no-default-impl policy (BACKEND_TRAIT_PROPOSAL.md
+      # `Backend` trait's no-default-impl policy (docs/decisions/BACKEND_TRAIT_PROPOSAL.md
       # §4, PRIMITIVE_RULES.md rule 7) actually enforced for the win
       # backend: before this step existed, #531 merged `draw_settings_chrome`
       # with no `WinBackend` impl and nothing caught it (7 missing methods

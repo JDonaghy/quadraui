@@ -25,7 +25,7 @@ yet** — its runtime side is mid-migration.
 
 This doc is descriptive: the architectural rationale (why the trait
 looks the way it does, what gets normalised vs. left native) lives in
-`BACKEND_TRAIT_PROPOSAL.md`. Read that first if you're writing a
+`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`. Read that first if you're writing a
 backend from scratch.
 
 ## Event-loop shape: poll-driven trait, queue adapter for callback-driven backends
@@ -207,7 +207,7 @@ your backend's own judgment.
 methods as if they were shipped API.** None of them exist in `src/` —
 grep finds zero occurrences of `BackendError` anywhere in the crate.
 That was aspirational text for the minimal-error-channel design in
-`DECISIONS.md` D-009 (issue #507), written before the design was
+`docs/decisions/DECISIONS.md` D-009 (issue #507), written before the design was
 implemented, and it drifted into looking like an implementer reference
 for API that was never built. Removed here rather than left to mislead
 the next backend author; see D-009 for the actual design (`Unsupported`
@@ -223,7 +223,7 @@ Not every `UiEvent` variant needs to be emitted by every backend to be
 conformant, and until this issue almost nothing said which was which —
 `docs/LESSONS.md`'s "all runners must fire all `UiEvent` variants the
 consumer pattern needs" rule was unenforceable without a definition of
-the required set. This table is that definition. `docs/DECISIONS.md`
+the required set. This table is that definition. `docs/decisions/DECISIONS.md`
 D-010 has the full per-variant reasoning and the grep evidence behind
 each disposition; this table is the quick-reference a new backend author
 should build against.

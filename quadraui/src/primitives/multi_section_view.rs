@@ -6,7 +6,7 @@
 //! browsers, Postman collection sidebars — anything that's "N stacked
 //! sections, each its own little scrollable list, with chrome on top."
 //!
-//! See `quadraui/docs/DECISIONS.md` D-003 for the design pass that
+//! See `quadraui/docs/decisions/DECISIONS.md` D-003 for the design pass that
 //! produced this primitive.
 //!
 //! # Composition vs subsumption

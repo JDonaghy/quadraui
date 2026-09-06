@@ -125,7 +125,7 @@ story and point at it by number (`#481`, `#502`, `#415`).
   change `CLAUDE.md`'s downstream-consumers section warns is expensive
   once `develop` has shipped it.
 - **`UiEvent::CharTyped`'s doc comment describes a pipeline that
-  doesn't exist.** D-010 (`DECISIONS.md`) already re-scoped its
+  doesn't exist.** D-010 (`docs/decisions/DECISIONS.md`) already re-scoped its
   contract to "IME committed composed text for one character" and
   confirmed **no backend emits it** — the doc comment is forward-looking
   design intent, correctly flagged as unimplemented, not a stale
@@ -213,7 +213,7 @@ CompositionUpdated { preedit: String, cursor: usize },
 /// text-input widget, same as `CompositionStarted`.
 ///
 /// **Supersedes `UiEvent::CharTyped` as the canonical IME-output
-/// event** — see `DECISIONS.md` D-0NN (this document's own decision,
+/// event** — see `docs/decisions/DECISIONS.md` D-0NN (this document's own decision,
 /// filed alongside the wiring issue that first emits this variant).
 /// Unlike `CharTyped(char)`, this carries the *whole* committed
 /// string: a CJK IME routinely commits a multi-character word in one

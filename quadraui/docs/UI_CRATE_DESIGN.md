@@ -2,7 +2,7 @@
 
 **Status:** Draft for discussion, from before any code existed. Kept as a
 decision record — most of §§1-9 shipped in some form since (see
-`DECISIONS.md` and the root `README.md`'s *Status* for what's real
+`docs/decisions/DECISIONS.md` and the root `README.md`'s *Status* for what's real
 today), but **decision #6 (Accessibility) below did not**: quadraui ships
 zero `a11y_role`/`a11y_label`-style fields on any primitive as of
 2026-09-05 (issue #798). Read the ✅ marks below as "this is what we

@@ -1135,6 +1135,7 @@ fn contains(rect: Rect, point: Point) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::RecordingBackend;
 
     fn sample_panels() -> Vec<PanelDefinition> {
         vec![
@@ -1720,7 +1721,7 @@ mod tests {
                     right: false,
                 },
             },
-            &MockBackend,
+            &RecordingBackend::new(),
             area(),
         );
         assert!(matches!(ev, AppShellEvent::SidebarResized { .. }));
@@ -1740,7 +1741,7 @@ mod tests {
                     right: false,
                 },
             },
-            &MockBackend,
+            &RecordingBackend::new(),
             area(),
         );
         assert!(matches!(ev, AppShellEvent::SidebarResized { .. }));
@@ -1757,7 +1758,7 @@ mod tests {
                 position: Point::new(50.0, 5.0),
                 widget: None,
             },
-            &MockBackend,
+            &RecordingBackend::new(),
             area(),
         );
         assert_eq!(ev, AppShellEvent::Consumed);
@@ -2002,7 +2003,7 @@ mod tests {
                 modifiers: Default::default(),
                 repeat: false,
             },
-            &MockBackend,
+            &RecordingBackend::new(),
             area(),
         );
         assert_eq!(ev, AppShellEvent::Ignored);
@@ -2167,7 +2168,7 @@ mod tests {
                     right: false,
                 },
             },
-            &MockBackend,
+            &RecordingBackend::new(),
             area(),
         );
         assert!(matches!(ev, AppShellEvent::BottomPanelResized { .. }));
@@ -2241,417 +2242,5 @@ mod tests {
             "hiding the title bar should hand its row back to content: \
              hidden={hidden_main_h}, visible={visible_main_h}"
         );
-    }
-
-    // ── Mock backend for handle() tests ─────────────────────────────
-
-    struct MockBackend;
-
-    impl Backend for MockBackend {
-        fn viewport(&self) -> crate::Viewport {
-            crate::Viewport {
-                width: 80.0,
-                height: 24.0,
-                scale: 1.0,
-            }
-        }
-        fn begin_frame(&mut self, _v: crate::Viewport) {}
-        fn end_frame(&mut self) {}
-        fn poll_events(&mut self) -> Vec<UiEvent> {
-            Vec::new()
-        }
-        fn wait_events(&mut self, _t: std::time::Duration) -> Vec<UiEvent> {
-            Vec::new()
-        }
-        fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
-        fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
-        fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
-            unimplemented!()
-        }
-        fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
-            unimplemented!()
-        }
-        fn services(&self) -> &dyn crate::backend::PlatformServices {
-            unimplemented!()
-        }
-        fn backend_caps(&self) -> crate::backend::BackendCaps {
-            crate::backend::BackendCaps::empty()
-        }
-        fn line_height(&self) -> f32 {
-            1.0
-        }
-        fn char_width(&self) -> f32 {
-            1.0
-        }
-        fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
-        fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
-        fn draw_data_table(
-            &mut self,
-            _r: Rect,
-            _t: &crate::DataTable,
-            _h: Option<usize>,
-        ) -> crate::DataTableLayout {
-            unimplemented!()
-        }
-        fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
-            unimplemented!()
-        }
-        fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_layout(&self, r: Rect, l: &crate::ListView) -> crate::ListViewLayout {
-            l.layout(r.width, r.height, 0.0, |_| {
-                crate::primitives::list::ListItemMeasure::new(1.0)
-            })
-        }
-        fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
-        fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
-        fn draw_settings_chrome(
-            &mut self,
-            _r: Rect,
-            _header_text: &str,
-            _query: &str,
-            _placeholder: &str,
-            _active: bool,
-        ) {
-        }
-        fn draw_status_bar(
-            &mut self,
-            _r: Rect,
-            _b: &StatusBar,
-            _hovered_id: Option<&WidgetId>,
-            _pressed_id: Option<&WidgetId>,
-        ) -> crate::StatusBarLayout {
-            crate::StatusBarLayout {
-                bar_width: 0.0,
-                bar_height: 0.0,
-                visible_segments: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_right_start: 0,
-            }
-        }
-        fn draw_tab_bar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::TabBar,
-            _h: Option<usize>,
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn draw_tab_bar_icons(
-            &mut self,
-            _r: Rect,
-            _b: &crate::TabBar,
-            _icons: &[Option<crate::TabIcon>],
-            _h: Option<usize>,
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn draw_activity_bar(
-            &mut self,
-            _r: Rect,
-            _b: &ActivityBar,
-            _h: Option<usize>,
-        ) -> Vec<crate::ActivityBarRowHit> {
-            Vec::new()
-        }
-        fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
-        fn draw_terminal_divider(&mut self, _r: Rect) {}
-        fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
-        fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
-        fn command_line_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandLine,
-        ) -> crate::primitives::command_line::CommandLineLayout {
-            Default::default()
-        }
-        fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
-            crate::StatusBarLayout {
-                bar_width: 0.0,
-                bar_height: 0.0,
-                visible_segments: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_right_start: 0,
-            }
-        }
-        fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn tab_bar_layout_icons(
-            &self,
-            _r: Rect,
-            _b: &crate::TabBar,
-            _icons: &[Option<crate::TabIcon>],
-        ) -> crate::TabBarHits {
-            crate::TabBarHits::default()
-        }
-        fn activity_bar_layout(
-            &self,
-            _r: Rect,
-            _b: &crate::primitives::activity_bar::ActivityBar,
-        ) -> Vec<crate::ActivityBarRowHit> {
-            Vec::new()
-        }
-        fn text_display_layout(
-            &self,
-            _r: Rect,
-            _t: &crate::TextDisplay,
-        ) -> crate::TextDisplayLayout {
-            unimplemented!()
-        }
-        fn draw_text_input(&mut self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
-            unimplemented!()
-        }
-        fn text_input_layout(&self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
-            unimplemented!()
-        }
-        fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
-        fn draw_context_menu(
-            &mut self,
-            _m: &crate::ContextMenu,
-            _l: &crate::ContextMenuLayout,
-        ) -> Vec<(Rect, WidgetId)> {
-            Vec::new()
-        }
-        fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
-            Vec::new()
-        }
-        fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
-        fn msv_layout(
-            &self,
-            _r: Rect,
-            _v: &crate::MultiSectionView,
-        ) -> crate::MultiSectionViewLayout {
-            unimplemented!()
-        }
-        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
-            unimplemented!()
-        }
-        fn tree_layout(
-            &self,
-            _r: Rect,
-            _t: &crate::TreeView,
-        ) -> crate::primitives::tree::TreeViewLayout {
-            unimplemented!()
-        }
-        fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
-            unimplemented!()
-        }
-        fn draw_editor(
-            &mut self,
-            _r: Rect,
-            _e: &crate::primitives::editor::Editor,
-        ) -> crate::backend::EditorPaintResult {
-            Default::default()
-        }
-        fn draw_message_list(
-            &mut self,
-            _r: Rect,
-            _l: &crate::primitives::message_list::MessageList,
-        ) {
-        }
-        fn draw_rich_text_popup(
-            &mut self,
-            _p: &crate::RichTextPopup,
-            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-        ) {
-        }
-        fn draw_find_replace(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
-        fn draw_completions(
-            &mut self,
-            _c: &crate::Completions,
-            _l: &crate::primitives::completions::CompletionsLayout,
-        ) {
-        }
-        fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
-        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
-        fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-            unimplemented!()
-        }
-        fn menu_bar_layout(&self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-            unimplemented!()
-        }
-        fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-            unimplemented!()
-        }
-        fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-            unimplemented!()
-        }
-        fn draw_split_tree(&mut self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-            unimplemented!()
-        }
-        fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-            unimplemented!()
-        }
-        fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
-            unimplemented!()
-        }
-        fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
-            unimplemented!()
-        }
-        fn draw_toast_stack(
-            &mut self,
-            _r: Rect,
-            _s: &crate::ToastStack,
-        ) -> crate::ToastStackLayout {
-            unimplemented!()
-        }
-        fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
-            unimplemented!()
-        }
-        fn draw_pipeline_view(
-            &mut self,
-            _r: Rect,
-            _v: &crate::PipelineView,
-        ) -> crate::PipelineViewLayout {
-            unimplemented!()
-        }
-        fn pipeline_view_layout(
-            &self,
-            _r: Rect,
-            _v: &crate::PipelineView,
-        ) -> crate::PipelineViewLayout {
-            unimplemented!()
-        }
-        fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-            unimplemented!()
-        }
-        fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-            unimplemented!()
-        }
-        fn draw_spinner(&mut self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            unimplemented!()
-        }
-        fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            unimplemented!()
-        }
-        fn draw_command_center(
-            &mut self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
-        fn command_center_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
-        fn draw_chart(
-            &mut self,
-            _r: Rect,
-            _c: &crate::primitives::chart::Chart,
-            _h: Option<(usize, usize)>,
-            _x: Option<f64>,
-        ) -> crate::primitives::chart::ChartLayout {
-            unimplemented!()
-        }
-        fn chart_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::primitives::chart::Chart,
-        ) -> crate::primitives::chart::ChartLayout {
-            unimplemented!()
-        }
-        fn draw_toolbar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::toolbar::Toolbar,
-            _h: Option<&crate::types::WidgetId>,
-            _p: Option<&crate::types::WidgetId>,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            unimplemented!()
-        }
-        fn toolbar_layout(
-            &self,
-            _r: Rect,
-            _b: &crate::primitives::toolbar::Toolbar,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            unimplemented!()
-        }
-        fn draw_sidebar_panel(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-            _h: Option<&crate::types::WidgetId>,
-            _pr: Option<&crate::types::WidgetId>,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
-        fn sidebar_panel_layout(
-            &self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
-
-        fn draw_diff_view(
-            &mut self,
-            _r: Rect,
-            view: &crate::primitives::diff_view::DiffView,
-        ) -> crate::primitives::diff_view::DiffViewLayout {
-            crate::primitives::diff_view::DiffViewLayout {
-                visible_rows: 0,
-                total_rows: view.total_rows(),
-            }
-        }
-
-        fn draw_board(
-            &mut self,
-            _r: Rect,
-            _m: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::BoardLayout {
-                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                columns: vec![],
-            }
-        }
-
-        fn board_layout(
-            &self,
-            _r: Rect,
-            _m: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::BoardLayout {
-                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                columns: vec![],
-            }
-        }
-
-        fn draw_minimap(
-            &mut self,
-            _r: Rect,
-            _m: &crate::primitives::minimap::Minimap,
-        ) -> crate::backend::MinimapPaintResult {
-            crate::backend::MinimapPaintResult::default()
-        }
-
-        fn minimap_layout(
-            &self,
-            _r: Rect,
-            _m: &crate::primitives::minimap::Minimap,
-        ) -> crate::primitives::minimap::MinimapLayout {
-            crate::primitives::minimap::MinimapLayout::default()
-        }
-
-        fn draw_image(
-            &mut self,
-            _r: Rect,
-            _i: &crate::primitives::image::Image,
-        ) -> crate::backend::ImagePaintResult {
-            crate::backend::ImagePaintResult::Unsupported
-        }
     }
 }

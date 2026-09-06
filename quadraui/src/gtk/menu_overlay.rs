@@ -41,7 +41,7 @@
 //! none of them have GTK's overlay-widget model to bridge into — the
 //! same category as `AppShell`'s GTK widget-tree bootstrap. Rule 7
 //! ("every primitive gets a `Backend` trait method") doesn't apply
-//! because this isn't a primitive. See `quadraui/docs/DECISIONS.md`
+//! because this isn't a primitive. See `quadraui/docs/decisions/DECISIONS.md`
 //! D-007 for the full write-up.
 
 use std::cell::{Cell, RefCell};

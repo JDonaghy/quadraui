@@ -43,7 +43,7 @@ Read this when adding or changing a primitive.
    taxonomy* under *Testing* for the full bug-class breakdown.
 7. **Add the primitive to the `Backend` trait.** Every primitive MUST
    have a `Backend::draw_<name>` (and where applicable, `Backend::<name>_layout`)
-   method. Per `BACKEND_TRAIT_PROPOSAL.md` section 4, adding a primitive is
+   method. Per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` section 4, adding a primitive is
    an intentional breaking change to the trait — every backend
    implementer sees the new method as a compile error and fills in
    their rasteriser. **No primitive ships with TUI/GTK free-function
@@ -79,7 +79,7 @@ Read this when adding or changing a primitive.
    before iterating cells — skip that reservation and the default body's
    `grid_cols` silently over-reports by the gutter's width whenever a
    caller omits an explicit scrollbar width (issue #506 review fix; see
-   `docs/DECISIONS.md` D-007's "`terminal_layout`'s scrollbar gap" note). If a backend supplies its own
+   `docs/decisions/DECISIONS.md` D-007's "`terminal_layout`'s scrollbar gap" note). If a backend supplies its own
    sizing constants that aren't derivable from those two accessors
    (`BoardMeasure`'s per-backend column/card pixel sizes, `ListView`'s
    scrollbar reservation), there is no default — every backend
@@ -88,7 +88,7 @@ Read this when adding or changing a primitive.
    in `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` (quadraui#492) —
    it is exempt from that check's "silently defaulted" failure only
    because the reason is written down, not because a default exists.
-   See `quadraui/docs/DECISIONS.md` D-007 for the full audit, the
+   See `quadraui/docs/decisions/DECISIONS.md` D-007 for the full audit, the
    off-trait-fn resolutions, and why `Palette` did **not** get a
    `palette_layout` method despite fitting the content-in-rect row
    above (a latent paint/layout drift, not a design gap — D-007's
@@ -226,7 +226,7 @@ caller has no other reason to track that rect, are ABSOLUTE
 `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`,
 `chart_layout`, `minimap_layout`, `msv_layout`, `text_input_layout`,
 `command_line_layout`).
-See `quadraui/docs/DECISIONS.md` D-005 for the full audit and why the
+See `quadraui/docs/decisions/DECISIONS.md` D-005 for the full audit and why the
 split isn't collapsed to one frame everywhere.
 
 **The rule this enforces is not "always LOCAL" — `docs/LESSONS.md`'s
@@ -266,7 +266,7 @@ keeps the hit-map in lock-step with what was painted by construction
 (see `quadraui/src/frame.rs`'s module doc). `Backend::draw_<name>`
 stays public, non-deprecated, low-level API — `ScreenLayout::draw`
 calls it internally, and it's the *only* path for any primitive that
-has no `Surface` variant yet. See `DECISIONS.md` D-006 for the full
+has no `Surface` variant yet. See `docs/decisions/DECISIONS.md` D-006 for the full
 audit and why `Backend::draw_*` isn't hidden or deprecated over that
 gap.
 

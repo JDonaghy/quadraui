@@ -4,7 +4,7 @@
 //! `features = ["tui"]` and call these `draw_*` functions to paint
 //! primitives into a [`ratatui::buffer::Buffer`].
 //!
-//! Per D6 (see `docs/BACKEND_TRAIT_PROPOSAL.md` §9): primitives own
+//! Per D6 (see `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9): primitives own
 //! layout, backends rasterise. Each rasteriser takes a pre-computed
 //! `*Layout` from the primitive's `.layout()` method along with the
 //! primitive itself and a [`crate::Theme`] for default colours.

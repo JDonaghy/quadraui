@@ -8,7 +8,7 @@
 //! [`crate::MultiSectionView::layout`].
 //!
 //! Vertical-only in v1 (per #294 / D-003 in
-//! `quadraui/docs/DECISIONS.md`); horizontal sections fall through to
+//! `quadraui/docs/decisions/DECISIONS.md`); horizontal sections fall through to
 //! a no-op.
 //!
 //! Mirrors [`crate::gtk::multi_section_view`] in shape:

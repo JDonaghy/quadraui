@@ -419,7 +419,7 @@ An alternative design — a single `fn draw_primitive(&mut self, rect: Rect, p: 
 
 1. Adding a primitive still requires work in every backend (a new match arm, same as a new trait method), but changes become **runtime panics via unhandled arms**, not compile errors.
 2. The `AnyPrimitive` enum ossifies every primitive's public shape into one bulky type and brings `'a` lifetime parameters everywhere the enum flows.
-3. Violates `quadraui/docs/DECISIONS.md` D-001 principle: "one primitive per UX concept, not per algebraic reduction." `AnyPrimitive` is the reduction.
+3. Violates `quadraui/docs/decisions/DECISIONS.md` D-001 principle: "one primitive per UX concept, not per algebraic reduction." `AnyPrimitive` is the reduction.
 4. The speculative benefit — "plugins can pass heterogeneous primitive lists through one call" — has no concrete use case today and can be added later as `AnyPrimitive` + a single `draw_primitive` method alongside the per-method ones if a real need appears.
 
 ---
@@ -622,7 +622,7 @@ pre-optimise; profile after B.5 if necessary.
   Diffing is not on the table.
 - **Not retained widget state.** Scroll offsets and text-input
   state remain the only primitive-owned state; everything else
-  stays on the app (see `DECISIONS.md` D-001 principle).
+  stays on the app (see `docs/decisions/DECISIONS.md` D-001 principle).
 
 ---
 

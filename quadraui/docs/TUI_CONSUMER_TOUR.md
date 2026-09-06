@@ -27,7 +27,7 @@ A **primitive** (e.g. `StatusBar`, `Tooltip`, `ListView`) has:
 Backends are **paint-only**: they receive `&Primitive + &Layout` and
 write pixels / cells into their native surface. They do **not** make
 layout decisions. This is Decision D6 (resolved 2026-04-22) —
-`quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §9 D6 has the full
+`quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9 D6 has the full
 rationale.
 
 The payoff: paint and click resolution derive from the same `Layout`
@@ -191,10 +191,10 @@ contract.
 
 ## 5. The decision log (why things are the way they are)
 
-- [`quadraui/docs/DECISIONS.md`](DECISIONS.md) — primitive-distinctness
+- [`quadraui/docs/decisions/DECISIONS.md`](decisions/DECISIONS.md) — primitive-distinctness
   principles ("why ListView ≠ TreeView", "what belongs as Decoration
   vs a separate field"). Read before adding a new primitive.
-- [`quadraui/docs/BACKEND_TRAIT_PROPOSAL.md`](BACKEND_TRAIT_PROPOSAL.md)
+- [`quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md`](decisions/BACKEND_TRAIT_PROPOSAL.md)
   §9 — D1–D7 resolved decisions with rationale. **D6** is the one
   that drives every migration in this tour.
 
@@ -222,7 +222,7 @@ Roughly 1–2 hours to genuinely understand:
    (see §2 above).
 3. [`quadraui/src/primitives/tooltip.rs`](../src/primitives/tooltip.rs)
    + `hover_popup_to_quadraui_tooltip` adapter (see §1).
-4. D1–D7 in [`BACKEND_TRAIT_PROPOSAL.md`](BACKEND_TRAIT_PROPOSAL.md)
+4. D1–D7 in [`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`](decisions/BACKEND_TRAIT_PROPOSAL.md)
    §9 — especially D6.
 5. `draw_find_replace` as the "escape hatch" case (see §4).
 

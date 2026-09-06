@@ -11,7 +11,7 @@
 //! — most consumers (sidebar/editor, diff view) only ever need one.
 //! `SplitTree` is for hosts that need arbitrary nesting with per-node
 //! ratio state addressed by a stable pre-order index. Per
-//! `docs/DECISIONS.md`'s "one primitive per UX concept, not per
+//! `docs/decisions/DECISIONS.md`'s "one primitive per UX concept, not per
 //! algebraic reduction" principle this is a distinct primitive, not a
 //! `Split` with a recursion flag — leaf identity, ratio mutation by
 //! index, and parent lookup have no analogue in `Split`.

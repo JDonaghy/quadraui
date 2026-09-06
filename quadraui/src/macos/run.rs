@@ -152,7 +152,7 @@ type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 ///   native paste signal on a bespoke `NSView`, so a matching keypress
 ///   reads the system clipboard directly and delivers `ClipboardPaste`
 ///   instead of forwarding the raw key press. `Shift` is tolerated (not
-///   just plain Cmd-V) — see `docs/DECISIONS.md` D-011 for why this
+///   just plain Cmd-V) — see `docs/decisions/DECISIONS.md` D-011 for why this
 ///   matches Ctrl-Shift-V's already-shipped GTK/Linux tolerance instead
 ///   of the stricter `shift: false` this match guard used to require.
 ///
@@ -257,7 +257,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     };
 
     // Cmd-V / Cmd-Shift-V paste interception — shared predicate, #728
-    // (see this function's doc comment and D-011 in `docs/DECISIONS.md`).
+    // (see this function's doc comment and D-011 in `docs/decisions/DECISIONS.md`).
     if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
         if is_paste_keypress(key, modifiers, PasteModifier::Cmd) {
             return if let Some(text) = backend.services().clipboard().read_text() {

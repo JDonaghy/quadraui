@@ -273,7 +273,7 @@ impl StatusBar {
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
-// Per Decision D6 in `docs/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
+// Per Decision D6 in `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
 // fully-resolved `Layout` structs; backends rasterise verbatim. Second
 // primitive to gain the new shape after `TabBar` — see that file for the
 // established template.

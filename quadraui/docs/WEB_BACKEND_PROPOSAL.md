@@ -332,7 +332,7 @@ generic, primitive-agnostic client.
 
 ## 11. References
 
-- `BACKEND_TRAIT_PROPOSAL.md` — the `Backend` trait + `UiEvent` contract
+- `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` — the `Backend` trait + `UiEvent` contract
   (esp. §4 trait shape, §6.2 where layout lives).
 - `quadraui/src/frame.rs` — `ScreenLayout` (the layout reused for the
   id→rect map).

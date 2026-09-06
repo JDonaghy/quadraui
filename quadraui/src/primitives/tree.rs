@@ -93,7 +93,7 @@ pub struct TreeRowEditState {
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
-// Per Decision D6 in `docs/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
+// Per Decision D6 in `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
 // fully-resolved `Layout` structs; backends rasterise verbatim. Third
 // primitive to gain the new shape after `TabBar` and `StatusBar`. TreeView
 // is purely vertical — rows stack from `scroll_offset` until the viewport
