@@ -1,7 +1,7 @@
 //! `TabGroup` — tabbed split-pane compose helper.
 //!
-//! Wires [`TabBar`](crate::TabBar) + [`Split`](crate::Split) +
-//! [`DropZone`](crate::DropZone) + [`FocusGroup`] into an
+//! Wires [`TabBar`] + [`Split`] +
+//! [`DropZone`] + [`FocusGroup`] into an
 //! editor-group-style layout: N panes arranged in an arbitrary nested
 //! H/V split tree, each with its own scrollable tab bar.
 //!
@@ -80,7 +80,7 @@
 //!
 //! [`TabGroupController::add_pane_with_tab`] opens a new pane, splitting the
 //! focused pane evenly. Panes are separated by draggable
-//! [`Split`](crate::Split) dividers. Route `MouseDown` / `MouseMoved` /
+//! [`Split`] dividers. Route `MouseDown` / `MouseMoved` /
 //! `MouseUp` events to [`handle_drag_start`](TabGroupController::handle_drag_start)
 //! / [`handle_drag_move`](TabGroupController::handle_drag_move) /
 //! [`handle_drag_end`](TabGroupController::handle_drag_end) for resize support.
@@ -1389,7 +1389,7 @@ impl TabGroupController {
     /// all groups.
     ///
     /// Call on every mouse-moved event while dragging. The result can be
-    /// passed to [`drop_zone_overlay`](crate::drop_zone_overlay) directly,
+    /// passed to [`drop_zone_overlay`] directly,
     /// or use [`tab_drag_overlay`](Self::tab_drag_overlay) as a convenience.
     pub fn handle_tab_drag_move(&mut self, x: f32, y: f32) -> Option<DropZone> {
         self.dragging_tab.as_ref()?;

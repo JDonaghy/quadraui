@@ -88,7 +88,7 @@ pub struct ModalEntry {
 ///
 /// Backends hold one instance (typically on their concrete backend
 /// struct behind `Rc<RefCell<_>>`; the trait exposes
-/// [`crate::Backend::modal_stack_handle`][crate::Backend::modal_stack_handle]).
+/// [`crate::Backend::modal_stack_handle`]).
 /// The app mutates it through modal-open and modal-close code paths
 /// (typically in the engine's picker/dialog-open state transitions);
 /// quadraui's dispatcher reads it.

@@ -2,9 +2,9 @@
 //!
 //! Owns all state for an interactive directory-browsing modal:
 //! filesystem walking, fuzzy filtering, scroll, and selection. Renders
-//! via the existing [`Palette`](crate::Palette) primitive (no new
+//! via the existing [`Palette`] primitive (no new
 //! `Backend` trait method needed) and accepts backend-neutral
-//! [`UiEvent`](crate::UiEvent)s.
+//! [`UiEvent`]s.
 //!
 //! # Relation to vimcode
 //!

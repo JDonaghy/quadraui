@@ -17,7 +17,7 @@
 //! assert_eq!(ring.current(), Some(&WidgetId::new("replace")));
 //! ```
 //!
-//! # Relationship to [`FocusGroup`](super::FocusGroup)
+//! # Relationship to [`FocusGroup`]
 //!
 //! Both types cycle a "current" position with wrap-around, and used to
 //! carry two independent copies of the same modulo arithmetic (#509).
