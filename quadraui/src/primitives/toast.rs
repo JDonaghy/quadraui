@@ -367,6 +367,391 @@ impl ToastStack {
     }
 }
 
+// ── NativeSurface paint (#861, Phase 2d slice 4/9 of the NativeSurface
+// milestone) ────────────────────────────────────────────────────────────
+//
+// Before this, `gtk::toast::draw_toast_stack` (Cairo/Pango),
+// `macos::toast::draw_toast_stack` (Core Graphics/Core Text) and
+// `win::toast::draw_toast_stack` (Direct2D/DirectWrite) each independently
+// painted the same toast box (background tint, title/body text, dismiss
+// glyph, action label) with their own drawing API (quadraui#785 child
+// #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
+// shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API — matching the pattern #811 (scrollbar), #859
+// (panel) and #860 (status_bar) already established.
+//
+// Each backend's own no-paint `*_toast_stack_layout` twin (`gtk_toast_stack_layout`,
+// `mac_toast_stack_layout`, `win_toast_stack_layout`) is untouched by this
+// migration — it's layout-only, consumed by `Backend::toast_stack_layout`
+// for hit-testing without a repaint, and out of this issue's scope (see
+// this primitive's own D6 layout API section above). The margin/gap/
+// dismiss-width/action-padding/box-width constants below are `paint`'s own
+// copy, matching every pre-#861 per-backend constant's value exactly (all
+// three agreed already), same as `status_bar::native_surface_paint::MIN_GAP`'s
+// independent copy of `MIN_GAP_PX`.
+//
+// `severity_bg`'s colour formula (the `Success`/`Warning` hardcoded RGB,
+// `Info`/`Error` theme fields) is unchanged — lifting those into `Theme`
+// is quadraui#815's job, not this one.
+//
+// # Divergences found — reported, not silently resolved
+//
+// 1. **Win never took a live theme.** `win::toast::draw_toast_stack` had
+//    no `theme: &Theme` parameter at all — `paint_toast` built
+//    `Theme::default()` internally on every call, regardless of
+//    `WinBackend::set_theme`. Quadraui#789 ("win rasterisers paint with
+//    the live theme, not `Theme::default()`") fixed this same class of
+//    bug for six other Win-GUI rasterisers (`activity_bar`, `menu_bar`,
+//    `context_menu`, `completions`, `find_replace`, `status_bar`) but
+//    toast was not in that list — re-verified against #789's own diff
+//    while migrating (per this issue's "re-verify before you implement"),
+//    not assumed. The shared `paint` requires a `theme: &Theme` parameter
+//    (matching gtk/macos, which always had one), so `WinBackend::draw_toast_stack`
+//    now passes `&self.current_theme` — fixing the gap as a side effect of
+//    the unification rather than leaving it for a future issue.
+//
+// 2. **Dismiss/action glyph centring.** `gtk::toast::paint_toast` and
+//    `macos::toast::paint_toast` both centre the dismiss `×` and the
+//    action-button label horizontally within their reserved sub-region
+//    (`dismiss_bounds`/`action_bounds`), using the glyph/label's own
+//    measured width. `win::toast::paint_toast` drew both directly into
+//    the full-height `db`/`ab` rect via `DWrite::draw_text`, which uses
+//    DirectWrite's default (leading/near) alignment — flush against the
+//    sub-region's own left edge, not centred. The shared `paint` adopts
+//    the 2-of-3 (gtk/macos) centred shape uniformly, which visibly shifts
+//    Win's dismiss `×` and action label rightward to the centre of their
+//    reserved column. Reported here per this issue's instructions, rather
+//    than silently picking one.
+//
+// `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note
+// (#811) — only *called* once a real pixel backend is compiled in,
+// exercised by each backend's own `Backend::draw_toast_stack` call site
+// plus this module's own `RecordingSurface` tests on every leg that
+// enables one of the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{
+        ToastItem, ToastMeasure, ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
+    };
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    const TOAST_WIDTH: f32 = 320.0;
+    const TOAST_MARGIN: f32 = 12.0;
+    const TOAST_GAP: f32 = 8.0;
+    const DISMISS_WIDTH: f32 = 28.0;
+    const ACTION_PADDING: f32 = 16.0;
+    const TOAST_PADDING: f32 = 8.0;
+
+    /// Severity → fallback background tint, used when `ToastItem::accent`
+    /// is `None`. Duplicated verbatim across `tui::toast` (out of scope
+    /// for this `NativeSurface` migration — see the module doc's TUI
+    /// note in `native_surface.rs`) — lifting these hardcoded colours
+    /// into `Theme` is quadraui#815's job, not this one.
+    fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
+        match severity {
+            ToastSeverity::Info => theme.surface_bg,
+            ToastSeverity::Success => Color::rgb(30, 80, 30),
+            ToastSeverity::Warning => Color::rgb(100, 80, 20),
+            ToastSeverity::Error => theme.error_fg,
+        }
+    }
+
+    /// Compute a [`ToastStack`]'s layout and paint it onto `surface` in
+    /// one pass, returning the resolved [`ToastStackLayout`] for the
+    /// caller's click dispatch — same contract as
+    /// [`crate::Backend::draw_toast_stack`]. `line_height` is the
+    /// caller's current text-row height (surface-native units); action
+    /// label width is measured directly against `surface`, so a no-paint
+    /// hit-test caller (each backend's own `*_toast_stack_layout`) must
+    /// keep using its own equivalent measurement to agree with what this
+    /// painted.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        stack: &ToastStack,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        origin_x: f32,
+        origin_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+        line_height: f32,
+    ) -> ToastStackLayout {
+        let layout = stack.layout(
+            origin_x,
+            origin_y,
+            viewport_width,
+            viewport_height,
+            TOAST_MARGIN,
+            TOAST_GAP,
+            |i| {
+                let toast = &stack.toasts[i];
+                let h = if toast.body.is_empty() {
+                    line_height + TOAST_PADDING * 2.0
+                } else {
+                    line_height * 2.0 + TOAST_PADDING * 2.0
+                };
+                let action_w = toast
+                    .action
+                    .as_ref()
+                    .map(|a| {
+                        let (w, _) = surface.surface_measure_text(&a.label);
+                        w + ACTION_PADDING
+                    })
+                    .unwrap_or(0.0);
+                ToastMeasure {
+                    width: TOAST_WIDTH.min((viewport_width - TOAST_MARGIN * 2.0).max(0.0)),
+                    height: h,
+                    dismiss_width: DISMISS_WIDTH,
+                    action_width: action_w,
+                }
+            },
+        );
+
+        for vt in &layout.visible_toasts {
+            let toast = &stack.toasts[vt.toast_idx];
+            paint_toast(surface, theme, vt, toast, line_height);
+        }
+
+        layout
+    }
+
+    /// Paint one resolved toast box: background tint, title, optional
+    /// body (second line), dismiss `×` and optional action label — both
+    /// of the latter centred horizontally within their own reserved
+    /// sub-region, at the same vertical position as the title (see this
+    /// module's doc, divergence 2).
+    fn paint_toast(
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        vt: &VisibleToast,
+        toast: &ToastItem,
+        line_height: f32,
+    ) {
+        let bg_color = toast
+            .accent
+            .unwrap_or_else(|| severity_bg(toast.severity, theme));
+        surface.surface_fill_rect(vt.bounds, bg_color);
+
+        let title_rect = Rect::new(
+            vt.bounds.x + TOAST_PADDING,
+            vt.bounds.y + TOAST_PADDING,
+            (vt.bounds.width - TOAST_PADDING * 2.0).max(0.0),
+            line_height,
+        );
+        surface.surface_draw_text_run(title_rect, &toast.title, theme.foreground);
+
+        if !toast.body.is_empty() {
+            let body_rect = Rect::new(
+                title_rect.x,
+                title_rect.y + line_height,
+                title_rect.width,
+                line_height,
+            );
+            surface.surface_draw_text_run(body_rect, &toast.body, theme.foreground);
+        }
+
+        if let Some(db) = vt.dismiss_bounds {
+            let (tw, _) = surface.surface_measure_text("×");
+            let rect = Rect::new(
+                db.x + (db.width - tw) / 2.0,
+                vt.bounds.y + TOAST_PADDING,
+                db.width,
+                db.height,
+            );
+            surface.surface_draw_text_run(rect, "×", theme.foreground);
+        }
+
+        if let (Some(ab), Some(action)) = (vt.action_bounds, &toast.action) {
+            let (tw, _) = surface.surface_measure_text(&action.label);
+            let rect = Rect::new(
+                ab.x + (ab.width - tw) / 2.0,
+                vt.bounds.y + TOAST_PADDING,
+                ab.width,
+                ab.height,
+            );
+            surface.surface_draw_text_run(rect, &action.label, theme.accent_fg);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::toast::{ToastAction, ToastCorner};
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every surface verb this primitive's paint uses —
+        /// mirrors `primitives::status_bar`'s `RecordingSurface` test
+        /// double, so this test runs on any host without Cairo/Core
+        /// Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(400.0, 300.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn toast(id: &str, title: &str) -> ToastItem {
+            ToastItem {
+                id: WidgetId::new(id),
+                title: title.into(),
+                body: String::new(),
+                severity: ToastSeverity::Info,
+                action: None,
+                accent: None,
+            }
+        }
+
+        fn stack_br(toasts: Vec<ToastItem>) -> ToastStack {
+            ToastStack {
+                id: WidgetId::new("toasts"),
+                corner: ToastCorner::BottomRight,
+                toasts,
+            }
+        }
+
+        #[test]
+        fn empty_stack_paints_nothing() {
+            let stack = stack_br(vec![]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            assert!(layout.visible_toasts.is_empty());
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        /// Background fill uses `accent` when present, else the
+        /// severity's fallback tint.
+        #[test]
+        fn accent_overrides_severity_tint() {
+            let accent = Color::rgb(10, 20, 30);
+            let mut t = toast("t1", "Hello");
+            t.accent = Some(accent);
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            assert_eq!(surface.fills[0].1, accent);
+        }
+
+        #[test]
+        fn severity_tint_used_when_no_accent() {
+            let mut t = toast("t1", "Hello");
+            t.severity = ToastSeverity::Error;
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            assert_eq!(surface.fills[0].1, theme.error_fg);
+        }
+
+        /// Regression for this module's divergence 2: the dismiss glyph
+        /// and action label must be painted centred within their own
+        /// reserved sub-region, not flush against its left edge — the
+        /// shape `win::toast` alone lacked pre-#861.
+        #[test]
+        fn dismiss_and_action_are_centred_in_their_sub_region() {
+            let mut t = toast("t1", "Build failed");
+            t.action = Some(ToastAction {
+                id: WidgetId::new("open_log"),
+                label: "Open log".into(),
+            });
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let vt = &layout.visible_toasts[0];
+            let db = vt.dismiss_bounds.expect("dismiss bounds present");
+            let ab = vt.action_bounds.expect("action bounds present");
+
+            let (dismiss_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "×")
+                .expect("dismiss glyph painted");
+            let dismiss_w = 8.0; // RecordingSurface: 1 char * 8.0
+            assert!((dismiss_rect.x - (db.x + (db.width - dismiss_w) / 2.0)).abs() < 0.01);
+
+            let (action_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Open log")
+                .expect("action label painted");
+            let action_w = "Open log".chars().count() as f32 * 8.0;
+            assert!((action_rect.x - (ab.x + (ab.width - action_w) / 2.0)).abs() < 0.01);
+        }
+
+        #[test]
+        fn body_line_painted_below_title() {
+            let mut t = toast("t1", "Title");
+            t.body = "Body text".into();
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let title_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Title")
+                .expect("title painted");
+            let body_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Body text")
+                .expect("body painted");
+            assert_eq!(body_run.0.y, title_run.0.y + 16.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

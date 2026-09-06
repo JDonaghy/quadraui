@@ -148,6 +148,12 @@ pub use tab_bar::{
 };
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use text_input::{draw_text_input, gtk_text_input_layout};
+// #861: `draw_toast_stack` is `#[deprecated]` — see
+// `toast::draw_toast_stack`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
 pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
 pub use toolbar::{draw_toolbar, gtk_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};

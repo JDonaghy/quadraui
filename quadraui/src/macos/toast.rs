@@ -1,8 +1,17 @@
 //! macOS rasteriser for [`crate::ToastStack`].
 //!
-//! Paints toast notification boxes stacked in a viewport corner. Each
-//! toast is a rect with title, optional body, severity tint, dismiss
-//! `×`, and optional action button label.
+//! Painting moved to the shared
+//! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
+//! `NativeSurface` Phase 2d slice 4/9) — see that fn's doc for the named
+//! divergences (Win never took a live theme; Win's dismiss/action text
+//! wasn't centred in its sub-region) found while unifying
+//! `gtk::toast::draw_toast_stack`, `macos::toast::draw_toast_stack` and
+//! `win::toast::draw_toast_stack` into one implementation. This module
+//! now only carries [`mac_toast_stack_layout`] (pure layout, still needed
+//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries),
+//! [`RawMacToastSurface`], and the deprecated [`draw_toast_stack`]
+//! compatibility shim over it, mirroring `macos::form::RawFormSurface`
+//! (#808).
 //!
 //! ## Scope omissions (follow-up)
 //!
@@ -11,14 +20,11 @@
 //!   (search-box border in command_center, close-button hover bg in
 //!   tab_bar).
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::toast::{
-    ToastItem, ToastMeasure, ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
-};
+use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -29,21 +35,18 @@ const DISMISS_WIDTH_PX: f32 = 28.0;
 const ACTION_PADDING_PX: f32 = 16.0;
 const TOAST_PADDING_PX: f64 = 8.0;
 
-fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
-    match severity {
-        ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => Color::rgb(30, 80, 30),
-        ToastSeverity::Warning => Color::rgb(100, 80, 20),
-        ToastSeverity::Error => theme.error_fg,
-    }
-}
-
 /// Compute the macOS pixel-unit layout for a [`ToastStack`].
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
 /// screen coordinates, matching `mac_menu_bar_layout` / `mac_panel_layout`)
 /// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
+///
+/// Still its own Core Text-based measurer, independent of the shared
+/// paint's internal layout computation (which measures via
+/// [`crate::native_surface::NativeSurface::surface_measure_text`]) — same
+/// "no-paint layout stays put" posture as `MacBackend::status_bar_layout`
+/// (#860).
 #[allow(clippy::too_many_arguments)]
 pub fn mac_toast_stack_layout(
     stack: &ToastStack,
@@ -86,13 +89,109 @@ pub fn mac_toast_stack_layout(
     )
 }
 
-/// Draw a [`ToastStack`] overlay onto `ctx`. Returns the layout for
-/// host click dispatch.
+/// Minimal [`crate::native_surface::NativeSurface`] adapter over a raw
+/// `(CGContextRef, &CTFont)` pair, used only by the deprecated
+/// [`draw_toast_stack`] shim below — mirrors `macos::form::RawFormSurface`'s
+/// identical pattern (#808), scoped to the three verbs a toast's paint
+/// actually uses (fill, plain text run, measure).
+pub(crate) struct RawMacToastSurface<'a> {
+    pub(crate) ctx: CGContextRef,
+    pub(crate) font: &'a CTFont,
+}
+
+impl crate::native_surface::NativeSurface for RawMacToastSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawMacToastSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawMacToastSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawMacToastSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawMacToastSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawMacToastSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (w, h) = measure_text(self.font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's
+        // paint pass — see this struct's construction site.
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(&mut self, _rect: crate::Rect, _color: Color, _stroke_width: f32) {
+        unreachable!("ToastStack::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: Color) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe {
+            draw_text(
+                self.ctx,
+                self.font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                super::backend::ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("ToastStack::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("ToastStack::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("ToastStack::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("ToastStack::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
+/// the pre-#861 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_toast_stack` reference rather than going
+/// through [`crate::Backend::draw_toast_stack`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_toast_stack` instead — this free function is a compatibility shim over the shared #861 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_toast_stack(
     ctx: CGContextRef,
@@ -105,119 +204,17 @@ pub unsafe fn draw_toast_stack(
     theme: &Theme,
     line_height: f64,
 ) -> ToastStackLayout {
-    let layout = mac_toast_stack_layout(
+    let mut surface = RawMacToastSurface { ctx, font };
+    crate::primitives::toast::native_surface_paint::paint(
         stack,
-        font,
+        &mut surface,
+        theme,
         origin_x as f32,
         origin_y as f32,
         viewport_width as f32,
         viewport_height as f32,
-        line_height,
-    );
-
-    for vt in &layout.visible_toasts {
-        let toast = &stack.toasts[vt.toast_idx];
-        paint_toast(ctx, font, vt, toast, theme);
-    }
-
-    layout
-}
-
-unsafe fn paint_toast(
-    ctx: CGContextRef,
-    font: &CTFont,
-    vt: &VisibleToast,
-    toast: &ToastItem,
-    theme: &Theme,
-) {
-    let bg_color = toast
-        .accent
-        .unwrap_or_else(|| severity_bg(toast.severity, theme));
-
-    fill_rect(
-        ctx,
-        vt.bounds.x as f64,
-        vt.bounds.y as f64,
-        vt.bounds.width as f64,
-        vt.bounds.height as f64,
-        bg_color,
-    );
-
-    // Title text.
-    draw_text(
-        ctx,
-        font,
-        &toast.title,
-        vt.bounds.x as f64 + TOAST_PADDING_PX,
-        vt.bounds.y as f64 + TOAST_PADDING_PX,
-        color_to_cg(theme.foreground),
-    );
-
-    // Body text (second line).
-    if !toast.body.is_empty() {
-        let (_, title_h) = measure_text(font, &toast.title);
-        draw_text(
-            ctx,
-            font,
-            &toast.body,
-            vt.bounds.x as f64 + TOAST_PADDING_PX,
-            vt.bounds.y as f64 + TOAST_PADDING_PX + title_h,
-            color_to_cg(theme.foreground),
-        );
-    }
-
-    // Dismiss × — centred inside dismiss_bounds.
-    if let Some(db) = vt.dismiss_bounds {
-        let (tw, _) = measure_text(font, "×");
-        draw_text(
-            ctx,
-            font,
-            "×",
-            db.x as f64 + (db.width as f64 - tw) / 2.0,
-            vt.bounds.y as f64 + TOAST_PADDING_PX,
-            color_to_cg(theme.foreground),
-        );
-    }
-
-    // Action button label.
-    if let (Some(ab), Some(ref action)) = (vt.action_bounds, &toast.action) {
-        let (tw, _) = measure_text(font, &action.label);
-        draw_text(
-            ctx,
-            font,
-            &action.label,
-            ab.x as f64 + (ab.width as f64 - tw) / 2.0,
-            vt.bounds.y as f64 + TOAST_PADDING_PX,
-            color_to_cg(theme.accent_fg),
-        );
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
+        line_height as f32,
     )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -227,7 +224,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::toast::{ToastAction, ToastCorner, ToastHit};
+    use crate::primitives::toast::{ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity};
     use crate::types::WidgetId;
     use crate::Backend;
 
@@ -332,7 +329,10 @@ mod tests {
         let px = (t.bounds.x + t.bounds.width - DISMISS_WIDTH_PX - 4.0) as u32;
         let py = (t.bounds.y + t.bounds.height - 2.0) as u32;
         let (r, g, b, _) = surface.pixel(px, py);
-        let expected = severity_bg(ToastSeverity::Error, &theme);
+        // Error severity's fallback tint is `theme.error_fg` — see
+        // `primitives::toast::native_surface_paint::severity_bg`, the
+        // one shared copy of this formula post-#861.
+        let expected = theme.error_fg;
         assert_eq!((r, g, b), (expected.r, expected.g, expected.b));
     }
 

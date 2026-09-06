@@ -3231,20 +3231,21 @@ impl Backend for GtkBackend {
         rect: QRect,
         stack: &crate::primitives::toast::ToastStack,
     ) -> crate::primitives::toast::ToastStackLayout {
-        let line_height = self.current_line_height;
+        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // each require an active frame internally — see
+        // `Self::surface_fill_rect` — so this method needs no separate
+        // cr/pango fetch of its own, matching `Self::draw_status_bar`'s
+        // #860 shape.
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_toast_stack called outside enter_frame_scope");
-        crate::gtk::draw_toast_stack(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
+        let line_height = self.current_line_height as f32;
+        crate::primitives::toast::native_surface_paint::paint(
             stack,
+            self,
             &theme,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
             line_height,
         )
     }
