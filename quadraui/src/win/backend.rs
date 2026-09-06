@@ -2726,14 +2726,17 @@ impl Backend for WinBackend {
     /// attached yet" fallback posture.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::panel::draw_panel(
-                &surface.target,
-                dwrite,
-                rect,
-                panel,
-                self.current_line_height,
-            );
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let line_height = self.current_line_height;
+            let layout = super::panel::win_panel_layout(rect, panel, line_height);
+            // `Theme::default()`, not `self.current_theme` — preserves
+            // the pre-#859 `win::panel::draw_panel` behaviour exactly
+            // (see `win::panel`'s module doc, "# Theme" section:
+            // `WinBackend` has no live theme wired through to panel
+            // chrome yet).
+            let theme = crate::theme::Theme::default();
+            crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+            return layout;
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, panel);

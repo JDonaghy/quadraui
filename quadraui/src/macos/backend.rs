@@ -1995,31 +1995,18 @@ impl Backend for MacBackend {
         )
     }
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_panel called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_panel requires set_current_font");
         let theme = self.current_theme;
         let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::panel::draw_panel(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                panel,
-                &theme,
-                line_height,
-            )
-        }
+        let layout = super::panel::mac_panel_layout(
+            panel,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            line_height,
+        );
+        crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+        layout
     }
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
         super::panel::mac_panel_layout(

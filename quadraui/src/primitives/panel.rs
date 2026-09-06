@@ -209,6 +209,323 @@ impl Panel {
     }
 }
 
+// ── NativeSurface paint (#859, Phase 2d slice 2/9 of the NativeSurface
+// milestone) ─────────────────────────────────────────────────────────────
+//
+// Before this, `gtk::draw_panel` (Cairo/Pango), `macos::panel::draw_panel`
+// (Core Graphics/Core Text) and `win::panel::draw_panel` (Direct2D/
+// DirectWrite) each independently painted the same title-bar +
+// action-button chrome with their own drawing API (quadraui#785 child
+// #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
+// shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API.
+//
+// The three deleted copies were near-identical: title bar filled with
+// `panel.accent.unwrap_or(theme.separator)`, title text drawn at
+// `(tb.x + 4, tb.y)`, action buttons filled with `theme.accent_bg` when
+// `is_active` else the title bar's own colour, and each glyph centred
+// horizontally in its button and top-aligned at `va.bounds.y`. One real
+// (if narrow) divergence was found and is **not** silently resolved here,
+// per this issue's "report it" instruction:
+//
+// - `gtk::draw_panel` and `macos::panel::draw_panel` centred an action
+//   glyph with `(va.bounds.width - text_w) / 2.0`, unclamped — if a
+//   glyph were ever wider than its 24px button, the computed x would go
+//   *negative*, drawing left of the button's own left edge.
+// - `win::panel::draw_panel` computed the identical centring offset but
+//   wrapped it in `.max(0.0)`, clamping the glyph to the button's left
+//   edge instead of overhanging it.
+//
+// This is unreachable in practice (every caller passes a single-glyph
+// icon inside a 24px button, per `PanelMeasure::action_button_width`'s
+// doc), which is presumably why it survived three independent
+// implementations without a bug report. `paint` below follows the 2-of-3
+// majority (GTK, macOS) and does **not** clamp — reported here rather
+// than picked silently, so a future issue can decide whether Win's clamp
+// should instead become the shared behaviour.
+//
+// A second divergence, this one a straightforward bug fix rather than a
+// judgment call: `gtk::draw_panel` filled the title bar and action
+// buttons via `gtk::set_source` (`cr.set_source_rgb`), which drops
+// `Color::a` — the exact GTK-only alpha-dropping bug quadraui#811 (slice
+// 1/9, `scrollbar`) found and fixed at the source, in
+// `GtkBackend::surface_fill_rect` itself. `macos::panel::draw_panel` and
+// `win::panel::draw_panel` already passed `Color::a` straight through to
+// `CGContextSetRGBFillColor` / `D2D1_COLOR_F`. So a translucent
+// `panel.accent` used to render opaque on GTK only; routing through
+// `surface_fill_rect` (already alpha-correct since #811) makes GTK match
+// macOS/Windows instead of reintroducing the bug, with no extra fix
+// needed here. Themes ship only opaque colours today, so this has no
+// visible effect until a caller sets a translucent `panel.accent`.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_panel` call site plus this module's
+// own `RecordingSurface` tests on every leg that enables one of the three
+// cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{Panel, PanelLayout};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+
+    fn plain_text(t: &crate::types::StyledText) -> String {
+        t.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// Paint a [`Panel`]'s chrome (title bar + action buttons) onto
+    /// `surface`. `layout` must be the same [`PanelLayout`] the caller
+    /// uses for hit-testing (typically `Backend::panel_layout`'s return
+    /// value, or the value this fn's own caller — `Backend::draw_panel`
+    /// — returns) so paint and hit-test can never disagree. Content is
+    /// NOT painted — every backend leaves `layout.content_bounds` to the
+    /// app, same contract as before this migration.
+    pub(crate) fn paint(
+        panel: &Panel,
+        layout: &PanelLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        let Some(tb) = layout.title_bar_bounds else {
+            return;
+        };
+
+        let title_bg = panel.accent.unwrap_or(theme.separator);
+        surface.surface_fill_rect(tb, title_bg);
+
+        if let Some(ref title) = panel.title {
+            let text = plain_text(title);
+            let (tw, th) = surface.surface_measure_text(&text);
+            surface.surface_draw_text_run(
+                Rect::new(tb.x + 4.0, tb.y, tw, th),
+                &text,
+                theme.foreground,
+            );
+        }
+
+        for va in &layout.visible_actions {
+            let Some(action) = panel.actions.get(va.action_idx) else {
+                continue;
+            };
+            let action_bg = if action.is_active {
+                theme.accent_bg
+            } else {
+                title_bg
+            };
+            surface.surface_fill_rect(va.bounds, action_bg);
+
+            let (gw, gh) = surface.surface_measure_text(&action.icon);
+            // Unclamped — see this module's doc for the named win vs.
+            // gtk/macos divergence.
+            let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(glyph_x, va.bounds.y, gw, gh),
+                &action.icon,
+                theme.foreground,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::panel::{PanelAction, PanelMeasure};
+        use crate::types::{Color, StyledText, WidgetId};
+        use crate::Image;
+
+        /// Records every surface verb this primitive's paint uses —
+        /// mirrors `primitives::scrollbar`'s `RecordingSurface` test
+        /// double, so this test runs on any host without Cairo/Core
+        /// Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample_panel() -> Panel {
+            Panel {
+                id: WidgetId::new("p"),
+                title: Some(StyledText::plain("Terminal")),
+                actions: vec![
+                    PanelAction {
+                        id: WidgetId::new("p:close"),
+                        icon: "x".into(),
+                        tooltip: String::new(),
+                        is_active: false,
+                    },
+                    PanelAction {
+                        id: WidgetId::new("p:pin"),
+                        icon: "o".into(),
+                        tooltip: String::new(),
+                        is_active: true,
+                    },
+                ],
+                accent: None,
+                collapsed: false,
+            }
+        }
+
+        #[test]
+        fn title_bar_paints_accent_when_set_else_separator() {
+            let mut panel = sample_panel();
+            let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let theme = Theme::default();
+
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+            assert_eq!(surface.fills[0].1, theme.separator);
+
+            panel.accent = Some(Color::rgb(10, 20, 30));
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+            assert_eq!(surface.fills[0].1, panel.accent.unwrap());
+        }
+
+        #[test]
+        fn title_text_drawn_at_title_bar_top_left_inset() {
+            let panel = sample_panel();
+            let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let theme = Theme::default();
+
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+
+            let tb = layout.title_bar_bounds.unwrap();
+            let (rect, text, color) = &surface.text_runs[0];
+            assert_eq!(text, "Terminal");
+            assert_eq!(rect.x, tb.x + 4.0);
+            assert_eq!(rect.y, tb.y);
+            assert_eq!(*color, theme.foreground);
+        }
+
+        #[test]
+        fn active_action_paints_accent_bg_inactive_paints_title_bg() {
+            let panel = sample_panel();
+            let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let theme = Theme::default();
+
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+
+            // fills[0] = title bar, then one fill + one text run per
+            // visible action, in `visible_actions` order.
+            let close_fill = surface.fills[1].1;
+            let pin_fill = surface.fills[2].1;
+            assert_eq!(
+                close_fill, theme.separator,
+                "inactive action keeps title bg"
+            );
+            assert_eq!(pin_fill, theme.accent_bg, "active action gets accent_bg");
+        }
+
+        #[test]
+        fn action_glyph_centred_horizontally_in_its_button() {
+            let panel = sample_panel();
+            let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let theme = Theme::default();
+
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+
+            let va = &layout.visible_actions[0];
+            let (rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "x")
+                .expect("close glyph drawn");
+            let expected_x = va.bounds.x + (va.bounds.width - rect.width) / 2.0;
+            assert!((rect.x - expected_x).abs() < 0.01);
+        }
+
+        #[test]
+        fn no_title_paints_nothing() {
+            let panel = Panel {
+                id: WidgetId::new("p"),
+                title: None,
+                actions: vec![],
+                accent: None,
+                collapsed: false,
+            };
+            let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let theme = Theme::default();
+
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        #[test]
+        fn collapsed_panel_still_paints_title_bar_chrome() {
+            let mut panel = sample_panel();
+            panel.collapsed = true;
+            let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let layout = panel.layout(bounds, PanelMeasure::new(20.0));
+            let theme = Theme::default();
+
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &layout, &mut surface, &theme);
+            assert!(
+                !surface.fills.is_empty(),
+                "title bar chrome still paints when collapsed"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
