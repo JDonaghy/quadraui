@@ -236,7 +236,8 @@ pub fn draw_data_table(
             layout.visible_rows as f32,
             line_height as f32,
         );
-        super::draw_scrollbar(cr, &sb, theme);
+        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
@@ -258,7 +259,8 @@ pub fn draw_data_table(
             visible_w,
             line_height as f32,
         );
-        super::draw_scrollbar(cr, &hsb, theme);
+        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
     }
 
     // ── Footer (pinned summary row) ─────────────────────────────────

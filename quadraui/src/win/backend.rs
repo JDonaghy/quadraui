@@ -1988,9 +1988,7 @@ impl Backend for WinBackend {
                     sb_state.visible_lines as f32,
                     lh,
                 );
-                if let Some(surface) = &self.surface {
-                    super::scrollbar::draw_scrollbar(&surface.target, &sb, &theme);
-                }
+                crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
             }
             return;
         }
@@ -2449,9 +2447,10 @@ impl Backend for WinBackend {
     /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar) {
         #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.surface {
+        if self.surface.is_some() {
             let _ = rect;
-            super::scrollbar::draw_scrollbar(&surface.target, scrollbar, &self.current_theme);
+            let theme = self.current_theme;
+            crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
             return;
         }
         #[cfg(not(target_os = "windows"))]

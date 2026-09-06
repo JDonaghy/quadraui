@@ -335,7 +335,8 @@ pub fn draw_list(
             visible_px as f32,
             line_height as f32,
         );
-        super::draw_scrollbar(cr, &hsb, theme);
+        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
     }
 
     if list.bordered {

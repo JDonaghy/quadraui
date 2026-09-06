@@ -291,7 +291,12 @@ pub use progress::{draw_progress, win_progress_layout, CANCEL_WIDTH_DIP};
 #[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig};
+// #811: `draw_scrollbar` is `#[deprecated]` — see `scrollbar::draw_scrollbar`'s
+// doc for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
 #[cfg(target_os = "windows")]
+#[allow(deprecated)]
 pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
