@@ -322,6 +322,31 @@ fn hello_renders_the_greeting_and_quit_hint_on_the_first_frame() {
     );
 }
 
+/// quadraui#817: the status bar's height comes from
+/// `backend.measure().line_height` now, not a hand-picked `28.0` pixel
+/// constant. Empirically verified by mutation: reverting the rect to the
+/// pre-#817 `Rect::new(0.0, vp.height - 28.0, vp.width, 28.0)` turns this
+/// RED — `q_rect_to_ratatui` clamps that rect's negative `y` to `0`, so
+/// the bar (and this greeting) paints on row 0 instead of the last row.
+/// `backend.measure()` gives a real ~1-cell-tall bar on TUI that anchors
+/// to the bottom the way the primitive's own doc says a status bar
+/// should, proving the switch away from the hand-built constant lands
+/// the bar in the *correct* place, not just an unchanged one.
+#[test]
+fn hello_status_bar_anchors_to_the_last_row_via_measure() {
+    let driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    let (_, y) = driver
+        .find("Hello, quadraui!")
+        .expect("greeting should be painted somewhere on screen");
+    assert_eq!(
+        y.floor() as u16,
+        9,
+        "status bar sized from backend.measure() should anchor to the last row \
+         (row 9) of a 10-row viewport:\n{}",
+        driver.screen()
+    );
+}
+
 #[test]
 fn hello_counts_keystrokes() {
     let mut driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);

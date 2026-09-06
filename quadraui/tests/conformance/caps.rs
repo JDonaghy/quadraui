@@ -632,6 +632,39 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          no native scrollbar floated over the content edge; unrelated to the #19 stub gaps above \
          (#776)",
     ),
+    // ── issue #817: `measure` bundles `char_width()`/`line_height()` into
+    // one `Metrics` value. Its trait default is a pure fn of those two
+    // *required* methods — same shape as the `terminal_layout` /
+    // `editor_layout` / `diff_view_layout` block above (#506) — so every
+    // backend's default answer is that backend's own real metrics, not a
+    // placeholder. There is nothing backend-specific left for any of the
+    // four to add: overriding `measure` could only ever re-derive
+    // `Self { char_width: self.char_width(), line_height: self.line_height() }`
+    // by hand, which is the exact duplication #817 exists to remove.
+    (
+        "tui",
+        "measure",
+        "pure fn of char_width()/line_height() — see the block comment above (#506); nothing \
+         backend-specific to add (#817)",
+    ),
+    (
+        "gtk",
+        "measure",
+        "pure fn of char_width()/line_height() — see the block comment above (#506); nothing \
+         backend-specific to add (#817)",
+    ),
+    (
+        "macos",
+        "measure",
+        "pure fn of char_width()/line_height() — see the block comment above (#506); nothing \
+         backend-specific to add (#817)",
+    ),
+    (
+        "win",
+        "measure",
+        "pure fn of char_width()/line_height() — see the block comment above (#506); nothing \
+         backend-specific to add (#817)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

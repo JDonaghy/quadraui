@@ -120,6 +120,15 @@ impl TextDisplayLineMeasure {
     pub fn new(height: f32) -> Self {
         Self { height }
     }
+
+    /// Build from the backend's own [`crate::backend::Metrics`]
+    /// (`backend.measure()`) for the common uniform-height case — one
+    /// display line is one text row (quadraui#817). Wrap-enabled
+    /// backends that vary height per line still use [`Self::new`]
+    /// directly.
+    pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
+        Self::new(m.line_height)
+    }
 }
 
 /// Resolved position of one visible text-display line after layout.

@@ -175,6 +175,13 @@ impl PaletteItemMeasure {
     pub fn new(height: f32) -> Self {
         Self { height }
     }
+
+    /// Build from the backend's own [`crate::backend::Metrics`]
+    /// (`backend.measure()`) — one result row is one text row
+    /// (quadraui#817).
+    pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
+        Self::new(m.line_height)
+    }
 }
 
 /// Resolved position of one visible palette item.

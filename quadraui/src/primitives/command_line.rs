@@ -45,6 +45,13 @@ impl CommandLineMeasure {
     pub fn new(char_width: f32) -> Self {
         Self { char_width }
     }
+
+    /// Build from the backend's own [`crate::backend::Metrics`]
+    /// (`backend.measure()`) instead of reading `backend.char_width()`
+    /// by hand (quadraui#817).
+    pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
+        Self::new(m.char_width)
+    }
 }
 
 /// Fully-resolved layout for a `CommandLine` (issue #705).

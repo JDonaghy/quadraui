@@ -107,12 +107,13 @@ impl ModalOcclusionDemo {
     /// and `handle` so paint and hit-test can never disagree — the
     /// `docs/LESSONS.md` "one layout fn, two callers" rule.
     fn dialog_layout(&self, backend: &dyn Backend) -> DialogLayout {
-        let lh = backend.line_height();
+        // quadraui#817: real backend metrics via `measure()` instead of
+        // approximating char width from `line_height` (the pre-#817
+        // pattern `dialog_table_demo` also carried, both fixed together).
+        let m = backend.measure();
+        let lh = m.line_height;
+        let char_w = m.char_width;
         let viewport = backend.viewport();
-        // TUI's line_height is 1.0 (one cell); pixel backends report the
-        // real line height, so approximate a char width from it exactly
-        // as `dialog_table_demo` does.
-        let char_w = if lh > 1.0 { lh * 0.6 } else { 1.0 };
         let measure = DialogMeasure {
             width: (viewport.width * 0.5).clamp(char_w * 24.0, char_w * 48.0),
             title_height: lh,

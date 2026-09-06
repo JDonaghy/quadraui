@@ -34,8 +34,17 @@ impl AppLogic for Hello {
                 action_id: None,
             }],
         };
+        // Backend-native bar height instead of a hand-picked pixel
+        // constant (quadraui#817): `backend.measure()` bundles
+        // `char_width`/`line_height` in one call, so this scales to a
+        // real 1-cell-tall bar on TUI and a proportionally-taller pixel
+        // bar on GTK/macOS/Win — the same portable-sizing pattern
+        // `docs/BACKEND_TRAIT_PROPOSAL.md` documents for `line_height`
+        // alone (`backend.line_height() * 1.5`), just asking for both
+        // metrics through the one bundled call.
         let vp = backend.viewport();
-        let rect = Rect::new(0.0, vp.height - 28.0, vp.width, 28.0);
+        let bar_h = backend.measure().line_height.max(1.0) * 1.4;
+        let rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let _ = backend.draw_status_bar(rect, &bar, None, None);
     }
 
