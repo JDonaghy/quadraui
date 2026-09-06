@@ -211,6 +211,22 @@ pub mod accelerator;
 pub mod backend;
 pub mod event;
 
+// ── NativeSurface (#807, Phase 1 of the NativeSurface milestone) ───────────
+// The ~15-verb drawing trait underneath the three pixel backends —
+// extracted from helpers each of GtkBackend/MacBackend/WinBackend already
+// had privately. `pub(crate)`, not `pub`: purely an internal decomposition
+// of `Backend`'s existing (sealed) implementors, so it adds no new public
+// API surface. TUI is deliberately excluded (see `native_surface`'s module
+// doc); gated the same way `text_selection` below is, on the backends that
+// actually implement it, so a `tui`-only build doesn't carry a trait with
+// zero implementors under `-D warnings`' dead-code lint.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+mod native_surface;
+
 // ── Phase B.4: cross-backend event routing ──────────────────────────────────
 // ModalStack + dispatch free functions. Backends hold one ModalStack and
 // call into dispatch to translate raw mouse events into Vec<UiEvent>

@@ -69,8 +69,9 @@ use std::time::Duration;
 use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape};
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
-use crate::event::{Rect, UiEvent, Viewport};
+use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
+use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
@@ -3001,6 +3002,144 @@ impl Backend for WinBackend {
     }
 }
 
+// ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────
+//
+// The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
+// helpers this backend already had privately: `super::text::fill_rect`/
+// `stroke_rect`/`push_clip`/`pop_clip`/`draw_line` and the inherent
+// `Self::measure_text`/`Self::draw_text` (both already `Rect`-taking, #21).
+// Phase 1 is a pure extraction — every verb below either forwards to the
+// identically-named `Backend` method (frame lifecycle, measurement,
+// viewport, image) or to the same free function/inherent method a real
+// `draw_*` rasteriser would call, so no existing call site's behaviour
+// changes. Same `#[cfg(target_os = "windows")]` / `todo!()` split as every
+// other method on this backend — see the module doc's "Implementation
+// notes" for why that keeps `cargo check --features win` meaningful on
+// Linux. See `native_surface`'s module doc for the full scope note and why
+// these methods are `surface_`-prefixed instead of colliding with
+// `Backend`'s.
+impl NativeSurface for WinBackend {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        Backend::begin_frame(self, viewport);
+    }
+
+    fn surface_end_frame(&mut self) {
+        Backend::end_frame(self);
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        Backend::viewport(self)
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        Backend::line_height(self)
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        Backend::char_width(self)
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        #[cfg(target_os = "windows")]
+        {
+            self.measure_text(text)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = text;
+            todo!("DirectWrite measure_text (no surface attached yet)")
+        }
+    }
+
+    fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = super::text::fill_rect(&surface.target, rect, color);
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, color);
+        todo!("Direct2D fill_rect (no surface attached yet)")
+    }
+
+    fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = super::text::stroke_rect(&surface.target, rect, color, stroke_width);
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, color, stroke_width);
+        todo!("Direct2D stroke_rect (no surface attached yet)")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
+        #[cfg(target_os = "windows")]
+        {
+            self.draw_text(text, rect, color);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, text, color);
+            todo!("DirectWrite draw_text (no surface attached yet)")
+        }
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        from: Point,
+        to: Point,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = super::text::draw_line(
+                &surface.target,
+                from.x,
+                from.y,
+                to.x,
+                to.y,
+                color,
+                stroke_width,
+            );
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (from, to, color, stroke_width);
+        todo!("Direct2D draw_line (no surface attached yet)")
+    }
+
+    fn surface_push_clip(&mut self, rect: Rect) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            super::text::push_clip(&surface.target, rect);
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = rect;
+        todo!("Direct2D push_clip (no surface attached yet)")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            super::text::pop_clip(&surface.target);
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        todo!("Direct2D pop_clip (no surface attached yet)")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        Backend::draw_image(self, rect, image)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3860,5 +3999,106 @@ mod tests {
             (custom_bg.r, custom_bg.g, custom_bg.b),
             "find/replace panel background must reflect the live theme, not `Theme::default()`",
         );
+    }
+
+    // ── NativeSurface (#807, Phase 1) ────────────────────────────────
+    //
+    // Real Direct2D execution, like every other headless-surface test in
+    // this file — `#[cfg(target_os = "windows")]`-gated because
+    // `attach_headless`/`HeadlessSurface` only exist on that target (see
+    // this file's module doc, "Render target"); `cargo check --features
+    // win` on Linux still type-checks the impl block above, but only the
+    // `windows-latest` CI leg actually runs these.
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_native_surface_fill_rect_paints_solid_color() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 32;
+        const H: u32 = 32;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let red = Color::rgb(200, 20, 20);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+        backend.end_frame();
+
+        let px = surface.pixel_at(5, 5);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (red.r, red.g, red.b),
+            "surface_fill_rect must paint the solid color it was given"
+        );
+    }
+
+    /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
+    /// above) — this exercises every remaining `NativeSurface` method at
+    /// least once end-to-end (frame lifecycle, measurement, stroke, line,
+    /// clip push/pop, text run, image) so an implementation bug (wrong arg
+    /// order, a missing surface guard, a panic inside the `todo!()` split)
+    /// fails a test instead of shipping silently.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_native_surface_verbs_do_not_panic() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 64;
+        const H: u32 = 64;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let viewport = Viewport::new(W as f32, H as f32, 1.0);
+        backend.surface_begin_frame(viewport);
+        assert_eq!(
+            backend.surface_viewport(),
+            viewport,
+            "surface_viewport must forward to Backend::begin_frame's stored value"
+        );
+        assert_eq!(
+            backend.surface_line_height(),
+            Backend::line_height(&backend)
+        );
+        assert_eq!(backend.surface_char_width(), Backend::char_width(&backend));
+
+        let blue = Color::rgb(20, 20, 200);
+        let white = Color::rgb(255, 255, 255);
+        backend.surface_stroke_rect(Rect::new(0.0, 0.0, 40.0, 40.0), blue, 2.0);
+        backend.surface_draw_line(Point::new(0.0, 0.0), Point::new(40.0, 40.0), blue, 1.0);
+        backend.surface_push_clip(Rect::new(0.0, 0.0, 40.0, 40.0));
+        backend.surface_draw_text_run(Rect::new(2.0, 2.0, 30.0, 10.0), "hi", white);
+        backend.surface_pop_clip();
+
+        let (w, h) = backend.surface_measure_text("hi");
+        assert!(
+            w > 0.0 && h > 0.0,
+            "surface_measure_text must report a nonzero footprint for non-empty \
+             text: got ({w}, {h})"
+        );
+
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("test:native-surface-image"),
+            source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
+            intrinsic_size: Some((8, 8)),
+            fit: crate::primitives::image::ImageFit::Contain,
+            fallback_text: "[i]".to_string(),
+        };
+        // Direct2D bitmap decode fails on empty bytes on the real path
+        // too — this call only needs to prove it reaches the same code
+        // `Backend::draw_image` does, not any particular decode outcome.
+        let _ = backend.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
+
+        backend.surface_end_frame();
     }
 }

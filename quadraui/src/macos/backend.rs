@@ -36,6 +36,8 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
+use core_graphics::base::CGFloat;
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 use objc2::rc::Retained;
@@ -45,8 +47,9 @@ use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult, PointerShape, ResizeEdge};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
-use crate::event::{Rect, UiEvent, Viewport};
+use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
+use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout};
@@ -78,7 +81,7 @@ use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::testing::{TextRun, ZoneRec};
-use crate::types::WidgetId;
+use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Form, Key, ListView, Modifiers,
@@ -2528,6 +2531,237 @@ impl Backend for MacBackend {
         self.register_zone(image.id.clone(), rect);
         super::image::mac_draw_image()
     }
+}
+
+// ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────
+//
+// The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
+// helpers this backend already had privately — every macOS rasteriser module
+// (`activity_bar.rs`, `tooltip.rs`, `board.rs`, ...) declares its own private
+// copy of `color_to_cg`/`fill_rect`/`stroke_rect`/the `CGContext*` extern
+// block; this impl is one canonical copy, scoped to this file, that Phase 2
+// can point those ~30 call sites at instead of their own duplicate. Phase 1
+// itself changes no behaviour: nothing calls through `NativeSurface` yet, so
+// every existing rasteriser keeps using its own private copy untouched.
+// See `native_surface`'s module doc for the full scope note and why these
+// methods are `surface_`-prefixed instead of colliding with `Backend`'s.
+impl NativeSurface for MacBackend {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        Backend::begin_frame(self, viewport);
+    }
+
+    fn surface_end_frame(&mut self) {
+        Backend::end_frame(self);
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        Backend::viewport(self)
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        Backend::line_height(self)
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        Backend::char_width(self)
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::surface_measure_text requires set_current_font");
+        let (w, h) = super::text::measure_text(font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_fill_rect called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { ns_fill_rect(ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_stroke_rect called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { ns_stroke_rect(ctx, rect, color, stroke_width as f64) };
+    }
+
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_draw_text_run called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::surface_draw_text_run requires set_current_font");
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text(
+                ctx,
+                font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_draw_line called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            ns_draw_line(
+                ctx,
+                from.x as f64,
+                from.y as f64,
+                to.x as f64,
+                to.y as f64,
+                color,
+                stroke_width as f64,
+            );
+        }
+    }
+
+    fn surface_push_clip(&mut self, rect: Rect) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_push_clip called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope. Every push here
+        // must be balanced by a `surface_pop_clip` call — see that method.
+        unsafe { ns_push_clip(ctx, rect) };
+    }
+
+    fn surface_pop_clip(&mut self) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_pop_clip called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { CGContextRestoreGState(ctx) };
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        Backend::draw_image(self, rect, image)
+    }
+}
+
+/// `Color` (0-255 per channel) to CoreGraphics' 0.0-1.0 RGBA tuple —
+/// identical math to every per-rasteriser private `color_to_cg` this
+/// canonicalises (see this section's module comment).
+fn ns_color_to_cg(c: Color) -> (f64, f64, f64, f64) {
+    (
+        c.r as f64 / 255.0,
+        c.g as f64 / 255.0,
+        c.b as f64 / 255.0,
+        c.a as f64 / 255.0,
+    )
+}
+
+fn ns_cg_rect(rect: Rect) -> CGRect {
+    CGRect::new(
+        &CGPoint::new(rect.x as f64, rect.y as f64),
+        &CGSize::new(rect.width as f64, rect.height as f64),
+    )
+}
+
+/// # Safety
+/// `ctx` must be a valid, non-null `CGContextRef` borrowed for the
+/// duration of this call.
+unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
+    let (r, g, b, a) = ns_color_to_cg(c);
+    CGContextSetRGBFillColor(ctx, r, g, b, a);
+    CGContextFillRect(ctx, ns_cg_rect(rect));
+}
+
+/// # Safety
+/// Same contract as [`ns_fill_rect`].
+unsafe fn ns_stroke_rect(ctx: CGContextRef, rect: Rect, c: Color, line_width: f64) {
+    let (r, g, b, a) = ns_color_to_cg(c);
+    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
+    CGContextSetLineWidth(ctx, line_width);
+    CGContextStrokeRect(ctx, ns_cg_rect(rect));
+}
+
+/// # Safety
+/// Same contract as [`ns_fill_rect`].
+unsafe fn ns_draw_line(
+    ctx: CGContextRef,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    c: Color,
+    line_width: f64,
+) {
+    let (r, g, b, a) = ns_color_to_cg(c);
+    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
+    CGContextSetLineWidth(ctx, line_width);
+    CGContextMoveToPoint(ctx, x0, y0);
+    CGContextAddLineToPoint(ctx, x1, y1);
+    CGContextStrokePath(ctx);
+}
+
+/// Push an axis-aligned clip rect by saving graphics state then clipping —
+/// CoreGraphics has no clip-only push/pop pair, so (as every macOS
+/// rasteriser that clips already does — e.g. `macos::board`'s column/card
+/// clipping) this piggybacks on the save/restore GState stack:
+/// `MacBackend`'s `NativeSurface::surface_pop_clip` impl calls
+/// `CGContextRestoreGState` directly to match.
+///
+/// # Safety
+/// Same contract as [`ns_fill_rect`].
+unsafe fn ns_push_clip(ctx: CGContextRef, rect: Rect) {
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, ns_cg_rect(rect));
+}
+
+extern "C" {
+    fn CGContextSaveGState(c: CGContextRef);
+    fn CGContextRestoreGState(c: CGContextRef);
+    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
+    fn CGContextSetRGBFillColor(
+        c: CGContextRef,
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        alpha: CGFloat,
+    );
+    fn CGContextSetRGBStrokeColor(
+        c: CGContextRef,
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        alpha: CGFloat,
+    );
+    fn CGContextSetLineWidth(c: CGContextRef, width: CGFloat);
+    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
+    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
+    fn CGContextMoveToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
+    fn CGContextAddLineToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
+    fn CGContextStrokePath(c: CGContextRef);
 }
 
 #[cfg(test)]
