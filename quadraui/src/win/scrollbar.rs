@@ -1,28 +1,17 @@
 //! Direct2D rasteriser for [`crate::Scrollbar`] (issue #27).
 //!
-//! Overlay-style scrollbar matching [`crate::gtk::scrollbar::draw_scrollbar`]
-//! / [`crate::macos::scrollbar::draw_scrollbar`]: a thin track with a
-//! brighter thumb on top, both bumping opacity on hover/drag so the bar
-//! pops while the user is interacting with it.
+//! Painting moved to the shared
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`] (#811,
+//! `NativeSurface` Phase 2d) — see that fn's doc for the one named
+//! divergence (quadraui#791) re-verified (already fixed) while unifying
+//! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
+//! `win::scrollbar::draw_scrollbar` into one implementation. This module
+//! now only carries [`RawScrollbarSurface`] and the deprecated
+//! [`draw_scrollbar`] compatibility shim over it, mirroring
+//! `win::form::RawFormSurface` (#808).
 //!
-//! Both axes share this implementation — [`Scrollbar::axis`] determines
-//! whether `thumb_start`/`thumb_len` are applied vertically or
-//! horizontally.
-//!
-//! Matches the GTK/macOS twins (quadraui#791): track and thumb paint a
-//! real alpha-blended overlay via a translucent `ID2D1SolidColorBrush`
-//! (see [`with_alpha`]) straight onto whatever is already on the
-//! target, instead of premixing against `theme.background` via
-//! [`super::text::blend`]. A scrollbar drawn over an editor, terminal
-//! or panel header previously got a `theme.background`-coloured halo
-//! rather than blending with the content underneath — the brush's own
-//! alpha channel still blends correctly against the render target's
-//! existing pixels even though the target itself is created with
-//! `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN` (that mode only forces the
-//! target's *own* stored alpha to opaque; it doesn't disable source-over
-//! blending for a fill). `super::multi_section_view`'s embedded
-//! scrollbar still uses the CPU-premix convention — out of scope here,
-//! see that module's doc.
+//! `super::multi_section_view`'s embedded scrollbar still uses its own
+//! CPU-premix convention — out of scope here, see that module's doc.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod scrollbar;` and `backend.rs`'s
@@ -31,81 +20,124 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::fill_rect;
-use crate::event::Rect;
-use crate::primitives::scrollbar::{ScrollAxis, Scrollbar};
+use crate::native_surface::NativeSurface;
+use crate::primitives::scrollbar::Scrollbar;
 use crate::theme::Theme;
-use crate::types::Color;
 
-/// Paint `scrollbar` onto `target`.
-pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: &Theme) {
-    let track = scrollbar.track;
-    if track.width <= 0.0 || track.height <= 0.0 {
-        return;
-    }
-
-    let track_alpha = if scrollbar.hovered || scrollbar.dragging {
-        0.35
-    } else {
-        0.20
-    };
-    let thumb_alpha = if scrollbar.dragging {
-        0.85
-    } else if scrollbar.hovered {
-        0.70
-    } else {
-        0.50
-    };
-
-    let _ = fill_rect(
-        target,
-        track,
-        with_alpha(theme.scrollbar_track, track_alpha),
-    );
-
-    let thumb_rect = match scrollbar.axis {
-        ScrollAxis::Vertical => Rect::new(
-            track.x,
-            track.y + scrollbar.thumb_start,
-            track.width,
-            scrollbar.thumb_len,
-        ),
-        ScrollAxis::Horizontal => Rect::new(
-            track.x + scrollbar.thumb_start,
-            track.y,
-            scrollbar.thumb_len,
-            track.height,
-        ),
-    };
-    let _ = fill_rect(
-        target,
-        thumb_rect,
-        with_alpha(theme.scrollbar_thumb, thumb_alpha),
-    );
+/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget`,
+/// used only by the deprecated [`draw_scrollbar`] shim below and by this
+/// module's own tests — a scrollbar's paint calls exactly one verb
+/// (`surface_fill_rect`), so every other method is `unreachable!()`.
+/// Mirrors `win::form::RawFormSurface`'s identical pattern (#808).
+pub(crate) struct RawScrollbarSurface<'a> {
+    pub(crate) target: &'a ID2D1RenderTarget,
 }
 
-/// `color` with its alpha channel replaced by `alpha` (`0.0`–`1.0`),
-/// so [`fill_rect`]'s `ID2D1SolidColorBrush` blends natively against
-/// whatever is already on the target instead of painting an opaque
-/// fill. Mirrors `macos::scrollbar::with_alpha` / `macos::palette::with_alpha`.
-fn with_alpha(color: Color, alpha: f32) -> Color {
-    Color::rgba(
-        color.r,
-        color.g,
-        color.b,
-        (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
-    )
+impl NativeSurface for RawScrollbarSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawScrollbarSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawScrollbarSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawScrollbarSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawScrollbarSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawScrollbarSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawScrollbarSurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // `win::text::fill_rect` already honours `color.a` with a real
+        // translucent `ID2D1SolidColorBrush` (the quadraui#791 fix,
+        // predating this issue — see the module doc).
+        let _ = super::text::fill_rect(self.target, rect, color);
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Scrollbar::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("Scrollbar::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Scrollbar::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("Scrollbar::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("Scrollbar::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("Scrollbar::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#811, CLAUDE.md rule 8): reproduces
+/// the pre-#811 signature exactly for any external caller that held a
+/// direct `quadraui::win::draw_scrollbar` reference rather than going
+/// through [`crate::Backend::draw_scrollbar`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is
+/// why this shim has no in-repo caller left to trip the
+/// `-D warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_scrollbar` instead — this free function is a compatibility shim over the shared #811 implementation"
+)]
+pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: &Theme) {
+    let mut surface = RawScrollbarSurface { target };
+    crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, &mut surface, theme);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::WidgetId;
+    use crate::event::Rect;
+    use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
     const W: u32 = 80;
     const H: u32 = 200;
 
+    /// Paint `scrollbar` via the shared
+    /// [`crate::primitives::scrollbar::native_surface_paint::paint`]
+    /// through a [`RawScrollbarSurface`] over `surface`'s headless
+    /// target — the same adapter the deprecated [`draw_scrollbar`] shim
+    /// uses, exercised here directly so these tests don't trip the
+    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3;
+    /// mirrors `win::form`'s identical test-migration note).
     fn paint(scrollbar: &Scrollbar) -> HeadlessSurface {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         // Fill with a known background so blended track/thumb colours
@@ -118,7 +150,12 @@ mod tests {
             .expect("fill bg");
         surface
             .paint(|target| {
-                draw_scrollbar(target, scrollbar, &Theme::default());
+                let mut raw = RawScrollbarSurface { target };
+                crate::primitives::scrollbar::native_surface_paint::paint(
+                    scrollbar,
+                    &mut raw,
+                    &Theme::default(),
+                );
             })
             .expect("paint scrollbar");
         surface
@@ -175,11 +212,12 @@ mod tests {
             .expect("fill bg");
         surface
             .paint(|target| {
-                draw_scrollbar(target, &sb, &theme);
+                let mut raw = RawScrollbarSurface { target };
+                crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, &theme);
             })
             .expect("paint scrollbar");
 
-        // Not hovered/dragging: track_alpha = 0.20 (see draw_scrollbar).
+        // Not hovered/dragging: track_alpha = 0.20 (see the shared `paint`).
         let track_alpha = 0.20;
         let expected = expected_alpha_blend(real_bg, theme.scrollbar_track, track_alpha);
         let old_halo = expected_alpha_blend(theme.background, theme.scrollbar_track, track_alpha);

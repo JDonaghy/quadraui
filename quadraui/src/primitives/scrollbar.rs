@@ -176,6 +176,255 @@ pub fn visible_window(
     (start, end)
 }
 
+// ── NativeSurface paint (#811, Phase 2d of the NativeSurface milestone) ────
+//
+// Before this, `gtk::draw_scrollbar` (Cairo), `macos::scrollbar::draw_scrollbar`
+// (Core Graphics) and `win::scrollbar::draw_scrollbar` (Direct2D) each
+// independently painted the same overlay track+thumb geometry with their
+// own drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
+// §5). `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API.
+//
+// Unlike `primitives::chart`'s divergence-heavy unification (#810), the
+// three deleted copies here were already near-identical: same
+// track/thumb alpha thresholds, same axis-based rect placement. The one
+// divergence this issue names as "known, owned elsewhere" —
+// `win::scrollbar` pre-blending its fill against `theme.background`
+// instead of a real alpha blend (quadraui#791) — had **already been
+// fixed**, independently of this issue, before this migration started:
+// the pre-deletion `win/scrollbar.rs` module doc documented the fix
+// landing under #791 directly (a real translucent `ID2D1SolidColorBrush`
+// fill, matching GTK's `cr.set_source_rgba` and macOS's
+// `CGContextSetRGBFillColor` with a real alpha channel). Re-verified
+// while migrating, per this issue's "re-verify before you implement" —
+// reported here rather than silently assumed.
+//
+// What #791 did *not* reach, because the code didn't exist yet:
+// `NativeSurface::surface_fill_rect`'s own GTK implementation (added
+// later, by the #808/#810 migrations that gave `primitives::{chart,form,
+// terminal,text_display}` a shared paint path) called
+// `crate::gtk::set_source` — `cr.set_source_rgb`, which drops `Color::a`
+// outright. Routing `Scrollbar`'s paint through `surface_fill_rect`
+// unchanged would have *reintroduced* an opaque-fill regression on GTK
+// specifically, on the one primitive whose entire visual identity is a
+// translucent overlay. Fixed at the source instead of worked around
+// here: `GtkBackend::surface_fill_rect` now calls the new
+// `crate::gtk::set_source_rgba` (see that fn's doc for why every
+// existing `surface_fill_rect` caller is unaffected — they all already
+// pass opaque colours).
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_scrollbar`/`draw_terminal` call
+// sites plus this module's own `RecordingSurface` tests on every leg
+// that enables one of the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{ScrollAxis, Scrollbar};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    /// `color` with its alpha channel replaced by `alpha` (`0.0`-`1.0`).
+    fn with_alpha(color: Color, alpha: f32) -> Color {
+        Color::rgba(
+            color.r,
+            color.g,
+            color.b,
+            (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
+        )
+    }
+
+    /// Paint a [`Scrollbar`] onto `surface`: a translucent track with a
+    /// brighter translucent thumb on top, both bumping alpha on
+    /// hover/drag. See this module's doc for the one known divergence
+    /// (quadraui#791) re-verified (already fixed) while unifying three
+    /// per-backend copies into this one.
+    pub(crate) fn paint(scrollbar: &Scrollbar, surface: &mut dyn NativeSurface, theme: &Theme) {
+        let track = scrollbar.track;
+        if track.width <= 0.0 || track.height <= 0.0 {
+            return;
+        }
+
+        let track_alpha = if scrollbar.hovered || scrollbar.dragging {
+            0.35
+        } else {
+            0.20
+        };
+        let thumb_alpha = if scrollbar.dragging {
+            0.85
+        } else if scrollbar.hovered {
+            0.70
+        } else {
+            0.50
+        };
+
+        surface.surface_fill_rect(track, with_alpha(theme.scrollbar_track, track_alpha));
+
+        let thumb_rect = match scrollbar.axis {
+            ScrollAxis::Vertical => Rect::new(
+                track.x,
+                track.y + scrollbar.thumb_start,
+                track.width,
+                scrollbar.thumb_len,
+            ),
+            ScrollAxis::Horizontal => Rect::new(
+                track.x + scrollbar.thumb_start,
+                track.y,
+                scrollbar.thumb_len,
+                track.height,
+            ),
+        };
+        surface.surface_fill_rect(thumb_rect, with_alpha(theme.scrollbar_thumb, thumb_alpha));
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every `surface_fill_rect` call — mirrors
+        /// `primitives::chart`'s `RecordingSurface` test double, scoped
+        /// to just the verb this primitive uses, so this test runs on
+        /// any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn vertical_bar(scroll: f32, total: f32, visible: f32) -> Scrollbar {
+            Scrollbar::vertical(
+                WidgetId::new("sb"),
+                Rect::new(0.0, 0.0, 8.0, 200.0),
+                scroll,
+                total,
+                visible,
+                20.0,
+            )
+        }
+
+        /// Regression for quadraui#791, ported to the shared paint path:
+        /// track/thumb must carry real alpha (`Color::a < 255`), never a
+        /// fully-opaque colour pre-blended against `theme.background`.
+        /// This is also the test that catches the GTK-specific
+        /// `surface_fill_rect` alpha-dropping bug this same issue fixed
+        /// (see this module's doc) — RED against a `paint` that routed
+        /// through the pre-fix `surface_fill_rect`/`set_source`.
+        #[test]
+        fn track_and_thumb_paint_with_real_alpha_not_opaque() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&sb, &mut surface, &theme);
+
+            assert_eq!(
+                surface.fills.len(),
+                2,
+                "expected exactly a track fill and a thumb fill"
+            );
+            for (_, color) in &surface.fills {
+                assert!(
+                    color.a < 255,
+                    "scrollbar fill must carry real alpha, got opaque a={}",
+                    color.a
+                );
+            }
+        }
+
+        #[test]
+        fn dragging_increases_thumb_alpha() {
+            let mut sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+
+            let mut normal = RecordingSurface::default();
+            paint(&sb, &mut normal, &theme);
+            let normal_thumb_alpha = normal.fills[1].1.a;
+
+            sb.dragging = true;
+            let mut dragging = RecordingSurface::default();
+            paint(&sb, &mut dragging, &theme);
+            let dragging_thumb_alpha = dragging.fills[1].1.a;
+
+            assert!(
+                dragging_thumb_alpha > normal_thumb_alpha,
+                "dragging should raise thumb alpha: normal={normal_thumb_alpha}, dragging={dragging_thumb_alpha}"
+            );
+        }
+
+        #[test]
+        fn zero_size_track_paints_nothing() {
+            let sb = Scrollbar::vertical(
+                WidgetId::new("sb"),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                0.0,
+                200.0,
+                50.0,
+                20.0,
+            );
+            let mut surface = RecordingSurface::default();
+            paint(&sb, &mut surface, &Theme::default());
+            assert!(surface.fills.is_empty());
+        }
+
+        #[test]
+        fn horizontal_thumb_rect_uses_width_axis() {
+            let track = Rect::new(0.0, 50.0, 100.0, 8.0);
+            let sb = Scrollbar::horizontal(WidgetId::new("h"), track, 0.0, 200.0, 40.0, 10.0);
+            let mut surface = RecordingSurface::default();
+            paint(&sb, &mut surface, &Theme::default());
+            let (thumb_rect, _) = surface.fills[1];
+            assert_eq!(thumb_rect.y, track.y);
+            assert_eq!(thumb_rect.height, track.height);
+            assert!(thumb_rect.width > 0.0 && thumb_rect.width <= track.width);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -109,6 +109,11 @@ pub use pipeline_view::{draw_pipeline_view, mac_pipeline_view_layout};
 pub use progress::{draw_progress, mac_progress_layout};
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::run;
+// #811: `draw_scrollbar` is `#[deprecated]` — see `scrollbar::draw_scrollbar`'s
+// doc for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[allow(deprecated)]
 pub use scrollbar::draw_scrollbar;
 pub use services::MacPlatformServices;
 pub use sidebar_panel::{draw_sidebar_panel, mac_sidebar_panel_layout};

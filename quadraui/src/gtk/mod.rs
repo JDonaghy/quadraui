@@ -120,6 +120,11 @@ pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
 pub use run::{run, run_with, RunConfig};
+// #811: `draw_scrollbar` is `#[deprecated]` — see `scrollbar::draw_scrollbar`'s
+// doc for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[allow(deprecated)]
 pub use scrollbar::draw_scrollbar;
 pub use sidebar_panel::{draw_sidebar_panel, gtk_sidebar_panel_layout};
 pub use spinner::{draw_spinner, gtk_spinner_layout};
@@ -148,6 +153,34 @@ pub fn cairo_rgb(c: Color) -> (f64, f64, f64) {
 pub fn set_source(cr: &Context, c: Color) {
     let (r, g, b) = cairo_rgb(c);
     cr.set_source_rgb(r, g, b);
+}
+
+/// `set_source_rgba` shortcut that honours `c.a`, unlike [`set_source`]
+/// (see [`cairo_rgb`]'s doc for why that one drops it).
+///
+/// Used by [`crate::gtk::backend::GtkBackend::surface_fill_rect`]
+/// (issue #811, `NativeSurface` Phase 2d) so a translucent fill —
+/// `primitives::scrollbar::paint`'s overlay track/thumb, most notably —
+/// blends against whatever is already on the target instead of
+/// silently rendering opaque. Before this, `GtkBackend`'s own
+/// `NativeSurface::surface_fill_rect` was the *one* of the three pixel
+/// backends whose fill didn't honour alpha (macOS's `ns_fill_rect` and
+/// Windows's `win::text::fill_rect` both already paint a real
+/// translucent brush/fill — see quadraui#791, which fixed Windows's
+/// side of this same gap for the pre-`NativeSurface`
+/// `win::scrollbar::draw_scrollbar`). Every existing
+/// `surface_fill_rect` caller (`primitives::{chart,form,terminal,
+/// text_display}`) always passes an opaque (`a: 255`) `Color`, so
+/// switching the GTK impl from `set_source_rgb` to this makes no visual
+/// difference to any of them — it only starts honouring alpha for
+/// colours that actually carry it.
+pub fn set_source_rgba(cr: &Context, c: Color) {
+    cr.set_source_rgba(
+        c.r as f64 / 255.0,
+        c.g as f64 / 255.0,
+        c.b as f64 / 255.0,
+        c.a as f64 / 255.0,
+    );
 }
 
 /// Build a closed rounded-rectangle Cairo path with corner radius `r`.

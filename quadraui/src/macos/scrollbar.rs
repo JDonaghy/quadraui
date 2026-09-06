@@ -1,113 +1,123 @@
 //! macOS rasteriser for [`crate::Scrollbar`].
 //!
-//! Overlay-style scrollbar matching [`crate::gtk::scrollbar::draw_scrollbar`]:
-//! a thin alpha-blended track with a brighter thumb on top. Hover / drag
-//! state bumps both alphas so the bar pops while the user is interacting
-//! with it.
-//!
-//! Both axes share this implementation — the `axis` field of the
-//! primitive determines whether `thumb_start` / `thumb_len` are applied
-//! vertically or horizontally.
+//! Painting moved to the shared
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`] (#811,
+//! `NativeSurface` Phase 2d) — see that fn's doc for the one named
+//! divergence (quadraui#791) re-verified (already fixed) while unifying
+//! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
+//! `win::scrollbar::draw_scrollbar` into one implementation. This module
+//! now only carries [`RawScrollbarSurface`] and the deprecated
+//! [`draw_scrollbar`] compatibility shim over it, mirroring
+//! `macos::form::RawFormSurface` (#808).
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 
-use crate::primitives::scrollbar::{ScrollAxis, Scrollbar};
+use crate::native_surface::NativeSurface;
+use crate::primitives::scrollbar::Scrollbar;
 use crate::theme::Theme;
-use crate::types::Color;
 
-/// Paint `scrollbar` onto `ctx`.
+/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef`, used
+/// only by the deprecated [`draw_scrollbar`] shim below — a scrollbar's
+/// paint calls exactly one verb (`surface_fill_rect`), so every other
+/// method is `unreachable!()`. Mirrors `macos::form::RawFormSurface`'s
+/// identical pattern (#808).
+pub(crate) struct RawScrollbarSurface {
+    pub(crate) ctx: CGContextRef,
+}
+
+impl NativeSurface for RawScrollbarSurface {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawScrollbarSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawScrollbarSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawScrollbarSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawScrollbarSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawScrollbarSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawScrollbarSurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
+        // pass — see this struct's construction site. `ns_fill_rect`
+        // already honours `color.a` with a real alpha blend (unlike the
+        // GTK `NativeSurface::surface_fill_rect` bug this same issue
+        // fixed — see the module doc).
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Scrollbar::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("Scrollbar::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Scrollbar::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("Scrollbar::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("Scrollbar::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("Scrollbar::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#811, CLAUDE.md rule 8): reproduces
+/// the pre-#811 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_scrollbar` reference rather than going
+/// through [`crate::Backend::draw_scrollbar`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is
+/// why this shim has no in-repo caller left to trip the
+/// `-D warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_scrollbar` instead — this free function is a compatibility shim over the shared #811 implementation"
+)]
 pub unsafe fn draw_scrollbar(ctx: CGContextRef, scrollbar: &Scrollbar, theme: &Theme) {
-    let track = scrollbar.track;
-    if track.width <= 0.0 || track.height <= 0.0 {
-        return;
-    }
-
-    let track_alpha = if scrollbar.hovered || scrollbar.dragging {
-        0.35
-    } else {
-        0.20
-    };
-    let thumb_alpha = if scrollbar.dragging {
-        0.85
-    } else if scrollbar.hovered {
-        0.70
-    } else {
-        0.50
-    };
-
-    fill_rect(
-        ctx,
-        track.x as f64,
-        track.y as f64,
-        track.width as f64,
-        track.height as f64,
-        with_alpha(theme.scrollbar_track, track_alpha),
-    );
-
-    let (tx, ty, tw, th) = match scrollbar.axis {
-        ScrollAxis::Vertical => (
-            track.x as f64,
-            track.y as f64 + scrollbar.thumb_start as f64,
-            track.width as f64,
-            scrollbar.thumb_len as f64,
-        ),
-        ScrollAxis::Horizontal => (
-            track.x as f64 + scrollbar.thumb_start as f64,
-            track.y as f64,
-            scrollbar.thumb_len as f64,
-            track.height as f64,
-        ),
-    };
-    fill_rect(
-        ctx,
-        tx,
-        ty,
-        tw,
-        th,
-        with_alpha(theme.scrollbar_thumb, thumb_alpha),
-    );
-}
-
-fn with_alpha(c: Color, alpha: f64) -> Color {
-    Color {
-        r: c.r,
-        g: c.g,
-        b: c.b,
-        a: (255.0 * alpha).round().clamp(0.0, 255.0) as u8,
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
+    let mut surface = RawScrollbarSurface { ctx };
+    crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, &mut surface, theme);
 }
 
 #[cfg(test)]

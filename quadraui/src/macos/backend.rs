@@ -1532,7 +1532,6 @@ impl Backend for MacBackend {
             None,
         );
 
-        let ctx = self.current_cg();
         if let Some(ref sb_state) = term.scrollbar {
             let sb = crate::primitives::scrollbar::Scrollbar::vertical(
                 term.id.clone(),
@@ -1547,8 +1546,7 @@ impl Backend for MacBackend {
                 sb_state.visible_lines as f32,
                 line_height as f32,
             );
-            // SAFETY: ctx is non-null inside the frame scope.
-            unsafe { super::scrollbar::draw_scrollbar(ctx, &sb, &theme) }
+            crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
         }
     }
     /// #810: shared divider painting lives in
@@ -1838,14 +1836,8 @@ impl Backend for MacBackend {
         unsafe { super::completions::draw_completions(ctx, font, completions, layout, &theme) }
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_scrollbar called outside enter_frame_scope",
-        );
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::scrollbar::draw_scrollbar(ctx, scrollbar, &theme) }
+        crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {

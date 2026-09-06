@@ -2460,10 +2460,7 @@ impl Backend for GtkBackend {
                 sb_state.visible_lines as f32,
                 lh as f32,
             );
-            let (cr, _layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
-            crate::gtk::draw_scrollbar(cr, &sb, &theme);
+            crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
         }
 
         // #492/#810: before #810, `draw_terminal_cells` painted glyphs
@@ -2907,10 +2904,7 @@ impl Backend for GtkBackend {
         scrollbar: &crate::primitives::scrollbar::Scrollbar,
     ) {
         let theme = self.current_theme;
-        let (cr, _layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_scrollbar called outside enter_frame_scope");
-        crate::gtk::draw_scrollbar(cr, scrollbar, &theme);
+        crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
         // #492: a scrollbar strokes/fills only — no text — so on this
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
@@ -3696,7 +3690,10 @@ impl NativeSurface for GtkBackend {
         let (cr, _layout) = self
             .current_frame_refs()
             .expect("GtkBackend::surface_fill_rect called outside enter_frame_scope");
-        crate::gtk::set_source(cr, color);
+        // `set_source_rgba`, not `set_source` — see that fn's doc
+        // (issue #811) for why a translucent fill must honour `color.a`
+        // here to match macOS/Windows's `NativeSurface::surface_fill_rect`.
+        crate::gtk::set_source_rgba(cr, color);
         cr.rectangle(
             rect.x as f64,
             rect.y as f64,

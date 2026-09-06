@@ -263,7 +263,8 @@ pub unsafe fn draw_list(
             w as f32,
             line_height as f32,
         );
-        super::draw_scrollbar(ctx, &hsb, theme);
+        let mut raw = super::scrollbar::RawScrollbarSurface { ctx };
+        crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
     }
 
     CGContextRestoreGState(ctx);
