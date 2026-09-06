@@ -3127,7 +3127,6 @@ impl NativeSurface for WinBackend {
             super::text::pop_clip(&surface.target);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
         todo!("Direct2D pop_clip (no surface attached yet)")
     }
 
