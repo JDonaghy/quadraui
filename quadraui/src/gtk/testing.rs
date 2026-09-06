@@ -50,6 +50,7 @@ use crate::backend::Backend;
 use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
+use crate::testing::driver_core::DriverCore;
 use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
     TextRun,
@@ -57,7 +58,7 @@ use crate::testing::{
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent, WidgetId};
 
 use super::backend::GtkBackend;
-use super::run::{dispatch_event, render_frame, EventOutcome};
+use super::run::{dispatch_event, render_frame};
 
 /// Build a [`GtkDriver`] that wraps `app` in the full
 /// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
@@ -107,12 +108,10 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// [`Self::click`] / [`Self::drag`], and read painted pixels back with
 /// [`Self::pixel`].
 pub struct GtkDriver<A: AppLogic> {
-    app: A,
-    backend: GtkBackend,
+    core: DriverCore<GtkBackend, A>,
     surface: ImageSurface,
     width: i32,
     height: i32,
-    exited: bool,
 }
 
 impl<A: AppLogic> GtkDriver<A> {
@@ -158,12 +157,10 @@ impl<A: AppLogic> GtkDriver<A> {
         let mut app = app;
         app.setup(&mut backend);
         let mut driver = Self {
-            app,
-            backend,
+            core: DriverCore::new(app, backend),
             surface,
             width,
             height,
-            exited: false,
         };
         driver.render();
         driver
@@ -172,26 +169,27 @@ impl<A: AppLogic> GtkDriver<A> {
     /// Repaint one frame through the shared production render path.
     pub fn render(&mut self) {
         let cr = Context::new(&self.surface).expect("Context::new on headless ImageSurface");
-        render_frame(&mut self.backend, &self.app, &cr, self.width, self.height);
+        let (backend, app) = self.core.parts_mut();
+        render_frame(backend, app, &cr, self.width, self.height);
     }
 
     /// Feed one synthetic event through the shared production
     /// [`dispatch_event`] path. Repaints on redraw and latches `exited`.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
-        match dispatch_event(event, &mut self.backend, &mut self.app) {
-            EventOutcome::Continue => Reaction::Continue,
-            EventOutcome::Redraw => {
-                self.render();
-                Reaction::Redraw
-            }
-            EventOutcome::Exit => {
-                self.exited = true;
-                Reaction::Exit
-            }
-        }
+        let outcome = {
+            let (backend, app) = self.core.parts_mut();
+            dispatch_event(event, backend, app)
+        };
+        let surface = &self.surface;
+        let width = self.width;
+        let height = self.height;
+        self.core.apply_outcome(outcome, |backend, app| {
+            let cr = Context::new(surface).expect("Context::new on headless ImageSurface");
+            render_frame(backend, app, &cr, width, height);
+        })
     }
 
     /// Toggle whether [`Self::dispatch`] (and every click helper built on
@@ -205,7 +203,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// than a coin-flip on wall-clock timing. Mirrors
     /// `TuiDriver::set_double_click_folding` exactly.
     pub fn set_double_click_folding(&mut self, enabled: bool) {
-        self.backend.set_double_click_folding(enabled);
+        self.core.backend_mut().set_double_click_folding(enabled);
     }
 
     /// Press a key (no modifiers).
@@ -242,21 +240,22 @@ impl<A: AppLogic> GtkDriver<A> {
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
         let position = Point::new(x, y);
         let events = {
-            let stack_rc = self.backend.modal_stack_handle();
-            let drag_rc = self.backend.drag_state_handle();
+            let backend = self.core.backend_mut();
+            let stack_rc = backend.modal_stack_handle();
+            let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
             let evs = dispatch_click(
                 &stack,
                 &[], // scroll surfaces not tracked by the driver — mirrors gtk::run
-                self.backend.text_regions(),
+                backend.text_regions(),
                 &mut drag,
                 position,
                 MouseButton::Left,
                 Modifiers::default(),
             );
             if let Some(crate::dispatch::DragTarget::TextSelection { region, .. }) = drag.target() {
-                self.backend.track_focused_text_region(region.clone());
+                backend.track_focused_text_region(region.clone());
             }
             evs
         };
@@ -270,7 +269,7 @@ impl<A: AppLogic> GtkDriver<A> {
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
         let position = Point::new(x, y);
         let events = {
-            let drag_rc = self.backend.drag_state_handle();
+            let drag_rc = self.core.backend().drag_state_handle();
             let drag = drag_rc.borrow();
             dispatch_mouse_drag(
                 &drag,
@@ -288,8 +287,9 @@ impl<A: AppLogic> GtkDriver<A> {
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
         let position = Point::new(x, y);
         let events = {
-            let stack_rc = self.backend.modal_stack_handle();
-            let drag_rc = self.backend.drag_state_handle();
+            let backend = self.core.backend();
+            let stack_rc = backend.modal_stack_handle();
+            let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
             dispatch_mouse_up(&stack, &mut drag, position, MouseButton::Left)
@@ -320,25 +320,25 @@ impl<A: AppLogic> GtkDriver<A> {
 
     /// Whether the app has returned [`Reaction::Exit`].
     pub fn exited(&self) -> bool {
-        self.exited
+        self.core.exited()
     }
 
     /// Access the app state for test assertions.
     pub fn app(&self) -> &A {
-        &self.app
+        self.core.app()
     }
 
     /// Mutable access to the app state for tests that need to poke state
     /// directly rather than through a scripted [`UiEvent`] — mirrors
     /// [`crate::tui::testing::TuiDriver::app_mut`] (quadraui#488).
     pub fn app_mut(&mut self) -> &mut A {
-        &mut self.app
+        self.core.app_mut()
     }
 
     /// Access the backend for test assertions (e.g. active selection
     /// state, drag state).
     pub fn backend(&self) -> &GtkBackend {
-        &self.backend
+        self.core.backend()
     }
 
     /// Read an RGB triple from the rendered surface at pixel `(x, y)`.
@@ -392,7 +392,8 @@ impl<A: AppLogic> GtkDriver<A> {
     /// the primitives that paint no text at all (`draw_split`,
     /// `draw_split_tree`, `draw_scrollbar`, `draw_drop_overlay`).
     pub fn painted_texts(&self) -> Vec<&str> {
-        self.backend
+        self.core
+            .backend()
             .painted_text
             .iter()
             .map(|p| p.text.as_str())
@@ -402,7 +403,8 @@ impl<A: AppLogic> GtkDriver<A> {
     /// True if any painted label contains `needle` — the GTK analogue of
     /// [`crate::tui::testing::TuiDriver::screen_contains`].
     pub fn screen_contains(&self, needle: &str) -> bool {
-        self.backend
+        self.core
+            .backend()
             .painted_text
             .iter()
             .any(|p| p.text.contains(needle))
@@ -415,7 +417,8 @@ impl<A: AppLogic> GtkDriver<A> {
     /// resolved from Pango-measured layout geometry rather than a
     /// character grid.
     pub fn find_bounds(&self, needle: &str) -> Option<crate::Rect> {
-        self.backend
+        self.core
+            .backend()
             .painted_text
             .iter()
             .find(|p| p.text.contains(needle))
@@ -441,7 +444,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// this frame, or if `tab_idx` is scrolled out of view behind the
     /// bar's `scroll_offset`.
     pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
+        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
         let (cx, cy) = layout.tab_center(tab_idx)?;
         Some((rect.x + cx, rect.y + cy))
     }
@@ -454,7 +457,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// drew no close button this frame (`is_closable: false` on the tab,
     /// or `show_tab_close: false` on the bar).
     pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
+        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
         let (cx, cy) = layout.tab_close_center(tab_idx)?;
         Some((rect.x + cx, rect.y + cy))
     }
@@ -496,7 +499,7 @@ impl<A: AppLogic> PixelClickConformance for GtkDriver<A> {
     }
 
     fn conformance_line_height(&self) -> f32 {
-        self.backend.line_height()
+        self.core.backend().line_height()
     }
 }
 
@@ -521,7 +524,7 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `GtkBackend` this driver wraps — never a
         // re-statement (quadraui#492).
-        crate::Backend::backend_caps(&self.backend)
+        crate::Backend::backend_caps(self.core.backend())
     }
 
     fn press_named(&mut self, key: NamedKey) {
@@ -551,7 +554,8 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
     fn inventory(&self) -> FrameInventory {
         FrameInventory {
             text_runs: self
-                .backend
+                .core
+                .backend()
                 .painted_text
                 .iter()
                 .map(|p| TextRun {
@@ -564,7 +568,7 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
             // (activity-bar items, sidebar header/content, status bar,
             // ...). Primitives that don't yet call `register_zone`
             // contribute no zone (quadraui#490).
-            zones: self.backend.zones.clone(),
+            zones: self.core.backend().zones.clone(),
         }
     }
 
@@ -1139,11 +1143,12 @@ mod tests {
         let bar = driver.app().bar();
 
         let (rect, painted) = driver
-            .backend
+            .core
+            .backend()
             .cached_tab_bar_layout(&bar.id)
             .map(|(r, l)| (r, l.clone()))
             .expect("the first frame painted the tab bar");
-        let hits = crate::Backend::tab_bar_layout(&mut driver.backend, rect, &bar);
+        let hits = crate::Backend::tab_bar_layout(driver.core.backend_mut(), rect, &bar);
 
         for vt in &painted.visible_tabs {
             let painted_slot = (

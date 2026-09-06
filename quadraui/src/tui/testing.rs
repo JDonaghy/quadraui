@@ -59,6 +59,7 @@ pub use ratatui::style::{Color, Modifier};
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
+use crate::testing::driver_core::DriverCore;
 use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, TextRun,
 };
@@ -139,10 +140,8 @@ pub struct CellStyle {
 /// back with [`Self::screen`] / [`Self::screen_contains`] / [`Self::find`],
 /// or its style with [`Self::style_at`] / [`Self::styled_row`].
 pub struct TuiDriver<A: AppLogic> {
-    app: A,
-    backend: TuiBackend,
+    core: DriverCore<TuiBackend, A>,
     terminal: Terminal<TestBackend>,
-    exited: bool,
 }
 
 impl<A: AppLogic> TuiDriver<A> {
@@ -161,10 +160,8 @@ impl<A: AppLogic> TuiDriver<A> {
         let mut app = app;
         app.setup(&mut backend);
         let mut driver = Self {
-            app,
-            backend,
+            core: DriverCore::new(app, backend),
             terminal,
-            exited: false,
         };
         driver.render();
         driver
@@ -172,8 +169,8 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// Repaint one frame through the shared production render path.
     pub fn render(&mut self) {
-        render_frame(&mut self.terminal, &mut self.backend, &self.app)
-            .expect("TestBackend render is infallible");
+        let (backend, app) = self.core.parts_mut();
+        render_frame(&mut self.terminal, backend, app).expect("TestBackend render is infallible");
     }
 
     /// Feed one synthetic event through the **full production pipeline**:
@@ -189,12 +186,17 @@ impl<A: AppLogic> TuiDriver<A> {
     /// following `MouseMoved` is translated into `TextSelectionChanged` —
     /// exactly as `wait_events` does for real crossterm input.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
         let mut result = Reaction::Continue;
-        for ev in self.backend.translate_injected(vec![event]) {
-            match dispatch_event(ev, &mut self.backend, &mut self.app) {
+        let translated = self.core.backend_mut().translate_injected(vec![event]);
+        for ev in translated {
+            let outcome = {
+                let (backend, app) = self.core.parts_mut();
+                dispatch_event(ev, backend, app)
+            };
+            match outcome {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => {
                     self.render();
@@ -203,7 +205,7 @@ impl<A: AppLogic> TuiDriver<A> {
                     }
                 }
                 EventOutcome::Exit => {
-                    self.exited = true;
+                    self.core.mark_exited();
                     return Reaction::Exit;
                 }
             }
@@ -344,12 +346,12 @@ impl<A: AppLogic> TuiDriver<A> {
     /// instead of a result that depends on how much wall-clock time
     /// elapsed between the two `dispatch` calls.
     pub fn set_double_click_folding(&mut self, enabled: bool) {
-        self.backend.set_double_click_folding(enabled);
+        self.core.backend_mut().set_double_click_folding(enabled);
     }
 
     /// Whether the app has returned [`Reaction::Exit`].
     pub fn exited(&self) -> bool {
-        self.exited
+        self.core.exited()
     }
 
     /// The current rendered screen as newline-joined rows.
@@ -462,7 +464,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// Useful when the test app records side-effects (e.g. last copied text,
     /// selection changes) that would otherwise require screen-scraping.
     pub fn app(&self) -> &A {
-        &self.app
+        self.core.app()
     }
 
     /// Mutable access to the app state for tests that need to poke state
@@ -470,13 +472,13 @@ impl<A: AppLogic> TuiDriver<A> {
     /// a render-time invariant (like editor cursor placement) across a
     /// state change with no dedicated event/handler of its own.
     pub fn app_mut(&mut self) -> &mut A {
-        &mut self.app
+        self.core.app_mut()
     }
 
     /// Access the backend for test assertions (e.g. active selection state,
     /// drag state).
     pub fn backend(&self) -> &TuiBackend {
-        &self.backend
+        self.core.backend()
     }
 
     /// The `(x, y)` position `Terminal::draw` last applied to the
@@ -573,7 +575,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// this frame, or if `tab_idx` is scrolled out of view behind the
     /// bar's `scroll_offset`.
     pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
+        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
         let (cx, cy) = layout.tab_center(tab_idx)?;
         Some((rect.x + cx, rect.y + cy))
     }
@@ -586,7 +588,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// drew no close button this frame (`is_closable: false` on the tab,
     /// or `show_tab_close: false` on the bar).
     pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.backend.cached_tab_bar_layout(bar)?;
+        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
         let (cx, cy) = layout.tab_close_center(tab_idx)?;
         Some((rect.x + cx, rect.y + cy))
     }
@@ -632,7 +634,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `TuiBackend` this driver wraps — never a
         // re-statement (quadraui#492).
-        crate::Backend::backend_caps(&self.backend)
+        crate::Backend::backend_caps(self.core.backend())
     }
 
     fn press_named(&mut self, key: NamedKey) {
@@ -677,7 +679,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
         let (x, y) = self
             .find(needle)
             .unwrap_or_else(|| panic!("TuiDriver: {needle:?} not painted:\n{}", self.screen()));
-        let line_height = self.backend.line_height();
+        let line_height = self.core.backend().line_height();
         self.dispatch(UiEvent::Scroll {
             widget: None,
             delta: ScrollDelta::new(0.0, lines as f32 * line_height),
@@ -728,7 +730,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
             // (activity-bar items, sidebar header/content, status bar,
             // ...). Primitives that don't yet call `register_zone`
             // contribute no zone (quadraui#490).
-            zones: self.backend.zones().to_vec(),
+            zones: self.core.backend().zones().to_vec(),
         }
     }
 

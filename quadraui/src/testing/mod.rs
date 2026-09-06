@@ -34,6 +34,35 @@
 //!    so a literal in a shared body would silently be wrong on one side.
 //! 2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
 //!    works identically on every backend.
+//!
+//! ## `driver_core` (quadraui#814, finishing quadraui#708)
+//!
+//! [`driver_core::DriverCore`] is the shared `app`/`backend`/`exited`
+//! state every concrete backend driver (`TuiDriver`, `GtkDriver`,
+//! `MacDriver`, `WinDriver`) wraps rather than redeclaring — see that
+//! module's doc for what it replaced. `pub(crate)`, not re-exported here:
+//! it's an implementation detail of the four driver structs, not part of
+//! this module's own `ConformanceDriver`/`DriverInput` public surface.
+//!
+//! Gated to the same predicate as those four driver modules' own
+//! existence, not left unconditional: `crate::testing` itself has no
+//! backend feature gate (see this module's own top doc), but
+//! `DriverCore` has no consumer at all unless at least one concrete
+//! driver — `TuiDriver` (`feature = "tui"`), `GtkDriver`
+//! (`feature = "gtk"`), `MacDriver`
+//! (`all(feature = "macos", target_os = "macos")`), or `WinDriver`
+//! (`all(feature = "win", target_os = "windows")`) — is actually being
+//! compiled. Without this, `cargo check -p quadraui --features win` on a
+//! non-Windows host (`win::testing` is itself `target_os = "windows"`-gated,
+//! so nothing reaches `DriverCore` there either) would trip `dead_code`
+//! under this crate's workflow-wide `-D warnings`.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
+))]
+pub(crate) mod driver_core;
 
 // Only pulled in by the paint-time text-run recording sink below, which
 // is itself gated to the pixel backends that need it (`gtk`/`win`/`macos`
@@ -375,7 +404,10 @@ impl FrameInventory {
 
 /// Shared "act" surface for headless [`AppLogic`] test drivers
 /// (quadraui#708, issue #708's "Problem 2" — `testing.rs` is a 3-way
-/// copy).
+/// copy). #708's other half — Problem 1, the `app`/`backend`/`exited`
+/// state these trait defaults are methods *on* — is
+/// [`driver_core::DriverCore`], landed by quadraui#814; both halves of
+/// #708 are met as of that issue.
 ///
 /// `press`/`type_char`/`press_named`/`ctrl_char`/`click`/`drag` reduce to
 /// the exact same body on every backend driver once [`Self::dispatch`]

@@ -58,6 +58,7 @@ use windows::Win32::Graphics::Gdi::{
 use crate::event::{Rect, Viewport};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
+use crate::testing::driver_core::DriverCore;
 use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
 };
@@ -341,12 +342,10 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// point — every `todo!()`-stub rasteriser still contributes nothing,
 /// same as it contributes no pixels.
 pub struct WinDriver<A: AppLogic> {
-    app: A,
-    backend: WinBackend,
+    core: DriverCore<WinBackend, A>,
     surface: HeadlessSurface,
     width: u32,
     height: u32,
-    exited: bool,
 }
 
 impl<A: AppLogic> WinDriver<A> {
@@ -380,12 +379,10 @@ impl<A: AppLogic> WinDriver<A> {
         let mut app = app;
         app.setup(&mut backend);
         let mut driver = Self {
-            app,
-            backend,
+            core: DriverCore::new(app, backend),
             surface,
             width,
             height,
-            exited: false,
         };
         driver.render();
         driver
@@ -401,36 +398,37 @@ impl<A: AppLogic> WinDriver<A> {
     /// recreated it — the exact gap that made the render-target recovery
     /// path unreachable from a test.
     pub fn render(&mut self) {
-        let _ = self.backend.ensure_surface();
+        let _ = self.core.backend_mut().ensure_surface();
         let viewport = Viewport::new(self.width as f32, self.height as f32, 1.0);
-        render_frame(&mut self.backend, &self.app, viewport);
+        let (backend, app) = self.core.parts_mut();
+        render_frame(backend, app, viewport);
     }
 
     /// Feed one synthetic event through the shared production
     /// [`dispatch_event`] path. Repaints on redraw and latches `exited`.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
-        let outcome = dispatch_event(event, &mut self.backend, &mut self.app);
+        let outcome = {
+            let (backend, app) = self.core.parts_mut();
+            dispatch_event(event, backend, app)
+        };
         self.apply_outcome(outcome)
     }
 
     /// Shared outcome→[`Reaction`] bookkeeping [`Self::dispatch`] and
     /// [`Self::mouse_down`]/[`Self::mouse_move`]/[`Self::mouse_up`] (#741)
-    /// all need: repaint on redraw, latch `exited` on exit.
+    /// all need: repaint on redraw, latch `exited` on exit. Thin wrapper
+    /// over [`DriverCore::apply_outcome`] (quadraui#814) — `render` still
+    /// has to be a closure here (not `Self::render`) because `DriverCore`
+    /// doesn't own this driver's `surface`/`width`/`height`.
     fn apply_outcome(&mut self, outcome: EventOutcome) -> Reaction {
-        match outcome {
-            EventOutcome::Continue => Reaction::Continue,
-            EventOutcome::Redraw => {
-                self.render();
-                Reaction::Redraw
-            }
-            EventOutcome::Exit => {
-                self.exited = true;
-                Reaction::Exit
-            }
-        }
+        let viewport = Viewport::new(self.width as f32, self.height as f32, 1.0);
+        self.core.apply_outcome(outcome, |backend, app| {
+            let _ = backend.ensure_surface();
+            render_frame(backend, app, viewport);
+        })
     }
 
     /// Press a key (no modifiers).
@@ -475,16 +473,19 @@ impl<A: AppLogic> WinDriver<A> {
     /// registered `TextRegion` starts a selection drag here exactly as it
     /// does live.
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
-        let outcome = route_mouse_down(
-            &mut self.backend,
-            &mut self.app,
-            Point::new(x, y),
-            MouseButton::Left,
-            Modifiers::default(),
-        );
+        let outcome = {
+            let (backend, app) = self.core.parts_mut();
+            route_mouse_down(
+                backend,
+                app,
+                Point::new(x, y),
+                MouseButton::Left,
+                Modifiers::default(),
+            )
+        };
         self.apply_outcome(outcome)
     }
 
@@ -493,18 +494,21 @@ impl<A: AppLogic> WinDriver<A> {
     /// `TextSelection`/scrollbar drag emits `TextSelectionChanged`/scroll
     /// events, mirroring the live `wndproc`.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
-        let outcome = route_mouse_move(
-            &mut self.backend,
-            &mut self.app,
-            Point::new(x, y),
-            ButtonMask {
-                left: true,
-                ..ButtonMask::default()
-            },
-        );
+        let outcome = {
+            let (backend, app) = self.core.parts_mut();
+            route_mouse_move(
+                backend,
+                app,
+                Point::new(x, y),
+                ButtonMask {
+                    left: true,
+                    ..ButtonMask::default()
+                },
+            )
+        };
         self.apply_outcome(outcome)
     }
 
@@ -512,44 +516,42 @@ impl<A: AppLogic> WinDriver<A> {
     /// [`route_mouse_up`] (#741) so an in-progress scrollbar/text-selection
     /// drag ends cleanly, mirroring the live `wndproc`.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
-        let outcome = route_mouse_up(
-            &mut self.backend,
-            &mut self.app,
-            Point::new(x, y),
-            MouseButton::Left,
-        );
+        let outcome = {
+            let (backend, app) = self.core.parts_mut();
+            route_mouse_up(backend, app, Point::new(x, y), MouseButton::Left)
+        };
         self.apply_outcome(outcome)
     }
 
     /// Whether the app has returned [`Reaction::Exit`].
     pub fn exited(&self) -> bool {
-        self.exited
+        self.core.exited()
     }
 
     /// Access the app state for test assertions.
     pub fn app(&self) -> &A {
-        &self.app
+        self.core.app()
     }
 
     /// Mutable access to the app state for tests that need to poke state
     /// directly rather than through a scripted [`UiEvent`].
     pub fn app_mut(&mut self) -> &mut A {
-        &mut self.app
+        self.core.app_mut()
     }
 
     /// Access the backend for test assertions.
     pub fn backend(&self) -> &WinBackend {
-        &self.backend
+        self.core.backend()
     }
 
     /// Mutable access to the backend — needed for `&mut self` trait
     /// methods like [`Backend::last_error`] that a test wants to poll
     /// directly rather than through a scripted event (issue #805).
     pub fn backend_mut(&mut self) -> &mut WinBackend {
-        &mut self.backend
+        self.core.backend_mut()
     }
 
     /// Access the underlying offscreen surface.
@@ -565,40 +567,32 @@ impl<A: AppLogic> WinDriver<A> {
 
     /// All text painted during the last [`Self::render`], as recorded at
     /// the [`super::text::DWrite::draw_text`]/`draw_text_styled` choke
-    /// point (quadraui#721).
+    /// point (quadraui#721) — shared body: [`DriverCore::painted_texts`]
+    /// (quadraui#814).
     pub fn painted_texts(&self) -> Vec<&str> {
-        self.backend
-            .text_runs()
-            .iter()
-            .map(|r| r.text.as_str())
-            .collect()
+        self.core.painted_texts()
     }
 
     /// True if any painted text contains `needle` — the Win-GUI analogue
     /// of [`crate::gtk::testing::GtkDriver::screen_contains`] /
-    /// [`crate::macos::testing::MacDriver::screen_contains`].
+    /// [`crate::macos::testing::MacDriver::screen_contains`] — shared
+    /// body: [`DriverCore::screen_contains`] (quadraui#814).
     pub fn screen_contains(&self, needle: &str) -> bool {
-        self.backend
-            .text_runs()
-            .iter()
-            .any(|r| r.text.contains(needle))
+        self.core.screen_contains(needle)
     }
 
-    /// Bounds (DIPs) of the first painted text run containing `needle`.
+    /// Bounds (DIPs) of the first painted text run containing `needle` —
+    /// shared body: [`DriverCore::find_bounds`] (quadraui#814).
     pub fn find_bounds(&self, needle: &str) -> Option<Rect> {
-        self.backend
-            .text_runs()
-            .iter()
-            .find(|r| r.text.contains(needle))
-            .map(|r| r.bounds)
+        self.core.find_bounds(needle)
     }
 
     /// Center coordinates (DIPs) of the first painted text run containing
     /// `needle` — pass straight to [`Self::click`]. `None` if nothing
-    /// painted this frame matched.
+    /// painted this frame matched. Shared body: [`DriverCore::find`]
+    /// (quadraui#814).
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
-        self.find_bounds(needle)
-            .map(|b| (b.x + b.width / 2.0, b.y + b.height / 2.0))
+        self.core.find(needle)
     }
 }
 
@@ -655,7 +649,7 @@ impl<A: AppLogic> PixelClickConformance for WinDriver<A> {
     }
 
     fn conformance_line_height(&self) -> f32 {
-        crate::Backend::line_height(&self.backend)
+        crate::Backend::line_height(self.core.backend())
     }
 }
 
@@ -681,7 +675,7 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `WinBackend` this driver wraps — never a
         // re-statement (quadraui#492).
-        crate::Backend::backend_caps(&self.backend)
+        crate::Backend::backend_caps(self.core.backend())
     }
 
     fn press_named(&mut self, key: NamedKey) {
@@ -710,7 +704,7 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
 
     fn inventory(&self) -> FrameInventory {
         FrameInventory {
-            text_runs: self.backend.text_runs().to_vec(),
+            text_runs: self.core.backend().text_runs().to_vec(),
             // `WinBackend` doesn't yet call `Backend::register_zone`
             // anywhere (no rasteriser wires it up) — no zone, rather than
             // a wrong one, same posture `gtk`/`macos` take for any
