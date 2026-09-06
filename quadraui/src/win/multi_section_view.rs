@@ -6,7 +6,7 @@
 //! and dispatches each section's body to the appropriate quadraui body
 //! rasteriser (`super::tree::draw_tree`, `super::list::draw_list`,
 //! `draw_form_body`, `crate::primitives::chart::paint` (#810),
-//! `super::terminal::draw_terminal_cells`,
+//! `crate::primitives::terminal::paint` (#810),
 //! `super::message_list::draw_message_list`) using the body bounds
 //! returned by the primitive's [`crate::MultiSectionView::layout`].
 //! `SectionBody::Terminal` / `SectionBody::MessageList` used to paint
@@ -1042,8 +1042,8 @@ mod tests {
 
     /// #727: `SectionBody::Terminal` used to paint background only. A
     /// real MSV paint of a `Terminal` section must now reach
-    /// `super::terminal::draw_terminal_cells` and record a text run for
-    /// each non-blank cell — same contract as
+    /// `crate::primitives::terminal::paint` (#810) and record a text run
+    /// for each non-blank cell — same contract as
     /// `message_list_section_paints_row_text` above.
     #[test]
     fn terminal_section_paints_cell_glyphs() {

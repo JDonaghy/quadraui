@@ -305,7 +305,6 @@ pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
 #[cfg(target_os = "windows")]
-#[cfg(target_os = "windows")]
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
 pub use text_input::{draw_text_input, win_text_input_layout};
