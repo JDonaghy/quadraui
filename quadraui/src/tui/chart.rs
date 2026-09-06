@@ -64,12 +64,17 @@ pub fn draw_chart(
     layout
 }
 
+/// Resolve the colour series `idx` paints with: its own `color` if it
+/// set one, else the theme's shared series palette, cycling by index
+/// (#815 — this used to be a `SERIES_COLORS` literal private to this
+/// module, duplicating the identical table in `primitives::chart`).
 fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
+    let palette = theme.chart_series();
     chart
         .series
         .get(idx)
         .and_then(|s| s.color)
-        .unwrap_or(theme.chart_series[idx % theme.chart_series.len()])
+        .unwrap_or(palette[idx % palette.len()])
 }
 
 fn paint_sparkline(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
@@ -629,35 +634,68 @@ mod tests {
         }
     }
 
-    /// #815: a series with no explicit `color` must resolve against the
-    /// *live* `theme.chart_series`, not a hardcoded built-in palette — a
-    /// themed app's chart series colours must actually change.
+    /// #815: a series with no explicit `color` resolves through
+    /// [`Theme::chart_series`] — this rasteriser no longer carries its
+    /// own `SERIES_COLORS` literal, so it can't drift from the copy the
+    /// pixel backends share in `primitives::chart`.
     #[test]
     fn sparkline_with_no_explicit_color_paints_with_the_themes_chart_series() {
         let area = Rect::new(0, 0, 3, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![5.0, 5.0, 5.0]);
-        let default_series0 = Theme::default().chart_series[0];
-        let custom_series0 = Color::rgb(1, 2, 3);
-        assert_ne!(
-            custom_series0, default_series0,
-            "test fixture invalid: custom colour must differ from the default"
-        );
-        let theme = Theme {
-            chart_series: {
-                let mut series = Theme::default().chart_series;
-                series[0] = custom_series0;
-                series
-            },
-            ..Theme::default()
-        };
+        let theme = Theme::default();
 
         let _layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
 
         assert_eq!(
             fg_at(&buf, 0, 0),
-            ratatui_color(custom_series0),
-            "sparkline should paint with the theme's custom chart_series[0]:\n{:?}",
+            ratatui_color(theme.chart_series()[0]),
+            "sparkline should paint with the theme's chart_series[0]:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    /// #815: with more series than the palette has entries, series `i`
+    /// takes `chart_series()[i % 6]` — the legend swatches make the
+    /// cycle directly observable, and the 7th series must reuse entry 0
+    /// rather than panic or paint an off-palette colour.
+    #[test]
+    fn legend_swatches_cycle_through_the_themes_chart_series_palette() {
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        let mut chart = bar_chart_of(
+            ChartKind::Bar,
+            (0..7)
+                .map(|i| Series {
+                    label: i.to_string(),
+                    data: vec![1.0],
+                    color: None,
+                    fill: false,
+                })
+                .collect(),
+            Some((0.0, 3.0)),
+        );
+        chart.show_legend = true;
+        let theme = Theme::default();
+        let palette = theme.chart_series();
+
+        let layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
+
+        let lb = layout.legend_bounds.expect("bar charts get a legend row");
+        let row_y = lb.y.round() as u16;
+        let swatch_colors: Vec<ratatui::style::Color> = (lb.x.round() as u16
+            ..(lb.x + lb.width).round() as u16)
+            .filter(|&x| cell_char(&buf, x, row_y) == '■')
+            .map(|x| fg_at(&buf, x, row_y))
+            .collect();
+
+        let expected: Vec<ratatui::style::Color> = (0..7)
+            .map(|i| ratatui_color(palette[i % palette.len()]))
+            .collect();
+        assert_eq!(
+            swatch_colors,
+            expected,
+            "legend swatches should cycle through chart_series, wrapping the 7th back to entry 0:\n{:?}",
             grid(&buf, area)
         );
     }

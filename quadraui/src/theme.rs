@@ -303,40 +303,24 @@ pub struct Theme {
     pub card_hint_bg: Color,
     /// Text colour of the `BoardCard::hint` callout.
     pub card_hint_fg: Color,
-
-    // ── Chart series lift (#815) ────────────────────────────────────────
-    /// Default per-series palette for `Chart` — used when a `Series`
-    /// doesn't set its own `color`, cycling by index
-    /// (`chart_series[idx % chart_series.len()]`). All backends already
-    /// shared one literal 6-colour array (TUI's own copy in
-    /// `tui::chart`, and the unified `primitives::chart` copy consumed
-    /// by `gtk`/`macos`/`win` since #810) — no cross-backend
-    /// disagreement was found on either the values or the length.
-    ///
-    /// #815 originally proposed this alongside `toast_success_bg` and
-    /// `toast_warning_bg` in one PR — three new `pub` fields at once,
-    /// which review correctly flagged against this struct's own "one
-    /// field per PR" policy above (coord-tui's palette builders in
-    /// `src/settings.rs` use exhaustive `Theme { .. }` literals with no
-    /// `..Default::default()` spread, so *any* new field is an
-    /// `E0063: missing field` there). Only `chart_series` lands here;
-    /// the toast-severity fields are deferred to a follow-up issue so
-    /// each field's downstream migration can be tracked and landed on
-    /// its own, per policy.
-    #[serde(default = "default_chart_series")]
-    pub chart_series: [Color; 6],
 }
 
-fn default_chart_series() -> [Color; 6] {
-    [
-        Color::rgb(80, 160, 255),
-        Color::rgb(255, 120, 80),
-        Color::rgb(80, 220, 120),
-        Color::rgb(220, 180, 60),
-        Color::rgb(180, 100, 240),
-        Color::rgb(240, 100, 180),
-    ]
-}
+/// The six-colour categorical palette returned by
+/// [`Theme::chart_series`] — the single in-crate definition of the
+/// table that `tui::chart` and `primitives::chart` each used to spell
+/// out for themselves (#815).
+///
+/// `pub(crate)` so the backend rasteriser tests can name it as a
+/// constant (a `const` can't call the accessor method); everything
+/// that *paints* goes through [`Theme::chart_series`].
+pub(crate) const CHART_SERIES: [Color; 6] = [
+    Color::rgb(80, 160, 255),
+    Color::rgb(255, 120, 80),
+    Color::rgb(80, 220, 120),
+    Color::rgb(220, 180, 60),
+    Color::rgb(180, 100, 240),
+    Color::rgb(240, 100, 180),
+];
 
 /// Strip `//` and `/* */` comments from JSON-with-comments (JSONC), as
 /// used by VS Code theme files. Preserves newlines inside block comments
@@ -720,6 +704,48 @@ impl Theme {
     pub fn find_match_bg(&self) -> Color {
         Color::rgb(100, 80, 20)
     }
+
+    // ── Chart series lift (#815) ────────────────────────────────────────
+
+    /// Default per-series palette for `Chart`, used when a `Series`
+    /// doesn't set its own `color`. Callers cycle by index:
+    /// `theme.chart_series()[idx % 6]`.
+    ///
+    /// Before #815 this six-colour table was spelled out twice — once
+    /// in `tui::chart` and once in `primitives::chart` (the copy
+    /// `gtk`/`macos`/`win` share since #810) — with identical values
+    /// and length in both. It now has exactly one definition, and every
+    /// rasteriser resolves through this accessor, so the backends can't
+    /// drift apart again.
+    ///
+    /// **This is a method, not a `Theme` field, on purpose** — same
+    /// reasoning as [`Self::find_active_bg`] above, and #815 learned it
+    /// the same expensive way #620 did. It first shipped as
+    /// `pub chart_series: [Color; 6]` and reddened the `downstream
+    /// consumers (compile truth)` gate: `coord-tui` builds three of its
+    /// four palettes (`light_palette`, `high_contrast_palette`,
+    /// `solarized_palette` in `src/settings.rs`) with exhaustive
+    /// `quadraui::Theme { … }` literals and no `..Default::default()`
+    /// spread, so the new field landed there as `error[E0063]: missing
+    /// field chart_series`. Only `dark_palette` has the spread.
+    ///
+    /// Unlike [`Self::tab_active_border_top`] this can't derive from an
+    /// existing field: a chart legend needs six *mutually distinct*
+    /// categorical colours, and `Theme` has no six semantically-unrelated
+    /// hues to borrow (the closest candidates — `accent_fg` and
+    /// `diagnostic_hint` — are the same `rgb(140, 200, 240)` by default,
+    /// and nothing in the struct is purple or pink). A method returning
+    /// the shared literal is still purely additive: it adds no field for
+    /// `coord-tui`'s exhaustive literals to miss, so it costs nothing
+    /// downstream, and per-`Series` `color: Some(..)` remains the
+    /// supported way for an app to choose its own chart colours today.
+    /// Promote to a real field only if a consumer asks to theme the
+    /// *default* palette independently — that's rule 8's "if it must
+    /// break" path, one field per PR with a `## Downstream impact`
+    /// section and the consumer migration PRs landed first.
+    pub fn chart_series(&self) -> [Color; 6] {
+        CHART_SERIES
+    }
 }
 
 impl Default for Theme {
@@ -811,9 +837,6 @@ impl Default for Theme {
             badge_blocked: Color::rgb(220, 80, 80),
             card_hint_bg: Color::rgb(35, 40, 55),
             card_hint_fg: Color::rgb(180, 190, 210),
-
-            // Chart series lift (#815)
-            chart_series: default_chart_series(),
         }
     }
 }
@@ -1084,32 +1107,46 @@ mod tests {
             badge_blocked: d.badge_blocked,
             card_hint_bg: d.card_hint_bg,
             card_hint_fg: d.card_hint_fg,
-            chart_series: d.chart_series,
         };
         assert_eq!(exhaustive, d);
     }
 
-    /// #815: `chart_series` is a new field — a `Theme` serialised (e.g.
-    /// saved to an app's config file) *before* this change must still
-    /// deserialise after it, falling back to the shipped default for the
-    /// field it doesn't have. Without the `#[serde(default = "...")]`
-    /// attribute this would fail with a "missing field" deserialize
-    /// error instead.
+    /// #815: the chart series palette must be reachable off any `Theme`,
+    /// including one an app built field-by-field rather than by
+    /// spreading `..Default::default()`. It is an accessor, not a
+    /// field, precisely so that call shape keeps compiling —
+    /// `exhaustive_literal_is_still_valid` above is the compile-time
+    /// half of that guarantee (it is the literal `coord-tui`'s
+    /// `light_palette` / `high_contrast_palette` / `solarized_palette`
+    /// use, and a new `pub` field would fail it with `E0063`); this is
+    /// the runtime half.
     #[test]
-    fn deserializing_theme_json_without_the_new_field_falls_back_to_defaults() {
-        // A full `Theme::default()` round-tripped through JSON, then the
-        // new key stripped out — simulating a theme file saved by a
-        // pre-#815 build.
-        let mut val = serde_json::to_value(Theme::default()).expect("serialize default theme");
-        let obj = val
-            .as_object_mut()
-            .expect("Theme serializes to a JSON object");
-        obj.remove("chart_series");
+    fn chart_series_is_reachable_off_a_non_default_theme() {
+        let themed = Theme {
+            background: Color::rgb(250, 250, 250),
+            foreground: Color::rgb(10, 10, 10),
+            ..Theme::default()
+        };
 
-        let theme: Theme = serde_json::from_value(val)
-            .expect("Theme must deserialize even when the new #815 field is absent from the JSON");
+        assert_eq!(themed.chart_series(), Theme::default().chart_series());
+        assert_eq!(themed.chart_series().len(), 6);
+    }
 
-        let default = Theme::default();
-        assert_eq!(theme.chart_series, default.chart_series);
+    /// #815: the six series colours must be mutually distinct — they are
+    /// a *categorical* palette, so two equal entries would render two
+    /// different chart series indistinguishable in the legend.
+    #[test]
+    fn chart_series_colours_are_mutually_distinct() {
+        let series = Theme::default().chart_series();
+        for (i, a) in series.iter().enumerate() {
+            for (j, b) in series.iter().enumerate() {
+                if i != j {
+                    assert_ne!(
+                        a, b,
+                        "chart_series[{i}] and chart_series[{j}] are identical"
+                    );
+                }
+            }
+        }
     }
 }
