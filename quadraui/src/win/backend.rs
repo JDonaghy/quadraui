@@ -62,7 +62,7 @@
 //!   `UiEvent::WindowClose`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -287,6 +287,22 @@ pub struct WinBackend {
     /// `ShellAdapter`'s built-in activity-bar keyboard navigation (#409)
     /// is unreachable on this backend.
     focused_activity_bar: Option<WidgetId>,
+    /// Queue-adapter between event producers and the trait's poll-style
+    /// [`Backend::poll_events`]/[`Backend::wait_events`] (#806) — the
+    /// `docs/BACKEND.md` "option A event queue" shape, same
+    /// `Rc<RefCell<VecDeque<UiEvent>>>` field GTK/macOS ship
+    /// (`GtkBackend::events`/`MacBackend::events`). `Rc<RefCell<>>` (not a
+    /// plain field) so a producer holding only an [`Self::events_handle`]
+    /// clone — a future `wndproc` wiring, or a test via [`Self::push_event`]
+    /// — can push without a `&mut WinBackend` borrow. Not `target_os`-gated:
+    /// the queue itself is plain `VecDeque<UiEvent>` with no WinAPI
+    /// dependency, same rationale as `current_pointer_shape` above — only a
+    /// real Win32 producer wiring this queue to `wndproc`'s live message
+    /// pump would need a real host, and nothing does that yet (see
+    /// `win::run`'s "Dispatch model" module doc: the live message loop
+    /// still dispatches directly to `AppLogic::handle`, mirroring GTK's own
+    /// "ships the API but producer wiring is separate work" posture).
+    events: Rc<RefCell<VecDeque<UiEvent>>>,
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
@@ -437,6 +453,7 @@ impl WinBackend {
             accelerators: HashMap::new(),
             parsed_accelerators: Vec::new(),
             focused_activity_bar: None,
+            events: Rc::new(RefCell::new(VecDeque::new())),
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -793,6 +810,51 @@ impl WinBackend {
             }
         }
         None
+    }
+
+    /// Rewrite matching `KeyPressed` events to `UiEvent::Accelerator` in
+    /// place — the `docs/BACKEND.md` "Event poll / wait" step 3, run by
+    /// [`Backend::poll_events`]/[`Backend::wait_events`] (#806) over
+    /// whatever this call drained from [`Self::events`]. Mirrors
+    /// `GtkBackend::apply_accelerators` exactly (down to the early-return
+    /// when nothing is registered); `win::run::dispatch_event`'s
+    /// synchronous per-message path calls [`Self::match_keypress`]
+    /// directly instead of going through this, since it already has one
+    /// event at a time rather than a batch.
+    pub(crate) fn apply_accelerators(&self, events: &mut [UiEvent]) {
+        if self.parsed_accelerators.is_empty() {
+            return;
+        }
+        for ev in events.iter_mut() {
+            if let UiEvent::KeyPressed { key, modifiers, .. } = ev {
+                if let Some(id) = self.match_keypress(key, *modifiers) {
+                    *ev = UiEvent::Accelerator(id, *modifiers);
+                }
+            }
+        }
+    }
+
+    // ── Event queue adapter (#806) ──────────────────────────────────────
+
+    /// Shared handle to the backend's event queue, for a future producer
+    /// (a live `wndproc` wiring, or any other event source) to clone and
+    /// push into without needing a `&mut WinBackend` borrow. Mirrors
+    /// `GtkBackend::events_handle`/`MacBackend::events_handle`. Not
+    /// `target_os`-gated: `Rc<RefCell<VecDeque<UiEvent>>>` has no WinAPI
+    /// dependency.
+    pub fn events_handle(&self) -> Rc<RefCell<VecDeque<UiEvent>>> {
+        self.events.clone()
+    }
+
+    /// Push one event onto the adapter queue, drained by
+    /// [`Backend::poll_events`]/[`Backend::wait_events`] below. The
+    /// producer side of the `docs/BACKEND.md` "option A event queue"
+    /// pattern — mirrors `MacBackend::push_event`. Exercised directly by
+    /// this module's own tests (`events_queue_*`, #806) standing in for
+    /// the not-yet-wired live `wndproc` producer (see [`Self::events`]'s
+    /// field doc).
+    pub fn push_event(&self, ev: UiEvent) {
+        self.events.borrow_mut().push_back(ev);
     }
 
     /// Re-apply `current_pointer_shape` via `SetCursor`/`LoadCursorW`
@@ -1186,12 +1248,43 @@ impl Backend for WinBackend {
 
     // ─── Events + keybindings ─────────────────────────────────────────
 
+    /// Drain [`Self::events`] (the `docs/BACKEND.md` queue adapter,
+    /// #806) and run the result through [`Self::apply_accelerators`].
+    /// Never blocks — a plain `VecDeque` drain, no WinAPI call, so this
+    /// runs identically on every host and needs no `target_os` gate,
+    /// same posture as `GtkBackend::poll_events`/`MacBackend::poll_events`.
+    ///
+    /// Nothing feeds this queue from the live `wndproc` message pump
+    /// yet — see [`Self::events`]'s field doc and `win::run`'s "Dispatch
+    /// model" module doc for why: the live loop dispatches each
+    /// translated event straight to `AppLogic::handle` instead, the same
+    /// "ships the API, producer wiring is separate work" state
+    /// `docs/BACKEND.md` documents for `GtkBackend`. A driver or any
+    /// other caller that pushes via [`Self::push_event`]/
+    /// [`Self::events_handle`] gets a real, non-panicking drain instead
+    /// of the `todo!()` this issue replaces.
     fn poll_events(&mut self) -> Vec<UiEvent> {
-        todo!("PeekMessage loop → translate WM_* → UiEvent")
+        let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
+        self.apply_accelerators(&mut out);
+        out
     }
 
+    /// Same drain as [`Self::poll_events`] — `_timeout` is accepted (per
+    /// the trait signature) but never waited out. A Win32 message loop
+    /// has no native "block up to N ms for the next message" primitive
+    /// that fits this poll-style trait (`MsgWaitForMultipleObjects` waits
+    /// on kernel handles, not "either a message or a timeout elapses
+    /// with the queue left untouched"), and nothing in this backend
+    /// drives a real `HWND`'s message queue from here — the live
+    /// `wndproc` pump stays the direct-dispatch path (see
+    /// [`Self::poll_events`]'s doc). Returning a plain drain rather than
+    /// spinning `GetMessageW` (a real, uninterruptible block with no
+    /// timeout at all) mirrors `MacBackend::wait_events`'s identical
+    /// "today this is a plain drain" posture — both callback-driven
+    /// backends where the native run loop, not this trait method, is
+    /// what actually waits.
     fn wait_events(&mut self, _timeout: Duration) -> Vec<UiEvent> {
-        todo!("MsgWaitForMultipleObjects + GetMessage → UiEvent")
+        self.poll_events()
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -1294,8 +1387,9 @@ impl Backend for WinBackend {
     /// `WM_CHAR`, and focus — all dispatched directly from `win::run`'s
     /// `WndProc` (see that module's docs for why this mirrors the GTK
     /// backend's signal-callback dispatch rather than
-    /// `poll_events`/`wait_events`, which stay `todo!("PeekMessage loop →
-    /// translate WM_* → UiEvent")` since they're not on that hot path).
+    /// `poll_events`/`wait_events`; #806 gave both a real queue-adapter
+    /// drain instead of a `todo!()`, but nothing feeds that queue from
+    /// the live `WndProc` yet — still not on that hot path).
     ///
     /// quadraui#723: `mouse`/`scroll`/`drag` are now declared `true` — the
     /// translators are wired (`WM_LBUTTONDOWN`/`WM_LBUTTONUP`/
@@ -3159,6 +3253,107 @@ mod tests {
         let mut b = WinBackend::new();
         let ev = b.fold_double_click(UiEvent::WindowFocused(true));
         assert_eq!(ev, UiEvent::WindowFocused(true));
+    }
+
+    // ── Event queue adapter (#806) ───────────────────────────────────────
+    //
+    // Before this issue, `WinBackend::poll_events`/`wait_events` were
+    // unconditional `todo!()` — calling either panicked immediately,
+    // which is exactly what every test in this section would have hit
+    // (`RED`) before the queue-adapter implementation below landed.
+    // Pure `VecDeque`/`HashMap` logic, no Direct2D — runs on every host,
+    // mirrors `macos::backend::tests::poll_events_drains_queue_fifo` and
+    // the `docs/BACKEND.md` "option A event queue" contract `GtkBackend`
+    // ships.
+
+    #[test]
+    fn poll_events_drains_queue_fifo() {
+        let b = WinBackend::new();
+        b.push_event(win_mouse_down(1.0, 2.0));
+        b.push_event(UiEvent::WindowFocused(true));
+        // `poll_events` takes `&mut self`, so re-acquire after the
+        // (shared-ref) `push_event` calls above — mirrors
+        // `MacBackend`'s identical test structure.
+        let mut b = b;
+        let evs = b.poll_events();
+        assert_eq!(evs.len(), 2);
+        assert!(matches!(evs[0], UiEvent::MouseDown { .. }));
+        assert!(matches!(evs[1], UiEvent::WindowFocused(true)));
+        // Second drain yields nothing — draining doesn't panic on an
+        // empty queue either.
+        assert!(b.poll_events().is_empty());
+    }
+
+    #[test]
+    fn poll_events_does_not_panic_on_empty_queue() {
+        // The core regression this issue fixes: before #806 this call
+        // was an unconditional `todo!()`, so *any* polling caller
+        // (headless driver, quadraui#785's shared `DriverCore`) panicked
+        // even with nothing queued.
+        let mut b = WinBackend::new();
+        assert!(b.poll_events().is_empty());
+    }
+
+    #[test]
+    fn wait_events_does_not_panic_and_drains_like_poll_events() {
+        // Same regression as `poll_events_does_not_panic_on_empty_queue`,
+        // for `wait_events` — also an unconditional `todo!()` before
+        // #806. No true blocking primitive is wired up (see
+        // `Backend::wait_events`'s doc on `WinBackend`), so a queued
+        // event is still returned immediately rather than lost.
+        let mut b = WinBackend::new();
+        assert!(b.wait_events(Duration::from_millis(50)).is_empty());
+
+        b.push_event(win_mouse_down(1.0, 2.0));
+        let evs = b.wait_events(Duration::from_millis(50));
+        assert_eq!(evs.len(), 1);
+        assert!(matches!(evs[0], UiEvent::MouseDown { .. }));
+    }
+
+    #[test]
+    fn poll_events_and_wait_events_agree_for_the_same_sequence() {
+        // Acceptance bar (#806): the queue-adapter behaviour must match
+        // `GtkBackend`'s for the same event sequence. `GtkBackend::
+        // poll_events`/`wait_events` are both a plain drain + the same
+        // `apply_accelerators` pass over the batch (see
+        // `gtk::backend::GtkBackend::{poll_events,wait_events}`); this
+        // pins `WinBackend` doing byte-for-byte the same thing for a
+        // fixed input rather than the two diverging (e.g. one applying
+        // accelerators and the other not).
+        let seq = |mut b: WinBackend| -> WinBackend {
+            b.register_accelerator(&acc("save", "<C-s>"));
+            b.push_event(UiEvent::KeyPressed {
+                key: Key::Char('s'),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                repeat: false,
+            });
+            b.push_event(win_mouse_down(1.0, 2.0));
+            b
+        };
+
+        let mut by_poll = seq(WinBackend::new());
+        let via_poll = by_poll.poll_events();
+
+        let mut by_wait = seq(WinBackend::new());
+        let via_wait = by_wait.wait_events(Duration::from_millis(0));
+
+        assert_eq!(via_poll, via_wait);
+        assert_eq!(
+            via_poll[0],
+            UiEvent::Accelerator(
+                AcceleratorId::new("save"),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                }
+            ),
+            "registered KeyPressed must rewrite to Accelerator, matching \
+             GtkBackend::apply_accelerators",
+        );
+        assert!(matches!(via_poll[1], UiEvent::MouseDown { .. }));
     }
 
     #[test]

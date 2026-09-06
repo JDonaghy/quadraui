@@ -58,6 +58,23 @@ listeners) uses the same queue pattern. macOS may need its
 methods pushing to a `Mutex<VecDeque<UiEvent>>`; web pushes from
 JS event listeners and drives paint from `requestAnimationFrame`.
 
+**Landed so far:** `MacBackend` (`src/macos/backend.rs`) and
+`WinBackend` (`src/win/backend.rs`, quadraui#806) both ship this same
+`Rc<RefCell<VecDeque<UiEvent>>>` shape — a single-threaded `Rc<RefCell<>>`
+was enough for both in practice, not the `Mutex` sketched above. Both
+implement a real (non-`todo!()`) `poll_events`/`wait_events` drain with
+`apply_accelerators` run over the batch, matching `GtkBackend`'s shape.
+Producer wiring is partial for both: `macos::run` already feeds the
+queue for one real source — native menu-bar activations
+(`Backend::install_menu_bar`) `push_event` there, drained once per
+paint via `poll_events` (`macos::run`'s `paint` closure) — but mouse/
+keyboard/window events still go straight from each responder method to
+`AppLogic::handle`, bypassing the queue. `win::run`'s `WndProc` doesn't
+feed the queue at all yet; every translated event there still dispatches
+directly. Finishing either wiring is separate follow-up work; the queue
+exists today so a poll-style caller (a headless driver, a future shared
+`DriverCore`) has something real to drain instead of a panic.
+
 ## What the backend owns
 
 A backend struct holds the per-app state the trait requires:
