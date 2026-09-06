@@ -30,11 +30,13 @@
 //! It renders into an in-memory `CGBitmapContext`, so it does **not**
 //! exercise real `NSEvent` delivery — raw `NSEvent`/keycode translation
 //! (`macos::events`), IME, or actual `NSResponder` wiring are out of
-//! scope and need a live-window smoke test instead. `MacBackend` also
-//! doesn't yet support text selection or scrollbar drag (`backend_caps`
-//! declares neither), so [`Self::drag`]-based scenarios that depend on
-//! either are `Anchor`/`ConformanceDriver::backend_caps`-gated the same
-//! way they are on every other backend.
+//! scope and need a live-window smoke test instead. `MacBackend` adopted
+//! text selection in #803 (`backend_caps` now declares it), so
+//! [`Self::drag`]-based selection scenarios run here same as on GTK/Win —
+//! scrollbar drag is still unsupported (`backend_caps` doesn't declare
+//! it), so [`Self::drag`]-based scenarios that depend on that are still
+//! `Anchor`/`ConformanceDriver::backend_caps`-gated the same way they are
+//! on every other backend without it.
 //!
 //! ```no_run
 //! # use quadraui::macos::testing::MacDriver;
@@ -210,12 +212,15 @@ impl<A: AppLogic> MacDriver<A> {
         DriverInput::press_named(self, key)
     }
 
-    /// Press a character key with Ctrl held. `MacBackend` has no
-    /// Ctrl-C/Ctrl-A text-selection interception of its own (Cmd, not
-    /// Ctrl, is the Mac convention — see [`dispatch_event`]'s Cmd-V
-    /// handling), so unlike `TuiDriver`/`GtkDriver`'s `ctrl_char` this is
-    /// a plain `KeyPressed` with `ctrl: true` — still useful for
-    /// `Ctrl`-bound accelerators, which `dispatch_event` does resolve.
+    /// Press a character key with Ctrl held. Cmd, not Ctrl, is the Mac
+    /// accelerator convention — see [`dispatch_event`]'s Cmd-V handling
+    /// and [`MacBackend::register_accelerator`]'s `macos_universal_binding_modifiers`
+    /// Ctrl→Cmd rewrite for *registered* accelerators — but #803 adopted
+    /// the shared cross-platform text-selection pipeline as-is, so a
+    /// literal Ctrl-C/Ctrl-A now drives copy/select-all the same way it
+    /// does on `GtkDriver`/`TuiDriver`/`WinDriver`. This is a plain
+    /// `KeyPressed` with `ctrl: true`, same shape as every other driver's
+    /// `ctrl_char` — `dispatch_event` resolves it.
     pub fn ctrl_char(&mut self, c: char) -> Reaction {
         DriverInput::ctrl_char(self, c)
     }
@@ -768,6 +773,128 @@ mod tests {
             )),
             "unfocused bar must not intercept: {:?}",
             driver.app().seen
+        );
+    }
+
+    // ── Text selection (#803) ────────────────────────────────────────
+    //
+    // Acceptance coverage for #803's brief: drag a selection through the
+    // full live-runner pipeline (`MacDriver::drag` → `mouse_down`/
+    // `mouse_move`/`mouse_up` → `super::run::dispatch_event`), assert the
+    // rendered highlight actually painted, then Ctrl-C and assert the
+    // real clipboard content. RED before #803's `backend.rs`/`run.rs`
+    // wiring: `register_text_region` was the trait's no-op default, so no
+    // `TextRegion` was ever tracked, `dispatch_click`/`dispatch_mouse_drag`
+    // were never fed one, no `TextSelectionChanged` was ever produced, and
+    // `active_text_selection()` stayed `None` for the drag's entire
+    // duration — the highlight-diff assertion below would have failed
+    // (`before == after`) and the clipboard assertion would have read back
+    // whatever was on the pasteboard before the test ran, not "hello
+    // world". Unverified by execution in this session — this backend only
+    // compiles under `target_os = "macos"` (see `lib.rs`'s `mod macos`
+    // gate), so it can only run for real on `macos.yml`'s `macos-latest`
+    // job; on this Linux host only `cargo check --features macos --target
+    // aarch64-apple-darwin --all-targets` type-checked it.
+
+    const SELECTABLE_LINE: &str = "hello world";
+    const SELECTABLE_BG: Color = Color::rgb(10, 10, 10);
+
+    /// One line of selectable text filling the whole surface, registered
+    /// as a single `TextRegion` each frame — the minimal fixture
+    /// `panel_app`'s conformance scenario (`panel.drag_select_copy`)
+    /// already exercises end-to-end; this is the pixel-level twin that
+    /// asserts the highlight itself, not just the app's confirmation text.
+    struct SelectableApp;
+
+    impl AppLogic for SelectableApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let bounds = Rect::new(0.0, 0.0, W as f32, H as f32);
+            backend.draw_status_bar(
+                bounds,
+                &StatusBar {
+                    id: WidgetId::new("bg"),
+                    left_segments: vec![StatusBarSegment {
+                        // Leading/trailing space so the pixel probe below
+                        // (near the region's top-left corner) lands on
+                        // glyph-free background fill, not a glyph stroke
+                        // — same trick `status_bar.rs`'s own tests use.
+                        // The extra padding is paint-only: the
+                        // `TextRegion` below still registers the raw
+                        // `SELECTABLE_LINE`, which is what gets extracted
+                        // and copied.
+                        text: format!(" {SELECTABLE_LINE} "),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: SELECTABLE_BG,
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                None,
+                None,
+            );
+            backend.register_text_region(crate::TextRegion {
+                id: WidgetId::new("bg"),
+                bounds,
+                lines: vec![SELECTABLE_LINE.to_string()],
+            });
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn drag_select_paints_highlight_then_ctrl_c_copies_to_clipboard() {
+        let mut driver = MacDriver::new(SelectableApp, W, H);
+
+        // Sample a glyph-free padding pixel before any selection exists —
+        // same probe-point trick `dominant_pixel`'s callers use elsewhere
+        // in this file, but a single pixel suffices here since the
+        // highlight is a flat translucent fill with no anti-aliased edge
+        // this close to the region's top-left corner.
+        let before = driver.pixel(2, 2);
+
+        // Drag across the whole line — left edge to (near) the right edge
+        // of the surface, comfortably past "hello world"'s real width at
+        // any reasonable Menlo advance.
+        driver.drag(0.0, 4.0, (W - 4) as f32, 4.0);
+
+        assert!(
+            driver.backend().active_text_selection().is_some(),
+            "dragging across the registered TextRegion must produce an active selection"
+        );
+
+        let after = driver.pixel(2, 2);
+        assert_ne!(
+            before, after,
+            "apply_selection_highlight must have painted over the background by the time \
+             the drag finishes: before={before:?} after={after:?}"
+        );
+        assert!(
+            after.2 > before.2 + 20,
+            "the highlight is translucent blue, so the blue channel must rise noticeably \
+             at a selected pixel: before={before:?} after={after:?}"
+        );
+
+        driver.ctrl_char('c');
+
+        assert!(
+            driver.backend().active_text_selection().is_none(),
+            "Ctrl-C must clear the selection after copying it"
+        );
+        assert_eq!(
+            driver
+                .backend()
+                .services()
+                .clipboard()
+                .read_text()
+                .as_deref(),
+            Some(SELECTABLE_LINE),
+            "Ctrl-C must copy the dragged text to the real OS clipboard"
         );
     }
 }

@@ -44,7 +44,7 @@ use objc2_app_kit::{NSCursor, NSEvent, NSWindow};
 use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult, PointerShape, ResizeEdge};
 use crate::desktop::WindowDragArm;
-use crate::dispatch::{DoubleClickDetector, DragState};
+use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -211,6 +211,14 @@ pub struct MacBackend {
     /// [`Backend::set_nerd_fonts`]; defaults to `false` — see that
     /// method's doc for why every backend now agrees on this default.
     nerd_fonts_enabled: bool,
+    /// Region registry + active-selection state shared by every
+    /// `text_selection: true` backend (#741, adopted here in #803) — see
+    /// [`crate::text_selection::TextSelectionState`]'s doc. Mirrors
+    /// `GtkBackend`/`WinBackend`'s identically-named field; only the
+    /// paint call ([`Self::apply_selection_highlight`], via
+    /// [`super::text_selection::draw_selection_highlight`]) and text
+    /// extraction ([`Self::extract_selection_text`]) are backend-owned.
+    text_selection: crate::text_selection::TextSelectionState,
 }
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -369,6 +377,7 @@ impl MacBackend {
             window: None,
             pending_window_press: WindowDragArm::new(),
             nerd_fonts_enabled: false,
+            text_selection: crate::text_selection::TextSelectionState::default(),
         }
     }
 
@@ -557,6 +566,154 @@ impl MacBackend {
         let [ev] = events;
         ev
     }
+
+    // ── Text selection (#803) ────────────────────────────────────────
+    //
+    // The region registry + active-selection state machine lives in
+    // [`crate::text_selection::TextSelectionState`] — the same shared
+    // implementation `GtkBackend`/`TuiBackend`/`WinBackend` embed. Every
+    // method below except [`Self::apply_selection_highlight`]/
+    // [`Self::extract_selection_text`] (CoreGraphics painting via
+    // [`super::text_selection::draw_selection_highlight`] /
+    // `TextRegion::lines` extraction via the shared pixel-based
+    // `crate::text_selection::extract_lines_pixel` — same helper GTK/Win
+    // use, since macOS is pixel-based too) is a thin delegation. Mirrors
+    // `WinBackend`'s identically-named, identically-shaped block in
+    // `win/backend.rs` (#741).
+
+    /// Every `TextRegion` registered so far this frame.
+    pub(crate) fn text_regions(&self) -> &[TextRegion] {
+        &self.text_selection.text_regions
+    }
+
+    /// Return the current active text selection, if any.
+    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.text_selection.active_text_selection()
+    }
+
+    /// Update (or start) the active text selection. Called by
+    /// `macos::run::dispatch_event` when a [`UiEvent::TextSelectionChanged`]
+    /// event arrives, and by [`Self::select_all_text_region`].
+    pub(crate) fn set_active_text_selection(
+        &mut self,
+        region: WidgetId,
+        anchor: crate::event::Point,
+        focus: crate::event::Point,
+    ) {
+        self.text_selection
+            .set_active_text_selection(region, anchor, focus);
+    }
+
+    /// Clear the active text selection highlight only (does NOT end an
+    /// in-progress `TextSelection` drag). Called before dispatching a new
+    /// mouse-down so the old highlight disappears without interrupting the
+    /// drag that is about to start. Mirrors `GtkBackend::clear_selection_display`.
+    pub(crate) fn clear_selection_display(&mut self) {
+        self.text_selection.clear_selection_display();
+    }
+
+    /// Clear the active text selection and end any in-progress
+    /// `TextSelection` drag. Called after Ctrl-C copies the selection or
+    /// on a plain click outside any text region.
+    pub(crate) fn clear_text_selection(&mut self) {
+        let mut drag = self.drag_state.borrow_mut();
+        self.text_selection.clear_text_selection(&mut drag);
+    }
+
+    /// End any in-progress `TextSelection` drag without clearing the
+    /// displayed selection. Backs the `Backend` trait's
+    /// `cancel_text_selection_drag` override — apps hosting an embedded
+    /// terminal call it to abort a speculative drag before forwarding a
+    /// click to a PTY. Mirrors `GtkBackend::cancel_text_selection_drag_impl`/
+    /// `WinBackend`'s identically-named method.
+    fn cancel_text_selection_drag_impl(&mut self) {
+        let mut drag = self.drag_state.borrow_mut();
+        self.text_selection.cancel_text_selection_drag(&mut drag);
+    }
+
+    /// Record that `id` is the most-recently focused/clicked `TextRegion`.
+    /// Called by `macos::run`'s mouse-down handling after a `TextSelection`
+    /// drag begins, so [`Self::select_all_text_region`] can resolve the
+    /// correct target even before the first drag-move fires a
+    /// `TextSelectionChanged` event.
+    pub(crate) fn track_focused_text_region(&mut self, id: WidgetId) {
+        self.text_selection.track_focused_text_region(id);
+    }
+
+    /// Set the active selection to cover the entire visible content of the
+    /// most-recently focused `TextRegion` (the Ctrl-A target). See
+    /// [`crate::text_selection::TextSelectionState::select_all_text_region`]
+    /// for the resolution order and the viewport-only limitation.
+    pub(crate) fn select_all_text_region(&mut self) -> bool {
+        self.text_selection.select_all_text_region()
+    }
+
+    /// Extract the selected text from the active selection's `TextRegion`
+    /// using its stored `lines` (macOS is pixel-based, like GTK/Win-GUI —
+    /// see `TextRegion::lines`'s doc). Empty when there is no active
+    /// selection, the region isn't registered this frame, or it has no
+    /// `lines` content.
+    pub(crate) fn extract_selection_text(&self) -> String {
+        let Some(sel) = self.text_selection.active_text_selection() else {
+            return String::new();
+        };
+        let Some(region) = self.text_selection.find_region(&sel.region) else {
+            return String::new();
+        };
+        crate::text_selection::extract_lines_pixel(
+            region,
+            sel.anchor,
+            sel.focus,
+            self.current_line_height as f32,
+            self.current_char_width as f32,
+        )
+    }
+
+    /// Paint the active text-selection highlight on top of the frame's
+    /// already-painted content. Must be called from inside
+    /// [`Self::enter_frame_scope`], after `app.render` has run (so the
+    /// highlight sits on top of the rendered content) — see
+    /// `macos::run::render_frame`. Mirrors `GtkBackend::apply_selection_highlight`'s
+    /// Cairo twin and `WinBackend::apply_selection_highlight`'s Direct2D
+    /// twin. No-op when there is no active selection, the region isn't
+    /// registered this frame, or metrics aren't known yet.
+    pub(crate) fn apply_selection_highlight(&self) {
+        let Some(sel) = self.text_selection.active_text_selection() else {
+            return;
+        };
+        let Some(region) = self.text_selection.find_region(&sel.region) else {
+            return;
+        };
+        let char_w = self.current_char_width as f32;
+        let line_h = self.current_line_height as f32;
+        let Some(ranges) = crate::text_selection::pixel_selection_ranges(
+            region.bounds,
+            sel.anchor,
+            sel.focus,
+            line_h,
+            char_w,
+        ) else {
+            return;
+        };
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::apply_selection_highlight called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope (see the
+        // debug_assert above — a null ctx here means a caller ran this
+        // outside `enter_frame_scope`, same contract every other draw_*
+        // method on this backend relies on).
+        unsafe {
+            super::text_selection::draw_selection_highlight(
+                ctx,
+                region.bounds,
+                &ranges,
+                char_w as f64,
+                line_h as f64,
+            );
+        }
+    }
 }
 
 impl Default for MacBackend {
@@ -587,6 +744,10 @@ impl Backend for MacBackend {
         // #455: clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
+        // Clear per-frame text regions so stale registrations from the
+        // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
+        // `WinBackend`'s identical `begin_frame` clear (#741, #803).
+        self.text_selection.begin_frame();
     }
 
     fn end_frame(&mut self) {
@@ -691,6 +852,21 @@ impl Backend for MacBackend {
         self.zones.push(ZoneRec { id, bounds });
     }
 
+    // ─── Text selection (#803) ──────────────────────────────────────────
+
+    /// Overrides the trait's no-op default — see [`Self::text_regions`]
+    /// and `crate::text_selection::TextSelectionState`. Mirrors
+    /// `GtkBackend`/`WinBackend`'s identical override.
+    fn register_text_region(&mut self, region: TextRegion) {
+        self.text_selection.register_text_region(region);
+    }
+
+    /// Overrides the trait's no-op default — see
+    /// [`Self::cancel_text_selection_drag_impl`].
+    fn cancel_text_selection_drag(&mut self) {
+        self.cancel_text_selection_drag_impl();
+    }
+
     /// quadraui#492: honest per-method, not aspirational.
     ///
     /// - `mouse` / `scroll` / `drag`: `macos::run`'s view subclass forwards
@@ -720,10 +896,18 @@ impl Backend for MacBackend {
     ///   geometry math against).
     /// - `pointer_cursor`: `set_cursor` is overridden below, via
     ///   `crate::desktop`'s `PointerShape`/`ResizeEdge` scaffold.
-    /// - Everything else — `text_selection`, `ime` — is **not** declared:
-    ///   `register_text_region` is still the trait's no-op default on
-    ///   this backend today (see #493 — no macOS runner in the fleet yet
-    ///   to exercise it).
+    /// - `text_selection` (#803): `register_text_region`/
+    ///   `cancel_text_selection_drag` are both overridden above, backed by
+    ///   the shared `crate::text_selection::TextSelectionState`
+    ///   `GtkBackend`/`TuiBackend`/`WinBackend` also embed —
+    ///   `macos::run::dispatch_event` wires drag-select and Ctrl-C through
+    ///   the same pipeline, so `panel.drag_select_copy` (which
+    ///   `requires: ["text_selection"]`) now runs against `MacDriver`
+    ///   instead of skipping. Before #803 this backend declared neither
+    ///   `register_text_region` nor a drag pipeline for it, so the cap
+    ///   stayed unset (see #493's original note, now stale).
+    /// - Everything else — `ime` — is **not** declared: no macOS IME
+    ///   integration exists yet.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
             mouse: true,
@@ -734,6 +918,7 @@ impl Backend for MacBackend {
             notifications: true,
             window_chrome: true,
             pointer_cursor: true,
+            text_selection: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -3062,6 +3247,248 @@ mod tests {
         assert!(
             b.zones().iter().any(|z| z.id == image.id),
             "a click/hover zone must still be registered even though nothing painted"
+        );
+    }
+
+    // ── Text selection (#803) ────────────────────────────────────────
+    //
+    // State-machine delegation coverage, mirroring `gtk::backend::tests`'
+    // (now-lifted, see `crate::text_selection`'s own test module for the
+    // shared behaviour) `gtk_*_text_selection*` suite. `apply_selection_highlight`'s
+    // actual CoreGraphics paint is covered separately below, against a real
+    // `BitmapSurface`.
+
+    fn text_region(id: &str, x: f32, y: f32, w: f32, h: f32, lines: Vec<&str>) -> TextRegion {
+        TextRegion {
+            id: WidgetId::new(id),
+            bounds: crate::event::Rect::new(x, y, w, h),
+            lines: lines.into_iter().map(String::from).collect(),
+        }
+    }
+
+    /// Mirrors `line_height_picks_up_set_current_line_height_via_font_install`'s
+    /// inline `make_font` call above, lifted into a helper since the
+    /// text-selection extraction tests below need it more than once.
+    fn font() -> CTFont {
+        super::super::text::make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    #[test]
+    fn mac_backend_declares_text_selection_capability() {
+        let b = MacBackend::new();
+        assert!(
+            b.backend_caps().text_selection,
+            "#803: MacBackend must declare text_selection now that register_text_region/\
+             cancel_text_selection_drag are both overridden"
+        );
+    }
+
+    #[test]
+    fn mac_register_text_region_and_begin_frame_clears_it() {
+        let mut b = MacBackend::new();
+        b.register_text_region(text_region("r", 0.0, 0.0, 100.0, 50.0, vec![]));
+        assert_eq!(b.text_regions().len(), 1);
+        b.begin_frame(Viewport::new(200.0, 100.0, 1.0));
+        assert!(
+            b.text_regions().is_empty(),
+            "begin_frame must clear the previous frame's registered regions"
+        );
+    }
+
+    #[test]
+    fn mac_clear_selection_display_clears_active_selection_only() {
+        let mut b = MacBackend::new();
+        assert!(b.active_text_selection().is_none());
+        b.set_active_text_selection(
+            WidgetId::new("r"),
+            Point::new(0.0, 0.0),
+            Point::new(50.0, 20.0),
+        );
+        assert!(b.active_text_selection().is_some());
+        b.clear_selection_display();
+        assert!(b.active_text_selection().is_none());
+    }
+
+    #[test]
+    fn mac_clear_text_selection_also_ends_a_text_selection_drag() {
+        let mut b = MacBackend::new();
+        b.drag_state
+            .borrow_mut()
+            .begin(crate::dispatch::DragTarget::TextSelection {
+                region: WidgetId::new("r"),
+                anchor: Point::new(0.0, 0.0),
+            });
+        b.set_active_text_selection(
+            WidgetId::new("r"),
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 10.0),
+        );
+        b.clear_text_selection();
+        assert!(b.active_text_selection().is_none());
+        assert!(
+            !b.drag_state.borrow().is_active(),
+            "clear_text_selection must also end an in-progress TextSelection drag"
+        );
+    }
+
+    #[test]
+    fn mac_cancel_text_selection_drag_preserves_the_displayed_selection() {
+        let mut b = MacBackend::new();
+        b.drag_state
+            .borrow_mut()
+            .begin(crate::dispatch::DragTarget::TextSelection {
+                region: WidgetId::new("r"),
+                anchor: Point::new(0.0, 0.0),
+            });
+        b.set_active_text_selection(
+            WidgetId::new("r"),
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 10.0),
+        );
+        b.cancel_text_selection_drag_impl();
+        assert!(!b.drag_state.borrow().is_active());
+        assert!(
+            b.active_text_selection().is_some(),
+            "cancel_text_selection_drag must not clear the displayed selection"
+        );
+    }
+
+    #[test]
+    fn mac_select_all_text_region_targets_the_sole_region() {
+        let mut b = MacBackend::new();
+        b.register_text_region(text_region("body", 0.0, 0.0, 10.0, 5.0, vec![]));
+        assert!(b.select_all_text_region());
+        let sel = b
+            .active_text_selection()
+            .expect("selection should be active after select_all_text_region");
+        assert_eq!(sel.anchor, Point::new(0.0, 0.0));
+        assert_eq!(sel.focus, Point::new(10.0, 5.0));
+    }
+
+    #[test]
+    fn mac_select_all_text_region_returns_false_with_no_regions() {
+        let mut b = MacBackend::new();
+        assert!(!b.select_all_text_region());
+        assert!(b.active_text_selection().is_none());
+    }
+
+    #[test]
+    fn mac_extract_selection_text_single_row() {
+        let mut b = MacBackend::new();
+        b.set_current_font(font());
+        let line = "The quick brown fox jumps over the lazy dog.";
+        // Size the region from the backend's *real* CoreText char_width
+        // (Menlo 14pt) rather than a hardcoded pixel width — GTK's/Win's
+        // equivalent tests get to assume a synthetic fixed char_width;
+        // macOS's is whatever CoreText actually measures. A couple of
+        // cells of slack past the line's length keeps `end_col`'s clamp
+        // (see `text_selection_line_range`'s doc) from truncating it.
+        let width = (line.chars().count() as f32 + 2.0) * b.char_width();
+        b.register_text_region(text_region("body", 0.0, 0.0, width, 100.0, vec![line]));
+        b.set_active_text_selection(
+            WidgetId::new("body"),
+            Point::new(0.0, 0.0),
+            Point::new(width, 1.0),
+        );
+        let text = b.extract_selection_text();
+        assert_eq!(text, line);
+    }
+
+    #[test]
+    fn mac_extract_selection_text_empty_when_no_selection() {
+        let b = MacBackend::new();
+        assert_eq!(b.extract_selection_text(), "");
+    }
+
+    #[test]
+    fn mac_extract_selection_text_empty_when_no_lines() {
+        let mut b = MacBackend::new();
+        b.set_current_font(font());
+        b.register_text_region(text_region("body", 0.0, 0.0, 200.0, 32.0, vec![]));
+        b.set_active_text_selection(
+            WidgetId::new("body"),
+            Point::new(0.0, 0.0),
+            Point::new(200.0, 32.0),
+        );
+        assert_eq!(
+            b.extract_selection_text(),
+            "",
+            "a region with no `lines` content has nothing to extract"
+        );
+    }
+
+    /// `apply_selection_highlight`'s real CoreGraphics paint, checked
+    /// against a headless `BitmapSurface` — the pixel-level half of
+    /// #803's acceptance criteria. Paints a solid-colour `TextRegion`
+    /// background via `draw_status_bar`, drags a selection across it
+    /// (`set_active_text_selection` directly — the dispatch-level drag
+    /// round trip is covered in `macos::run`'s own tests), calls
+    /// `apply_selection_highlight`, and asserts the pixel at the
+    /// selection's location shifted toward the translucent-blue highlight
+    /// instead of staying the plain background colour.
+    #[test]
+    fn mac_apply_selection_highlight_paints_over_the_background() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::types::Color;
+
+        const W: u32 = 200;
+        const H: u32 = 32;
+        const BG: Color = Color::rgb(10, 10, 10);
+
+        let surface = BitmapSurface::new(W, H);
+        let mut b = MacBackend::new();
+        b.set_current_font(font());
+        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        b.enter_frame_scope(surface.context_ptr(), |bk| {
+            bk.draw_status_bar(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &StatusBar {
+                    id: WidgetId::new("bg"),
+                    left_segments: vec![StatusBarSegment {
+                        text: "hello world".into(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: BG,
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                None,
+                None,
+            );
+        });
+        b.register_text_region(text_region(
+            "bg",
+            0.0,
+            0.0,
+            W as f32,
+            H as f32,
+            vec!["hello world"],
+        ));
+        b.set_active_text_selection(
+            WidgetId::new("bg"),
+            Point::new(0.0, 0.0),
+            Point::new(W as f32, 1.0),
+        );
+
+        // Sample before painting the highlight, then paint it and sample
+        // again — same probe pixel, so the diff isolates exactly what
+        // `apply_selection_highlight` changed.
+        let before = surface.pixel(2, 2);
+        b.enter_frame_scope(surface.context_ptr(), |bk| {
+            bk.apply_selection_highlight();
+        });
+        let after = surface.pixel(2, 2);
+
+        assert_ne!(
+            before, after,
+            "apply_selection_highlight must paint over the background at a selected pixel"
+        );
+        assert!(
+            after.2 > before.2 + 20,
+            "the highlight is translucent blue, so the blue channel must rise \
+             noticeably at a selected pixel: before={before:?} after={after:?}"
         );
     }
 }

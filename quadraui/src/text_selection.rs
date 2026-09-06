@@ -1,4 +1,4 @@
-//! Shared text-selection state machine (#741).
+//! Shared text-selection state machine (#741, macOS adopted in #803).
 //!
 //! `GtkTextSelection`/`TuiTextSelection` were byte-identical structs, and
 //! the region registry plus `active_text_selection`/`set_active_text_selection`/
@@ -21,19 +21,28 @@
 //! - **TUI** reads the live `ratatui::buffer::Buffer` cell-by-cell —
 //!   only available inside `terminal.draw`'s closure, so `TuiBackend`
 //!   keeps its own `apply_selection_highlight`/`extract_selection_text`.
-//! - **GTK, Win-GUI, and (eventually) macOS** are pixel-based and store
+//! - **GTK, Win-GUI, and macOS** (#803) are pixel-based and store
 //!   selectable source text on the `TextRegion` itself (`TextRegion::lines`
 //!   — see that field's doc). [`pixel_selection_ranges`] and
 //!   [`extract_lines_pixel`] are the row/column math and text-slicing
 //!   those three share; each backend still owns the actual paint call
-//!   (Cairo `fill()` for GTK, Direct2D `FillRectangle` for Win-GUI)
-//!   since that's real toolkit code with no portable shape.
+//!   (Cairo `fill()` for GTK, Direct2D `FillRectangle` for Win-GUI,
+//!   CoreGraphics `CGContextFillRect` for macOS) since that's real
+//!   toolkit code with no portable shape.
 
-#[cfg(any(feature = "gtk", feature = "win"))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 use crate::dispatch::text_selection_line_range;
 use crate::dispatch::{DragState, DragTarget, TextRegion};
 use crate::event::Point;
-#[cfg(any(feature = "gtk", feature = "win"))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 use crate::event::Rect;
 use crate::types::WidgetId;
 
@@ -55,7 +64,7 @@ pub(crate) struct TextSelection {
 /// `Backend::register_text_region`/`cancel_text_selection_drag` override
 /// needs. Embedded as a field (not a blanket trait impl) by every backend
 /// that declares `BackendCaps::text_selection = true` — `GtkBackend`,
-/// `TuiBackend`, and (#741) `WinBackend`.
+/// `TuiBackend`, (#741) `WinBackend`, and (#803) `MacBackend`.
 #[derive(Default)]
 pub(crate) struct TextSelectionState {
     /// Selectable text regions registered during the current frame via
@@ -215,10 +224,14 @@ impl TextSelectionState {
 /// `None` when `line_height`/`char_width` aren't positive (metrics not
 /// known yet, e.g. before the first real frame).
 ///
-/// `#[cfg(any(feature = "gtk", feature = "win"))]`: the only two adopters
-/// today — a `tui`-only build (the `--features tui` clippy leg) would
-/// otherwise flag this as dead code.
-#[cfg(any(feature = "gtk", feature = "win"))]
+/// `#[cfg(any(feature = "gtk", feature = "win", all(feature = "macos", target_os
+/// = "macos")))]`: the only three adopters today — a `tui`-only build (the
+/// `--features tui` clippy leg) would otherwise flag this as dead code.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) fn pixel_selection_ranges(
     region_bounds: Rect,
     anchor: Point,
@@ -252,8 +265,13 @@ pub(crate) fn pixel_selection_ranges(
 /// Extract the selected text from `region.lines` (pixel-based backends
 /// only — see the module doc) using pixel `anchor`/`focus`. Returns an
 /// empty string when there is no `lines` content or the metrics aren't
-/// known yet. Shared by GTK's and Win-GUI's `extract_selection_text`.
-#[cfg(any(feature = "gtk", feature = "win"))]
+/// known yet. Shared by GTK's, Win-GUI's, and macOS's
+/// `extract_selection_text`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) fn extract_lines_pixel(
     region: &TextRegion,
     anchor: Point,
@@ -428,7 +446,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "gtk", feature = "win"))]
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn extract_lines_pixel_single_row() {
         let region = region(
@@ -450,7 +472,11 @@ mod tests {
         assert_eq!(text, "The quick brown fox");
     }
 
-    #[cfg(any(feature = "gtk", feature = "win"))]
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn extract_lines_pixel_multi_row() {
         let region = region(
@@ -471,7 +497,11 @@ mod tests {
         assert_eq!(text, "first line here\nsecond line here");
     }
 
-    #[cfg(any(feature = "gtk", feature = "win"))]
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn extract_lines_pixel_empty_when_no_lines_content() {
         let region = region("body", 0.0, 0.0, 200.0, 32.0, vec![]);
@@ -485,7 +515,11 @@ mod tests {
         assert_eq!(text, "");
     }
 
-    #[cfg(any(feature = "gtk", feature = "win"))]
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn extract_lines_pixel_empty_when_metrics_unknown() {
         let region = region("body", 0.0, 0.0, 200.0, 32.0, vec!["hello"]);
