@@ -476,6 +476,20 @@ impl TuiBackend {
         self.text_selection.select_all_text_region()
     }
 
+    /// `WidgetId` of the `ActivityBar` that declared
+    /// `is_keyboard_focused = true` during the most recent render pass,
+    /// if any. Added for quadraui#813's `PreprocessBackend` impl to
+    /// mirror `Gtk`/`Mac`/`WinBackend::focused_activity_bar_id` — TUI
+    /// itself never calls this: [`Self::apply_dispatch`] already redirects
+    /// a focused bar's `KeyPressed` to `UiEvent::ActivityBar` one layer
+    /// upstream of `dispatch_event`, so by the time an event reaches
+    /// `preprocess_event` a `KeyPressed` on TUI never has a bar focused —
+    /// the shared step's `KeyPressed` guard just never matches here. See
+    /// `PreprocessBackend for TuiBackend`'s doc.
+    pub(crate) fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar.as_ref()
+    }
+
     /// Read the selected cells back from `buf`, trim trailing whitespace
     /// per line, and return the joined text (lines separated by `\n`).
     ///
@@ -693,6 +707,71 @@ impl TuiBackend {
 impl Default for TuiBackend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::runtime::PreprocessBackend for TuiBackend {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.active_text_selection()
+    }
+
+    fn set_active_text_selection(&mut self, region: WidgetId, anchor: Point, focus: Point) {
+        self.set_active_text_selection(region, anchor, focus)
+    }
+
+    fn clear_text_selection(&mut self) {
+        self.clear_text_selection()
+    }
+
+    fn clear_selection_display(&mut self) {
+        self.clear_selection_display()
+    }
+
+    fn select_all_text_region(&mut self) -> bool {
+        self.select_all_text_region()
+    }
+
+    fn selection_text_for_copy(&self) -> String {
+        self.cached_selection_text()
+    }
+
+    fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar_id()
+    }
+
+    fn match_keypress(
+        &self,
+        key: &crate::Key,
+        modifiers: crate::Modifiers,
+    ) -> Option<AcceleratorId> {
+        self.match_keypress(key, modifiers)
+    }
+
+    /// No-op passthrough — see this impl block's own doc and
+    /// `PreprocessBackend::fold_double_click`'s doc for why. TUI folds
+    /// double-clicks earlier, once per batch of translated crossterm
+    /// events in [`Self::translate_injected`]/`Backend::wait_events`
+    /// (via [`Self::double_click`]'s own `DoubleClickDetector`), before
+    /// any individual event reaches `dispatch_event`/`preprocess_event`.
+    /// Folding again here — even against a *fresh* detector instance —
+    /// would silently coin-flip on whichever fold ran first; reusing
+    /// `self.double_click` instead would double-consume the same
+    /// detector state the batch pass already advanced. Either way is
+    /// wrong, so this stays a deliberate identity function.
+    fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
+        ev
+    }
+
+    /// TUI-only override (quadraui#496's original audit; preserved by
+    /// #813): tolerates a stray Shift and accepts `'C'` (CapsLock) as
+    /// well as `'c'`. Real terminals attach modifier noise to Ctrl-C
+    /// that the crate-wide strict default would silently drop, turning
+    /// a real copy request into a no-op.
+    fn is_copy_keypress(&self, key: &crate::Key, modifiers: &crate::Modifiers) -> bool {
+        matches!(key, crate::Key::Char('c') | crate::Key::Char('C'))
+            && modifiers.ctrl
+            && !modifiers.alt
+            && !modifiers.cmd
     }
 }
 

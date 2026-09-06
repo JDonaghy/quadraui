@@ -725,6 +725,53 @@ impl Default for MacBackend {
     }
 }
 
+impl crate::runtime::PreprocessBackend for MacBackend {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.active_text_selection()
+    }
+
+    fn set_active_text_selection(&mut self, region: WidgetId, anchor: Point, focus: Point) {
+        self.set_active_text_selection(region, anchor, focus)
+    }
+
+    fn clear_text_selection(&mut self) {
+        self.clear_text_selection()
+    }
+
+    fn clear_selection_display(&mut self) {
+        self.clear_selection_display()
+    }
+
+    fn select_all_text_region(&mut self) -> bool {
+        self.select_all_text_region()
+    }
+
+    fn selection_text_for_copy(&self) -> String {
+        self.extract_selection_text()
+    }
+
+    fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar_id()
+    }
+
+    fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
+        self.match_keypress(key, modifiers)
+    }
+
+    fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
+        self.fold_double_click(ev)
+    }
+
+    /// macOS pastes on Cmd-V/Cmd-Shift-V — the platform convention. The
+    /// copy shortcut stays literal Ctrl-C everywhere (this trait's
+    /// `is_copy_keypress` default, which `MacBackend` does not override)
+    /// — a deliberate cross-platform choice, not an oversight; see
+    /// `macos::run::dispatch_event`'s doc.
+    fn paste_modifier(&self) -> crate::desktop::PasteModifier {
+        crate::desktop::PasteModifier::Cmd
+    }
+}
+
 impl crate::backend::sealed::Sealed for MacBackend {}
 
 impl Backend for MacBackend {

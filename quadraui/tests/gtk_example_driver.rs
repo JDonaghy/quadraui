@@ -393,6 +393,14 @@ fn toolbar_initial_screen_paints_action_buttons() {
 #[test]
 fn toolbar_clicking_filter_toggles_it_without_keyboard_focus() {
     let mut driver = GtkDriver::new(ToolbarApp::new(), W, H);
+    // Two deliberate single clicks at the same spot, back to back, with
+    // no real GDK press-count or wall-clock gap between them — without
+    // this, `crate::dispatch::DoubleClickDetector` (quadraui#813) could
+    // fold the second press into a `DoubleClick` instead of a second
+    // `MouseDown`, and `ToolbarApp` doesn't bind `DoubleClick` at all.
+    // Mirrors `tui_example_driver.rs`'s identical
+    // `set_double_click_folding(false)` calls for the same reason.
+    driver.set_double_click_folding(false);
     assert!(
         !driver.screen_contains("Filter on"),
         "filter should start off: {:?}",

@@ -47,7 +47,7 @@ use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
 // `crate::runtime` (quadraui#496).
 pub(crate) use crate::runtime::EventOutcome;
 use crate::tui::backend::TuiBackend;
-use crate::{Key, UiEvent};
+use crate::UiEvent;
 
 /// Default poll timeout — 16 ms ≈ 60 fps. The runner sleeps inside
 /// `wait_events(timeout)` waiting for input; on timeout the loop
@@ -296,101 +296,31 @@ where
 // handles one event — is defined once in `crate::runtime` and shared by
 // every backend runner (quadraui#496); imported at the top of this file.
 
-/// Dispatch one [`UiEvent`] through the app, applying the runner's
-/// built-in pre-processing first.
+/// Dispatch one [`UiEvent`] through the app, applying the shared runner
+/// pre-processing pipeline first.
 ///
-/// Pre-processing handled here (before — or instead of — the app's
-/// `handle`):
-/// - [`UiEvent::TextSelectionChanged`]: update the backend's active
-///   selection, then still forward the event to the app and force a
-///   redraw.
-/// - [`UiEvent::MouseDown`]: clear the displayed selection highlight,
-///   then forward.
-/// - Ctrl-C with an active selection: copy the selection to the
-///   clipboard and emit [`UiEvent::TextCopied`] to the app (so it can
-///   show copy-confirmation UI) **instead of** forwarding the Ctrl-C —
-///   forwarding it could trigger quit/copy-all handlers, and
-///   `ClipboardPaste` would wrongly insert text.
+/// The pre-processing itself — Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
+/// middle-click PRIMARY-selection paste (a no-op on TUI — see
+/// [`crate::backend::Clipboard::read_primary_selection`]'s default),
+/// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
+/// — lives in [`crate::runtime::preprocess_event`] (quadraui#813),
+/// shared with GTK/macOS/Windows; see that function's doc for the exact
+/// priority order and `TuiBackend`'s `PreprocessBackend` impl for TUI's
+/// two documented differences (a lenient Ctrl-C guard, and a no-op
+/// `fold_double_click` — TUI already folds double-clicks upstream, in
+/// [`TuiBackend::apply_dispatch`]/`translate_injected`).
+///
+/// One behavior change from before #813: a `Reaction::Continue` app now
+/// stays `EventOutcome::Continue` after Ctrl-C, matching GTK/macOS/
+/// Windows — this runner used to force `EventOutcome::Redraw`
+/// unconditionally, which #496's original audit found was an
+/// unintentional divergence (see `crate::runtime`'s module doc).
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
     backend: &mut TuiBackend,
     app: &mut A,
 ) -> EventOutcome {
-    let mut force_redraw = false;
-    match &event {
-        // Update active selection while dragging.
-        UiEvent::TextSelectionChanged {
-            region,
-            anchor,
-            focus,
-        } => {
-            backend.set_active_text_selection(region.clone(), *anchor, *focus);
-            force_redraw = true;
-        }
-        // Clear the displayed selection highlight on any mouse-down. Use
-        // `clear_selection_display` rather than `clear_text_selection`
-        // so we don't cancel the `TextSelection` drag that `wait_events`
-        // may have just started for this very event.
-        UiEvent::MouseDown { .. } => {
-            backend.clear_selection_display();
-        }
-        // Ctrl-C (any case, any extra modifiers) with an active
-        // selection → copy to clipboard and notify the app via
-        // TextCopied. Accepts 'C' (CapsLock) and tolerates stray
-        // modifier bits some terminals attach to Ctrl-C.
-        UiEvent::KeyPressed {
-            key: Key::Char('c') | Key::Char('C'),
-            modifiers,
-            ..
-        } if modifiers.ctrl
-            && !modifiers.alt
-            && !modifiers.cmd
-            && backend.active_text_selection().is_some() =>
-        {
-            let text = backend.cached_selection_text();
-            backend.services().clipboard().write_text(&text);
-            backend.clear_text_selection();
-            return match app.handle(UiEvent::TextCopied(text), backend) {
-                Reaction::Exit => EventOutcome::Exit,
-                _ => EventOutcome::Redraw,
-            };
-        }
-        // Ctrl-A (any case; not Ctrl-Shift-A) → select the entire
-        // content of the most-recently focused `TextRegion`, if one is
-        // registered. Accepts 'A' (CapsLock). Falls through to the app
-        // when no region resolves so app-level Ctrl-A handlers (e.g. a
-        // tree-node inline-edit select-all) are unaffected.
-        //
-        // Priority note: when a `TextRegion` is registered the runner
-        // takes Ctrl-A; apps that register a `TextRegion` and also want
-        // their own Ctrl-A handler should clear the region first.
-        UiEvent::KeyPressed {
-            key: Key::Char('a') | Key::Char('A'),
-            modifiers,
-            ..
-        } if modifiers.ctrl
-            && !modifiers.shift
-            && !modifiers.alt
-            && !modifiers.cmd
-            && backend.select_all_text_region() =>
-        {
-            return EventOutcome::Redraw;
-        }
-        _ => {}
-    }
-
-    // ── Normal app dispatch ─────────────────────────────────────
-    match app.handle(event, backend) {
-        Reaction::Continue => {
-            if force_redraw {
-                EventOutcome::Redraw
-            } else {
-                EventOutcome::Continue
-            }
-        }
-        Reaction::Redraw => EventOutcome::Redraw,
-        Reaction::Exit => EventOutcome::Exit,
-    }
+    crate::runtime::preprocess_event(event, backend, app)
 }
 
 /// Push kitty keyboard protocol flags (best-effort). Returns whether
@@ -433,10 +363,14 @@ mod tests {
     // ── Minimal test app ──────────────────────────────────────────────────────
 
     /// Records `TextCopied` payloads and `TextSelectionChanged` anchor/focus
-    /// so tests can assert on them without a real clipboard.
+    /// so tests can assert on them without a real clipboard. Also records
+    /// every event `handle` receives (quadraui#813) so tests can assert an
+    /// intercepted event never reaches the app at all — the empty-clipboard
+    /// half of the Ctrl-V/middle-click paste contract.
     struct SelectionRecorder {
         last_copied: Option<String>,
         selection_changes: Vec<(Point, Point)>,
+        events: Vec<UiEvent>,
     }
 
     impl SelectionRecorder {
@@ -444,6 +378,7 @@ mod tests {
             Self {
                 last_copied: None,
                 selection_changes: Vec::new(),
+                events: Vec::new(),
             }
         }
 
@@ -472,6 +407,7 @@ mod tests {
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event.clone());
             match event {
                 UiEvent::TextCopied(text) => {
                     self.last_copied = Some(text);
@@ -601,6 +537,46 @@ mod tests {
         assert!(
             driver.backend().active_text_selection().is_none(),
             "MouseDown must clear the previously displayed selection"
+        );
+    }
+
+    /// quadraui#813: before this, TUI's `dispatch_event` never intercepted
+    /// Ctrl-V at all (real terminals deliver a paste as crossterm's
+    /// bracketed-paste `Event::Paste` → `UiEvent::ClipboardPaste` directly,
+    /// a separate translation-layer path this test doesn't exercise). The
+    /// shared `preprocess_event` pipeline now adds the same Ctrl-V/
+    /// Ctrl-Shift-V keypress interception GTK/macOS/Windows already had, as
+    /// a supplementary path (e.g. for a terminal/multiplexer that doesn't
+    /// negotiate bracketed paste, or a scripted `KeyPressed` like this
+    /// test's).
+    ///
+    /// Unlike `gtk::run::paste_tests`, this can't assert on the swallowed-
+    /// vs-forwarded distinction against a *specific* clipboard payload:
+    /// `TuiBackend` has no `install_test_clipboard` fake (GTK's is backed
+    /// by a swappable `GtkClipboard` service; TUI's `TuiClipboard` always
+    /// goes straight to a real `arboard::Clipboard`), and asserting on the
+    /// host's real clipboard contents would be exactly the environment-
+    /// dependent test `gtk::run::paste_tests`'s own doc comment warns
+    /// against — green on headless CI, red (or silently wrong) on a
+    /// developer desktop with something already copied. What *is* safe to
+    /// pin here, on any host: Ctrl-V must never panic and must never reach
+    /// `app.handle` as a literal `'v'` `KeyPressed` — whichever clipboard
+    /// branch it takes, the raw keypress is always swallowed.
+    #[test]
+    fn ctrl_v_is_never_forwarded_as_a_raw_keypress() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+        driver.ctrl_char('v');
+        assert!(
+            !driver.app().events.iter().any(|e| matches!(
+                e,
+                UiEvent::KeyPressed {
+                    key: Key::Char('v'),
+                    ..
+                }
+            )),
+            "Ctrl-V must never fall through to app.handle as a raw 'v' \
+             keypress, got {:?}",
+            driver.app().events
         );
     }
 

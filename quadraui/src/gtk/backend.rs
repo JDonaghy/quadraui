@@ -48,7 +48,7 @@ use gtk4::prelude::*;
 
 use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout};
 use crate::desktop::WindowDragArm;
-use crate::dispatch::TextRegion;
+use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::Point;
 use crate::native_surface::NativeSurface;
 use crate::testing::ZoneRec;
@@ -62,6 +62,25 @@ use crate::{
 };
 
 use super::services::GtkPlatformServices;
+
+/// Position tolerance, in DIPs, for [`GtkBackend::fold_double_click`]'s
+/// [`DoubleClickDetector`] — GTK's `MouseDown` positions are point-
+/// precision pixels, the same coordinate system macOS/Win-GUI use, so
+/// this mirrors `MAC_DOUBLE_CLICK_RADIUS`/`WIN_DOUBLE_CLICK_RADIUS`
+/// rather than the tighter cell-tuned default
+/// [`crate::dispatch::DoubleClickDetector::new`] otherwise picks.
+///
+/// Before quadraui#813, GTK folded double-clicks from GDK's own
+/// `GestureClick` press-count (`n_press == 2`) in `gtk/run.rs`'s
+/// `connect_pressed` closure — native OS double-click timing, not this
+/// detector. That path also bypassed `dispatch_click` for the second
+/// press entirely, so a double-click landing inside a `TextRegion` never
+/// started/continued the same drag machinery a single click would. #813
+/// moves GTK onto the same shared [`DoubleClickDetector`]-backed
+/// [`Self::fold_double_click`] every other backend already used via
+/// [`crate::runtime::preprocess_event`], closing that gap and giving
+/// every backend one definition of "what counts as a double-click."
+pub(crate) const GTK_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
 /// One piece of text painted this frame, with its on-surface bounds in
 /// backend (pixel) coordinates. Recorded via
@@ -295,6 +314,22 @@ pub struct GtkBackend {
     /// snapshot and the pixel geometry it was painted at — see
     /// [`Self::draw_terminal`] and `TermPaintCache`'s own docs (#417).
     term_paint_cache: HashMap<WidgetId, TermPaintCache>,
+    /// Folds a `MouseDown` into `DoubleClick` when it lands within
+    /// [`GTK_DOUBLE_CLICK_RADIUS`]/400ms of the previous click at the
+    /// same button — the shared mechanism every backend's
+    /// `dispatch_event` now uses via [`Self::fold_double_click`]
+    /// (quadraui#813). Mirrors `MacBackend::double_click`/
+    /// `WinBackend::double_click`.
+    double_click: DoubleClickDetector,
+    /// Whether [`Self::fold_double_click`] is armed. Defaults to `true`
+    /// (real double-click folding, matching the live GTK app and
+    /// `TuiBackend`'s own default). [`super::testing::GtkDriver::set_double_click_folding`]
+    /// (quadraui#813) turns it off so a test that dispatches two
+    /// deliberate single clicks at the same spot in immediate succession
+    /// — no real GDK press-count or wall-clock gap between them — gets
+    /// two `MouseDown`s, not a coin-flip on `DoubleClickDetector`'s
+    /// 400ms window. Mirrors `TuiBackend::double_click_folding` exactly.
+    double_click_folding: bool,
 }
 
 /// Cached state from the most recent successful [`GtkBackend::draw_terminal`]
@@ -400,6 +435,8 @@ impl GtkBackend {
             tab_bar_layouts: HashMap::new(),
             frame_counter: 0,
             term_paint_cache: HashMap::new(),
+            double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
+            double_click_folding: true,
         }
     }
 
@@ -1021,6 +1058,32 @@ impl GtkBackend {
         self.text_selection.select_all_text_region()
     }
 
+    // ── Double-click folding (#813) ───────────────────────────────────────
+
+    /// Fold a `MouseDown` into `DoubleClick` if it lands within
+    /// [`GTK_DOUBLE_CLICK_RADIUS`]/400ms of the previous click at the same
+    /// button. Every other variant passes through unchanged. Called from
+    /// [`crate::runtime::preprocess_event`] (via GTK's `PreprocessBackend`
+    /// impl) — mirrors `MacBackend::fold_double_click`/
+    /// `WinBackend::fold_double_click`.
+    pub(crate) fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
+        if !self.double_click_folding {
+            return ev;
+        }
+        let mut events = [ev];
+        self.double_click.process(&mut events);
+        let [ev] = events;
+        ev
+    }
+
+    /// Toggle whether [`Self::fold_double_click`] folds a `MouseDown` into
+    /// `DoubleClick`. Driver-facing knob for
+    /// [`super::testing::GtkDriver::set_double_click_folding`]
+    /// (quadraui#813) — mirrors `TuiBackend::set_double_click_folding`.
+    pub(crate) fn set_double_click_folding(&mut self, enabled: bool) {
+        self.double_click_folding = enabled;
+    }
+
     // ── Accelerators ────────────────────────────────────────────────────────
 
     /// Apply registered accelerators to a slice of UiEvents. Mirrors
@@ -1077,6 +1140,48 @@ impl GtkBackend {
 impl Default for GtkBackend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::runtime::PreprocessBackend for GtkBackend {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+        self.active_text_selection()
+    }
+
+    fn set_active_text_selection(&mut self, region: WidgetId, anchor: Point, focus: Point) {
+        self.set_active_text_selection(region, anchor, focus)
+    }
+
+    fn clear_text_selection(&mut self) {
+        self.clear_text_selection()
+    }
+
+    fn clear_selection_display(&mut self) {
+        self.clear_selection_display()
+    }
+
+    fn select_all_text_region(&mut self) -> bool {
+        self.select_all_text_region()
+    }
+
+    fn selection_text_for_copy(&self) -> String {
+        self.extract_selection_text()
+    }
+
+    fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
+        self.focused_activity_bar_id()
+    }
+
+    fn match_keypress(
+        &self,
+        key: &crate::Key,
+        modifiers: crate::Modifiers,
+    ) -> Option<AcceleratorId> {
+        self.match_keypress(key, modifiers)
+    }
+
+    fn fold_double_click(&mut self, ev: UiEvent) -> UiEvent {
+        self.fold_double_click(ev)
     }
 }
 
