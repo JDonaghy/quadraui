@@ -60,6 +60,7 @@ use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_u
 use super::text::make_font;
 use crate::backend::Backend;
 use crate::desktop::{is_paste_keypress, PasteModifier};
+use crate::dispatch::DragTarget;
 use crate::event::Viewport;
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
@@ -68,7 +69,7 @@ use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // module — keeps working unchanged after the type moved to
 // `crate::runtime` (quadraui#496).
 pub(crate) use crate::runtime::EventOutcome;
-use crate::{ButtonMask, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -155,6 +156,31 @@ type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 ///   just plain Cmd-V) — see `docs/decisions/DECISIONS.md` D-011 for why this
 ///   matches Ctrl-Shift-V's already-shipped GTK/Linux tolerance instead
 ///   of the stricter `shift: false` this match guard used to require.
+/// - Ctrl-C with an active text selection (#803): copies the selection to
+///   the OS clipboard via [`MacBackend::extract_selection_text`], clears
+///   it, and delivers `UiEvent::TextCopied` instead of forwarding the raw
+///   key press — the C2 event `panel.drag_select_copy` requires. Mirrors
+///   `gtk::run::dispatch_event`/`win::run::dispatch_event`'s identical
+///   arm. Deliberately still literal Ctrl (not remapped to Cmd the way
+///   [`macos_universal_binding_modifiers`] rewrites *registered*
+///   accelerators) — this is the same cross-platform shared-pipeline
+///   convention GTK/TUI/Win-GUI all use, adopted as-is per #803's brief
+///   rather than inventing a macOS-specific Cmd-C path.
+/// - Ctrl-A (#803): selects the entire content of the most-recently
+///   focused `TextRegion` via [`MacBackend::select_all_text_region`], if
+///   one is registered.
+/// - `MouseDown` (#803): routes through [`crate::dispatch::dispatch_click`]
+///   with the backend's registered [`MacBackend::text_regions`] (previously
+///   an empty slice — text regions were never tracked) so a click inside
+///   one begins a `TextSelection` drag, and clears the displayed selection
+///   highlight beforehand (a fresh drag may be starting).
+/// - `MouseMoved` (#803): routes through
+///   [`crate::dispatch::dispatch_mouse_drag`] so an in-progress
+///   `TextSelection` drag emits `TextSelectionChanged`.
+/// - `MouseUp` (#803): routes through [`crate::dispatch::dispatch_mouse_up`]
+///   so an in-progress drag ends cleanly.
+/// - `TextSelectionChanged` (#803): updates the backend's active selection
+///   and forces a redraw.
 ///
 /// Anything not matched above falls through to `app.handle` unchanged.
 pub(crate) fn dispatch_event<A: AppLogic>(
@@ -186,20 +212,32 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     } = &event
     {
         let (button, position, modifiers) = (*button, *position, *modifiers);
+        // #803: clear the displayed selection highlight before a fresh
+        // drag begins — mirrors gtk::run/win::run's identical MouseDown
+        // pre-processing. Runs once per raw MouseDown regardless of
+        // whether `fold_double_click` below turns it into a `DoubleClick`.
+        backend.clear_selection_display();
         let dispatched = {
             let stack_rc = backend.modal_stack_handle();
             let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
-            crate::dispatch::dispatch_click(
+            let evs = crate::dispatch::dispatch_click(
                 &stack,
                 &[], // scroll surfaces not tracked by MacBackend yet
-                &[], // text regions not tracked by MacBackend yet
+                backend.text_regions(),
                 &mut drag,
                 position,
                 button,
                 modifiers,
-            )
+            );
+            // #803: track which region was clicked so Ctrl-A can target
+            // it even before the first drag-move fires a
+            // `TextSelectionChanged` event — mirrors gtk::run/win::run.
+            if let Some(DragTarget::TextSelection { region, .. }) = drag.target() {
+                backend.track_focused_text_region(region.clone());
+            }
+            evs
         };
         let mut outcome = EventOutcome::Continue;
         for ev in dispatched {
@@ -211,6 +249,63 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             }
         }
         return outcome;
+    }
+
+    // #803: route a `MouseMoved` through `dispatch_mouse_drag` so an
+    // in-progress `TextSelection`/scrollbar/split-divider drag (armed by
+    // the `MouseDown` branch above) emits its synthetic event
+    // (`TextSelectionChanged`/`ScrollOffsetChanged`/`SplitDividerDragged`)
+    // alongside the plain `MouseMoved` — mirrors gtk::run's motion
+    // controller / win::run::route_mouse_move. The plain `MouseMoved`
+    // goes straight to `app.handle` (nothing else in this function's
+    // pre-processing chain matches it); the extra event, if any, recurses
+    // into `dispatch_event` so its own pre-processing (`TextSelectionChanged`
+    // below) applies uniformly — safe because `dispatch_mouse_drag` never
+    // emits a second `MouseMoved`, so this can't loop.
+    if let UiEvent::MouseMoved { position, buttons } = &event {
+        let (position, buttons) = (*position, *buttons);
+        let events = {
+            let drag_rc = backend.drag_state_handle();
+            let drag = drag_rc.borrow();
+            crate::dispatch::dispatch_mouse_drag(&drag, position, buttons)
+        };
+        let mut outcome = EventOutcome::Continue;
+        for ev in events {
+            let step = if matches!(ev, UiEvent::MouseMoved { .. }) {
+                app.handle(ev, backend).into()
+            } else {
+                dispatch_event(ev, backend, app, caret_visible, caret_pause)
+            };
+            match step {
+                EventOutcome::Exit => return EventOutcome::Exit,
+                EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+                EventOutcome::Continue => {}
+            }
+        }
+        return outcome;
+    }
+
+    // #803: route a `MouseUp` through `dispatch_mouse_up` so an
+    // in-progress drag ends cleanly — mirrors gtk::run's
+    // `connect_released` / win::run::route_mouse_up. `dispatch_mouse_up`
+    // always returns exactly one `MouseUp` (see its doc), rewritten with
+    // `widget` when the release lands inside an open modal.
+    if let UiEvent::MouseUp {
+        position, button, ..
+    } = &event
+    {
+        let (position, button) = (*position, *button);
+        let ev = {
+            let stack_rc = backend.modal_stack_handle();
+            let drag_rc = backend.drag_state_handle();
+            let stack = stack_rc.borrow();
+            let mut drag = drag_rc.borrow_mut();
+            crate::dispatch::dispatch_mouse_up(&stack, &mut drag, position, button)
+                .into_iter()
+                .next()
+                .expect("dispatch_mouse_up always returns exactly one MouseUp")
+        };
+        return app.handle(ev, backend).into();
     }
 
     // `MouseDown` is the only variant `fold_double_click` acts on, and
@@ -256,6 +351,33 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         event
     };
 
+    // ── Ctrl-C interception (text selection, #803) ────────────────────
+    //
+    // Mirrors gtk::run/win::run's identical Ctrl-C arm: copy the active
+    // selection to the OS clipboard, clear it, and deliver `TextCopied`
+    // instead of the raw key press — the C2 event `panel.drag_select_copy`
+    // requires. See this function's doc comment for why this stays
+    // literal Ctrl rather than the Cmd macOS accelerators normally use.
+    if let UiEvent::KeyPressed {
+        key: Key::Char('c'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if backend.active_text_selection().is_some() {
+            let text = backend.extract_selection_text();
+            backend.services().clipboard().write_text(&text);
+            backend.clear_text_selection();
+            return app.handle(UiEvent::TextCopied(text), backend).into();
+        }
+    }
+
     // Cmd-V / Cmd-Shift-V paste interception — shared predicate, #728
     // (see this function's doc comment and D-011 in `docs/decisions/DECISIONS.md`).
     if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
@@ -268,7 +390,42 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         }
     }
 
-    app.handle(event, backend).into()
+    // ── Ctrl-A interception (select-all for text regions, #803) ──────
+    if let UiEvent::KeyPressed {
+        key: Key::Char('a') | Key::Char('A'),
+        modifiers:
+            Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+        ..
+    } = &event
+    {
+        if backend.select_all_text_region() {
+            return EventOutcome::Redraw;
+        }
+    }
+
+    // ── TextSelectionChanged: update active selection while dragging (#803) ──
+    let mut force_redraw = false;
+    if let UiEvent::TextSelectionChanged {
+        region,
+        anchor,
+        focus,
+    } = &event
+    {
+        backend.set_active_text_selection(region.clone(), *anchor, *focus);
+        force_redraw = true;
+    }
+
+    let outcome: EventOutcome = app.handle(event, backend).into();
+    if force_redraw && matches!(outcome, EventOutcome::Continue) {
+        EventOutcome::Redraw
+    } else {
+        outcome
+    }
 }
 
 /// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
@@ -286,6 +443,15 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.begin_frame(viewport);
     backend.enter_frame_scope(ctx, |b| {
         app.render(b, <A as AppLogic>::AreaId::default());
+        // After app.render: overlay the text-selection highlight on top of
+        // the rendered content (#803) — mirrors gtk::run::render_frame's
+        // `apply_selection_highlight(cr)` call and win::run::render_frame's
+        // `apply_selection_highlight()` call, both made at this same point
+        // in the frame. Stays inside this closure (unlike GTK/Win, which
+        // call it just after their own render_frame's paint step) because
+        // `MacBackend::current_cg` — which the highlight paint needs — is
+        // only non-null inside `enter_frame_scope`.
+        b.apply_selection_highlight();
     });
     backend.end_frame();
 }
@@ -884,3 +1050,232 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 // future opaque-pointer dancing in this file as it grows.
 #[allow(dead_code)]
 fn _unused_imports(_p: *mut c_void) {}
+
+/// Coverage for #803: `dispatch_event`'s `MouseDown`/`MouseMoved`/`MouseUp`
+/// text-selection routing plus its Ctrl-C/Ctrl-A/`TextSelectionChanged`
+/// pre-processing. None of this needs a live `CGContext` or a running
+/// `NSApplication` — the state machine and `dispatch_event` are plain Rust
+/// logic once a `MacBackend` exists — mirroring `win::run`'s identical
+/// `text_selection_dispatch_tests` module (#741) almost line for line;
+/// `MacBackend::new()`'s default metrics (16.0 line height, 8.0 char
+/// width) match `WinBackend::new()`'s exactly, so the same pixel math
+/// applies unchanged.
+#[cfg(test)]
+mod text_selection_dispatch_tests {
+    use super::*;
+    use crate::dispatch::TextRegion;
+    use crate::event::Point;
+    use crate::types::WidgetId;
+    use crate::{ButtonMask, Key, Modifiers, MouseButton, UiEvent};
+
+    #[derive(Default)]
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            Reaction::Continue
+        }
+    }
+
+    fn region(id: &str, x: f32, y: f32, w: f32, h: f32, lines: &[&str]) -> TextRegion {
+        TextRegion {
+            id: WidgetId::new(id),
+            bounds: crate::event::Rect::new(x, y, w, h),
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn ctrl_char(c: char) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                cmd: false,
+            },
+            repeat: false,
+        }
+    }
+
+    /// Drive `dispatch_event` with a fresh caret-blink handle pair each
+    /// call — the tests here don't care about caret-blink state, only
+    /// about the text-selection pre-processing, so a scratch pair per
+    /// call keeps each test's call sites terse (mirrors `MacDriver::dispatch`,
+    /// which does the same thing against the live backend's own handles).
+    fn dispatch(ev: UiEvent, backend: &mut MacBackend, app: &mut RecordingApp) -> EventOutcome {
+        let caret_visible = backend.caret_visible_handle();
+        let caret_pause = backend.caret_blink_pause_handle();
+        dispatch_event(ev, backend, app, &caret_visible, &caret_pause)
+    }
+
+    /// End-to-end round trip: click-drag across a registered `TextRegion`,
+    /// then Ctrl-C — the exact sequence `panel.drag_select_copy` (the
+    /// Tier-1 scenario #803 unblocks on macOS) drives.
+    #[test]
+    fn drag_select_then_ctrl_c_copies_the_selection() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        backend.register_text_region(region("body", 0.0, 0.0, 88.0, 16.0, &["hello world"]));
+
+        // Press inside the region (row 0, col 0).
+        let outcome = dispatch(
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(0.0, 4.0),
+                modifiers: Modifiers::default(),
+            },
+            &mut backend,
+            &mut app,
+        );
+        assert!(matches!(
+            outcome,
+            EventOutcome::Continue | EventOutcome::Redraw
+        ));
+
+        // Drag to the far right of the region (row 0, col 11 — "hello world" in full).
+        let outcome = dispatch(
+            UiEvent::MouseMoved {
+                position: Point::new(88.0, 4.0),
+                buttons: ButtonMask {
+                    left: true,
+                    ..ButtonMask::default()
+                },
+            },
+            &mut backend,
+            &mut app,
+        );
+        assert!(
+            matches!(outcome, EventOutcome::Redraw),
+            "a TextSelectionChanged event must force a redraw"
+        );
+        assert!(
+            backend.active_text_selection().is_some(),
+            "dragging across a registered TextRegion must produce an active selection"
+        );
+
+        // Release — ends the drag, does not clear the selection.
+        let _ = dispatch(
+            UiEvent::MouseUp {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(88.0, 4.0),
+            },
+            &mut backend,
+            &mut app,
+        );
+        assert!(
+            backend.active_text_selection().is_some(),
+            "MouseUp must not clear the finalised selection"
+        );
+
+        // Ctrl-C copies it, clears it, and delivers TextCopied.
+        let outcome = dispatch(ctrl_char('c'), &mut backend, &mut app);
+        assert!(matches!(
+            outcome,
+            EventOutcome::Redraw | EventOutcome::Continue
+        ));
+        assert!(
+            backend.active_text_selection().is_none(),
+            "Ctrl-C must clear the selection after copying it"
+        );
+        assert!(
+            app.events
+                .iter()
+                .any(|e| matches!(e, UiEvent::TextCopied(text) if text == "hello world")),
+            "Ctrl-C over a full-region selection must deliver TextCopied(\"hello world\"); \
+             got {:?}",
+            app.events
+        );
+    }
+
+    #[test]
+    fn ctrl_c_without_a_selection_falls_through_to_the_app() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = ctrl_char('c');
+        let _ = dispatch(ev.clone(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![ev],
+            "Ctrl-C with no active selection must fall through to app.handle unchanged, \
+             matching gtk::run::dispatch_event/win::run::dispatch_event"
+        );
+    }
+
+    #[test]
+    fn ctrl_a_selects_the_sole_registered_region() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        backend.register_text_region(region("body", 0.0, 0.0, 40.0, 16.0, &["hi"]));
+        let outcome = dispatch(ctrl_char('a'), &mut backend, &mut app);
+        assert!(matches!(outcome, EventOutcome::Redraw));
+        assert!(
+            backend.active_text_selection().is_some(),
+            "Ctrl-A must select the sole registered TextRegion"
+        );
+        assert!(
+            app.events.is_empty(),
+            "a recognised Ctrl-A must not also forward the raw KeyPressed to the app"
+        );
+    }
+
+    #[test]
+    fn ctrl_a_with_no_regions_falls_through_to_the_app() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        let ev = ctrl_char('a');
+        let _ = dispatch(ev.clone(), &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![ev],
+            "Ctrl-A with no registered TextRegion must fall through to app.handle unchanged"
+        );
+    }
+
+    #[test]
+    fn mouse_down_clears_the_displayed_selection() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        backend.set_active_text_selection(
+            WidgetId::new("r"),
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+        );
+        assert!(backend.active_text_selection().is_some());
+        let ev = UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(0.0, 0.0),
+            modifiers: Modifiers::default(),
+        };
+        let _ = dispatch(ev, &mut backend, &mut app);
+        assert!(
+            backend.active_text_selection().is_none(),
+            "a MouseDown reaching dispatch_event must clear the displayed selection"
+        );
+    }
+
+    #[test]
+    fn text_selection_changed_updates_active_selection_and_forces_redraw() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::default();
+        backend.register_text_region(region("body", 0.0, 0.0, 40.0, 16.0, &["hi there"]));
+        let ev = UiEvent::TextSelectionChanged {
+            region: WidgetId::new("body"),
+            anchor: Point::new(0.0, 0.0),
+            focus: Point::new(40.0, 0.0),
+        };
+        let outcome = dispatch(ev, &mut backend, &mut app);
+        assert!(matches!(outcome, EventOutcome::Redraw));
+        assert!(backend.active_text_selection().is_some());
+    }
+}

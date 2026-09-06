@@ -264,22 +264,26 @@ mod runtime;
 // free. See `desktop`'s module doc and `BACKEND.md` §10.
 mod desktop;
 
-// Shared text-selection state machine (#741): the region registry plus
-// active-selection tracking every `text_selection: true` backend embeds.
-// No toolkit dependency of its own, but — unlike `desktop` above — it is
-// gated on the backends that actually embed it (`TuiBackend`,
-// `GtkBackend`, `WinBackend`) rather than compiled unconditionally.
-// macOS is the one backend that does *not* declare
-// `BackendCaps::text_selection` (see `macos::backend`'s caps doc), so a
-// `--features macos` build has no consumer for any of it, and with
-// `RUSTFLAGS: -D warnings` the whole module lands as a hard `dead_code`
+// Shared text-selection state machine (#741, macOS adopted in #803): the
+// region registry plus active-selection tracking every
+// `text_selection: true` backend embeds. No toolkit dependency of its
+// own, but — unlike `desktop` above — it is gated on the backends that
+// actually embed it (`TuiBackend`, `GtkBackend`, `WinBackend`,
+// `MacBackend`) rather than compiled unconditionally. Before #803, macOS
+// was the one backend that did *not* declare `BackendCaps::text_selection`,
+// so a `--features macos` build had no consumer for any of it, and with
+// `RUSTFLAGS: -D warnings` the whole module landed as a hard `dead_code`
 // error rather than a warning — which is exactly how the `macos (build,
 // test)` job failed the first time a PR touched `quadraui/src/macos/**`
 // after #741 (that job is `paths`-filtered, so nothing ran it in
-// between). When macOS grows text selection, add `all(feature = "macos",
-// target_os = "macos")` to this gate alongside the other three; the
-// module itself needs no change.
-#[cfg(any(feature = "tui", feature = "gtk", feature = "win"))]
+// between). If a future backend doesn't adopt this module, mirror that
+// same fix rather than compiling it unconditionally.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 mod text_selection;
 
 pub use diff::compute_hunks;
