@@ -81,6 +81,39 @@ impl NativeSurface for RawFormSurface<'_> {
         let _ = self.dwrite.draw_text(self.target, text, rect, color);
     }
 
+    /// #810: overrides the default (which drops styling and scale) —
+    /// mirrors `WinBackend::surface_draw_text_run_styled`'s `bold`-only
+    /// + `scale_x` support, needed so
+    /// [`crate::win::multi_section_view`]'s embedded `Terminal` section
+    /// body (the one production call site that reaches this through
+    /// `RawFormSurface` rather than a live `WinBackend`) doesn't lose
+    /// bold cells or the wide-glyph advance fix by routing through
+    /// `primitives::terminal::paint`.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: crate::Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (italic, underline);
+        if (scale_x - 1.0).abs() > f32::EPSILON {
+            super::text::with_horizontal_scale(self.target, scale_x, rect.x, || {
+                let _ = self
+                    .dwrite
+                    .draw_text_styled(self.target, text, rect, color, bold);
+            });
+        } else {
+            let _ = self
+                .dwrite
+                .draw_text_styled(self.target, text, rect, color, bold);
+        }
+    }
+
     fn surface_draw_line(
         &mut self,
         from: crate::Point,

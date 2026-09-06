@@ -395,6 +395,449 @@ pub enum TerminalEvent {
     Scroll { delta: i32 },
 }
 
+// ── NativeSurface paint (#810, Phase 2c of the NativeSurface milestone) ────
+//
+// Before this, `gtk::terminal::draw_terminal_cells`,
+// `macos::terminal::draw_terminal_cells` and
+// `win::terminal::draw_terminal_cells` each independently walked
+// `term.cells[row][col]` and painted every cell's background + glyph
+// with their own Cairo / CoreGraphics / Direct2D calls — all three
+// already shared the geometry helpers in `crate::terminal_style`
+// (`resolve_cell_style`, `wide_cell_advance`, `wide_glyph_x_scale`,
+// `divider_geometry`), so only the actual paint calls were duplicated.
+// `paint`/`paint_divider` below are the one shared implementation,
+// written against [`crate::native_surface::NativeSurface`] (#807, Phase
+// 1).
+//
+// Per-cell glyph styling (`TerminalCell::bold`/`italic`/`underline`) and
+// the wide-glyph horizontal scale (#439/#500/#703) both needed a new
+// verb this trait didn't have at the end of Phase 1 —
+// [`NativeSurface::surface_draw_text_run_styled`] — added in this same
+// PR specifically so unifying this primitive wouldn't force GTK's full
+// bold/italic/underline support and Windows's bold support to regress to
+// macOS's weaker (undocumented-as-a-bug, deliberately deferred) "no
+// per-cell styling at all" posture. See that method's own doc for
+// exactly which of the three flags (plus `scale_x`) each backend's
+// `NativeSurface` override actually applies — this crate's own
+// `native_surface.rs` is sealed (`pub(crate)`, no downstream consumer
+// can see it), so growing its vocabulary here is not a breaking change
+// (see that module's doc).
+//
+// #417's GTK-only dirty-row repaint cache (`TermPaintCache`) stays in
+// `GtkBackend::draw_terminal` — it's a frame-to-frame *caching* decision
+// (which rows even need repainting this frame), not a paint-time
+// concern, so it has nothing to do with how a given row's cells get
+// painted. `paint`'s own `dirty_rows` parameter is the same "paint only
+// these rows" contract `draw_terminal_cells` already had; macOS and
+// Windows simply never call it with anything but `None` (full repaint
+// every frame, their pre-#810 posture), but nothing stops a future
+// caching layer on either from reusing this without a fourth per-backend
+// dirty-row implementation.
+//
+// #492 incidental fix: GTK's pre-#810 `draw_terminal_cells` painted
+// glyphs straight through `pangocairo::functions::show_layout`,
+// bypassing the `painted_text` tracking every other primitive's
+// rasteriser already routed through — so a terminal's cell content never
+// reached `FrameInventory::text_runs()` on GTK. `paint` reaches glyphs
+// through `surface_draw_text_run_styled`, whose `GtkBackend` override
+// goes through `super::painted_text::show_layout` like every other
+// verb — this gap closes as a side effect of unification, not a
+// deliberate #492 fix in its own right.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_terminal`/`draw_terminal_divider`
+// call sites plus this module's own `RecordingSurface` tests on every
+// leg that enables one of the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+mod native_surface_paint {
+    use super::Terminal;
+    use crate::native_surface::NativeSurface;
+    use crate::terminal_style::{
+        divider_geometry, resolve_cell_style, wide_cell_advance, wide_glyph_x_scale,
+    };
+    use crate::theme::Theme;
+    use crate::Rect;
+
+    /// Paint `term`'s cell grid into the rectangular region starting at
+    /// `(x, y)` on `surface`. The caller is responsible for filling the
+    /// surrounding background first (see each `Backend::draw_terminal`
+    /// impl's own pane-clear posture — that decision stays per-backend,
+    /// not part of this shared fn).
+    ///
+    /// `cell_area_w`/`cell_area_h` clip painting to the pane's own
+    /// bounds — cells past the right edge, or rows whose top has reached
+    /// the bottom, stop being drawn rather than bleeding past the pane
+    /// (quadraui#437). `line_height`/`char_width` are the per-cell
+    /// dimensions in surface-native units.
+    ///
+    /// `dirty_rows`: `None` paints every row; `Some(rows)` paints only
+    /// the rows whose index appears in `rows` (sorted ascending) and
+    /// leaves every other row's pixels untouched — see this module's
+    /// doc for why only `GtkBackend` currently passes `Some(_)`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        term: &Terminal,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        x: f32,
+        y: f32,
+        cell_area_w: f32,
+        cell_area_h: f32,
+        line_height: f32,
+        char_width: f32,
+        dirty_rows: Option<&[usize]>,
+    ) {
+        for (row_idx, row) in term.cells.iter().enumerate() {
+            let row_y = y + row_idx as f32 * line_height;
+            // Stop once a row's top has reached the pane bottom — such a
+            // row belongs to a taller (pre-resize) grid and would bleed
+            // past the pane. A row that merely straddles the bottom edge
+            // is still drawn (and clipped by whatever the host paints
+            // over it).
+            if row_y >= y + cell_area_h {
+                break;
+            }
+            if let Some(rows) = dirty_rows {
+                if rows.binary_search(&row_idx).is_err() {
+                    continue;
+                }
+            }
+            let mut cell_x = x;
+            let mut col = 0usize;
+            while col < row.len() {
+                let cell = &row[col];
+                // Double-width glyphs (CJK, emoji, ...) get a
+                // two-column cell: the vt100 grid already reserves the
+                // following column as an empty continuation
+                // placeholder, so claim it here rather than letting it
+                // paint its own (mismatched) background over the
+                // glyph's right half (#439/#500).
+                let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width as f64);
+                let cell_w = cell_w as f32;
+                let is_wide = cols_advanced == 2;
+
+                if cell_x + cell_w > x + cell_area_w {
+                    break;
+                }
+                let (cell_bg, cell_fg) = resolve_cell_style(cell, theme);
+                surface.surface_fill_rect(Rect::new(cell_x, row_y, cell_w, line_height), cell_bg);
+
+                if cell.ch != ' ' && cell.ch != '\0' {
+                    let s = cell.ch.to_string();
+                    let cell_rect = Rect::new(cell_x, row_y, cell_w, line_height);
+                    let scale_x = if is_wide {
+                        // The font each backend falls back to for
+                        // CJK/emoji rarely lays the glyph out at
+                        // exactly two cells — scale it to fill `cell_w`
+                        // instead of leaving a ragged gap or overlap
+                        // (#439 follow-up / #500 / #703).
+                        let (natural_w, _) = surface.surface_measure_text(&s);
+                        wide_glyph_x_scale(natural_w as f64, cell_w as f64) as f32
+                    } else {
+                        1.0
+                    };
+                    surface.surface_draw_text_run_styled(
+                        cell_rect,
+                        &s,
+                        cell_fg,
+                        cell.bold,
+                        cell.italic,
+                        cell.underline,
+                        scale_x,
+                    );
+                }
+
+                cell_x += cell_w;
+                col += cols_advanced;
+            }
+        }
+    }
+
+    /// Draw a vertical divider line for a terminal split pane. Paints a
+    /// 1-unit-wide line at `x` from `y` to `y + height` using
+    /// `theme.separator`. Geometry comes from
+    /// [`crate::terminal_style::divider_geometry`].
+    pub(crate) fn paint_divider(
+        surface: &mut dyn NativeSurface,
+        x: f32,
+        y: f32,
+        height: f32,
+        theme: &Theme,
+    ) {
+        let g = divider_geometry(x as f64, y as f64, height as f64);
+        surface.surface_fill_rect(
+            Rect::new(g.x as f32, g.y as f32, g.width as f32, g.height as f32),
+            theme.separator,
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::terminal::TerminalCell;
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues — mirrors
+        /// `primitives::chart`/`primitives::find_replace`/
+        /// `primitives::text_display`'s own `RecordingSurface`
+        /// (#809/#810).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            styled_runs: Vec<(Rect, String, Color, bool, bool, bool, f32)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                20.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                10.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 10.0, 20.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_text_run_styled(
+                &mut self,
+                rect: Rect,
+                text: &str,
+                color: Color,
+                bold: bool,
+                italic: bool,
+                underline: bool,
+                scale_x: f32,
+            ) {
+                self.styled_runs.push((
+                    rect,
+                    text.to_string(),
+                    color,
+                    bold,
+                    italic,
+                    underline,
+                    scale_x,
+                ));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
+            TerminalCell {
+                ch,
+                fg,
+                bg,
+                bold: false,
+                italic: false,
+                underline: false,
+                selected: false,
+                is_cursor: false,
+                is_find_match: false,
+                is_find_active: false,
+            }
+        }
+
+        #[test]
+        fn cell_background_and_glyph_paint_at_the_grid_position() {
+            let fg = Color::rgb(255, 255, 255);
+            let bg = Color::rgb(10, 20, 30);
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![vec![cell('A', fg, bg)]],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|&(r, c)| r == Rect::new(0.0, 0.0, 10.0, 20.0) && c == bg),
+                "expected the cell's own background fill, fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface
+                    .styled_runs
+                    .iter()
+                    .any(|(r, t, c, ..)| t == "A" && *c == fg && r.x == 0.0 && r.y == 0.0),
+                "expected the glyph painted in the cell's fg colour, got {:?}",
+                surface.styled_runs,
+            );
+        }
+
+        #[test]
+        fn blank_and_nul_cells_paint_background_only() {
+            let bg = Color::rgb(10, 20, 30);
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![vec![
+                    cell(' ', Color::rgb(0, 0, 0), bg),
+                    cell('\0', Color::rgb(0, 0, 0), bg),
+                ]],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            assert_eq!(
+                surface.fills.len(),
+                2,
+                "both cells should still fill their background"
+            );
+            assert!(
+                surface.styled_runs.is_empty(),
+                "space and NUL cells must not paint a glyph, got {:?}",
+                surface.styled_runs,
+            );
+        }
+
+        #[test]
+        fn bold_italic_underline_flags_reach_the_styled_run() {
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![vec![TerminalCell {
+                    bold: true,
+                    italic: true,
+                    underline: true,
+                    ..cell('X', Color::rgb(255, 255, 255), Color::rgb(0, 0, 0))
+                }]],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            let (_, _, _, bold, italic, underline, _) = surface.styled_runs[0];
+            assert!(bold && italic && underline);
+        }
+
+        #[test]
+        fn dirty_rows_filter_skips_untouched_rows() {
+            let painted = Color::rgb(200, 200, 200);
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![
+                    vec![cell('A', painted, painted)],
+                    vec![cell('B', painted, painted)],
+                ],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                Some(&[1]),
+            );
+
+            assert!(
+                surface.fills.iter().all(|(r, _)| r.y == 20.0),
+                "only row 1 (y=20) should have painted anything, fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        #[test]
+        fn paint_divider_fills_the_separator_geometry() {
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint_divider(&mut surface, 10.0, 5.0, 40.0, &theme);
+
+            assert!(
+                surface.fills.iter().any(|&(_, c)| c == theme.separator),
+                "expected a fill in theme.separator, fills were {:?}",
+                surface.fills,
+            );
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(unused_imports)]
+pub(crate) use native_surface_paint::{paint, paint_divider};
+
 #[cfg(test)]
 mod tests {
     use super::*;

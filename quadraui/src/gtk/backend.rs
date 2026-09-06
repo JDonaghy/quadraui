@@ -2390,10 +2390,6 @@ impl Backend for GtkBackend {
                 }
             });
 
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
-
         match &dirty_rows {
             Some(rows) => {
                 // Fast path: geometry is unchanged (checked above), so
@@ -2404,56 +2400,47 @@ impl Backend for GtkBackend {
                 // entirely — e.g. a cursor-blink tick with no new PTY
                 // output).
                 if !rows.is_empty() {
-                    crate::gtk::draw_terminal_cells(
-                        cr,
-                        layout,
+                    crate::primitives::terminal::paint(
                         term,
-                        rect.x as f64,
-                        rect.y as f64,
-                        cell_area_w,
-                        rect.height as f64,
-                        lh,
-                        cw,
+                        self,
                         &theme,
+                        rect.x,
+                        rect.y,
+                        cell_area_w as f32,
+                        rect.height,
+                        lh as f32,
+                        cw as f32,
                         Some(rows),
                     );
                 }
             }
             None => {
                 // Clear the entire terminal pane to the terminal background before
-                // painting cells (quadraui#437). `draw_terminal_cells` only fills
-                // each *live* cell's own background, so without this any pixel the
-                // current grid doesn't cover — a sub-cell sliver, the strip below the
-                // last row, or (critically) a region GTK didn't re-clear on an
+                // painting cells (quadraui#437). `primitives::terminal::paint` only
+                // fills each *live* cell's own background, so without this any pixel
+                // the current grid doesn't cover — a sub-cell sliver, the strip below
+                // the last row, or (critically) a region GTK didn't re-clear on an
                 // interactive-resize frame where the widget's cached render node is
                 // partially reused — keeps showing glyphs from the pre-resize frame.
                 // That was the "stale ~ / > prompt fragments stuck on rows that
                 // should be blank after a shrink-then-expand" ghosting. vimcode's
                 // bespoke renderer does the same full-pane fill first; the trait doc
-                // on `draw_terminal_cells` delegates this to the caller, and the GTK
-                // backend is that caller. (30,30,30) matches the vt100 default cell
-                // background used by `TerminalSession::build_rows`, so blank areas
-                // blend seamlessly with blank cells.
-                cr.rectangle(
-                    rect.x as f64,
-                    rect.y as f64,
-                    rect.width as f64,
-                    rect.height as f64,
-                );
-                cr.set_source_rgb(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0);
-                cr.fill().ok();
+                // on `primitives::terminal::paint` delegates this to the caller, and
+                // the GTK backend is that caller. (30,30,30) matches the vt100
+                // default cell background used by `TerminalSession::build_rows`, so
+                // blank areas blend seamlessly with blank cells.
+                self.surface_fill_rect(rect, Color::rgb(30, 30, 30));
 
-                crate::gtk::draw_terminal_cells(
-                    cr,
-                    layout,
+                crate::primitives::terminal::paint(
                     term,
-                    rect.x as f64,
-                    rect.y as f64,
-                    cell_area_w,
-                    rect.height as f64,
-                    lh,
-                    cw,
+                    self,
                     &theme,
+                    rect.x,
+                    rect.y,
+                    cell_area_w as f32,
+                    rect.height,
+                    lh as f32,
+                    cw as f32,
                     None,
                 );
             }
@@ -2473,18 +2460,24 @@ impl Backend for GtkBackend {
                 sb_state.visible_lines as f32,
                 lh as f32,
             );
+            let (cr, _layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_terminal called outside enter_frame_scope");
             crate::gtk::draw_scrollbar(cr, &sb, &theme);
         }
 
-        // #492: `draw_terminal_cells` paints glyphs straight through
-        // `pangocairo::functions::show_layout`, bypassing the
-        // `painted_text` tracking every other primitive's rasteriser
-        // routes through — so on this backend a terminal's cell content
-        // never reaches `FrameInventory::text_runs()` (a real, narrower
-        // gap than the no-op-default case this tier mainly targets, but
-        // the same symptom: painted, yet unobservable). Register a zone
-        // so the frame is still attributable to this call until that
-        // tracking gap is closed.
+        // #492/#810: before #810, `draw_terminal_cells` painted glyphs
+        // straight through `pangocairo::functions::show_layout`,
+        // bypassing the `painted_text` tracking every other primitive's
+        // rasteriser routes through — so a terminal's cell content never
+        // reached `FrameInventory::text_runs()`. `primitives::terminal::
+        // paint` now reaches glyphs via `surface_draw_text_run_styled`,
+        // whose `GtkBackend` override goes through
+        // `super::painted_text::show_layout` like every other verb, so
+        // that gap is closed as an incidental side effect of unifying
+        // this primitive. This zone registration is kept anyway — it's
+        // a real, if now-redundant, attribution the C0 paint smoke
+        // already relies on.
         self.register_zone(term.id.clone(), rect);
 
         // #417: remember this frame's snapshot and geometry so the next
@@ -2504,18 +2497,11 @@ impl Backend for GtkBackend {
         );
     }
 
+    /// #810: shared divider painting lives in
+    /// [`crate::primitives::terminal::paint_divider`] now.
     fn draw_terminal_divider(&mut self, rect: QRect) {
         let theme = self.current_theme;
-        let (cr, _layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_terminal_divider called outside enter_frame_scope");
-        crate::gtk::draw_terminal_divider(
-            cr,
-            rect.x as f64,
-            rect.y as f64,
-            rect.height as f64,
-            &theme,
-        );
+        crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
         // #492: the primitive takes no `WidgetId` of its own (there is at
         // most one divider on screen at a time), so register a fixed
         // chrome id — on a pixel backend this paints strokes only, so
@@ -2525,21 +2511,16 @@ impl Backend for GtkBackend {
         self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
     }
 
+    /// #810: shared text-display painting lives in
+    /// [`crate::primitives::text_display::paint`] now — see that fn's
+    /// doc for the divergence (Windows's bold-span support) resolved
+    /// while unifying `gtk::text_display::draw_text_display`,
+    /// `macos::text_display::draw_text_display` and
+    /// `win::text_display::draw_text_display` into one implementation.
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_text_display called outside enter_frame_scope");
-        crate::gtk::draw_text_display(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            td,
-            &self.current_theme,
-            self.current_line_height,
-        );
+        let theme = self.current_theme;
+        let line_height = self.current_line_height as f32;
+        crate::primitives::text_display::paint(td, rect, self, &theme, line_height);
     }
 
     fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
@@ -3370,6 +3351,11 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// #810: shared chart painting lives in
+    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
+    /// the divergences (the quadraui#791 clip, most notably) resolved
+    /// while unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart`
+    /// and `win::chart::draw_chart` into one implementation.
     fn draw_chart(
         &mut self,
         rect: QRect,
@@ -3378,25 +3364,9 @@ impl Backend for GtkBackend {
         crosshair_x: Option<f64>,
     ) -> crate::primitives::chart::ChartLayout {
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_chart called outside enter_frame_scope");
-        crate::gtk::draw_chart(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            chart,
-            &theme,
-            line_height,
-            char_width,
-            hovered_point,
-            crosshair_x,
-        )
+        let layout = self.chart_layout(rect, chart);
+        crate::primitives::chart::paint(chart, &layout, self, &theme, hovered_point, crosshair_x);
+        layout
     }
 
     fn chart_layout(
@@ -3760,6 +3730,51 @@ impl NativeSurface for GtkBackend {
         crate::gtk::set_source(cr, color);
         cr.move_to(rect.x as f64, rect.y as f64);
         super::painted_text::show_layout(cr, layout);
+    }
+
+    /// #810: overrides the default (which drops styling) — Pango's
+    /// `AttrList` can apply all three, matching what
+    /// `gtk::terminal::draw_terminal_cells` did per-cell before its
+    /// paint moved to `primitives::terminal::paint`.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: QRect,
+        text: &str,
+        color: Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_draw_text_run_styled called outside enter_frame_scope");
+        layout.set_text(text);
+        let attrs = pango::AttrList::new();
+        if bold {
+            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
+        }
+        if italic {
+            attrs.insert(pango::AttrInt::new_style(pango::Style::Italic));
+        }
+        if underline {
+            attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
+        }
+        layout.set_attributes(Some(&attrs));
+        crate::gtk::set_source(cr, color);
+        if (scale_x - 1.0).abs() > f32::EPSILON {
+            cr.save().ok();
+            cr.translate(rect.x as f64, rect.y as f64);
+            cr.scale(scale_x as f64, 1.0);
+            cr.move_to(0.0, 0.0);
+            super::painted_text::show_layout(cr, layout);
+            cr.restore().ok();
+        } else {
+            cr.move_to(rect.x as f64, rect.y as f64);
+            super::painted_text::show_layout(cr, layout);
+        }
+        layout.set_attributes(None);
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -6806,5 +6821,339 @@ mod tests {
         backend.enter_frame_scope(&cr, &pango_layout, |b| {
             b.draw_find_replace(QRect::new(0.0, 0.0, W as f32, H as f32), &panel);
         });
+    }
+
+    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    //
+    // Ported from the deleted `gtk::chart::tests` (that module painted
+    // straight onto a Cairo `ImageSurface` via the since-deleted free
+    // function `gtk::chart::draw_chart`) to instead drive the real
+    // `Backend::draw_chart` → `primitives::chart::paint` path end to
+    // end, the same shape `gtk_backend_draw_find_replace_*` above uses.
+
+    use crate::primitives::chart::{Chart as ChartModel, ChartKind, Series, SERIES_COLORS};
+
+    const CHART_W: i32 = 30;
+    const CHART_H: i32 = 30;
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    fn chart_pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn chart_series(label: &str, data: Vec<f64>) -> Series {
+        Series {
+            label: label.into(),
+            data,
+            color: None,
+            fill: false,
+        }
+    }
+
+    fn chart_bar_chart(kind: ChartKind, series: Vec<Series>, y_range: (f64, f64)) -> ChartModel {
+        ChartModel {
+            id: WidgetId::new("chart"),
+            kind,
+            series,
+            x_label: None,
+            y_label: None,
+            y_range: Some(y_range),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(0),
+            show_grid: false,
+        }
+    }
+
+    fn paint_chart_via_backend(
+        chart: &ChartModel,
+        rect: QRect,
+        hovered_point: Option<(usize, usize)>,
+    ) -> pangocairo::cairo::ImageSurface {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(crate::Theme::default());
+        Backend::begin_frame(
+            &mut backend,
+            Viewport::new(CHART_W as f32, CHART_H as f32, 1.0),
+        );
+        let surface =
+            ImageSurface::create(Format::ARgb32, CHART_W, CHART_H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_chart(rect, chart, hovered_point, None);
+            });
+        }
+        surface.flush();
+        surface
+    }
+
+    #[test]
+    fn gtk_backend_draw_chart_stacked_bar_paints_each_series_in_its_own_color() {
+        // Three equal-value series stacked in a single column, with an
+        // explicit y_range so the geometry is exact: (0, 1/3), (1/3,
+        // 2/3), (2/3, 1) bottom to top.
+        let chart = chart_bar_chart(
+            ChartKind::Bar,
+            vec![
+                chart_series("a", vec![1.0]),
+                chart_series("b", vec![1.0]),
+                chart_series("c", vec![1.0]),
+            ],
+            (0.0, 3.0),
+        );
+        let rect = QRect::new(0.0, 0.0, CHART_W as f32, CHART_H as f32);
+        let mut surface = paint_chart_via_backend(&chart, rect, None);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let mid_x = 15;
+        let bottom_y = 25;
+        let mid_y = 15;
+        let top_y = 5;
+
+        assert_eq!(
+            chart_pixel(&data, stride, mid_x, bottom_y),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b),
+            "bottom segment should be series 0's colour"
+        );
+        assert_eq!(
+            chart_pixel(&data, stride, mid_x, mid_y),
+            (SERIES_COLORS[1].r, SERIES_COLORS[1].g, SERIES_COLORS[1].b),
+            "middle segment should be series 1's colour"
+        );
+        assert_eq!(
+            chart_pixel(&data, stride, mid_x, top_y),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b),
+            "top segment should be series 2's colour"
+        );
+    }
+
+    #[test]
+    fn gtk_backend_draw_chart_grouped_bar_paints_series_side_by_side() {
+        let chart = chart_bar_chart(
+            ChartKind::BarGrouped,
+            vec![
+                chart_series("a", vec![1.0]),
+                chart_series("b", vec![2.0]),
+                chart_series("c", vec![3.0]),
+            ],
+            (0.0, 3.0),
+        );
+        let rect = QRect::new(0.0, 0.0, CHART_W as f32, CHART_H as f32);
+        let mut surface = paint_chart_via_backend(&chart, rect, None);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let probe_y = 27;
+        assert_eq!(
+            chart_pixel(&data, stride, 6, probe_y),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b),
+            "leftmost sub-bar should be series 0"
+        );
+        assert_eq!(
+            chart_pixel(&data, stride, 15, probe_y),
+            (SERIES_COLORS[1].r, SERIES_COLORS[1].g, SERIES_COLORS[1].b),
+            "middle sub-bar should be series 1"
+        );
+        assert_eq!(
+            chart_pixel(&data, stride, 23, probe_y),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b),
+            "rightmost sub-bar should be series 2"
+        );
+    }
+
+    /// Regression for quadraui#791/#810: before #791, GTK's `draw_chart`
+    /// had no clip, so overlay elements painted outside `plot_area` on
+    /// purpose (legend, crosshair, hover marker) could bleed past the
+    /// chart's *own* rect onto whatever is painted beside it. #810
+    /// unified all three backends' `draw_chart` onto one shared
+    /// `primitives::chart::paint`, which is what now owns this clip for
+    /// every pixel backend — this is the "driver-tier" proof for GTK;
+    /// `win::backend::tests` carries the equivalent proof for Windows,
+    /// which never had this clip at all before #810 (see that module's
+    /// twin test's doc for the RED-before-this-PR detail).
+    #[test]
+    fn gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
+        // origin=1.0 at index 0 → top edge; 0.0 at index 1 → bottom
+        // edge. n=2 → index 0's x is the plot area's left edge. So data
+        // point (0, 0) sits exactly at the chart's top-left corner.
+        let chart = chart_bar_chart(
+            ChartKind::Sparkline,
+            vec![chart_series("a", vec![10.0, 0.0])],
+            (0.0, 10.0),
+        );
+
+        let canvas_w = 40;
+        let canvas_h = 40;
+        let sentinel: (u8, u8, u8) = (0, 0, 0);
+        let (chart_x, chart_y, chart_w, chart_h) = (10.0, 10.0, 20.0, 20.0);
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(crate::Theme::default());
+        Backend::begin_frame(
+            &mut backend,
+            Viewport::new(canvas_w as f32, canvas_h as f32, 1.0),
+        );
+        let mut surface = pangocairo::cairo::ImageSurface::create(
+            pangocairo::cairo::Format::ARgb32,
+            canvas_w,
+            canvas_h,
+        )
+        .expect("create ImageSurface");
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(
+                sentinel.0 as f64 / 255.0,
+                sentinel.1 as f64 / 255.0,
+                sentinel.2 as f64 / 255.0,
+            );
+            cr.rectangle(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+            cr.fill().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_chart(
+                    QRect::new(chart_x, chart_y, chart_w, chart_h),
+                    &chart,
+                    Some((0, 0)),
+                    None,
+                );
+            });
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // Inside the marker's 8-unit-radius ring, centred at the chart's
+        // own top-left corner (10, 10), but outside the chart's rect.
+        let probe = (5, 5);
+        assert_eq!(
+            chart_pixel(&data, stride, probe.0, probe.1),
+            sentinel,
+            "hover marker must not paint outside the chart's own rect",
+        );
+    }
+
+    // ── #810: draw_text_display real-pixel driver tests ─────────────────
+    //
+    // GTK had no pixel-level coverage for `draw_text_display` before
+    // #810 (only `gtk::text_display::tests`'s pure-layout round trips);
+    // macOS's and Windows's own equivalents already drove this through
+    // their real backend, so this closes the GTK gap using the same
+    // shape.
+
+    use crate::primitives::text_display::{
+        TextDisplay as TextDisplayModel, TextDisplayLine as TextDisplayLineModel,
+    };
+
+    const TD_W: i32 = 240;
+    const TD_H: i32 = 160;
+
+    fn td_line(text: &str) -> TextDisplayLineModel {
+        TextDisplayLineModel {
+            spans: vec![crate::types::StyledSpan::plain(text)],
+            decoration: crate::types::Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn make_td(lines: usize, show_scrollbar: bool) -> TextDisplayModel {
+        TextDisplayModel {
+            id: WidgetId::new("td"),
+            lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar,
+        }
+    }
+
+    fn paint_td_via_backend(td: &TextDisplayModel) -> pangocairo::cairo::ImageSurface {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(crate::Theme::default());
+        Backend::begin_frame(&mut backend, Viewport::new(TD_W as f32, TD_H as f32, 1.0));
+        let surface =
+            ImageSurface::create(Format::ARgb32, TD_W, TD_H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_text_display(QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32), td);
+            });
+        }
+        surface.flush();
+        surface
+    }
+
+    #[test]
+    fn gtk_backend_draw_text_display_background_fills_theme_background() {
+        let td = make_td(0, false);
+        let mut surface = paint_td_via_backend(&td);
+        let theme = crate::Theme::default();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (x, y) = (TD_W / 2, TD_H / 2);
+        let off = y as usize * stride + x as usize * 4;
+        let (b8, g8, r8) = (data[off], data[off + 1], data[off + 2]);
+        assert_eq!(
+            (r8, g8, b8),
+            (theme.background.r, theme.background.g, theme.background.b),
+        );
+    }
+
+    #[test]
+    fn gtk_backend_draw_text_display_scrollbar_gutter_and_thumb_paint() {
+        let td = make_td(100, true);
+        let mut surface = paint_td_via_backend(&td);
+        let layout = crate::gtk::gtk_text_display_layout(
+            &td,
+            QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32),
+            16.0,
+        );
+        let theme = crate::Theme::default();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let pixel = |x: u32, y: u32| -> (u8, u8, u8) {
+            let off = y as usize * stride + x as usize * 4;
+            (data[off + 2], data[off + 1], data[off])
+        };
+
+        let thumb = layout.thumb_bounds.expect("thumb present");
+        let (tr, tg, tb) = pixel(
+            (thumb.x + thumb.width / 2.0) as u32,
+            (thumb.y + thumb.height / 2.0) as u32,
+        );
+        assert_eq!(
+            (tr, tg, tb),
+            (
+                theme.scrollbar_thumb.r,
+                theme.scrollbar_thumb.g,
+                theme.scrollbar_thumb.b
+            ),
+        );
+
+        let gutter = layout.scrollbar_bounds.expect("gutter present");
+        let (gr, gg, gb) = pixel(
+            (gutter.x + gutter.width / 2.0) as u32,
+            (gutter.y + gutter.height - 2.0) as u32,
+        );
+        assert_eq!(
+            (gr, gg, gb),
+            (
+                theme.scrollbar_track.r,
+                theme.scrollbar_track.g,
+                theme.scrollbar_track.b
+            ),
+        );
     }
 }

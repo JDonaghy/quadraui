@@ -348,22 +348,19 @@ fn paint_body(
             draw_form_body(cr, layout, x, y, w, h, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
+            // #810: painting moved to the shared
+            // `crate::primitives::chart::paint`; this raw
+            // `(&Context, &pango::Layout)` call site (no live
+            // `GtkBackend` on hand) uses the same `RawFormSurface`
+            // adapter `form::draw_form`'s deprecated shim uses for the
+            // same reason (#808's doc explains why the name is generic,
+            // not form-specific).
             layout.set_text("M");
             let char_width = layout.pixel_size().0 as f64;
-            super::draw_chart(
-                cr,
-                layout,
-                x,
-                y,
-                w,
-                h,
-                c,
-                theme,
-                line_height,
-                char_width.max(1.0),
-                None,
-                None,
-            );
+            let chart_layout =
+                super::gtk_chart_layout(c, x, y, w, h, line_height, char_width.max(1.0));
+            let mut surface = super::form::RawFormSurface { cr, layout };
+            crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::MessageList(m) => {
             draw_message_list(cr, layout, m, x, y, w, y + h, line_height);

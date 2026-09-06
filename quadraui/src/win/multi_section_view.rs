@@ -5,7 +5,7 @@
 //! per-section scrollbars, optional dividers) onto an `ID2D1RenderTarget`
 //! and dispatches each section's body to the appropriate quadraui body
 //! rasteriser (`super::tree::draw_tree`, `super::list::draw_list`,
-//! `draw_form_body`, `super::chart::draw_chart`,
+//! `draw_form_body`, `crate::primitives::chart::paint` (#810),
 //! `super::terminal::draw_terminal_cells`,
 //! `super::message_list::draw_message_list`) using the body bounds
 //! returned by the primitive's [`crate::MultiSectionView::layout`].
@@ -368,29 +368,31 @@ fn paint_body(
             draw_form_body(target, dwrite, bounds, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
-            let _ = super::chart::draw_chart(
-                target,
-                dwrite,
-                bounds,
-                c,
-                char_width,
-                line_height,
-                None,
-                None,
-            );
+            // #810: painting moved to the shared
+            // `crate::primitives::chart::paint`; this raw
+            // `(&ID2D1RenderTarget, &DWrite)` call site (no live
+            // `WinBackend` on hand) reuses `win::form::RawFormSurface` —
+            // a generic adapter despite its name, see that struct's doc.
+            let chart_layout = super::chart::win_chart_layout(c, bounds, char_width, line_height);
+            let mut surface = super::form::RawFormSurface { target, dwrite };
+            crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::Terminal(t) => {
-            super::terminal::draw_terminal_cells(
-                target,
-                dwrite,
+            // #810: painting moved to the shared
+            // `crate::primitives::terminal::paint`; reuses
+            // `win::form::RawFormSurface` like the `Chart` arm above.
+            let mut surface = super::form::RawFormSurface { target, dwrite };
+            crate::primitives::terminal::paint(
                 t,
+                &mut surface,
+                theme,
                 bounds.x,
                 bounds.y,
                 bounds.width,
                 bounds.height,
                 line_height,
                 char_width,
-                theme,
+                None,
             );
         }
         SectionBody::MessageList(m) => {

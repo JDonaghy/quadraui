@@ -635,6 +635,710 @@ pub fn format_tick_value(v: f64) -> String {
     }
 }
 
+// ── NativeSurface paint (#810, Phase 2c of the NativeSurface milestone) ────
+//
+// Before this, `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
+// `win::chart::draw_chart` each independently painted every `ChartKind`
+// with their own Cairo / CoreGraphics / Direct2D calls (quadraui#785
+// child #810, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
+// shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API.
+//
+// Behavioural divergences found while unifying (not resolved silently,
+// per this issue's acceptance bar):
+//
+//   - **The clip (quadraui#791).** GTK and macOS both bracketed their
+//     whole paint in a save/clip/restore to the chart's own rect, so the
+//     legend/crosshair/hover-marker overlays (painted outside
+//     `plot_area` on purpose) couldn't bleed past the chart's own
+//     bounds. `win::chart::draw_chart` had **no clip at all**. `paint`
+//     always brackets its body in `surface_push_clip(layout.bounds)` /
+//     `surface_pop_clip()`, so Windows gains the clip GTK and macOS
+//     already had, for free — see the driver-tier tests in each
+//     backend's own `backend.rs` test module.
+//   - **Area fill (`Series::fill`) is dropped.** GTK and macOS filled
+//     the polygon under a Sparkline/Line series with the pre-#810
+//     Cairo/CoreGraphics path APIs; `win::chart` never painted it at
+//     all — its own (now-deleted) module doc read: "it needs a filled
+//     polygon path, which this backend doesn't build a
+//     `ID2D1PathGeometry` for yet; only the line stroke itself paints."
+//     `NativeSurface` has no polygon-fill verb (only axis-aligned
+//     `surface_fill_rect`), so there is no way to reproduce an
+//     arbitrary under-the-line fill through it. `paint` adopts
+//     Windows's pre-existing, documented scope limitation instead of
+//     inventing a fill_rect-based approximation: `Series::fill` no
+//     longer paints an area on any pixel backend. TUI's own
+//     `tui::chart` is untouched and keeps its own fill rendering.
+//   - **The sparkline's data cadence.** GTK and macOS stretch every
+//     data point evenly across the plot's full width — macOS's own
+//     pre-unification module doc: "we want the polyline stretched
+//     across the full plot width — same approach GTK uses." Windows
+//     instead painted only the most recent `plot_area.width` points at
+//     one pixel each (the same windowed cadence `Chart::layout` itself
+//     uses for `ChartKind::Sparkline`'s `data_point_positions` — a
+//     TUI-cell convention bleeding into the pixel backends, per that
+//     same macOS comment). `paint` adopts the two-out-of-three
+//     full-width stretch. A hovered sparkline point's marker still
+//     reads its position from `layout.data_point_positions` (matching
+//     what GTK and macOS already did), so a data point outside the
+//     windowed cadence can show a hover marker slightly off the
+//     re-stretched line — a pre-existing mismatch carried forward
+//     rather than fixed here, since it's outside this issue's scope.
+//   - **The crosshair.** GTK drew a dashed, 50%-alpha line plus each
+//     series' value at the crosshair position. Windows drew the same
+//     per-series labels but a solid, fully opaque line. macOS drew only
+//     a plain solid line, no labels at all. `NativeSurface` has no
+//     dashed-line verb, so `paint` adopts the two-out-of-three shape —
+//     solid line, per-series value labels — approximating GTK's
+//     50%-alpha tint with `blend` against `theme.background` instead of
+//     dropping it outright.
+//   - **Axis lines.** GTK and Windows both stroke the plot's left/bottom
+//     axis lines for `ChartKind::Line` and a bottom baseline for
+//     `ChartKind::Bar`/`BarGrouped`; macOS drew neither. `paint` adopts
+//     the two-out-of-three shape and always strokes them.
+//   - **The grid line color.** GTK used `theme.muted_fg` at ~20% alpha;
+//     Windows approximated the same intent by blending `theme.muted_fg`
+//     into `theme.background` at 35%; macOS used `theme.separator` at
+//     full opacity. `paint` adopts macOS's shape — `theme.separator` is
+//     the theme's own semantic "chrome line" color, so painting it
+//     opaque needs no alpha approximation on any backend.
+//   - **The hover marker.** GTK and Windows drew a real two-ring circle
+//     (`cr.arc`/`fill_circle`); macOS approximated it with a single
+//     filled square, since its own private rasteriser never grew a
+//     circle helper. `NativeSurface` has no circle verb either (see its
+//     module doc's "~15 drawing verbs" — a circle isn't one of them),
+//     so `paint` adopts macOS's square approximation, sized to the same
+//     footprint GTK/Windows already used (radius 5 / radius 8 rings →
+//     10×10 / 16×16 squares).
+//   - **The chart's theme, on Windows, is left as-is.**
+//     `win::chart::draw_chart` was called with a hardcoded
+//     `Theme::default()` rather than `self.current_theme`
+//     (`win::status_bar` got this same fix under quadraui#789, but that
+//     was its own dedicated issue). `WinBackend::draw_form`'s own #808
+//     migration kept `Theme::default()` rather than folding in that
+//     fix; `WinBackend::draw_chart` does the same here, for the same
+//     reason — a live-theme fix is a separate, one-issue-at-a-time
+//     change, not something to bundle incidentally into a paint-code
+//     unification.
+//
+// `SERIES_COLORS`/`series_color` are lifted here verbatim (same six
+// literal colors every deleted per-backend copy used) — per this
+// issue's acceptance bar, the color-table *abstraction* is a separate,
+// sibling issue; this phase only collapses three copies of the same
+// literal array into one.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_chart` call site plus this module's
+// own `RecordingSurface` tests on every leg that enables one of the
+// three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+mod native_surface_paint {
+    use super::{Chart, ChartKind, ChartLayout};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    /// Default series palette — see this module's doc for why this is a
+    /// fourth (not shared-with-TUI) copy.
+    pub(crate) const SERIES_COLORS: [Color; 6] = [
+        Color::rgb(80, 160, 255),
+        Color::rgb(255, 120, 80),
+        Color::rgb(80, 220, 120),
+        Color::rgb(220, 180, 60),
+        Color::rgb(180, 100, 240),
+        Color::rgb(240, 100, 180),
+    ];
+
+    fn series_color(chart: &Chart, idx: usize) -> Color {
+        chart
+            .series
+            .get(idx)
+            .and_then(|s| s.color)
+            .unwrap_or(SERIES_COLORS[idx % SERIES_COLORS.len()])
+    }
+
+    /// CPU-side alpha pre-mix — see this module's doc for why: two of
+    /// the three pixel backends' `NativeSurface::surface_fill_rect` /
+    /// `surface_draw_line` implementations don't honour `Color::a`
+    /// (mirrors the now-deleted `win::text::blend`, lifted here since
+    /// it's needed by every backend now, not just Windows).
+    fn blend(base: Color, over: Color, alpha: f32) -> Color {
+        let alpha = alpha.clamp(0.0, 1.0);
+        let mix =
+            |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
+        Color::rgb(
+            mix(base.r, over.r),
+            mix(base.g, over.g),
+            mix(base.b, over.b),
+        )
+    }
+
+    /// Stroke a polyline through `points` as `points.len() - 1` separate
+    /// segments — `NativeSurface::surface_draw_line` only draws one
+    /// segment at a time (mirrors how `win::chart`'s pre-#810 rasteriser
+    /// already built every polyline, one `draw_line` call per segment,
+    /// since Direct2D's `ID2D1RenderTarget` has no multi-segment stroke
+    /// helper here either).
+    fn stroke_polyline(
+        surface: &mut dyn NativeSurface,
+        points: &[(f32, f32)],
+        color: Color,
+        stroke_width: f32,
+    ) {
+        for pair in points.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            surface.surface_draw_line(
+                crate::Point::new(from.0, from.1),
+                crate::Point::new(to.0, to.1),
+                color,
+                stroke_width,
+            );
+        }
+    }
+
+    /// Paint a [`Chart`] (already resolved into `layout`) onto `surface`.
+    /// See this module's doc for the divergences resolved while
+    /// unifying three per-backend copies into this one.
+    ///
+    /// `layout` must be the same [`ChartLayout`] the caller uses for
+    /// hit-testing/hover resolution — mirrors `primitives::form::paint`'s
+    /// contract of reading geometry only from the caller-supplied
+    /// layout, never recomputing it.
+    pub(crate) fn paint(
+        chart: &Chart,
+        layout: &ChartLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
+    ) {
+        let b = layout.bounds;
+        if b.width <= 0.0 || b.height <= 0.0 {
+            return;
+        }
+
+        // Clip to the chart's own rect (quadraui#791) — see this
+        // module's doc for why Windows didn't have this before.
+        surface.surface_push_clip(b);
+
+        match chart.kind {
+            ChartKind::Sparkline => paint_sparkline(surface, layout, chart, theme),
+            ChartKind::Line => paint_line(surface, layout, chart, theme),
+            ChartKind::Bar | ChartKind::BarGrouped => paint_bar(surface, layout, chart, theme),
+        }
+
+        if let Some(data_x) = crosshair_x {
+            paint_crosshair(surface, layout, chart, theme, data_x);
+        }
+        if let Some((si, di)) = hovered_point {
+            paint_hover_marker(surface, layout, si, di, chart);
+        }
+
+        surface.surface_pop_clip();
+    }
+
+    fn paint_sparkline(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        chart: &Chart,
+        theme: &Theme,
+    ) {
+        let pa = layout.plot_area;
+        surface.surface_fill_rect(pa, theme.background);
+
+        let Some(s) = chart.series.first() else {
+            return;
+        };
+        if s.data.is_empty() || pa.width <= 0.0 || pa.height <= 0.0 {
+            return;
+        }
+        let (y_min, y_max) = chart.effective_y_range();
+        let range = y_max - y_min;
+        let color = series_color(chart, 0);
+        let n = s.data.len();
+        let points: Vec<(f32, f32)> = s
+            .data
+            .iter()
+            .enumerate()
+            .map(|(i, &val)| {
+                let norm = if range > 0.0 {
+                    ((val - y_min) / range).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                };
+                let sx = pa.x
+                    + if n <= 1 {
+                        0.0
+                    } else {
+                        (i as f32 / (n - 1) as f32) * pa.width
+                    };
+                let sy = pa.y + pa.height - norm as f32 * pa.height;
+                (sx, sy)
+            })
+            .collect();
+        stroke_polyline(surface, &points, color, 1.5);
+    }
+
+    fn paint_line(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        chart: &Chart,
+        theme: &Theme,
+    ) {
+        let pa = layout.plot_area;
+        surface.surface_fill_rect(pa, theme.background);
+        if pa.width <= 0.0 || pa.height <= 0.0 {
+            return;
+        }
+
+        // Axes.
+        surface.surface_draw_line(
+            crate::Point::new(pa.x, pa.y),
+            crate::Point::new(pa.x, pa.y + pa.height),
+            theme.muted_fg,
+            1.0,
+        );
+        surface.surface_draw_line(
+            crate::Point::new(pa.x, pa.y + pa.height),
+            crate::Point::new(pa.x + pa.width, pa.y + pa.height),
+            theme.muted_fg,
+            1.0,
+        );
+
+        for (si, s) in chart.series.iter().enumerate() {
+            if s.data.is_empty() {
+                continue;
+            }
+            let color = series_color(chart, si);
+            let points: Vec<(f32, f32)> = layout
+                .data_point_positions
+                .iter()
+                .filter_map(|&(pt_si, _, x, y)| if pt_si == si { Some((x, y)) } else { None })
+                .collect();
+            stroke_polyline(surface, &points, color, 2.0);
+        }
+
+        paint_legend(surface, layout, chart, theme);
+        paint_axis_labels(surface, layout, chart, theme);
+    }
+
+    fn paint_bar(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        chart: &Chart,
+        theme: &Theme,
+    ) {
+        let pa = layout.plot_area;
+        surface.surface_fill_rect(pa, theme.background);
+        if pa.width <= 0.0 || pa.height <= 0.0 {
+            return;
+        }
+
+        let n = chart.max_data_len();
+        if n > 0 {
+            let slot_w = pa.width / n as f32;
+            let gap = (slot_w * 0.15).max(1.0);
+            let bar_w = (slot_w - gap).max(1.0);
+            let stacked = chart.kind.is_stacked_bar();
+            let series_count = chart.series.len().max(1) as f32;
+            let baseline = pa.y + pa.height;
+
+            for (i, column) in chart.bar_column_spans_all().into_iter().enumerate() {
+                let slot_x = pa.x + i as f32 * slot_w + gap / 2.0;
+                for (si, bottom, top) in column {
+                    let (bx, seg_w) = if stacked {
+                        (slot_x, bar_w)
+                    } else {
+                        let sub_w = (bar_w / series_count).max(1.0);
+                        (slot_x + si as f32 * sub_w, sub_w)
+                    };
+                    let seg_h = (top - bottom) as f32 * pa.height;
+                    if seg_h <= 0.0 {
+                        continue;
+                    }
+                    let by = baseline - top as f32 * pa.height;
+                    surface.surface_fill_rect(
+                        Rect::new(bx, by, seg_w, seg_h),
+                        series_color(chart, si),
+                    );
+                }
+            }
+
+            surface.surface_draw_line(
+                crate::Point::new(pa.x, baseline),
+                crate::Point::new(pa.x + pa.width, baseline),
+                theme.muted_fg,
+                1.0,
+            );
+        }
+
+        paint_legend(surface, layout, chart, theme);
+        paint_axis_labels(surface, layout, chart, theme);
+    }
+
+    fn paint_legend(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        chart: &Chart,
+        theme: &Theme,
+    ) {
+        let Some(lb) = layout.legend_bounds else {
+            return;
+        };
+        surface.surface_fill_rect(lb, theme.background);
+
+        let mut cx = lb.x + 2.0;
+        for (i, s) in chart.series.iter().enumerate() {
+            let color = series_color(chart, i);
+            let swatch = lb.height * 0.6;
+            let sy = lb.y + (lb.height - swatch) / 2.0;
+            surface.surface_fill_rect(Rect::new(cx, sy, swatch, swatch), color);
+            cx += swatch + 4.0;
+
+            let (tw, th) = surface.surface_measure_text(&s.label);
+            surface.surface_draw_text_run(
+                Rect::new(cx, lb.y, tw, th.max(lb.height)),
+                &s.label,
+                theme.foreground,
+            );
+            cx += tw + 12.0;
+        }
+    }
+
+    fn paint_axis_labels(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        chart: &Chart,
+        theme: &Theme,
+    ) {
+        let pa = layout.plot_area;
+
+        for &(sy, val) in &layout.y_tick_positions {
+            let label = super::format_tick_value(val);
+            let (tw, th) = surface.surface_measure_text(&label);
+            surface.surface_draw_text_run(
+                Rect::new(pa.x - tw - 4.0, sy - th / 2.0, tw, th),
+                &label,
+                theme.muted_fg,
+            );
+
+            if chart.show_grid && sy > pa.y && sy < pa.y + pa.height {
+                surface.surface_draw_line(
+                    crate::Point::new(pa.x, sy),
+                    crate::Point::new(pa.x + pa.width, sy),
+                    theme.separator,
+                    0.5,
+                );
+            }
+        }
+
+        if let Some(label) = &chart.x_label {
+            let (tw, th) = surface.surface_measure_text(label);
+            let cx = pa.x + (pa.width - tw) / 2.0;
+            let cy = pa.y + pa.height;
+            surface.surface_draw_text_run(Rect::new(cx, cy, tw, th), label, theme.foreground);
+        }
+
+        if let Some(label) = &chart.y_label {
+            let (tw, th) = surface.surface_measure_text(label);
+            surface.surface_draw_text_run(
+                Rect::new(layout.bounds.x, pa.y, tw, th),
+                label,
+                theme.foreground,
+            );
+        }
+    }
+
+    fn paint_crosshair(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        chart: &Chart,
+        theme: &Theme,
+        data_x: f64,
+    ) {
+        let data_len = chart.max_data_len();
+        let screen_x = layout.data_to_screen_x(data_x, data_len);
+        let pa = layout.plot_area;
+        if screen_x <= pa.x || screen_x >= pa.x + pa.width {
+            return;
+        }
+
+        let line_color = blend(theme.background, theme.muted_fg, 0.5);
+        surface.surface_draw_line(
+            crate::Point::new(screen_x, pa.y),
+            crate::Point::new(screen_x, pa.y + pa.height),
+            line_color,
+            1.0,
+        );
+
+        let (y_min, y_max) = chart.effective_y_range();
+        let range = y_max - y_min;
+        for (si, s) in chart.series.iter().enumerate() {
+            if s.data.is_empty() {
+                continue;
+            }
+            let idx = data_x.round() as usize;
+            let Some(&val) = s.data.get(idx) else {
+                continue;
+            };
+            let label = super::format_tick_value(val);
+            let color = series_color(chart, si);
+            let norm = if range > 0.0 {
+                ((val - y_min) / range).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let sy = pa.y + pa.height - norm as f32 * pa.height;
+            let (tw, th) = surface.surface_measure_text(&label);
+            surface.surface_draw_text_run(
+                Rect::new(screen_x + 4.0, sy - 8.0, tw, th),
+                &label,
+                color,
+            );
+        }
+    }
+
+    fn paint_hover_marker(
+        surface: &mut dyn NativeSurface,
+        layout: &ChartLayout,
+        series_idx: usize,
+        data_idx: usize,
+        chart: &Chart,
+    ) {
+        let Some(&(_, _, sx, sy)) = layout
+            .data_point_positions
+            .iter()
+            .find(|&&(si, di, _, _)| si == series_idx && di == data_idx)
+        else {
+            return;
+        };
+        let color = series_color(chart, series_idx);
+        let inner = 5.0_f32;
+        surface.surface_fill_rect(
+            Rect::new(sx - inner, sy - inner, inner * 2.0, inner * 2.0),
+            color,
+        );
+        let outer_color = blend(Theme::default().background, color, 0.3);
+        let outer = 8.0_f32;
+        surface.surface_fill_rect(
+            Rect::new(sx - outer, sy - outer, outer * 2.0, outer * 2.0),
+            outer_color,
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::chart::Series;
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues, so a paint
+        /// assertion can run on any host — no Cairo, Core Graphics or
+        /// Direct2D needed. Mirrors `primitives::find_replace`'s own
+        /// `RecordingSurface` (#809): the pixel backends' real
+        /// `ImageSurface`/`BitmapSurface`/`HeadlessSurface` driver tests
+        /// still cover "the verb reached real pixels"; this covers "the
+        /// shared painter emits the right verb at all", on every leg of
+        /// the quality gate that enables gtk, win, or macos.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            lines: Vec<(crate::Point, crate::Point, Color, f32)>,
+            clip_pushes: Vec<Rect>,
+            clip_pops: usize,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                from: crate::Point,
+                to: crate::Point,
+                color: Color,
+                stroke_width: f32,
+            ) {
+                self.lines.push((from, to, color, stroke_width));
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn line_chart(data: Vec<f64>) -> Chart {
+            Chart {
+                id: WidgetId::new("chart"),
+                kind: ChartKind::Line,
+                series: vec![Series {
+                    label: "a".into(),
+                    data,
+                    color: None,
+                    fill: false,
+                }],
+                x_label: None,
+                y_label: None,
+                y_range: None,
+                x_range: None,
+                show_legend: false,
+                y_ticks: Some(0),
+                x_ticks: Some(0),
+                show_grid: false,
+            }
+        }
+
+        fn layout_for(chart: &Chart) -> ChartLayout {
+            chart.layout(
+                0.0,
+                0.0,
+                crate::primitives::chart::ChartMeasure {
+                    width: 100.0,
+                    height: 50.0,
+                    char_width: 8.0,
+                    line_height: 16.0,
+                },
+            )
+        }
+
+        /// Regression for quadraui#791/#810: every pixel backend must
+        /// clip a chart's paint to its own bounds — see this module's
+        /// doc for why Windows had no clip at all before this phase.
+        #[test]
+        fn paint_clips_to_the_charts_own_bounds() {
+            let chart = line_chart(vec![1.0, 2.0, 3.0]);
+            let layout = layout_for(&chart);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            assert_eq!(
+                surface.clip_pushes,
+                vec![layout.bounds],
+                "paint must push exactly one clip, at the chart's own bounds"
+            );
+            assert_eq!(
+                surface.clip_pops, 1,
+                "every surface_push_clip must be balanced by surface_pop_clip"
+            );
+        }
+
+        #[test]
+        fn zero_size_chart_paints_nothing_and_never_clips() {
+            let chart = line_chart(vec![1.0, 2.0]);
+            let layout = ChartLayout {
+                bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+                plot_area: Rect::new(0.0, 0.0, 0.0, 0.0),
+                legend_bounds: None,
+                hit_regions: Vec::new(),
+                data_point_positions: Vec::new(),
+                y_tick_positions: Vec::new(),
+                x_tick_positions: Vec::new(),
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            assert!(surface.clip_pushes.is_empty());
+            assert_eq!(surface.clip_pops, 0);
+            assert!(surface.fills.is_empty());
+        }
+
+        #[test]
+        fn line_series_paints_with_its_resolved_color() {
+            let chart = line_chart(vec![1.0, 4.0, 2.0]);
+            let layout = layout_for(&chart);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            assert!(
+                surface
+                    .lines
+                    .iter()
+                    .any(|&(_, _, c, _)| c == SERIES_COLORS[0]),
+                "expected at least one line segment in the series' resolved colour, got {:?}",
+                surface.lines,
+            );
+        }
+
+        #[test]
+        fn hover_marker_paints_two_nested_fills_at_the_data_point() {
+            let chart = line_chart(vec![1.0, 4.0, 2.0]);
+            let layout = layout_for(&chart);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, Some((0, 1)), None);
+
+            let (_, _, sx, sy) = layout.data_point_positions[1];
+            // Filter to small, marker-sized fills (<= the 16x16 outer
+            // ring) centred on the data point — excludes the much
+            // larger plot-area background fill, which also covers this
+            // point.
+            let fills_at_point = surface
+                .fills
+                .iter()
+                .filter(|(r, _)| {
+                    r.width <= 16.0
+                        && r.height <= 16.0
+                        && r.x <= sx
+                        && sx <= r.x + r.width
+                        && r.y <= sy
+                        && sy <= r.y + r.height
+                })
+                .count();
+            assert_eq!(
+                fills_at_point, 2,
+                "hover marker should paint two nested fills (inner + outer ring) centred on the data point"
+            );
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(unused_imports)]
+pub(crate) use native_surface_paint::{paint, SERIES_COLORS};
+
 #[cfg(test)]
 mod tests {
     use super::*;

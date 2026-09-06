@@ -75,7 +75,7 @@ pub use crate::primitives::tab_bar::TabBarHits;
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, ACTIVITY_ROW_PX};
 pub use backend::GtkBackend;
 pub use board::{draw_board, gtk_board_layout};
-pub use chart::{draw_chart, gtk_chart_layout};
+pub use chart::gtk_chart_layout;
 pub use command_center::{draw_command_center, gtk_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::draw_context_menu;
@@ -129,7 +129,6 @@ pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
 };
-pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use text_input::{draw_text_input, gtk_text_input_layout};
 pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
