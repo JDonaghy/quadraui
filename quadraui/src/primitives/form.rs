@@ -473,6 +473,14 @@ mod native_surface_paint {
     use super::{FieldKind, Form, FormLayout, ValidationState};
     use crate::event::Rect;
     use crate::native_surface::NativeSurface;
+    // Rect arithmetic for the selected-item background pill, extracted
+    // to `paint_geometry` (#857) so it's unit-tested outside this
+    // module's own feature-gated `mod tests` too — see that function's
+    // doc for the #808 history (macOS painted it, GTK painted nothing,
+    // Windows painted `hover_bg` at full row height; unifying on macOS's
+    // shape gives every pixel backend the same at-a-glance "which
+    // toggle is on" cue).
+    use crate::paint_geometry::form_selection_pill as selection_pill;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
@@ -491,38 +499,6 @@ mod native_surface_paint {
     /// rect are translated by the same `origin`, once each.
     fn translate(r: &Rect, origin: crate::Point) -> Rect {
         Rect::new(origin.x + r.x, origin.y + r.y, r.width, r.height)
-    }
-
-    /// Vertical inset applied to a selected `ToggleGroup` /
-    /// `SegmentedControl` item's background pill, in points.
-    const PILL_INSET_Y: f32 = 2.0;
-
-    /// Shrink an item rect into the "pill" the *on* / *selected* state
-    /// paints its background into: full item width, inset
-    /// [`PILL_INSET_Y`] at top and bottom so consecutive items keep a
-    /// visible gap between their highlights.
-    ///
-    /// Ports `macos::form::draw_form`'s pre-#808 `iy + 2.0` /
-    /// `ih - 4.0` fill — the one selected-state affordance the three
-    /// deleted per-backend copies disagreed about (macOS painted it,
-    /// GTK painted nothing, Windows painted `hover_bg` at full row
-    /// height). Unifying on macOS's shape gives every pixel backend the
-    /// same at-a-glance "which toggle is on" cue; TUI keeps signalling
-    /// it with `accent_fg` alone, since a cell grid has no sub-cell
-    /// inset to give.
-    ///
-    /// Degenerate rows (height <= `2 * PILL_INSET_Y`) fall back to the
-    /// un-inset rect rather than producing a negative height.
-    fn selection_pill(r: Rect) -> Rect {
-        if r.height <= PILL_INSET_Y * 2.0 {
-            return r;
-        }
-        Rect::new(
-            r.x,
-            r.y + PILL_INSET_Y,
-            r.width,
-            r.height - PILL_INSET_Y * 2.0,
-        )
     }
 
     fn plain_text(t: &StyledText) -> String {
