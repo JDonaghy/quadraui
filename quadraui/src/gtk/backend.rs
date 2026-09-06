@@ -2895,17 +2895,17 @@ impl Backend for GtkBackend {
         rect: QRect,
         panel: &crate::primitives::find_replace::FindReplacePanel,
     ) {
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_find_replace called outside enter_frame_scope");
-        // GTK rasteriser positions the panel via its own anchor logic;
-        // `rect` parameter is currently unused (forward-compat for a
-        // host-resolved layout per BACKEND_TRAIT_PROPOSAL §6.2).
+        debug_assert!(
+            self.current_frame_refs().is_some(),
+            "GtkBackend::draw_find_replace called outside enter_frame_scope",
+        );
+        // The panel positions itself via its own anchor logic (see
+        // `primitives::find_replace::paint`); `rect` is currently
+        // unused (forward-compat for a host-resolved layout per
+        // BACKEND_TRAIT_PROPOSAL §6.2).
         let _ = rect;
-        crate::gtk::draw_find_replace(cr, pango_layout, panel, &theme, line_height, char_width);
+        crate::primitives::find_replace::paint(panel, self, &theme);
     }
 
     fn draw_completions(
@@ -6680,5 +6680,131 @@ mod tests {
         });
 
         backend.surface_end_frame();
+    }
+
+    // ── find_replace (#809, `NativeSurface` Phase 2b) ──────────────────
+    //
+    // `gtk::find_replace` used to carry its own `#[cfg(test)]` module
+    // with a `draw_find_replace_with_multibyte_query_does_not_panic`
+    // test, exercising `gtk::find_replace::draw_find_replace` directly
+    // against a bare Cairo `ImageSurface` — it never asserted rendered
+    // pixels. That module (and the whole file) is deleted — the paint
+    // logic it exercised now lives in
+    // `crate::primitives::find_replace::paint`, covered on every host by
+    // that module's own `RecordingSurface` tests. The test below goes a
+    // step further than the deleted one did: it asserts real rendered
+    // output (the popup background pixel), proving the *plumbing* —
+    // `GtkBackend::draw_find_replace` really does reach `paint` and
+    // `paint` really does land real Cairo pixels through `GtkBackend`'s
+    // `NativeSurface` impl — not just that it doesn't panic.
+    #[test]
+    fn gtk_backend_draw_find_replace_paints_popup_background() {
+        use crate::primitives::find_replace::{compute_hit_regions, FindReplacePanel};
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 600;
+        const H: i32 = 200;
+
+        let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
+        let panel = FindReplacePanel {
+            query: "needle".into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor: 6,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: QRect::new(0.0, 0.0, W as f32, H as f32),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        };
+
+        let mut backend = GtkBackend::new();
+        let theme = crate::Theme::default();
+        backend.set_current_theme(theme);
+        Backend::begin_frame(&mut backend, Viewport::new(W as f32, H as f32, 1.0));
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_find_replace(QRect::new(0.0, 0.0, W as f32, H as f32), &panel);
+            });
+        }
+
+        let cw = backend.char_width().max(1.0);
+        let lh = backend.line_height().max(1.0);
+        let popup_w = panel.panel_width as f32 * cw;
+        let popup_h = 3.0 * lh; // show_replace == false: 1 content row + 2 border rows
+        let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
+            .max(panel.group_bounds.x);
+        let popup_y = panel.group_bounds.y + 2.0;
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let px = (
+            (popup_x + popup_w - 4.0) as usize,
+            (popup_y + popup_h - 4.0) as usize,
+        );
+        let offset = px.1 * stride + px.0 * 4;
+        // Cairo `ARgb32` is premultiplied BGRA in native byte order.
+        let (b8, g8, r8) = (data[offset], data[offset + 1], data[offset + 2]);
+        assert_eq!(
+            (r8, g8, b8),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+            "find/replace popup background must be painted through GtkBackend's \
+             real NativeSurface impl",
+        );
+    }
+
+    /// Regression twin of `primitives::find_replace`'s own
+    /// `multibyte_query_with_out_of_range_selection_does_not_panic`:
+    /// that test proves the shared slicing logic is safe in the
+    /// abstract; this proves real Pango measurement/drawing of the same
+    /// multibyte text through `GtkBackend` doesn't panic either.
+    #[test]
+    fn gtk_backend_draw_find_replace_with_multibyte_query_does_not_panic() {
+        use crate::primitives::find_replace::{compute_hit_regions, FindReplacePanel};
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 600;
+        const H: i32 = 200;
+
+        let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
+        let panel = FindReplacePanel {
+            query: "café🎉中文".into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor: 3,
+            sel_anchor: Some(6),
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: QRect::new(0.0, 0.0, W as f32, H as f32),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        };
+
+        let mut backend = GtkBackend::new();
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            b.draw_find_replace(QRect::new(0.0, 0.0, W as f32, H as f32), &panel);
+        });
     }
 }

@@ -81,10 +81,6 @@ mod editor;
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// landed in #19 via `msg` + `run` instead — see this module's docs.
 pub mod events;
-/// Direct2D / DirectWrite rasteriser for [`crate::FindReplacePanel`]
-/// (#28). Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod find_replace;
 /// Direct2D / DirectWrite rasteriser for [`crate::Form`] (#26).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -260,8 +256,6 @@ pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
 #[cfg(target_os = "windows")]
 pub use editor::draw_editor;
-#[cfg(target_os = "windows")]
-pub use find_replace::draw_find_replace;
 #[cfg(target_os = "windows")]
 pub use form::{draw_settings_chrome, win_form_layout};
 // #808: `draw_form` is `#[deprecated]` — see `form::draw_form`'s doc for

@@ -2,10 +2,12 @@
 //! that anchors at the top-right of the active editor group.
 //!
 //! This primitive owns the data shape, hit-region layout, and click-
-//! target enum. It is the smallest set of types that lets a backend's
-//! rasteriser paint the overlay and route clicks back through a
-//! shared dispatch path. The rasteriser itself lives in
-//! [`crate::tui::draw_find_replace`] and [`crate::gtk::draw_find_replace`].
+//! target enum, plus (as of #809, `NativeSurface` Phase 2b) the shared
+//! [`native_surface_paint::paint`] rasteriser every pixel backend
+//! (GTK/macOS/Win) calls through `Backend::draw_find_replace`. TUI
+//! stays a separate rasteriser, [`crate::tui::draw_find_replace`] —
+//! see `native_surface.rs`'s module doc for why TUI never implements
+//! `NativeSurface` (a cell grid has no sub-cell `Rect`).
 //!
 //! # Why a primitive (and not just a `StatusBar` variant)
 //!
@@ -243,3 +245,651 @@ pub struct FindReplacePanel {
     /// [`compute_hit_regions`] at panel construction.
     pub hit_regions: Vec<(FrHitRegion, FindReplaceClickTarget)>,
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// NativeSurface Phase 2b (#809): shared paint implementation
+// ─────────────────────────────────────────────────────────────────────
+//
+// Before this, `gtk::find_replace::draw_find_replace`,
+// `macos::find_replace::draw_find_replace` and
+// `win::find_replace::draw_find_replace` each independently walked
+// `panel.hit_regions` and painted every region with their own cairo /
+// CoreGraphics / Direct2D calls (quadraui#785 child #809 — re-measure
+// rather than trust the parent audit's 270/220/205 line counts, which
+// predate this PR and this repo's own history of two closed-as-wrong
+// audit findings, #481/#482).
+//
+// Behavioural divergence found while unifying — reported per this
+// issue's acceptance bar, not resolved silently:
+//   - GTK painted a focused input's selection as a 50%-alpha rect
+//     drawn *after* the full (unsplit) text run, so the selected
+//     characters showed through, tinted.
+//   - Windows painted the same highlight as an **opaque** rect, also
+//     drawn after the full text run — so on Windows the selected
+//     characters were completely hidden underneath it. This reads as
+//     a latent rendering bug, not a deliberate style choice.
+//   - macOS painted no selection highlight at all — its module doc
+//     explicitly called this out as a "Scope omission (follow-up)".
+//
+// `paint` below resolves this by adopting the same shape
+// `primitives::form::paint`'s bracketed-text selection already uses
+// (`paint_bracketed_text`, #808): fill the selection rect first, at
+// full opacity, then draw the field's text in three runs (prefix /
+// selected / suffix) on top, so the selected characters stay legible
+// on every backend. `NativeSurface::surface_fill_rect` doesn't
+// guarantee alpha blending — GTK's implementation discards the alpha
+// channel entirely (`GtkBackend::surface_fill_rect` calls
+// `crate::gtk::set_source`, which is `cr.set_source_rgb`) — so an
+// opaque fill is the only shape that reads correctly on all three
+// pixel backends. It also matches how
+// [`crate::tui::draw_find_replace`] already renders this: a solid
+// `sel_bg` cell background, never blended.
+//
+// `#[allow(dead_code)]`: exercised by each backend's own
+// `Backend::draw_find_replace` call site once compiled in, and by this
+// module's own `RecordingSurface` tests on every leg that enables one
+// of the three cfg'd features (gtk, win, or macos-on-macos) — see
+// `native_surface.rs`'s module doc for why that's not actually dead
+// under `--features win` on a non-Windows host, the same shape this
+// module borrows from `primitives::form`'s `native_surface_paint`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+mod native_surface_paint {
+    use super::{FindReplaceClickTarget, FindReplacePanel};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    /// Layout constants shared by every helper below, computed once per
+    /// [`paint`] call.
+    struct Metrics {
+        cw: f32,
+        lh: f32,
+        content_x: f32,
+        content_y: f32,
+    }
+
+    /// Convert a **char** offset into `text` (the unit `cursor` /
+    /// `sel_anchor` are stored in) to a byte offset safe to slice at.
+    /// Out-of-range offsets clamp to `text.len()` — always a valid
+    /// slice point — rather than panicking, mirroring the identical
+    /// `char_indices().nth(..)` idiom every deleted per-backend copy
+    /// used independently.
+    fn char_to_byte(text: &str, char_idx: usize) -> usize {
+        text.char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len())
+    }
+
+    /// A hit-region's bounds in `surface`-absolute coordinates: `col`/
+    /// `row` are char-cell offsets from the panel's content corner,
+    /// `width` is in char cells. Width is floored to 1 device unit so a
+    /// theoretically-zero-width region never produces a degenerate
+    /// fill/stroke rect.
+    fn region_rect(m: &Metrics, col: u16, row: u16, width: u16) -> Rect {
+        Rect::new(
+            m.content_x + col as f32 * m.cw,
+            m.content_y + row as f32 * m.lh,
+            (width as f32 * m.cw).max(1.0),
+            m.lh,
+        )
+    }
+
+    /// Paint a plain text label at a cell position — no background, no
+    /// centering. Used for the chevron and the match-count string.
+    fn paint_label(
+        surface: &mut dyn NativeSurface,
+        m: &Metrics,
+        col: u16,
+        row: u16,
+        text: &str,
+        fg: Color,
+    ) {
+        let (tw, _) = surface.surface_measure_text(text);
+        let px = m.content_x + col as f32 * m.cw;
+        let py = m.content_y + row as f32 * m.lh;
+        surface.surface_draw_text_run(Rect::new(px, py, tw, m.lh), text, fg);
+    }
+
+    /// Paint a toggle button (`Aa` / `ab` / `.*` / `AB`): filled with
+    /// `accent_bg` and inverted text when `active`, outlined with
+    /// `separator` and normal text otherwise.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_toggle(
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        m: &Metrics,
+        col: u16,
+        row: u16,
+        width: u16,
+        label: &str,
+        active: bool,
+    ) {
+        let rect = region_rect(m, col, row, width);
+        let fg = if active {
+            surface.surface_fill_rect(rect, theme.accent_bg);
+            theme.background
+        } else {
+            surface.surface_stroke_rect(rect, theme.separator, 0.5);
+            theme.foreground
+        };
+        let (tw, _) = surface.surface_measure_text(label);
+        let tx = rect.x + ((rect.width - tw) / 2.0).max(0.0);
+        surface.surface_draw_text_run(Rect::new(tx, rect.y, tw, m.lh), label, fg);
+    }
+
+    /// Paint a nav/dismiss/replace glyph (`↑` `↓` `≡` `×` and the
+    /// app-supplied replace-one/replace-all glyphs): filled +
+    /// inverted when `active`, plain text with no outline otherwise —
+    /// every deleted per-backend copy painted no outline here, unlike
+    /// [`paint_toggle`]'s inactive state.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_glyph(
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        m: &Metrics,
+        col: u16,
+        row: u16,
+        width: u16,
+        label: &str,
+        active: bool,
+    ) {
+        let rect = region_rect(m, col, row, width);
+        let fg = if active {
+            surface.surface_fill_rect(rect, theme.accent_bg);
+            theme.background
+        } else {
+            theme.foreground
+        };
+        let (tw, _) = surface.surface_measure_text(label);
+        let tx = rect.x + ((rect.width - tw) / 2.0).max(0.0);
+        surface.surface_draw_text_run(Rect::new(tx, rect.y, tw, m.lh), label, fg);
+    }
+
+    /// Paint a find/replace input field: background + border, the
+    /// field's text, and — only when `is_focused` — the selection
+    /// highlight and cursor.
+    ///
+    /// See this module's doc for why the selection highlight is filled
+    /// *before* the text (split into prefix/selected/suffix runs)
+    /// rather than as a translucent overlay drawn after a single full
+    /// run — that's the shape the three deleted per-backend copies
+    /// disagreed on.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_input(
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        m: &Metrics,
+        col: u16,
+        row: u16,
+        width: u16,
+        text: &str,
+        is_focused: bool,
+        cursor: usize,
+        sel_anchor: Option<usize>,
+    ) {
+        let rect = region_rect(m, col, row, width);
+        surface.surface_fill_rect(rect, theme.background);
+        surface.surface_stroke_rect(rect, theme.separator, 0.5);
+
+        let text_x = rect.x + 4.0;
+
+        let has_sel = is_focused && sel_anchor.is_some_and(|a| a != cursor) && !text.is_empty();
+
+        if !has_sel {
+            let (tw, _) = surface.surface_measure_text(text);
+            surface.surface_draw_text_run(
+                Rect::new(text_x, rect.y, tw, m.lh),
+                text,
+                theme.foreground,
+            );
+        } else {
+            let anchor = sel_anchor.expect("has_sel implies sel_anchor is Some");
+            let (lo, hi) = (anchor.min(cursor), anchor.max(cursor));
+            let lo_b = char_to_byte(text, lo);
+            let hi_b = char_to_byte(text, hi);
+            let prefix = &text[..lo_b];
+            let selected = &text[lo_b..hi_b];
+            let suffix = &text[hi_b..];
+            let (pw, _) = surface.surface_measure_text(prefix);
+            let (sw, _) = surface.surface_measure_text(selected);
+            let (suw, _) = surface.surface_measure_text(suffix);
+
+            surface.surface_fill_rect(
+                Rect::new(text_x + pw, rect.y, sw.max(1.0), m.lh),
+                theme.selection_bg,
+            );
+            surface.surface_draw_text_run(
+                Rect::new(text_x, rect.y, pw, m.lh),
+                prefix,
+                theme.foreground,
+            );
+            surface.surface_draw_text_run(
+                Rect::new(text_x + pw, rect.y, sw, m.lh),
+                selected,
+                theme.foreground,
+            );
+            surface.surface_draw_text_run(
+                Rect::new(text_x + pw + sw, rect.y, suw, m.lh),
+                suffix,
+                theme.foreground,
+            );
+        }
+
+        if !is_focused {
+            return;
+        }
+
+        // Cursor: a 2-device-unit-wide bar at the char offset, inset 2
+        // top/bottom — same shape all three deleted copies drew.
+        let cursor_b = char_to_byte(text, cursor);
+        let (cursor_px, _) = surface.surface_measure_text(&text[..cursor_b]);
+        surface.surface_fill_rect(
+            Rect::new(text_x + cursor_px, rect.y + 2.0, 2.0, (m.lh - 4.0).max(1.0)),
+            theme.foreground,
+        );
+    }
+
+    /// Paint a laid-out [`FindReplacePanel`] using `surface`'s
+    /// [`NativeSurface`] verbs.
+    ///
+    /// Walks `panel.hit_regions` — the same list
+    /// [`super::compute_hit_regions`] builds once at panel construction
+    /// and every backend's click dispatch hit-tests against — so paint
+    /// and click can never disagree about where a target lives.
+    pub(crate) fn paint(panel: &FindReplacePanel, surface: &mut dyn NativeSurface, theme: &Theme) {
+        use FindReplaceClickTarget as T;
+
+        let cw = surface.surface_char_width().max(1.0);
+        let lh = surface.surface_line_height().max(1.0);
+
+        let popup_w = panel.panel_width as f32 * cw;
+        let row_count = if panel.show_replace { 2.0 } else { 1.0 };
+        let popup_h = (row_count + 2.0) * lh;
+
+        let gb = &panel.group_bounds;
+        let popup_x = ((gb.x + gb.width) - popup_w - 10.0).max(gb.x);
+        let popup_y = gb.y + 2.0;
+        let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+        surface.surface_fill_rect(popup_rect, theme.surface_bg);
+        surface.surface_stroke_rect(popup_rect, theme.separator, 1.0);
+
+        let m = Metrics {
+            cw,
+            lh,
+            content_x: popup_x + cw,
+            content_y: popup_y + lh,
+        };
+
+        // Positions derived from neighbouring hit regions, not a hit
+        // region itself — the match-count string isn't clickable. Same
+        // trick every deleted per-backend copy (and TUI) used.
+        let mut regex_end_col: Option<u16> = None;
+        let mut prev_match_col: Option<u16> = None;
+
+        for (region, target) in &panel.hit_regions {
+            match target {
+                T::Chevron => {
+                    let chevron = if panel.show_replace {
+                        "\u{25bc}"
+                    } else {
+                        "\u{25b6}"
+                    };
+                    paint_label(
+                        surface,
+                        &m,
+                        region.col,
+                        region.row,
+                        chevron,
+                        theme.foreground,
+                    );
+                }
+                T::FindInput(_) => paint_input(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    &panel.query,
+                    panel.focus == 0,
+                    panel.cursor,
+                    panel.sel_anchor,
+                ),
+                T::ReplaceInput(_) => paint_input(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    &panel.replacement,
+                    panel.focus == 1,
+                    panel.cursor,
+                    panel.sel_anchor,
+                ),
+                T::ToggleCase => paint_toggle(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    "Aa",
+                    panel.case_sensitive,
+                ),
+                T::ToggleWholeWord => paint_toggle(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    "ab",
+                    panel.whole_word,
+                ),
+                T::ToggleRegex => {
+                    paint_toggle(
+                        surface,
+                        theme,
+                        &m,
+                        region.col,
+                        region.row,
+                        region.width,
+                        ".*",
+                        panel.use_regex,
+                    );
+                    regex_end_col = Some(region.col + region.width);
+                }
+                T::PrevMatch => {
+                    paint_glyph(
+                        surface,
+                        theme,
+                        &m,
+                        region.col,
+                        region.row,
+                        region.width,
+                        "\u{2191}",
+                        false,
+                    );
+                    prev_match_col.get_or_insert(region.col);
+                }
+                T::NextMatch => paint_glyph(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    "\u{2193}",
+                    false,
+                ),
+                T::ToggleInSelection => paint_glyph(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    "\u{2261}",
+                    panel.in_selection,
+                ),
+                T::Close => paint_glyph(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    "\u{00d7}",
+                    false,
+                ),
+                T::TogglePreserveCase => paint_toggle(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    "AB",
+                    panel.preserve_case,
+                ),
+                T::ReplaceCurrent => paint_glyph(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    &panel.replace_one_glyph,
+                    false,
+                ),
+                T::ReplaceAll => paint_glyph(
+                    surface,
+                    theme,
+                    &m,
+                    region.col,
+                    region.row,
+                    region.width,
+                    &panel.replace_all_glyph,
+                    false,
+                ),
+            }
+        }
+
+        if let (Some(start_col), Some(end_col)) = (regex_end_col, prev_match_col) {
+            let info_col = start_col + 1;
+            if end_col > info_col + 1 {
+                paint_label(
+                    surface,
+                    &m,
+                    info_col,
+                    0,
+                    &panel.match_info,
+                    theme.foreground,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::find_replace::compute_hit_regions;
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues, so a paint
+        /// assertion can run on any host — no cairo, Core Graphics or
+        /// Direct2D needed. The pixel backends' own probes (real
+        /// `ImageSurface`/`BitmapSurface`/`HeadlessSurface` renders)
+        /// still cover "the verb reached real pixels"; this covers "the
+        /// shared painter emits the right verb at all", on every leg of
+        /// the quality gate that enables gtk, win, or macos — not just
+        /// whichever one happens to run on this host.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(600.0, 200.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample_panel(query: &str, cursor: usize, sel_anchor: Option<usize>) -> FindReplacePanel {
+            let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
+            FindReplacePanel {
+                query: query.into(),
+                replacement: String::new(),
+                show_replace: false,
+                focus: 0,
+                cursor,
+                sel_anchor,
+                match_info: "1 of 3".into(),
+                case_sensitive: false,
+                whole_word: false,
+                use_regex: false,
+                preserve_case: false,
+                in_selection: false,
+                group_bounds: Rect::new(0.0, 0.0, 600.0, 200.0),
+                panel_width: 50,
+                replace_one_glyph: "R1".into(),
+                replace_all_glyph: "R*".into(),
+                hit_regions,
+            }
+        }
+
+        #[test]
+        fn paints_popup_background_and_border() {
+            let panel = sample_panel("needle", 6, None);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
+                "expected a surface_bg fill for the popup background, fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .any(|(_, c, w)| *c == theme.separator && *w == 1.0),
+                "expected a 1.0-wide separator stroke for the popup border, strokes were {:?}",
+                surface.strokes,
+            );
+        }
+
+        #[test]
+        fn active_toggle_paints_accent_bg() {
+            let mut panel = sample_panel("needle", 6, None);
+            panel.case_sensitive = true;
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.accent_bg),
+                "expected an accent_bg fill for the active toggle, fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// Regression for the divergence this PR found and resolved
+        /// (see the module doc): the selection fill must land *and* the
+        /// selected substring must still be drawn as its own text run,
+        /// so it stays legible rather than getting hidden the way
+        /// Windows's deleted copy hid it.
+        #[test]
+        fn focused_input_selection_fills_and_still_draws_selected_text() {
+            let mut panel = sample_panel("needle", 3, Some(0));
+            panel.focus = 0;
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.selection_bg),
+                "expected a selection_bg fill for the focused input's selection, fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "nee"),
+                "selected substring \"nee\" must still be drawn as its own text run \
+                 (the fill happens before text, so it can't hide it), text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// An unfocused input paints its text but no cursor and no
+        /// selection highlight, even if `sel_anchor` is set — matches
+        /// every deleted per-backend copy's `if !is_focused { return }`
+        /// guard.
+        #[test]
+        fn unfocused_input_paints_no_selection_or_cursor() {
+            let mut panel = sample_panel("needle", 3, Some(0));
+            panel.focus = 1; // no replace row exists, so FindInput (focus 0) is unfocused
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == theme.selection_bg),
+                "unfocused input must not paint a selection highlight, fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "needle"),
+                "unfocused input must still paint its full text as one run, text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// Regression for issue #503: `cursor`/`sel_anchor` are char
+        /// offsets, so a multibyte query with a boundary-adjacent or
+        /// out-of-range offset must not panic — twin of the
+        /// per-backend `*_with_multibyte_query_does_not_panic` tests
+        /// this PR deletes in favour of this one shared assertion.
+        #[test]
+        fn multibyte_query_with_out_of_range_selection_does_not_panic() {
+            let panel = sample_panel("café🎉中文", 3, Some(6));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&panel, &mut surface, &theme);
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(unused_imports)]
+pub(crate) use native_surface_paint::paint;
