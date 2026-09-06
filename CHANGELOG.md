@@ -76,6 +76,16 @@ release time.
   `quadraui/docs/GUIDE.md` (new) walks through building a two-pane app
   with it, including a "which runner do I want?" (`AppLogic` vs
   `ShellApp`) comparison.
+- `quadraui::layout` — shared foundation for the `layout()`/`hit_test()`
+  convergence (issue #816): `Anchor` + `Side`/`ResolvedSide` (the
+  preferred-side/overflow-flip/pin-to-edge resolution `Tooltip`,
+  `Completions`, `ContextMenu` and `RichTextPopup` each reimplement via
+  their own placement enum today) and `visible_range_walk` +
+  `VisibleItem` (the scroll-offset visible-range walk all 19
+  `Visible*{idx, bounds}` structs hand-roll today). Purely additive —
+  no existing primitive consumes it yet; each primitive converges onto
+  it in its own PR behind a `#[deprecated]` shim per
+  `quadraui/docs/PRIMITIVE_RULES.md` rule 8.
 - `quadraui::testing::RecordingBackend` — a public, fully-implemented
   `Backend` for unit tests that need *some* backend to hand a
   controller (e.g. `TreeController`, `ChatController`), not a specific

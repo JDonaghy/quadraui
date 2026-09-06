@@ -160,6 +160,7 @@
 pub mod diagnostics;
 pub mod diff;
 pub mod frame;
+pub mod layout;
 pub mod prelude;
 pub mod primitives;
 pub mod shell;
@@ -476,6 +477,12 @@ pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
     FrameZone, ScreenLayout, Surface,
 };
+// #816: shared layout/hit-test foundation (`Anchor` for overlay
+// positioning, `visible_range_walk` replacing the per-primitive
+// `Visible*{idx, bounds}` structs). Nothing in `primitives/` consumes
+// these yet — each primitive converges onto them in its own PR behind a
+// `#[deprecated]` shim per `docs/PRIMITIVE_RULES.md` rule 8.
+pub use layout::{visible_range_walk, Anchor, Axis, ResolvedSide, Side, VisibleItem};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.
