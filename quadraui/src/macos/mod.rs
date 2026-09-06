@@ -89,7 +89,16 @@ pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
 pub use editor::draw_editor;
 pub use find_replace::draw_find_replace;
-pub use form::{draw_form, draw_settings_chrome, mac_form_layout};
+pub use form::{draw_settings_chrome, mac_form_layout};
+// #808: `draw_form` is `#[deprecated]` — see `form::draw_form`'s doc for
+// why the shim exists and why re-exporting it here (rather than dropping
+// the re-export) is the point. `#[allow(deprecated)]` because a `pub
+// use` of a deprecated item is itself a `deprecated`-lint use site, and
+// this crate denies that lint in-repo (`RUSTFLAGS: -D warnings`) — see
+// CLAUDE.md's "the `deprecated` lint is denied in-repo and allowed
+// downstream" section for why that split is deliberate.
+#[allow(deprecated)]
+pub use form::draw_form;
 pub use image::mac_draw_image;
 pub use list::{draw_list, mac_list_layout};
 pub use menu_bar::{draw_menu_bar, mac_menu_bar_layout};

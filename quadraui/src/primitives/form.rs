@@ -435,6 +435,576 @@ impl Form {
     }
 }
 
+// ── NativeSurface paint (#808, Phase 2a of the NativeSurface milestone) ────
+//
+// Before this, `gtk::form::draw_form`, `macos::form::draw_form` and
+// `win::form::draw_form` each independently matched every `FieldKind` and
+// painted it with their own cairo / CoreGraphics / Direct2D calls — 1,813
+// duplicated lines across the three copies (`docs/SMELL_AUDIT_2026-07.md`
+// §5, quadraui#785 child #808). Worse, `macos::form::draw_form` matched
+// only 10 of 14 variants and silently fell through (`_ => {}`) on
+// `Slider`, `ColorPicker`, `Dropdown` and `TextArea` — a form using one of
+// those rendered nothing on macOS, with no error anywhere.
+//
+// `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API. It handles all 14 variants, so the silent
+// macOS fall-through disappears by construction rather than by
+// four more copy-pasted match arms.
+//
+// `#[allow(dead_code)]`: `paint` and its private helpers are only *called*
+// when a real pixel backend is compiled in — `GtkBackend::draw_form`,
+// `MacBackend::draw_form`/`draw_form_body` and `WinBackend::draw_form`/
+// `draw_form_body` are the call sites, and the Win ones live behind a
+// further `target_os = "windows"` gate (see `win::form`'s module doc).
+// `--features win` alone, on a non-Windows host — exactly what `ci.yml`'s
+// win leg (`cargo check -p quadraui --features win`) runs — compiles this
+// module (the `cfg` above is satisfied) but reaches none of those call
+// sites, so nothing here is "dead" in the sense the lint means; it's the
+// same shape `native_surface.rs`'s own `#[allow(dead_code)]` documents,
+// one level up the call chain.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+mod native_surface_paint {
+    use super::{FieldKind, Form, FormLayout, ValidationState};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::text_util::snap_to_char_boundary;
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText};
+
+    /// Translate a form-local `Rect` (`FormLayout`'s `bounds`/
+    /// `item_bounds` are always local to the form, origin at `(0, 0)` —
+    /// see `FormLayout`'s doc) into `surface`-absolute coordinates.
+    ///
+    /// The single place every field-kind arm below crosses into absolute
+    /// space, rather than re-deriving the translation per call site the
+    /// way the three deleted per-backend copies did — one of which,
+    /// `win::form::shift`, added the row's *already-translated* `y` to
+    /// the item's still-form-local `y` a second time, over-shifting every
+    /// `ToggleGroup` / `ButtonRow` / `SegmentedControl` item on every row
+    /// but the first. Not reproduced here: an item's rect and its row's
+    /// rect are translated by the same `origin`, once each.
+    fn translate(r: &Rect, origin: crate::Point) -> Rect {
+        Rect::new(origin.x + r.x, origin.y + r.y, r.width, r.height)
+    }
+
+    fn plain_text(t: &StyledText) -> String {
+        t.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// Paint a laid-out [`Form`] using `surface`'s [`NativeSurface`]
+    /// verbs.
+    ///
+    /// `flayout` must be the *same* [`FormLayout`] the caller uses for
+    /// hit-testing (typically `Backend::form_layout`'s return value for
+    /// this `form`) — `paint` reads geometry only from `flayout`, never
+    /// recomputes it, so paint and hit-test can never disagree (the #710
+    /// failure class, closed by construction for every backend at once
+    /// instead of per-backend vigilance).
+    ///
+    /// `origin` places the form's local `(0, 0)` at `origin` in
+    /// `surface`'s coordinate space — mirrors every other `*_layout`
+    /// primitive's "local layout + host-supplied origin" contract (see
+    /// `mac_form_layout`'s doc for the same convention stated from the
+    /// hit-test side).
+    ///
+    /// # `FieldKind::Toolbar` is not painted here
+    ///
+    /// `NativeSurface`'s drawing verbs have no rounded-rect or
+    /// hover/pressed/focus-state support, so a `Toolbar` field's full
+    /// chrome (see `crate::gtk::toolbar`'s module doc for the state
+    /// table every pixel backend already implements) can't be
+    /// reproduced through this trait without growing it well past this
+    /// primitive's own scope. `paint` still paints a `Toolbar` field's
+    /// row background / label / validation indicator like any other
+    /// field, but leaves the value column blank — callers must paint the
+    /// embedded `Toolbar` themselves *after* `paint` returns (so the two
+    /// never fight over `surface`'s exclusive borrow), using their
+    /// existing per-backend toolbar rasteriser at the field's
+    /// `VisibleFormField::bounds` / `item_bounds`. See
+    /// `GtkBackend::draw_form` for the reference pattern.
+    pub(crate) fn paint(
+        form: &Form,
+        flayout: &FormLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        origin: crate::Point,
+    ) {
+        let form_rect = Rect::new(
+            origin.x,
+            origin.y,
+            flayout.viewport_width,
+            flayout.viewport_height,
+        );
+        surface.surface_fill_rect(form_rect, theme.tab_bar_bg);
+
+        for vf in &flayout.visible_fields {
+            let Some(field) = form.fields.get(vf.field_idx) else {
+                continue;
+            };
+            let row_rect = translate(&vf.bounds, origin);
+            let row_h = row_rect.height;
+
+            let is_focused = form.has_focus
+                && form
+                    .focused_field
+                    .as_ref()
+                    .is_some_and(|id| id == &field.id);
+            let is_header = matches!(field.kind, FieldKind::Label);
+
+            let (default_fg, row_bg) = if is_focused {
+                (theme.foreground, theme.selected_bg)
+            } else if is_header {
+                (theme.header_fg, theme.header_bg)
+            } else {
+                (theme.foreground, theme.tab_bar_bg)
+            };
+            surface.surface_fill_rect(row_rect, row_bg);
+
+            let field_fg = if field.disabled {
+                theme.muted_fg
+            } else {
+                default_fg
+            };
+
+            let label_text = plain_text(&field.label);
+            let (label_w, label_h) = surface.surface_measure_text(&label_text);
+            let label_x = row_rect.x + 6.0;
+            let label_y = row_rect.y + (row_h - label_h) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(label_x, label_y, label_w, label_h),
+                &label_text,
+                field_fg,
+            );
+            let label_right = label_x + label_w;
+            let no_label = label_text.is_empty();
+            let input_right = row_rect.x + row_rect.width - 8.0;
+
+            match &field.kind {
+                FieldKind::Label => {}
+                FieldKind::Toggle { value } => {
+                    let glyph = if *value { "[x]" } else { "[ ]" };
+                    let fg = if *value && !field.disabled {
+                        theme.accent_fg
+                    } else {
+                        field_fg
+                    };
+                    let (w, h) = surface.surface_measure_text(glyph);
+                    let ix = if no_label { label_x } else { input_right - w };
+                    if no_label || ix > label_right + 8.0 {
+                        let iy = row_rect.y + (row_h - h) / 2.0;
+                        surface.surface_draw_text_run(Rect::new(ix, iy, w, h), glyph, fg);
+                    }
+                }
+                FieldKind::TextInput {
+                    value,
+                    placeholder,
+                    cursor,
+                    selection_anchor,
+                } => {
+                    paint_bracketed_text(
+                        surface,
+                        row_rect,
+                        label_right,
+                        no_label,
+                        input_right,
+                        value,
+                        placeholder,
+                        *cursor,
+                        *selection_anchor,
+                        field_fg,
+                        theme.muted_fg,
+                        theme.selection_bg,
+                        theme.accent_fg,
+                        false,
+                        '\0',
+                    );
+                }
+                FieldKind::PasswordInput {
+                    value,
+                    placeholder,
+                    cursor,
+                    mask_char,
+                } => {
+                    paint_bracketed_text(
+                        surface,
+                        row_rect,
+                        label_right,
+                        no_label,
+                        input_right,
+                        value,
+                        placeholder,
+                        *cursor,
+                        None,
+                        field_fg,
+                        theme.muted_fg,
+                        theme.selection_bg,
+                        theme.accent_fg,
+                        true,
+                        *mask_char,
+                    );
+                }
+                FieldKind::TextArea {
+                    value,
+                    placeholder,
+                    cursor,
+                    ..
+                } => {
+                    let first_line = value.lines().next().unwrap_or("");
+                    paint_bracketed_text(
+                        surface,
+                        row_rect,
+                        label_right,
+                        no_label,
+                        input_right,
+                        first_line,
+                        placeholder,
+                        *cursor,
+                        None,
+                        field_fg,
+                        theme.muted_fg,
+                        theme.selection_bg,
+                        theme.accent_fg,
+                        false,
+                        '\0',
+                    );
+                }
+                FieldKind::Button => {
+                    let cap = label_text.clone();
+                    let total_w = label_w + 24.0;
+                    let ix = if no_label {
+                        label_x
+                    } else {
+                        input_right - total_w
+                    };
+                    if no_label || ix > row_rect.x + 8.0 {
+                        let brk = if is_focused {
+                            theme.accent_fg
+                        } else {
+                            theme.muted_fg
+                        };
+                        let (_, h) = surface.surface_measure_text("<");
+                        let y = row_rect.y + (row_h - h) / 2.0;
+                        surface.surface_draw_text_run(Rect::new(ix, y, 12.0, h), "<", brk);
+                        let text_fg = if field.disabled {
+                            theme.muted_fg
+                        } else {
+                            field_fg
+                        };
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + 12.0, y, label_w, h),
+                            &cap,
+                            text_fg,
+                        );
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + 12.0 + label_w + 4.0, y, 12.0, h),
+                            ">",
+                            brk,
+                        );
+                    }
+                }
+                FieldKind::ReadOnly { value } => {
+                    let text = plain_text(value);
+                    let (w, h) = surface.surface_measure_text(&text);
+                    let ix = if no_label { label_x } else { input_right - w };
+                    if no_label || ix > label_right + 8.0 {
+                        let iy = row_rect.y + (row_h - h) / 2.0;
+                        surface.surface_draw_text_run(
+                            Rect::new(ix, iy, w, h),
+                            &text,
+                            theme.muted_fg,
+                        );
+                    }
+                }
+                FieldKind::Slider {
+                    value, min, max, ..
+                } => {
+                    let track_w = 80.0_f32;
+                    let range = (max - min).max(f32::EPSILON);
+                    let frac = ((value - min) / range).clamp(0.0, 1.0);
+                    let value_str = format!("{value:.2}");
+                    let (value_w, value_h) = surface.surface_measure_text(&value_str);
+                    let total = track_w + 8.0 + value_w;
+                    let ix = input_right - total;
+                    if ix > label_right + 8.0 {
+                        let track_y = row_rect.y + row_h / 2.0 - 2.0;
+                        surface.surface_fill_rect(
+                            Rect::new(ix, track_y, track_w, 4.0),
+                            theme.muted_fg,
+                        );
+                        surface.surface_fill_rect(
+                            Rect::new(ix, track_y, track_w * frac, 4.0),
+                            theme.accent_fg,
+                        );
+                        let vy = row_rect.y + (row_h - value_h) / 2.0;
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + track_w + 8.0, vy, value_w, value_h),
+                            &value_str,
+                            field_fg,
+                        );
+                    }
+                }
+                FieldKind::ColorPicker { value } => {
+                    let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
+                    let (hw, hh) = surface.surface_measure_text(&hex);
+                    let swatch = 12.0_f32;
+                    let total = swatch + 6.0 + hw;
+                    let ix = input_right - total;
+                    if ix > label_right + 8.0 {
+                        let sy = row_rect.y + (row_h - swatch) / 2.0;
+                        surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
+                        let ty = row_rect.y + (row_h - hh) / 2.0;
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + swatch + 6.0, ty, hw, hh),
+                            &hex,
+                            field_fg,
+                        );
+                    }
+                }
+                FieldKind::Dropdown {
+                    options,
+                    selected_idx,
+                } => {
+                    let chosen = options
+                        .get(*selected_idx)
+                        .map(plain_text)
+                        .unwrap_or_default();
+                    let (cw, ch) = surface.surface_measure_text(&chosen);
+                    let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
+                    let total = cw + 4.0 + chev_w;
+                    let ix = input_right - total;
+                    if ix > label_right + 8.0 {
+                        let ty = row_rect.y + (row_h - ch) / 2.0;
+                        surface.surface_draw_text_run(Rect::new(ix, ty, cw, ch), &chosen, field_fg);
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + cw + 4.0, ty, chev_w, ch),
+                            "\u{25BE}",
+                            theme.muted_fg,
+                        );
+                    }
+                }
+                FieldKind::ToggleGroup { toggles } => {
+                    for (item_id, item_rect) in &vf.item_bounds {
+                        if let Some(t) = toggles.iter().find(|t| &t.id == item_id) {
+                            let fg = if t.value && !field.disabled {
+                                theme.accent_fg
+                            } else {
+                                theme.muted_fg
+                            };
+                            let r = translate(item_rect, origin);
+                            surface.surface_draw_text_run(r, &t.label, fg);
+                        }
+                    }
+                }
+                FieldKind::ButtonRow { buttons } => {
+                    for (item_id, item_rect) in &vf.item_bounds {
+                        if let Some(b) = buttons.iter().find(|b| &b.id == item_id) {
+                            let r = translate(item_rect, origin);
+                            let disabled = b.disabled || field.disabled;
+                            let bg = if disabled { row_bg } else { theme.hover_bg };
+                            surface.surface_fill_rect(r, bg);
+                            let fg = if disabled { theme.muted_fg } else { field_fg };
+                            let mut tx = r.x + 4.0;
+                            if let Some(ref icon) = b.icon {
+                                let (iw, ih) = surface.surface_measure_text(&icon.fallback);
+                                let iy = r.y + (r.height - ih) / 2.0;
+                                surface.surface_draw_text_run(
+                                    Rect::new(tx, iy, iw, ih),
+                                    &icon.fallback,
+                                    fg,
+                                );
+                                tx += iw + 4.0;
+                            }
+                            let (lw, lh) = surface.surface_measure_text(&b.label);
+                            let ly = r.y + (r.height - lh) / 2.0;
+                            surface.surface_draw_text_run(Rect::new(tx, ly, lw, lh), &b.label, fg);
+                        }
+                    }
+                }
+                FieldKind::SegmentedControl {
+                    options,
+                    selected_idx,
+                } => {
+                    for (i, (_item_id, item_rect)) in vf.item_bounds.iter().enumerate() {
+                        let opt = options.get(i).map(|s| s.as_str()).unwrap_or("");
+                        let fg = if i == *selected_idx {
+                            theme.accent_fg
+                        } else {
+                            theme.muted_fg
+                        };
+                        let r = translate(item_rect, origin);
+                        if i == *selected_idx {
+                            surface.surface_fill_rect(r, theme.hover_bg);
+                        }
+                        let (tw, th) = surface.surface_measure_text(opt);
+                        let ty = r.y + (r.height - th) / 2.0;
+                        surface.surface_draw_text_run(Rect::new(r.x, ty, tw, th), opt, fg);
+                    }
+                }
+                FieldKind::Toolbar(_) => {
+                    // See this fn's doc: painted by the caller after
+                    // `paint` returns, using the backend's own toolbar
+                    // rasteriser.
+                }
+            }
+
+            if let Some(ref vs) = field.validation {
+                let (color, msg) = match vs {
+                    ValidationState::Error(m) => (theme.error_fg, m.as_str()),
+                    ValidationState::Warning(m) => (theme.warning_fg, m.as_str()),
+                };
+                surface.surface_fill_rect(
+                    Rect::new(row_rect.x + 2.0, row_rect.y + (row_h - 3.0) / 2.0, 3.0, 3.0),
+                    color,
+                );
+                if !msg.is_empty() {
+                    let (mw, mh) = surface.surface_measure_text(msg);
+                    let my = row_rect.y + (row_h - mh) / 2.0;
+                    surface.surface_draw_text_run(
+                        Rect::new(row_rect.x + 8.0, my, mw, mh),
+                        msg,
+                        color,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Shared bracketed `[value]` painter for `TextInput` / `PasswordInput`
+    /// / the single-line `TextArea` preview. `mask` replaces every
+    /// character with `mask_char` when `masked` is true. Port of
+    /// `win::form::draw_bracketed_text` (the most complete of the three
+    /// deleted copies — it already carried the selection highlight GTK's
+    /// copy had and macOS's never gained).
+    #[allow(clippy::too_many_arguments)]
+    fn paint_bracketed_text(
+        surface: &mut dyn NativeSurface,
+        row_rect: Rect,
+        label_right: f32,
+        no_label: bool,
+        input_right: f32,
+        value: &str,
+        placeholder: &str,
+        cursor: Option<usize>,
+        selection_anchor: Option<usize>,
+        field_fg: Color,
+        dim_fg: Color,
+        sel_bg: Color,
+        accent_fg: Color,
+        masked: bool,
+        mask_char: char,
+    ) {
+        let masked_value: String;
+        let shown: &str = if value.is_empty() {
+            placeholder
+        } else if masked {
+            masked_value = value.chars().map(|_| mask_char).collect();
+            &masked_value
+        } else {
+            value
+        };
+        let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+        let row_h = row_rect.height;
+        let (shown_w, shown_h) = surface.surface_measure_text(shown);
+
+        let (ix, _dw, bracket_right) = if no_label {
+            let ix = row_rect.x + 6.0;
+            let bracket_r = input_right - 4.0;
+            let avail = (bracket_r - ix - 8.0).max(0.0);
+            (ix, shown_w.min(avail), bracket_r)
+        } else {
+            let max_width = (row_rect.width * 0.6).max(80.0);
+            let dw = shown_w.min(max_width);
+            let ix = input_right - dw - 14.0;
+            (ix, dw, ix + 8.0 + dw + 2.0)
+        };
+        if !(no_label || ix > label_right + 8.0) {
+            return;
+        }
+
+        let y = row_rect.y + (row_h - shown_h) / 2.0;
+        surface.surface_draw_text_run(Rect::new(ix, y, 8.0, shown_h), "[", dim_fg);
+
+        let has_sel = !masked
+            && matches!((cursor, selection_anchor), (Some(c), Some(a)) if c != a && !value.is_empty());
+        if has_sel {
+            let (c, a) = (cursor.unwrap(), selection_anchor.unwrap());
+            let (lo, hi) = (c.min(a), c.max(a));
+            let lo = snap_to_char_boundary(shown, lo);
+            let hi = snap_to_char_boundary(shown, hi);
+            let prefix = &shown[..lo];
+            let sel_text = &shown[lo..hi];
+            let suffix = &shown[hi..];
+            let (pw, _) = surface.surface_measure_text(prefix);
+            let (sw, _) = surface.surface_measure_text(sel_text);
+            surface.surface_fill_rect(
+                Rect::new(ix + 8.0 + pw, row_rect.y + 2.0, sw, row_h - 4.0),
+                sel_bg,
+            );
+            surface.surface_draw_text_run(Rect::new(ix + 8.0, y, pw, shown_h), prefix, input_fg);
+            surface.surface_draw_text_run(
+                Rect::new(ix + 8.0 + pw, y, sw, shown_h),
+                sel_text,
+                field_fg,
+            );
+            surface.surface_draw_text_run(
+                Rect::new(ix + 8.0 + pw + sw, y, shown_w - pw - sw, shown_h),
+                suffix,
+                input_fg,
+            );
+        } else {
+            surface.surface_draw_text_run(
+                Rect::new(ix + 8.0, y, shown_w, shown_h),
+                shown,
+                input_fg,
+            );
+        }
+
+        surface.surface_draw_text_run(Rect::new(bracket_right, y, 8.0, shown_h), "]", dim_fg);
+
+        if !masked {
+            if let Some(cur) = cursor {
+                if !value.is_empty() {
+                    let prefix = &shown[..snap_to_char_boundary(shown, cur)];
+                    let (pw, _) = surface.surface_measure_text(prefix);
+                    let cx = ix + 8.0 + pw;
+                    surface.surface_fill_rect(
+                        Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
+                        accent_fg,
+                    );
+                }
+            }
+        } else if let Some(cur) = cursor {
+            if !value.is_empty() {
+                let char_pos = value[..snap_to_char_boundary(value, cur)].chars().count();
+                let prefix: String = shown.chars().take(char_pos).collect();
+                let (pw, _) = surface.surface_measure_text(&prefix);
+                let cx = ix + 8.0 + pw;
+                surface.surface_fill_rect(
+                    Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
+                    accent_fg,
+                );
+            }
+        }
+    }
+}
+
+// `#[allow(unused_imports)]`: see `mod native_surface_paint`'s doc — a
+// `--features win` build on a non-Windows host has no reachable call site
+// for `paint` (the Win one is further gated to `target_os = "windows"`).
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(unused_imports)]
+pub(crate) use native_surface_paint::paint;
+
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FormEvent {

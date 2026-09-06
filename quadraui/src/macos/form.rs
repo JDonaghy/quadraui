@@ -1,24 +1,13 @@
-//! macOS rasteriser for [`crate::Form`].
+//! macOS layout + settings-chrome rasteriser for [`crate::Form`].
 //!
-//! Mirrors [`crate::gtk::form::draw_form`] for the field kinds needed
-//! by current consumers: `Label`, `Toggle`, `TextInput`, `Button`,
-//! `ReadOnly`, `ToggleGroup`, `SegmentedControl`, `ButtonRow`,
-//! `PasswordInput`. Per-row height is `(line_height * 1.4).round()`
-//! to match GTK row pitch.
-//!
-//! ## Scope omissions (follow-up)
-//!
-//! - **Rich field kinds still missing** — `Slider`, `ColorPicker`,
-//!   `Dropdown`, `TextArea`, `Number`, `DateInput`, `FilePicker`
-//!   render as label-only rows for now. Layout still produces full
-//!   hit regions so click routing keeps working; pretty rendering
-//!   lands when a consumer needs it (parity check vs GTK before each
-//!   add).
-//! - **Selection highlight** inside `TextInput` — deferred with the
-//!   unified text-attribute pass that also unlocks editor selection.
-//! - **Validation indicators** — `ValidationState` is honoured for
-//!   colour (error_fg / warning_fg on the field label) but the hint
-//!   strip below the row is not yet rendered.
+//! Field-kind *painting* moved to the shared
+//! [`crate::primitives::form::paint`] (#808, NativeSurface Phase 2a) —
+//! `mac_form_layout` here only computes geometry (used both for
+//! hit-testing via `MacBackend::form_layout` and to feed `paint` from
+//! `MacBackend::draw_form`). Before #808, this module's own `draw_form`
+//! matched only 10 of 14 `FieldKind` variants and silently fell through
+//! on `Slider` / `ColorPicker` / `Dropdown` / `TextArea`; the shared
+//! `paint` handles all 14, so that gap can't recur here.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
@@ -26,9 +15,9 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
-use crate::primitives::form::{FieldKind, Form, FormLayout, ValidationState};
+use crate::native_surface::NativeSurface;
+use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::layout_metrics::TextMeasure;
-use crate::text_util::safe_prefix;
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -66,13 +55,135 @@ pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont
     })
 }
 
-/// Draw a [`Form`] into `(x, y, w, h)` on `ctx`. Returns the same
-/// layout `mac_form_layout` would produce.
+/// Minimal [`NativeSurface`] adapter over a raw `(CGContextRef, &CTFont)`
+/// pair, for [`crate::primitives::form::paint`] call sites that have
+/// only those — not a live [`super::MacBackend`] — such as
+/// [`crate::macos::multi_section_view`]'s embedded-`Form` section body.
+///
+/// Frame-lifecycle / measurement-metrics verbs are unreachable from a
+/// bare `CGContextRef` (there is no backend to ask), so they panic if
+/// ever called — `paint` never calls them (it only fills, draws text,
+/// and measures text), so this is a latent contract, not a live gap.
+pub(crate) struct RawFormSurface<'a> {
+    pub(crate) ctx: CGContextRef,
+    pub(crate) font: &'a CTFont,
+}
+
+impl NativeSurface for RawFormSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawFormSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawFormSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawFormSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawFormSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawFormSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (w, h) = measure_text(self.font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's
+        // paint pass — see this struct's construction sites.
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(&mut self, rect: crate::Rect, color: Color, stroke_width: f32) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_stroke_rect(self.ctx, rect, color, stroke_width as f64) };
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: Color) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe {
+            draw_text(
+                self.ctx,
+                self.font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                super::backend::ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        from: crate::Point,
+        to: crate::Point,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe {
+            super::backend::ns_draw_line(
+                self.ctx,
+                from.x as f64,
+                from.y as f64,
+                to.x as f64,
+                to.y as f64,
+                color,
+                stroke_width as f64,
+            );
+        }
+    }
+
+    fn surface_push_clip(&mut self, rect: crate::Rect) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
+    }
+
+    fn surface_pop_clip(&mut self) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_pop_clip(self.ctx) };
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        // Matches `MacBackend::draw_image`: no `NSImage` decoder wired
+        // up yet (#802).
+        crate::backend::ImagePaintResult::Unsupported
+    }
+}
+
+/// Deprecated free-function shim (#808, CLAUDE.md rule 8): this module's
+/// `draw_form` used to match every `FieldKind` directly, and matched
+/// only 10 of 14 (see the module doc). Painting now goes through
+/// [`crate::primitives::form::paint`] via [`RawFormSurface`]; this
+/// wrapper reproduces the old signature exactly for any external caller
+/// that held a direct `quadraui::macos::draw_form` reference rather than
+/// going through [`crate::Backend::draw_form`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is
+/// why this shim has no in-repo caller left to trip the
+/// `-D warnings`-denied `deprecated` lint. `FieldKind::Toolbar` renders
+/// through the full toolbar rasteriser here too, matching pre-#808
+/// behaviour, for the same reason `MacBackend::draw_form` does (see that
+/// method's doc).
 ///
 /// # Safety
 ///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
+/// call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `RawFormSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_form(
     ctx: CGContextRef,
@@ -86,321 +197,45 @@ pub unsafe fn draw_form(
     line_height: f64,
 ) -> FormLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let flayout = mac_form_layout(form, area, line_height, font);
     if w <= 0.0 || h <= 0.0 {
-        return mac_form_layout(form, area, line_height, font);
+        return flayout;
     }
 
-    let layout = mac_form_layout(form, area, line_height, font);
+    let origin = crate::Point::new(x as f32, y as f32);
+    let mut surface = RawFormSurface { ctx, font };
+    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
-    fill_rect(ctx, x, y, w, h, theme.tab_bar_bg);
-
-    for vis in &layout.visible_fields {
-        let field = &form.fields[vis.field_idx];
-        // Layout returns local coords; shift to absolute for paint.
-        let row_x = vis.bounds.x as f64 + x;
-        let row_y = vis.bounds.y as f64 + y;
-        let row_w = vis.bounds.width as f64;
-        let row_h = vis.bounds.height as f64;
-
-        let is_focused = form.has_focus
-            && form
-                .focused_field
-                .as_ref()
-                .is_some_and(|id| id == &field.id);
-        let is_header = matches!(field.kind, FieldKind::Label);
-
-        let (default_fg, row_bg) = if is_focused {
-            (theme.foreground, theme.selected_bg)
-        } else if is_header {
-            (theme.header_fg, theme.header_bg)
-        } else {
-            (theme.foreground, theme.tab_bar_bg)
+    for vf in &flayout.visible_fields {
+        let Some(field) = form.fields.get(vf.field_idx) else {
+            continue;
         };
-
-        fill_rect(ctx, row_x, row_y, row_w, row_h, row_bg);
-
-        let validation_fg = field.validation.as_ref().map(|v| match v {
-            ValidationState::Error(_) => theme.error_fg,
-            ValidationState::Warning(_) => theme.warning_fg,
-        });
-        let field_fg = if field.disabled {
-            theme.muted_fg
-        } else {
-            validation_fg.unwrap_or(default_fg)
+        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
+            continue;
         };
-
         let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-        let (label_w, label_h) = measure_text(font, &label_text);
-        let label_x = row_x + 6.0;
-        let text_y = (row_y + (row_h - label_h) / 2.0).round();
-        draw_text(
-            ctx,
-            font,
-            &label_text,
-            label_x,
-            text_y,
-            color_to_cg(field_fg),
-        );
-        let label_right = label_x + label_w;
         let no_label = label_text.is_empty();
-
-        let input_right = row_x + row_w - 8.0;
-        match &field.kind {
-            FieldKind::Label => {}
-            FieldKind::Toggle { value } => {
-                let glyph = if *value { "[x]" } else { "[ ]" };
-                let fg_color = if *value && !field.disabled {
-                    theme.accent_fg
-                } else {
-                    field_fg
-                };
-                let (iw, _) = measure_text(font, glyph);
-                let ix = if no_label { label_x } else { input_right - iw };
-                if no_label || ix > label_right + 8.0 {
-                    draw_text(ctx, font, glyph, ix, text_y, color_to_cg(fg_color));
-                }
-            }
-            FieldKind::TextInput {
-                value,
-                placeholder,
-                cursor,
-                selection_anchor: _,
-            } => {
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    value.as_str()
-                };
-                let input_fg = if value.is_empty() {
-                    theme.muted_fg
-                } else {
-                    field_fg
-                };
-                let (shown_w, _) = measure_text(font, shown);
-
-                let (ix, bracket_right) = if no_label {
-                    (label_x, input_right - 4.0)
-                } else {
-                    let max_width = (row_w * 0.6).max(80.0);
-                    let dw = shown_w.min(max_width);
-                    let ix = input_right - dw - 14.0;
-                    (ix, ix + 8.0 + dw + 2.0)
-                };
-                if no_label || ix > label_right + 8.0 {
-                    draw_text(ctx, font, "[", ix, text_y, color_to_cg(theme.muted_fg));
-                    draw_text(ctx, font, shown, ix + 8.0, text_y, color_to_cg(input_fg));
-                    draw_text(
-                        ctx,
-                        font,
-                        "]",
-                        bracket_right,
-                        text_y,
-                        color_to_cg(theme.muted_fg),
-                    );
-
-                    // Caret — thin 1.5pt bar at the cursor's byte offset.
-                    if let Some(cur) = cursor {
-                        if is_focused {
-                            let prefix = safe_prefix(shown, *cur);
-                            let (prefix_w, _) = measure_text(font, prefix);
-                            let caret_x = ix + 8.0 + prefix_w;
-                            fill_rect(
-                                ctx,
-                                caret_x,
-                                row_y + 3.0,
-                                1.5,
-                                row_h - 6.0,
-                                theme.foreground,
-                            );
-                        }
-                    }
-                }
-            }
-            FieldKind::Button => {
-                // Label already painted above; nothing further to draw.
-            }
-            FieldKind::ReadOnly { value } => {
-                let value_text: String = value.spans.iter().map(|s| s.text.as_str()).collect();
-                let (vw, _) = measure_text(font, &value_text);
-                let vx = input_right - vw;
-                if vx > label_right + 8.0 {
-                    draw_text(
-                        ctx,
-                        font,
-                        &value_text,
-                        vx,
-                        text_y,
-                        color_to_cg(theme.muted_fg),
-                    );
-                }
-            }
-            FieldKind::ToggleGroup { toggles } => {
-                // Layout's item_bounds are local — shift by (x, y) for paint.
-                for (toggle, (_id, item_rect)) in toggles.iter().zip(&vis.item_bounds) {
-                    let on = toggle.value && !field.disabled;
-                    let toggle_fg = if on { theme.accent_fg } else { theme.muted_fg };
-                    let ix = item_rect.x as f64 + x;
-                    let iy = item_rect.y as f64 + y;
-                    let iw = item_rect.width as f64;
-                    let ih = item_rect.height as f64;
-                    // Subtle pill-style background on the "on" state so the
-                    // toggled state is visible at a glance — GTK leans on
-                    // fg color alone, but macOS needs the extra contrast
-                    // since text rasterisation is lighter here.
-                    if on {
-                        fill_rect(ctx, ix, iy + 2.0, iw, ih - 4.0, theme.selected_bg);
-                    }
-                    let (_, th) = measure_text(font, &toggle.label);
-                    let ty = (iy + (ih - th) / 2.0).round();
-                    draw_text(ctx, font, &toggle.label, ix, ty, color_to_cg(toggle_fg));
-                }
-            }
-            FieldKind::ButtonRow { buttons } => {
-                for (button, (_id, item_rect)) in buttons.iter().zip(&vis.item_bounds) {
-                    let disabled = button.disabled || field.disabled;
-                    let btn_fg = if disabled { theme.muted_fg } else { field_fg };
-                    let brk_fg = if disabled {
-                        theme.muted_fg
-                    } else {
-                        theme.accent_fg
-                    };
-                    let ix = item_rect.x as f64 + x;
-                    let iy = item_rect.y as f64 + y;
-                    let ih = item_rect.height as f64;
-                    let (_, bh) = measure_text(font, "[");
-                    let ty = (iy + (ih - bh) / 2.0).round();
-                    // [
-                    let (bw, _) = measure_text(font, "[");
-                    draw_text(ctx, font, "[", ix, ty, color_to_cg(brk_fg));
-                    let mut cur = ix + bw;
-                    // Optional icon (uses ASCII fallback — nerd-font handling
-                    // lives at a higher layer).
-                    if let Some(ref icon) = button.icon {
-                        let glyph = icon.fallback.as_str();
-                        let (iw, _) = measure_text(font, glyph);
-                        draw_text(ctx, font, glyph, cur, ty, color_to_cg(btn_fg));
-                        cur += iw;
-                        if !button.label.is_empty() {
-                            cur += 4.0;
-                        }
-                    }
-                    // label
-                    draw_text(ctx, font, &button.label, cur, ty, color_to_cg(btn_fg));
-                    let (lw, _) = measure_text(font, &button.label);
-                    cur += lw;
-                    // ]
-                    draw_text(ctx, font, "]", cur, ty, color_to_cg(brk_fg));
-                }
-            }
-            FieldKind::SegmentedControl {
-                options,
-                selected_idx,
-            } => {
-                for (idx, (opt, (_id, item_rect))) in
-                    options.iter().zip(&vis.item_bounds).enumerate()
-                {
-                    let ix = item_rect.x as f64 + x;
-                    let iy = item_rect.y as f64 + y;
-                    let iw = item_rect.width as f64;
-                    let ih = item_rect.height as f64;
-                    let is_selected = idx == *selected_idx;
-                    let opt_fg = if is_selected {
-                        theme.accent_fg
-                    } else {
-                        theme.muted_fg
-                    };
-                    if is_selected {
-                        fill_rect(ctx, ix, iy + 2.0, iw, ih - 4.0, theme.selected_bg);
-                    }
-                    let bracketed = format!("[{opt}]");
-                    let (_, th) = measure_text(font, &bracketed);
-                    let ty = (iy + (ih - th) / 2.0).round();
-                    draw_text(ctx, font, &bracketed, ix, ty, color_to_cg(opt_fg));
-                }
-            }
-            FieldKind::PasswordInput {
-                value,
-                placeholder,
-                cursor,
-                mask_char,
-            } => {
-                let masked: String = value.chars().map(|_| *mask_char).collect();
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    masked.as_str()
-                };
-                let input_fg = if value.is_empty() {
-                    theme.muted_fg
-                } else {
-                    field_fg
-                };
-                let (shown_w, _) = measure_text(font, shown);
-
-                let (ix, bracket_right) = if no_label {
-                    (label_x, input_right - 4.0)
-                } else {
-                    let max_width = (row_w * 0.6).max(80.0);
-                    let dw = shown_w.min(max_width);
-                    let ix = input_right - dw - 14.0;
-                    (ix, ix + 8.0 + dw + 2.0)
-                };
-                if no_label || ix > label_right + 8.0 {
-                    draw_text(ctx, font, "[", ix, text_y, color_to_cg(theme.muted_fg));
-                    draw_text(ctx, font, shown, ix + 8.0, text_y, color_to_cg(input_fg));
-                    draw_text(
-                        ctx,
-                        font,
-                        "]",
-                        bracket_right,
-                        text_y,
-                        color_to_cg(theme.muted_fg),
-                    );
-
-                    if let Some(cur) = cursor {
-                        if is_focused {
-                            // Each plaintext char maps to one mask char, so
-                            // measure the masked prefix up to the byte-cursor.
-                            let char_pos = safe_prefix(value, *cur).chars().count();
-                            let mask_prefix: String = masked.chars().take(char_pos).collect();
-                            let (prefix_w, _) = measure_text(font, &mask_prefix);
-                            let caret_x = ix + 8.0 + prefix_w;
-                            fill_rect(
-                                ctx,
-                                caret_x,
-                                row_y + 3.0,
-                                1.5,
-                                row_h - 6.0,
-                                theme.foreground,
-                            );
-                        }
-                    }
-                }
-            }
-            FieldKind::Toolbar(toolbar) => {
-                // Delegate to the macOS toolbar rasteriser.
-                let toolbar_x = if no_label {
-                    label_x
-                } else {
-                    label_right + 12.0
-                };
-                let toolbar_w = row_w - (toolbar_x - x);
-                if toolbar_w > 0.0 {
-                    super::toolbar::draw_toolbar(
-                        ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
-                    );
-                }
-            }
-            // Rich field kinds still without paint paths — label-only
-            // fallback. Tracked in module header.
-            _ => {}
+        let (label_w, _) = measure_text(font, &label_text);
+        let row_x = x + vf.bounds.x as f64;
+        let row_y = y + vf.bounds.y as f64;
+        let row_w = vf.bounds.width as f64;
+        let row_h = vf.bounds.height as f64;
+        let toolbar_x = if no_label {
+            row_x + 6.0
+        } else {
+            row_x + 6.0 + label_w + 12.0
+        };
+        let toolbar_w = row_x + row_w - toolbar_x;
+        if toolbar_w > 0.0 {
+            // SAFETY: `ctx` is valid for the duration of this call, per
+            // this fn's own contract.
+            super::toolbar::draw_toolbar(
+                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
+            );
         }
     }
 
-    CGContextRestoreGState(ctx);
-    layout
+    flayout
 }
 
 /// Cursor width in points for the settings-chrome search row. Matches

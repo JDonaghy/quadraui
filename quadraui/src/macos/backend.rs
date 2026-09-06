@@ -84,9 +84,9 @@ use crate::testing::{TextRun, ZoneRec};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Form, Key, ListView, Modifiers,
-    Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, Terminal, TextDisplay, Theme,
-    TreeView,
+    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, FieldKind, Form, Key, ListView,
+    Modifiers, Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, Terminal, TextDisplay,
+    Theme, TreeView,
 };
 
 use super::services::MacPlatformServices;
@@ -1148,31 +1148,57 @@ impl Backend for MacBackend {
             self.current_char_width,
         )
     }
+    /// #808: shared field-kind painting lives in
+    /// [`crate::primitives::form::paint`] now — see that fn's doc for why
+    /// `FieldKind::Toolbar` is the one variant painted here instead,
+    /// after `paint` releases its exclusive borrow of `self`.
     fn draw_form(&mut self, rect: Rect, form: &Form) {
-        let ctx = self.current_cg();
         debug_assert!(
-            !ctx.is_null(),
+            !self.current_cg().is_null(),
             "MacBackend::draw_form called outside enter_frame_scope",
         );
         let font = self
             .current_font
-            .as_ref()
+            .clone()
             .expect("MacBackend::draw_form requires set_current_font");
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::form::draw_form(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                form,
-                &theme,
-                line_height,
-            );
+        let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
+        let origin = Point::new(rect.x, rect.y);
+        crate::primitives::form::paint(form, &flayout, self, &theme, origin);
+
+        for vf in &flayout.visible_fields {
+            let Some(field) = form.fields.get(vf.field_idx) else {
+                continue;
+            };
+            let FieldKind::Toolbar(toolbar) = &field.kind else {
+                continue;
+            };
+            let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
+            let no_label = label_text.is_empty();
+            let (label_w, _) = super::text::measure_text(&font, &label_text);
+            let row_x = (origin.x + vf.bounds.x) as f64;
+            let row_y = (origin.y + vf.bounds.y) as f64;
+            let row_w = vf.bounds.width as f64;
+            let row_h = vf.bounds.height as f64;
+            let toolbar_x = if no_label {
+                row_x + 6.0
+            } else {
+                row_x + 6.0 + label_w + 12.0
+            };
+            let toolbar_w = row_x + row_w - toolbar_x;
+            if toolbar_w > 0.0 {
+                let ctx = self.current_cg();
+                debug_assert!(
+                    !ctx.is_null(),
+                    "MacBackend::draw_form called outside enter_frame_scope",
+                );
+                // SAFETY: ctx is non-null inside the frame scope.
+                unsafe {
+                    super::toolbar::draw_toolbar(
+                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                    );
+                }
+            }
         }
     }
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
@@ -2671,7 +2697,7 @@ impl NativeSurface for MacBackend {
 /// `Color` (0-255 per channel) to CoreGraphics' 0.0-1.0 RGBA tuple —
 /// identical math to every per-rasteriser private `color_to_cg` this
 /// canonicalises (see this section's module comment).
-fn ns_color_to_cg(c: Color) -> (f64, f64, f64, f64) {
+pub(crate) fn ns_color_to_cg(c: Color) -> (f64, f64, f64, f64) {
     (
         c.r as f64 / 255.0,
         c.g as f64 / 255.0,
@@ -2690,7 +2716,7 @@ fn ns_cg_rect(rect: Rect) -> CGRect {
 /// # Safety
 /// `ctx` must be a valid, non-null `CGContextRef` borrowed for the
 /// duration of this call.
-unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
+pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
     let (r, g, b, a) = ns_color_to_cg(c);
     CGContextSetRGBFillColor(ctx, r, g, b, a);
     CGContextFillRect(ctx, ns_cg_rect(rect));
@@ -2698,7 +2724,7 @@ unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
 
 /// # Safety
 /// Same contract as [`ns_fill_rect`].
-unsafe fn ns_stroke_rect(ctx: CGContextRef, rect: Rect, c: Color, line_width: f64) {
+pub(crate) unsafe fn ns_stroke_rect(ctx: CGContextRef, rect: Rect, c: Color, line_width: f64) {
     let (r, g, b, a) = ns_color_to_cg(c);
     CGContextSetRGBStrokeColor(ctx, r, g, b, a);
     CGContextSetLineWidth(ctx, line_width);
@@ -2707,7 +2733,7 @@ unsafe fn ns_stroke_rect(ctx: CGContextRef, rect: Rect, c: Color, line_width: f6
 
 /// # Safety
 /// Same contract as [`ns_fill_rect`].
-unsafe fn ns_draw_line(
+pub(crate) unsafe fn ns_draw_line(
     ctx: CGContextRef,
     x0: f64,
     y0: f64,
@@ -2733,9 +2759,21 @@ unsafe fn ns_draw_line(
 ///
 /// # Safety
 /// Same contract as [`ns_fill_rect`].
-unsafe fn ns_push_clip(ctx: CGContextRef, rect: Rect) {
+pub(crate) unsafe fn ns_push_clip(ctx: CGContextRef, rect: Rect) {
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, ns_cg_rect(rect));
+}
+
+/// Pop a clip pushed by [`ns_push_clip`]. `pub(crate)` alongside it so a
+/// caller with only a raw `CGContextRef` (no live `MacBackend`) — e.g.
+/// [`crate::primitives::multi_section_view`]'s embedded-`Form` section
+/// body — can balance its own `ns_push_clip` call the same way
+/// `MacBackend`'s `NativeSurface::surface_pop_clip` impl does.
+///
+/// # Safety
+/// Same contract as [`ns_fill_rect`].
+pub(crate) unsafe fn ns_pop_clip(ctx: CGContextRef) {
+    CGContextRestoreGState(ctx);
 }
 
 extern "C" {
@@ -3889,5 +3927,131 @@ mod tests {
         });
 
         backend.surface_end_frame();
+    }
+
+    // ── Form (#808, NativeSurface Phase 2a) ──────────────────────────
+
+    /// Regression for #808: pre-fix, `macos::form::draw_form` matched
+    /// only 10 of 14 `FieldKind` variants and silently fell through
+    /// (`_ => {}`) on `Slider` / `ColorPicker` / `Dropdown` / `TextArea`
+    /// — a form using one of those painted nothing beyond its label and
+    /// row background, with no error anywhere. Confirmed to reproduce
+    /// against unfixed `develop @ a9104f5`. `draw_form` now routes
+    /// through the shared `primitives::form::paint`, which handles all
+    /// 14 variants — this scans each field's row, past where its label
+    /// ends, for a pixel that isn't the row background, proving the
+    /// *value* painted something (a label-only hit doesn't count: every
+    /// pre-fix backend already painted labels regardless of whether the
+    /// value fell through).
+    #[test]
+    fn mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::form::{FieldKind, Form, FormField};
+        use crate::types::StyledText;
+
+        const W: u32 = 320;
+        const H: u32 = 160;
+
+        fn field(id: &str, label: &str, kind: FieldKind) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain(label),
+                kind,
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }
+        }
+
+        let form = Form {
+            id: WidgetId::new("regression-808"),
+            fields: vec![
+                field(
+                    "font-size",
+                    "Font size",
+                    FieldKind::Slider {
+                        value: 14.0,
+                        min: 8.0,
+                        max: 32.0,
+                        step: 1.0,
+                    },
+                ),
+                field(
+                    "accent",
+                    "Accent",
+                    FieldKind::ColorPicker {
+                        value: Color::rgb(0x7a, 0xb4, 0xff),
+                    },
+                ),
+                field(
+                    "theme",
+                    "Theme",
+                    FieldKind::Dropdown {
+                        options: vec![
+                            StyledText::plain("One Dark"),
+                            StyledText::plain("Solarized"),
+                        ],
+                        selected_idx: 1,
+                    },
+                ),
+                field(
+                    "notes",
+                    "Notes",
+                    FieldKind::TextArea {
+                        value: "release notes".into(),
+                        placeholder: String::new(),
+                        cursor: None,
+                        visible_rows: 3,
+                    },
+                ),
+            ],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let flayout =
+            crate::macos::form::mac_form_layout(&form, rect, backend.line_height() as f64, &font());
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_form(rect, &form);
+        });
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+
+        for vf in &flayout.visible_fields {
+            let field = &form.fields[vf.field_idx];
+            let x0 = (vf.bounds.x + vf.bounds.width * 0.6) as u32;
+            let x1 = ((vf.bounds.x + vf.bounds.width) as u32).min(W);
+            let y0 = vf.bounds.y as u32;
+            let y1 = ((vf.bounds.y + vf.bounds.height) as u32).min(H);
+
+            let mut painted_beyond_label = false;
+            'scan: for y in y0..y1 {
+                for x in x0..x1 {
+                    let (r, g, b, _a) = surface.pixel(x, y);
+                    if (r, g, b) != bg {
+                        painted_beyond_label = true;
+                        break 'scan;
+                    }
+                }
+            }
+            assert!(
+                painted_beyond_label,
+                "field {:?} ({:?}) must paint something in the right ~40% of its \
+                 row (past the label) — this is exactly the #808 silent-drop bug: \
+                 pre-fix, macos::form::draw_form's `_ => {{}}` matched Slider/\
+                 ColorPicker/Dropdown/TextArea and painted only the row background \
+                 there",
+                field.id, field.kind,
+            );
+        }
     }
 }

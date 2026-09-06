@@ -30,6 +30,10 @@ use quadraui::{
 mod pipeline_app;
 use pipeline_app::PipelineApp;
 
+#[path = "../examples/common/form_all_fields.rs"]
+mod form_all_fields;
+use form_all_fields::FormAllFieldsApp;
+
 #[path = "../examples/common/tab_chrome_demo.rs"]
 mod tab_chrome_demo;
 use tab_chrome_demo::TabChromeDemo;
@@ -170,6 +174,77 @@ fn pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state() {
         "expected: no stage-3 mention before the click, a mention after \
          clicking Go, and exited after 'q'"
     );
+}
+
+// ─── FormAllFieldsApp parity (quadraui#808) ────────────────────────────────
+//
+// #808's audit: `gtk::form::draw_form` and `macos::form::draw_form` each
+// independently matched `FieldKind`, and `macos::form::draw_form` matched
+// only 10 of 14 variants — a form using `Slider` / `ColorPicker` /
+// `Dropdown` / `TextArea` rendered nothing on macOS for that field, with
+// no error anywhere. Painting now goes through the one shared
+// `primitives::form::paint` (written against `NativeSurface`) for every
+// pixel backend, so this asserts the fix at the only level that would
+// have caught the original bug: painting a form with every variant and
+// checking each one's value text actually appears, on every backend that
+// paints pixels. `tests/tui_example_driver.rs`'s
+// `form_all_fields_paints_every_field_kind_value` establishes the TUI
+// baseline these needles are drawn from (TUI's rasteriser is untouched
+// by #808 — see `native_surface.rs`'s module doc for why TUI stays a
+// separate implementation).
+
+/// One needle per `FieldKind` variant `FormAllFieldsApp` uses, chosen so
+/// each string is unique on screen and only ever painted by that
+/// variant's *value* rendering (not its label, which every pre-#808
+/// backend already painted regardless of whether the value fell through
+/// — see `primitives::form.rs`'s `native_surface_paint` module doc).
+const FORM_ALL_FIELDS_NEEDLES: &[&str] = &[
+    "Editor",             // Label
+    "line numbers",       // Toggle (label; value is a glyph, not text)
+    "quadraui",           // TextInput
+    "Save settings",      // Button
+    "v0zerodotonezero",   // ReadOnly
+    "14.00",              // Slider — one of the four macOS silently dropped
+    "#7ab4ff",            // ColorPicker — ditto
+    "Solarizedlight",     // Dropdown — ditto
+    "releasenotesgohere", // TextArea — ditto
+    "Filescope",          // SegmentedControl
+    "Casesens",           // ToggleGroup
+    "Runaction",          // ButtonRow
+    "Buildaction",        // Toolbar
+];
+
+fn assert_form_all_fields_painted<D: ConformanceDriver>(d: &D, backend_name: &str) {
+    for needle in FORM_ALL_FIELDS_NEEDLES {
+        assert!(
+            d.screen_has(needle),
+            "{backend_name}: expected {needle:?} painted somewhere on screen — a \
+             FieldKind this form uses rendered nothing"
+        );
+    }
+}
+
+#[test]
+fn form_all_field_kinds_render_on_tui_and_gtk() {
+    let tui = TuiDriver::new(FormAllFieldsApp::new(), 100, 34);
+    let gtk = GtkDriver::new(FormAllFieldsApp::new(), 900, 760);
+    assert_form_all_fields_painted(&tui, "TUI");
+    assert_form_all_fields_painted(&gtk, "GTK");
+}
+
+/// macOS twin (quadraui#808): the exact regression this issue fixes —
+/// pre-#808, `macos::form::draw_form` would have failed this on 4 of the
+/// 13 needles above (every one but `"Editor"`/`"line numbers"`/
+/// `"quadraui"`/`"Save settings"`/`"v0zerodotonezero"`/`"Filescope"`/
+/// `"Casesens"`/`"Runaction"`/`"Buildaction"` — i.e. `Slider` /
+/// `ColorPicker` / `Dropdown` / `TextArea`).
+#[cfg(all(feature = "macos", target_os = "macos"))]
+#[test]
+fn form_all_field_kinds_render_on_macos() {
+    use quadraui::macos::testing::MacDriver;
+
+    let mac = MacDriver::new(FormAllFieldsApp::new(), 900, 760);
+    assert_form_all_fields_painted(&mac, "macOS");
 }
 
 // ─── TabChrome parity (quadraui#631): bracket framing encloses the close

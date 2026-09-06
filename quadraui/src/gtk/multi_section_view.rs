@@ -22,7 +22,7 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::{cairo_rgb, draw_form, draw_list, draw_message_list, draw_tree};
+use super::{cairo_rgb, draw_list, draw_message_list, draw_tree};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
@@ -345,7 +345,7 @@ fn paint_body(
             );
         }
         SectionBody::Form(f) => {
-            draw_form(cr, layout, x, y, w, h, f, theme, line_height);
+            draw_form_body(cr, layout, x, y, w, h, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
             layout.set_text("M");
@@ -383,6 +383,75 @@ fn paint_body(
         }
     }
     cr.restore().ok();
+}
+
+/// Paint an embedded [`crate::Form`] section body. #808: field-kind
+/// painting goes through the shared [`crate::primitives::form::paint`]
+/// via [`super::form::RawFormSurface`] (this call site has only a raw
+/// `cr`/`layout`, not a live [`super::backend::GtkBackend`]) —
+/// `FieldKind::Toolbar` is painted separately below, same as
+/// `GtkBackend::draw_form`, for the same reason (see that fn's doc).
+#[allow(clippy::too_many_arguments)]
+fn draw_form_body(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    form: &crate::Form,
+    theme: &Theme,
+    line_height: f64,
+) {
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
+    let measure = super::toolbar::PangoMeasure {
+        pango_layout: Some(layout),
+        char_width: 8.0,
+    };
+    let flayout = form.layout(w as f32, h as f32, |i| {
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+    });
+    let origin = crate::Point::new(x as f32, y as f32);
+    let mut surface = super::form::RawFormSurface { cr, layout };
+    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
+
+    for vf in &flayout.visible_fields {
+        let Some(field) = form.fields.get(vf.field_idx) else {
+            continue;
+        };
+        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
+            continue;
+        };
+        let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
+        let no_label = label_text.is_empty();
+        layout.set_text(&label_text);
+        let (label_w, _) = layout.pixel_size();
+        let row_x = x + vf.bounds.x as f64;
+        let row_y = y + vf.bounds.y as f64;
+        let row_w = vf.bounds.width as f64;
+        let toolbar_row_h = vf.bounds.height as f64;
+        let toolbar_x = if no_label {
+            row_x + 6.0
+        } else {
+            row_x + 6.0 + label_w as f64 + 12.0
+        };
+        let toolbar_w = row_x + row_w - toolbar_x;
+        if toolbar_w > 0.0 {
+            super::toolbar::draw_toolbar(
+                cr,
+                layout,
+                toolbar_x,
+                row_y,
+                toolbar_w,
+                toolbar_row_h,
+                toolbar,
+                theme,
+                None,
+                None,
+            );
+            layout.set_attributes(None);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
