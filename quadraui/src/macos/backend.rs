@@ -1502,16 +1502,13 @@ impl Backend for MacBackend {
         super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
+    /// #810: shared cell-grid painting lives in
+    /// [`crate::primitives::terminal::paint`] now — see that fn's doc
+    /// for the divergences resolved while unifying
+    /// `gtk::terminal::draw_terminal_cells`,
+    /// `macos::terminal::draw_terminal_cells` and
+    /// `win::terminal::draw_terminal_cells` into one implementation.
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_terminal called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_terminal requires set_current_font");
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
@@ -1522,22 +1519,20 @@ impl Backend for MacBackend {
         };
         let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
 
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::terminal::draw_terminal_cells(
-                ctx,
-                font,
-                term,
-                rect.x as f64,
-                rect.y as f64,
-                cell_area_w,
-                rect.height as f64,
-                line_height,
-                char_width,
-                &theme,
-            );
-        }
+        crate::primitives::terminal::paint(
+            term,
+            self,
+            &theme,
+            rect.x,
+            rect.y,
+            cell_area_w as f32,
+            rect.height,
+            line_height as f32,
+            char_width as f32,
+            None,
+        );
 
+        let ctx = self.current_cg();
         if let Some(ref sb_state) = term.scrollbar {
             let sb = crate::primitives::scrollbar::Scrollbar::vertical(
                 term.id.clone(),
@@ -1556,50 +1551,22 @@ impl Backend for MacBackend {
             unsafe { super::scrollbar::draw_scrollbar(ctx, &sb, &theme) }
         }
     }
+    /// #810: shared divider painting lives in
+    /// [`crate::primitives::terminal::paint_divider`] now.
     fn draw_terminal_divider(&mut self, rect: Rect) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_terminal_divider called outside enter_frame_scope",
-        );
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::terminal::draw_terminal_divider(
-                ctx,
-                rect.x as f64,
-                rect.y as f64,
-                rect.height as f64,
-                &theme,
-            );
-        }
+        crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
     }
+    /// #810: shared text-display painting lives in
+    /// [`crate::primitives::text_display::paint`] now — see that fn's
+    /// doc for the divergence resolved while unifying
+    /// `gtk::text_display::draw_text_display`,
+    /// `macos::text_display::draw_text_display` and
+    /// `win::text_display::draw_text_display` into one implementation.
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_text_display called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_text_display requires set_current_font");
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::text_display::draw_text_display(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                td,
-                &theme,
-                line_height,
-            );
-        }
+        let line_height = self.current_line_height as f32;
+        crate::primitives::text_display::paint(td, rect, self, &theme, line_height);
     }
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
         let ctx = self.current_cg();
@@ -2207,6 +2174,11 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
+    /// #810: shared chart painting lives in
+    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
+    /// the divergences resolved while unifying `gtk::chart::draw_chart`,
+    /// `macos::chart::draw_chart` and `win::chart::draw_chart` into one
+    /// implementation.
     fn draw_chart(
         &mut self,
         rect: Rect,
@@ -2214,35 +2186,10 @@ impl Backend for MacBackend {
         hovered_point: Option<(usize, usize)>,
         crosshair_x: Option<f64>,
     ) -> ChartLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_chart called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_chart requires set_current_font");
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::chart::draw_chart(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                chart,
-                &theme,
-                line_height,
-                char_width,
-                hovered_point,
-                crosshair_x,
-            )
-        }
+        let layout = self.chart_layout(rect, chart);
+        crate::primitives::chart::paint(chart, &layout, self, &theme, hovered_point, crosshair_x);
+        layout
     }
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout {
         super::chart::mac_chart_layout(
@@ -2626,6 +2573,48 @@ impl NativeSurface for MacBackend {
                 text,
                 rect.x as f64,
                 rect.y as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    /// #810: overrides the default (which drops both styling and
+    /// scale) for `scale_x` only — `bold`/`italic`/`underline` stay
+    /// unsupported (this backend's own pre-#810 documented "not
+    /// rendered yet" posture; see `macos::terminal`'s former module
+    /// doc), but `draw_text_scaled_x` already existed here for the
+    /// wide-glyph advance fix (#500/#703), so that capability isn't
+    /// lost by routing through this trait.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (bold, italic, underline);
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_draw_text_run_styled called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::surface_draw_text_run_styled requires set_current_font");
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text_scaled_x(
+                ctx,
+                font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                scale_x as f64,
                 ns_color_to_cg(color),
             );
         }
@@ -4159,5 +4148,418 @@ mod tests {
             );
         });
         backend.end_frame();
+    }
+
+    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    //
+    // Ported from the deleted `macos::chart::tests` (that module already
+    // drove the real `MacBackend::draw_chart` via its own local
+    // `paint_via_backend` helper — the shape every other backend's #810
+    // migration now also uses) to live alongside every other
+    // `draw_*`-family driver test in this module.
+
+    use super::super::headless::BitmapSurface;
+    use crate::primitives::chart::{
+        Chart as ChartModel, ChartHit, ChartKind, Series, SERIES_COLORS,
+    };
+
+    const CHART_W: u32 = 200;
+    const CHART_H: u32 = 120;
+
+    fn chart_sample_line() -> ChartModel {
+        ChartModel {
+            id: WidgetId::new("ch"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "x".into(),
+                data: vec![0.0, 1.0, 0.5, 2.0, 1.0],
+                color: Some(Color::rgb(80, 160, 255)),
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 2.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(0),
+            show_grid: false,
+        }
+    }
+
+    fn paint_chart_via_backend(
+        chart: &ChartModel,
+        hovered: Option<(usize, usize)>,
+    ) -> (BitmapSurface, ChartLayout) {
+        let surface = BitmapSurface::new(CHART_W, CHART_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(CHART_W as f32, CHART_H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_chart(
+                Rect::new(0.0, 0.0, CHART_W as f32, CHART_H as f32),
+                chart,
+                hovered,
+                None,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    #[test]
+    fn mac_backend_draw_chart_plot_area_paints_background() {
+        let chart = chart_sample_line();
+        let (surface, layout) = paint_chart_via_backend(&chart, None);
+        let theme = Theme::default();
+        let px = (layout.plot_area.x + layout.plot_area.width - 2.0) as u32;
+        let py = (layout.plot_area.y + 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(px, py);
+        assert_eq!(
+            (r, g, b),
+            (theme.background.r, theme.background.g, theme.background.b),
+        );
+    }
+
+    #[test]
+    fn mac_backend_draw_chart_line_stroke_paints_series_color() {
+        let chart = chart_sample_line();
+        let (surface, layout) = paint_chart_via_backend(&chart, None);
+        // Sample at data point index 1 (value 1.0 in [0..2] range = mid
+        // plot, comfortably inside bounds — first and last points sit
+        // on the plot edges).
+        let (_, _, sx, sy) = layout.data_point_positions[1];
+        let (r, g, b, _) = surface.pixel(sx as u32, sy as u32);
+        assert!(
+            b > r,
+            "expected blue dominant at data point 1 ({}, {}), got ({}, {}, {})",
+            sx as u32,
+            sy as u32,
+            r,
+            g,
+            b,
+        );
+    }
+
+    #[test]
+    fn mac_backend_draw_chart_hit_test_inside_plot_area_returns_body() {
+        let chart = chart_sample_line();
+        let (_surface, layout) = paint_chart_via_backend(&chart, None);
+        let cx = layout.plot_area.x + layout.plot_area.width * 0.5;
+        let cy = layout.plot_area.y + layout.plot_area.height * 0.5;
+        assert_eq!(layout.hit_test(cx, cy), ChartHit::Body(WidgetId::new("ch")),);
+    }
+
+    #[test]
+    fn mac_backend_draw_chart_hover_marker_painted_when_set() {
+        let chart = chart_sample_line();
+        let (surface, layout) = paint_chart_via_backend(&chart, Some((0, 2)));
+        let (_, _, sx, sy) = layout.data_point_positions[2];
+        let (r, _, b, _) = surface.pixel(sx as u32, sy as u32);
+        assert!(b > r);
+    }
+
+    // ── Multi-series bars (#584 review — macOS had no bar coverage) ──────
+
+    fn chart_bar_series(label: &str, data: Vec<f64>) -> Series {
+        Series {
+            label: label.into(),
+            data,
+            color: None,
+            fill: false,
+        }
+    }
+
+    fn chart_sample_bar(kind: ChartKind, series: Vec<Series>, y_range: (f64, f64)) -> ChartModel {
+        ChartModel {
+            id: WidgetId::new("ch"),
+            kind,
+            series,
+            x_label: None,
+            y_label: None,
+            y_range: Some(y_range),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(0),
+            show_grid: false,
+        }
+    }
+
+    #[test]
+    fn mac_backend_draw_chart_stacked_bar_paints_each_series_in_its_own_color() {
+        let chart = chart_sample_bar(
+            ChartKind::Bar,
+            vec![
+                chart_bar_series("a", vec![1.0]),
+                chart_bar_series("b", vec![1.0]),
+                chart_bar_series("c", vec![1.0]),
+            ],
+            (0.0, 3.0),
+        );
+        let (surface, _layout) = paint_chart_via_backend(&chart, None);
+
+        // slot_w = pw = 200, gap = 30, bar_w = 170, slot_x = 15 → mid-x = 100.
+        let mid_x = 100;
+        let (r0, g0, b0, _) = surface.pixel(mid_x, 100);
+        assert_eq!(
+            (r0, g0, b0),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b)
+        );
+        let (r1, g1, b1, _) = surface.pixel(mid_x, 60);
+        assert_eq!(
+            (r1, g1, b1),
+            (SERIES_COLORS[1].r, SERIES_COLORS[1].g, SERIES_COLORS[1].b)
+        );
+        let (r2, g2, b2, _) = surface.pixel(mid_x, 20);
+        assert_eq!(
+            (r2, g2, b2),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b)
+        );
+    }
+
+    #[test]
+    fn mac_backend_draw_chart_grouped_bar_paints_series_side_by_side() {
+        let chart = chart_sample_bar(
+            ChartKind::BarGrouped,
+            vec![
+                chart_bar_series("a", vec![1.0]),
+                chart_bar_series("b", vec![2.0]),
+                chart_bar_series("c", vec![3.0]),
+            ],
+            (0.0, 3.0),
+        );
+        let (surface, _layout) = paint_chart_via_backend(&chart, None);
+
+        let probe_y = 100;
+        let (r0, g0, b0, _) = surface.pixel(43, probe_y);
+        assert_eq!(
+            (r0, g0, b0),
+            (SERIES_COLORS[0].r, SERIES_COLORS[0].g, SERIES_COLORS[0].b),
+            "leftmost sub-bar should be series 0"
+        );
+        let (r1, g1, b1, _) = surface.pixel(100, probe_y);
+        assert_eq!(
+            (r1, g1, b1),
+            (SERIES_COLORS[1].r, SERIES_COLORS[1].g, SERIES_COLORS[1].b),
+            "middle sub-bar should be series 1"
+        );
+        let (r2, g2, b2, _) = surface.pixel(157, probe_y);
+        assert_eq!(
+            (r2, g2, b2),
+            (SERIES_COLORS[2].r, SERIES_COLORS[2].g, SERIES_COLORS[2].b),
+            "rightmost sub-bar should be series 2"
+        );
+    }
+
+    /// Regression for quadraui#791/#810: before #791, `macos::chart`
+    /// already clipped via `CGContextSaveGState`/`CGContextClipToRect`;
+    /// #810 unified all three backends' `draw_chart` onto the shared
+    /// `primitives::chart::paint`, which is what now owns this clip for
+    /// every pixel backend — this is the "driver-tier" proof for macOS,
+    /// mirroring `gtk::backend::tests`'s and `win::backend::tests`'s
+    /// twin tests pixel-for-pixel (same fixture, same geometry).
+    #[test]
+    fn mac_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
+        let chart = chart_sample_bar(
+            ChartKind::Sparkline,
+            vec![chart_bar_series("a", vec![10.0, 0.0])],
+            (0.0, 10.0),
+        );
+
+        let canvas_w = 40;
+        let canvas_h = 40;
+        let sentinel = Color::rgb(0, 0, 0);
+        let (chart_x, chart_y, chart_w, chart_h) = (10.0_f32, 10.0_f32, 20.0_f32, 20.0_f32);
+
+        let surface = BitmapSurface::new(canvas_w, canvas_h);
+        surface.fill(0.0, 0.0, 0.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.surface_fill_rect(
+                Rect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
+                sentinel,
+            );
+            b.draw_chart(
+                Rect::new(chart_x, chart_y, chart_w, chart_h),
+                &chart,
+                Some((0, 0)),
+                None,
+            );
+        });
+        backend.end_frame();
+
+        // Inside the marker's 8-unit-radius ring, centred at the
+        // chart's own top-left corner (10, 10), but outside the
+        // chart's rect.
+        let (r, g, b, _) = surface.pixel(5, 5);
+        assert_eq!(
+            (r, g, b),
+            (sentinel.r, sentinel.g, sentinel.b),
+            "hover marker must not paint outside the chart's own rect",
+        );
+    }
+
+    // ── #810: draw_text_display real-pixel driver tests ─────────────────
+    //
+    // Ported from the deleted `macos::text_display::tests` (that module
+    // already drove the real `MacBackend::draw_text_display` via its own
+    // local `paint`/`paint_at` helpers) to live alongside every other
+    // `draw_*`-family driver test in this module.
+
+    use crate::primitives::text_display::{
+        TextDisplay as TextDisplayModel, TextDisplayHit, TextDisplayLine as TextDisplayLineModel,
+    };
+    use crate::types::Decoration;
+
+    const TD_W: u32 = 240;
+    const TD_H: u32 = 160;
+
+    fn td_line(text: &str) -> TextDisplayLineModel {
+        TextDisplayLineModel {
+            spans: vec![crate::types::StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    fn make_td(lines: usize, show_scrollbar: bool) -> TextDisplayModel {
+        TextDisplayModel {
+            id: WidgetId::new("td"),
+            lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar,
+        }
+    }
+
+    fn paint_td_via_backend(
+        td: &TextDisplayModel,
+        rect: Rect,
+    ) -> (
+        BitmapSurface,
+        crate::primitives::text_display::TextDisplayLayout,
+    ) {
+        let surface = BitmapSurface::new(TD_W, TD_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(TD_W as f32, TD_H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_text_display(rect, td);
+            let l = b.text_display_layout(rect, td);
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    #[test]
+    fn mac_backend_draw_text_display_background_fills_theme_background() {
+        let td = make_td(0, false);
+        let (s, _) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
+        let theme = Theme::default();
+        let (r, g, b, _) = s.pixel(TD_W / 2, TD_H / 2);
+        assert_eq!(
+            (r, g, b),
+            (theme.background.r, theme.background.g, theme.background.b),
+        );
+    }
+
+    #[test]
+    fn mac_backend_draw_text_display_scrollbar_gutter_paints_track_colour() {
+        let td = make_td(100, true);
+        let (s, layout) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
+        let gutter = layout.scrollbar_bounds.expect("gutter present");
+        let probe_x = (gutter.x + gutter.width / 2.0) as u32;
+        let probe_y = (gutter.y + gutter.height - 2.0) as u32;
+        let (r, g, b, _) = s.pixel(probe_x, probe_y);
+        let theme = Theme::default();
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.scrollbar_track.r,
+                theme.scrollbar_track.g,
+                theme.scrollbar_track.b,
+            ),
+        );
+    }
+
+    #[test]
+    fn mac_backend_draw_text_display_scrollbar_thumb_paints_thumb_colour() {
+        let td = make_td(100, true);
+        let (s, layout) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
+        let thumb = layout.thumb_bounds.expect("thumb present");
+        let probe_x = (thumb.x + thumb.width / 2.0) as u32;
+        let probe_y = (thumb.y + thumb.height / 2.0) as u32;
+        let (r, g, b, _) = s.pixel(probe_x, probe_y);
+        let theme = Theme::default();
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.scrollbar_thumb.r,
+                theme.scrollbar_thumb.g,
+                theme.scrollbar_thumb.b,
+            ),
+        );
+    }
+
+    #[test]
+    fn mac_backend_draw_text_display_layout_hit_test_resolves_lines() {
+        let td = make_td(20, false);
+        let (_, layout) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
+        let vis = &layout.visible_lines[0];
+        let cx = vis.bounds.x + vis.bounds.width / 2.0;
+        let cy = vis.bounds.y + vis.bounds.height / 2.0;
+        match layout.hit_test(cx, cy) {
+            TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
+            other => panic!("expected Line, got {:?}", other),
+        }
+    }
+
+    /// Regression for quadraui#494 / LESSONS.md "Layout helpers must
+    /// return coords in the same frame across backends": paint at a
+    /// non-zero rect origin with a title row present, then round-trip
+    /// an absolute click the way a real host does.
+    #[test]
+    fn mac_backend_draw_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
+        let mut td = make_td(20, false);
+        td.title = Some(crate::types::StyledText::plain("Logs"));
+
+        let rect_x = 9.0_f32;
+        let rect_y = 17.0_f32;
+        let rect = Rect::new(rect_x, rect_y, TD_W as f32 - rect_x, TD_H as f32 - rect_y);
+        let (_surface, layout) = paint_td_via_backend(&td, rect);
+
+        // `MacBackend::new()`'s default `current_line_height`, matching
+        // `paint_td_via_backend`'s backend construction (no explicit
+        // line-height override in this test module).
+        let line_height = 16.0_f32;
+        let body_y = rect_y + line_height;
+
+        let vis = &layout.visible_lines[0];
+        assert_eq!(
+            vis.bounds.y, 0.0,
+            "visible_lines bounds.y must be body-local, got {}",
+            vis.bounds.y,
+        );
+
+        let abs_x = rect_x + vis.bounds.x + vis.bounds.width * 0.5;
+        let abs_y = body_y + vis.bounds.y + vis.bounds.height * 0.5;
+        let local_x = abs_x - rect_x;
+        let local_y = abs_y - body_y;
+        match layout.hit_test(local_x, local_y) {
+            TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
+            other => panic!("expected Line, got {:?}", other),
+        }
     }
 }

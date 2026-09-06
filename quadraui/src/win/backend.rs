@@ -1947,12 +1947,18 @@ impl Backend for WinBackend {
     /// why that's a deliberate, follow-up-sized scope cut. See
     /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
     /// fallback posture.
+    /// #810: shared cell-grid painting lives in
+    /// [`crate::primitives::terminal::paint`] now — see that fn's doc
+    /// for the divergences (per-cell bold/italic/underline styling)
+    /// resolved while unifying `gtk::terminal::draw_terminal_cells`,
+    /// `macos::terminal::draw_terminal_cells` and
+    /// `win::terminal::draw_terminal_cells` into one implementation.
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+        if self.surface.is_some() {
             let lh = self.current_line_height;
             let cw = self.current_char_width;
-            let theme = &self.current_theme;
+            let theme = self.current_theme;
 
             let sb_width = match &term.scrollbar {
                 Some(sb) => sb.width.map(|w| w as f32).unwrap_or(8.0),
@@ -1960,17 +1966,17 @@ impl Backend for WinBackend {
             };
             let cell_area_w = (rect.width - sb_width).max(0.0);
 
-            super::terminal::draw_terminal_cells(
-                &surface.target,
-                dwrite,
+            crate::primitives::terminal::paint(
                 term,
+                self,
+                &theme,
                 rect.x,
                 rect.y,
                 cell_area_w,
                 rect.height,
                 lh,
                 cw,
-                theme,
+                None,
             );
 
             if let Some(ref sb_state) = term.scrollbar {
@@ -1982,7 +1988,9 @@ impl Backend for WinBackend {
                     sb_state.visible_lines as f32,
                     lh,
                 );
-                super::scrollbar::draw_scrollbar(&surface.target, &sb, theme);
+                if let Some(surface) = &self.surface {
+                    super::scrollbar::draw_scrollbar(&surface.target, &sb, &theme);
+                }
             }
             return;
         }
@@ -1997,14 +2005,9 @@ impl Backend for WinBackend {
     /// `self.dwrite`.
     fn draw_terminal_divider(&mut self, rect: Rect) {
         #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.surface {
-            super::terminal::draw_terminal_divider(
-                &surface.target,
-                rect.x,
-                rect.y,
-                rect.height,
-                &self.current_theme,
-            );
+        if self.surface.is_some() {
+            let theme = self.current_theme;
+            crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -2015,17 +2018,20 @@ impl Backend for WinBackend {
     /// #30: real Direct2D/DirectWrite rasteriser via `win::text_display`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
     /// for the "surface not attached yet" fallback posture.
+    ///
+    /// #810: shared text-display painting lives in
+    /// [`crate::primitives::text_display::paint`] now — see that fn's
+    /// doc for the divergence (this backend's `StyledSpan::bold`
+    /// support, dropped since `NativeSurface` has no weight parameter)
+    /// resolved while unifying `gtk::text_display::draw_text_display`,
+    /// `macos::text_display::draw_text_display` and
+    /// `win::text_display::draw_text_display` into one implementation.
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            super::text_display::draw_text_display(
-                &surface.target,
-                dwrite,
-                rect,
-                td,
-                &self.current_theme,
-                self.current_line_height,
-            );
+        if self.surface.is_some() {
+            let theme = self.current_theme;
+            let line_height = self.current_line_height;
+            crate::primitives::text_display::paint(td, rect, self, &theme, line_height);
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -3000,6 +3006,15 @@ impl Backend for WinBackend {
 
     /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// #810: shared chart painting lives in
+    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
+    /// the divergences (the quadraui#791 clip, most notably — Windows
+    /// never had one before this) resolved while unifying
+    /// `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
+    /// `win::chart::draw_chart` into one implementation. Keeps
+    /// `Theme::default()` rather than `self.current_theme`, matching
+    /// `WinBackend::draw_form`'s own #808 migration — see that fn's doc.
     fn draw_chart(
         &mut self,
         rect: Rect,
@@ -3008,17 +3023,18 @@ impl Backend for WinBackend {
         crosshair_x: Option<f64>,
     ) -> crate::primitives::chart::ChartLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::chart::draw_chart(
-                &surface.target,
-                dwrite,
-                rect,
+        if self.surface.is_some() {
+            let layout = self.chart_layout(rect, chart);
+            let theme = Theme::default();
+            crate::primitives::chart::paint(
                 chart,
-                self.current_char_width,
-                self.current_line_height,
+                &layout,
+                self,
+                &theme,
                 hovered_point,
                 crosshair_x,
             );
+            return layout;
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, chart, hovered_point, crosshair_x);
@@ -3134,6 +3150,40 @@ impl NativeSurface for WinBackend {
             let _ = (rect, text, color);
             todo!("DirectWrite draw_text (no surface attached yet)")
         }
+    }
+
+    /// #810: overrides the default (which drops styling) for `bold`
+    /// only — `DWrite::draw_text_styled` already exists on this
+    /// backend (#25); `italic`/`underline` are silently dropped,
+    /// matching `win::terminal::draw_terminal_cells`'s pre-#810
+    /// documented limitation ("DWrite has no italic text format or
+    /// underline attribute wired up today").
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: crate::Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (italic, underline);
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            if (scale_x - 1.0).abs() > f32::EPSILON {
+                super::text::with_horizontal_scale(&surface.target, scale_x, rect.x, || {
+                    let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
+                });
+            } else {
+                let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
+            }
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, text, color, bold, scale_x);
+        todo!("DirectWrite draw_text_styled (no surface attached yet)")
     }
 
     fn surface_draw_line(
@@ -4148,5 +4198,357 @@ mod tests {
         let _ = backend.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
 
         backend.surface_end_frame();
+    }
+
+    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    //
+    // Ported from the deleted `win::chart::tests` (that module drove
+    // `HeadlessSurface::paint` straight against the since-deleted free
+    // function `win::chart::draw_chart`) to instead drive the real
+    // `Backend::draw_chart` → `primitives::chart::paint` path end to
+    // end, the same shape `set_theme_reaches_the_find_replace` above
+    // uses. `#[cfg(target_os = "windows")]`-gated for the same reason
+    // every other `HeadlessSurface` test in this file is.
+
+    #[cfg(target_os = "windows")]
+    fn chart_line_fixture(data: Vec<f64>) -> crate::primitives::chart::Chart {
+        use crate::primitives::chart::{ChartKind, Series};
+        crate::primitives::chart::Chart {
+            id: WidgetId::new("chart"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data,
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(0),
+            show_grid: false,
+        }
+    }
+
+    /// Paint↔hover round trip: a nearest-point lookup at a data point's
+    /// resolved screen position must resolve back to that point, and
+    /// painting with it as `hovered_point` must not panic.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_chart_paint_and_nearest_point_round_trip() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 100;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let chart = chart_line_fixture(vec![1.0, 5.0, 2.0, 8.0, 3.0]);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_chart(rect, &chart, None, None);
+        backend.end_frame();
+
+        assert_eq!(layout.data_point_positions.len(), 5);
+        for &(si, di, x, y) in &layout.data_point_positions {
+            let nearest = layout.nearest_point(x, y, 1.0);
+            assert_eq!(nearest, Some((si, di)));
+        }
+
+        // Painting with a hover marker + crosshair must not panic.
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_chart(rect, &chart, Some((0, 0)), Some(1.0));
+        backend.end_frame();
+    }
+
+    /// No-paint layout must agree byte-for-byte with what `draw_chart`
+    /// painted — the same contract `primitives::form::paint` documents
+    /// ("paint and hit-test can never disagree").
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_chart_no_paint_layout_matches_paint_layout() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 100;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let chart = chart_line_fixture(vec![1.0, 4.0, 2.0]);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let painted = backend.draw_chart(rect, &chart, None, None);
+        backend.end_frame();
+
+        let no_paint = backend.chart_layout(rect, &chart);
+        assert_eq!(painted, no_paint);
+    }
+
+    /// Regression for quadraui#791/#810: `win::chart::draw_chart` never
+    /// clipped at all before #810 unified all three backends onto the
+    /// shared `primitives::chart::paint`, which always brackets its body
+    /// in `surface_push_clip`/`surface_pop_clip`. Mirrors
+    /// `gtk::backend::tests::gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect`
+    /// pixel-for-pixel (same fixture, same geometry) — this is the
+    /// "driver-tier … observed RED" proof for Windows: reverting #810's
+    /// `WinBackend::draw_chart` to call the old, clip-less
+    /// `win::chart::draw_chart` free function turns this red.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
+        use crate::primitives::chart::{ChartKind, Series};
+        use crate::win::testing::HeadlessSurface;
+        use crate::Color;
+
+        // origin=1.0 at index 0 → top edge; 0.0 at index 1 → bottom
+        // edge. n=2 → index 0's x is the plot area's left edge. So data
+        // point (0, 0) sits exactly at the chart's top-left corner.
+        let chart = crate::primitives::chart::Chart {
+            id: WidgetId::new("chart"),
+            kind: ChartKind::Sparkline,
+            series: vec![Series {
+                label: "a".into(),
+                data: vec![10.0, 0.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 10.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(0),
+            show_grid: false,
+        };
+
+        const CANVAS_W: u32 = 40;
+        const CANVAS_H: u32 = 40;
+        let sentinel = Color::rgb(0, 0, 0);
+        let (chart_x, chart_y, chart_w, chart_h) = (10.0_f32, 10.0_f32, 20.0_f32, 20.0_f32);
+
+        let surface = HeadlessSurface::new(CANVAS_W, CANVAS_H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), CANVAS_W, CANVAS_H)
+            .expect("attach headless surface");
+
+        backend.begin_frame(Viewport::new(CANVAS_W as f32, CANVAS_H as f32, 1.0));
+        backend.surface_fill_rect(
+            Rect::new(0.0, 0.0, CANVAS_W as f32, CANVAS_H as f32),
+            sentinel,
+        );
+        backend.draw_chart(
+            Rect::new(chart_x, chart_y, chart_w, chart_h),
+            &chart,
+            Some((0, 0)),
+            None,
+        );
+        backend.end_frame();
+
+        // Inside the marker's 8-unit-radius ring, centred at the chart's
+        // own top-left corner (10, 10), but outside the chart's rect.
+        let px = surface.pixel_at(5, 5);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (sentinel.r, sentinel.g, sentinel.b),
+            "hover marker must not paint outside the chart's own rect",
+        );
+    }
+
+    // ── #810: draw_text_display real-pixel driver tests ─────────────────
+    //
+    // Ported from the deleted `win::text_display::tests` (that module
+    // drove `HeadlessSurface::paint` straight against the since-deleted
+    // free function `win::text_display::draw_text_display`) to instead
+    // drive the real `Backend::draw_text_display` →
+    // `primitives::text_display::paint` path end to end.
+
+    #[cfg(target_os = "windows")]
+    fn td_line(text: &str) -> crate::primitives::text_display::TextDisplayLine {
+        crate::primitives::text_display::TextDisplayLine {
+            spans: vec![crate::types::StyledSpan::plain(text)],
+            decoration: crate::types::Decoration::Normal,
+            timestamp: None,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn make_td(lines: usize, show_scrollbar: bool) -> crate::primitives::text_display::TextDisplay {
+        crate::primitives::text_display::TextDisplay {
+            id: WidgetId::new("td"),
+            lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_text_display_background_fills_theme_background() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 240;
+        const H: u32 = 160;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let td = make_td(0, false);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_text_display(Rect::new(0.0, 0.0, W as f32, H as f32), &td);
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let px = surface.pixel_at(W / 2, H / 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.background.r, theme.background.g, theme.background.b)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_text_display_scrollbar_gutter_and_thumb_paint() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 240;
+        const H: u32 = 160;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let td = make_td(100, true);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_text_display(rect, &td);
+        let layout = backend.text_display_layout(rect, &td);
+        backend.end_frame();
+
+        let theme = Theme::default();
+
+        let gutter = layout.scrollbar_bounds.expect("gutter present");
+        let probe_x = (gutter.x + gutter.width / 2.0) as u32;
+        let probe_y = (gutter.y + gutter.height - 2.0) as u32;
+        let px = surface.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (
+                theme.scrollbar_track.r,
+                theme.scrollbar_track.g,
+                theme.scrollbar_track.b
+            )
+        );
+
+        let thumb = layout.thumb_bounds.expect("thumb present");
+        let probe_x = (thumb.x + thumb.width / 2.0) as u32;
+        let probe_y = (thumb.y + thumb.height / 2.0) as u32;
+        let px = surface.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (
+                theme.scrollbar_thumb.r,
+                theme.scrollbar_thumb.g,
+                theme.scrollbar_thumb.b
+            )
+        );
+    }
+
+    /// Regression guard for quadraui#494 ("layout helpers must return
+    /// coords in the same frame across backends"): paint at a non-zero
+    /// rect origin with a title row present, then round-trip an
+    /// absolute click the way a real host does.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
+        use crate::primitives::text_display::TextDisplayHit;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 240;
+        const H: u32 = 160;
+        const LINE_HEIGHT: f32 = 16.0;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let mut td = make_td(20, false);
+        td.title = Some(crate::types::StyledText::plain("Logs"));
+
+        let rect_x = 9.0_f32;
+        let rect_y = 17.0_f32;
+        let rect = Rect::new(rect_x, rect_y, W as f32 - rect_x, H as f32 - rect_y);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_text_display(rect, &td);
+        let layout = backend.text_display_layout(rect, &td);
+        backend.end_frame();
+
+        let body_y = rect_y + LINE_HEIGHT;
+        let vis = &layout.visible_lines[0];
+        assert_eq!(
+            vis.bounds.y, 0.0,
+            "visible_lines bounds.y must be body-local"
+        );
+
+        let abs_x = rect_x + vis.bounds.x + vis.bounds.width * 0.5;
+        let abs_y = body_y + vis.bounds.y + vis.bounds.height * 0.5;
+        let local_x = abs_x - rect_x;
+        let local_y = abs_y - body_y;
+        match layout.hit_test(local_x, local_y) {
+            TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
+            other => panic!("expected Line, got {:?}", other),
+        }
+    }
+
+    /// No-paint layout must agree byte-for-byte with what
+    /// `draw_text_display` painted.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_text_display_no_paint_layout_matches_paint_layout() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 240;
+        const H: u32 = 160;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let td = make_td(30, true);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_text_display(rect, &td);
+        let painted = backend.text_display_layout(rect, &td);
+        backend.end_frame();
+
+        let no_paint = backend.text_display_layout(rect, &td);
+        assert_eq!(painted, no_paint);
     }
 }

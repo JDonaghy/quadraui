@@ -19,7 +19,7 @@ use windows::core::{Error as WinError, Result as WinResult, BOOL, HSTRING};
 use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1RenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
+    ID2D1RenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
@@ -431,26 +431,6 @@ pub(crate) fn draw_line(
             None,
         );
     }
-    Ok(())
-}
-
-/// Fill a circle centred at `(cx, cy)` (DIPs, target-relative) with
-/// radius `r` in `color` — [`crate::win::chart`]'s data-point hover
-/// marker.
-pub(crate) fn fill_circle(
-    target: &ID2D1RenderTarget,
-    cx: f32,
-    cy: f32,
-    r: f32,
-    color: Color,
-) -> WinResult<()> {
-    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
-    let ellipse = D2D1_ELLIPSE {
-        point: Vector2 { X: cx, Y: cy },
-        radiusX: r,
-        radiusY: r,
-    };
-    unsafe { target.FillEllipse(&ellipse, &brush) };
     Ok(())
 }
 

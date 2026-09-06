@@ -410,6 +410,396 @@ impl TextDisplay {
     }
 }
 
+// ── NativeSurface paint (#810, Phase 2c of the NativeSurface milestone) ────
+//
+// Before this, `gtk::text_display::draw_text_display`,
+// `macos::text_display::draw_text_display` and
+// `win::text_display::draw_text_display` each independently painted the
+// optional title row, per-line spans/timestamp, and scrollbar gutter +
+// thumb with their own Cairo / CoreGraphics / Direct2D calls — the three
+// were already near-identical (macOS's own module doc: "Mirror of
+// `gtk::text_display::draw_text_display`"; Windows's: "Mirrors
+// `macos::text_display::draw_text_display`"). `paint` below is the one
+// shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1).
+//
+// Each backend keeps its own `*_text_display_layout` free function
+// (`gtk_text_display_layout`/`mac_text_display_layout`/
+// `win_text_display_layout`) — unlike `paint`, that helper is pure
+// `TextDisplay::layout`/`layout_with_scrollbar` math with zero
+// Cairo/CoreGraphics/Direct2D dependency, so it was already
+// backend-agnostic; unifying it into a fourth shared function is a
+// natural follow-on but outside this issue's stated scope ("move …
+// paint"), so it's left as three near-identical copies for now, the
+// same call made for `*_chart_layout` in #810's chart migration.
+//
+// Behavioural divergence found while unifying (not resolved silently,
+// per this issue's acceptance bar): **bold span text, on Windows only.**
+// `win::text_display::draw_text_display` measured/drew each span with
+// `DWrite::measure_text_styled`/`draw_text_styled(.., span.bold)`; GTK
+// and macOS never read `StyledSpan::bold` at all — Pango/Core Text
+// bold-weight selection was never wired into either rasteriser.
+// `NativeSurface::surface_measure_text`/`surface_draw_text_run` carry no
+// bold parameter (see that trait's module doc's "~15 drawing verbs" —
+// weight selection isn't one of them), so there is no way to preserve
+// Windows's behaviour through this trait. `paint` adopts the
+// two-out-of-three shape: `StyledSpan::bold` is not painted specially on
+// any pixel backend. TUI's own `tui::text_display` is untouched.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_text_display` call site plus this
+// module's own `RecordingSurface` tests on every leg that enables one of
+// the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+mod native_surface_paint {
+    use super::{TextDisplay, TextDisplayLineMeasure};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Decoration;
+    use crate::Rect;
+
+    /// Paint a [`TextDisplay`] into `rect` on `surface`.
+    ///
+    /// Mirrors every deleted per-backend `draw_text_display`: fills
+    /// `rect` with [`Theme::background`], paints an optional title row
+    /// (shrinking the body by one `line_height`), then each visible
+    /// line's optional timestamp + spans (span `bg` filled before its
+    /// text, per-line `Decoration` resolving a fallback `fg`), then an
+    /// optional scrollbar gutter + thumb at the trailing edge.
+    ///
+    /// `line_height` and the resulting layout math are identical to
+    /// what `gtk_text_display_layout`/`mac_text_display_layout`/
+    /// `win_text_display_layout` already compute — see this module's
+    /// doc for why those three stay separate, pure-math copies rather
+    /// than also being unified here.
+    pub(crate) fn paint(
+        display: &TextDisplay,
+        rect: Rect,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        line_height: f32,
+    ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+
+        surface.surface_fill_rect(rect, theme.background);
+
+        // Optional title row at the top. Body shrinks by `line_height`
+        // when present.
+        let (body_y, body_h) = if let Some(ref title) = display.title {
+            let mut cursor_x = rect.x;
+            for span in &title.spans {
+                let span_fg = span.fg.unwrap_or(theme.foreground);
+                let (sw, _) = surface.surface_measure_text(&span.text);
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, rect.y, sw.max(1.0), line_height),
+                    &span.text,
+                    span_fg,
+                );
+                cursor_x += sw;
+            }
+            (rect.y + line_height, (rect.height - line_height).max(0.0))
+        } else {
+            (rect.y, rect.height)
+        };
+        if body_h <= 0.0 {
+            return;
+        }
+
+        let gutter = 12.0_f32;
+        let min_thumb = 8.0_f32;
+        let layout = if display.show_scrollbar {
+            display.layout_with_scrollbar(rect.width, body_h, gutter, min_thumb, |_| {
+                TextDisplayLineMeasure::new(line_height)
+            })
+        } else {
+            display.layout(rect.width, body_h, |_| {
+                TextDisplayLineMeasure::new(line_height)
+            })
+        };
+
+        for vis in &layout.visible_lines {
+            let line = &display.lines[vis.line_idx];
+            let row_y = body_y + vis.bounds.y;
+            if row_y + line_height > body_y + body_h {
+                break;
+            }
+
+            let line_fg = match line.decoration {
+                Decoration::Error => theme.error_fg,
+                Decoration::Warning => theme.warning_fg,
+                Decoration::Muted => theme.muted_fg,
+                _ => theme.foreground,
+            };
+
+            let mut cursor_x = rect.x;
+
+            if let Some(ref ts) = line.timestamp {
+                let (tw, _) = surface.surface_measure_text(ts);
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, row_y, tw.max(1.0), line_height),
+                    ts,
+                    theme.muted_fg,
+                );
+                cursor_x += tw + 6.0;
+            }
+
+            for span in &line.spans {
+                let span_fg = span.fg.unwrap_or(line_fg);
+                let (sw, _) = surface.surface_measure_text(&span.text);
+                if let Some(span_bg) = span.bg {
+                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, sw, line_height), span_bg);
+                }
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, row_y, sw.max(1.0), line_height),
+                    &span.text,
+                    span_fg,
+                );
+                cursor_x += sw;
+            }
+        }
+
+        // Scrollbar gutter.
+        if display.show_scrollbar {
+            if let Some(gutter) = layout.scrollbar_bounds {
+                surface.surface_fill_rect(
+                    Rect::new(
+                        rect.x + gutter.x,
+                        body_y + gutter.y,
+                        gutter.width,
+                        gutter.height,
+                    ),
+                    theme.scrollbar_track,
+                );
+            }
+            if let Some(thumb) = layout.thumb_bounds {
+                let inset = 2.0;
+                surface.surface_fill_rect(
+                    Rect::new(
+                        rect.x + thumb.x + inset,
+                        body_y + thumb.y,
+                        (thumb.width - inset * 2.0).max(2.0),
+                        thumb.height,
+                    ),
+                    theme.scrollbar_thumb,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::text_display::TextDisplayLine;
+        use crate::types::{Color, StyledSpan, StyledText, WidgetId};
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues — mirrors
+        /// `primitives::chart`/`primitives::find_replace`'s own
+        /// `RecordingSurface` (#810/#809).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(240.0, 160.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn td_line(text: &str) -> TextDisplayLine {
+            TextDisplayLine {
+                spans: vec![StyledSpan::plain(text)],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }
+        }
+
+        fn make_td(lines: usize, show_scrollbar: bool) -> TextDisplay {
+            TextDisplay {
+                id: WidgetId::new("td"),
+                lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
+                scroll_offset: 0,
+                auto_scroll: false,
+                max_lines: 0,
+                has_focus: false,
+                title: None,
+                show_scrollbar,
+            }
+        }
+
+        #[test]
+        fn background_fills_theme_background() {
+            let td = make_td(0, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 240.0, 160.0);
+
+            paint(&td, rect, &mut surface, &theme, 16.0);
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|&(r, c)| r == rect && c == theme.background),
+                "expected a full-rect background fill, fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        #[test]
+        fn zero_size_rect_paints_nothing() {
+            let td = make_td(5, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &td,
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                &mut surface,
+                &theme,
+                16.0,
+            );
+
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        #[test]
+        fn title_row_paints_before_the_body_and_shrinks_it() {
+            let mut td = make_td(1, false);
+            td.title = Some(StyledText::plain("Logs"));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 240.0, 32.0);
+
+            paint(&td, rect, &mut surface, &theme, 16.0);
+
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(r, t, _)| t == "Logs" && r.y == 0.0),
+                "expected the title span painted at the top row, got {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(r, t, _)| t == "ln0" && r.y == 16.0),
+                "expected the body's first line shifted down by one line_height, got {:?}",
+                surface.text_runs,
+            );
+        }
+
+        #[test]
+        fn line_decoration_resolves_fallback_color() {
+            let mut td = make_td(1, false);
+            td.lines[0].decoration = Decoration::Error;
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &td,
+                Rect::new(0.0, 0.0, 240.0, 32.0),
+                &mut surface,
+                &theme,
+                16.0,
+            );
+
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, c)| t == "ln0" && *c == theme.error_fg),
+                "expected the error-decorated line painted in theme.error_fg, got {:?}",
+                surface.text_runs,
+            );
+        }
+
+        #[test]
+        fn scrollbar_gutter_and_thumb_paint_when_shown() {
+            let td = make_td(100, true);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &td,
+                Rect::new(0.0, 0.0, 240.0, 160.0),
+                &mut surface,
+                &theme,
+                16.0,
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|&(_, c)| c == theme.scrollbar_track),
+                "expected a scrollbar-track fill"
+            );
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|&(_, c)| c == theme.scrollbar_thumb),
+                "expected a scrollbar-thumb fill"
+            );
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(unused_imports)]
+pub(crate) use native_surface_paint::paint;
+
 #[cfg(test)]
 mod tests {
     use super::*;

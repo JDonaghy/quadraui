@@ -1,11 +1,24 @@
-//! GTK rasteriser for [`crate::Terminal`] cell grids.
+//! GTK support for [`crate::Terminal`] cell grids.
 //!
-//! Iterates rows then per-cell, painting cell background then per-cell
-//! glyph (skipped for spaces and `\0`). Overlay flags
-//! (`is_cursor`, `is_find_active`, `is_find_match`, `selected`)
-//! override the cell's `bg`/`fg` via [`crate::terminal_style::resolve_cell_style`]
-//! — the ladder shared with the TUI and macOS rasterisers (#500). Bold /
-//! italic / underline applied via Pango `AttrList` per cell.
+//! Painting moved to the shared [`crate::primitives::terminal::paint`] /
+//! [`crate::primitives::terminal::paint_divider`] (#810, NativeSurface
+//! Phase 2c) — see that fn's doc for the divergences (per-cell
+//! bold/italic/underline styling, and #492's incidental `painted_text`
+//! tracking fix) resolved while unifying
+//! `gtk::terminal::draw_terminal_cells`,
+//! `macos::terminal::draw_terminal_cells` and
+//! `win::terminal::draw_terminal_cells` into one implementation. GTK's
+//! own [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]
+//! override applies all three style flags via Pango's `AttrList`,
+//! matching this module's pre-#810 behaviour exactly.
+//!
+//! This module now carries no rasteriser code of its own — both deleted
+//! free functions had zero call sites in `coord-tui`/`vimcode` (`grep -rn
+//! "draw_terminal_cells\|draw_terminal_divider" ~/src/coord-tui/src
+//! ~/src/vimcode/src` — the only hits there are `Backend::draw_terminal`/
+//! `Backend::draw_terminal_divider` trait calls, whose signatures are
+//! unchanged) or in `kubeui-gtk`, so neither needed a deprecation shim
+//! (CLAUDE.md rule 1).
 //!
 //! # Wide characters (#439)
 //!
@@ -13,204 +26,31 @@
 //! cell grid straight from vt100's model: a double-width character
 //! (CJK, emoji, ...) occupies its *own* column plus one trailing
 //! "continuation" column that vt100 reports as an empty cell (`ch =
-//! ' '`). Before #439, this rasteriser advanced by exactly
-//! `char_width` per grid column regardless of glyph width, so a
-//! double-width glyph — which Pango draws at roughly double the
-//! advance width — got its right half painted over by the
-//! continuation column's background fill. [`draw_terminal_cells`] now
-//! detects wide glyphs via [`crate::terminal_style::wide_cell_advance`]
-//! (shared with `macos::terminal`, #500), paints their background
-//! across two columns, and skips the continuation column so it's
-//! never independently painted on top of the glyph.
-//!
-//! The two-column cell is the *box*; the glyph inside it still needs to
-//! fill that box. The font Pango falls back to for CJK / emoji typically
-//! lays a glyph out at its own natural advance — often narrower than two
-//! terminal cells (a CJK glyph measuring 15px inside an 18px box), which
-//! left a ragged gap before the next wide glyph. [`draw_terminal_cells`]
-//! therefore scales each wide glyph horizontally (see
-//! [`crate::terminal_style::wide_glyph_x_scale`], lifted from this
-//! module's original private copy by #703 so `macos` and `win` apply the
-//! same decision) so it spans exactly `cell_w`, giving the tight, even
-//! two-cell packing a normal terminal produces.
-
-use gtk4::cairo::Context;
-use gtk4::pango;
-use gtk4::pango::AttrList;
-
-use crate::primitives::terminal::Terminal;
-use crate::terminal_style::{
-    divider_geometry, resolve_cell_style, wide_cell_advance, wide_glyph_x_scale,
-};
-use crate::theme::Theme;
-
-/// Draw `term`'s cell grid into the rectangular region starting at
-/// `(x, content_y)` on `cr`. The caller is responsible for filling
-/// the surrounding background (vimcode does this with
-/// `theme.terminal_bg` before calling so the area outside the cell
-/// grid stays consistent).
-///
-/// `cell_area_w` clips per-row painting — cells past the right edge
-/// stop being drawn rather than wrapping. `cell_area_h` clips per-column
-/// painting vertically — rows whose top falls at or below the pane
-/// bottom stop being drawn rather than bleeding into whatever sits below
-/// the terminal (the footer, an adjacent pane). This matters during an
-/// interactive resize: painting is not debounced, so a frame can render a
-/// grid that still has the pre-resize (taller) row count into an
-/// already-shrunk pixel pane (quadraui#437). `line_height` and
-/// `char_width` are the per-cell dimensions in DIPs.
-///
-/// `dirty_rows` (#417) restricts painting to a subset of rows: `None`
-/// paints every row (the historical behaviour); `Some(rows)` paints only
-/// the rows whose index appears in `rows` (expected sorted ascending,
-/// e.g. from [`crate::primitives::terminal::Terminal::dirty_rows`]) and
-/// leaves every other row's pixels untouched. Callers only pass
-/// `Some(_)` when they can guarantee nothing else painted over those
-/// pixels since they were last correctly rendered — see
-/// `GtkBackend::draw_terminal`'s cache-invalidation guards.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_terminal_cells(
-    cr: &Context,
-    layout: &pango::Layout,
-    term: &Terminal,
-    x: f64,
-    content_y: f64,
-    cell_area_w: f64,
-    cell_area_h: f64,
-    line_height: f64,
-    char_width: f64,
-    theme: &Theme,
-    dirty_rows: Option<&[usize]>,
-) {
-    for (row_idx, row) in term.cells.iter().enumerate() {
-        let row_y = content_y + row_idx as f64 * line_height;
-        // Stop once a row's top has reached the pane bottom — such a row
-        // belongs to a taller (pre-resize) grid and would bleed past the
-        // pane. A row that merely straddles the bottom edge is still drawn
-        // (and clipped by the pane fill / footer painted over it).
-        if row_y >= content_y + cell_area_h {
-            break;
-        }
-        if let Some(rows) = dirty_rows {
-            if rows.binary_search(&row_idx).is_err() {
-                continue;
-            }
-        }
-        let mut cell_x = x;
-        let mut col = 0usize;
-        while col < row.len() {
-            let cell = &row[col];
-            // Double-width glyphs (CJK, emoji, ...) get a two-column cell:
-            // the vt100 grid already reserves the following column as an
-            // empty continuation placeholder, so claim it here rather
-            // than letting it paint its own (mismatched) background over
-            // the glyph's right half.
-            let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width);
-            let is_wide = cols_advanced == 2;
-
-            if cell_x + cell_w > x + cell_area_w {
-                break;
-            }
-            let (draw_bg, draw_fg) = resolve_cell_style(cell, theme);
-            cr.set_source_rgb(
-                draw_bg.r as f64 / 255.0,
-                draw_bg.g as f64 / 255.0,
-                draw_bg.b as f64 / 255.0,
-            );
-            cr.rectangle(cell_x, row_y, cell_w, line_height);
-            cr.fill().ok();
-
-            if cell.ch != ' ' && cell.ch != '\0' {
-                cr.set_source_rgb(
-                    draw_fg.r as f64 / 255.0,
-                    draw_fg.g as f64 / 255.0,
-                    draw_fg.b as f64 / 255.0,
-                );
-
-                let attrs = AttrList::new();
-                if cell.bold {
-                    attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
-                }
-                if cell.italic {
-                    attrs.insert(pango::AttrInt::new_style(pango::Style::Italic));
-                }
-                if cell.underline {
-                    attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
-                }
-                layout.set_attributes(Some(&attrs));
-                let s = cell.ch.to_string();
-                layout.set_text(&s);
-
-                if is_wide {
-                    // A double-width glyph occupies a two-column (`cell_w`)
-                    // box, but the font Pango falls back to for CJK / emoji
-                    // usually lays the glyph out at its *own* natural advance
-                    // — narrower than two terminal cells (e.g. a CJK glyph
-                    // measuring 15px inside an 18px box) or, for some emoji
-                    // fonts, wider. Drawn left-aligned at the cell origin,
-                    // that leaves a ragged gap before the next wide glyph:
-                    // the #439 follow-up defect where consecutive CJK/emoji
-                    // looked abnormally spread out. Scale the glyph
-                    // horizontally so it fills exactly `cell_w`, giving the
-                    // tight, even two-cell packing a normal terminal
-                    // produces. Narrow cells already match `char_width`
-                    // (measured from the same monospace font), so only wide
-                    // cells need this.
-                    let (natural_w, _) = layout.pixel_size();
-                    let scale_x = wide_glyph_x_scale(natural_w as f64, cell_w);
-                    if (scale_x - 1.0).abs() > f64::EPSILON {
-                        cr.save().ok();
-                        cr.translate(cell_x, row_y);
-                        cr.scale(scale_x, 1.0);
-                        cr.move_to(0.0, 0.0);
-                        pangocairo::functions::show_layout(cr, layout);
-                        cr.restore().ok();
-                    } else {
-                        cr.move_to(cell_x, row_y);
-                        pangocairo::functions::show_layout(cr, layout);
-                    }
-                } else {
-                    cr.move_to(cell_x, row_y);
-                    pangocairo::functions::show_layout(cr, layout);
-                }
-                layout.set_attributes(None);
-            }
-
-            cell_x += cell_w;
-            col += cols_advanced;
-        }
-    }
-}
-
-/// Draw a vertical divider line for a terminal split pane.
-/// Paints a 1-pixel-wide line at `x` from `y` to `y + height`
-/// using `theme.separator` colour. Geometry comes from
-/// [`crate::terminal_style::divider_geometry`], shared with the
-/// `macos`/`win` twins (#703).
-pub fn draw_terminal_divider(cr: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
-    let g = divider_geometry(x, y, height);
-    let (r, gg, b) = (
-        theme.separator.r as f64 / 255.0,
-        theme.separator.g as f64 / 255.0,
-        theme.separator.b as f64 / 255.0,
-    );
-    cr.set_source_rgb(r, gg, b);
-    cr.rectangle(g.x, g.y, g.width, g.height);
-    cr.fill().ok();
-}
+//! ' '`). `primitives::terminal::paint` detects wide glyphs via
+//! [`crate::terminal_style::wide_cell_advance`] (shared with
+//! `macos`/`win`, #500), paints their background across two columns,
+//! skips the continuation column, and scales the glyph horizontally
+//! (via `NativeSurface::surface_draw_text_run_styled`'s `scale_x`, see
+//! [`crate::terminal_style::wide_glyph_x_scale`]) so it spans exactly
+//! `cell_w` — the same #439/#703 fix this module's own rasteriser used
+//! to apply directly.
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
-// Headless paint tests: verify `draw_terminal_cells` background-fill
-// behaviour for wide (double-width) vs narrow cells without a display.
-// Uses a Cairo `ImageSurface` and reads back pixel data directly, mirroring
-// the pattern in `gtk::tab_bar` / `gtk::multi_section_view`.
+// Headless paint tests: verify terminal-cell background-fill and
+// wide-glyph behaviour without a display. Uses a Cairo `ImageSurface`
+// and reads back pixel data directly, driving the real
+// `GtkBackend::draw_terminal` path (mirrors `gtk::backend::tests`'s own
+// `draw_chart`/`draw_text_display` driver tests, #810).
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::primitives::terminal::TerminalCell;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::gtk::backend::GtkBackend;
+    use crate::primitives::terminal::{Terminal, TerminalCell};
+    use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
+    use crate::Backend;
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     const W: i32 = 200;
@@ -242,24 +82,18 @@ mod tests {
     }
 
     fn paint(term: &Terminal) -> ImageSurface {
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(Theme::default());
+        backend.set_current_line_height(LINE_H);
+        backend.set_current_char_width(CHAR_W);
+        Backend::begin_frame(&mut backend, Viewport::new(W as f32, H as f32, 1.0));
         let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
         {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            let theme = Theme::default();
-            draw_terminal_cells(
-                &cr,
-                &pango_layout,
-                term,
-                0.0,
-                0.0,
-                W as f64,
-                H as f64,
-                LINE_H,
-                CHAR_W,
-                &theme,
-                None,
-            );
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_terminal(QRect::new(0.0, 0.0, W as f32, H as f32), term);
+            });
         }
         surface
     }
@@ -287,7 +121,7 @@ mod tests {
         // fail spuriously. Painting the glyph in the background colour keeps
         // the probe a pure, deterministic background read on every host,
         // while the glyph-scaling maths stays covered by the dedicated
-        // `wide_glyph_x_scale` unit tests below.
+        // `wide_glyph_x_scale` unit tests in `terminal_style`.
         let row = vec![cell('日', magenta, magenta), cell(' ', magenta, cyan)];
         let term = Terminal {
             id: WidgetId::new("term"),
@@ -348,119 +182,12 @@ mod tests {
         );
     }
 
-    /// #439 follow-up: a wide glyph whose natural Pango advance is *narrower*
-    /// than its two-cell box must be stretched to fill it exactly, so
-    /// consecutive CJK/emoji pack tightly with no ragged inter-glyph gap.
-    /// A CJK glyph measuring 15px inside an 18px (2 × 9px) box → 1.2×.
-    #[test]
-    fn narrow_wide_glyph_is_stretched_to_fill_two_cells() {
-        let cell_w = 18.0;
-        let scale = wide_glyph_x_scale(15.0, cell_w);
-        assert!(
-            (scale - 1.2).abs() < 1e-9,
-            "15px glyph in an 18px box should scale 1.2×, got {scale}"
-        );
-        // And the rendered advance is exactly the two-cell box width.
-        assert!((15.0 * scale - cell_w).abs() < 1e-9);
-    }
-
-    /// A wide glyph that already fills its box (emoji measuring exactly two
-    /// cells) is left untouched — scale factor 1.0.
-    #[test]
-    fn exact_fit_wide_glyph_is_not_scaled() {
-        assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
-    }
-
-    /// A wide glyph *wider* than two cells (some colour-emoji fonts) is
-    /// shrunk back into the box so it can't overlap the next glyph.
-    #[test]
-    fn over_wide_glyph_is_shrunk_into_box() {
-        let scale = wide_glyph_x_scale(24.0, 18.0);
-        assert!(
-            scale < 1.0,
-            "24px glyph in 18px box should shrink, got {scale}"
-        );
-        assert!((24.0 * scale - 18.0).abs() < 1e-9);
-    }
-
-    /// A zero / negative advance (empty or degenerate layout) must not
-    /// divide by zero or explode — it falls back to no scaling.
-    #[test]
-    fn degenerate_glyph_width_falls_back_to_no_scale() {
-        assert_eq!(wide_glyph_x_scale(0.0, 18.0), 1.0);
-        assert_eq!(wide_glyph_x_scale(-3.0, 18.0), 1.0);
-    }
-
-    /// #417: passing `Some(dirty_rows)` must paint only the listed rows
-    /// and leave every other row's pixels completely untouched — that's
-    /// the whole premise of the dirty-row fast path, since those pixels
-    /// are assumed to already be correct from an earlier frame.
-    ///
-    /// Both probes are deliberately font-independent, because the host's
-    /// default Pango font differs between a dev machine and CI and a glyph
-    /// routinely rasterises taller than its `line_height`-tall cell box:
-    /// the painted row uses `fg == bg`, so its glyph cannot change the
-    /// probed pixel's colour, and the *skipped* row probed here is row 0 —
-    /// above the only row that paints, so nothing can bleed onto it. Keep
-    /// both properties if you extend this test; a contrasting `fg` with a
-    /// probe under a painting row is what reddened the `gtk` CI job once
-    /// already (see `gtk::backend::tests::term_row_417`).
-    #[test]
-    fn dirty_rows_filter_skips_untouched_rows() {
-        let sentinel = Color::rgb(1, 2, 3);
-        let painted = Color::rgb(200, 200, 200);
-        let term = Terminal {
-            id: WidgetId::new("term"),
-            cells: vec![
-                vec![cell('A', painted, painted)],
-                vec![cell('B', painted, painted)],
-            ],
-            scrollbar: None,
-        };
-        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-        {
-            let cr = Context::new(&surface).expect("Context::new");
-            // Stand in for "whatever a previous frame already painted
-            // here" — draw_terminal_cells must not touch row 0's pixels
-            // when row 0 is excluded from `dirty_rows`.
-            cr.set_source_rgb(
-                sentinel.r as f64 / 255.0,
-                sentinel.g as f64 / 255.0,
-                sentinel.b as f64 / 255.0,
-            );
-            cr.paint().ok();
-            let pango_layout = pangocairo::functions::create_layout(&cr);
-            let theme = Theme::default();
-            draw_terminal_cells(
-                &cr,
-                &pango_layout,
-                &term,
-                0.0,
-                0.0,
-                W as f64,
-                H as f64,
-                LINE_H,
-                CHAR_W,
-                &theme,
-                Some(&[1]),
-            );
-        }
-        let mut s = surface;
-        s.flush();
-        let stride = s.stride() as usize;
-        let data = s.data().expect("surface data");
-
-        let row0 = pixel(&data, stride, 5, 5);
-        assert_eq!(
-            row0,
-            (sentinel.r, sentinel.g, sentinel.b),
-            "row 0 excluded from dirty_rows must be left untouched"
-        );
-        let row1 = pixel(&data, stride, 5, LINE_H as i32 + 5);
-        assert_eq!(
-            row1,
-            (painted.r, painted.g, painted.b),
-            "row 1 included in dirty_rows must be repainted"
-        );
-    }
+    // #417's dirty-row *decision* (`TermPaintCache`) lives entirely in
+    // `GtkBackend::draw_terminal` and is untouched by #810 — see
+    // `gtk::backend::tests::term_row_417` and its many neighbouring
+    // tests for that integration's own coverage. The paint-level "only
+    // repaint the rows in `dirty_rows`" contract itself is covered by
+    // `primitives::terminal::native_surface_paint::tests::dirty_rows_filter_skips_untouched_rows`,
+    // which runs on every leg (no Cairo needed) rather than duplicated
+    // here as a third real-pixel copy.
 }

@@ -1,216 +1,37 @@
-//! macOS rasteriser for [`crate::Terminal`] cell grids.
+//! macOS support for [`crate::Terminal`] cell grids.
 //!
-//! Mirror of [`crate::gtk::terminal::draw_terminal_cells`]: walks
-//! `term.cells[row][col]`, fills each cell's background, then paints
-//! the glyph (skipped for `' '` and `'\0'`). Overlay flags
-//! (`is_cursor`, `is_find_active`, `is_find_match`, `selected`)
-//! override the cell's `bg` / `fg` via
-//! [`crate::terminal_style::resolve_cell_style`] — the ladder shared
-//! with the TUI and GTK rasterisers (#500).
+//! Painting moved to the shared [`crate::primitives::terminal::paint`] /
+//! [`crate::primitives::terminal::paint_divider`] (#810, NativeSurface
+//! Phase 2c) — see that fn's doc for the divergence (per-cell
+//! bold/italic/underline styling) resolved while unifying
+//! `gtk::terminal::draw_terminal_cells`, `macos::terminal::draw_terminal_cells`
+//! and `win::terminal::draw_terminal_cells` into one implementation.
+//! macOS gained no new styling capability from this (it never rendered
+//! bold/italic/underline before #810 either — see
+//! [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]'s
+//! doc), but keeps the wide-glyph horizontal-scale fix (#500/#703) it
+//! already had.
 //!
-//! # Wide characters (#440, #500's shared box fix, #703's shared scale)
-//!
-//! Before #500, this rasteriser advanced a flat `char_width` per grid
-//! column regardless of glyph width, so a double-width character (CJK,
-//! emoji, ...) — which vt100 represents as the glyph's own column plus
-//! a trailing blank "continuation" column, see
-//! [`crate::terminal_engine::TerminalSession::to_terminal`] — got its
-//! right half painted over by the continuation column's own background.
-//! This mirrors the bug GTK fixed in #439. [`draw_terminal_cells`] uses
-//! [`crate::terminal_style::wide_cell_advance`] (shared with
-//! `gtk::terminal`) to paint the wide glyph's background across both
-//! columns and skip the continuation column, matching the GTK fix.
-//!
-//! #500 shipped that box fix but deliberately left the glyph itself
-//! drawn at its natural Core Text advance — narrower or wider than the
-//! two-cell box, same ragged-packing gap GTK fixed in its #439
-//! follow-up. #703 closes that gap here too: [`draw_terminal_cells`]
-//! measures the glyph via [`super::text::measure_text`] and scales it
-//! with [`super::text::draw_text_scaled_x`] using
-//! [`crate::terminal_style::wide_glyph_x_scale`] — the same decision
-//! GTK's `wide_glyph_x_scale` makes, lifted to a shared helper rather
-//! than re-implemented here. This closes the *shared math* half of
-//! #440; live verification on real macOS hardware remains blocked (no
-//! macOS runner on this fleet) and is unaffected by this change — see
-//! this module's headless tests for what *is* verified here.
-//!
-//! Bold / italic / underline attributes are **not** rendered yet —
-//! Core Text would need a per-cell `CTFont` (or attributed-string
-//! attribute) for the bold / italic variants, and the cell grid is
-//! hot enough that we want trait-shape parity in this ticket and
-//! defer styled-attr support to a follow-up. (#43 acceptance
-//! criteria covers the cell grid + cursor / selection / find
-//! overlays; attribute variants are listed in the milestone but
-//! gated behind a consumer asking for them.)
-
-use core_graphics::base::CGFloat;
-use core_graphics::geometry::{CGPoint, CGRect, CGSize};
-use core_graphics::sys::CGContextRef;
-use core_text::font::CTFont;
-
-use super::text::{draw_text, draw_text_scaled_x, measure_text};
-use crate::primitives::terminal::Terminal;
-use crate::terminal_style::{
-    divider_geometry, resolve_cell_style, wide_cell_advance, wide_glyph_x_scale,
-};
-use crate::theme::Theme;
-use crate::types::Color;
-
-/// Draw `term`'s cell grid into the rectangular region starting at
-/// `(x, y)` on `ctx`. `cell_area_w` clips per-row painting — cells
-/// past the right edge stop being drawn rather than wrapping.
-/// `cell_area_h` clips per-column painting vertically — rows whose top
-/// falls at or below the pane bottom stop being drawn rather than
-/// bleeding into whatever sits below the terminal (the footer, an
-/// adjacent pane). `line_height` and `char_width` are the per-cell
-/// dimensions in points.
-///
-/// Callers that render with a scrollbar pass `cell_area_w =
-/// rect.width - scrollbar_width` so the cell grid stops at the
-/// scrollbar gutter; the gutter itself is painted by
-/// [`super::scrollbar::draw_scrollbar`] from
-/// [`crate::macos::backend::MacBackend::draw_terminal`].
-///
-/// # Why `cell_area_h` exists (quadraui#437 / #484)
-///
-/// Painting is not debounced, so a frame during an interactive resize
-/// can render a grid that still has the pre-resize (taller) row count
-/// into an already-shrunk pixel pane. The GTK twin gained this clip
-/// under #437; the macOS caller was updated to pass `rect.height` at
-/// the same time but this signature was not, which is the E0061 arity
-/// mismatch quadraui#484 found the first time `macos-latest` compiled
-/// this backend. Fixed on the callee side — dropping the argument
-/// instead would have made the build green by silently deleting the
-/// vertical clip on macOS. This is *not* #440 (wide-char handling);
-/// `char_width` was already a parameter and still advances one column
-/// per cell.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call (typical: the frame-scope pointer on
-/// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_terminal_cells(
-    ctx: CGContextRef,
-    font: &CTFont,
-    term: &Terminal,
-    x: f64,
-    y: f64,
-    cell_area_w: f64,
-    cell_area_h: f64,
-    line_height: f64,
-    char_width: f64,
-    theme: &Theme,
-) {
-    if cell_area_w <= 0.0 || cell_area_h <= 0.0 || line_height <= 0.0 || char_width <= 0.0 {
-        return;
-    }
-    for (row_idx, row) in term.cells.iter().enumerate() {
-        let row_y = y + row_idx as f64 * line_height;
-        // Stop once a row's top has reached the pane bottom — such a row
-        // belongs to a taller (pre-resize) grid and would bleed past the
-        // pane. A row that merely straddles the bottom edge is still
-        // drawn (and clipped by whatever the host paints over it).
-        if row_y >= y + cell_area_h {
-            break;
-        }
-        let mut cell_x = x;
-        let mut col = 0usize;
-        while col < row.len() {
-            let cell = &row[col];
-            // Double-width glyphs (CJK, emoji, ...) get a two-column cell:
-            // the vt100 grid already reserves the following column as an
-            // empty continuation placeholder, so claim it here rather
-            // than letting it paint its own (mismatched) background over
-            // the glyph's right half — mirrors `gtk::terminal`'s #439 fix.
-            let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width);
-            let is_wide = cols_advanced == 2;
-
-            if cell_x + cell_w > x + cell_area_w {
-                break;
-            }
-            let (cell_bg, cell_fg) = resolve_cell_style(cell, theme);
-            fill_rect(ctx, cell_x, row_y, cell_w, line_height, cell_bg);
-
-            if cell.ch != ' ' && cell.ch != '\0' {
-                let s = cell.ch.to_string();
-                let color = color_to_cg(cell_fg);
-                if is_wide {
-                    // Mirrors `gtk::terminal`'s glyph-scaling follow-up
-                    // (#439 / #500 / #703): the font Core Text falls back
-                    // to for CJK / emoji rarely lays the glyph out at
-                    // exactly two cells, so scale it to fill `cell_w`
-                    // instead of leaving a ragged gap or overlap.
-                    let (natural_w, _) = measure_text(font, &s);
-                    let scale_x = wide_glyph_x_scale(natural_w, cell_w);
-                    if (scale_x - 1.0).abs() > f64::EPSILON {
-                        draw_text_scaled_x(ctx, font, &s, cell_x, row_y, scale_x, color);
-                    } else {
-                        draw_text(ctx, font, &s, cell_x, row_y, color);
-                    }
-                } else {
-                    draw_text(ctx, font, &s, cell_x, row_y, color);
-                }
-            }
-
-            cell_x += cell_w;
-            col += cols_advanced;
-        }
-    }
-}
-
-/// Draw a vertical divider line for a terminal split pane. Paints a
-/// 1-pt-wide line at `x` from `y` to `y + height` using
-/// `theme.separator`. Geometry comes from
-/// [`crate::terminal_style::divider_geometry`], shared with the
-/// `gtk`/`win` twins (#703).
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call. Calling with a freed or null pointer is UB.
-pub unsafe fn draw_terminal_divider(ctx: CGContextRef, x: f64, y: f64, height: f64, theme: &Theme) {
-    let g = divider_geometry(x, y, height);
-    fill_rect(ctx, g.x, g.y, g.width, g.height, theme.separator);
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: CGFloat,
-        green: CGFloat,
-        blue: CGFloat,
-        alpha: CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-}
+//! This module now carries no rasteriser code of its own — both deleted
+//! free functions had zero call sites in `coord-tui`/`vimcode` (`grep -rn
+//! "draw_terminal_cells\|draw_terminal_divider" ~/src/coord-tui/src
+//! ~/src/vimcode/src` — the only hits there are `Backend::draw_terminal`/
+//! `Backend::draw_terminal_divider` trait calls, whose signatures are
+//! unchanged), so neither needed a deprecation shim (CLAUDE.md rule 1).
 
 #[cfg(test)]
 mod tests {
+    use super::super::form::RawFormSurface;
     use super::super::headless::BitmapSurface;
     use super::super::text::make_font;
     use super::super::MacBackend;
-    use super::*;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::terminal::{Terminal, TerminalCell};
-    use crate::types::WidgetId;
+    use crate::terminal_style::wide_glyph_x_scale;
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
     use crate::Backend;
+    use core_text::font::CTFont;
 
     const W: u32 = 200;
     const H: u32 = 120;
@@ -265,19 +86,20 @@ mod tests {
         assert_eq!((r, g, b), (magenta.r, magenta.g, magenta.b));
     }
 
-    /// #440 / #500 regression, mirroring `gtk::terminal`'s
-    /// `wide_cell_background_spans_two_columns` test: a double-width
+    /// #440 / #500 regression, mirroring `gtk::backend::tests`'s
+    /// `wide_cell_background_spans_two_columns` twin: a double-width
     /// glyph (CJK) followed by vt100's blank continuation cell must have
     /// its background span both columns — the continuation cell's own
     /// (different) background must NOT paint over the second half of the
-    /// wide glyph's cell. Calls [`draw_terminal_cells`] directly (rather
+    /// wide glyph's cell. Paints via `RawFormSurface` directly (rather
     /// than through `MacBackend::draw_terminal`) so the test controls
     /// `char_width` explicitly instead of depending on Menlo's measured
-    /// advance.
+    /// advance — the same reason `win::multi_section_view`'s embedded
+    /// `Terminal` section body uses that adapter.
     #[test]
     fn wide_cell_background_spans_two_columns() {
-        const CHAR_W: f64 = 10.0;
-        const LINE_H: f64 = 20.0;
+        const CHAR_W: f32 = 10.0;
+        const LINE_H: f32 = 20.0;
 
         let magenta = Color::rgb(200, 30, 200);
         let cyan = Color::rgb(30, 200, 200);
@@ -297,22 +119,13 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let theme = Theme::default();
         let f = font();
-        // SAFETY: `surface.context_ptr()` is valid for the surface's
-        // lifetime, which outlives this call.
-        unsafe {
-            draw_terminal_cells(
-                surface.context_ptr(),
-                &f,
-                &term,
-                0.0,
-                0.0,
-                W as f64,
-                H as f64,
-                LINE_H,
-                CHAR_W,
-                &theme,
-            );
-        }
+        let mut raw = RawFormSurface {
+            ctx: surface.context_ptr(),
+            font: &f,
+        };
+        crate::primitives::terminal::paint(
+            &term, &mut raw, &theme, 0.0, 0.0, W as f32, H as f32, LINE_H, CHAR_W, None,
+        );
 
         // Probe just past the first single-cell-width boundary, still
         // within the wide glyph's two-column span: must be magenta, not
@@ -329,12 +142,12 @@ mod tests {
 
     /// Companion regression: ordinary narrow (single-width) cells must
     /// still advance by exactly `char_width` — the wide-cell fix must
-    /// not widen unrelated cells. Mirrors `gtk::terminal`'s
+    /// not widen unrelated cells. Mirrors `gtk::backend::tests`'s
     /// `narrow_cells_advance_by_single_char_width`.
     #[test]
     fn narrow_cells_advance_by_single_char_width() {
-        const CHAR_W: f64 = 10.0;
-        const LINE_H: f64 = 20.0;
+        const CHAR_W: f32 = 10.0;
+        const LINE_H: f32 = 20.0;
 
         let magenta = Color::rgb(200, 30, 200);
         let cyan = Color::rgb(30, 200, 200);
@@ -353,22 +166,13 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let theme = Theme::default();
         let f = font();
-        // SAFETY: `surface.context_ptr()` is valid for the surface's
-        // lifetime, which outlives this call.
-        unsafe {
-            draw_terminal_cells(
-                surface.context_ptr(),
-                &f,
-                &term,
-                0.0,
-                0.0,
-                W as f64,
-                H as f64,
-                LINE_H,
-                CHAR_W,
-                &theme,
-            );
-        }
+        let mut raw = RawFormSurface {
+            ctx: surface.context_ptr(),
+            font: &f,
+        };
+        crate::primitives::terminal::paint(
+            &term, &mut raw, &theme, 0.0, 0.0, W as f32, H as f32, LINE_H, CHAR_W, None,
+        );
 
         // Just past the single-cell-width boundary: second cell's own
         // background (cyan) should already be showing.
@@ -381,9 +185,9 @@ mod tests {
         );
     }
 
-    /// #703: mirrors `gtk::terminal`'s `narrow_wide_glyph_is_stretched_to_fill_two_cells`
-    /// — both backends now share `wide_glyph_x_scale`, so a CJK glyph
-    /// measuring 15px in an 18px (2 × 9px) box scales 1.2x on macOS too.
+    /// #703: mirrors the GTK twin — both backends share `wide_glyph_x_scale`,
+    /// so a CJK glyph measuring 15px in an 18px (2 × 9px) box scales
+    /// 1.2x on macOS too.
     #[test]
     fn narrow_wide_glyph_is_stretched_to_fill_two_cells() {
         let cell_w = 18.0;
@@ -395,13 +199,13 @@ mod tests {
         assert!((15.0 * scale - cell_w).abs() < 1e-9);
     }
 
-    /// #703: mirrors `gtk::terminal`'s `exact_fit_wide_glyph_is_not_scaled`.
+    /// #703: mirrors the GTK twin.
     #[test]
     fn exact_fit_wide_glyph_is_not_scaled() {
         assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
     }
 
-    /// #703: mirrors `gtk::terminal`'s `over_wide_glyph_is_shrunk_into_box`.
+    /// #703: mirrors the GTK twin.
     #[test]
     fn over_wide_glyph_is_shrunk_into_box() {
         let scale = wide_glyph_x_scale(24.0, 18.0);

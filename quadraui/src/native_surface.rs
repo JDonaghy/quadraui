@@ -157,6 +157,48 @@ pub(crate) trait NativeSurface {
     /// surface's current font.
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color);
 
+    /// [`Self::surface_draw_text_run`] with optional bold/italic/underline
+    /// styling and horizontal scale — added in #810 (Phase 2c)
+    /// specifically so `primitives::terminal::paint`'s per-cell glyph
+    /// styling (ANSI bold/italic/underline) and wide-glyph advance fix
+    /// (#439/#500/#703: stretch/shrink a CJK/emoji glyph so it fills its
+    /// two-column cell box exactly) don't have to regress just because
+    /// this trait's original ~15 verbs (#807, Phase 1) didn't anticipate
+    /// either.
+    ///
+    /// `scale_x` of `1.0` means "natural width, no scaling" — matches
+    /// every caller that doesn't need the wide-glyph fix.
+    ///
+    /// Defaults to dropping `bold`/`italic`/`underline`/`scale_x`
+    /// entirely and forwarding to [`Self::surface_draw_text_run`] —
+    /// correct only for a surface that can style *and* scale text no
+    /// better than that. No implementor actually wants the full default:
+    /// [`crate::gtk::backend::GtkBackend`] overrides for all three style
+    /// flags (Pango `AttrList`) plus `scale_x` (`cr.scale`);
+    /// [`crate::win::backend::WinBackend`] overrides for `bold` only
+    /// (`DWrite::draw_text_styled`) plus `scale_x`
+    /// (`with_horizontal_scale`), silently dropping `italic`/`underline`
+    /// (its own pre-#810 documented limitation);
+    /// [`crate::macos::backend::MacBackend`] overrides for `scale_x`
+    /// only (`draw_text_scaled_x`), dropping every style flag (its own
+    /// pre-#810 documented "not rendered yet" posture) — so macOS gains
+    /// no new styling capability here, but keeps the wide-glyph fix it
+    /// already had.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (bold, italic, underline, scale_x);
+        self.surface_draw_text_run(rect, text, color);
+    }
+
     /// Stroke a line segment from `from` to `to` in `color` at
     /// `stroke_width`.
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32);

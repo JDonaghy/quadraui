@@ -369,20 +369,15 @@ unsafe fn paint_body(
             draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
-            super::chart::draw_chart(
-                ctx,
-                font,
-                bx,
-                by,
-                bw,
-                bh,
-                c,
-                theme,
-                line_height,
-                char_width,
-                None,
-                None,
-            );
+            // #810: painting moved to the shared
+            // `crate::primitives::chart::paint`; this raw
+            // `(CGContextRef, &CTFont)` call site (no live `MacBackend`
+            // on hand) reuses `macos::form::RawFormSurface` — a generic
+            // adapter despite its name, see that struct's doc.
+            let chart_layout =
+                super::chart::mac_chart_layout(c, bx, by, bw, bh, line_height, char_width);
+            let mut surface = super::form::RawFormSurface { ctx, font };
+            crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::Terminal(_) | SectionBody::MessageList(_) => {
             // Lands in #43 — paint the bg only for now.

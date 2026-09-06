@@ -237,7 +237,7 @@ pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 pub use board::{draw_board, win_board_layout};
 #[cfg(target_os = "windows")]
-pub use chart::{draw_chart, win_chart_layout};
+pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
 pub use command_center::{draw_command_center, win_command_center_layout};
 #[cfg(target_os = "windows")]
@@ -305,9 +305,8 @@ pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
 #[cfg(target_os = "windows")]
-pub use terminal::{draw_terminal_cells, draw_terminal_divider};
 #[cfg(target_os = "windows")]
-pub use text_display::{draw_text_display, win_text_display_layout};
+pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
 pub use text_input::{draw_text_input, win_text_input_layout};
 #[cfg(target_os = "windows")]
