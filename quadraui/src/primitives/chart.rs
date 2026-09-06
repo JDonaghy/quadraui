@@ -728,11 +728,12 @@ pub fn format_tick_value(v: f64) -> String {
 //     change, not something to bundle incidentally into a paint-code
 //     unification.
 //
-// `SERIES_COLORS`/`series_color` are lifted here verbatim (same six
-// literal colors every deleted per-backend copy used) — per this
-// issue's acceptance bar, the color-table *abstraction* is a separate,
-// sibling issue; this phase only collapses three copies of the same
-// literal array into one.
+// `SERIES_COLORS` mirrors `Theme::default().chart_series` (same six
+// literal colors every deleted per-backend copy used, now the default
+// value of that field — quadraui#815). `series_color` resolves against
+// the live `theme.chart_series` so a themed app's chart series colours
+// actually change, falling back to `SERIES_COLORS` only where a
+// `Theme` isn't available (this module's own tests).
 //
 // `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
 // — only *called* once a real pixel backend is compiled in, exercised by
@@ -752,8 +753,11 @@ mod native_surface_paint {
     use crate::types::Color;
     use crate::Rect;
 
-    /// Default series palette — see this module's doc for why this is a
-    /// fourth (not shared-with-TUI) copy.
+    /// Same literal values as [`Theme::default`]'s `chart_series` (#815)
+    /// — kept here too since this module's own tests build charts and
+    /// assert on resolved colours without always constructing a `Theme`
+    /// first. `series_color` itself no longer reads this; it reads the
+    /// live `theme.chart_series`.
     pub(crate) const SERIES_COLORS: [Color; 6] = [
         Color::rgb(80, 160, 255),
         Color::rgb(255, 120, 80),
@@ -763,12 +767,12 @@ mod native_surface_paint {
         Color::rgb(240, 100, 180),
     ];
 
-    fn series_color(chart: &Chart, idx: usize) -> Color {
+    fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
         chart
             .series
             .get(idx)
             .and_then(|s| s.color)
-            .unwrap_or(SERIES_COLORS[idx % SERIES_COLORS.len()])
+            .unwrap_or(theme.chart_series[idx % theme.chart_series.len()])
     }
 
     /// CPU-side alpha pre-mix — see this module's doc for why: two of
@@ -868,7 +872,7 @@ mod native_surface_paint {
         }
         let (y_min, y_max) = chart.effective_y_range();
         let range = y_max - y_min;
-        let color = series_color(chart, 0);
+        let color = series_color(chart, 0, theme);
         let n = s.data.len();
         let points: Vec<(f32, f32)> = s
             .data
@@ -923,7 +927,7 @@ mod native_surface_paint {
             if s.data.is_empty() {
                 continue;
             }
-            let color = series_color(chart, si);
+            let color = series_color(chart, si, theme);
             let points: Vec<(f32, f32)> = layout
                 .data_point_positions
                 .iter()
@@ -973,7 +977,7 @@ mod native_surface_paint {
                     let by = baseline - top as f32 * pa.height;
                     surface.surface_fill_rect(
                         Rect::new(bx, by, seg_w, seg_h),
-                        series_color(chart, si),
+                        series_color(chart, si, theme),
                     );
                 }
             }
@@ -1003,7 +1007,7 @@ mod native_surface_paint {
 
         let mut cx = lb.x + 2.0;
         for (i, s) in chart.series.iter().enumerate() {
-            let color = series_color(chart, i);
+            let color = series_color(chart, i, theme);
             let swatch = lb.height * 0.6;
             let sy = lb.y + (lb.height - swatch) / 2.0;
             surface.surface_fill_rect(Rect::new(cx, sy, swatch, swatch), color);
@@ -1096,7 +1100,7 @@ mod native_surface_paint {
                 continue;
             };
             let label = super::format_tick_value(val);
-            let color = series_color(chart, si);
+            let color = series_color(chart, si, theme);
             let norm = if range > 0.0 {
                 ((val - y_min) / range).clamp(0.0, 1.0)
             } else {
@@ -1127,7 +1131,7 @@ mod native_surface_paint {
         else {
             return;
         };
-        let color = series_color(chart, series_idx);
+        let color = series_color(chart, series_idx, theme);
         let inner = 5.0_f32;
         surface.surface_fill_rect(
             Rect::new(sx - inner, sy - inner, inner * 2.0, inner * 2.0),
@@ -1300,6 +1304,52 @@ mod native_surface_paint {
                     .iter()
                     .any(|&(_, _, c, _)| c == SERIES_COLORS[0]),
                 "expected at least one line segment in the series' resolved colour, got {:?}",
+                surface.lines,
+            );
+        }
+
+        /// #815: a series with no explicit `color` must resolve against
+        /// the *live* `theme.chart_series`, not the built-in
+        /// `SERIES_COLORS` literal — a themed app's chart series colours
+        /// must actually change.
+        #[test]
+        fn series_with_no_explicit_color_paints_with_the_themes_chart_series() {
+            let chart = line_chart(vec![1.0, 4.0, 2.0]);
+            let layout = layout_for(&chart);
+            let custom_series0 = Color::rgb(1, 2, 3);
+            assert_ne!(
+                custom_series0, SERIES_COLORS[0],
+                "test fixture invalid: custom colour must differ from the built-in default"
+            );
+            let theme = Theme {
+                chart_series: [
+                    custom_series0,
+                    SERIES_COLORS[1],
+                    SERIES_COLORS[2],
+                    SERIES_COLORS[3],
+                    SERIES_COLORS[4],
+                    SERIES_COLORS[5],
+                ],
+                ..Theme::default()
+            };
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            assert!(
+                surface
+                    .lines
+                    .iter()
+                    .any(|&(_, _, c, _)| c == custom_series0),
+                "expected the line to paint with the theme's custom chart_series[0], got {:?}",
+                surface.lines,
+            );
+            assert!(
+                surface
+                    .lines
+                    .iter()
+                    .all(|&(_, _, c, _)| c != SERIES_COLORS[0]),
+                "the built-in default colour must not appear once the theme overrides it, got {:?}",
                 surface.lines,
             );
         }

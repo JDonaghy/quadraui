@@ -15,15 +15,6 @@ use crate::types::Color;
 
 const SPARK_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-const SERIES_COLORS: [Color; 6] = [
-    Color::rgb(80, 160, 255),
-    Color::rgb(255, 120, 80),
-    Color::rgb(80, 220, 120),
-    Color::rgb(220, 180, 60),
-    Color::rgb(180, 100, 240),
-    Color::rgb(240, 100, 180),
-];
-
 /// Compute the TUI cell-unit layout for a [`Chart`] without painting.
 pub fn tui_chart_layout(chart: &Chart, area: Rect) -> ChartLayout {
     chart.layout(
@@ -73,12 +64,12 @@ pub fn draw_chart(
     layout
 }
 
-fn series_color(chart: &Chart, idx: usize) -> Color {
+fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
     chart
         .series
         .get(idx)
         .and_then(|s| s.color)
-        .unwrap_or(SERIES_COLORS[idx % SERIES_COLORS.len()])
+        .unwrap_or(theme.chart_series[idx % theme.chart_series.len()])
 }
 
 fn paint_sparkline(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
@@ -95,7 +86,7 @@ fn paint_sparkline(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme:
         }
         let (y_min, y_max) = chart.effective_y_range();
         let range = y_max - y_min;
-        let fg = ratatui_color(series_color(chart, 0));
+        let fg = ratatui_color(series_color(chart, 0, theme));
         let n = s.data.len();
 
         for col_idx in 0..pw as usize {
@@ -168,7 +159,7 @@ fn paint_line(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &The
         if s.data.is_empty() {
             continue;
         }
-        let fg = ratatui_color(series_color(chart, si));
+        let fg = ratatui_color(series_color(chart, si, theme));
 
         let mut grid = vec![vec![false; dot_w]; dot_h];
 
@@ -320,7 +311,7 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
                 continue;
             }
 
-            let fg = ratatui_color(series_color(chart, si));
+            let fg = ratatui_color(series_color(chart, si, theme));
             for r in row_bottom..row_top.min(plot_h) {
                 let by = base_row.saturating_sub(r as u16);
                 if by < py {
@@ -360,7 +351,7 @@ fn paint_legend(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &T
             if col >= lx + lw {
                 break;
             }
-            let sc = ratatui_color(series_color(chart, i));
+            let sc = ratatui_color(series_color(chart, i, theme));
             set_cell(buf, col, ly, '■', sc, bg);
             col += 1;
 
@@ -506,7 +497,7 @@ fn paint_hover_marker(
     };
     let n = s.data.len();
 
-    let fg = ratatui_color(series_color(chart, series_idx));
+    let fg = ratatui_color(series_color(chart, series_idx, theme));
     let bg = ratatui_color(theme.background);
 
     let (col, row) = match chart.kind {
@@ -636,6 +627,39 @@ mod tests {
         for col in 0..3 {
             assert_ne!(cell_char(&buf, col, 0), ' ');
         }
+    }
+
+    /// #815: a series with no explicit `color` must resolve against the
+    /// *live* `theme.chart_series`, not a hardcoded built-in palette — a
+    /// themed app's chart series colours must actually change.
+    #[test]
+    fn sparkline_with_no_explicit_color_paints_with_the_themes_chart_series() {
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::empty(area);
+        let chart = spark(vec![5.0, 5.0, 5.0]);
+        let default_series0 = Theme::default().chart_series[0];
+        let custom_series0 = Color::rgb(1, 2, 3);
+        assert_ne!(
+            custom_series0, default_series0,
+            "test fixture invalid: custom colour must differ from the default"
+        );
+        let theme = Theme {
+            chart_series: {
+                let mut series = Theme::default().chart_series;
+                series[0] = custom_series0;
+                series
+            },
+            ..Theme::default()
+        };
+
+        let _layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
+
+        assert_eq!(
+            fg_at(&buf, 0, 0),
+            ratatui_color(custom_series0),
+            "sparkline should paint with the theme's custom chart_series[0]:\n{:?}",
+            grid(&buf, area)
+        );
     }
 
     #[test]

@@ -43,8 +43,8 @@ const TOAST_PADDING_DIP: f32 = 8.0;
 fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
     match severity {
         ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => Color::rgb(30, 80, 30),
-        ToastSeverity::Warning => Color::rgb(100, 80, 20),
+        ToastSeverity::Success => theme.toast_success_bg,
+        ToastSeverity::Warning => theme.toast_warning_bg,
         ToastSeverity::Error => theme.error_fg,
     }
 }

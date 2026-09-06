@@ -303,6 +303,47 @@ pub struct Theme {
     pub card_hint_bg: Color,
     /// Text colour of the `BoardCard::hint` callout.
     pub card_hint_fg: Color,
+
+    // ── Toast severity / Chart series lift (#815) ──────────────────────
+    /// Background of a `ToastSeverity::Success` toast. Every backend
+    /// (`tui`/`gtk`/`macos`/`win`) hardcoded the identical
+    /// `Color::rgb(30, 80, 30)` literal before this field existed — see
+    /// each `*::toast::severity_bg`.
+    #[serde(default = "default_toast_success_bg")]
+    pub toast_success_bg: Color,
+    /// Background of a `ToastSeverity::Warning` toast. Every backend
+    /// hardcoded the identical `Color::rgb(100, 80, 20)` literal before
+    /// this field existed.
+    #[serde(default = "default_toast_warning_bg")]
+    pub toast_warning_bg: Color,
+    /// Default per-series palette for `Chart` — used when a `Series`
+    /// doesn't set its own `color`, cycling by index
+    /// (`chart_series[idx % chart_series.len()]`). All backends already
+    /// shared one literal 6-colour array (TUI's own copy in
+    /// `tui::chart`, and the unified `primitives::chart` copy consumed
+    /// by `gtk`/`macos`/`win` since #810) — no cross-backend
+    /// disagreement was found on either the values or the length.
+    #[serde(default = "default_chart_series")]
+    pub chart_series: [Color; 6],
+}
+
+fn default_toast_success_bg() -> Color {
+    Color::rgb(30, 80, 30)
+}
+
+fn default_toast_warning_bg() -> Color {
+    Color::rgb(100, 80, 20)
+}
+
+fn default_chart_series() -> [Color; 6] {
+    [
+        Color::rgb(80, 160, 255),
+        Color::rgb(255, 120, 80),
+        Color::rgb(80, 220, 120),
+        Color::rgb(220, 180, 60),
+        Color::rgb(180, 100, 240),
+        Color::rgb(240, 100, 180),
+    ]
 }
 
 /// Strip `//` and `/* */` comments from JSON-with-comments (JSONC), as
@@ -778,6 +819,11 @@ impl Default for Theme {
             badge_blocked: Color::rgb(220, 80, 80),
             card_hint_bg: Color::rgb(35, 40, 55),
             card_hint_fg: Color::rgb(180, 190, 210),
+
+            // Toast severity / Chart series lift (#815)
+            toast_success_bg: default_toast_success_bg(),
+            toast_warning_bg: default_toast_warning_bg(),
+            chart_series: default_chart_series(),
         }
     }
 }
@@ -1048,7 +1094,39 @@ mod tests {
             badge_blocked: d.badge_blocked,
             card_hint_bg: d.card_hint_bg,
             card_hint_fg: d.card_hint_fg,
+            toast_success_bg: d.toast_success_bg,
+            toast_warning_bg: d.toast_warning_bg,
+            chart_series: d.chart_series,
         };
         assert_eq!(exhaustive, d);
+    }
+
+    /// #815: `toast_success_bg`/`toast_warning_bg`/`chart_series` are new
+    /// fields — a `Theme` serialised (e.g. saved to an app's config file)
+    /// *before* this change must still deserialise after it, falling back
+    /// to the shipped default for the fields it doesn't have. Without the
+    /// `#[serde(default = "...")]` attributes on these three fields this
+    /// would fail with a "missing field" deserialize error instead.
+    #[test]
+    fn deserializing_theme_json_without_the_new_fields_falls_back_to_defaults() {
+        // A full `Theme::default()` round-tripped through JSON, then the
+        // three new keys stripped out — simulating a theme file saved by
+        // a pre-#815 build.
+        let mut val = serde_json::to_value(Theme::default()).expect("serialize default theme");
+        let obj = val
+            .as_object_mut()
+            .expect("Theme serializes to a JSON object");
+        obj.remove("toast_success_bg");
+        obj.remove("toast_warning_bg");
+        obj.remove("chart_series");
+
+        let theme: Theme = serde_json::from_value(val).expect(
+            "Theme must deserialize even when the new #815 fields are absent from the JSON",
+        );
+
+        let default = Theme::default();
+        assert_eq!(theme.toast_success_bg, default.toast_success_bg);
+        assert_eq!(theme.toast_warning_bg, default.toast_warning_bg);
+        assert_eq!(theme.chart_series, default.chart_series);
     }
 }
