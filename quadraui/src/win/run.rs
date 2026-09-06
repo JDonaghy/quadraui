@@ -57,8 +57,22 @@
 //! `Backend::poll_events` (see `gtk::run`'s module docs, "single-DA
 //! model"); `Backend::poll_events`/`wait_events` exist as a
 //! forward-compat seam for future headless-driver parity, not as this
-//! runner's hot path. `WinBackend`'s versions stay `todo!()` stubs
-//! until something actually needs them.
+//! runner's hot path.
+//!
+//! quadraui#806 gave `WinBackend::poll_events`/`wait_events` a real
+//! `docs/BACKEND.md` queue-adapter implementation — draining
+//! `WinBackend::events`, non-panicking — instead of the `todo!()` stubs
+//! that made any polling caller (a headless driver, quadraui#785's
+//! shared `DriverCore`, quadraweb) crash. This `wndproc` still does not
+//! feed that queue: it keeps calling [`dispatch_event`]/`app.handle`
+//! directly per message, same as before, and the two paths are mutually
+//! exclusive today (nothing both runs a live window through this
+//! function *and* polls the same `WinBackend` for events). Wiring
+//! `wndproc` to also push translated events onto `WinBackend::events`
+//! (`events_handle`/`push_event`) so a future consumer can observe the
+//! live pump through the adapter — the way `docs/BACKEND.md` describes
+//! GTK's signal handlers eventually doing — is follow-up work, not
+//! required to stop the panic this issue was filed for.
 //!
 //! # Per-window state without closures
 //!
