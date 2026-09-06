@@ -700,6 +700,8 @@ impl RecordingBackend {
     }
 }
 
+impl crate::backend::sealed::Sealed for RecordingBackend {}
+
 impl crate::Backend for RecordingBackend {
     fn viewport(&self) -> crate::Viewport {
         self.viewport

@@ -1886,3 +1886,88 @@ issue and out of scope here.
   (vimcode declares its own `pub struct ScreenLayout` at
   `src/render.rs:10098`) — that's a vimcode-side rename, not something
   quadraui's API can fix from this side.
+
+## D-013 — `Backend` is `pub` but sealed: no implementations outside this crate (issue #800)
+
+### Question
+
+`Backend` is a `pub` trait with 100+ required methods, and
+`docs/PRIMITIVE_RULES.md` rule 8 (and several doc comments in
+`src/backend.rs` itself) already asserted "in-tree backends only — a new
+required method is not a breaking change because there are no external
+implementors." Nothing in the code enforced that. An outsider reading a
+`pub trait` has every reason to try `impl Backend for MyThing` and get
+burned the next time this crate adds a primitive's `draw_<name>` method
+in an ordinary PR with no default and no major-version signal — exactly
+the failure mode the "in-tree only" claim was supposed to rule out. Worse,
+the crate-root `BACKEND.md`'s opening line actively invited it: "Audience:
+you want to render quadraui primitives onto a target your favourite
+[toolkit] doesn't yet support" — written before the in-tree-only decision
+and never reconciled with it.
+
+Two honest options, per the issue: seal the trait so the existing rule
+becomes true, or keep it open and document required-method churn as
+permanent API instability.
+
+### Decision
+
+**Seal it.** `Backend: sealed::Sealed`, where `sealed` is a `pub(crate)`
+module in `src/backend.rs` — nameable anywhere in this crate, unnameable
+from any other. This was the "honest default" the issue itself named:
+`PRIMITIVE_RULES.md` and `src/backend.rs`'s own doc comments were already
+written as though this were true, so sealing costs nothing conceptually
+and closes a real gap between the prose and the compiler. The open-and-
+document alternative would have meant admitting `Backend` is unstable
+API on a crate about to cut its first tagged release (`quadraui#797`) —
+strictly worse than making the existing "in-tree only" claim actually
+true.
+
+Mechanically:
+
+- `Backend`'s rustdoc gets a "Sealed" section explaining the mechanism
+  and pointing at `BACKEND.md` for "contribute a fifth in-tree backend"
+  as the path for a target none of TUI/GTK/Win-GUI/macOS cover, plus a
+  `compile_fail` doctest: `impl quadraui::Backend for MyBackend {}` fails
+  because `MyBackend` cannot satisfy the private `sealed::Sealed`
+  supertrait (on top of the missing method bodies a real attempt would
+  also owe — sealing makes writing those irrelevant).
+- Every in-tree `impl Backend for _` block — `TuiBackend`, `GtkBackend`,
+  `WinBackend`, `MacBackend`, the public `testing::RecordingBackend`, and
+  the two `#[cfg(test)]`-only `MockBackend`s in `tui::backend` and
+  `compose::menu_system` — gets a matching `impl
+  crate::backend::sealed::Sealed for _ {}` alongside it. A new backend
+  (in-tree, by definition — see below) must do the same or it won't
+  satisfy `Backend`'s supertrait bound.
+- `PRIMITIVE_RULES.md` rule 8's consumer-impact table gets a note that
+  the "in-tree backends only" row is now enforced, not just claimed, with
+  a pointer to this decision and the doctest.
+- `quadraui/BACKEND.md`'s audience line and its "Reference
+  implementations" section (which still pointed at three backends
+  "living in the vimcode repository" — stale since they were extracted
+  in-tree) are corrected to describe contributing a new backend *to this
+  repo* as the only supported path, pointing at the four real
+  `src/<platform>/backend.rs` files instead.
+- `src/lib.rs`'s crate doc gets a short "Backend implementors" section
+  stating the same thing, since that's the first page an outsider reads.
+
+### What this does NOT mean
+
+- It does not change `Backend`'s method surface, method count, or any
+  primitive's rasteriser contract — this is purely an implementability
+  restriction, nothing about the trait's shape moved.
+- It does not affect `ShellApp` or `AppLogic`, the two traits consumers
+  (`coord-tui`, `vimcode`) actually implement — `Backend` was never one
+  of them (see rule 8's table), so this closes zero consumer-facing
+  surface and needed no `## Downstream impact` migration.
+- It does not stop a *fifth in-tree* backend from being added — sealing
+  restricts *where* `Backend` can be implemented (inside this crate),
+  not *how many* backends this crate may ship. `docs/BACKEND.md` and
+  `BACKEND.md` remain the how-to for exactly that, now with an explicit
+  "add `impl sealed::Sealed` too" step.
+- It does not retroactively make `tests/conformance/caps.rs`'s
+  source-parsing of `src/backend.rs`'s trait header immune to future
+  header changes — that test's literal-string match
+  (`"pub trait Backend: sealed::Sealed {"`, updated by this issue) will
+  need updating again if the header's shape changes further; it is a
+  by-design brittleness the test itself already documented before this
+  change, not a new one.

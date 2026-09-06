@@ -134,6 +134,21 @@ and `AppLogic` — never `Backend`. So:
 | New variant on a public enum a consumer matches | **Yes** unless the enum is `#[non_exhaustive]`. |
 | Rename / removal of any `pub` item with a consumer hit | **Yes.** |
 
+**`Backend` is `pub` but sealed — this is enforced, not just written down
+(quadraui#800).** Before this, `Backend` was a `pub` trait with 100+
+required methods and this table's "in-tree backends only" claim was
+prose an outsider had no way to verify short of trying it and getting
+burned by the next release. `Backend: sealed::Sealed` in `src/backend.rs`
+now makes that literally true: `sealed` is a `pub(crate)` module, so its
+`Sealed` trait can't be named from outside this crate, and `Backend`
+cannot be implemented downstream — see the "Sealed" section of
+`Backend`'s own rustdoc (including a `compile_fail` doctest proving an
+out-of-crate `impl Backend` is rejected) and `BACKEND.md`'s framing of
+"contribute a fifth in-tree backend" as the supported path for a target
+none of the four cover. Every one of the four in-tree backends (plus the
+in-tree `RecordingBackend`/`MockBackend` test doubles) implements
+`sealed::Sealed` alongside `Backend` — do the same for any new backend.
+
 **Measure before you cut.** Both consumers sit beside this checkout:
 
 ```bash

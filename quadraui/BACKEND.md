@@ -1,10 +1,21 @@
 # Implementing a quadraui backend
 
-Audience: you want to render quadraui primitives onto a target your
-favourite primitive doesn't yet support — a new GPU surface, a webview,
-a different terminal library, an embedded display, the next major
-desktop toolkit. Or you want to understand why the existing backends
-look the way they do.
+**`Backend` is sealed — see [`quadraui::Backend`]'s rustdoc.** It cannot
+be implemented outside this crate; that isn't a style preference, it's
+enforced by a private supertrait, plus a `compile_fail` doctest proving
+an out-of-crate `impl Backend` is rejected (quadraui#800). If your target
+isn't one of the four in-tree backends (TUI, GTK, Win-GUI, macOS —
+`quadraui/src/{tui,gtk,win,macos}/backend.rs`), the supported path is
+**contributing a fifth in-tree backend to this repo**, not writing an
+out-of-tree crate against `Backend`. `docs/PRIMITIVE_RULES.md` rule 8
+explains why: a new primitive adds a required `Backend` method in an
+ordinary PR, with no default and no version-bump ceremony, and an
+out-of-tree implementor would have no way to keep up with that.
+
+Audience: you're opening a PR against this repo to add a new render
+backend — a new GPU surface, a webview, a different terminal library, an
+embedded display, the next major desktop toolkit — or you want to
+understand why the existing backends look the way they do.
 
 This guide covers the patterns and pitfalls. The per-primitive contracts
 themselves live in each primitive's rustdoc; treat this doc as the
@@ -621,16 +632,28 @@ and why. Add to that log when adding new ones.
 
 ## 9. Reference implementations
 
-Three production backends live in the [vimcode] repository:
+The four in-tree `impl Backend` blocks are the reference implementations
+— read the one closest to your target before writing a fifth:
 
-- `src/tui_main/quadraui_tui.rs` — TUI (ratatui)
-- `src/gtk/quadraui_gtk.rs` — GTK4 (Cairo + Pango)
-- `src/win_gui/quadraui_win.rs` — Windows (Direct2D + DirectWrite)
+- `src/tui/backend.rs` — `TuiBackend`, TUI (ratatui + crossterm). Full
+  feature parity; the easiest one to read first (cell units, no font
+  metrics to wrangle).
+- `src/gtk/backend.rs` — `GtkBackend`, GTK4 (Cairo + Pango).
+- `src/win/backend.rs` — `WinBackend`, Windows (Direct2D + DirectWrite).
+  Window/event/platform-services infrastructure is real and CI-blocking;
+  most per-primitive rasterisers are still `todo!()` stubs (see the
+  crate root README's *Status* section).
+- `src/macos/backend.rs` — `MacBackend`, macOS (Core Graphics + Core
+  Text). Every in-window rasteriser shipped; built/tested for real on
+  `macos-latest` CI.
 
-The naming convention is `quadraui_<backend>::draw_<primitive>` for
-the rasteriser plus an adapter in the app's render layer
-(`render::*_to_*`) that converts app state to the primitive. Both
-patterns are stable; copy them when standing up a new backend.
+These were originally prototyped as per-backend code in [vimcode] — still
+quadraui's primary consumer and R&D lab for new patterns — then extracted
+in-tree behind the `Backend` trait. A new backend belongs in this repo
+the same way: add `src/<platform>/backend.rs`, `impl Backend for
+<Platform>Backend`, and `impl crate::backend::sealed::Sealed for
+<Platform>Backend` (required — `Backend` is sealed, see the top of this
+file) alongside it.
 
 [vimcode]: https://github.com/JDonaghy/vimcode
 

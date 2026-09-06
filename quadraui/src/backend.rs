@@ -370,8 +370,57 @@ impl BackendCaps {
     ];
 }
 
+// Sealed-trait pattern (Rust API Guidelines C-SEALED): `sealed` is
+// `pub(crate)`, so `Sealed` is nameable from anywhere in this crate (every
+// in-tree backend implements it below) but not from outside it. That is
+// the enforcement mechanism behind the stance this module documents on
+// `Backend` itself, `docs/PRIMITIVE_RULES.md` rule 7, and `BACKEND.md`:
+// four in-tree backends, no external implementors, ever (quadraui#800).
+pub(crate) mod sealed {
+    /// Unnameable outside this crate — see [`super::Backend`]'s "Sealed"
+    /// docs.
+    pub trait Sealed {}
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
-pub trait Backend {
+///
+/// # Sealed — no implementations outside this crate
+///
+/// `Backend` cannot be implemented downstream: it requires the private
+/// supertrait [`sealed::Sealed`], which lives in a `pub(crate)` module and
+/// so cannot even be *named*, let alone implemented, from another crate.
+/// This makes real what `docs/PRIMITIVE_RULES.md` rule 7 already asserted
+/// in prose — "adding a required `Backend` method is not a breaking
+/// change, because there are no external implementors to break" — instead
+/// of leaving it an aspiration a `pub` trait quietly contradicted
+/// (quadraui#800). Concretely: a new primitive adds a new required
+/// `draw_<name>` method to this trait in the same PR that adds the
+/// primitive itself, with no default and no version-bump ceremony, and
+/// every in-tree backend (TUI, GTK, Win-GUI, macOS) fills it in as an
+/// intentional compile error surfaced by that PR — see `docs/BACKEND.md`
+/// and the "Adding a primitive is a breaking change to this trait —
+/// intentional" note under *Drawing* below.
+///
+/// If you want quadraui to render onto a target none of the four in-tree
+/// backends cover, the supported path is contributing a fifth in-tree
+/// backend (`BACKEND.md` walks through the shape; `docs/BACKEND.md`
+/// covers the trait's event-loop/hook conventions) — not an out-of-tree
+/// `impl Backend`, which sealing rules out entirely. An out-of-tree impl
+/// would have no way to keep up with a trait that gains required methods
+/// in ordinary, non-major-bump PRs; sealing turns that into a compile
+/// error today instead of a silent trap the first time this crate cuts a
+/// release.
+///
+/// ```compile_fail
+/// // Rejected: `Backend`'s private supertrait `sealed::Sealed` can't be
+/// // named outside this crate, so no out-of-crate type can satisfy it —
+/// // this minimal impl fails to compile for that reason (on top of the
+/// // missing method bodies, which a real attempt would also have to
+/// // supply and which sealing makes irrelevant to write).
+/// struct MyBackend;
+/// impl quadraui::Backend for MyBackend {}
+/// ```
+pub trait Backend: sealed::Sealed {
     // ─── Frame + viewport ──────────────────────────────────────────────
     /// Viewport geometry in native units. TUI: cells; GTK/Win-GUI/macOS:
     /// pixel-ish units with `scale` set to the DPI ratio.

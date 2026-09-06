@@ -309,11 +309,11 @@ const BACKEND_TRAIT_SRC: &str = include_str!("../../src/backend.rs");
 pub fn defaulted_trait_methods() -> Vec<&'static str> {
     let mut lines = BACKEND_TRAIT_SRC
         .lines()
-        .skip_while(|l| *l != "pub trait Backend {");
+        .skip_while(|l| *l != "pub trait Backend: sealed::Sealed {");
     assert!(
         lines.next().is_some(),
-        "src/backend.rs: no line reads exactly `pub trait Backend {{` — the trait header moved, \
-         and an empty parse here would report every backend as complete"
+        "src/backend.rs: no line reads exactly `pub trait Backend: sealed::Sealed {{` — the \
+         trait header moved, and an empty parse here would report every backend as complete"
     );
     let body: Vec<&str> = lines.take_while(|l| *l != "}").collect();
 
