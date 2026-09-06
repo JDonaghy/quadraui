@@ -99,6 +99,16 @@ use crate::{Color, Image, Point, Rect, Viewport};
 /// ordinary (non-test) build the moment this file lands, for a gap that is
 /// this phase's entire scope, not a bug — see this issue's PR description
 /// for why that tradeoff is deliberate here rather than pulled forward.
+///
+/// "Each backend's own test suite" runs on different hosts, not this one:
+/// `gtk::backend`'s and `win::backend`'s `native_surface_*` tests execute
+/// on this dev machine (the win ones behind a further `target_os =
+/// "windows"` per-test gate, since `HeadlessSurface` needs a real
+/// Direct2D device); `macos::backend`'s can only execute on `macos.yml`'s
+/// `macos-latest` runner, because `mod macos` itself only compiles under
+/// `#[cfg(all(feature = "macos", target_os = "macos"))]` (see `lib.rs`).
+/// A Linux `cargo check --features macos --target aarch64-apple-darwin`
+/// type-checks the mac tests but never runs them.
 #[allow(dead_code)]
 pub(crate) trait NativeSurface {
     // ─── Frame + viewport ──────────────────────────────────────────────

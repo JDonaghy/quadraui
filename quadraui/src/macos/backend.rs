@@ -3782,4 +3782,112 @@ mod tests {
              is outside the one-row selection and must be untouched"
         );
     }
+
+    // ── NativeSurface (#807, Phase 1) ────────────────────────────────
+    //
+    // Unlike the GTK/Windows twins of these two tests, these only run on
+    // a real Mac — this whole module (`mod macos` in `lib.rs`) is gated
+    // `#[cfg(all(feature = "macos", target_os = "macos"))]`, so there is
+    // no "type-checks on Linux, runs for real on CI" split to call out
+    // here the way `win_backend_native_surface_verbs_do_not_panic` does:
+    // if this file compiles at all, it's on `macos.yml`'s `macos-latest`
+    // runner, and these tests run there for real, pixels and all.
+
+    #[test]
+    fn mac_backend_native_surface_fill_rect_paints_solid_color() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 32;
+        const H: u32 = 32;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+
+        let red = Color::rgb(200, 20, 20);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+        });
+        backend.end_frame();
+
+        let (r, g, b, _a) = surface.pixel(5, 5);
+        assert_eq!(
+            (r, g, b),
+            (red.r, red.g, red.b),
+            "surface_fill_rect must paint the solid color it was given"
+        );
+    }
+
+    /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
+    /// above) — this exercises every remaining `NativeSurface` method at
+    /// least once end-to-end (frame lifecycle, measurement, stroke, line,
+    /// clip push/pop, text run, image) so an implementation bug (wrong arg
+    /// order, a swapped field, a panic inside the frame-scope guard) fails
+    /// a test instead of shipping silently — the same coverage
+    /// `gtk_backend_native_surface_verbs_do_not_panic` /
+    /// `win_backend_native_surface_verbs_do_not_panic` give their
+    /// backends, closing the gap this issue's review flagged: until this
+    /// test existed, nothing anywhere called a `MacBackend::surface_*`
+    /// method, so the hand-written `ns_fill_rect`/`ns_stroke_rect`/
+    /// `ns_draw_line`/`ns_push_clip` CoreGraphics FFI was verified by
+    /// nothing beyond "it compiles".
+    #[test]
+    fn mac_backend_native_surface_verbs_do_not_panic() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 64;
+        const H: u32 = 64;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+
+        let viewport = Viewport::new(W as f32, H as f32, 1.0);
+        backend.surface_begin_frame(viewport);
+        assert_eq!(
+            backend.surface_viewport(),
+            viewport,
+            "surface_viewport must forward to Backend::begin_frame's stored value"
+        );
+        assert_eq!(
+            backend.surface_line_height(),
+            Backend::line_height(&backend)
+        );
+        assert_eq!(backend.surface_char_width(), Backend::char_width(&backend));
+
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let blue = Color::rgb(20, 20, 200);
+            let white = Color::rgb(255, 255, 255);
+            b.surface_stroke_rect(Rect::new(0.0, 0.0, 40.0, 40.0), blue, 2.0);
+            b.surface_draw_line(Point::new(0.0, 0.0), Point::new(40.0, 40.0), blue, 1.0);
+            b.surface_push_clip(Rect::new(0.0, 0.0, 40.0, 40.0));
+            b.surface_draw_text_run(Rect::new(2.0, 2.0, 30.0, 10.0), "hi", white);
+            b.surface_pop_clip();
+
+            let (w, h) = b.surface_measure_text("hi");
+            assert!(
+                w > 0.0 && h > 0.0,
+                "surface_measure_text must report a nonzero footprint for \
+                 non-empty text: got ({w}, {h})"
+            );
+
+            let image = crate::primitives::image::Image {
+                id: WidgetId::new("test:native-surface-image"),
+                source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
+                intrinsic_size: Some((8, 8)),
+                fit: crate::primitives::image::ImageFit::Contain,
+                fallback_text: "[i]".to_string(),
+            };
+            // macOS categorically returns `Unsupported` here until #802
+            // lands a real `NSImage` decoder — this call only needs to
+            // prove it reaches the same code `Backend::draw_image` does,
+            // not any particular decode outcome.
+            let _ = b.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
+        });
+
+        backend.surface_end_frame();
+    }
 }
