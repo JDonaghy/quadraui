@@ -230,10 +230,10 @@ impl AppLogic for FormAllFieldsApp {
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
-            UiEvent::KeyPressed { key, .. } => match key {
-                Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
-                _ => Reaction::Continue,
-            },
+            UiEvent::KeyPressed {
+                key: Key::Char('q') | Key::Named(NamedKey::Escape),
+                ..
+            } => Reaction::Exit,
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }
