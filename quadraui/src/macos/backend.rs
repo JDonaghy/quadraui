@@ -1845,29 +1845,16 @@ impl Backend for MacBackend {
         unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }
     }
     fn draw_find_replace(&mut self, _rect: Rect, panel: &FindReplacePanel) {
-        let ctx = self.current_cg();
         debug_assert!(
-            !ctx.is_null(),
+            !self.current_cg().is_null(),
             "MacBackend::draw_find_replace called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_find_replace requires set_current_font");
+        debug_assert!(
+            self.current_font.is_some(),
+            "MacBackend::draw_find_replace requires set_current_font",
+        );
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::find_replace::draw_find_replace(
-                ctx,
-                font,
-                panel,
-                &theme,
-                line_height,
-                char_width,
-            );
-        }
+        crate::primitives::find_replace::paint(panel, self, &theme);
     }
     fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
         let ctx = self.current_cg();
@@ -4053,5 +4040,124 @@ mod tests {
                 field.id, field.kind,
             );
         }
+    }
+
+    // ── find_replace (#809, `NativeSurface` Phase 2b) ──────────────────
+    //
+    // `macos::find_replace` used to carry its own `#[cfg(test)]` module
+    // with `panel_paints_surface_bg`, `panel_with_multibyte_query_does_not_panic`
+    // and `hit_regions_present_for_basic_panel`, exercising
+    // `macos::find_replace::draw_find_replace` against a real
+    // `BitmapSurface`/Core Text stack. That module (and the whole file)
+    // is deleted — the paint logic it tested now lives in
+    // `crate::primitives::find_replace::paint`, already covered on every
+    // host by that module's own `RecordingSurface` tests. These two
+    // tests are the twin that stays macOS-only for a reason: they prove
+    // the *plumbing* — `MacBackend::draw_find_replace` really does reach
+    // `paint` and `paint` really does land real Core Text pixels through
+    // `MacBackend`'s `NativeSurface` impl — not the paint logic itself.
+
+    fn find_replace_sample_panel(w: f32, h: f32) -> FindReplacePanel {
+        let (hit_regions, _input_width) =
+            crate::primitives::find_replace::compute_hit_regions(50, false, "1 of 3", 2, 2);
+        FindReplacePanel {
+            query: "needle".into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor: 6,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: crate::event::Rect::new(0.0, 0.0, w, h),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        }
+    }
+
+    /// End-to-end pixel probe: `Backend::draw_find_replace` on a real
+    /// `MacBackend`, over a headless `BitmapSurface`, must actually paint
+    /// the popup background — proving `MacBackend`'s `NativeSurface`
+    /// impl really reaches Core Graphics, not just that the shared
+    /// painter emits the right verb (the primitive-level
+    /// `RecordingSurface` test already covers that half, portably).
+    #[test]
+    fn mac_backend_draw_find_replace_paints_popup_background() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 600;
+        const H: u32 = 200;
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let panel = find_replace_sample_panel(W as f32, H as f32);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_find_replace(
+                crate::event::Rect::new(0.0, 0.0, W as f32, H as f32),
+                &panel,
+            );
+        });
+        backend.end_frame();
+
+        let theme = crate::theme::Theme::default();
+        let cw = backend.char_width().max(1.0);
+        let lh = backend.line_height().max(1.0);
+        let popup_w = panel.panel_width as f32 * cw;
+        let popup_h = 3.0 * lh; // show_replace == false: 1 content row + 2 border rows
+        let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
+            .max(panel.group_bounds.x);
+        let popup_y = panel.group_bounds.y + 2.0;
+
+        // A few px inside the popup's bottom-right corner: past the
+        // border stroke and below the single (`row == 0`) content row,
+        // so nothing but the background fill can have painted here.
+        let (r, g, b, _a) = surface.pixel(
+            (popup_x + popup_w - 4.0) as u32,
+            (popup_y + popup_h - 4.0) as u32,
+        );
+        assert_eq!(
+            (r, g, b),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+            "find/replace popup background must be painted through MacBackend's \
+             real NativeSurface impl",
+        );
+    }
+
+    /// Regression twin of `primitives::find_replace`'s own
+    /// `multibyte_query_with_out_of_range_selection_does_not_panic`:
+    /// that test proves the shared slicing logic is safe in the
+    /// abstract; this proves real Core Text measurement/drawing of the
+    /// same multibyte text through `MacBackend` doesn't panic either.
+    #[test]
+    fn mac_backend_draw_find_replace_with_multibyte_query_does_not_panic() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 600;
+        const H: u32 = 200;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let mut panel = find_replace_sample_panel(W as f32, H as f32);
+        panel.query = "café🎉中文".into();
+        panel.cursor = 3;
+        panel.sel_anchor = Some(6);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_find_replace(
+                crate::event::Rect::new(0.0, 0.0, W as f32, H as f32),
+                &panel,
+            );
+        });
+        backend.end_frame();
     }
 }

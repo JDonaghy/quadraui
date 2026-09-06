@@ -38,7 +38,6 @@ mod diff_view;
 mod drop_overlay;
 mod editor;
 pub mod events;
-mod find_replace;
 mod form;
 mod image;
 mod list;
@@ -86,7 +85,6 @@ pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
 pub use editor::{draw_editor, editor_col_at_x};
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
-pub use find_replace::draw_find_replace;
 pub use form::draw_settings_chrome;
 // #808: `draw_form` is `#[deprecated]` — see `form::draw_form`'s doc for
 // why the shim exists and why re-exporting it here (rather than dropping

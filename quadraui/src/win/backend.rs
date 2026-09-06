@@ -2399,21 +2399,16 @@ impl Backend for WinBackend {
         todo!("Direct2D rich text popup rasteriser (no surface attached yet)")
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::find_replace`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
-    /// for the "surface not attached yet" fallback posture.
+    /// #809 (`NativeSurface` Phase 2b): real Direct2D/DirectWrite
+    /// rendering via [`crate::primitives::find_replace::paint`] once a
+    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
+    /// "surface not attached yet" fallback posture.
     fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel) {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+        if self.surface.is_some() && self.dwrite.is_some() {
             let _ = rect;
-            super::find_replace::draw_find_replace(
-                &surface.target,
-                dwrite,
-                panel,
-                self.current_line_height,
-                self.current_char_width,
-                &self.current_theme,
-            );
+            let theme = self.current_theme;
+            crate::primitives::find_replace::paint(panel, self, &theme);
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -4010,16 +4005,14 @@ mod tests {
             hit_regions,
         };
 
-        // Mirrors `win::find_replace`'s own
-        // `paints_panel_background_and_border` test's geometry, but reads
-        // the cell metrics off the backend rather than assuming
+        // Reads the cell metrics off the backend rather than assuming
         // `WinBackend::new`'s 16.0/8.0 defaults: `attach_headless`
         // overwrites `current_line_height`/`current_char_width` with the
         // *measured* DirectWrite metrics of the editor font, and those
         // are what `Backend::draw_find_replace` then hands
-        // `win::find_replace::draw_find_replace`. Hardcoding 16.0/8.0
-        // here would put the probe at coordinates the rasteriser never
-        // painted on any host whose font measures differently.
+        // `crate::primitives::find_replace::paint` (#809). Hardcoding
+        // 16.0/8.0 here would put the probe at coordinates the painter
+        // never painted on any host whose font measures differently.
         let cw = backend.char_width().max(1.0);
         let lh = backend.line_height().max(1.0);
         let popup_w = panel.panel_width as f32 * cw;
