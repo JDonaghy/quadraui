@@ -24,8 +24,8 @@ const GTK_TOAST_PADDING_PX: f64 = 8.0;
 fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
     match severity {
         ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => Color::rgb(30, 80, 30),
-        ToastSeverity::Warning => Color::rgb(100, 80, 20),
+        ToastSeverity::Success => theme.toast_success_bg,
+        ToastSeverity::Warning => theme.toast_warning_bg,
         ToastSeverity::Error => theme.error_fg,
     }
 }
@@ -305,5 +305,62 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7.0, 13.0);
+    }
+
+    /// #815: a `ToastSeverity::Success` toast must paint with the *live*
+    /// `Theme::toast_success_bg`, not the hardcoded `Color::rgb(30, 80,
+    /// 30)` literal every backend used before this field existed — a
+    /// themed app's success toasts must actually change colour.
+    #[test]
+    fn success_toast_paints_with_the_themes_success_colour() {
+        let canvas_w = VIEW_W.ceil() as i32;
+        let canvas_h = VIEW_H.ceil() as i32;
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, canvas_w, canvas_h).expect("create ImageSurface");
+        let custom_success = Color::rgb(9, 200, 9);
+        assert_ne!(custom_success, Theme::default().toast_success_bg);
+        let theme = Theme {
+            toast_success_bg: custom_success,
+            ..Theme::default()
+        };
+        let toast = ToastItem {
+            id: WidgetId::new("t1"),
+            title: "Saved".into(),
+            body: String::new(),
+            severity: ToastSeverity::Success,
+            action: None,
+            accent: None,
+        };
+        let stack = stack_br(vec![toast]);
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_toast_stack(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                VIEW_W,
+                VIEW_H,
+                &stack,
+                &theme,
+                LINE_HEIGHT,
+            )
+        };
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let vt = &layout.visible_toasts[0];
+        let probe_x = (vt.bounds.x + 2.0) as i32;
+        let probe_y = (vt.bounds.y + vt.bounds.height - 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, probe_x, probe_y),
+            (custom_success.r, custom_success.g, custom_success.b),
+            "success toast should paint with the theme's custom toast_success_bg"
+        );
     }
 }
