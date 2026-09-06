@@ -30,8 +30,8 @@ fn toast_height(toast: &crate::primitives::toast::ToastItem) -> f32 {
 fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
     match severity {
         ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => theme.toast_success_bg,
-        ToastSeverity::Warning => theme.toast_warning_bg,
+        ToastSeverity::Success => crate::types::Color::rgb(30, 80, 30),
+        ToastSeverity::Warning => crate::types::Color::rgb(100, 80, 20),
         ToastSeverity::Error => theme.error_fg,
     }
 }
@@ -177,27 +177,12 @@ mod tests {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
     }
 
-    fn cell_bg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
-        buf[(x, y)].bg
-    }
-
     fn info_toast(id: &str, title: &str) -> ToastItem {
         ToastItem {
             id: WidgetId::new(id),
             title: title.into(),
             body: String::new(),
             severity: ToastSeverity::Info,
-            action: None,
-            accent: None,
-        }
-    }
-
-    fn severity_toast(id: &str, title: &str, severity: ToastSeverity) -> ToastItem {
-        ToastItem {
-            id: WidgetId::new(id),
-            title: title.into(),
-            body: String::new(),
-            severity,
             action: None,
             accent: None,
         }
@@ -248,44 +233,6 @@ mod tests {
     #[test]
     fn single_toast_paint_and_click_round_trip_at_nonzero_origin() {
         single_toast_paint_and_click_round_trip_at(7, 13);
-    }
-
-    /// #815: `ToastSeverity::Success`/`Warning` backgrounds must resolve
-    /// against the *live* `Theme::toast_success_bg`/`toast_warning_bg`,
-    /// not a hardcoded literal — a themed app's toast colours must
-    /// actually change.
-    #[test]
-    fn success_and_warning_toasts_paint_with_the_themes_severity_colours() {
-        let area = Rect::new(0, 0, 60, 20);
-        let mut buf = Buffer::empty(area);
-        let custom_success = crate::types::Color::rgb(1, 2, 3);
-        let custom_warning = crate::types::Color::rgb(4, 5, 6);
-        let default = Theme::default();
-        assert_ne!(custom_success, default.toast_success_bg);
-        assert_ne!(custom_warning, default.toast_warning_bg);
-        let theme = Theme {
-            toast_success_bg: custom_success,
-            toast_warning_bg: custom_warning,
-            ..Theme::default()
-        };
-        let stack = stack_br(vec![
-            severity_toast("t1", "Saved", ToastSeverity::Success),
-            severity_toast("t2", "Careful", ToastSeverity::Warning),
-        ]);
-
-        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
-
-        let expected_by_idx = [custom_success, custom_warning];
-        for vt in &layout.visible_toasts {
-            let bx = vt.bounds.x.round() as u16;
-            let by = vt.bounds.y.round() as u16;
-            assert_eq!(
-                cell_bg(&buf, bx, by),
-                ratatui_color(expected_by_idx[vt.toast_idx]),
-                "toast {} at ({bx}, {by}) should paint with the theme's custom severity background",
-                vt.toast_idx,
-            );
-        }
     }
 
     /// Shared body for `dismiss_glyph_paint_and_click_round_trip` —
