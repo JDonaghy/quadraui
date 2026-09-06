@@ -424,6 +424,33 @@ impl ToastStack {
 //    reserved column. Reported here per this issue's instructions, rather
 //    than silently picking one.
 //
+// 3. **Body-line vertical offset.** `gtk::toast::paint_toast` and
+//    `macos::toast::paint_toast` both positioned the body (second) line
+//    at the title's own *measured* pixel height — gtk via
+//    `pango_layout.pixel_size().1`, macos via `measure_text(font,
+//    &toast.title)` — and neither ever used the `line_height` parameter
+//    for this offset (gtk's was even named `_line_height`, unused).
+//    `win::toast::paint_toast` was the outlier, using the nominal
+//    `line_height` argument instead. The shared `paint_toast` adopts the
+//    2-of-3 (gtk/macos) measured-height shape uniformly — calling
+//    `surface.surface_measure_text(&toast.title)` and using its height
+//    for the body offset — which visibly moves Win's body line whenever
+//    a title's real rendered height differs from its nominal
+//    `line_height`. Reported here per this issue's instructions, rather
+//    than silently picking one.
+//
+// 4. **Toast-width clamp floor.** `gtk::toast::gtk_toast_stack_layout`
+//    and `macos::toast::macos_toast_stack_layout` computed
+//    `TOAST_WIDTH.min(viewport_width - TOAST_MARGIN * 2.0)` with no
+//    floor — a viewport narrower than `TOAST_MARGIN * 2` (24px) could
+//    drive the resolved width negative. Only
+//    `win::toast::win_toast_stack_layout` already clamped the subtrahend
+//    to `.max(0.0)`. The shared `paint` adopts Win's (safer) clamped
+//    form for all three below. This only changes anything for a
+//    degenerate viewport under 24px wide, and is strictly protective
+//    (a `ToastMeasure` can never receive a negative width), but is
+//    named here for the same transparency reason as 1–3.
+//
 // `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note
 // (#811) — only *called* once a real pixel backend is compiled in,
 // exercised by each backend's own `Backend::draw_toast_stack` call site
@@ -528,7 +555,9 @@ pub(crate) mod native_surface_paint {
     /// body (second line), dismiss `×` and optional action label — both
     /// of the latter centred horizontally within their own reserved
     /// sub-region, at the same vertical position as the title (see this
-    /// module's doc, divergence 2).
+    /// module's doc, divergence 2). The body line is offset below the
+    /// title by the title's own *measured* height, not the nominal
+    /// `line_height` (divergence 3).
     fn paint_toast(
         surface: &mut dyn NativeSurface,
         theme: &Theme,
@@ -550,9 +579,15 @@ pub(crate) mod native_surface_paint {
         surface.surface_draw_text_run(title_rect, &toast.title, theme.foreground);
 
         if !toast.body.is_empty() {
+            // Offset by the title's own measured pixel height (matching
+            // gtk/macos's pre-#861 `pixel_size()`/`measure_text` calls),
+            // not the nominal `line_height` — see this module's doc,
+            // divergence 3. Only `win::toast` used `line_height` here
+            // pre-migration.
+            let (_, title_h) = surface.surface_measure_text(&toast.title);
             let body_rect = Rect::new(
                 title_rect.x,
-                title_rect.y + line_height,
+                title_rect.y + title_h,
                 title_rect.width,
                 line_height,
             );
@@ -599,6 +634,13 @@ pub(crate) mod native_surface_paint {
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
             text_runs: Vec<(Rect, String, Color)>,
+            /// Overrides `surface_measure_text`'s returned height when
+            /// set — lets a test make the "measured text height" and
+            /// "nominal `line_height` passed into `paint`" conventions
+            /// disagree, so it can tell which one `paint_toast` actually
+            /// uses (regression for this module's divergence 3). `None`
+            /// falls back to the fixed `16.0` every other test relies on.
+            measured_text_height: Option<f32>,
         }
 
         impl NativeSurface for RecordingSurface {
@@ -614,7 +656,10 @@ pub(crate) mod native_surface_paint {
                 8.0
             }
             fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-                (text.chars().count() as f32 * 8.0, 16.0)
+                (
+                    text.chars().count() as f32 * 8.0,
+                    self.measured_text_height.unwrap_or(16.0),
+                )
             }
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
@@ -748,6 +793,37 @@ pub(crate) mod native_surface_paint {
                 .find(|(_, text, _)| text == "Body text")
                 .expect("body painted");
             assert_eq!(body_run.0.y, title_run.0.y + 16.0);
+        }
+
+        /// Regression for this module's divergence 3: the body line must
+        /// be offset by the title's own *measured* pixel height, not the
+        /// nominal `line_height` passed into `paint` — matching gtk/
+        /// macos's pre-#861 `pixel_size()`/`measure_text` calls, not
+        /// win's pre-#861 `line_height` arithmetic. Sets the surface's
+        /// measured title height (20.0) to disagree with `line_height`
+        /// (16.0) so the two conventions can't coincidentally agree.
+        #[test]
+        fn body_offset_uses_measured_title_height_not_nominal_line_height() {
+            let mut t = toast("t1", "Title");
+            t.body = "Body text".into();
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface {
+                measured_text_height: Some(20.0),
+                ..Default::default()
+            };
+            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let title_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Title")
+                .expect("title painted");
+            let body_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Body text")
+                .expect("body painted");
+            assert_eq!(body_run.0.y, title_run.0.y + 20.0);
         }
     }
 }
