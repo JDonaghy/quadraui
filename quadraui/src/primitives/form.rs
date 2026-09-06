@@ -473,14 +473,15 @@ mod native_surface_paint {
     use super::{FieldKind, Form, FormLayout, ValidationState};
     use crate::event::Rect;
     use crate::native_surface::NativeSurface;
-    // Rect arithmetic for the selected-item background pill, extracted
-    // to `paint_geometry` (#857) so it's unit-tested outside this
-    // module's own feature-gated `mod tests` too — see that function's
-    // doc for the #808 history (macOS painted it, GTK painted nothing,
-    // Windows painted `hover_bg` at full row height; unifying on macOS's
-    // shape gives every pixel backend the same at-a-glance "which
-    // toggle is on" cue).
-    use crate::paint_geometry::form_selection_pill as selection_pill;
+    // The selected-item background pill's rect *and* the widget-state
+    // decision of whether to paint it at all are extracted to
+    // `paint_geometry` (#857) so both are unit-tested outside this
+    // module's own feature-gated `mod tests` too — see
+    // `paint_geometry::selected_item_fill`'s doc for the #808 history
+    // (macOS painted it, GTK painted nothing, Windows painted `hover_bg`
+    // at full row height; unifying on macOS's shape gives every pixel
+    // backend the same at-a-glance "which toggle is on" cue).
+    use crate::paint_geometry::selected_item_fill;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
@@ -802,8 +803,8 @@ mod native_surface_paint {
                             let on = t.value && !field.disabled;
                             let fg = if on { theme.accent_fg } else { theme.muted_fg };
                             let r = translate(item_rect, origin);
-                            if on {
-                                surface.surface_fill_rect(selection_pill(r), theme.selected_bg);
+                            if let Some((pill, bg)) = selected_item_fill(r, on, theme.selected_bg) {
+                                surface.surface_fill_rect(pill, bg);
                             }
                             surface.surface_draw_text_run(r, &t.label, fg);
                         }
@@ -846,8 +847,10 @@ mod native_surface_paint {
                             theme.muted_fg
                         };
                         let r = translate(item_rect, origin);
-                        if i == *selected_idx {
-                            surface.surface_fill_rect(selection_pill(r), theme.selected_bg);
+                        if let Some((pill, bg)) =
+                            selected_item_fill(r, i == *selected_idx, theme.selected_bg)
+                        {
+                            surface.surface_fill_rect(pill, bg);
                         }
                         let (tw, th) = surface.surface_measure_text(opt);
                         let ty = r.y + (r.height - th) / 2.0;
@@ -1213,16 +1216,16 @@ mod native_surface_paint {
             );
         }
 
-        /// A row too short to inset falls back to the un-inset rect
-        /// rather than producing a negative height (which every backend
-        /// would either clamp, drop, or paint as an inverted rect).
-        #[test]
-        fn selection_pill_does_not_invert_on_degenerate_rows() {
-            let flat = Rect::new(10.0, 20.0, 30.0, 3.0);
-            assert_eq!(selection_pill(flat), flat);
-            let tall = Rect::new(10.0, 20.0, 30.0, 20.0);
-            assert_eq!(selection_pill(tall), Rect::new(10.0, 22.0, 30.0, 16.0));
-        }
+        // The pill's inset math (degenerate-row fallback, the normal
+        // inset-by-2 case, the exact-boundary case) and the
+        // widget-state → "does this item get filled at all" decision
+        // both live in `paint_geometry` now (#857) and have their own
+        // tests there (`form_selection_pill_*`, `selected_item_fill_*`)
+        // — deliberately not duplicated here. What this module's tests
+        // above still own is the one thing `paint_geometry`'s pure-math
+        // tests can't see: that `paint()` actually wires `Form` state
+        // through to `selected_item_fill` and issues the resulting fill
+        // via `NativeSurface`, exercised through `RecordingSurface`.
     }
 }
 
