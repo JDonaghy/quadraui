@@ -3189,20 +3189,16 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::panel::PanelLayout {
         let line_height = self.current_line_height;
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_panel called outside enter_frame_scope");
-        crate::gtk::draw_panel(
-            cr,
-            pango_layout,
+        let layout = crate::gtk::gtk_panel_layout(
+            panel,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-            panel,
-            &theme,
             line_height,
-        )
+        );
+        crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+        layout
     }
 
     fn panel_layout(

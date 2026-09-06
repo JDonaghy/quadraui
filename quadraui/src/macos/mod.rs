@@ -104,7 +104,13 @@ pub use message_list::draw_message_list;
 pub use minimap::mac_minimap_layout;
 pub use multi_section_view::{draw_multi_section_view, mac_msv_layout, mac_msv_metrics};
 pub use palette::{draw_palette, mac_palette_layout};
-pub use panel::{draw_panel, mac_panel_layout};
+pub use panel::mac_panel_layout;
+// #859: `draw_panel` is `#[deprecated]` — see `panel::draw_panel`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[allow(deprecated)]
+pub use panel::draw_panel;
 pub use pipeline_view::{draw_pipeline_view, mac_pipeline_view_layout};
 pub use progress::{draw_progress, mac_progress_layout};
 pub use rich_text_popup::draw_rich_text_popup;

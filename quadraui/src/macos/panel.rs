@@ -1,19 +1,25 @@
 //! macOS rasteriser for [`crate::Panel`].
 //!
-//! Paints panel chrome (title bar + action buttons). Content is the
-//! app's responsibility — the rasteriser returns the resolved
-//! [`PanelLayout`] so the host paints into `content_bounds` and routes
-//! clicks via `hit_test`.
+//! Painting moved to the shared
+//! [`crate::primitives::panel::native_surface_paint::paint`] (#859,
+//! `NativeSurface` Phase 2d slice 2/9) — see that fn's doc for the named
+//! divergences (unclamped glyph centring vs. win's `.max(0.0)`; GTK's
+//! `set_source` alpha-drop, fixed at the source by #811) found while
+//! unifying `gtk::draw_panel`, `macos::panel::draw_panel` and
+//! `win::panel::draw_panel` into one implementation. This module now
+//! only carries [`mac_panel_layout`] (pure layout, still needed by
+//! `MacBackend::panel_layout` for no-paint hit-test queries) and the
+//! deprecated [`draw_panel`] compatibility shim over
+//! [`RawPanelSurface`], mirroring `macos::scrollbar`'s identical #811
+//! shape.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
+use crate::native_surface::NativeSurface;
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// 24-pt action-button width, matching GTK.
 const ACTION_BUTTON_PX: f32 = 24.0;
@@ -40,13 +46,119 @@ pub fn mac_panel_layout(
     panel.layout(bounds, measure)
 }
 
-/// Draw a [`Panel`]'s chrome onto `ctx`. Returns the layout for host
-/// click dispatch. Content is NOT painted.
+/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
+/// used only by the deprecated [`draw_panel`] shim below — a panel's
+/// paint calls `surface_fill_rect`, `surface_measure_text` and
+/// `surface_draw_text_run`; every other method is `unreachable!()`.
+/// Mirrors `macos::scrollbar::RawScrollbarSurface`'s identical pattern
+/// (#811).
+struct RawPanelSurface<'a> {
+    ctx: CGContextRef,
+    font: &'a CTFont,
+}
+
+impl NativeSurface for RawPanelSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawPanelSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawPanelSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawPanelSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawPanelSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawPanelSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (w, h) = super::text::measure_text(self.font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
+        // pass — see this struct's construction site. `ns_fill_rect`
+        // already honours `color.a` with a real alpha blend (unlike the
+        // GTK `NativeSurface::surface_fill_rect` bug quadraui#811 fixed
+        // — see this module's doc).
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Panel::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        // SAFETY: `self.ctx` is the caller-supplied context passed to
+        // `draw_panel`, valid for the duration of the shim call.
+        unsafe {
+            super::text::draw_text(
+                self.ctx,
+                self.font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                super::backend::ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Panel::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("Panel::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("Panel::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("Panel::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
+/// the pre-#859 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_panel` reference rather than going
+/// through [`crate::Backend::draw_panel`] — the sanctioned entry point,
+/// and the one every in-tree call site already uses, which is why this
+/// shim has no in-repo caller left to trip the `-D warnings`-denied
+/// `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_panel` instead — this free function is a compatibility shim over the shared #859 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_panel(
     ctx: CGContextRef,
@@ -60,87 +172,9 @@ pub unsafe fn draw_panel(
     line_height: f64,
 ) -> PanelLayout {
     let layout = mac_panel_layout(panel, x, y, w, h, line_height);
-
-    if let Some(tb) = layout.title_bar_bounds {
-        let title_bg = panel.accent.unwrap_or(theme.separator);
-        fill_rect(
-            ctx,
-            tb.x as f64,
-            tb.y as f64,
-            tb.width as f64,
-            tb.height as f64,
-            title_bg,
-        );
-
-        // Title text.
-        if let Some(ref title) = panel.title {
-            let text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
-            draw_text(
-                ctx,
-                font,
-                &text,
-                tb.x as f64 + 4.0,
-                tb.y as f64,
-                color_to_cg(theme.foreground),
-            );
-        }
-
-        // Action buttons.
-        for va in &layout.visible_actions {
-            let action = &panel.actions[va.action_idx];
-            let action_bg = if action.is_active {
-                theme.accent_bg
-            } else {
-                title_bg
-            };
-            fill_rect(
-                ctx,
-                va.bounds.x as f64,
-                va.bounds.y as f64,
-                va.bounds.width as f64,
-                va.bounds.height as f64,
-                action_bg,
-            );
-            let (gw, _) = measure_text(font, &action.icon);
-            draw_text(
-                ctx,
-                font,
-                &action.icon,
-                va.bounds.x as f64 + (va.bounds.width as f64 - gw) / 2.0,
-                va.bounds.y as f64,
-                color_to_cg(theme.foreground),
-            );
-        }
-    }
-
+    let mut surface = RawPanelSurface { ctx, font };
+    crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, theme);
     layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

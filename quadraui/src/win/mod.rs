@@ -283,7 +283,14 @@ pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_me
 #[cfg(target_os = "windows")]
 pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
-pub use panel::{draw_panel, win_panel_layout, ACTION_BUTTON_DIP};
+pub use panel::{win_panel_layout, ACTION_BUTTON_DIP};
+// #859: `draw_panel` is `#[deprecated]` — see `panel::draw_panel`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use panel::draw_panel;
 #[cfg(target_os = "windows")]
 pub use pipeline_view::{draw_pipeline_view, win_pipeline_view_layout};
 #[cfg(target_os = "windows")]

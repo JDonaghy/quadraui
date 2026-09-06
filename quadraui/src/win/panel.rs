@@ -1,14 +1,17 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::Panel`] (issue #29).
 //!
-//! Mirrors `gtk::panel`'s structure: [`Panel::layout`] (the D6 layout
-//! API — see that primitive's module doc) computes title-bar/action-
-//! button/content geometry; this module only measures (title-bar height
-//! from `line_height`) and paints (title-bar fill, title text,
-//! action-button glyphs) via Direct2D / DirectWrite. Paint and hit-test
-//! both derive from one `Panel::layout` call (through
-//! [`win_panel_layout`]), so they can't drift apart. Content is NOT
-//! painted — apps draw into `layout.content_bounds` themselves, same
-//! contract as every other backend.
+//! Painting moved to the shared
+//! [`crate::primitives::panel::native_surface_paint::paint`] (#859,
+//! `NativeSurface` Phase 2d slice 2/9) — see that fn's doc for the named
+//! divergences (unclamped glyph centring vs. this backend's old
+//! `.max(0.0)` clamp; GTK's `set_source` alpha-drop, fixed at the source
+//! by #811) found while unifying `gtk::draw_panel`,
+//! `macos::panel::draw_panel` and `win::panel::draw_panel` into one
+//! implementation. This module now only carries [`win_panel_layout`]
+//! (pure layout, still needed by `WinBackend::panel_layout` for no-paint
+//! hit-test queries) and the deprecated [`draw_panel`] compatibility
+//! shim over [`RawPanelSurface`], mirroring `win::scrollbar`'s identical
+//! #811 shape.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod panel;` and `backend.rs`'s module
@@ -23,8 +26,9 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
+use crate::native_surface::NativeSurface;
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::theme::Theme;
 
@@ -49,8 +53,98 @@ pub fn win_panel_layout(rect: Rect, panel: &Panel, line_height: f32) -> PanelLay
     panel.layout(rect, measure)
 }
 
-/// Draw a [`Panel`]'s chrome onto `target`. Returns the layout for host
-/// click dispatch. Content is NOT painted.
+/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget` +
+/// [`DWrite`], used only by the deprecated [`draw_panel`] shim below and
+/// by this module's own tests — a panel's paint calls
+/// `surface_fill_rect`, `surface_measure_text` and
+/// `surface_draw_text_run`; every other method is `unreachable!()`.
+/// Mirrors `win::scrollbar::RawScrollbarSurface`'s identical pattern
+/// (#811).
+pub(crate) struct RawPanelSurface<'a> {
+    pub(crate) target: &'a ID2D1RenderTarget,
+    pub(crate) dwrite: &'a DWrite,
+}
+
+impl NativeSurface for RawPanelSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawPanelSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawPanelSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawPanelSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawPanelSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawPanelSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        let _ = super::text::fill_rect(self.target, rect, color);
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Panel::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        let _ = self.dwrite.draw_text(self.target, text, rect, color);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Panel::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("Panel::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("Panel::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("Panel::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
+/// the pre-#859 signature exactly for any external caller that held a
+/// direct `quadraui::win::draw_panel` reference rather than going
+/// through [`crate::Backend::draw_panel`] — the sanctioned entry point,
+/// and the one every in-tree call site already uses, which is why this
+/// shim has no in-repo caller left to trip the `-D warnings`-denied
+/// `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_panel` instead — this free function is a compatibility shim over the shared #859 implementation"
+)]
 pub fn draw_panel(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -60,38 +154,8 @@ pub fn draw_panel(
 ) -> PanelLayout {
     let layout = win_panel_layout(rect, panel, line_height);
     let theme = Theme::default();
-
-    if let Some(tb) = layout.title_bar_bounds {
-        let title_bg = panel.accent.unwrap_or(theme.separator);
-        let _ = fill_rect(target, tb, title_bg);
-
-        if let Some(ref title) = panel.title {
-            let text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
-            let text_rect = Rect::new(tb.x + 4.0, tb.y, (tb.width - 4.0).max(0.0), tb.height);
-            let _ = dwrite.draw_text(target, &text, text_rect, theme.foreground);
-        }
-
-        for va in &layout.visible_actions {
-            let action = &panel.actions[va.action_idx];
-            let action_bg = if action.is_active {
-                theme.accent_bg
-            } else {
-                title_bg
-            };
-            let _ = fill_rect(target, va.bounds, action_bg);
-
-            let (glyph_w, _) = dwrite.measure_text(&action.icon).unwrap_or((0.0, 0.0));
-            let glyph_x = va.bounds.x + ((va.bounds.width - glyph_w) / 2.0).max(0.0);
-            let glyph_rect = Rect::new(
-                glyph_x,
-                va.bounds.y,
-                (va.bounds.x + va.bounds.width - glyph_x).max(1.0),
-                va.bounds.height,
-            );
-            let _ = dwrite.draw_text(target, &action.icon, glyph_rect, theme.foreground);
-        }
-    }
-
+    let mut surface = RawPanelSurface { target, dwrite };
+    crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, &theme);
     layout
 }
 
@@ -121,6 +185,29 @@ mod tests {
         }
     }
 
+    /// Paint `panel` via the shared
+    /// [`crate::primitives::panel::native_surface_paint::paint`] through
+    /// a [`RawPanelSurface`] over `surface`'s headless target — the same
+    /// adapter the deprecated [`draw_panel`] shim uses, exercised here
+    /// directly so these tests don't trip the `-D warnings`-denied
+    /// `deprecated` lint (CLAUDE.md rule 3; mirrors `win::scrollbar`'s
+    /// identical test-migration note).
+    fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, panel: &Panel) -> PanelLayout {
+        let layout = win_panel_layout(rect, panel, LINE_HEIGHT);
+        surface
+            .paint(|target| {
+                let mut raw = RawPanelSurface { target, dwrite };
+                crate::primitives::panel::native_surface_paint::paint(
+                    panel,
+                    &layout,
+                    &mut raw,
+                    &Theme::default(),
+                );
+            })
+            .expect("paint panel");
+        layout
+    }
+
     /// Paint↔click round trip: title bar, action button, and content
     /// area each paint their own bg (or, for content, are simply left
     /// unpainted chrome) at the bounds `hit_test` resolves to the
@@ -132,13 +219,7 @@ mod tests {
         let panel = panel();
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
-        let layout = surface
-            .paint(|target| {
-                draw_panel(target, &dwrite, rect, &panel, LINE_HEIGHT);
-            })
-            .map(|_| win_panel_layout(rect, &panel, LINE_HEIGHT))
-            .expect("paint panel");
-
+        let layout = paint(&surface, &dwrite, rect, &panel);
         let theme = Theme::default();
 
         // Title bar: painted bg matches theme.separator (no accent
@@ -181,20 +262,15 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
-        let layout = surface
-            .paint(|target| {
-                draw_panel(target, &dwrite, rect, &panel, LINE_HEIGHT);
-            })
-            .map(|_| win_panel_layout(rect, &panel, LINE_HEIGHT))
-            .expect("paint panel");
+        let layout = paint(&surface, &dwrite, rect, &panel);
 
         assert!(layout.title_bar_bounds.is_none());
         assert_eq!(layout.content_bounds.height, H as f32);
     }
 
     /// `win_panel_layout` (no-paint) must produce byte-identical layout
-    /// to what `draw_panel` used to paint — same panel, same rect, same
-    /// line height.
+    /// to what `paint` used to paint — same panel, same rect, same line
+    /// height.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let panel = panel();
@@ -202,12 +278,7 @@ mod tests {
 
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
-        let painted = surface
-            .paint(|target| {
-                draw_panel(target, &dwrite, rect, &panel, LINE_HEIGHT);
-            })
-            .map(|_| win_panel_layout(rect, &panel, LINE_HEIGHT))
-            .expect("paint");
+        let painted = paint(&surface, &dwrite, rect, &panel);
         let no_paint = win_panel_layout(rect, &panel, LINE_HEIGHT);
 
         assert_eq!(painted, no_paint);

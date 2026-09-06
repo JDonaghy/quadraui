@@ -113,7 +113,13 @@ pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
 pub use palette::draw_palette;
-pub use panel::{draw_panel, gtk_panel_layout};
+pub use panel::gtk_panel_layout;
+// #859: `draw_panel` is `#[deprecated]` — see `panel::draw_panel`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[allow(deprecated)]
+pub use panel::draw_panel;
 pub use pipeline_view::{draw_pipeline_view, gtk_pipeline_view_layout};
 pub use progress::{draw_progress, gtk_progress_layout};
 pub use rich_text_popup::{
