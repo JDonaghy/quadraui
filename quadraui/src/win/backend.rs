@@ -396,6 +396,17 @@ pub struct WinBackend {
     /// call does (mirrors `painted_text_recording`/`current_pointer_shape`
     /// above).
     text_selection: crate::text_selection::TextSelectionState,
+    /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
+    /// / `MacBackend::nerd_fonts_enabled` (issue #683, extended to
+    /// Win-GUI by #804). Picks `Icon::glyph` vs `Icon::fallback` in
+    /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to
+    /// `false`, matching every other backend. Not `target_os`-gated:
+    /// the flag itself is a plain `bool` with no WinAPI dependency,
+    /// same rationale as `current_pointer_shape`/`painted_text_recording`
+    /// above — only the DirectWrite paint call that reads it needs a
+    /// real host to actually render Nerd Font glyphs, not to store the
+    /// setting or run headless tests against it.
+    nerd_fonts_enabled: bool,
 }
 
 impl WinBackend {
@@ -434,6 +445,7 @@ impl WinBackend {
             painted_text_recording: false,
             text_runs: Vec::new(),
             text_selection: crate::text_selection::TextSelectionState::default(),
+            nerd_fonts_enabled: false,
         }
     }
 
@@ -1087,6 +1099,15 @@ impl Backend for WinBackend {
         self.set_current_theme(theme);
     }
 
+    /// Store the nerd-fonts flag so `draw_tree` paints `Icon::glyph`
+    /// instead of always falling back to `Icon::fallback` (#804).
+    /// Mirrors `TuiBackend::set_nerd_fonts`/`GtkBackend::set_nerd_fonts`/
+    /// `MacBackend::set_nerd_fonts` — see [`Backend::set_nerd_fonts`]'s
+    /// doc for why every backend defaults this to `false`.
+    fn set_nerd_fonts(&mut self, enabled: bool) {
+        self.nerd_fonts_enabled = enabled;
+    }
+
     /// Store the chrome font description for the next
     /// [`Self::attach_surface`]/[`Self::attach_headless`] call to build a
     /// chrome `IDWriteTextFormat` from (#724), parsed via
@@ -1327,6 +1348,7 @@ impl Backend for WinBackend {
                 rect,
                 tree,
                 self.current_line_height,
+                self.nerd_fonts_enabled,
             );
             return;
         }

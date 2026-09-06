@@ -353,7 +353,13 @@ fn paint_body(
 
     match body {
         SectionBody::Tree(t) => {
-            let _ = super::tree::draw_tree(target, dwrite, bounds, t, line_height);
+            // #804 fixed the nerd-fonts gap in `win::tree::draw_tree`
+            // itself; wiring `nerd_fonts_enabled` through
+            // `draw_multi_section_view`'s own call chain (it isn't a
+            // parameter here yet, unlike TUI/GTK's MSV) is separate,
+            // unstarted scope — passing `false` preserves today's
+            // fallback-only behaviour for tree bodies nested in an MSV.
+            let _ = super::tree::draw_tree(target, dwrite, bounds, t, line_height, false);
         }
         SectionBody::List(l) => {
             let _ = super::list::draw_list(target, dwrite, bounds, l, line_height);
