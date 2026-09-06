@@ -51,6 +51,7 @@
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
+use crate::testing::driver_core::DriverCore;
 use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
 };
@@ -58,7 +59,7 @@ use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 use super::backend::MacBackend;
 use super::headless::BitmapSurface;
-use super::run::{dispatch_event, render_frame, EventOutcome};
+use super::run::{dispatch_event, render_frame};
 use super::text::make_font;
 
 /// Build a [`MacDriver`] that wraps `app` in the full
@@ -109,12 +110,10 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// [`Self::click`] / [`Self::drag`], and read painted pixels back with
 /// [`Self::pixel`] or locate painted text with [`Self::find`].
 pub struct MacDriver<A: AppLogic> {
-    app: A,
-    backend: MacBackend,
+    core: DriverCore<MacBackend, A>,
     surface: BitmapSurface,
     width: u32,
     height: u32,
-    exited: bool,
 }
 
 impl<A: AppLogic> MacDriver<A> {
@@ -148,12 +147,10 @@ impl<A: AppLogic> MacDriver<A> {
         let mut app = app;
         app.setup(&mut backend);
         let mut driver = Self {
-            app,
-            backend,
+            core: DriverCore::new(app, backend),
             surface,
             width,
             height,
-            exited: false,
         };
         driver.render();
         driver
@@ -162,39 +159,28 @@ impl<A: AppLogic> MacDriver<A> {
     /// Repaint one frame through the shared production render path.
     pub fn render(&mut self) {
         let viewport = crate::Viewport::new(self.width as f32, self.height as f32, 1.0);
-        render_frame(
-            &mut self.backend,
-            &self.app,
-            viewport,
-            self.surface.context_ptr(),
-        );
+        let context_ptr = self.surface.context_ptr();
+        let (backend, app) = self.core.parts_mut();
+        render_frame(backend, app, viewport, context_ptr);
     }
 
     /// Feed one synthetic event through the shared production
     /// [`dispatch_event`] path. Repaints on redraw and latches `exited`.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
-        if self.exited {
+        if self.core.exited() {
             return Reaction::Exit;
         }
-        let caret_visible = self.backend.caret_visible_handle();
-        let caret_pause = self.backend.caret_blink_pause_handle();
-        match dispatch_event(
-            event,
-            &mut self.backend,
-            &mut self.app,
-            &caret_visible,
-            &caret_pause,
-        ) {
-            EventOutcome::Continue => Reaction::Continue,
-            EventOutcome::Redraw => {
-                self.render();
-                Reaction::Redraw
-            }
-            EventOutcome::Exit => {
-                self.exited = true;
-                Reaction::Exit
-            }
-        }
+        let outcome = {
+            let caret_visible = self.core.backend().caret_visible_handle();
+            let caret_pause = self.core.backend().caret_blink_pause_handle();
+            let (backend, app) = self.core.parts_mut();
+            dispatch_event(event, backend, app, &caret_visible, &caret_pause)
+        };
+        let viewport = crate::Viewport::new(self.width as f32, self.height as f32, 1.0);
+        let context_ptr = self.surface.context_ptr();
+        self.core.apply_outcome(outcome, |backend, app| {
+            render_frame(backend, app, viewport, context_ptr);
+        })
     }
 
     /// Press a key (no modifiers).
@@ -267,23 +253,23 @@ impl<A: AppLogic> MacDriver<A> {
 
     /// Whether the app has returned [`Reaction::Exit`].
     pub fn exited(&self) -> bool {
-        self.exited
+        self.core.exited()
     }
 
     /// Access the app state for test assertions.
     pub fn app(&self) -> &A {
-        &self.app
+        self.core.app()
     }
 
     /// Mutable access to the app state for tests that need to poke state
     /// directly rather than through a scripted [`UiEvent`].
     pub fn app_mut(&mut self) -> &mut A {
-        &mut self.app
+        self.core.app_mut()
     }
 
     /// Access the backend for test assertions.
     pub fn backend(&self) -> &MacBackend {
-        &self.backend
+        self.core.backend()
     }
 
     /// Access the underlying offscreen surface, e.g. for
@@ -299,40 +285,32 @@ impl<A: AppLogic> MacDriver<A> {
     }
 
     /// All text painted during the last [`Self::render`], as recorded at
-    /// the [`super::text::draw_text`] choke point (quadraui#493).
+    /// the [`super::text::draw_text`] choke point (quadraui#493) — shared
+    /// body: [`DriverCore::painted_texts`] (quadraui#814).
     pub fn painted_texts(&self) -> Vec<&str> {
-        self.backend
-            .text_runs()
-            .iter()
-            .map(|r| r.text.as_str())
-            .collect()
+        self.core.painted_texts()
     }
 
     /// True if any painted text contains `needle` — the macOS analogue of
     /// [`crate::tui::testing::TuiDriver::screen_contains`] /
-    /// [`crate::gtk::testing::GtkDriver::screen_contains`].
+    /// [`crate::gtk::testing::GtkDriver::screen_contains`] — shared body:
+    /// [`DriverCore::screen_contains`] (quadraui#814).
     pub fn screen_contains(&self, needle: &str) -> bool {
-        self.backend
-            .text_runs()
-            .iter()
-            .any(|r| r.text.contains(needle))
+        self.core.screen_contains(needle)
     }
 
-    /// Bounds (points) of the first painted text run containing `needle`.
+    /// Bounds (points) of the first painted text run containing `needle`
+    /// — shared body: [`DriverCore::find_bounds`] (quadraui#814).
     pub fn find_bounds(&self, needle: &str) -> Option<crate::Rect> {
-        self.backend
-            .text_runs()
-            .iter()
-            .find(|r| r.text.contains(needle))
-            .map(|r| r.bounds)
+        self.core.find_bounds(needle)
     }
 
     /// Center coordinates (points) of the first painted text run
     /// containing `needle` — pass straight to [`Self::click`]. `None` if
-    /// nothing painted this frame matched.
+    /// nothing painted this frame matched. Shared body:
+    /// [`DriverCore::find`] (quadraui#814).
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
-        self.find_bounds(needle)
-            .map(|b| (b.x + b.width / 2.0, b.y + b.height / 2.0))
+        self.core.find(needle)
     }
 }
 
@@ -372,7 +350,7 @@ impl<A: AppLogic> PixelClickConformance for MacDriver<A> {
     }
 
     fn conformance_line_height(&self) -> f32 {
-        crate::Backend::line_height(&self.backend)
+        crate::Backend::line_height(self.core.backend())
     }
 }
 
@@ -399,7 +377,7 @@ impl<A: AppLogic> ConformanceDriver for MacDriver<A> {
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `MacBackend` this driver wraps — never a
         // re-statement (quadraui#492).
-        crate::Backend::backend_caps(&self.backend)
+        crate::Backend::backend_caps(self.core.backend())
     }
 
     fn press_named(&mut self, key: NamedKey) {
@@ -428,8 +406,8 @@ impl<A: AppLogic> ConformanceDriver for MacDriver<A> {
 
     fn inventory(&self) -> FrameInventory {
         FrameInventory {
-            text_runs: self.backend.text_runs().to_vec(),
-            zones: self.backend.zones().to_vec(),
+            text_runs: self.core.backend().text_runs().to_vec(),
+            zones: self.core.backend().zones().to_vec(),
         }
     }
 
