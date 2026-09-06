@@ -431,8 +431,9 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // are no longer here (#724): both are now overridden — `set_theme`
     // stores `current_theme` for every `draw_*` rasteriser that used to
     // fall back to `Theme::default()`, and `set_ui_font` builds a chrome
-    // `IDWriteTextFormat` alongside the editor one.
-    ("win", "set_nerd_fonts", "stub backend — see #19"),
+    // `IDWriteTextFormat` alongside the editor one. `set_nerd_fonts` is
+    // no longer here either (#804): `WinBackend` now stores the flag and
+    // `draw_tree` honours it, matching TUI/GTK/macOS.
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
     ("win", "register_zone", "stub backend — see #19"),

@@ -47,6 +47,12 @@ pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
 /// same layout `mac_tree_layout` would produce.
 ///
+/// `nerd_fonts_enabled` picks `row.icon.glyph` when `true` and
+/// `row.icon.fallback` when `false` (issue #804) — pass
+/// `MacBackend`'s own flag (set via [`crate::Backend::set_nerd_fonts`]),
+/// same convention as `macos::activity_bar::draw_activity_bar` and the
+/// TUI/GTK `draw_tree` rasterisers.
+///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
@@ -62,6 +68,7 @@ pub unsafe fn draw_tree(
     tree: &TreeView,
     theme: &Theme,
     line_height: f64,
+    nerd_fonts_enabled: bool,
 ) -> TreeViewLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     if w <= 0.0 || h <= 0.0 {
@@ -146,11 +153,15 @@ pub unsafe fn draw_tree(
             cursor_x += line_height * 0.8;
         }
 
-        // Icon — uses the ASCII `fallback` (Nerd Font handling lives
-        // at a higher layer; this rasteriser doesn't take a per-frame
-        // toggle yet).
+        // Icon — `glyph` when `nerd_fonts_enabled`, else the ASCII
+        // `fallback` (issue #804; mirrors `macos::activity_bar`'s
+        // `draw_activity_bar` and the TUI/GTK `draw_tree` rasterisers).
         if let Some(ref icon) = row.icon {
-            let glyph = icon.fallback.as_str();
+            let glyph = if nerd_fonts_enabled {
+                icon.glyph.as_str()
+            } else {
+                icon.fallback.as_str()
+            };
             let (iw, ih) = measure_text(font, glyph);
             draw_text(
                 ctx,
@@ -557,5 +568,78 @@ mod tests {
             assert_eq!(small.hit_test(cx, cy), TreeViewHit::Row(s.row_idx));
             assert_eq!(large.hit_test(cx, cy), TreeViewHit::Row(s.row_idx));
         }
+    }
+
+    /// #804: `nerd_fonts_enabled` selects `row.icon.glyph` vs
+    /// `row.icon.fallback` — previously a stored-but-ignored flag,
+    /// `draw_tree` always painted `fallback` regardless of
+    /// `MacBackend::nerd_fonts_enabled`. Uses two ASCII strings of
+    /// clearly different width (`"WWWW"` vs `"E"`) rather than a real
+    /// Nerd Font codepoint, so the assertion holds headless without a
+    /// Nerd Font installed — same reasoning as
+    /// `gtk::activity_bar::nerd_fonts_flag_selects_glyph_or_fallback`.
+    /// Measures the painted icon's pixel bounding-box width via
+    /// foreground-vs-background scanning — asserted on pixels, not
+    /// screen text, per quadraui#555. This test was observed RED against
+    /// the pre-fix `draw_tree` (both widths equal to the `"E"` fallback's).
+    #[test]
+    fn nerd_fonts_flag_selects_glyph_or_fallback() {
+        use crate::types::Icon;
+
+        let row = TreeRow {
+            path: vec![0],
+            indent: 0,
+            icon: Some(Icon::new("WWWW", "E")),
+            text: StyledText::plain(""),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        };
+        let tree = make_tree(vec![row]);
+
+        let painted_width = |nerd_fonts_enabled: bool| -> u32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(1.0, 1.0, 1.0, 1.0);
+            let mut backend = MacBackend::new();
+            backend.set_current_theme(Theme {
+                tab_bar_bg: Color::rgb(255, 255, 255),
+                background: Color::rgb(255, 255, 255),
+                ..Theme::default()
+            });
+            backend.set_current_font(font());
+            backend.set_nerd_fonts(nerd_fonts_enabled);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_tree(QRect::new(0.0, 0.0, W as f32, H as f32), &tree);
+            });
+            backend.end_frame();
+
+            // First (only) row's band is well within y in [0, 20); probe
+            // its vertical mid-point.
+            let mid_y = 10u32;
+            let mut left = None;
+            let mut right = None;
+            for x in 0..W {
+                let (r, g, b, _) = surface.pixel(x, mid_y);
+                if (r, g, b) != (255, 255, 255) {
+                    left.get_or_insert(x);
+                    right = Some(x);
+                }
+            }
+            match (left, right) {
+                (Some(l), Some(r)) => r - l + 1,
+                _ => 0,
+            }
+        };
+
+        let glyph_width = painted_width(true);
+        let fallback_width = painted_width(false);
+        assert!(
+            glyph_width > fallback_width,
+            "nerd_fonts_enabled: true should paint the wider glyph icon \
+             (\"WWWW\", measured {glyph_width}px) vs the narrower fallback \
+             (\"E\", measured {fallback_width}px) painted when false"
+        );
     }
 }

@@ -354,7 +354,13 @@ unsafe fn paint_body(
 
     match body {
         SectionBody::Tree(t) => {
-            super::tree::draw_tree(ctx, font, bx, by, bw, bh, t, theme, line_height);
+            // #804 fixed the nerd-fonts no-op in `macos::tree::draw_tree`
+            // itself; wiring `nerd_fonts_enabled` through
+            // `draw_multi_section_view`'s own call chain (it isn't a
+            // parameter here yet, unlike TUI/GTK's MSV) is separate,
+            // unstarted scope — passing `false` preserves today's
+            // fallback-only behaviour for tree bodies nested in an MSV.
+            super::tree::draw_tree(ctx, font, bx, by, bw, bh, t, theme, line_height, false);
         }
         SectionBody::List(l) => {
             super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height);

@@ -207,9 +207,9 @@ pub struct MacBackend {
     pending_window_press: WindowDragArm<Retained<NSEvent>>,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     /// (issue #683). Picks `Icon::glyph` vs `Icon::fallback` in
-    /// `draw_activity_bar`. Set via [`Backend::set_nerd_fonts`]; defaults
-    /// to `false` — see that method's doc for why every backend now
-    /// agrees on this default.
+    /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
+    /// [`Backend::set_nerd_fonts`]; defaults to `false` — see that
+    /// method's doc for why every backend now agrees on this default.
     nerd_fonts_enabled: bool,
 }
 
@@ -835,6 +835,7 @@ impl Backend for MacBackend {
                 tree,
                 &theme,
                 line_height,
+                self.nerd_fonts_enabled,
             );
         }
     }
