@@ -41,7 +41,17 @@
 // a character grid instead), so this import must be gated in lock-step or
 // a `--features tui` build (no pixel backend) flags it unused under
 // `-D warnings`.
-#[cfg(any(feature = "gtk", feature = "win", feature = "macos"))]
+//
+// The macOS arm must carry `target_os = "macos"` here too, exactly as the
+// sink's own cfg below does: `--features macos` on a Linux host turns the
+// feature on but compiles none of `macos::text`, so a bare
+// `feature = "macos"` arm imports `RefCell` for a `thread_local!` that
+// isn't there and warns `unused_imports`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 use std::cell::RefCell;
 
 use crate::runner::{AppLogic, Reaction};
