@@ -100,6 +100,27 @@
 // compiled as separate crates and are unaffected by this inner attribute;
 // they're expected to print freely.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// docs.rs builds every crate with `--cfg docsrs` (nightly rustdoc) so that
+// feature-gated items can be annotated with their requirement. `doc(cfg(..))`
+// itself is a nightly-only rustdoc attribute, so it's spelled behind
+// `cfg_attr(docsrs, ...)` everywhere it's used below — a plain build (this
+// repo's own `cargo doc`, on stable, with no `--cfg docsrs`) never sees the
+// attribute at all, so this compiles unchanged on stable. See issue #797 and
+// `[package.metadata.docs.rs]` in `Cargo.toml`, which is what sets
+// `--cfg docsrs` (via `rustdoc-args`) for the published build.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+// #797: `cargo doc --no-deps -D warnings` is a CI gate (see `ci.yml`'s `doc`
+// job). Two rustdoc lints below are pre-existing debt across ~38 files
+// (measured 2026-09-06: ~185 warnings, mostly stale intra-doc links to
+// renamed/removed methods, plus doc comments on public re-exports that link
+// to private helpers by relative path) that predates this gate and is out of
+// scope for the release-metadata work that added it (issue #797) — fixing it
+// crate-wide is its own follow-up. Allowed here, narrowly, rather than
+// disabling `-D warnings` for the whole doc build: every other rustdoc lint
+// (`rustdoc::bare_urls`, `rustdoc::invalid_html_tags`, `missing_docs`-style
+// checks, etc.) still fails the build. Do not widen this allow list without
+// updating this comment.
+#![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
 pub mod diagnostics;
 pub mod diff;
@@ -116,6 +137,7 @@ pub mod types;
 // Gated behind the `terminal` feature so non-terminal consumers don't pull in
 // portable-pty / vt100.
 #[cfg(feature = "terminal")]
+#[cfg_attr(docsrs, doc(cfg(feature = "terminal")))]
 pub mod terminal_engine;
 
 // ── Per-backend rasterisers (#223) ──────────────────────────────────────────
@@ -124,10 +146,13 @@ pub mod terminal_engine;
 // (`src/tui_main/quadraui_tui.rs`, `src/gtk/quadraui_gtk.rs`) one primitive
 // at a time so external apps stop reimplementing the same draw functions.
 #[cfg(feature = "gtk")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gtk")))]
 pub mod gtk;
 #[cfg(all(feature = "macos", target_os = "macos"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "macos")))]
 pub mod macos;
 #[cfg(feature = "tui")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tui")))]
 pub mod tui;
 // Unlike `macos` (target-gated in full — see that arm's comment), `win`
 // stays available on every host: `src/win/{backend,run}.rs` internally
@@ -137,6 +162,7 @@ pub mod tui;
 // `ci.yml`'s "Compile check (win feature)" step and `Cargo.toml`'s `win`
 // feature comment for why that per-repo, not per-OS, check exists).
 #[cfg(feature = "win")]
+#[cfg_attr(docsrs, doc(cfg(feature = "win")))]
 pub mod win;
 
 pub mod compose;

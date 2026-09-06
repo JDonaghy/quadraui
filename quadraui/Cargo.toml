@@ -5,7 +5,45 @@ edition.workspace = true
 description = "Cross-platform UI primitives with native Windows, Linux, macOS, and TUI rendering backends"
 license.workspace = true
 repository.workspace = true
-publish = false
+# Matches `rust-toolchain.toml`'s pin exactly (see that file's header for why
+# the pin exists at all — every stable release can ship new clippy lints and
+# this repo runs `-D warnings`). Keeping the two in lockstep means an older
+# rustc gets cargo's own "package `quadraui` requires rustc 1.97.1 or newer"
+# error instead of an opaque parse/feature failure deep in compilation.
+# Bumping the toolchain pin and this field is one commit, not two — do them
+# together.
+rust-version = "1.97.1"
+
+# docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`)
+# so a published crate actually renders all backends' public API instead of
+# just the always-on core (none of them are default features — see the
+# `[features]` table below). `rustdoc-args` sets `--cfg docsrs`, which is what
+# `src/lib.rs`'s `#![cfg_attr(docsrs, feature(doc_cfg))]` and each
+# feature-gated `pub mod`'s `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]`
+# key off of, so the rendered docs show each backend module's feature
+# requirement instead of silently omitting it.
+#
+# Deliberately no `targets`/`default-target` override here to add a macOS or
+# Windows build: `macos` is the only feature in this list that actually needs
+# a non-Linux target to render real content (`lib.rs` gates `mod macos` on
+# `target_os = "macos"` too, not just the feature — see that arm's comment),
+# but `gtk` — also in this list — is a REAL system dependency (gtk4 via
+# pkg-config, unlike the pure-Rust-binding `objc2`/`windows` crates), and
+# docs.rs applies one global feature set to every target in `targets`; there
+# is no per-target feature split available in this table. Adding an
+# `aarch64-apple-darwin` target here would make docs.rs try to compile
+# `quadraui::gtk` for that target with no system gtk4 in its build sandbox,
+# failing the crate's ENTIRE docs.rs build rather than just omitting macOS's
+# page. `win` has no such problem: `src/win/` is not target-gated at all
+# (only the real WinAPI calls inside it are, with a `todo!()` fallback — see
+# the `win` feature's comment above), so it already renders under the
+# default Linux target with no extra target needed. Real macOS doc coverage
+# instead comes from `.github/workflows/macos.yml`'s `Doc (macos feature)`
+# step, which runs `cargo doc --features macos` for real on a `macos-latest`
+# runner.
+[package.metadata.docs.rs]
+features = ["tui", "gtk", "win", "terminal", "macos"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
 

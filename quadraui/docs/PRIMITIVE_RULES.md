@@ -99,9 +99,11 @@ Read this when adding or changing a primitive.
 
 ## Rule 8 — public-API lifecycle
 
-`quadraui` is `publish = false` at `version = "0.0.1"`. Nothing pins a
-published *version* — but both consumers now pin a git *revision*, so
-neither floats on `develop`'s tip. `coord-tui` — `JDonaghy/coord-tui`, a
+`quadraui` is publishable (`publish = false` was dropped in `quadraui#797`,
+the first tagged release is `v0.1.0`, not yet cut as of this writing — see
+that issue). Nothing pins a published *version* today regardless — both
+consumers pin a git *revision* instead, so neither floats on `develop`'s
+tip. `coord-tui` — `JDonaghy/coord-tui`, a
 standalone repo since `claude-coordinator#2899` (2026-08-29) — pinned
 first, via `claude-coordinator#1973`. `vimcode` followed via
 `vimcode#691`, replacing its old path dependency with a git+rev pin the
@@ -180,6 +182,13 @@ pub fn with_machine(self, _machine: impl Into<String>) -> Self { self }
   their own schedule.
 - **PR 2** — delete the shims, once those migrations have merged.
   Reference them by number.
+
+**Both PRs get a `CHANGELOG.md` entry** (repo root — see that file's own
+header for the format): PR 1 adds a line under `### Deprecated` naming the
+old item, its replacement, and the PR-2 tracking issue; PR 2 moves that same
+line to `### Removed`. This is the two-PR protocol made visible outside a
+diff — a reader of `CHANGELOG.md` alone should be able to follow a
+deprecation from introduction to removal without pulling up either PR.
 
 **One breaking change per PR.** #476 removed a type, renamed a variant,
 deleted two struct fields and gutted a keymap in a single commit, so the

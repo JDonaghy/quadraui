@@ -65,6 +65,62 @@ jobs:
       - name: cargo package resolves with no patch (resolution proof)
         run: cargo package -p quadraui --no-verify --locked
 
+  package:
+    # #797: `patch-guard` above already runs `cargo package --no-verify` as a
+    # fast *resolution* proof (no `[patch]` stanza, manifest+lockfile resolve
+    # off crates.io) — deliberately skipping the build so that job stays
+    # cheap. This job is the *build* proof: a full `cargo package` (no
+    # `--no-verify`) actually compiles the assembled tarball in its own
+    # isolated directory, the same thing `cargo publish` would do right
+    # before uploading. Cargo's `package` subcommand has no `--dry-run` flag
+    # (only `cargo publish` does, and it works by shelling out to `package`
+    # internally) — this step, sans `--publish`/upload, already IS that dry
+    # run: it assembles the tarball, verifies it builds, and touches the
+    # network only to read the crates.io index for dependency resolution.
+    # `--locked` for the same reason as `patch-guard`'s: fail on a stale
+    # Cargo.lock instead of silently re-resolving over it.
+    name: cargo package (build verification)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo package (default features, full build verification)
+        run: cargo package -p quadraui --locked
+
+  doc:
+    # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal` only if they build
+    # clean under `cargo doc` — this is the local proxy for that, run with
+    # the same `-D warnings` bar as every other CI step (via `RUSTDOCFLAGS`,
+    # since `RUSTFLAGS` doesn't reach rustdoc). `macos` is excluded here:
+    # `lib.rs` gates `mod macos` on `target_os = "macos"` (see that arm's
+    # comment), so `--features macos` on this ubuntu runner would document
+    # nothing — same reason `ci.yml`'s `tui` job cross-compile-checks it
+    # rather than documenting it here. Real macOS doc coverage is
+    # `macos.yml`'s own `Doc (macos feature)` step, on an actual
+    # `macos-latest` runner — see `Cargo.toml`'s `[package.metadata.docs.rs]`
+    # comment for why that feature isn't just added to a docs.rs `targets`
+    # list instead (short version: `gtk` in this same feature set needs real
+    # system libraries docs.rs's cross-compile sandbox doesn't have).
+    #
+    # `gtk` needs the same system libraries as the `gtk` job below —
+    # rustdoc still expands macros / runs proc-macros that touch gtk4-sys,
+    # so this fails at gtk4's build-script pkg-config step without them.
+    name: cargo doc (docs.rs proxy, all Linux-buildable backend features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK4 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal
+
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the
     # matching driver test in `quadraui/tests/tui_example_driver.rs`. #A1

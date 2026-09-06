@@ -146,6 +146,20 @@ jobs:
       # demo crates have no `macos` feature to lint here.
       - name: Clippy (macos feature)
         run: cargo clippy -p quadraui --features macos -- -D warnings
+      # #797: the one place `cargo doc --features macos` compiles anything —
+      # `lib.rs` gates `mod macos` on `target_os = "macos"`, so `ci.yml`'s
+      # `doc` job (ubuntu-only) documents zero lines of `src/macos/`, same
+      # reason its build/test/clippy steps live here instead. `Cargo.toml`'s
+      # `[package.metadata.docs.rs]` deliberately does NOT add a macOS
+      # `targets` entry to get this coverage from docs.rs itself (see that
+      # table's comment: `gtk`, also in its feature list, needs real system
+      # libraries docs.rs's cross-compile sandbox doesn't have) — this step
+      # is macOS's only real doc-build proof, run for real on this
+      # `macos-latest` host.
+      - name: Doc (macos feature)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps -p quadraui --features macos
       # Tier-1 conformance matrix (quadraui#491, epic #480), matching the
       # artifact the `tui`/`gtk`/`win` legs upload in ci.yml. `backends()`
       # in `tests/conformance.rs` already registers `MacFactory` blocking
