@@ -2480,7 +2480,10 @@ impl Backend for WinBackend {
                 minimap,
                 &self.current_theme,
             );
-            return crate::backend::MinimapPaintResult { layout };
+            return crate::backend::MinimapPaintResult {
+                layout,
+                painted: true,
+            };
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, minimap);
