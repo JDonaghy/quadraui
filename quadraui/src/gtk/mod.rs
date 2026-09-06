@@ -136,6 +136,12 @@ pub use sidebar_panel::{draw_sidebar_panel, gtk_sidebar_panel_layout};
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::{draw_split, gtk_split_layout};
 pub use split_tree::{draw_split_tree, gtk_split_tree_layout};
+// #860: `draw_status_bar` is `#[deprecated]` — see
+// `status_bar::draw_status_bar`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,

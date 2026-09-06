@@ -1819,15 +1819,18 @@ impl Backend for WinBackend {
         pressed_id: Option<&crate::types::WidgetId>,
     ) -> StatusBarLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::status_bar::draw_status_bar(
-                &surface.target,
-                dwrite,
-                rect,
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            return crate::primitives::status_bar::native_surface_paint::paint(
                 bar,
+                self,
+                &theme,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
                 hovered_id,
                 pressed_id,
-                &self.current_theme,
             );
         }
         #[cfg(not(target_os = "windows"))]
@@ -3159,6 +3162,26 @@ impl NativeSurface for WinBackend {
         {
             let _ = text;
             todo!("DirectWrite measure_text (no surface attached yet)")
+        }
+    }
+
+    /// #860: overrides the default (which drops `bold`) —
+    /// `DWrite::measure_text_styled` already exists on this backend
+    /// (#25), matching what `win::status_bar::draw_status_bar` measured
+    /// before its paint moved to
+    /// `primitives::status_bar::native_surface_paint::paint`.
+    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        #[cfg(target_os = "windows")]
+        {
+            self.dwrite
+                .as_ref()
+                .and_then(|d| d.measure_text_styled(text, bold).ok())
+                .unwrap_or((0.0, 0.0))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (text, bold);
+            todo!("DirectWrite measure_text_styled (no surface attached yet)")
         }
     }
 

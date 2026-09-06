@@ -142,6 +142,31 @@ pub(crate) trait NativeSurface {
     /// current font, in surface-native units.
     fn surface_measure_text(&self, text: &str) -> (f32, f32);
 
+    /// [`Self::surface_measure_text`] with an optional bold weight —
+    /// added alongside [`Self::surface_draw_text_run_styled`] (#810) so a
+    /// caller measuring a segment it's about to paint bold (e.g.
+    /// `primitives::status_bar::native_surface_paint::paint`, #860)
+    /// measures the *same* weight it renders, rather than always the
+    /// regular one.
+    ///
+    /// Defaults to ignoring `bold` and forwarding to
+    /// [`Self::surface_measure_text`] — correct only for a surface that
+    /// can't tell bold and regular text apart. No implementor actually
+    /// wants the full default, mirroring [`Self::surface_draw_text_run_styled`]'s
+    /// per-backend split: [`crate::gtk::backend::GtkBackend`] overrides
+    /// with a Pango bold `AttrList` weight; [`crate::win::backend::WinBackend`]
+    /// overrides via `DWrite::measure_text_styled`;
+    /// [`crate::macos::backend::MacBackend`] takes the default as-is —
+    /// this backend's pre-#860 `status_bar` rasteriser measured (and
+    /// rendered) every segment at the same weight regardless of `bold`
+    /// (see that module's doc), so the default reproduces its existing
+    /// behaviour exactly rather than granting it new bold-measurement
+    /// capability.
+    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        let _ = bold;
+        self.surface_measure_text(text)
+    }
+
     // ─── Fills + strokes ────────────────────────────────────────────────
     /// Fill `rect` with a solid `color`.
     fn surface_fill_rect(&mut self, rect: Rect, color: Color);

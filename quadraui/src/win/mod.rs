@@ -312,7 +312,13 @@ pub use sidebar_panel::{draw_sidebar_panel, win_sidebar_panel_layout};
 pub use spinner::{draw_spinner, win_spinner_layout};
 #[cfg(target_os = "windows")]
 pub use split::{draw_split, win_split_layout, DIVIDER_DIP};
+// #860: `draw_status_bar` is `#[deprecated]` — see
+// `status_bar::draw_status_bar`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
 #[cfg(target_os = "windows")]
+#[allow(deprecated)]
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};

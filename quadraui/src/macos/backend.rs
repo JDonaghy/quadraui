@@ -1323,33 +1323,24 @@ impl Backend for MacBackend {
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
     ) -> StatusBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_status_bar called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_status_bar requires set_current_font");
+        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // each debug_assert their own `!ctx.is_null()` internally — see
+        // `Self::surface_fill_rect` — so this method needs no separate
+        // ctx/font fetch of its own, matching `Self::draw_panel`'s #859
+        // shape.
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope; the call
-        // chain enforces `enter_frame_scope` via the debug_assert above.
-        unsafe {
-            super::status_bar::draw_status_bar(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                line_height,
-                bar,
-                &theme,
-                hovered_id,
-                pressed_id,
-            )
-        }
+        let line_height = self.current_line_height as f32;
+        crate::primitives::status_bar::native_surface_paint::paint(
+            bar,
+            self,
+            &theme,
+            rect.x,
+            rect.y,
+            rect.width,
+            line_height,
+            hovered_id,
+            pressed_id,
+        )
     }
     fn draw_tab_bar(
         &mut self,
@@ -2560,6 +2551,12 @@ impl NativeSurface for MacBackend {
         let (w, h) = super::text::measure_text(font, text);
         (w as f32, h as f32)
     }
+
+    // #860: no `surface_measure_text_styled` override — the trait
+    // default (ignore `bold`, forward here) already reproduces this
+    // backend's pre-#860 `status_bar` rasteriser exactly: it measured
+    // (and rendered) every segment at the same weight regardless of
+    // `bold` (see `macos::status_bar`'s module doc, "Bold segments").
 
     fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
         let ctx = self.current_cg();

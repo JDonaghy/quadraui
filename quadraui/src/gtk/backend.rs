@@ -1915,30 +1915,40 @@ impl Backend for GtkBackend {
         pressed_id: Option<&crate::types::WidgetId>,
     ) -> crate::StatusBarLayout {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
         // #624: status bar segments are chrome, painted in `ui_font` —
         // save the editor font that's on the shared layout, swap in
-        // `ui_font` for the paint (and `gtk::draw_status_bar`'s own
-        // internal width measurement, which shares this same layout), then
-        // restore the editor font so later draws in this frame aren't
-        // left painting chrome-sized text.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        let bar_layout = crate::gtk::draw_status_bar(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            self.current_line_height,
+        // `ui_font` for the paint (and the shared `paint`'s own internal
+        // width measurement, which shares this same layout via
+        // `NativeSurface::surface_measure_text_styled`), then restore the
+        // editor font so later draws in this frame aren't left painting
+        // chrome-sized text.
+        let saved_font = {
+            let (_cr, layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
+            let saved = layout.font_description();
+            layout.set_font_description(Some(&ui_font_desc));
+            saved
+        };
+        let theme = self.current_theme;
+        let line_height = self.current_line_height as f32;
+        let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
             bar,
-            &self.current_theme,
+            self,
+            &theme,
+            rect.x,
+            rect.y,
+            rect.width,
+            line_height,
             hovered_id,
             pressed_id,
         );
-        layout.set_font_description(saved_font.as_ref());
+        {
+            let (_cr, layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
+            layout.set_font_description(saved_font.as_ref());
+        }
         // Record each visible segment's label into the painted-text map
         // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
         // from `bar` via the segment's side + index, since
@@ -3784,6 +3794,27 @@ impl NativeSurface for GtkBackend {
         layout.set_text(text);
         layout.set_attributes(None);
         let (w, h) = layout.pixel_size();
+        (w as f32, h as f32)
+    }
+
+    /// #860: overrides the default (which drops `bold`) — a bold Pango
+    /// `AttrList` weight, matching what `gtk::status_bar::draw_status_bar`
+    /// measured before its paint moved to
+    /// `primitives::status_bar::native_surface_paint::paint`.
+    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        let (_cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_measure_text_styled called outside enter_frame_scope");
+        layout.set_text(text);
+        if bold {
+            let attrs = pango::AttrList::new();
+            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
+            layout.set_attributes(Some(&attrs));
+        } else {
+            layout.set_attributes(None);
+        }
+        let (w, h) = layout.pixel_size();
+        layout.set_attributes(None);
         (w as f32, h as f32)
     }
 
