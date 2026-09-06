@@ -2010,31 +2010,23 @@ impl Backend for MacBackend {
         )
     }
     fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_toast_stack called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_toast_stack requires set_current_font");
+        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // each debug_assert/expect their own frame + font internally —
+        // see `Self::surface_fill_rect`/`Self::surface_measure_text` — so
+        // this method needs no separate ctx/font fetch of its own,
+        // matching `Self::draw_status_bar`'s #860 shape.
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::toast::draw_toast_stack(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                stack,
-                &theme,
-                line_height,
-            )
-        }
+        let line_height = self.current_line_height as f32;
+        crate::primitives::toast::native_surface_paint::paint(
+            stack,
+            self,
+            &theme,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            line_height,
+        )
     }
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
         let font = self

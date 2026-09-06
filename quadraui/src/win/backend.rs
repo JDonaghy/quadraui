@@ -2761,16 +2761,24 @@ impl Backend for WinBackend {
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
+    /// attached yet" fallback posture. #861: paints via the shared
+    /// [`crate::primitives::toast::native_surface_paint::paint`] now,
+    /// passing `&self.current_theme` — see `super::toast`'s module doc
+    /// for why the pre-#861 free function never did.
     fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::toast::draw_toast_stack(
-                &surface.target,
-                dwrite,
-                rect,
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            let line_height = self.current_line_height as f32;
+            return crate::primitives::toast::native_surface_paint::paint(
                 stack,
-                self.current_line_height,
+                self,
+                &theme,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+                line_height,
             );
         }
         #[cfg(not(target_os = "windows"))]

@@ -1,18 +1,24 @@
 //! GTK rasteriser for [`crate::ToastStack`].
 //!
-//! Paints toast notification boxes stacked in a viewport corner.
-//! Each toast is a rounded box with title, optional body, severity
-//! tint, dismiss `×`, and optional action button label.
+//! Painting moved to the shared
+//! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
+//! `NativeSurface` Phase 2d slice 4/9) — see that fn's doc for the named
+//! divergences (Win never took a live theme; Win's dismiss/action text
+//! wasn't centred in its sub-region) found while unifying
+//! `gtk::draw_toast_stack`, `macos::toast::draw_toast_stack` and
+//! `win::toast::draw_toast_stack` into one implementation. This module
+//! now only carries [`gtk_toast_stack_layout`] (pure layout, still needed
+//! by `GtkDriver`/downstream callers for no-paint hit-test queries),
+//! [`RawGtkToastSurface`], and the deprecated [`draw_toast_stack`]
+//! compatibility shim over it, mirroring `gtk::status_bar`'s identical
+//! #860 shape.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::set_source;
-use crate::primitives::toast::{
-    ToastMeasure, ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
-};
+use crate::native_surface::NativeSurface;
+use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 const GTK_TOAST_WIDTH_PX: f32 = 320.0;
 const GTK_TOAST_MARGIN_PX: f32 = 12.0;
@@ -21,21 +27,17 @@ const GTK_DISMISS_WIDTH_PX: f32 = 28.0;
 const GTK_ACTION_PADDING_PX: f32 = 16.0;
 const GTK_TOAST_PADDING_PX: f64 = 8.0;
 
-fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
-    match severity {
-        ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => Color::rgb(30, 80, 30),
-        ToastSeverity::Warning => Color::rgb(100, 80, 20),
-        ToastSeverity::Error => theme.error_fg,
-    }
-}
-
 /// Compute the GTK pixel-unit layout for a [`ToastStack`] without painting.
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
 /// window coordinates, matching `gtk_menu_bar_layout` / `gtk_panel_layout`)
 /// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
+///
+/// Still its own pango-based measurer, independent of the shared paint's
+/// internal layout computation (which measures via
+/// [`NativeSurface::surface_measure_text`]) — same "no-paint layout stays
+/// put" posture as `GtkBackend::status_bar_layout` (#860).
 #[allow(clippy::too_many_arguments)]
 pub fn gtk_toast_stack_layout(
     stack: &ToastStack,
@@ -79,8 +81,110 @@ pub fn gtk_toast_stack_layout(
     )
 }
 
-/// Draw a [`ToastStack`] overlay onto `cr`. Returns the layout for
-/// host click dispatch.
+/// Minimal [`NativeSurface`] adapter over a bare Cairo context + Pango
+/// layout, used only by the deprecated [`draw_toast_stack`] shim below —
+/// mirrors `gtk::status_bar::RawGtkStatusBarSurface`'s identical pattern
+/// (#860), scoped to the three verbs a toast's paint actually uses
+/// (fill, plain text run, measure).
+struct RawGtkToastSurface<'a> {
+    cr: &'a Context,
+    pango_layout: &'a pango::Layout,
+}
+
+impl NativeSurface for RawGtkToastSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawGtkToastSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawGtkToastSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawGtkToastSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawGtkToastSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawGtkToastSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        self.pango_layout.set_text(text);
+        self.pango_layout.set_attributes(None);
+        let (w, h) = self.pango_layout.pixel_size();
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        super::set_source_rgba(self.cr, color);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.fill().ok();
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("ToastStack::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        self.pango_layout.set_text(text);
+        self.pango_layout.set_attributes(None);
+        super::set_source(self.cr, color);
+        self.cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(self.cr, self.pango_layout);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("ToastStack::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("ToastStack::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("ToastStack::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("ToastStack::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
+/// the pre-#861 signature exactly for any external caller that held a
+/// direct `quadraui::gtk::draw_toast_stack` reference rather than going
+/// through [`crate::Backend::draw_toast_stack`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_toast_stack` instead — this free function is a compatibility shim over the shared #861 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toast_stack(
     cr: &Context,
@@ -93,100 +197,24 @@ pub fn draw_toast_stack(
     theme: &Theme,
     line_height: f64,
 ) -> ToastStackLayout {
-    let layout = gtk_toast_stack_layout(
+    let mut surface = RawGtkToastSurface { cr, pango_layout };
+    crate::primitives::toast::native_surface_paint::paint(
         stack,
-        pango_layout,
+        &mut surface,
+        theme,
         origin_x as f32,
         origin_y as f32,
         viewport_width as f32,
         viewport_height as f32,
-        line_height,
-    );
-
-    for vt in &layout.visible_toasts {
-        let toast = &stack.toasts[vt.toast_idx];
-        paint_toast(cr, pango_layout, vt, toast, theme, line_height);
-    }
-
-    layout
-}
-
-fn paint_toast(
-    cr: &Context,
-    pango_layout: &pango::Layout,
-    vt: &VisibleToast,
-    toast: &crate::primitives::toast::ToastItem,
-    theme: &Theme,
-    _line_height: f64,
-) {
-    let bg_color = toast
-        .accent
-        .unwrap_or_else(|| severity_bg(toast.severity, theme));
-
-    // Background rect.
-    set_source(cr, bg_color);
-    cr.rectangle(
-        vt.bounds.x as f64,
-        vt.bounds.y as f64,
-        vt.bounds.width as f64,
-        vt.bounds.height as f64,
-    );
-    cr.fill().ok();
-
-    // Title text.
-    pango_layout.set_text(&toast.title);
-    pango_layout.set_attributes(None);
-    set_source(cr, theme.foreground);
-    cr.move_to(
-        vt.bounds.x as f64 + GTK_TOAST_PADDING_PX,
-        vt.bounds.y as f64 + GTK_TOAST_PADDING_PX,
-    );
-    super::painted_text::show_layout(cr, pango_layout);
-
-    // Body text (second line).
-    if !toast.body.is_empty() {
-        let title_h = pango_layout.pixel_size().1 as f64;
-        pango_layout.set_text(&toast.body);
-        set_source(cr, theme.foreground);
-        cr.move_to(
-            vt.bounds.x as f64 + GTK_TOAST_PADDING_PX,
-            vt.bounds.y as f64 + GTK_TOAST_PADDING_PX + title_h,
-        );
-        super::painted_text::show_layout(cr, pango_layout);
-    }
-
-    // Dismiss ×.
-    if let Some(db) = vt.dismiss_bounds {
-        pango_layout.set_text("×");
-        set_source(cr, theme.foreground);
-        let text_w = pango_layout.pixel_size().0 as f64;
-        cr.move_to(
-            db.x as f64 + (db.width as f64 - text_w) / 2.0,
-            vt.bounds.y as f64 + GTK_TOAST_PADDING_PX,
-        );
-        super::painted_text::show_layout(cr, pango_layout);
-    }
-
-    // Action button label.
-    if let Some(ab) = vt.action_bounds {
-        if let Some(ref action) = toast.action {
-            pango_layout.set_text(&action.label);
-            set_source(cr, theme.accent_fg);
-            let text_w = pango_layout.pixel_size().0 as f64;
-            cr.move_to(
-                ab.x as f64 + (ab.width as f64 - text_w) / 2.0,
-                vt.bounds.y as f64 + GTK_TOAST_PADDING_PX,
-            );
-            super::painted_text::show_layout(cr, pango_layout);
-        }
-    }
+        line_height as f32,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::toast::{ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack};
-    use crate::types::WidgetId;
+    use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     // Fixed overlay size, independent of the test's origin — this file
@@ -229,11 +257,16 @@ mod tests {
     }
 
     /// Paint→click round trip at `(origin_x, origin_y)`: paints a single
-    /// toast through [`draw_toast_stack`], confirms the box's fill
-    /// colour lands at the origin-shifted *absolute* position — not the
-    /// viewport-local one `gtk_toast_stack_layout` used to compute
-    /// internally before shifting — and that `hit_test` resolves clicks
-    /// at that same absolute position through Dismiss and Body.
+    /// toast through [`RawGtkToastSurface`] and the shared
+    /// `primitives::toast::native_surface_paint::paint` directly (rather
+    /// than the deprecated [`draw_toast_stack`] shim, so this test
+    /// doesn't trip the `-D warnings`-denied `deprecated` lint — mirrors
+    /// `gtk::status_bar`'s identical #860 test-migration note), confirms
+    /// the box's fill colour lands at the origin-shifted *absolute*
+    /// position — not the viewport-local one `gtk_toast_stack_layout`
+    /// used to compute internally before shifting — and that `hit_test`
+    /// resolves clicks at that same absolute position through Dismiss
+    /// and Body.
     ///
     /// Canvas grows with the origin (`VIEW_W`/`VIEW_H` stay fixed) so a
     /// dropped-origin regression shows up as a shifted absolute paint
@@ -250,16 +283,19 @@ mod tests {
             cr.set_source_rgb(1.0, 1.0, 1.0);
             cr.paint().ok();
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            draw_toast_stack(
-                &cr,
-                &pango_layout,
-                origin_x,
-                origin_y,
-                VIEW_W,
-                VIEW_H,
+            let mut raw = RawGtkToastSurface {
+                cr: &cr,
+                pango_layout: &pango_layout,
+            };
+            crate::primitives::toast::native_surface_paint::paint(
                 &stack,
+                &mut raw,
                 &Theme::default(),
-                LINE_HEIGHT,
+                origin_x as f32,
+                origin_y as f32,
+                VIEW_W as f32,
+                VIEW_H as f32,
+                LINE_HEIGHT as f32,
             )
         };
         surface.flush();

@@ -135,6 +135,12 @@ pub use split_tree::{draw_split_tree, mac_split_tree_layout};
 pub use status_bar::{draw_status_bar, mac_status_bar_layout};
 pub use tab_bar::{draw_tab_bar, mac_tab_bar_layout};
 pub use text_display::mac_text_display_layout;
+// #861: `draw_toast_stack` is `#[deprecated]` — see
+// `toast::draw_toast_stack`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
 pub use toast::{draw_toast_stack, mac_toast_stack_layout};
 pub use toolbar::{draw_toolbar, mac_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
