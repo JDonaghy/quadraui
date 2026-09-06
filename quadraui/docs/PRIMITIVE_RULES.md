@@ -261,6 +261,40 @@ skipping `rect.x` is a no-op when `rect.x == 0`), which is why the
 historical `mac_tree_layout` bug (`docs/LESSONS.md`) shipped past
 tests that all used the origin.
 
+### Converging on one convention, ABSOLUTE-only (issue #816)
+
+The LOCAL/ABSOLUTE split above is the audited *current state*, not the
+target. quadraui#816 is converging every primitive onto: one `layout()`
+argument shape (`fn layout(&self, bounds: Rect, m: &Self::Measure) ->
+Self::Layout`, replacing the four in use today), one `hit_test()` shape
+(`fn hit_test(&self, p: Point) -> Self::Hit`, with a `Miss`/empty
+variant on every `Hit` — seven primitives have none today), and
+**ABSOLUTE coordinates everywhere** — once every primitive agrees, this
+table has nothing left to record and gets deleted.
+
+`quadraui/src/layout.rs` (new) is the shared infrastructure that
+per-primitive convergence PRs adopt one at a time:
+
+- `Anchor` + `Side`/`ResolvedSide` — the "preferred side, flip on
+  overflow, pin to viewport edge as a last resort" resolution that
+  `Tooltip`, `Completions`, `ContextMenu`, and `RichTextPopup` each
+  reimplement today behind their own placement enum.
+- `visible_range_walk` + `VisibleItem` — the "visible items from a
+  scroll offset, clipping the last one to the remaining viewport"
+  walk that all 19 `Visible*{idx, bounds}` structs (`VisibleListItem`,
+  `VisibleTreeRow`, `VisibleTab`, ...) hand-roll today.
+
+Landing `layout.rs` does not change any primitive's public API by
+itself — nothing in `primitives/` consumes it yet. Converting an
+existing primitive onto it (new `Visible*` alias, new placement type)
+is a rule-8 breaking change and lands as **its own PR per primitive**,
+with a `#[deprecated]` shim per the two-PR protocol above, so no
+consumer breaks in one commit — see #816 for the full split and its
+coordination with quadraui#785's Phase 2. Do not delete the LOCAL/
+ABSOLUTE table until every primitive listed in it has converged; a
+partially-converged table with rows removed early is worse than the
+current complete one.
+
 ## One primitive, one canonical paint path (issue #456)
 
 `quadraui` has two ways to paint a primitive: `backend.draw_<name>(rect,
