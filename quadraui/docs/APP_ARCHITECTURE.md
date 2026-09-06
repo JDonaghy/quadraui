@@ -11,15 +11,21 @@ This file is the other side of the coin: where does *your* feature
 logic live, given that quadraui intentionally does not own layout or
 event routing?
 
-**Status disclosure.** quadraui is in Phase A — a catalog of
-**declarative primitives** (Tree, Form, List, Palette, StatusBar, TabBar,
-ActivityBar, Terminal, TextDisplay). The more ambitious surface
-described in `UI_CRATE_DESIGN.md` §4.1 / §6 (`Window`, `Panel`, `Split`,
-`Tabs`, `MenuBar`, `Accelerator`, a unified `Backend` trait) is
-**roadmapped but not yet shipped**. Until it lands, app authors will
-write more per-backend plumbing than the end-state vision implies.
-This doc captures the current layering and points out which
-duplications collapse when Phase B extraction happens.
+**Status disclosure — corrected 2026-09-05 (issue #798).** This doc was
+written during quadraui's "Phase A" — when it was a catalog of purely
+declarative primitives with no unified backend surface — and said the
+more ambitious surface described in `UI_CRATE_DESIGN.md` §4.1 / §6
+(`Window`, `Panel`, `Split`, `Tabs`, `MenuBar`, `Accelerator`, a unified
+`Backend` trait) was on the roadmap but had no code yet. **That is no
+longer true: `Panel`, `Split`/`SplitTree`, `TabBar`, `MenuBar`,
+`Accelerator`, and a unified `Backend` trait (`quadraui::backend::Backend`)
+have all shipped** — see `quadraui/src/backend.rs` and the primitive
+count/status in the root `README.md`. What follows below is a snapshot of
+the *old* per-backend-plumbing layering from when this doc was written
+(vimcode's own `src/render.rs` / `src/tui_main` / `src/gtk` / `src/win_gui`
+structure, predating extraction) — kept for its worked-example value, not
+as a current architecture description. Treat "Phase B extraction" and
+similar phase references below as history, not a pending milestone.
 
 ---
 

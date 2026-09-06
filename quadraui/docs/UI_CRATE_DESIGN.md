@@ -1,6 +1,13 @@
 # Cross-Platform UI Crate — Design Sketch
 
-**Status:** Draft for discussion. No code yet.
+**Status:** Draft for discussion, from before any code existed. Kept as a
+decision record — most of §§1-9 shipped in some form since (see
+`DECISIONS.md` and the root `README.md`'s *Status* for what's real
+today), but **decision #6 (Accessibility) below did not**: quadraui ships
+zero `a11y_role`/`a11y_label`-style fields on any primitive as of
+2026-09-05 (issue #798). Read the ✅ marks below as "this is what we
+decided to do", not "this shipped" — verify against the crate before
+relying on any of them.
 **Audience:** The author and collaborators deciding whether this direction is sound before committing to a refactor.
 
 ---
@@ -324,7 +331,7 @@ All 13 decisions below were resolved in the 2026-04-18 design session (either ex
 3. ✅ **One `Backend` trait vs separate traits per primitive.** One trait, to keep the contract in one file. Primitives with complex state may get helper traits.
 4. ✅ **How does a `TextEditor` primitive consume vimcode's Engine?** The `TextEditor` primitive consumes a `BufferView` description that any app can produce. vimcode's engine becomes an adapter that produces `BufferView` per frame. The text engine (rope, tree-sitter, LSP) stays in a separate crate — not part of quadraui.
 5. ✅ **Do we support multiple `Window`s per process?** Yes, v1. Required for detaching tabs, dialogs on multi-monitor, and cross-platform parity. TUI backend collapses to one Window.
-6. ✅ **Accessibility.** v1 ships with a11y-ready data fields on every primitive (`a11y_role`, `a11y_label`, focus order). Platform wiring (UI Automation, NSAccessibility, AT-SPI) lands in v1.1. This keeps the door open without blocking v1.
+6. ✅ **Accessibility** (decided, not shipped — see status banner above). v1 was to ship with a11y-ready data fields on every primitive (`a11y_role`, `a11y_label`, focus order); platform wiring (UI Automation, NSAccessibility, AT-SPI) would land in v1.1. **As of 2026-09-05 no primitive has any such field** — `grep -rn a11y_role quadraui/src` finds nothing. Re-scope or re-open as a fresh issue before relying on this.
 7. ✅ **IME / composition.** v1.1. Ship without full IME; add when first non-Latin user complains. Text input primitives must at minimum not crash.
 8. ✅ **Theming system.** Palette-based `Theme` struct with derived colours, like vimcode's existing one. Exposed; apps can override. VSCode theme JSON importer.
 9. ✅ **Native menu bars.** v1. macOS uses global menu; Win/Linux uses in-window. Crate owns the platform integration.
@@ -371,7 +378,7 @@ This timeline is aggressive but achievable given how much of the work is already
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
 | Primitive set doesn't cover real-world apps and requires frequent breaking changes post-v1 | Medium | Stress-test with SQL and k8s sketches *before* extraction (§5). Build one non-vimcode example app in Phase D. |
-| Accessibility debt blocks adoption | Low (for target users) | v1 ships with a11y-ready data fields on every primitive; platform wiring (UIA / NSAccessibility / AT-SPI) lands in v1.1 once a concrete user need surfaces. |
+| Accessibility debt blocks adoption | Low (for target users) | **Materialized, not mitigated as of 2026-09-05**: the a11y-ready-fields plan (decision #6 above) was never implemented — zero primitives carry `a11y_role`/`a11y_label`. Re-plan before this risk is actually addressed. |
 | Fully-drawn approach feels "off" on macOS vs native Cocoa apps | Medium | Careful `PlatformStyle` work. Use platform font/accent religiously. Hide window chrome behind native title bar. |
 | macOS backend blows out timeline due to CG/CT learning curve | Medium-High | Budget extra time. `NATIVE_GUI_LESSONS.md` from Win-GUI should transfer. |
 | Text editor primitive too coupled to vimcode's Engine to extract | Medium | `BufferView` adapter pattern (§7.4) separates concerns. Validate during Phase A. |
