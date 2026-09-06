@@ -142,9 +142,11 @@ unsafe fn configure_panel(panel: &NSSavePanel, opts: &FileDialogOptions) {
     if !exts.is_empty() {
         // `NSArray::from_slice` requires `T: IsRetainable`, which
         // NSString doesn't satisfy (it has an `NSMutableString`
-        // subclass). `from_vec` consumes owned retained handles and
-        // sidesteps that bound.
-        let arr = NSArray::from_vec(exts);
+        // subclass). `from_retained_slice` takes already-`Retained`
+        // handles and sidesteps that bound — replaces objc2-foundation
+        // 0.2's `from_vec` (renamed/reshaped in 0.3, #796; same "already
+        // retained" semantics, slice instead of by-value `Vec`).
+        let arr = NSArray::from_retained_slice(&exts);
         // `setAllowedFileTypes:` is deprecated in favour of
         // `setAllowedContentTypes:` (UTType), but that requires the
         // UniformTypeIdentifiers framework which objc2 doesn't yet

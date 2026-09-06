@@ -143,9 +143,10 @@ impl<A: AppLogic> GtkDriver<A> {
         {
             let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
             let pctx = pangocairo::functions::create_context(&cr);
-            pctx.set_font_description(Some(&pangocairo::pango::FontDescription::from_string(
-                "Sans 11",
-            )));
+            // pango 0.22 (gtk4 0.11 bump, #796) tightened
+            // `Context::set_font_description` from
+            // `Option<&FontDescription>` to `&FontDescription`.
+            pctx.set_font_description(&pangocairo::pango::FontDescription::from_string("Sans 11"));
             backend.set_pango_context(pctx);
         }
         // Seed the viewport from the driver's surface size BEFORE setup,

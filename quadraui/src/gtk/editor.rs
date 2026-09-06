@@ -883,7 +883,7 @@ mod tests {
         let surface = ImageSurface::create(Format::ARgb32, 900, 60).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
         let ctx = pangocairo::functions::create_context(&cr);
-        ctx.set_font_description(Some(&pango::FontDescription::from_string("Monospace 12")));
+        ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
         pango::Layout::new(&ctx)
     }
 

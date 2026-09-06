@@ -208,8 +208,15 @@ impl MenuOverlay {
         let gesture = GestureClick::new();
         gesture.set_button(1);
         gesture.connect_pressed(move |g, _, x, y| {
-            let w = g.widget().width() as f32;
-            let h = g.widget().height() as f32;
+            // `EventControllerExt::widget()` returns `Option<Widget>` as of
+            // gtk4 0.11 (#796) — `None` only when the controller has been
+            // detached, which can't happen while its own callback is
+            // firing, so a realized widget is guaranteed here.
+            let widget = g
+                .widget()
+                .expect("event controller has a widget while its callback runs");
+            let w = widget.width() as f32;
+            let h = widget.height() as f32;
             let mut b = backend.borrow_mut();
             b.begin_frame(Viewport::new(w, h, 1.0));
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
@@ -238,8 +245,13 @@ impl MenuOverlay {
             if !menu_system.borrow().is_open() {
                 return;
             }
-            let w = m.widget().width() as f32;
-            let h = m.widget().height() as f32;
+            // See the `connect_pressed` note above (#796): `widget()` is
+            // `Option` since gtk4 0.11, but is always `Some` here.
+            let widget = m
+                .widget()
+                .expect("event controller has a widget while its callback runs");
+            let w = widget.width() as f32;
+            let h = widget.height() as f32;
             let mut b = backend.borrow_mut();
             b.begin_frame(Viewport::new(w, h, 1.0));
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());

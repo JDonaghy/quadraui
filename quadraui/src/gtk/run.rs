@@ -302,7 +302,11 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     if smoke_failed.get() {
         return std::process::ExitCode::FAILURE;
     }
-    std::process::ExitCode::from(glib_code.value() as u8)
+    // glib 0.22 (pulled in by the gtk4 0.11 bump, #796) renamed
+    // `ExitCode::value()` to `get()` and added a direct
+    // `From<ExitCode> for std::process::ExitCode`, so the `as u8`
+    // round-trip through `ExitCode::from(u8)` is no longer needed either.
+    std::process::ExitCode::from(glib_code)
 }
 
 fn activate<A: AppLogic + 'static>(
@@ -356,7 +360,11 @@ fn activate<A: AppLogic + 'static>(
     {
         let pctx = da.pango_context();
         let font_desc = pg::FontDescription::from_string("Sans 11");
-        pctx.set_font_description(Some(&font_desc));
+        // pango 0.22 (gtk4 0.11 bump, #796) tightened
+        // `Context::set_font_description` from `Option<&FontDescription>`
+        // to `&FontDescription` — there's no longer a "clear description"
+        // call to represent, so the `Some(...)` wrapper is just dropped.
+        pctx.set_font_description(&font_desc);
         backend.borrow_mut().set_pango_context(pctx);
     }
 

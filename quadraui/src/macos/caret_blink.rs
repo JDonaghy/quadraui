@@ -31,13 +31,14 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use objc2::declare_class;
-use objc2::msg_send_id;
-use objc2::mutability;
+// objc2 0.6 (#796) removed `declare_class!` in favour of `define_class!`
+// (superclass/mutability move from a `ClassType` impl block onto struct
+// attributes), renamed `DeclaredClass` to `DefinedClass`, and deprecated
+// `msg_send_id!` in favour of `msg_send!` (which now performs the same
+// `Retained` conversion itself — see that macro's own doc).
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
-use objc2::sel;
-use objc2::{ClassType, DeclaredClass};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::NSApplication;
 use objc2_foundation::{MainThreadMarker, NSTimer};
 
@@ -52,37 +53,31 @@ pub(crate) struct QuadraBlinkTargetIvars {
     paused_until: Rc<Cell<Instant>>,
 }
 
-declare_class!(
+define_class!(
     /// Obj-C target for the caret-blink `NSTimer`. Held alive by
     /// [`super::run::run`] for the duration of the application.
-    pub(crate) struct QuadraBlinkTarget;
-
+    //
     // SAFETY:
     // - Created and used exclusively on the main thread via
     //   `MainThreadMarker`. `NSTimer` callbacks fire on the run-loop
     //   that scheduled them — for `mainRunLoop`, the main thread.
     // - No Drop impl; ivars hold owned `Rc` smart pointers that drop
     //   cleanly when the Obj-C runtime finalises the instance.
-    unsafe impl ClassType for QuadraBlinkTarget {
-        type Super = NSObject;
-        type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "QuadraBlinkTarget";
-    }
-
-    impl DeclaredClass for QuadraBlinkTarget {
-        type Ivars = QuadraBlinkTargetIvars;
-    }
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = QuadraBlinkTargetIvars]
+    pub(crate) struct QuadraBlinkTarget;
 
     unsafe impl NSObjectProtocol for QuadraBlinkTarget {}
 
-    unsafe impl QuadraBlinkTarget {
+    impl QuadraBlinkTarget {
         /// Selector fired by the blink `NSTimer` once per
         /// [`BLINK_PERIOD_SECS`]. Toggles the shared `caret_visible`
         /// cell (skipping the toggle if we're still inside a
         /// typing-pause window) and requests a redraw of the key
         /// window's content view so the next frame paints with the
         /// new phase.
-        #[method(tick:)]
+        #[unsafe(method(tick:))]
         fn tick(&self, _timer: &NSTimer) {
             let now = Instant::now();
             if now < self.ivars().paused_until.get() {
@@ -95,7 +90,9 @@ declare_class!(
             let app = NSApplication::sharedApplication(mtm);
             if let Some(window) = app.keyWindow() {
                 if let Some(view) = window.contentView() {
-                    unsafe { view.setNeedsDisplay(true) };
+                    // `setNeedsDisplay:` is a safe method as of
+                    // objc2-app-kit 0.3 (#796 bump).
+                    view.setNeedsDisplay(true);
                 }
             }
         }
@@ -113,7 +110,7 @@ impl QuadraBlinkTarget {
             caret_visible,
             paused_until,
         });
-        unsafe { msg_send_id![super(this), init] }
+        unsafe { msg_send![super(this), init] }
     }
 }
 

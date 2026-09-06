@@ -18,13 +18,14 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use objc2::declare_class;
-use objc2::msg_send_id;
-use objc2::mutability;
+// objc2 0.6 (#796) removed `declare_class!` in favour of `define_class!`
+// (superclass/mutability move from a `ClassType` impl block onto struct
+// attributes), renamed `DeclaredClass` to `DefinedClass`, and deprecated
+// `msg_send_id!` in favour of `msg_send!` (which now performs the same
+// `Retained` conversion itself — see that macro's own doc).
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
-use objc2::sel;
-use objc2::{ClassType, DeclaredClass};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu,
     NSMenuItem,
@@ -65,12 +66,11 @@ pub(crate) struct QuadraMenuTargetIvars {
     kind: MenuKind,
 }
 
-declare_class!(
+define_class!(
     /// Obj-C target for action selectors emitted by quadraui-installed
     /// `NSMenuItem`s. One instance per `install_menu_bar` call; held
     /// alive by [`crate::macos::MacBackend`].
-    pub(crate) struct QuadraMenuTarget;
-
+    //
     // SAFETY:
     // - QuadraMenuTarget is created and used exclusively on the main
     //   thread via `MainThreadMarker`. AppKit dispatches all action
@@ -78,19 +78,14 @@ declare_class!(
     // - The class doesn't implement Drop; its ivars hold owned
     //   `RefCell` / `Rc` smart pointers that drop cleanly when the
     //   class instance is finalized by the Obj-C runtime.
-    unsafe impl ClassType for QuadraMenuTarget {
-        type Super = NSObject;
-        type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "QuadraMenuTarget";
-    }
-
-    impl DeclaredClass for QuadraMenuTarget {
-        type Ivars = QuadraMenuTargetIvars;
-    }
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = QuadraMenuTargetIvars]
+    pub(crate) struct QuadraMenuTarget;
 
     unsafe impl NSObjectProtocol for QuadraMenuTarget {}
 
-    unsafe impl QuadraMenuTarget {
+    impl QuadraMenuTarget {
         /// Action selector wired to every quadraui-installed
         /// `NSMenuItem`. Reads the sender's tag, looks up the
         /// associated `WidgetId`, pushes
@@ -100,9 +95,11 @@ declare_class!(
         /// queue and dispatches the event through `AppLogic::handle`
         /// before painting, mirroring the TUI/GTK poll-and-dispatch
         /// shape.
-        #[method(quadraMenuAction:)]
+        #[unsafe(method(quadraMenuAction:))]
         fn quadra_menu_action(&self, sender: &NSMenuItem) {
-            let tag = unsafe { sender.tag() };
+            // `tag`/`setNeedsDisplay:` are safe methods as of
+            // objc2-app-kit 0.3 (#796 bump).
+            let tag = sender.tag();
             let id = self.ivars().tag_to_id.borrow().get(&tag).cloned();
             if let Some(id) = id {
                 let event = match self.ivars().kind {
@@ -114,7 +111,7 @@ declare_class!(
                 let app = NSApplication::sharedApplication(mtm);
                 if let Some(window) = app.keyWindow() {
                     if let Some(view) = window.contentView() {
-                        unsafe { view.setNeedsDisplay(true) };
+                        view.setNeedsDisplay(true);
                     }
                 }
             }
@@ -134,7 +131,7 @@ impl QuadraMenuTarget {
             events,
             kind,
         });
-        unsafe { msg_send_id![super(this), init] }
+        unsafe { msg_send![super(this), init] }
     }
 
     /// Test-only accessor — simulates a selector dispatch without
@@ -179,7 +176,7 @@ pub(crate) fn install_menu_bar(
     // Build the root NSMenu. Title is unused for the main menu bar but
     // assigned for diagnostics in Accessibility Inspector.
     let main_menu: Retained<NSMenu> = unsafe {
-        msg_send_id![
+        msg_send![
             mtm.alloc::<NSMenu>(),
             initWithTitle: &*NSString::from_str(""),
         ]
@@ -210,16 +207,15 @@ fn append_app_menu(mtm: MainThreadMarker, main_menu: &NSMenu, app_name: &str) {
     main_menu.addItem(&app_item);
 
     let app_menu: Retained<NSMenu> = unsafe {
-        msg_send_id![
+        msg_send![
             mtm.alloc::<NSMenu>(),
             initWithTitle: &*NSString::from_str(app_name),
         ]
     };
     app_item.setSubmenu(Some(&app_menu));
 
-    let cmd = NSEventModifierFlags::NSEventModifierFlagCommand;
-    let cmd_opt = NSEventModifierFlags::NSEventModifierFlagCommand
-        | NSEventModifierFlags::NSEventModifierFlagOption;
+    let cmd = NSEventModifierFlags::Command;
+    let cmd_opt = NSEventModifierFlags::Command | NSEventModifierFlags::Option;
 
     add_stock_item(
         mtm,
@@ -276,7 +272,7 @@ fn add_stock_item(
     let title_ns = NSString::from_str(title);
     let key_ns = NSString::from_str(key_equivalent);
     let item: Retained<NSMenuItem> = unsafe {
-        msg_send_id![
+        msg_send![
             mtm.alloc::<NSMenuItem>(),
             initWithTitle: &*title_ns,
             action: Some(action),
@@ -298,12 +294,14 @@ fn append_top_level_menu(
 ) {
     let title = strip_mnemonic(&top.label);
     let container: Retained<NSMenuItem> = NSMenuItem::new(mtm);
-    unsafe { container.setTitle(&NSString::from_str(&title)) };
-    unsafe { container.setEnabled(!top.disabled) };
+    // `setTitle:`/`setEnabled:` are safe methods as of objc2-app-kit 0.3
+    // (#796 bump).
+    container.setTitle(&NSString::from_str(&title));
+    container.setEnabled(!top.disabled);
     main_menu.addItem(&container);
 
     let submenu: Retained<NSMenu> = unsafe {
-        msg_send_id![
+        msg_send![
             mtm.alloc::<NSMenu>(),
             initWithTitle: &*NSString::from_str(&title),
         ]
@@ -332,19 +330,21 @@ fn append_menu_item(
 
     let title: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
     let ns_item: Retained<NSMenuItem> = NSMenuItem::new(mtm);
-    unsafe { ns_item.setTitle(&NSString::from_str(&title)) };
-    unsafe { ns_item.setEnabled(!item.disabled) };
+    // `setTitle:`/`setEnabled:`/`setState:` are safe methods as of
+    // objc2-app-kit 0.3 (#796 bump).
+    ns_item.setTitle(&NSString::from_str(&title));
+    ns_item.setEnabled(!item.disabled);
     if let Some(true) = item.checked {
-        unsafe { ns_item.setState(NSControlStateValueOn) };
+        ns_item.setState(NSControlStateValueOn);
     } else if let Some(false) = item.checked {
-        unsafe { ns_item.setState(NSControlStateValueOff) };
+        ns_item.setState(NSControlStateValueOff);
     }
 
     if let Some(nested) = item.submenu.as_ref() {
         // Submenu container — no action on this item; the child items
         // carry the actions.
         let child_menu: Retained<NSMenu> = unsafe {
-            msg_send_id![
+            msg_send![
                 mtm.alloc::<NSMenu>(),
                 initWithTitle: &*NSString::from_str(&title),
             ]
@@ -362,7 +362,11 @@ fn append_menu_item(
     if let Some(ref id) = item.id {
         let tag = *next_tag;
         *next_tag += 1;
-        unsafe { ns_item.setTag(tag) };
+        // `setTag:`/`setKeyEquivalent:` are safe methods as of
+        // objc2-app-kit 0.3 (#796 bump); `setAction:`/`setTarget:` still
+        // require `unsafe` (the target pointer's lifetime/type isn't
+        // statically verified).
+        ns_item.setTag(tag);
         target
             .ivars()
             .tag_to_id
@@ -378,7 +382,7 @@ fn append_menu_item(
 
         if let Some(ref acc) = item.key_equivalent {
             if let Some((key, mods)) = accelerator_to_ns(acc) {
-                unsafe { ns_item.setKeyEquivalent(&NSString::from_str(&key)) };
+                ns_item.setKeyEquivalent(&NSString::from_str(&key));
                 ns_item.setKeyEquivalentModifierMask(mods);
             }
         }
@@ -430,26 +434,26 @@ fn parsed_to_ns(p: ParsedBinding) -> Option<(String, NSEventModifierFlags)> {
     };
     let mut mask = NSEventModifierFlags(0);
     if p.modifiers.ctrl {
-        mask |= NSEventModifierFlags::NSEventModifierFlagControl;
+        mask |= NSEventModifierFlags::Control;
     }
     if p.modifiers.shift {
-        mask |= NSEventModifierFlags::NSEventModifierFlagShift;
+        mask |= NSEventModifierFlags::Shift;
     }
     if p.modifiers.alt {
-        mask |= NSEventModifierFlags::NSEventModifierFlagOption;
+        mask |= NSEventModifierFlags::Option;
     }
     if p.modifiers.cmd {
-        mask |= NSEventModifierFlags::NSEventModifierFlagCommand;
+        mask |= NSEventModifierFlags::Command;
     }
     Some((key, mask))
 }
 
 fn cmd() -> NSEventModifierFlags {
-    NSEventModifierFlags::NSEventModifierFlagCommand
+    NSEventModifierFlags::Command
 }
 
 fn shift() -> NSEventModifierFlags {
-    NSEventModifierFlags::NSEventModifierFlagShift
+    NSEventModifierFlags::Shift
 }
 
 /// Show `menu` as a native right-click context menu at view-local
@@ -470,7 +474,7 @@ pub(crate) fn show_context_menu(
 ) {
     let target = QuadraMenuTarget::new(mtm, events.clone(), MenuKind::Context);
     let ns_menu: Retained<NSMenu> = unsafe {
-        msg_send_id![
+        msg_send![
             mtm.alloc::<NSMenu>(),
             initWithTitle: &*NSString::from_str(""),
         ]
@@ -490,10 +494,9 @@ pub(crate) fn show_context_menu(
     if let Some(window) = ns_app.keyWindow() {
         if let Some(view) = window.contentView() {
             let location = objc2_foundation::NSPoint::new(anchor_x, anchor_y);
-            // SAFETY: main thread; non-null view borrowed for call.
-            unsafe {
-                ns_menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(&view));
-            }
+            // `popUpMenuPositioningItem:atLocation:inView:` is a safe
+            // method as of objc2-app-kit 0.3 (#796 bump).
+            ns_menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(&view));
         }
     }
 
@@ -532,7 +535,7 @@ mod tests {
         };
         let (key, mask) = accelerator_to_ns(&acc).expect("Save maps");
         assert_eq!(key, "s");
-        assert_eq!(mask, NSEventModifierFlags::NSEventModifierFlagCommand);
+        assert_eq!(mask, NSEventModifierFlags::Command);
     }
 
     #[test]
@@ -547,8 +550,7 @@ mod tests {
         assert_eq!(key, "z");
         assert_eq!(
             mask,
-            NSEventModifierFlags::NSEventModifierFlagCommand
-                | NSEventModifierFlags::NSEventModifierFlagShift,
+            NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
         );
     }
 
@@ -562,8 +564,8 @@ mod tests {
         };
         let (key, mask) = accelerator_to_ns(&acc).expect("Literal maps");
         assert_eq!(key, "t");
-        assert!(mask.contains(NSEventModifierFlags::NSEventModifierFlagControl));
-        assert!(mask.contains(NSEventModifierFlags::NSEventModifierFlagShift));
+        assert!(mask.contains(NSEventModifierFlags::Control));
+        assert!(mask.contains(NSEventModifierFlags::Shift));
     }
 
     #[test]
@@ -678,7 +680,7 @@ mod tests {
     ) -> Retained<QuadraMenuTarget> {
         let target = QuadraMenuTarget::new(mtm, ev, MenuKind::Context);
         let ns_menu: Retained<NSMenu> = unsafe {
-            msg_send_id![
+            msg_send![
                 mtm.alloc::<NSMenu>(),
                 initWithTitle: &*NSString::from_str(""),
             ]
