@@ -728,12 +728,13 @@ pub fn format_tick_value(v: f64) -> String {
 //     change, not something to bundle incidentally into a paint-code
 //     unification.
 //
-// `SERIES_COLORS` mirrors `Theme::default().chart_series` (same six
-// literal colors every deleted per-backend copy used, now the default
-// value of that field — quadraui#815). `series_color` resolves against
-// the live `theme.chart_series` so a themed app's chart series colours
-// actually change, falling back to `SERIES_COLORS` only where a
-// `Theme` isn't available (this module's own tests).
+// `SERIES_COLORS` used to be a fourth literal copy of the six-colour
+// series palette. Since quadraui#815 it is an alias for the crate's one
+// definition, `theme::CHART_SERIES`, and `series_color` resolves
+// through [`Theme::chart_series`] — so this module and `tui::chart`
+// can't drift apart on the values or the length. (An accessor rather
+// than a `Theme` field on purpose: see `Theme::chart_series`'s own doc
+// for why a field reddened the downstream compile-truth gate.)
 //
 // `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
 // — only *called* once a real pixel backend is compiled in, exercised by
@@ -753,26 +754,20 @@ mod native_surface_paint {
     use crate::types::Color;
     use crate::Rect;
 
-    /// Same literal values as [`Theme::default`]'s `chart_series` (#815)
-    /// — kept here too since this module's own tests build charts and
-    /// assert on resolved colours without always constructing a `Theme`
-    /// first. `series_color` itself no longer reads this; it reads the
-    /// live `theme.chart_series`.
-    pub(crate) const SERIES_COLORS: [Color; 6] = [
-        Color::rgb(80, 160, 255),
-        Color::rgb(255, 120, 80),
-        Color::rgb(80, 220, 120),
-        Color::rgb(220, 180, 60),
-        Color::rgb(180, 100, 240),
-        Color::rgb(240, 100, 180),
-    ];
+    /// The crate's one series palette, re-exported under this module's
+    /// historical name for the backend rasteriser tests that already
+    /// import it as a `const` (#815 — a `const` can't call
+    /// [`Theme::chart_series`], which is what all *painting* goes
+    /// through).
+    pub(crate) const SERIES_COLORS: [Color; 6] = crate::theme::CHART_SERIES;
 
     fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
+        let palette = theme.chart_series();
         chart
             .series
             .get(idx)
             .and_then(|s| s.color)
-            .unwrap_or(theme.chart_series[idx % theme.chart_series.len()])
+            .unwrap_or(palette[idx % palette.len()])
     }
 
     /// CPU-side alpha pre-mix — see this module's doc for why: two of
@@ -1308,48 +1303,91 @@ mod native_surface_paint {
             );
         }
 
-        /// #815: a series with no explicit `color` must resolve against
-        /// the *live* `theme.chart_series`, not the built-in
-        /// `SERIES_COLORS` literal — a themed app's chart series colours
-        /// must actually change.
+        /// Builds an n-series line chart where no series sets its own
+        /// `color`, so every one of them falls through to the theme
+        /// palette.
+        fn uncoloured_multi_series_chart(n: usize) -> Chart {
+            Chart {
+                id: WidgetId::new("chart"),
+                kind: ChartKind::Line,
+                series: (0..n)
+                    .map(|i| Series {
+                        label: format!("s{i}"),
+                        data: vec![1.0, 4.0, 2.0],
+                        color: None,
+                        fill: false,
+                    })
+                    .collect(),
+                x_label: None,
+                y_label: None,
+                y_range: None,
+                x_range: None,
+                show_legend: false,
+                y_ticks: Some(0),
+                x_ticks: Some(0),
+                show_grid: false,
+            }
+        }
+
+        /// #815: a series with no explicit `color` resolves through
+        /// [`Theme::chart_series`], and more series than the palette has
+        /// entries cycles back through it (`idx % 6`) rather than
+        /// panicking or inventing an off-palette colour.
         #[test]
-        fn series_with_no_explicit_color_paints_with_the_themes_chart_series() {
-            let chart = line_chart(vec![1.0, 4.0, 2.0]);
+        fn uncoloured_series_cycle_through_the_themes_chart_series_palette() {
+            let chart = uncoloured_multi_series_chart(8);
             let layout = layout_for(&chart);
-            let custom_series0 = Color::rgb(1, 2, 3);
-            assert_ne!(
-                custom_series0, SERIES_COLORS[0],
-                "test fixture invalid: custom colour must differ from the built-in default"
+            let theme = Theme::default();
+            let palette = theme.chart_series();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            // `surface.lines` also carries chrome (axes, grid) painted
+            // in theme colours that aren't series colours, so assert on
+            // palette coverage rather than on every recorded line.
+            let painted: Vec<Color> = surface.lines.iter().map(|&(_, _, c, _)| c).collect();
+            assert!(
+                !painted.is_empty(),
+                "fixture painted no line segments at all"
             );
-            let theme = Theme {
-                chart_series: [
-                    custom_series0,
-                    SERIES_COLORS[1],
-                    SERIES_COLORS[2],
-                    SERIES_COLORS[3],
-                    SERIES_COLORS[4],
-                    SERIES_COLORS[5],
-                ],
-                ..Theme::default()
-            };
+            for expected in &palette {
+                assert!(
+                    painted.contains(expected),
+                    "8 uncoloured series should cover all 6 palette entries; {expected:?} never appeared in {painted:?}",
+                );
+            }
+        }
+
+        /// A `Series` that *does* set its own `color` keeps it — the
+        /// theme palette is only the fallback for series that don't
+        /// (#815).
+        #[test]
+        fn explicit_series_color_wins_over_the_theme_palette() {
+            let mut chart = uncoloured_multi_series_chart(1);
+            let custom = Color::rgb(1, 2, 3);
+            assert!(
+                !Theme::default().chart_series().contains(&custom),
+                "test fixture invalid: custom colour must not be in the palette"
+            );
+            chart.series[0].color = Some(custom);
+            let layout = layout_for(&chart);
+            let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
             paint(&chart, &layout, &mut surface, &theme, None, None);
 
             assert!(
-                surface
-                    .lines
-                    .iter()
-                    .any(|&(_, _, c, _)| c == custom_series0),
-                "expected the line to paint with the theme's custom chart_series[0], got {:?}",
+                surface.lines.iter().any(|&(_, _, c, _)| c == custom),
+                "expected the line to paint with the series' own colour, got {:?}",
                 surface.lines,
             );
             assert!(
                 surface
                     .lines
                     .iter()
-                    .all(|&(_, _, c, _)| c != SERIES_COLORS[0]),
-                "the built-in default colour must not appear once the theme overrides it, got {:?}",
+                    .all(|&(_, _, c, _)| c != theme.chart_series()[0]),
+                "palette entry 0 must not be used once the series sets its own colour, got {:?}",
                 surface.lines,
             );
         }
