@@ -5052,6 +5052,137 @@ mod tests {
         );
     }
 
+    /// #860 review follow-up: driver-tier proof that
+    /// `GtkBackend::surface_measure_text_styled`'s bold override actually
+    /// does something against a real `pango::Layout`, not just the
+    /// primitive-tier `RecordingSurface` test's synthetic `BOLD_BONUS_PX`
+    /// (which by construction would pass even if this override were a
+    /// no-op). Paints the same text through the real
+    /// `Backend::draw_status_bar` path once bold, once not, and asserts
+    /// the bold segment's resolved (painted) width is strictly wider.
+    #[test]
+    fn gtk_backend_draw_status_bar_bold_segment_measures_wider() {
+        let (surface, font, _) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
+
+        let width_for = |bold: bool| {
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(&font);
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            let bar = StatusBar {
+                id: WidgetId::new("test:status-bar"),
+                left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                    text: "READY".to_string(),
+                    fg: crate::types::Color::rgb(255, 255, 255),
+                    bg: crate::types::Color::rgb(0, 0, 0),
+                    bold,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                b.draw_status_bar(rect, &bar, None, None).visible_segments[0]
+                    .bounds
+                    .width
+            })
+        };
+
+        let regular_width = width_for(false);
+        let bold_width = width_for(true);
+        assert!(
+            bold_width > regular_width,
+            "a bold segment must measure (and paint) wider than the same text non-bold: \
+             regular={regular_width}, bold={bold_width}"
+        );
+    }
+
+    /// #860 review follow-up: driver-tier proof for the #791 zero/
+    /// negative-size guard in `primitives::status_bar::native_surface_paint::paint`.
+    ///
+    /// A literal `width = 0.0` can't tell this test anything on GTK:
+    /// `cr.rectangle(x, y, 0.0, h)` traces a zero-area path, so
+    /// `cr.clip()` already suppresses every subsequent fill regardless of
+    /// whether `paint`'s early-return guard runs at all — reverting the
+    /// guard wouldn't turn a `width = 0.0` version of this test red. A
+    /// *negative* width doesn't have that property: Cairo's
+    /// `rectangle()` walks `move_to(x, y)` → `rel_line_to(width, 0)` →
+    /// `rel_line_to(0, height)` → `rel_line_to(-width, 0)` →
+    /// `close_path()`, so a negative width just mirrors the rectangle
+    /// leftward into a *real*, positive-area path: `cr.clip()` clips to
+    /// that mirrored area instead of clipping everything away, and a
+    /// subsequent `cr.fill()` paints it. That is exactly the shape of
+    /// regression `paint`'s `width <= 0.0 || line_height <= 0.0` guard
+    /// exists to prevent — without it (observed red against a reverted
+    /// guard, confirmed by commenting out the early return locally), a
+    /// transient negative width (e.g. an `available - margin` computation
+    /// before clamping) would paint a real, visible rectangle instead of
+    /// leaving `surface` untouched. Uses the same sentinel-fill technique
+    /// as `gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect`.
+    #[test]
+    fn gtk_backend_draw_status_bar_negative_width_does_not_paint() {
+        let canvas_w = 40;
+        let canvas_h = 40;
+        let sentinel: (u8, u8, u8) = (7, 8, 9);
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(crate::Theme::default());
+        Backend::begin_frame(
+            &mut backend,
+            Viewport::new(canvas_w as f32, canvas_h as f32, 1.0),
+        );
+        let mut surface = pangocairo::cairo::ImageSurface::create(
+            pangocairo::cairo::Format::ARgb32,
+            canvas_w,
+            canvas_h,
+        )
+        .expect("create ImageSurface");
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(
+                sentinel.0 as f64 / 255.0,
+                sentinel.1 as f64 / 255.0,
+                sentinel.2 as f64 / 255.0,
+            );
+            cr.rectangle(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+            cr.fill().ok();
+
+            let bar = StatusBar {
+                id: WidgetId::new("test:status-bar"),
+                left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                    text: "READY".to_string(),
+                    fg: crate::types::Color::rgb(255, 255, 255),
+                    bg: crate::types::Color::rgb(200, 0, 0),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                // Negative width: `rect.x = 20` mirrors to a real
+                // [5, 20) x [10, 25) area on a positive-width backend, but
+                // must paint nothing at all once the guard short-circuits.
+                b.draw_status_bar(QRect::new(20.0, 10.0, -15.0, 15.0), &bar, None, None);
+            });
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        for y in 0..canvas_h {
+            for x in 0..canvas_w {
+                assert_eq!(
+                    chart_pixel(&data, stride, x, y),
+                    sentinel,
+                    "pixel ({x}, {y}) must stay untouched: a negative width must \
+                     short-circuit to the no-paint layout, not mirror into a real \
+                     paintable rect",
+                );
+            }
+        }
+    }
+
     #[test]
     fn gtk_backend_draw_tab_bar_uses_ui_font_not_editor_font() {
         let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();

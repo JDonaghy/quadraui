@@ -4428,6 +4428,66 @@ mod tests {
         );
     }
 
+    /// #860 review follow-up: driver-tier coverage (mirrors
+    /// `gtk::backend::tests::gtk_backend_draw_status_bar_negative_width_does_not_paint`)
+    /// proving the shared
+    /// `primitives::status_bar::native_surface_paint::paint`'s #791
+    /// zero/negative-size guard actually short-circuits through the real
+    /// `MacBackend`, not just the primitive-tier `RecordingSurface` test.
+    /// Unlike GTK, macOS already carried this guard pre-#860 (see that
+    /// module's own doc), so this is completeness coverage rather than a
+    /// regression proof — and it uses a literal zero width rather than a
+    /// negative one: CoreGraphics's `CGContextClipToRect`/`CGContextFillRect`
+    /// don't share Cairo's negative-size "mirrors into a real rect"
+    /// behaviour that makes a negative width meaningful there.
+    #[test]
+    fn mac_backend_draw_status_bar_zero_width_does_not_paint() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::types::Color;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+        let sentinel = Color::rgb(7, 8, 9);
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), sentinel);
+            b.draw_status_bar(
+                Rect::new(10.0, 10.0, 0.0, 15.0),
+                &StatusBar {
+                    id: WidgetId::new("test:status-bar"),
+                    left_segments: vec![StatusBarSegment {
+                        text: "READY".into(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: Color::rgb(200, 0, 0),
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                None,
+                None,
+            );
+        });
+        backend.end_frame();
+
+        for y in 0..H {
+            for x in 0..W {
+                let (r, g, b, _) = surface.pixel(x, y);
+                assert_eq!(
+                    (r, g, b),
+                    (sentinel.r, sentinel.g, sentinel.b),
+                    "pixel ({x}, {y}) must stay untouched: a zero-width rect must \
+                     short-circuit to the no-paint layout",
+                );
+            }
+        }
+    }
+
     // ── #810: draw_text_display real-pixel driver tests ─────────────────
     //
     // Ported from the deleted `macos::text_display::tests` (that module

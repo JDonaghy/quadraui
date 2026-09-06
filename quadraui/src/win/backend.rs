@@ -4436,6 +4436,62 @@ mod tests {
         );
     }
 
+    /// #860 review follow-up: driver-tier proof that
+    /// `WinBackend::surface_measure_text_styled`'s bold override actually
+    /// asks DirectWrite for a wider bold measurement, not just the
+    /// primitive-tier `RecordingSurface` test's synthetic `BOLD_BONUS_PX`
+    /// (which by construction would pass even if this override were a
+    /// no-op). Mirrors
+    /// `gtk::backend::tests::gtk_backend_draw_status_bar_bold_segment_measures_wider`:
+    /// paints the same text through the real `Backend::draw_status_bar`
+    /// path once bold, once not, and asserts the bold segment's resolved
+    /// (painted) width is strictly wider.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_status_bar_bold_segment_measures_wider() {
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::win::testing::HeadlessSurface;
+        use crate::Color;
+
+        const W: u32 = 200;
+        const H: u32 = 20;
+
+        let width_for = |bold: bool| {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let layout = backend.draw_status_bar(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &StatusBar {
+                    id: WidgetId::new("test:status-bar"),
+                    left_segments: vec![StatusBarSegment {
+                        text: "READY".into(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: Color::rgb(0, 0, 0),
+                        bold,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                None,
+                None,
+            );
+            backend.end_frame();
+            layout.visible_segments[0].bounds.width
+        };
+
+        let regular_width = width_for(false);
+        let bold_width = width_for(true);
+        assert!(
+            bold_width > regular_width,
+            "a bold segment must measure (and paint) wider than the same text non-bold: \
+             regular={regular_width}, bold={bold_width}"
+        );
+    }
+
     // ── #810: draw_text_display real-pixel driver tests ─────────────────
     //
     // Ported from the deleted `win::text_display::tests` (that module
