@@ -61,10 +61,10 @@
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]
-use crate::backend::MessageDialogButton;
+use crate::backend::{BackendError, MessageDialogButton};
 use crate::backend::{
     Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
-    PlatformServices,
+    PlatformServices, ServiceResult,
 };
 #[cfg(target_os = "windows")]
 use crate::primitives::dialog::DialogSeverity;
@@ -133,11 +133,26 @@ impl Clipboard for WinClipboard {
     fn write_text(&self, text: &str) {
         #[cfg(target_os = "windows")]
         {
-            win_clipboard_write(text);
+            let _ = win_clipboard_write(text);
         }
         #[cfg(not(target_os = "windows"))]
         {
             let _ = text;
+        }
+    }
+
+    /// Real `OpenClipboard`/`GlobalAlloc`/`SetClipboardData` failure,
+    /// surfaced instead of silently discarded (issue #805) — the one
+    /// in-tree override of [`Clipboard::write_text_result`]'s default.
+    fn write_text_result(&self, text: &str) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_write(text)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = text;
+            Ok(())
         }
     }
 }
@@ -330,31 +345,53 @@ fn win_clipboard_read() -> Option<String> {
     }
 }
 
+/// Write `text` to the system clipboard as `CF_UNICODETEXT`, returning
+/// the real failure instead of swallowing it (issue #805). Every early
+/// return below leaves the clipboard exactly as `write_text`/
+/// `write_text_result`'s callers have always observed it — this only
+/// adds the `Err` a caller can now ask for via `write_text_result`;
+/// `write_text` itself still discards it.
 #[cfg(target_os = "windows")]
-fn win_clipboard_write(text: &str) {
+fn win_clipboard_write(text: &str) -> ServiceResult<()> {
     unsafe {
         if OpenClipboard(None).is_err() {
-            return;
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
         }
         let _ = EmptyClipboard();
         let wide = wide_nul_terminated(text);
         let bytes = wide.len() * std::mem::size_of::<u16>();
-        if let Ok(hglobal) = GlobalAlloc(GMEM_MOVEABLE, bytes) {
-            let ptr = GlobalLock(hglobal) as *mut u16;
-            if ptr.is_null() {
-                let _ = GlobalFree(Some(hglobal));
-            } else {
-                std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
-                let _ = GlobalUnlock(hglobal);
-                // On success the system now owns `hglobal` — it must NOT
-                // be `GlobalFree`d here. On failure nothing took
-                // ownership, so this is the only chance to release it.
-                if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hglobal.0))).is_err() {
+        let result = match GlobalAlloc(GMEM_MOVEABLE, bytes) {
+            Ok(hglobal) => {
+                let ptr = GlobalLock(hglobal) as *mut u16;
+                if ptr.is_null() {
                     let _ = GlobalFree(Some(hglobal));
+                    Err(BackendError::PlatformFailure {
+                        context: "GlobalLock".to_string(),
+                    })
+                } else {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+                    let _ = GlobalUnlock(hglobal);
+                    // On success the system now owns `hglobal` — it must NOT
+                    // be `GlobalFree`d here. On failure nothing took
+                    // ownership, so this is the only chance to release it.
+                    if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hglobal.0))).is_err() {
+                        let _ = GlobalFree(Some(hglobal));
+                        Err(BackendError::PlatformFailure {
+                            context: "SetClipboardData".to_string(),
+                        })
+                    } else {
+                        Ok(())
+                    }
                 }
             }
-        }
+            Err(_) => Err(BackendError::PlatformFailure {
+                context: "GlobalAlloc".to_string(),
+            }),
+        };
         let _ = CloseClipboard();
+        result
     }
 }
 

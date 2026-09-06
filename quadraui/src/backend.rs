@@ -382,6 +382,54 @@ pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
+/// A backend-reported failure at a frame, event-loop, or
+/// [`PlatformServices`]/[`Clipboard`] seam (issue #507, design D-009 in
+/// `docs/decisions/DECISIONS.md`; shipped by issue #805).
+///
+/// Not used by `draw_*` methods or the four CSD `bool` methods
+/// (`begin_window_drag`, `toggle_window_maximize`, `begin_window_resize`,
+/// `set_cursor`) — D-009's "Why not Result-ify `draw_*` / the CSD bools"
+/// section explains why both stay exactly as they are. `Clone`, not
+/// `std::error::Error`: `context` is a short, ungrepped human string for
+/// logs/error UI, not a machine-matched code — backend authors compose it
+/// from whatever the native API gave them (`HRESULT`, `GError`, `errno`)
+/// with `format!`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendError {
+    /// This backend has no implementation of the surface being asked
+    /// for. Prefer a [`BackendCaps`] field where the gap is a whole
+    /// method; reach for this only where the gap is data-dependent
+    /// within a method `BackendCaps` already declares supported (e.g. a
+    /// `MessageDialogOptions` shape this backend's native dialog API
+    /// can't represent, even though `native_dialogs` is `true`).
+    Unsupported,
+    /// A native call failed for a reason this backend cannot recover
+    /// from inside the current call. `context` names the failing
+    /// native call/API, e.g. `"IDXGISwapChain::Present"`,
+    /// `"GtkFileChooserNative"`, `"CreateNotifyIcon"`.
+    PlatformFailure {
+        /// The failing native call or API, for logs/error UI — not a
+        /// machine-matched code.
+        context: String,
+    },
+    /// The render surface/device was lost mid-frame (D3D
+    /// `DXGI_ERROR_DEVICE_REMOVED`/`D2DERR_RECREATE_TARGET`, a destroyed
+    /// GTK `GdkSurface`, …) and must be recreated before the next
+    /// `begin_frame`. Distinct from `PlatformFailure` because callers
+    /// handle it differently — recreate-and-retry, not log-and-continue.
+    /// `WinBackend::end_frame` is the one in-tree producer today: it
+    /// drops the render target and reports this via `last_error()`, and
+    /// `WinBackend::ensure_surface` (called from `win::run`'s
+    /// `WM_PAINT`/`WM_SIZE` handlers) recreates it before the next frame
+    /// paints.
+    SurfaceLost,
+}
+
+/// The `Result` type every [`BackendError`]-fallible seam returns —
+/// `PlatformServices`/`Clipboard` `_result`-suffixed twin methods (D-009
+/// seam 2) and any future one like them.
+pub type ServiceResult<T> = Result<T, BackendError>;
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 ///
 /// # Sealed — no implementations outside this crate
@@ -778,6 +826,32 @@ pub trait Backend: sealed::Sealed {
     /// contract as [`Self::modal_stack_handle`]. See that method's docs
     /// for the pattern and rationale (quadraui#699).
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>>;
+
+    // ─── Error reporting (issue #507, D-009) ────────────────────────────
+    /// The most recent [`BackendError`] this backend recorded, if any,
+    /// since the last time this method was called.
+    ///
+    /// One polled method, not a `Result`-returning `begin_frame`/
+    /// `end_frame`/`poll_events`/`wait_events` each: those four calls
+    /// funnel into the same internal field, because a caller that wants
+    /// to notice backend trouble at all polls once per loop iteration
+    /// (after `end_frame`, conventionally) and doesn't need to know which
+    /// of the four calls produced it — `PlatformFailure`'s `context`
+    /// string carries that detail when it matters. See D-009 in
+    /// `docs/decisions/DECISIONS.md` for why a `Result`-returning
+    /// signature on those four methods was rejected as too costly for
+    /// every caller, for a failure class only Win-GUI produces today.
+    ///
+    /// Default: always `None` — a backend that never sets an internal
+    /// error field (TUI, GTK, macOS today) answers this exactly like it
+    /// doesn't exist, at zero cost to existing callers. `WinBackend`
+    /// overrides this: it sets an internal field from `end_frame` when
+    /// `EndDraw` fails (device lost / `D2DERR_RECREATE_TARGET`) and
+    /// clears it here — clear-on-read, matching every other "drain and
+    /// reset" method already on this trait (`poll_events` itself).
+    fn last_error(&mut self) -> Option<BackendError> {
+        None
+    }
 
     // ─── Platform services ─────────────────────────────────────────────
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
@@ -2265,6 +2339,28 @@ pub trait Clipboard {
 
     /// Write plain text to the clipboard.
     fn write_text(&self, text: &str);
+
+    /// Fallible twin of [`Self::write_text`] (issue #805, D-009 seam 2's
+    /// `_result`-twin pattern): same effect, but surfaces a failure a
+    /// caller could not previously observe instead of silently
+    /// discarding it. `write_text` itself keeps its infallible signature
+    /// unchanged — this is rule 2's "new function alongside the old one"
+    /// from `docs/PRIMITIVE_RULES.md`, chosen over a breaking signature
+    /// change because every existing call site (both consumers, per
+    /// `CLAUDE.md`'s downstream-consumer table) only calls `write_text`
+    /// and has no use for a failure reason today.
+    ///
+    /// Default: calls `write_text` and always returns `Ok(())` — a
+    /// backend that never overrides this answers exactly like it doesn't
+    /// exist, at zero cost to existing implementors (TUI, GTK, macOS
+    /// today swallow the underlying `arboard`/Cocoa error the same way
+    /// `write_text` always has). `WinBackend`'s `WinClipboard` overrides
+    /// this with the real `OpenClipboard`/`GlobalAlloc`/`SetClipboardData`
+    /// failure it can now tell apart from success.
+    fn write_text_result(&self, text: &str) -> ServiceResult<()> {
+        self.write_text(text);
+        Ok(())
+    }
 
     /// Read the X11/Wayland **PRIMARY** selection — the platform
     /// convention behind middle-click paste, distinct from

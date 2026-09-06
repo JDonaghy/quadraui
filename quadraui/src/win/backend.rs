@@ -67,7 +67,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{Backend, EditorPaintResult, PlatformServices, PointerShape};
+use crate::backend::{Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape};
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
@@ -302,6 +302,17 @@ pub struct WinBackend {
     dpi_scale: f32,
     #[cfg(target_os = "windows")]
     surface: Option<Surface>,
+    /// The `ID2D1DCRenderTarget` [`Self::attach_headless`] was given,
+    /// kept alongside (not inside) `surface` so [`Self::ensure_surface`]
+    /// can rebuild `surface` after `end_frame`'s device-lost recovery
+    /// drops it — mirroring `hwnd` below, which does the same job for a
+    /// real window. `None` for a `WinBackend` that never called
+    /// `attach_headless` (every live app, `attach_surface`'s `hwnd`
+    /// path) — cloning an `ID2D1DCRenderTarget` is a cheap COM `AddRef`,
+    /// same rationale as `Surface`'s own `factory: None` comment for why
+    /// this needs no separate factory to keep alive.
+    #[cfg(target_os = "windows")]
+    headless_target: Option<ID2D1DCRenderTarget>,
     /// The last `HWND` a surface was successfully attached to, kept
     /// *outside* `Surface` (and outlasting it) so a dropped surface
     /// (`end_frame`'s device-lost recovery) can still be re-created by
@@ -407,6 +418,13 @@ pub struct WinBackend {
     /// real host to actually render Nerd Font glyphs, not to store the
     /// setting or run headless tests against it.
     nerd_fonts_enabled: bool,
+    /// The most recent [`BackendError`] recorded by `end_frame`, drained
+    /// (and cleared) by [`Backend::last_error`] (issue #805, D-009). Not
+    /// `target_os`-gated: the field itself is a plain value with no
+    /// WinAPI dependency, same rationale as `current_pointer_shape` above
+    /// — only the `EndDraw` call that would ever populate it needs a
+    /// real host.
+    last_error: Option<BackendError>,
 }
 
 impl WinBackend {
@@ -427,6 +445,8 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             surface: None,
             #[cfg(target_os = "windows")]
+            headless_target: None,
+            #[cfg(target_os = "windows")]
             hwnd: None,
             #[cfg(target_os = "windows")]
             dwrite: None,
@@ -446,6 +466,7 @@ impl WinBackend {
             text_runs: Vec::new(),
             text_selection: crate::text_selection::TextSelectionState::default(),
             nerd_fonts_enabled: false,
+            last_error: None,
         }
     }
 
@@ -589,6 +610,12 @@ impl WinBackend {
     ) -> WinResult<()> {
         self.dpi_scale = 1.0;
         self.viewport = Viewport::new(width as f32, height as f32, self.dpi_scale);
+        // Keep a second clone around (cheap COM `AddRef`) so
+        // `ensure_surface` can rebuild `surface` after `end_frame`'s
+        // device-lost recovery drops it, even though headless mode has
+        // no `hwnd` to reattach through (issue #805) — see the
+        // `headless_target` field doc.
+        self.headless_target = Some(target.clone());
         self.surface = Some(Surface {
             factory: None,
             target: RenderTarget::Dc(target),
@@ -642,13 +669,29 @@ impl WinBackend {
     /// of leaving the window permanently blank.
     ///
     /// A no-op returning `Ok(())` if a surface is already live, and a
-    /// no-op returning `Ok(())` if no window has ever attached one yet
-    /// (nothing to recover to — covers the synchronous `WM_SIZE` Windows
-    /// fires from inside `CreateWindowExW`, before `run_inner` has a
-    /// `HWND` to attach at all).
+    /// no-op returning `Ok(())` if neither a window nor a headless target
+    /// has ever attached one yet (nothing to recover to — covers the
+    /// synchronous `WM_SIZE` Windows fires from inside `CreateWindowExW`,
+    /// before `run_inner` has a `HWND` to attach at all).
+    ///
+    /// Headless surfaces ([`Self::attach_headless`], `WinDriver`) recover
+    /// through `headless_target` instead of `hwnd` (issue #805): before
+    /// this, a headless surface dropped by `end_frame`'s device-lost path
+    /// stayed `None` forever, since `hwnd` is never set in headless mode
+    /// — the exact gap that made this method's recovery unreachable from
+    /// a test. Checked first because it's the cheaper, more specific
+    /// case; a `WinBackend` only ever has one of the two attached at a
+    /// time.
     #[cfg(target_os = "windows")]
     pub(crate) fn ensure_surface(&mut self) -> WinResult<()> {
         if self.surface.is_some() {
+            return Ok(());
+        }
+        if let Some(target) = self.headless_target.clone() {
+            self.surface = Some(Surface {
+                factory: None,
+                target: RenderTarget::Dc(target),
+            });
             return Ok(());
         }
         match self.hwnd {
@@ -1069,20 +1112,34 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             // `EndDraw` fails for two distinct reasons, both handled the
-            // same way here since the `Backend` trait's frame lifecycle
-            // has no error channel to report through
-            // (`docs/SMELL_AUDIT_2026-07.md` #93): the well-known
-            // `D2DERR_RECREATE_TARGET` (GPU driver reset, remote-desktop
-            // session change, etc.) and anything else. Either way, drop
-            // the surface rather than silently pretending the frame
+            // same way here — the well-known `D2DERR_RECREATE_TARGET`
+            // (GPU driver reset, remote-desktop session change, etc.) and
+            // anything else — since either way the render target must be
+            // rebuilt before the next frame can paint onto it. Drop the
+            // surface rather than silently pretending the frame
             // presented, or letting the next frame paint onto a target
-            // Direct2D has already discarded. `self.hwnd` (set by
-            // `attach_surface`, untouched here) survives the drop, so
-            // the next `WM_PAINT`/`WM_SIZE` reaching `win::run` actually
-            // recreates it via `Self::ensure_surface` — see that
+            // Direct2D has already discarded. `self.hwnd`/`headless_target`
+            // (set by `attach_surface`/`attach_headless`, untouched here)
+            // survive the drop, so the next `WM_PAINT`/`WM_SIZE` reaching
+            // `win::run` (or the next `WinDriver::render`, issue #805)
+            // actually recreates it via `Self::ensure_surface` — see that
             // method's docs.
+            //
+            // Now reported through the trait's error channel (issue
+            // #507/#805, `docs/decisions/DECISIONS.md` D-009) instead of
+            // silently dropping on the floor: `last_error()` hands the
+            // caller `BackendError::SurfaceLost`, and `diagnostics::emit`
+            // gives a host with a sink installed (`src/diagnostics.rs`)
+            // a chance to log it even if nothing ever polls
+            // `last_error()`.
             if unsafe { surface.target.EndDraw(None, None) }.is_err() {
                 self.surface = None;
+                self.last_error = Some(BackendError::SurfaceLost);
+                crate::diagnostics::emit(
+                    "quadraui win backend: EndDraw failed (device lost / \
+                     D2DERR_RECREATE_TARGET) — render target dropped, will \
+                     recreate via ensure_surface on the next frame",
+                );
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -1178,6 +1235,17 @@ impl Backend for WinBackend {
 
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
         self.drag_state.clone()
+    }
+
+    // ─── Error reporting (issue #507, D-009) ────────────────────────────
+
+    /// Drain the `BackendError` `end_frame` recorded on a failed
+    /// `EndDraw`, if any, since the last call. Mirrors
+    /// [`Self::attach_surface`]/[`Self::attach_headless`]'s "surface is
+    /// gone, `ensure_surface` recreates it lazily" recovery: this is the
+    /// method a caller polls to learn that happened at all.
+    fn last_error(&mut self) -> Option<BackendError> {
+        self.last_error.take()
     }
 
     // ─── Platform services ────────────────────────────────────────────

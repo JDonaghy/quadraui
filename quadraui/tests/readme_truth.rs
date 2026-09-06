@@ -320,33 +320,37 @@ fn a11y_fields_absence_is_still_disclosed_accurately() {
 #[test]
 fn backend_error_doc_claim_tracks_source_reality() {
     // docs/BACKEND.md used to document `BackendError`, `Backend::last_error`,
-    // and `_result`-suffixed `PlatformServices` methods as shipped API.
-    // None exist in src/. If #507/#784 ever ships the real thing, this
-    // test starts failing — that's the signal to restore the real
-    // documentation instead of leaving the "removed, doesn't exist" note
-    // next to code that now contradicts it.
+    // and `_result`-suffixed `PlatformServices` methods as design-only,
+    // with a "None of them exist in `src/`" disclaimer #798 added to
+    // correct drift the other way (the doc claimed shipped API that
+    // wasn't there). Issue #805 shipped the minimal error channel D-009
+    // designed — `BackendError`, `Backend::last_error`, and
+    // `Clipboard::write_text_result` (the three `PlatformServices`
+    // dialog `_result` twins remain follow-up scope, not shipped). If
+    // `BackendError` ever disappears from src/ again (a revert), this
+    // test starts failing — that's the signal to restore #798's
+    // "design only" framing instead of leaving a doc that describes API
+    // nothing implements.
     let src_dir = crate_root().join("src");
     let backend_error_in_src = walk_rs_files(&src_dir)
         .into_iter()
         .any(|p| fs::read_to_string(&p).is_ok_and(|s| s.contains("BackendError")));
 
     let backend_doc = backend_md();
-    if backend_error_in_src {
-        panic!(
-            "`BackendError` now appears somewhere under src/ — the minimal \
-             error channel (issue #507) shipped! docs/BACKEND.md's \
-             \"design only\" / \"None of them exist\" framing (added by \
-             #798) is now stale — restore real documentation for the \
-             shipped API instead."
-        );
-    }
     assert!(
-        backend_doc.contains("None of them exist in `src/`"),
-        "docs/BACKEND.md's disclaimer that `BackendError` et al. are \
-         design-only (added by #798, coordinating with issue #507) is \
-         missing, but `BackendError` still doesn't exist anywhere in \
-         src/. Someone edited the doc back toward presenting unshipped \
-         API as real — restore the correction."
+        backend_error_in_src,
+        "`BackendError` no longer appears anywhere under src/, but \
+         docs/BACKEND.md (updated by #805) describes it as shipped API — \
+         restore #798's \"design only\" / \"None of them exist in \
+         `src/`\" framing instead of leaving stale documentation for API \
+         that no longer exists."
+    );
+    assert!(
+        !backend_doc.contains("None of them exist in `src/`"),
+        "docs/BACKEND.md still carries #798's \"design only\" disclaimer, \
+         but `BackendError` now exists in src/ (issue #805 shipped it) — \
+         update the doc to describe the real, shipped API instead of \
+         contradicting the code."
     );
 }
 
