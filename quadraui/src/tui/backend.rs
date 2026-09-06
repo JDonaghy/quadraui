@@ -2147,7 +2147,10 @@ impl Backend for TuiBackend {
             .expect("TuiBackend::draw_minimap called outside enter_frame_scope");
         let layout = crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme);
         self.register_zone(minimap.id.clone(), rect);
-        crate::backend::MinimapPaintResult { layout }
+        crate::backend::MinimapPaintResult {
+            layout,
+            painted: true,
+        }
     }
 
     fn minimap_layout(

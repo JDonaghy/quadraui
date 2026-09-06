@@ -3612,7 +3612,10 @@ impl Backend for GtkBackend {
             &theme,
         );
         self.register_zone(minimap.id.clone(), rect);
-        crate::backend::MinimapPaintResult { layout }
+        crate::backend::MinimapPaintResult {
+            layout,
+            painted: true,
+        }
     }
 
     fn draw_image(

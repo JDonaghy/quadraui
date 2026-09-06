@@ -2280,48 +2280,68 @@ impl Backend for MacBackend {
     /// blocks, #667) and TUI (braille) only — macOS was explicitly out of
     /// scope until this backend carries the rest of the editor chrome.
     /// #738 added the third rasteriser (Win-GUI) and, along with it, lifted
-    /// the legibility/render-mode threshold and span-lookup helpers this
-    /// `todo!` would otherwise have had to reinvent
+    /// the legibility/render-mode threshold and span-lookup helpers a
+    /// macOS rasteriser would otherwise have had to reinvent
     /// ([`crate::primitives::minimap::is_legible`] /
     /// `render_mode` / `minimap_font_px` / `SpanCursor` / `color_at_column`
     /// / `truncate_to_columns`) — a future macOS rasteriser consumes those
-    /// directly, same as `gtk::minimap` and `win::minimap` do. That does
-    /// **not** make this `todo!` trivially closable, though: what's left is
-    /// the actual Core Graphics/Core Text paint calls (fill rects, `CTLine`
-    /// glyph runs, the clip bracket) — the same shape and size of
-    /// backend-specific work #738 did for Win-GUI, not a shim over shared
-    /// logic. The trait method itself is still mandatory here (rule 7: no
-    /// default impl, in-tree-only cost), so this stays a deliberate
-    /// `todo!` rather than the `BoardModel`-style real implementation
-    /// above.
+    /// directly, same as `gtk::minimap` and `win::minimap` do. What's left
+    /// for that future rasteriser is the actual Core Graphics/Core Text
+    /// paint calls (fill rects, `CTLine` glyph runs, the clip bracket) —
+    /// the same shape and size of backend-specific work #738 did for
+    /// Win-GUI, not a shim over shared logic.
+    ///
+    /// Until that lands, this used to be a reachable `todo!()` — a panic
+    /// an app calling `Backend::draw_minimap` generically could hit on
+    /// macOS alone, the exact inverse of the four-backend promise (#802).
+    /// `super::minimap::mac_minimap_layout` computes the real
+    /// [`MinimapLayout`](crate::primitives::minimap::MinimapLayout) (the
+    /// same `Minimap::layout_with_sizing` call GTK/Win-GUI make, not a
+    /// stub), so hit-testing/click-routing already works correctly; only
+    /// [`MinimapPaintResult::painted`](crate::backend::MinimapPaintResult::painted)
+    /// comes back `false` in place of pixels.
     fn draw_minimap(
         &mut self,
-        _rect: Rect,
-        _minimap: &crate::primitives::minimap::Minimap,
+        rect: Rect,
+        minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::backend::MinimapPaintResult {
-        todo!("Core Graphics/Core Text minimap rasteriser — out of scope per #382")
+        let layout = super::minimap::mac_minimap_layout(minimap, rect);
+        self.register_zone(minimap.id.clone(), rect);
+        crate::backend::MinimapPaintResult {
+            layout,
+            painted: false,
+        }
     }
 
+    /// Real geometry regardless of the paint gap above — see
+    /// [`Self::draw_minimap`]'s doc comment.
     fn minimap_layout(
         &self,
-        _rect: Rect,
-        _minimap: &crate::primitives::minimap::Minimap,
+        rect: Rect,
+        minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::primitives::minimap::MinimapLayout {
-        todo!("Core Graphics/Core Text minimap layout — out of scope per #382")
+        super::minimap::mac_minimap_layout(minimap, rect)
     }
 
     /// #662 scopes the `Image` rasteriser to GTK only for this first
-    /// pass — macOS's natural decoder is `NSImage`, not `gdk_pixbuf`,
-    /// and wiring that up is out of scope here the same way `draw_minimap`
-    /// above scopes macOS out of #382. The trait method itself is still
-    /// mandatory (rule 7: no default impl, in-tree-only cost), so this
-    /// is a deliberate `todo!` rather than a real implementation.
+    /// pass — macOS's natural decoder is `NSImage`, not `gdk_pixbuf`, and
+    /// wiring that up is real, backend-specific work, not a shim over
+    /// shared logic, the same way `draw_minimap` above is scoped out of
+    /// #382. Until a real `NSImage` decoder lands here, this used to be
+    /// a reachable `todo!()` — a panic an app calling
+    /// `Backend::draw_image` generically could hit on macOS alone (#802).
+    /// `super::image::mac_draw_image` reports
+    /// [`ImagePaintResult::Unsupported`](crate::backend::ImagePaintResult::Unsupported)
+    /// instead — the same signal TUI already uses for its own categorical
+    /// "no pixel grid" case — so a host degrades deliberately rather than
+    /// losing the whole app.
     fn draw_image(
         &mut self,
-        _rect: Rect,
-        _image: &crate::primitives::image::Image,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        todo!("NSImage rasteriser — out of scope per #662's first pass")
+        self.register_zone(image.id.clone(), rect);
+        super::image::mac_draw_image()
     }
 }
 
@@ -2946,5 +2966,102 @@ mod tests {
         assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * 16.0);
         assert!(bordered_sb.track.x >= rect.x + 8.0);
         assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
+    }
+
+    // ── #802: Minimap/Image must not panic on macOS ─────────────────────
+    //
+    // Before this issue, `MacBackend::draw_minimap`/`draw_image` were
+    // `todo!()` — any `AppLogic` calling either generically through `&mut
+    // dyn Backend` (exactly what `examples/common/minimap_app.rs` /
+    // `image_app.rs` do, the same fixtures `tests/macos_example_driver.rs`
+    // now drives) panicked and took the whole host down on macOS while
+    // working fine on TUI/GTK/Win-GUI. Observed RED before this fix: both
+    // methods hit their `todo!()` immediately, with no cfg gate to skip
+    // past on this (non-macOS) machine, so the confirmation here is
+    // structural — the calls below no longer reach a `todo!()`/
+    // `unimplemented!()` macro anywhere in their path — rather than a
+    // captured panic backtrace, which only `macos-latest` CI can produce
+    // for this target-gated module (see `CLAUDE.md`'s Downstream
+    // consumers / macOS sections).
+
+    fn sample_minimap() -> crate::primitives::minimap::Minimap {
+        crate::primitives::minimap::Minimap {
+            id: WidgetId::new("minimap"),
+            lines: (0..40)
+                .map(|i| crate::primitives::minimap::MinimapLine {
+                    text: format!("line {i}"),
+                    line_idx: i,
+                })
+                .collect(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 10,
+            total_buffer_lines: 40,
+        }
+    }
+
+    #[test]
+    fn draw_minimap_does_not_panic_and_reports_unpainted() {
+        let mut b = MacBackend::new();
+        let minimap = sample_minimap();
+        let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
+
+        let result = b.draw_minimap(rect, &minimap);
+
+        assert!(
+            !result.painted,
+            "macOS has no Core Graphics/Core Text minimap rasteriser yet (#382) -- \
+             `painted` must honestly report `false`, not panic"
+        );
+        assert!(
+            !result.layout.visible_lines.is_empty(),
+            "the layout must still be real geometry, not an empty stub"
+        );
+        assert!(
+            b.zones().iter().any(|z| z.id == minimap.id),
+            "a click zone must still be registered so a host can route clicks \
+             even though nothing painted"
+        );
+    }
+
+    /// `minimap_layout` (the no-paint query `AppLogic::handle` calls for
+    /// click routing) must agree with the layout `draw_minimap` just
+    /// returned — same contract every other backend upholds.
+    #[test]
+    fn minimap_layout_agrees_with_draw_minimap() {
+        let mut b = MacBackend::new();
+        let minimap = sample_minimap();
+        let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
+
+        let painted = b.draw_minimap(rect, &minimap);
+        let layout_only = b.minimap_layout(rect, &minimap);
+
+        assert_eq!(painted.layout, layout_only);
+    }
+
+    #[test]
+    fn draw_image_does_not_panic_and_reports_unsupported() {
+        let mut b = MacBackend::new();
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("logo"),
+            source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
+            intrinsic_size: Some((24, 24)),
+            fit: crate::primitives::image::ImageFit::Contain,
+            fallback_text: "[Q]".into(),
+        };
+        let rect = Rect::new(0.0, 0.0, 24.0, 24.0);
+
+        let result = b.draw_image(rect, &image);
+
+        assert_eq!(
+            result,
+            crate::backend::ImagePaintResult::Unsupported,
+            "macOS has no NSImage decoder yet (#662's first pass, #802) -- this must \
+             be a clean Unsupported result, not a panic"
+        );
+        assert!(
+            b.zones().iter().any(|z| z.id == image.id),
+            "a click/hover zone must still be registered even though nothing painted"
+        );
     }
 }

@@ -2010,10 +2010,16 @@ pub trait Backend: sealed::Sealed {
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
-    /// rule 7). Still `todo!()` on macOS — out of scope per #382; #738
-    /// lifted the shared decision logic a future macOS rasteriser would
-    /// consume, but writing the actual Core Graphics/Core Text paint
-    /// calls is not part of that lift.
+    /// rule 7). macOS has no Core Graphics/Core Text paint calls for this
+    /// yet (#382; #738 lifted the shared decision logic a future macOS
+    /// rasteriser would consume, but writing the actual paint calls was
+    /// not part of that lift) — rather than leaving that gap as a
+    /// reachable `todo!()` (#802: an app that reaches this on macOS would
+    /// otherwise take the whole host down), `MacBackend::draw_minimap`
+    /// computes the same real [`MinimapLayout`] every other backend does
+    /// (so hit-testing/click-routing is correct) and reports
+    /// [`MinimapPaintResult::painted`] `false` instead of rasterising
+    /// pixels — see that field's doc for the degrade contract.
     fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
 
     /// Compute [`Minimap`] layout without painting — mirrors
@@ -2023,17 +2029,22 @@ pub trait Backend: sealed::Sealed {
     /// against the same geometry the last paint used.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505). Real on GTK and Win-GUI (#738); still `todo!()` on
-    /// macOS (out of scope per #382) — do not call on that backend.
+    /// (issue #505). Real on every backend, including macOS (#802) —
+    /// `MacBackend` has no rasteriser yet (#382) but computes this exact
+    /// geometry, so it is always safe to call.
     fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
 
     /// Paint `image` within `rect`, honoring `image.fit` (see
     /// [`Image::layout`] for the geometry). GTK decodes `image.source`
-    /// through `gdk_pixbuf` and paints real pixels; macOS/Win are scoped
-    /// out of this first pass the same way `draw_minimap` scopes
-    /// macOS/Win out of #382 — a deliberate `todo!()`, not a silent
-    /// no-op, because this method has no default (rule 7 below still
-    /// applies to it).
+    /// through `gdk_pixbuf` and paints real pixels; Win is scoped out of
+    /// this first pass. macOS's natural decoder (`NSImage`) is also not
+    /// wired up yet (#662's first pass scoped GTK only) — rather than a
+    /// reachable `todo!()` (#802), `MacBackend::draw_image` reports
+    /// [`ImagePaintResult::Unsupported`] and paints nothing, the same
+    /// signal TUI's categorical case already used below. This method has
+    /// no default (rule 7 below still applies to it), so every backend
+    /// implementer still sees a compile error until it picks one of
+    /// these two honest outcomes.
     ///
     /// **TUI cannot rasterise an image** — there is no pixel grid to
     /// draw into, and this primitive deliberately does not attempt an
@@ -2042,10 +2053,12 @@ pub trait Backend: sealed::Sealed {
     /// `rect`, and reports [`ImagePaintResult::Unsupported`] rather than
     /// a silent no-op — #507's Unsupported-vs-failure question, and this
     /// primitive is a fresh, deliberate instance of it: TUI genuinely
-    /// cannot do this, so it says so. A GTK/macOS decode failure (bad
-    /// path, corrupt bytes) also reports `Unsupported` and paints
-    /// nothing, so a host can tell "no pixels appeared" apart from a
-    /// successful paint without inspecting pixels itself.
+    /// cannot do this, so it says so. A GTK decode failure (bad path,
+    /// corrupt bytes) also reports `Unsupported` and paints nothing, and
+    /// macOS (no decoder wired up yet, #802) reports `Unsupported`
+    /// unconditionally for the same reason — so a host can tell "no
+    /// pixels appeared" apart from a successful paint without inspecting
+    /// pixels itself.
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser, or an explicit
@@ -2059,6 +2072,20 @@ pub trait Backend: sealed::Sealed {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MinimapPaintResult {
     pub layout: MinimapLayout,
+    /// Whether this call actually rasterised pixels into the target
+    /// rect. `true` on TUI/GTK/Win-GUI. `false` on macOS (#802): no
+    /// Core Graphics/Core Text rasteriser exists yet (#382), so nothing
+    /// paints — but `layout` is still the real geometry
+    /// [`Backend::minimap_layout`] would also return (the shared
+    /// `Minimap::layout_with_sizing` logic, not a stub), so a host can
+    /// still hit-test clicks against it. The bool-on-a-struct shape
+    /// (rather than an enum like [`ImagePaintResult`]) is because this
+    /// method already returns a struct carrying a layout; `painted`
+    /// draws the same Unsupported-vs-real distinction that enum's
+    /// `Unsupported` variant draws for `draw_image`. Defaults to `false`
+    /// via `#[derive(Default)]` — the honest "nothing happened yet"
+    /// starting point, same reasoning as [`BackendCaps::empty`].
+    pub painted: bool,
 }
 
 /// Paint-side result of [`Backend::draw_image`]. Deliberately a plain
@@ -2071,9 +2098,10 @@ pub struct MinimapPaintResult {
 pub enum ImagePaintResult {
     /// The backend rasterised actual image pixels into the target rect.
     Painted,
-    /// The backend could not (or, for TUI, categorically can not)
-    /// rasterise pixels. TUI paints `image.fallback_text` instead;
-    /// GTK/macOS on a decode failure paint nothing. See
+    /// The backend could not (or, for TUI/macOS, categorically can not)
+    /// rasterise pixels. TUI paints `image.fallback_text` instead; GTK on
+    /// a decode failure and macOS unconditionally (#802, no `NSImage`
+    /// decoder wired up yet) both paint nothing. See
     /// [`Backend::draw_image`]'s doc comment.
     Unsupported,
 }

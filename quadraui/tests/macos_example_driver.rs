@@ -15,6 +15,7 @@
 #![cfg(all(feature = "macos", target_os = "macos"))]
 
 use quadraui::macos::testing::{driver_with_shell, MacDriver};
+use quadraui::testing::ConformanceDriver;
 use quadraui::{NamedKey, Reaction};
 
 #[path = "../examples/common/pipeline_app.rs"]
@@ -28,6 +29,14 @@ use appshell_demo::AppShellDemo;
 #[path = "../examples/common/data_table_app.rs"]
 mod data_table_app;
 use data_table_app::DataTableApp;
+
+#[path = "../examples/common/minimap_app.rs"]
+mod minimap_app;
+use minimap_app::MinimapApp;
+
+#[path = "../examples/common/image_app.rs"]
+mod image_app;
+use image_app::ImageApp;
 
 // Point canvas — big enough for five pipeline stage boxes + arrow
 // connectors + the bottom status bar at macOS's native (point, not cell)
@@ -379,5 +388,75 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
         narrowed < natural,
         "dragging the divider before the last column left should narrow it: \
          before={natural}, after={narrowed}"
+    );
+}
+
+// ─── MinimapApp / ImageApp: #802 — macOS must degrade, not panic ──────────
+//
+// Before #802, `MacBackend::draw_minimap`/`draw_image` were reachable
+// `todo!()`s. `MacDriver::new` paints the first frame immediately (same
+// as every other constructor in this file), so simply *constructing*
+// either driver below used to panic the whole test binary on macOS — the
+// one backend where these two examples were impossible to run at all,
+// the exact inverse of the four-backend promise these fixtures already
+// prove on TUI/GTK (`tests/tui_example_driver.rs`, `tests/gtk_example_
+// driver.rs`) and in `tests/cross_backend_parity.rs`.
+
+const MINIMAP_W: u32 = 400;
+const MINIMAP_H: u32 = 300;
+
+/// `draw_minimap` is called every frame `MinimapApp::render` runs; this
+/// proves that keeps working (and keeps scrolling) on macOS even though
+/// nothing paints inside the minimap track itself yet (#382).
+#[test]
+fn minimap_app_renders_every_frame_without_panicking_and_scrolls() {
+    let mut driver = MacDriver::new(MinimapApp::new(), MINIMAP_W, MINIMAP_H);
+    assert!(
+        driver.screen_contains("Minimap demo — line 0"),
+        "initial status bar should paint fine even though the minimap track \
+         itself has no Core Graphics rasteriser yet (#382/#802): {:?}",
+        driver.painted_texts()
+    );
+
+    driver.press_named(NamedKey::Down);
+    assert!(
+        driver.screen_contains("Minimap demo — line 1"),
+        "scrolling must keep re-rendering every frame without panicking: {:?}",
+        driver.painted_texts()
+    );
+}
+
+const IMAGE_W: u32 = 400;
+const IMAGE_H: u32 = 200;
+
+/// `draw_image` reports a clean [`quadraui::ImagePaintResult::Unsupported`]
+/// on macOS (no `NSImage` decoder yet, #662/#802) rather than a silent
+/// no-op or a panic — and the menu bar beside the (unpainted) icon still
+/// routes clicks correctly, proving the degrade is contained to the one
+/// primitive that can't paint yet.
+#[test]
+fn image_app_logo_paints_nothing_but_menu_click_routing_still_works() {
+    let mut driver = MacDriver::new(ImageApp::new(), IMAGE_W, IMAGE_H);
+
+    // Unlike TUI (which paints `Image::fallback_text` for its own
+    // categorical Unsupported case), macOS paints nothing at all: no
+    // real pixels, and no "[Q]" fallback text either.
+    assert!(
+        !driver.screen_contains("[Q]"),
+        "macOS has no image rasteriser yet -- neither real pixels nor \
+         fallback text should reach the screen: {:?}",
+        driver.painted_texts()
+    );
+
+    // The icon's reserved width still narrows the menu bar's hit-test
+    // rect (`ImageApp::bar_rects`, shared by every backend), so a real
+    // click on "File" must still route correctly even though the icon
+    // beside it painted nothing this frame.
+    driver.click_text("File");
+    assert!(
+        driver.screen_contains("activated: &File"),
+        "clicking the File menu item must still route through the \
+         icon-narrowed rect and update the status bar: {:?}",
+        driver.painted_texts()
     );
 }

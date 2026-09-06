@@ -46,6 +46,14 @@ use data_table_app::DataTableApp;
 mod panel_app;
 use panel_app::PanelApp;
 
+#[path = "../examples/common/minimap_app.rs"]
+mod minimap_app;
+use minimap_app::MinimapApp;
+
+#[path = "../examples/common/image_app.rs"]
+mod image_app;
+use image_app::ImageApp;
+
 /// Extra backend-specific surface the #552 activity-bar section below
 /// needs on top of [`ConformanceDriver`]: raw-coordinate click/hover
 /// (always derived from shell-reported geometry — see `activity_row_center`
@@ -1152,4 +1160,134 @@ fn title_does_not_reach_the_screen_when_border_is_not_full() {
             );
         }
     }
+}
+
+// ─── Minimap / Image: #802 parity coverage ─────────────────────────────────
+//
+// quadraui#802 fixed `MacBackend::draw_minimap`/`draw_image` being
+// reachable `todo!()`s — macOS now degrades (real layout / a clean
+// `Unsupported` result) instead of panicking; see the macOS-only
+// `tests/macos_example_driver.rs` for that leg. This pair proves the two
+// backends that *do* rasterise both primitives already agree on the
+// resulting logical state, the same "one AppLogic, one script, both
+// backends" shape as `pipeline_parity_tui_and_gtk_agree_on_logical_state`
+// above.
+
+/// Bounds of the zone [`minimap_app::MinimapApp`] registers every frame
+/// via `Backend::draw_minimap`'s `register_zone` call — read from each
+/// driver's own [`FrameInventory`] rather than recomputing the app's
+/// private `minimap_rect` math, so the click point below is never a
+/// hardcoded coordinate in either backend's units.
+fn minimap_zone_bounds(inv: &FrameInventory) -> Rect {
+    inv.zones()
+        .iter()
+        .find(|z| z.id == WidgetId::new("minimap"))
+        .expect("MinimapApp registers a \"minimap\" zone every frame")
+        .bounds
+}
+
+/// Reconstruct the bottom row's painted text in left-to-right reading
+/// order. GTK paints one [`crate::testing::TextRun`] per whole
+/// `StatusBarSegment` (`" Minimap demo — line 0 "`); TUI records one run
+/// per word (`"Minimap"`, `"demo"`, `"—"`, `"line"`, `"0"`, …) — same
+/// underlying content, different run granularity. Joining whatever runs
+/// share the frame's maximum `y` (the status bar sits below the minimap
+/// track on both) by ascending `x` recovers a searchable line regardless
+/// of which granularity a given backend used. GTK repaints its status
+/// bar's background and foreground as two identical runs at the same
+/// bounds; `dedup_by` collapses those back to one.
+fn bottom_row_text(inv: &FrameInventory) -> String {
+    let runs = inv.text_runs();
+    let max_y = runs.iter().fold(f32::MIN, |acc, r| acc.max(r.bounds.y));
+    let mut on_row: Vec<_> = runs.iter().filter(|r| r.bounds.y == max_y).collect();
+    on_row.sort_by(|a, b| {
+        a.bounds
+            .x
+            .partial_cmp(&b.bounds.x)
+            .expect("painted x coordinates are always finite")
+    });
+    on_row.dedup_by(|a, b| a.text == b.text && a.bounds == b.bounds);
+    on_row
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Parse the number following the literal word `"line"` in a
+/// [`bottom_row_text`] reconstruction, e.g. `"...line 145..."` -> `145`.
+fn scroll_line_number(status: &str) -> u32 {
+    status
+        .split("line")
+        .nth(1)
+        .expect("status bar must mention the current line")
+        .split_whitespace()
+        .next()
+        .expect("a line number must follow \"line\"")
+        .parse()
+        .expect("the line token must be numeric")
+}
+
+#[test]
+fn minimap_seek_click_agrees_tui_and_gtk_on_resulting_scroll_line() {
+    // TUI cells vs. GTK pixels -- same "different units, same logical
+    // widget" shape as the pipeline test above. `MinimapApp::seek` maps a
+    // click fraction straight to a scroll line with no backend-specific
+    // math, so clicking each backend's own reported zone at the same
+    // *relative* point (its vertical midpoint) must land on the same
+    // line in both.
+    let mut tui = TuiDriver::new(MinimapApp::new(), 100, 40);
+    let mut gtk = GtkDriver::new(MinimapApp::new(), 800, 480);
+
+    let tui_bounds = minimap_zone_bounds(&tui.inventory());
+    let gtk_bounds = minimap_zone_bounds(&gtk.inventory());
+
+    tui.click(
+        tui_bounds.x + tui_bounds.width / 2.0,
+        tui_bounds.y + tui_bounds.height / 2.0,
+    );
+    gtk.click(
+        gtk_bounds.x + gtk_bounds.width / 2.0,
+        gtk_bounds.y + gtk_bounds.height / 2.0,
+    );
+
+    let tui_line = scroll_line_number(&bottom_row_text(&tui.inventory()));
+    let gtk_line = scroll_line_number(&bottom_row_text(&gtk.inventory()));
+
+    assert_ne!(
+        tui_line, 0,
+        "clicking the midpoint of the minimap's own zone should seek away \
+         from the initial line 0 on both backends"
+    );
+    assert_eq!(
+        tui_line, gtk_line,
+        "seeking to the midpoint of each backend's own minimap zone should \
+         resolve to the same logical scroll line on both"
+    );
+}
+
+/// The two halves of #662 (real pixels on GTK, `Unsupported` +
+/// `fallback_text` on TUI) still must not desync the menu bar's
+/// icon-reserved click routing — `ImageApp::bar_rects` narrows the same
+/// way regardless of which `ImagePaintResult` `draw_image` returns.
+#[test]
+fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
+    fn activated_after_clicking_file<D: ConformanceDriver>(d: &mut D) -> bool {
+        d.click_text("File");
+        d.screen_has("activated: &File")
+    }
+
+    let mut tui = TuiDriver::new(ImageApp::new(), 100, 30);
+    let mut gtk = GtkDriver::new(ImageApp::new(), 800, 480);
+
+    assert!(
+        activated_after_clicking_file(&mut tui),
+        "TUI: clicking the File menu item (beside the fallback-text image) \
+         should update the status bar"
+    );
+    assert!(
+        activated_after_clicking_file(&mut gtk),
+        "GTK: clicking the File menu item (beside the real painted image) \
+         should update the status bar"
+    );
 }
