@@ -15,6 +15,15 @@
 //! them to [`draw_selection_highlight`] here — mirroring every other
 //! `draw_*` method on `MacBackend`, which resolves geometry itself and
 //! delegates the actual CG calls to a per-primitive submodule.
+//!
+//! The range→rect arithmetic itself lives in
+//! [`crate::paint_geometry::text_selection_highlight_rects`] (#857):
+//! that module has no `target_os` gate, unlike this one (`mod macos` is
+//! gated whole — see `lib.rs`'s comment on that `pub mod macos` arm), so
+//! its tests run on every host including this repo's ordinary Linux CI,
+//! rather than only on `macos-latest`. [`draw_selection_highlight`]
+//! below just turns each computed rect into one real
+//! `CGContextFillRect` call.
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
@@ -52,16 +61,15 @@ pub(crate) unsafe fn draw_selection_highlight(
 ) {
     let (r, g, b, a) = HIGHLIGHT_RGBA;
     CGContextSetRGBFillColor(ctx, r, g, b, a);
-    for &(row_cell, col_start, col_end) in ranges {
-        let width = (col_end - col_start) as f64 * char_w;
-        if width <= 0.0 {
-            continue;
-        }
-        let x = region_bounds.x as f64 + col_start as f64 * char_w;
-        let y = region_bounds.y as f64 + row_cell as f64 * line_h;
+    for rect in
+        crate::paint_geometry::text_selection_highlight_rects(region_bounds, ranges, char_w, line_h)
+    {
         CGContextFillRect(
             ctx,
-            CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, line_h)),
+            CGRect::new(
+                &CGPoint::new(rect.x as f64, rect.y as f64),
+                &CGSize::new(rect.width as f64, rect.height as f64),
+            ),
         );
     }
 }
@@ -83,10 +91,12 @@ mod tests {
     //! CoreGraphics FFI), so it's exercised via
     //! `MacBackend::apply_selection_highlight` against a
     //! `super::super::headless::BitmapSurface` in `backend.rs`'s own test
-    //! module (pixel-readback assertion) rather than here — this module
-    //! has nothing pure to unit-test on its own (the range→rect math is
-    //! `crate::text_selection::pixel_selection_ranges`'s, already covered
-    //! there).
+    //! module (pixel-readback assertion) rather than here. The rect math
+    //! it now delegates to,
+    //! `crate::paint_geometry::text_selection_highlight_rects`, has its
+    //! own host-independent tests in that module (#857) — this module's
+    //! own `mod tests` only covers what's genuinely local to it (the
+    //! highlight colour's alpha).
     use super::*;
 
     /// `HIGHLIGHT_RGBA`'s alpha must stay translucent — a fully opaque

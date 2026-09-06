@@ -227,6 +227,15 @@ pub mod event;
 ))]
 mod native_surface;
 
+// Host-independent paint-geometry helpers (#857) — pure rect/inset
+// arithmetic pulled out from behind `src/macos/`'s whole-module
+// `target_os = "macos"` gate (mirrors `src/win/msg.rs`'s equivalent split
+// for Windows), so `cargo test -p quadraui` exercises it with no
+// `--features macos` and no cross-target needed. Deliberately compiled
+// unconditionally — see that module's doc for why every item in it also
+// carries its own `#[allow(dead_code)]`.
+mod paint_geometry;
+
 // ── Phase B.4: cross-backend event routing ──────────────────────────────────
 // ModalStack + dispatch free functions. Backends hold one ModalStack and
 // call into dispatch to translate raw mouse events into Vec<UiEvent>
