@@ -710,7 +710,13 @@ pub fn format_tick_value(v: f64) -> String {
 //     module doc's "~15 drawing verbs" — a circle isn't one of them),
 //     so `paint` adopts macOS's square approximation, sized to the same
 //     footprint GTK/Windows already used (radius 5 / radius 8 rings →
-//     10×10 / 16×16 squares).
+//     10×10 / 16×16 squares). The outer ring's ~30%-alpha halo is
+//     CPU-blended against `theme.background` (mirroring the crosshair's
+//     `blend` above) rather than the real alpha compositing GTK's
+//     deleted Cairo rasteriser did — `paint_hover_marker` takes the same
+//     live `theme` every other function in this module does, not
+//     `Theme::default()`, so the halo still matches the chart's actual
+//     background under a non-default theme.
 //   - **The chart's theme, on Windows, is left as-is.**
 //     `win::chart::draw_chart` was called with a hardcoded
 //     `Theme::default()` rather than `self.current_theme`
@@ -839,7 +845,7 @@ mod native_surface_paint {
             paint_crosshair(surface, layout, chart, theme, data_x);
         }
         if let Some((si, di)) = hovered_point {
-            paint_hover_marker(surface, layout, si, di, chart);
+            paint_hover_marker(surface, layout, si, di, chart, theme);
         }
 
         surface.surface_pop_clip();
@@ -1112,6 +1118,7 @@ mod native_surface_paint {
         series_idx: usize,
         data_idx: usize,
         chart: &Chart,
+        theme: &Theme,
     ) {
         let Some(&(_, _, sx, sy)) = layout
             .data_point_positions
@@ -1126,7 +1133,7 @@ mod native_surface_paint {
             Rect::new(sx - inner, sy - inner, inner * 2.0, inner * 2.0),
             color,
         );
-        let outer_color = blend(Theme::default().background, color, 0.3);
+        let outer_color = blend(theme.background, color, 0.3);
         let outer = 8.0_f32;
         surface.surface_fill_rect(
             Rect::new(sx - outer, sy - outer, outer * 2.0, outer * 2.0),
@@ -1326,6 +1333,58 @@ mod native_surface_paint {
             assert_eq!(
                 fills_at_point, 2,
                 "hover marker should paint two nested fills (inner + outer ring) centred on the data point"
+            );
+        }
+
+        /// Regression test for the reviewer finding on #810: the hover
+        /// marker's outer-ring halo must blend against the *live*
+        /// `theme.background` passed into `paint`, not the hardcoded
+        /// `Theme::default().background` the shared code briefly
+        /// regressed to (a value only Windows's pre-#810 rasteriser
+        /// ever intentionally used). Uses a theme whose background
+        /// differs sharply from `Theme::default()`'s dark palette so
+        /// the two blends produce visibly different colours.
+        #[test]
+        fn hover_marker_outer_ring_blends_against_the_live_theme_background() {
+            let chart = line_chart(vec![1.0, 4.0, 2.0]);
+            let layout = layout_for(&chart);
+            let light_background = Color::rgb(240, 240, 240);
+            let theme = Theme {
+                background: light_background,
+                ..Theme::default()
+            };
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, Some((0, 1)), None);
+
+            let (_, _, sx, sy) = layout.data_point_positions[1];
+            let series_color = SERIES_COLORS[0];
+            let expected_outer = blend(light_background, series_color, 0.3);
+            let wrong_outer_from_default_theme =
+                blend(Theme::default().background, series_color, 0.3);
+            assert_ne!(
+                expected_outer, wrong_outer_from_default_theme,
+                "test fixture invalid: light and default-theme backgrounds must blend to different colours"
+            );
+
+            let outer_ring_fill = surface
+                .fills
+                .iter()
+                .filter(|(r, _)| {
+                    r.width <= 16.0
+                        && r.height <= 16.0
+                        && r.width > 10.0
+                        && r.x <= sx
+                        && sx <= r.x + r.width
+                        && r.y <= sy
+                        && sy <= r.y + r.height
+                })
+                .map(|(_, c)| *c)
+                .next();
+            assert_eq!(
+                outer_ring_fill,
+                Some(expected_outer),
+                "outer ring should blend the series colour against the live theme's background, not Theme::default()'s"
             );
         }
     }
