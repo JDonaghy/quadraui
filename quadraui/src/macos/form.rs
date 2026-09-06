@@ -643,35 +643,72 @@ mod tests {
         );
     }
 
+    /// True when at least one pixel *strictly inside* `rect` is exactly
+    /// `color`.
+    ///
+    /// Scanned rather than probed at one hard-coded offset: the only
+    /// pixels a solid fill leaves un-blended are the ones no glyph's
+    /// antialiasing touches, and where those sit inside an item's rect
+    /// depends on the host's font metrics and Core Text's rasteriser —
+    /// not on anything this crate controls. A single-offset probe
+    /// therefore asserts "this exact pixel is glyph-free" (a fact about
+    /// Menlo) on top of the fact under test ("the fill happened"), and
+    /// fails on the former the moment the painter nudges a glyph by a
+    /// fraction of a point. Same lesson as the macOS selection-highlight
+    /// probe.
+    ///
+    /// The rect is inset one pixel on every side so a *neighbouring*
+    /// item's fill (segments butt up against each other with no gap)
+    /// can never leak in through a boundary pixel.
+    fn region_has_color(surface: &BitmapSurface, rect: &QRect, color: Color) -> bool {
+        let x0 = rect.x.ceil() as u32 + 1;
+        let x1 = ((rect.x + rect.width).floor() as u32)
+            .saturating_sub(1)
+            .min(W);
+        let y0 = rect.y.ceil() as u32 + 1;
+        let y1 = ((rect.y + rect.height).floor() as u32)
+            .saturating_sub(1)
+            .min(H);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (r, g, b, _) = surface.pixel(x, y);
+                if (r, g, b) == (color.r, color.g, color.b) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     #[test]
     fn toggle_group_on_item_paints_selected_bg() {
         // The "on" toggle (regex / `.*`) must paint `selected_bg`
         // behind its rect so it is visually distinguishable from
-        // the off toggles at a glance.
+        // the off toggles at a glance. Regression for #808: the shared
+        // `primitives::form::paint` was written from the Windows copy,
+        // which never painted this pill, so unifying the three
+        // rasterisers silently dropped macOS's on-state affordance.
         let form = search_flags_form();
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
         let vis = &layout.visible_fields[0];
-        let (_, on_rect) = vis
-            .item_bounds
-            .iter()
-            .find(|(id, _)| id == &WidgetId::new("regex"))
-            .expect("regex toggle in layout");
-        // Probe a couple of pixels INSIDE the on-toggle's vertical
-        // padded band where the bg is filled (rect inset by 2 on top
-        // and bottom — see ToggleGroup paint path).
-        let px = (on_rect.x + on_rect.width - 1.0) as u32;
-        let py = (on_rect.y + on_rect.height / 2.0) as u32;
-        let (r, g, b, _) = surface.pixel(px, py);
-        assert_eq!(
-            (r, g, b),
-            (
-                theme.selected_bg.r,
-                theme.selected_bg.g,
-                theme.selected_bg.b,
-            ),
+        let rect_for = |name: &str| {
+            vis.item_bounds
+                .iter()
+                .find(|(id, _)| id == &WidgetId::new(name))
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{name} toggle in layout"))
+        };
+        assert!(
+            region_has_color(&surface, &rect_for("regex"), theme.selected_bg),
             "on-toggle should paint selected_bg behind its rect",
         );
+        for off in ["case", "word"] {
+            assert!(
+                !region_has_color(&surface, &rect_for(off), theme.selected_bg),
+                "off-toggle {off:?} must not paint the on-state pill",
+            );
+        }
     }
 
     #[test]
@@ -715,24 +752,27 @@ mod tests {
         let theme = Theme::default();
         let vis = &layout.visible_fields[0];
         // Synthetic per-segment ids `<field>__seg_<idx>` — assert
-        // the SELECTED segment paints selected_bg.
-        let (_, selected) = vis
-            .item_bounds
-            .iter()
-            .find(|(id, _)| id.as_str() == "scope__seg_1")
-            .expect("segment 1 in layout");
-        let px = (selected.x + selected.width - 1.0) as u32;
-        let py = (selected.y + selected.height / 2.0) as u32;
-        let (r, g, b, _) = surface.pixel(px, py);
-        assert_eq!(
-            (r, g, b),
-            (
-                theme.selected_bg.r,
-                theme.selected_bg.g,
-                theme.selected_bg.b,
-            ),
+        // the SELECTED segment paints selected_bg and its neighbours
+        // don't (regression for #808: the shared painter filled
+        // `hover_bg` here, a hover cue on a segment nothing is
+        // hovering).
+        let rect_for = |id: &str| {
+            vis.item_bounds
+                .iter()
+                .find(|(item, _)| item.as_str() == id)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{id} in layout"))
+        };
+        assert!(
+            region_has_color(&surface, &rect_for("scope__seg_1"), theme.selected_bg),
             "selected segment should paint selected_bg behind its rect",
         );
+        for other in ["scope__seg_0", "scope__seg_2"] {
+            assert!(
+                !region_has_color(&surface, &rect_for(other), theme.selected_bg),
+                "unselected segment {other:?} must not paint the selection pill",
+            );
+        }
     }
 
     #[test]
