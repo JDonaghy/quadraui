@@ -40,8 +40,9 @@ impl TooltipDemo {
     }
 
     fn tooltip(&self) -> Tooltip {
-        Tooltip::new(WidgetId::new("tooltip-demo:tip"), TOOLTIP_TEXT)
-            .with_placement(TooltipPlacement::Bottom)
+        let mut tip = Tooltip::new(WidgetId::new("tooltip-demo:tip"), TOOLTIP_TEXT);
+        tip.placement = TooltipPlacement::Bottom;
+        tip
     }
 
     /// `Full` needs a top and bottom border row on top of the one content
@@ -148,7 +149,7 @@ impl AppLogic for TooltipDemo {
         let layout = tooltip.layout(anchor, clamp, measure, lh);
         let mut chrome = TooltipChrome::new(self.border);
         if self.show_title && matches!(self.border, TooltipBorder::Full) {
-            chrome = chrome.with_title(TOOLTIP_TITLE);
+            chrome.title = Some(TOOLTIP_TITLE.to_string());
         }
         backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
     }

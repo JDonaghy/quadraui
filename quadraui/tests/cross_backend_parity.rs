@@ -1006,11 +1006,11 @@ impl AppLogic for TooltipBorderFixture {
         // either. See `primitives::tooltip`'s module doc for why: it keeps
         // every exhaustive `Tooltip { .. }` *and* `TooltipLayout { .. }`
         // literal (in-tree and downstream) compiling untouched.
-        let tooltip = Tooltip::new(
+        let mut tooltip = Tooltip::new(
             WidgetId::new(BORDER_TOOLTIP_ID),
             BORDER_TOOLTIP_TEXT.to_string(),
-        )
-        .with_placement(TooltipPlacement::Bottom);
+        );
+        tooltip.placement = TooltipPlacement::Bottom;
         // Horizontal slack (+4 columns, same margin `structural_parity.rs`
         // uses) so the tier-A control below can't fail for an unrelated
         // reason (the last glyph clipped for lack of padding).
@@ -1020,9 +1020,7 @@ impl AppLogic for TooltipBorderFixture {
         );
         let layout = tooltip.layout(anchor, viewport, measure, lh);
         let mut chrome = TooltipChrome::new(self.border);
-        if let Some(title) = self.title.clone() {
-            chrome = chrome.with_title(title);
-        }
+        chrome.title = self.title.clone();
         backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
     }
 
