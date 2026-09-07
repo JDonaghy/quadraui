@@ -766,3 +766,128 @@ mod kitty_keyboard_protocol {
         );
     }
 }
+
+// ─── tui_no_mouse: `RunConfig { mouse: false, .. }` withholds capture (#828) ──
+
+/// Byte-level proof that **`no-mouse` mode** (`RunConfig::no_mouse()`,
+/// `src/tui/run.rs`) actually withholds the mouse-capture escape sequences
+/// instead of merely discarding whatever the terminal sends back.
+///
+/// Before this module, `run_with`/`RunConfig` — the only public entry point
+/// for the feature — had zero call sites anywhere in `tests/` or
+/// `examples/`: the `if config.mouse { EnableMouseCapture… } else { … }`
+/// branch in `run_with` was reachable only in theory. `examples/tui_no_mouse.rs`
+/// is the sole caller of `run_with` with a non-default `RunConfig` in the
+/// tree; this module drives that binary over a real pty and inspects the
+/// raw byte stream, the same technique `sgr_color_depth` and
+/// `kitty_keyboard_protocol` above use for other escape-sequence claims.
+///
+/// **`#[cfg(unix)]` — deliberately, for the same transport reason as
+/// `sgr_color_depth`/`kitty_keyboard_protocol` above.** These fixtures
+/// assert on the exact bytes crossterm's `EnableMouseCapture`/
+/// `DisableMouseCapture` commands write (`ESC[?1000h` et al.); on Windows,
+/// ConPTY sits between the child and the master handle and re-serialises
+/// its own view of the session rather than passing the child's bytes
+/// through verbatim — a byte-exact presence *or* absence claim there would
+/// prove something about conhost, not about `quadraui::tui::run_with`. What
+/// Windows keeps: `TuiBackend::set_mouse_enabled`/`mouse_enabled`'s
+/// session-level-toggle unit tests in `src/tui/backend.rs`, which are
+/// platform-independent, plus this module's content-level assertion that
+/// the app stays fully operable by keyboard alone — that one doesn't
+/// depend on the pty being a faithful byte pipe.
+#[cfg(unix)]
+mod no_mouse {
+    use super::*;
+
+    /// Any one of `EnableMouseCapture`'s five constituent SGR sequences
+    /// (crossterm's `event::EnableMouseCapture::write_ansi`) is sufficient
+    /// evidence the terminal was asked to negotiate mouse capture at all.
+    /// `?1000h` (X10/normal tracking) is the first and least ambiguous of
+    /// the five — no other quadraui escape sequence starts with it.
+    const MOUSE_CAPTURE_ENABLE: &[u8] = b"\x1b[?1000h";
+
+    /// `RunConfig::no_mouse()` must never emit the mouse-capture escape
+    /// sequence at all, and the app must stay fully operable by keyboard —
+    /// the `[`/`]` keyboard-resize path `SplitApp` documents as the Tier-1
+    /// equivalent of dragging the divider (quadraui#828).
+    #[test]
+    fn tui_no_mouse_never_negotiates_mouse_capture_and_stays_keyboard_operable() {
+        let mut ex = PtyExample::spawn("tui_no_mouse", 100, 30);
+
+        assert!(
+            ex.wait_for("ratio: 50%", WAIT),
+            "tui_no_mouse did not render SplitApp's initial status bar over the pty; screen:\n{}",
+            ex.screen_text()
+        );
+        // Give the alt-screen/raw-mode setup a moment to fully settle
+        // before sampling the raw stream — the render above only proves
+        // *a* frame painted, not that setup has finished writing every
+        // escape sequence it's going to write.
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert!(
+            !ex.raw_contains(MOUSE_CAPTURE_ENABLE),
+            "RunConfig::no_mouse() still emitted the mouse-capture escape sequence {:?} — \
+             the `if config.mouse {{ .. }} else {{ .. }}` branch in `tui::run_with` did not \
+             withhold it",
+            String::from_utf8_lossy(MOUSE_CAPTURE_ENABLE)
+        );
+
+        // Keyboard still works with no mouse ever negotiated: `]` nudges
+        // the ratio up by 5% (see `KEYBOARD_RESIZE_STEP` in
+        // `examples/common/split_app.rs`).
+        ex.send(b"]");
+        assert!(
+            ex.wait_for("ratio: 55%", WAIT),
+            "the keyboard-only resize path ([`/`]) did not fire in no-mouse mode; screen:\n{}",
+            ex.screen_text()
+        );
+
+        ex.send(b"q");
+        assert!(
+            ex.wait_exit(WAIT),
+            "tui_no_mouse did not exit after 'q' — raw-mode teardown or event loop may be hanging"
+        );
+
+        // The escape sequence must still be absent from everything emitted
+        // across the whole session, not just the initial frame.
+        assert!(
+            !ex.raw_contains(MOUSE_CAPTURE_ENABLE),
+            "the mouse-capture escape sequence {:?} appeared at some point during the session \
+             (initial render was clean) — a later frame or the teardown path must have emitted \
+             it",
+            String::from_utf8_lossy(MOUSE_CAPTURE_ENABLE)
+        );
+    }
+
+    /// Control case: `tui_split` — the same `SplitApp`, but run through
+    /// plain `quadraui::tui::run` (`RunConfig::default()`, mouse enabled) —
+    /// *does* emit the mouse-capture escape sequence. Without this, a bug
+    /// that made `raw_contains` always return `false` (a typo'd needle, a
+    /// reader-thread race that drops bytes before they're recorded) would
+    /// make the test above pass for the wrong reason indefinitely.
+    #[test]
+    fn tui_split_negotiates_mouse_capture_by_default() {
+        let mut ex = PtyExample::spawn("tui_split", 100, 30);
+
+        assert!(
+            ex.wait_for("ratio: 50%", WAIT),
+            "tui_split did not render SplitApp's initial status bar over the pty; screen:\n{}",
+            ex.screen_text()
+        );
+
+        assert!(
+            ex.wait_for_raw(MOUSE_CAPTURE_ENABLE, WAIT),
+            "tui_split (default RunConfig, mouse enabled) never emitted the mouse-capture \
+             escape sequence {:?} — either crossterm's setup changed shape, or the \
+             `raw_contains`/`wait_for_raw` observation channel this module relies on is broken",
+            String::from_utf8_lossy(MOUSE_CAPTURE_ENABLE)
+        );
+
+        ex.send(b"q");
+        assert!(
+            ex.wait_exit(WAIT),
+            "tui_split did not exit after 'q' — raw-mode teardown or event loop may be hanging"
+        );
+    }
+}

@@ -554,6 +554,11 @@ path = "examples/gtk_split.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_no_mouse"
+path = "examples/tui_no_mouse.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_split_tree"
 path = "examples/tui_split_tree.rs"
 required-features = ["tui"]

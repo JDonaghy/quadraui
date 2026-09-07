@@ -99,6 +99,26 @@ impl Default for RunConfig {
     }
 }
 
+impl RunConfig {
+    /// Convenience constructor for **`no-mouse` mode** (quadraui#828):
+    /// equivalent to `RunConfig { mouse: false, ..Default::default() }`.
+    ///
+    /// `RunConfig` is `#[non_exhaustive]` so future fields can be added
+    /// without breaking downstream callers — but that same attribute means
+    /// a struct-literal expression (even one using `..Default::default()`)
+    /// is rejected by rustc (`E0639`) from *outside* this crate. Without
+    /// this constructor, no consumer could actually build a non-default
+    /// `RunConfig` at all: the field is `pub`, but the type would be
+    /// write-only from any caller that isn't `quadraui` itself. This method
+    /// is the one supported way in.
+    pub fn no_mouse() -> Self {
+        Self {
+            mouse: false,
+            ..Default::default()
+        }
+    }
+}
+
 /// Drive `app` to completion in a TUI environment, using the default
 /// [`RunConfig`] (mouse capture enabled). See [`run_with`] for a version
 /// that takes an explicit config, e.g. to opt into `no-mouse` mode.
@@ -121,7 +141,10 @@ pub fn run<A: AppLogic>(app: A) -> io::Result<()> {
 }
 
 /// Like [`run`], but with an explicit [`RunConfig`] — the entry point for
-/// **`no-mouse` mode** (`RunConfig { mouse: false, .. }`, quadraui#828).
+/// **`no-mouse` mode** ([`RunConfig::no_mouse`], quadraui#828). See
+/// `examples/tui_no_mouse.rs` for a runnable demo and
+/// `tests/tui_pty_smoke.rs`'s `no_mouse` module for the black-box proof
+/// that mouse capture is actually withheld over a real pty.
 pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     use ratatui::crossterm::event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
