@@ -349,6 +349,16 @@ where
         size.height as f32,
         1.0,
     ));
+    // Issue #830: resolve the currently-focused widget's rect (if any)
+    // from this frame's tab stops *before* entering the frame scope —
+    // `AppLogic::tab_stops` is `&self`-only and cheap for an app that
+    // already has this on hand from building its `ScreenLayout`.
+    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
+        app.tab_stops(A::AreaId::default())
+            .into_iter()
+            .find(|(stop_id, _)| *stop_id == id)
+            .map(|(_, rect)| rect)
+    });
     terminal
         .draw(|frame| {
             backend.enter_frame_scope(frame, |b| {
@@ -356,6 +366,13 @@ where
                 // `AreaId`. Multi-area runners (GTK) pass the AreaId for
                 // whichever surface is repainting.
                 app.render(b, A::AreaId::default());
+                // After app.render: paint the focus-ring convention
+                // (#830) so it overlays on top of the widget's own
+                // content, same ordering as the selection-highlight
+                // overlay below.
+                if let Some(rect) = focus_ring_rect {
+                    b.draw_focus_ring(rect);
+                }
             });
             // After app.render: overlay selection highlight on the rendered
             // buffer. Done outside enter_frame_scope so the closure lifetime
@@ -406,7 +423,8 @@ where
 /// Dispatch one [`UiEvent`] through the app, applying the shared runner
 /// pre-processing pipeline first.
 ///
-/// The pre-processing itself — Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
+/// The pre-processing itself — ActivityBar keyboard-focus redirect,
+/// Tab/Shift+Tab focus cycling (#830), Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
 /// middle-click PRIMARY-selection paste (a no-op on TUI — see
 /// [`crate::backend::Clipboard::read_primary_selection`]'s default),
 /// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`

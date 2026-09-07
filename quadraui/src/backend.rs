@@ -70,6 +70,7 @@ use std::time::Duration;
 
 use crate::dispatch::DragState;
 use crate::event::{Point, Rect, UiEvent, Viewport};
+use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
@@ -942,6 +943,37 @@ pub trait Backend: sealed::Sealed {
     /// contract as [`Self::modal_stack_handle`]. See that method's docs
     /// for the pattern and rationale (quadraui#699).
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>>;
+
+    // ─── Focus (issue #830) ──────────────────────────────────────────────
+    /// Read-only access to this backend's [`FocusManager`] — the single
+    /// owner of "what widget currently has keyboard focus". See
+    /// [`crate::focus`]'s module doc for the full design and the six
+    /// ad-hoc representations it replaces.
+    ///
+    /// Deliberately `&FocusManager`, not `&mut`: the only code that
+    /// mutates it is the shared Tab/Shift+Tab intercept in
+    /// [`crate::runtime::preprocess_event`], reached through the
+    /// crate-private `PreprocessBackend::focus_manager_mut` — apps read
+    /// the current focus here, they don't set it directly. No default:
+    /// every backend owns exactly one `FocusManager`, constructed
+    /// alongside its other per-frame state.
+    fn focus_manager(&self) -> &FocusManager;
+
+    /// Paint the focus-ring convention around `rect` — a themed,
+    /// border-only stroke (`Theme::accent_fg`) with no fill, so the
+    /// focused widget's own content keeps showing through underneath.
+    /// Called by the runner once per frame, immediately after
+    /// `AppLogic::render`, whenever [`Self::focus_manager`]`().focused()`
+    /// names a widget this frame's tab stops resolve a rect for — apps
+    /// never call this directly.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser
+    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    /// Do not add a no-op default here; see
+    /// `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
+    /// portability risk, not a precedent to follow.
+    fn draw_focus_ring(&mut self, rect: Rect);
 
     // ─── Error reporting (issue #507, D-009) ────────────────────────────
     /// The most recent [`BackendError`] this backend recorded, if any,

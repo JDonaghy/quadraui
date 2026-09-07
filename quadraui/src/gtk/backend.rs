@@ -330,6 +330,12 @@ pub struct GtkBackend {
     /// two `MouseDown`s, not a coin-flip on `DoubleClickDetector`'s
     /// 400ms window. Mirrors `TuiBackend::double_click_folding` exactly.
     double_click_folding: bool,
+    /// Single owner of keyboard focus (issue #830) — see
+    /// [`crate::focus`]'s module doc. Mutated only by the shared
+    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
+    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
+    /// read elsewhere via [`Backend::focus_manager`].
+    focus: crate::focus::FocusManager,
 }
 
 /// Cached state from the most recent successful [`GtkBackend::draw_terminal`]
@@ -437,6 +443,7 @@ impl GtkBackend {
             term_paint_cache: HashMap::new(),
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
             double_click_folding: true,
+            focus: crate::focus::FocusManager::new(),
         }
     }
 
@@ -1175,6 +1182,10 @@ impl crate::runtime::PreprocessBackend for GtkBackend {
         self.focused_activity_bar_id()
     }
 
+    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
+        &mut self.focus
+    }
+
     fn match_keypress(
         &self,
         key: &crate::Key,
@@ -1412,6 +1423,19 @@ impl Backend for GtkBackend {
 
     fn drag_state_handle(&self) -> Rc<std::cell::RefCell<DragState>> {
         self.drag_state.clone()
+    }
+
+    fn focus_manager(&self) -> &crate::focus::FocusManager {
+        &self.focus
+    }
+
+    fn draw_focus_ring(&mut self, rect: QRect) {
+        let theme = self.current_theme;
+        self.surface_stroke_rect(rect, theme.accent_fg, crate::focus::FOCUS_RING_STROKE_WIDTH);
+        // #492 C0 contract §5b: a chrome-only paint (no text of its own)
+        // is only "observable" via a registered zone — mirrors
+        // `draw_terminal_divider`'s identical registration.
+        self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
     fn services(&self) -> &dyn PlatformServices {

@@ -227,6 +227,12 @@ pub struct MacBackend {
     /// [`super::text_selection::draw_selection_highlight`]) and text
     /// extraction ([`Self::extract_selection_text`]) are backend-owned.
     text_selection: crate::text_selection::TextSelectionState,
+    /// Single owner of keyboard focus (issue #830) — see
+    /// [`crate::focus`]'s module doc. Mutated only by the shared
+    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
+    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
+    /// read elsewhere via [`Backend::focus_manager`].
+    focus: crate::focus::FocusManager,
 }
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -386,6 +392,7 @@ impl MacBackend {
             pending_window_press: WindowDragArm::new(),
             nerd_fonts_enabled: false,
             text_selection: crate::text_selection::TextSelectionState::default(),
+            focus: crate::focus::FocusManager::new(),
         }
     }
 
@@ -761,6 +768,10 @@ impl crate::runtime::PreprocessBackend for MacBackend {
         self.focused_activity_bar_id()
     }
 
+    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
+        &mut self.focus
+    }
+
     fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
         self.match_keypress(key, modifiers)
     }
@@ -899,6 +910,16 @@ impl Backend for MacBackend {
 
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
         self.drag_state.clone()
+    }
+
+    fn focus_manager(&self) -> &crate::focus::FocusManager {
+        &self.focus
+    }
+
+    fn draw_focus_ring(&mut self, rect: Rect) {
+        let theme = self.current_theme;
+        self.surface_stroke_rect(rect, theme.accent_fg, crate::focus::FOCUS_RING_STROKE_WIDTH);
+        self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
     fn services(&self) -> &dyn PlatformServices {

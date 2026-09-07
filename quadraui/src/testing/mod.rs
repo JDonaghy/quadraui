@@ -692,6 +692,11 @@ pub struct RecordingBackend {
     pub line_height: f32,
     /// Reported by [`Backend::char_width`]. `1.0` by default.
     pub char_width: f32,
+    /// Backs [`Backend::focus_manager`] — unlike `modal_stack_handle`/
+    /// `drag_state_handle`, this one *is* real state a headless mock can
+    /// honestly fabricate (issue #830), so it's included rather than
+    /// `unimplemented!()`.
+    pub focus: crate::focus::FocusManager,
 }
 
 impl Default for RecordingBackend {
@@ -705,6 +710,7 @@ impl Default for RecordingBackend {
             },
             line_height: 1.0,
             char_width: 1.0,
+            focus: crate::focus::FocusManager::new(),
         }
     }
 }
@@ -753,6 +759,12 @@ impl crate::Backend for RecordingBackend {
             "RecordingBackend has no shared ModalStack — drive a real backend \
              (quadraui::tui::testing::TuiDriver) if your test needs one"
         )
+    }
+    fn focus_manager(&self) -> &crate::focus::FocusManager {
+        &self.focus
+    }
+    fn draw_focus_ring(&mut self, _r: Rect) {
+        self.record("draw_focus_ring");
     }
     fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
         unimplemented!(

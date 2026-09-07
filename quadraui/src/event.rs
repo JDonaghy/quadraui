@@ -28,6 +28,7 @@
 //! | `FilesDropped` | Hit-test at drop position |
 //! | `ClipboardPaste` | Focus |
 //! | `TextCopied` | Broadcast (no target) |
+//! | `FocusChanged` | Broadcast — names the new focus, if any |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -380,6 +381,28 @@ pub enum UiEvent {
     /// Routing: broadcast (no widget target — it is not input-focus
     /// routed). Apps that don't need copy confirmation can ignore it.
     TextCopied(String),
+
+    // ── Focus ────────────────────────────────────────────────────────
+    /// Keyboard focus moved (or was cleared) — issue #830.
+    ///
+    /// Emitted by the shared runner pipeline
+    /// ([`crate::runtime::preprocess_event`]) whenever
+    /// [`crate::focus::FocusManager::focus_next`]/`focus_prev` (driven
+    /// by Tab/Shift+Tab) or [`crate::focus::FocusManager::set_focus`]
+    /// actually changes [`crate::Backend::focus_manager`]'s
+    /// [`crate::focus::FocusManager::focused`] value. `None` means focus
+    /// was cleared — no widget focused. A no-op cycle (e.g. Tab in a
+    /// single-widget tab order) does not re-fire this event.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`] — apps read the new
+    /// value directly off the payload (or off
+    /// [`crate::Backend::focus_manager`] at any later point) rather than
+    /// this being routed to a specific widget's handler. Only fires for
+    /// apps that opt in by returning a non-empty
+    /// [`crate::runner::AppLogic::tab_stops`] — see that method's doc
+    /// for the full opt-in contract, including why Tab/Shift+Tab stop
+    /// reaching [`Self::KeyPressed`] once an app opts in.
+    FocusChanged(Option<WidgetId>),
 
     // ── Cross-primitive scroll event ──────────────────────────────────
     /// A scrollbar drag or click resolved to a new offset. Generic

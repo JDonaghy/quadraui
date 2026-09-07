@@ -38,7 +38,8 @@
 //! live `cairo::Context` for one backed by a headless
 //! `cairo::ImageSurface` and supplies scripted events instead of real
 //! GDK signals — but the frame paint and the event pre-processing
-//! (ActivityBar keyboard-focus intercept, accelerator matching, Ctrl-C/
+//! (ActivityBar keyboard-focus intercept, Tab/Shift+Tab focus cycling
+//! (#830), accelerator matching, Ctrl-C/
 //! V/A interception, text-selection state) cannot drift, because every
 //! GTK signal closure below routes through these same two functions.
 //!
@@ -443,7 +444,8 @@ fn activate<A: AppLogic + 'static>(
             };
 
             // All key-press pre-processing — ActivityBar keyboard-focus
-            // intercept, `Global` accelerator matching (#445), Ctrl-C/V/A
+            // intercept, Tab/Shift+Tab focus cycling (#830), `Global`
+            // accelerator matching (#445), Ctrl-C/V/A
             // interception — lives in the shared `dispatch_event` (see the
             // module doc's "Shared with the headless test driver" section)
             // so the live GTK path and `GtkDriver::press`/`type_char`
@@ -1162,9 +1164,22 @@ pub(crate) fn render_frame<A: AppLogic>(
     );
     cr.paint().ok();
 
+    // Issue #830: resolve the currently-focused widget's rect (if any)
+    // from this frame's tab stops before entering the frame scope —
+    // mirrors `tui::run::paint_frame`.
+    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
+        app.tab_stops(A::AreaId::default())
+            .into_iter()
+            .find(|(stop_id, _)| *stop_id == id)
+            .map(|(_, rect)| rect)
+    });
     backend.enter_frame_scope(cr, &layout, |b| {
         // Single-area runner: pass the default `AreaId`.
         app.render(b, A::AreaId::default());
+        // After app.render: paint the focus-ring convention (#830).
+        if let Some(rect) = focus_ring_rect {
+            b.draw_focus_ring(rect);
+        }
     });
 
     // After app.render: overlay selection highlight on top of the
@@ -1194,6 +1209,7 @@ pub(crate) fn render_frame<A: AppLogic>(
 /// that matters.
 ///
 /// The pre-processing itself — ActivityBar keyboard-focus redirect,
+/// Tab/Shift+Tab focus cycling (#830),
 /// global accelerator rewrite, Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
 /// middle-click PRIMARY-selection paste, Ctrl-A select-all, selection-
 /// display clearing, `TextSelectionChanged` — lives in
