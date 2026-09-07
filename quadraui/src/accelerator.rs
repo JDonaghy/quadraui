@@ -80,8 +80,14 @@ pub enum KeyBinding {
     Copy,
     Cut,
     Paste,
+    /// Consumed by [`crate::primitives::text_input::EditOp::from_key_binding`]
+    /// (`TextInput`'s undo/redo — see issue #833).
     Undo,
+    /// See [`Self::Undo`].
     Redo,
+    /// Also consumed by
+    /// [`crate::primitives::text_input::EditOp::from_key_binding`] — see
+    /// [`Self::Undo`].
     SelectAll,
     Find,
     Replace,

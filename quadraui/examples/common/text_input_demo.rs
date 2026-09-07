@@ -1,14 +1,22 @@
-//! TextInput demo — visual smoke test for the new TextInput primitive.
+//! TextInput demo — visual smoke test for the `TextInput` primitive's
+//! editing behaviour.
 //!
 //! Renders a single multi-line `TextInput` filling most of the viewport.
-//! Implements minimal editing (insert, backspace, arrow keys, Enter,
-//! Home/End) so you can verify cursor positioning, line wrap on Enter,
-//! scroll auto-clamp, and placeholder rendering.
+//! All editing goes through `TextInput::apply(EditOp)` (issue #833) —
+//! this file no longer hand-rolls insert/backspace/cursor-movement logic
+//! itself. Exercises cursor positioning, line wrap on Enter, scroll
+//! auto-clamp, placeholder rendering, Shift+arrow selection, and
+//! Ctrl+Z/Ctrl+Shift+Z undo/redo (bound to the universal
+//! `KeyBinding::Undo`/`KeyBinding::Redo` accelerator names).
 
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, MouseButton, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, TextInput, TextInputHit, UiEvent, WidgetId,
+    Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Color, EditOp,
+    InteractionState, Key, KeyBinding, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TextInput, TextInputHit, UiEvent, WidgetId,
 };
+
+const UNDO_ACCEL: &str = "text_input_demo.undo";
+const REDO_ACCEL: &str = "text_input_demo.redo";
 
 pub struct TextInputDemo {
     input: TextInput,
@@ -17,110 +25,13 @@ pub struct TextInputDemo {
 impl TextInputDemo {
     pub fn new() -> Self {
         let mut input = TextInput::new(WidgetId::new("demo:input"));
-        input.placeholder =
-            Some("Type something. Enter for newline. Arrows/Home/End to move. Esc to quit.".into());
+        input.placeholder = Some(
+            "Type something. Enter for newline. Arrows/Home/End to move, Shift to select. \
+             Ctrl+Z/Ctrl+Shift+Z to undo/redo. Esc to quit."
+                .into(),
+        );
         input.has_focus = true;
         Self { input }
-    }
-
-    fn cursor_byte(&self) -> usize {
-        let line = self
-            .input
-            .lines
-            .get(self.input.cursor_line)
-            .map(String::as_str)
-            .unwrap_or("");
-        line.char_indices()
-            .nth(self.input.cursor_col)
-            .map(|(b, _)| b)
-            .unwrap_or(line.len())
-    }
-
-    fn insert_char(&mut self, ch: char) {
-        if self.input.lines.is_empty() {
-            self.input.lines.push(String::new());
-        }
-        let byte = self.cursor_byte();
-        let line = &mut self.input.lines[self.input.cursor_line];
-        line.insert(byte, ch);
-        self.input.cursor_col += 1;
-    }
-
-    fn insert_newline(&mut self) {
-        let byte = self.cursor_byte();
-        let line = self.input.lines[self.input.cursor_line].clone();
-        let (head, tail) = line.split_at(byte);
-        self.input.lines[self.input.cursor_line] = head.to_string();
-        self.input
-            .lines
-            .insert(self.input.cursor_line + 1, tail.to_string());
-        self.input.cursor_line += 1;
-        self.input.cursor_col = 0;
-    }
-
-    fn backspace(&mut self) {
-        if self.input.cursor_col > 0 {
-            let byte = self.cursor_byte();
-            let line = &mut self.input.lines[self.input.cursor_line];
-            // Find byte boundary for the char before cursor.
-            let prev_byte = line
-                .char_indices()
-                .nth(self.input.cursor_col - 1)
-                .map(|(b, _)| b)
-                .unwrap_or(0);
-            line.replace_range(prev_byte..byte, "");
-            self.input.cursor_col -= 1;
-        } else if self.input.cursor_line > 0 {
-            // Merge with previous line.
-            let current = self.input.lines.remove(self.input.cursor_line);
-            self.input.cursor_line -= 1;
-            let prev = &mut self.input.lines[self.input.cursor_line];
-            self.input.cursor_col = prev.chars().count();
-            prev.push_str(&current);
-        }
-    }
-
-    fn move_left(&mut self) {
-        if self.input.cursor_col > 0 {
-            self.input.cursor_col -= 1;
-        } else if self.input.cursor_line > 0 {
-            self.input.cursor_line -= 1;
-            self.input.cursor_col = self.input.lines[self.input.cursor_line].chars().count();
-        }
-    }
-
-    fn move_right(&mut self) {
-        let line_len = self.input.lines[self.input.cursor_line].chars().count();
-        if self.input.cursor_col < line_len {
-            self.input.cursor_col += 1;
-        } else if self.input.cursor_line + 1 < self.input.lines.len() {
-            self.input.cursor_line += 1;
-            self.input.cursor_col = 0;
-        }
-    }
-
-    fn move_up(&mut self) {
-        if self.input.cursor_line > 0 {
-            self.input.cursor_line -= 1;
-            let line_len = self.input.lines[self.input.cursor_line].chars().count();
-            self.input.cursor_col = self.input.cursor_col.min(line_len);
-        }
-    }
-
-    fn move_down(&mut self) {
-        if self.input.cursor_line + 1 < self.input.lines.len() {
-            self.input.cursor_line += 1;
-            let line_len = self.input.lines[self.input.cursor_line].chars().count();
-            self.input.cursor_col = self.input.cursor_col.min(line_len);
-        }
-    }
-
-    fn move_home(&mut self) {
-        self.input.cursor_col = 0;
-    }
-
-    fn move_end(&mut self) {
-        self.input.cursor_col = self.input.lines[self.input.cursor_line].chars().count();
     }
 
     /// Same `input_rect` geometry `render` uses — shared so
@@ -174,26 +85,56 @@ impl Default for TextInputDemo {
 impl AppLogic for TextInputDemo {
     type AreaId = ();
 
+    /// Registers the demo's undo/redo accelerators — see #833's module
+    /// doc. `Backend::register_accelerator` resolves `Global`-scope
+    /// bindings natively, translating a matching raw key press straight
+    /// into `UiEvent::Accelerator` before `handle` ever sees it.
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        backend.register_accelerator(&Accelerator {
+            id: AcceleratorId::new(UNDO_ACCEL),
+            binding: KeyBinding::Undo,
+            scope: AcceleratorScope::Global,
+            label: None,
+        });
+        backend.register_accelerator(&Accelerator {
+            id: AcceleratorId::new(REDO_ACCEL),
+            binding: KeyBinding::Redo,
+            scope: AcceleratorScope::Global,
+            label: None,
+        });
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
-        let lh = backend.line_height();
-        let status_h = lh;
-        let pad = lh;
+        let status_h = backend.line_height();
 
         let status_rect = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
         backend.draw_status_bar_interactive(status_rect, &self.status(), &InteractionState::new());
 
-        let input_rect = Rect::new(
-            pad,
-            pad,
-            viewport.width - pad * 2.0,
-            viewport.height - status_h - pad * 2.0,
-        );
+        let input_rect = Self::input_rect(backend);
         backend.draw_text_input(input_rect, &self.input);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
+            // Accelerators fire ahead of raw key events (quadraui's
+            // backends match registered accelerators first) — this is
+            // #833's undo/redo wiring: the long-declared
+            // `KeyBinding::Undo`/`Redo` names now reach
+            // `TextInput::apply` via `EditOp::from_key_binding`.
+            UiEvent::Accelerator(id, _modifiers) => {
+                let op = if id.as_str() == UNDO_ACCEL {
+                    EditOp::from_key_binding(&KeyBinding::Undo)
+                } else if id.as_str() == REDO_ACCEL {
+                    EditOp::from_key_binding(&KeyBinding::Redo)
+                } else {
+                    None
+                };
+                match op.map(|op| self.input.apply(op)) {
+                    Some(true) => Reaction::Redraw,
+                    Some(false) | None => Reaction::Continue,
+                }
+            }
             // Click routing (#818): move the cursor to the clicked line
             // via `TextInputLayout::hit_test` — the same layout `render`
             // just painted from.
@@ -204,61 +145,54 @@ impl AppLogic for TextInputDemo {
             } => {
                 let rect = Self::input_rect(backend);
                 let layout = backend.text_input_layout(rect, &self.input);
-                match layout.hit_test(position.x, position.y) {
-                    TextInputHit::Line { line_idx } => {
-                        self.input.cursor_line = line_idx;
-                        let len = self.input.lines[line_idx].chars().count();
-                        self.input.cursor_col = self.input.cursor_col.min(len);
-                        Reaction::Redraw
-                    }
+                let op = match layout.hit_test(position.x, position.y) {
+                    TextInputHit::Line { line_idx } => EditOp::SetCursor {
+                        line: line_idx,
+                        col: self.input.cursor_col,
+                        extend: false,
+                    },
                     TextInputHit::EmptyArea => {
-                        self.input.cursor_line = self.input.lines.len().saturating_sub(1);
-                        self.input.cursor_col =
-                            self.input.lines[self.input.cursor_line].chars().count();
-                        Reaction::Redraw
+                        let last = self.input.lines.len().saturating_sub(1);
+                        EditOp::SetCursor {
+                            line: last,
+                            col: usize::MAX,
+                            extend: false,
+                        }
                     }
+                };
+                if self.input.apply(op) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
             }
-            UiEvent::KeyPressed { key, .. } => match key {
-                Key::Named(NamedKey::Escape) => Reaction::Exit,
-                Key::Named(NamedKey::Enter) => {
-                    self.insert_newline();
-                    Reaction::Redraw
+            UiEvent::KeyPressed {
+                key,
+                modifiers,
+                repeat: _,
+            } => {
+                if matches!(key, Key::Named(NamedKey::Escape)) {
+                    return Reaction::Exit;
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.backspace();
-                    Reaction::Redraw
+                // Plain typing and cursor movement (with Shift-to-select)
+                // go through `EditOp::from_key`; Ctrl+<letter> combos
+                // that aren't accelerators (none needed here — Undo/Redo
+                // are handled above as accelerators) fall through to
+                // `Reaction::Continue`.
+                if modifiers.ctrl || modifiers.cmd {
+                    return Reaction::Continue;
                 }
-                Key::Named(NamedKey::Left) => {
-                    self.move_left();
-                    Reaction::Redraw
+                match EditOp::from_key(&key, modifiers) {
+                    Some(op) => {
+                        if self.input.apply(op) {
+                            Reaction::Redraw
+                        } else {
+                            Reaction::Continue
+                        }
+                    }
+                    None => Reaction::Continue,
                 }
-                Key::Named(NamedKey::Right) => {
-                    self.move_right();
-                    Reaction::Redraw
-                }
-                Key::Named(NamedKey::Up) => {
-                    self.move_up();
-                    Reaction::Redraw
-                }
-                Key::Named(NamedKey::Down) => {
-                    self.move_down();
-                    Reaction::Redraw
-                }
-                Key::Named(NamedKey::Home) => {
-                    self.move_home();
-                    Reaction::Redraw
-                }
-                Key::Named(NamedKey::End) => {
-                    self.move_end();
-                    Reaction::Redraw
-                }
-                Key::Char(c) => {
-                    self.insert_char(c);
-                    Reaction::Redraw
-                }
-                _ => Reaction::Continue,
-            },
+            }
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }

@@ -128,6 +128,23 @@ release time.
   test can tell them apart. All three additions are purely additive —
   no consumer hits for either symbol in `coord-tui` or `vimcode` (grep in
   the PR body).
+- `quadraui::undo::UndoStack<T>` (issue #833) — a generic, snapshot-based
+  undo/redo stack, reusable by any primitive (not just `TextInput`).
+- `TextInput::apply(EditOp)` (issue #833) — the primitive's first real
+  editing behaviour: insert, delete, cursor movement, and shift-to-select
+  selection, plus `EditOp::Undo`/`EditOp::Redo` backed by a private
+  `UndoStack`. `EditOp::from_key` maps a plain keypress to the op it
+  means; `EditOp::from_key_binding` wires the long-declared
+  `KeyBinding::Undo`/`Redo`/`SelectAll` accelerator names (previously
+  unconsumed) to real behaviour. New `TextInput::selection_anchor` field
+  (`#[serde(default)]`, additive) and `TextInput::selection_range`/
+  `selected_text` read helpers. Before this, every consumer (including
+  this crate's own `examples/common/text_input_demo.rs`) hand-rolled
+  insert/backspace/cursor-movement logic itself. `TextInput` also gained
+  a new *private* field (`undo_stack`) — see `## Downstream impact` in
+  the PR body: any exhaustive external `TextInput { .. }` struct literal
+  (as opposed to `TextInput::new(id)` + field assignment) no longer
+  compiles.
 
 ### Changed
 

@@ -654,16 +654,9 @@ pub const CASES: &[Case] = &[
         method: "draw_text_input",
         needle: Some("c0tin"),
         paint: |b, area| {
-            let ti = TextInput {
-                id: id("text-input"),
-                lines: vec!["c0tin".to_string()],
-                cursor_line: 0,
-                cursor_col: 0,
-                placeholder: None,
-                scroll_offset: 0,
-                scroll_col: 0,
-                has_focus: true,
-            };
+            let mut ti = TextInput::new(id("text-input"));
+            ti.lines = vec!["c0tin".to_string()];
+            ti.has_focus = true;
             let _ = b.draw_text_input(area, &ti);
         },
     },

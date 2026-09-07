@@ -708,19 +708,18 @@ impl ChatController {
             self.input_buf.split('\n').map(String::from).collect()
         };
         let (cursor_line, cursor_col) = cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-        TextInput {
-            id: WidgetId::new(format!("{}-input", self.id.0)),
-            lines,
-            cursor_line,
-            cursor_col,
-            placeholder: Some(
-                "Type a message\u{2026} (Ctrl+S or Alt+Enter to send, Enter for newline, Esc to cancel)"
-                    .into(),
-            ),
-            scroll_offset: self.input_scroll_offset,
-            scroll_col: self.input_scroll_col,
-            has_focus: self.input_has_focus,
-        }
+        let mut ti = TextInput::new(WidgetId::new(format!("{}-input", self.id.0)));
+        ti.lines = lines;
+        ti.cursor_line = cursor_line;
+        ti.cursor_col = cursor_col;
+        ti.placeholder = Some(
+            "Type a message\u{2026} (Ctrl+S or Alt+Enter to send, Enter for newline, Esc to cancel)"
+                .into(),
+        );
+        ti.scroll_offset = self.input_scroll_offset;
+        ti.scroll_col = self.input_scroll_col;
+        ti.has_focus = self.input_has_focus;
+        ti
     }
 
     // ── Key handling ──────────────────────────────────────────────────

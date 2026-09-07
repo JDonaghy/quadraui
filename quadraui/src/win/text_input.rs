@@ -19,10 +19,11 @@
 //! `char_width` a second time (#733's acceptance bar — "no geometry
 //! re-derived in `win/`").
 //!
-//! `TextInput` carries no selection range (see that primitive's doc), so
-//! unlike a full editor there is no selection highlight to paint here —
-//! only the cursor bar, matching `gtk::text_input`'s own cursor-only
-//! contract.
+//! `TextInput` gained a `selection_anchor` field under #833, but this
+//! rasteriser doesn't paint a selection highlight yet — only the cursor
+//! bar, matching `gtk::text_input`'s own (pre-#833) cursor-only contract.
+//! Painting the selection range is tracked as follow-up work alongside
+//! the other backends.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod text_input;` and `backend.rs`'s
@@ -129,16 +130,12 @@ mod tests {
     const H: f32 = 60.0;
 
     fn sample(lines: Vec<&str>, cursor_line: usize, cursor_col: usize) -> TextInput {
-        TextInput {
-            id: WidgetId::new("ti"),
-            lines: lines.into_iter().map(String::from).collect(),
-            cursor_line,
-            cursor_col,
-            placeholder: None,
-            scroll_offset: 0,
-            scroll_col: 0,
-            has_focus: true,
-        }
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = lines.into_iter().map(String::from).collect();
+        ti.cursor_line = cursor_line;
+        ti.cursor_col = cursor_col;
+        ti.has_focus = true;
+        ti
     }
 
     /// C0 smoke: `draw_text_input` must actually paint text + a
