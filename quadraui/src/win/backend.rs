@@ -2592,8 +2592,16 @@ impl Backend for WinBackend {
         tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
         #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.surface {
-            return super::split_tree::draw_split_tree(&surface.target, rect, tree);
+        if self.surface.is_some() {
+            let layout = super::split_tree::win_split_tree_layout(rect, tree);
+            // `Theme::default()`, not `self.current_theme` — preserves
+            // the pre-#863 `win::split_tree::draw_split_tree` behaviour
+            // exactly (see that module's doc, "# Theme" section:
+            // `WinBackend` has no live theme wired through to
+            // split-tree chrome yet).
+            let theme = crate::theme::Theme::default();
+            crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
+            return layout;
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, tree);

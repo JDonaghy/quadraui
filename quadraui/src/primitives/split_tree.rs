@@ -525,6 +525,222 @@ impl SplitTreeLayout {
     }
 }
 
+// ── NativeSurface paint (#863, Phase 2d slice 6/9 of the NativeSurface
+// milestone, child of #811) ────────────────────────────────────────────
+//
+// Before this, `gtk::draw_split_tree` (Cairo), `macos::split_tree::draw_split_tree`
+// (Core Graphics) and `win::split_tree::draw_split_tree` (Direct2D) each
+// independently painted the same divider-only chrome with their own
+// drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
+// §5). `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of
+// any one backend's drawing API.
+//
+// Unlike `primitives::scrollbar`'s translucent-overlay identity (#811
+// slice 1) or `primitives::chart`'s divergence-heavy unification (#810),
+// the three deleted copies here were already exactly identical: same
+// divider-rect placement per `SplitDirection` (swap axis vs. cross for
+// `Horizontal`/`Vertical`), same opaque `theme.separator` fill colour,
+// no hover/drag state and no alpha manipulation of any kind — GTK filled
+// every divider rect in one `cr.fill()` call after accumulating them via
+// `cr.rectangle`, while macOS and Windows filled one rect at a time, but
+// non-overlapping same-colour opaque fills are pixel-identical either
+// way. Re-verified while migrating, per this issue's "re-verify before
+// you implement" — reported here rather than silently assumed. **No
+// divergence found.**
+//
+// Unlike `draw_scrollbar`/`draw_panel`, geometry (leaf rects + divider
+// placement) was ALREADY the single shared [`SplitTree::layout`] before
+// this issue — only the *paint* half (walking `layout.dividers` and
+// filling each divider's rect) was triplicated. `paint` therefore takes
+// an already-resolved [`SplitTreeLayout`] (the same convention as
+// `primitives::panel::native_surface_paint::paint`), not the raw
+// `SplitTree` + bounds — callers compute the layout once and reuse it
+// for both paint and hit-test, exactly as `SplitTreeDivider::cell_position`'s
+// doc already requires.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised
+// by each backend's own `Backend::draw_split_tree` call site plus this
+// module's own `RecordingSurface` tests on every leg that enables one
+// of the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{SplitDirection, SplitTreeLayout};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::Rect;
+
+    /// Paint a [`SplitTreeLayout`]'s dividers onto `surface` as filled
+    /// rectangles in `theme.separator`. `layout` must be the same
+    /// [`SplitTreeLayout`] the caller uses for hit-testing (typically
+    /// `Backend::split_tree_layout`'s return value, or the value this
+    /// fn's own caller — `Backend::draw_split_tree` — returns) so paint
+    /// and hit-test can never disagree. Leaf content is NOT painted —
+    /// every backend leaves the leaf rects (`layout.leaves`) to the
+    /// host, same contract as before this migration.
+    pub(crate) fn paint(layout: &SplitTreeLayout, surface: &mut dyn NativeSurface, theme: &Theme) {
+        for div in &layout.dividers {
+            let rect = match div.direction {
+                SplitDirection::Horizontal => {
+                    Rect::new(div.position, div.cross_start, div.thickness, div.cross_size)
+                }
+                SplitDirection::Vertical => {
+                    Rect::new(div.cross_start, div.position, div.cross_size, div.thickness)
+                }
+            };
+            surface.surface_fill_rect(rect, theme.separator);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Rect as QRect, Viewport};
+        use crate::primitives::split_tree::{SplitTree, SplitTreeMeasure};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every `surface_fill_rect` call — mirrors
+        /// `primitives::scrollbar`'s `RecordingSurface` test double,
+        /// scoped to just the verb this primitive uses, so this test
+        /// runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn wid(s: &str) -> WidgetId {
+            WidgetId::new(s)
+        }
+
+        fn two_pane() -> SplitTree {
+            SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::leaf(wid("a")),
+                SplitTree::leaf(wid("b")),
+            )
+        }
+
+        fn nested() -> SplitTree {
+            SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::split(
+                    SplitDirection::Vertical,
+                    0.5,
+                    SplitTree::leaf(wid("a")),
+                    SplitTree::leaf(wid("c")),
+                ),
+                SplitTree::leaf(wid("b")),
+            )
+        }
+
+        #[test]
+        fn one_fill_per_divider_in_theme_separator() {
+            let layout = nested().layout(
+                QRect::new(0.0, 0.0, 400.0, 300.0),
+                SplitTreeMeasure::new(4.0),
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+            assert_eq!(surface.fills.len(), 2, "one fill per divider node");
+            for (_, color) in &surface.fills {
+                assert_eq!(
+                    *color, theme.separator,
+                    "dividers paint the opaque theme separator colour"
+                );
+            }
+        }
+
+        #[test]
+        fn horizontal_divider_rect_matches_geometry() {
+            let layout =
+                two_pane().layout(QRect::new(0.0, 0.0, 41.0, 10.0), SplitTreeMeasure::new(1.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+            let d = &layout.dividers[0];
+            assert_eq!(
+                surface.fills[0].0,
+                Rect::new(d.position, d.cross_start, d.thickness, d.cross_size)
+            );
+        }
+
+        #[test]
+        fn vertical_divider_rect_swaps_axes() {
+            let tree = SplitTree::split(
+                SplitDirection::Vertical,
+                0.5,
+                SplitTree::leaf(wid("a")),
+                SplitTree::leaf(wid("b")),
+            );
+            let layout = tree.layout(QRect::new(0.0, 0.0, 10.0, 21.0), SplitTreeMeasure::new(1.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+            let d = &layout.dividers[0];
+            assert_eq!(
+                surface.fills[0].0,
+                Rect::new(d.cross_start, d.position, d.cross_size, d.thickness)
+            );
+        }
+
+        #[test]
+        fn leaf_only_tree_paints_nothing() {
+            let layout = SplitTree::leaf(wid("a"))
+                .layout(QRect::new(0.0, 0.0, 10.0, 10.0), SplitTreeMeasure::new(1.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+            assert!(surface.fills.is_empty());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -320,6 +320,18 @@ pub use sidebar_panel::draw_sidebar_panel;
 pub use spinner::{draw_spinner, win_spinner_layout};
 #[cfg(target_os = "windows")]
 pub use split::{draw_split, win_split_layout, DIVIDER_DIP};
+// #863: `draw_split_tree` is `#[deprecated]` — see
+// `split_tree::draw_split_tree`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export, or leaving
+// it unreachable and therefore dead code once `WinBackend::draw_split_tree`
+// no longer called it directly) is the point. This re-export was missing
+// even for the pre-#863 free function — `split_tree` is the one
+// container/indicator module in this file whose twin, `split`, already
+// gets this treatment two lines up. `#[allow(deprecated)]` for the same
+// reason as `form::draw_form`'s re-export above.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use split_tree::{draw_split_tree, win_split_tree_layout};
 // #860: `draw_status_bar` is `#[deprecated]` — see
 // `status_bar::draw_status_bar`'s doc for why the shim exists and why
 // re-exporting it here (rather than dropping the re-export) is the
