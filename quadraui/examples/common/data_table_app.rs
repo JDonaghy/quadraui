@@ -18,8 +18,8 @@
 use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit,
-    DataTableLayout, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar, StatusBarSegment,
-    StyledText, UiEvent, WidgetId,
+    DataTableLayout, InteractionState, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct DataTableApp {
@@ -363,7 +363,11 @@ impl AppLogic for DataTableApp {
         let _layout = backend.draw_data_table(table_rect, &table, self.hovered_idx);
 
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
-        let _ = backend.draw_status_bar(bar_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            bar_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

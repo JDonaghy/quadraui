@@ -17,9 +17,10 @@
 //! - `q` / `Esc`                  quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarAction,
-    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Decoration, InteractionState, Key, NamedKey, NavigationMode,
+    Reaction, Rect, ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
+    StatusBarAction, StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent,
+    WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
@@ -131,11 +132,16 @@ impl AppLogic for DebugSidebar {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        let layout = backend.draw_status_bar(
+        // #819: one `InteractionState` in, instead of two positional
+        // ids. `StatusBarInteraction` keeps owning the press/release
+        // state machine; this adapts its ids into the new call shape.
+        let layout = backend.draw_status_bar_interactive(
             status,
             &self.build_status_bar(),
-            self.status_interaction.hovered_id(),
-            self.status_interaction.pressed_id(),
+            &InteractionState::from_parts(
+                self.status_interaction.hovered_id().cloned(),
+                self.status_interaction.pressed_id().cloned(),
+            ),
         );
         self.status_interaction.set_layout(layout);
     }

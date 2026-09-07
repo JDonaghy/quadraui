@@ -8,8 +8,8 @@
 //! call.
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct MiniApp {
@@ -75,7 +75,7 @@ impl AppLogic for MiniApp {
         let viewport = backend.viewport();
         let row_h = 28.0;
         let rect = Rect::new(0.0, viewport.height - row_h, viewport.width, row_h);
-        let _ = backend.draw_status_bar(rect, &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

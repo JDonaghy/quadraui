@@ -833,12 +833,11 @@ impl crate::Backend for RecordingBackend {
     /// only because neither `TreeController` nor `ChatController` ever
     /// calls `draw_status_bar`) — `AppShell::render` calls this for
     /// real, so its behaviour wins.
-    fn draw_status_bar(
+    fn draw_status_bar_interactive(
         &mut self,
         _r: Rect,
         _b: &crate::primitives::status_bar::StatusBar,
-        _hovered_id: Option<&WidgetId>,
-        _pressed_id: Option<&WidgetId>,
+        _interaction: &crate::interaction::InteractionState,
     ) -> crate::StatusBarLayout {
         self.record("draw_status_bar");
         crate::StatusBarLayout {
@@ -1144,12 +1143,11 @@ impl crate::Backend for RecordingBackend {
     ) -> crate::primitives::chart::ChartLayout {
         unimplemented!("RecordingBackend has no Chart layout algorithm")
     }
-    fn draw_toolbar(
+    fn draw_toolbar_interactive(
         &mut self,
         _r: Rect,
         _b: &crate::primitives::toolbar::Toolbar,
-        _h: Option<&crate::types::WidgetId>,
-        _p: Option<&crate::types::WidgetId>,
+        _interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         self.record("draw_toolbar");
         unimplemented!("RecordingBackend has no Toolbar layout algorithm")
@@ -1161,12 +1159,11 @@ impl crate::Backend for RecordingBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         unimplemented!("RecordingBackend has no Toolbar layout algorithm")
     }
-    fn draw_sidebar_panel(
+    fn draw_sidebar_panel_interactive(
         &mut self,
         _r: Rect,
         _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        _h: Option<&crate::types::WidgetId>,
-        _pr: Option<&crate::types::WidgetId>,
+        _interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         self.record("draw_sidebar_panel");
         unimplemented!("RecordingBackend has no SidebarPanel layout algorithm")

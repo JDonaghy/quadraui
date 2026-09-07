@@ -12,8 +12,9 @@
 //! menu item. Right-click anywhere in the window to open the menu.
 
 use quadraui::{
-    AppLogic, Backend, Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, Key, MouseButton,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, InteractionState,
+    Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    WidgetId,
 };
 
 use quadraui::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
@@ -103,7 +104,7 @@ impl AppLogic for RightClickDemo {
         let viewport = backend.viewport();
         let row_h = 28.0_f32;
         let rect = Rect::new(0.0, viewport.height - row_h, viewport.width, row_h);
-        let _ = backend.draw_status_bar(rect, &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

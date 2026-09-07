@@ -441,7 +441,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -454,8 +454,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
         }
 
@@ -550,11 +549,10 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &self.bar(),
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
         }
 
@@ -789,7 +787,7 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let bounds = Rect::new(0.0, 0.0, W as f32, H as f32);
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 bounds,
                 &StatusBar {
                     id: WidgetId::new("bg"),
@@ -810,8 +808,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
             backend.register_text_region(crate::TextRegion {
                 id: WidgetId::new("bg"),

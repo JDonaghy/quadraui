@@ -823,12 +823,11 @@ mod tests {
             _active: bool,
         ) {
         }
-        fn draw_status_bar(
+        fn draw_status_bar_interactive(
             &mut self,
             _r: Rect,
             _b: &crate::primitives::status_bar::StatusBar,
-            _hovered_id: Option<&WidgetId>,
-            _pressed_id: Option<&WidgetId>,
+            _interaction: &crate::interaction::InteractionState,
         ) -> crate::StatusBarLayout {
             unimplemented!()
         }
@@ -1059,12 +1058,11 @@ mod tests {
         ) -> crate::CommandCenterLayout {
             unimplemented!()
         }
-        fn draw_toolbar(
+        fn draw_toolbar_interactive(
             &mut self,
             _r: Rect,
             _b: &crate::primitives::toolbar::Toolbar,
-            _h: Option<&WidgetId>,
-            _p: Option<&WidgetId>,
+            _interaction: &crate::interaction::InteractionState,
         ) -> crate::primitives::toolbar::ToolbarLayout {
             unimplemented!()
         }
@@ -1075,12 +1073,11 @@ mod tests {
         ) -> crate::primitives::toolbar::ToolbarLayout {
             unimplemented!()
         }
-        fn draw_sidebar_panel(
+        fn draw_sidebar_panel_interactive(
             &mut self,
             _r: Rect,
             _p: &crate::primitives::sidebar_panel::SidebarPanel,
-            _h: Option<&WidgetId>,
-            _pr: Option<&WidgetId>,
+            _interaction: &crate::interaction::InteractionState,
         ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
             unimplemented!()
         }

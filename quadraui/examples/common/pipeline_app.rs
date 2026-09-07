@@ -12,8 +12,9 @@
 //! - q / Esc                quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, PipelineEvent, PipelineHit, PipelineStage,
-    PipelineView, Reaction, Rect, StageStatus, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, PipelineEvent, PipelineHit,
+    PipelineStage, PipelineView, Reaction, Rect, StageStatus, StatusBar, StatusBarSegment, UiEvent,
+    WidgetId,
 };
 
 pub struct PipelineApp {
@@ -105,7 +106,11 @@ impl AppLogic for PipelineApp {
 
         // Status bar at bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
 
         // Pipeline view occupying most of the screen, centred vertically.
         let pv_h = lh * 5.0; // roughly 5 rows tall

@@ -18,9 +18,9 @@
 use std::cell::RefCell;
 
 use quadraui::{
-    AppLogic, Backend, Color, FrameHitMap, FrameZone, Key, ListItem, ListView, NamedKey, Reaction,
-    Rect, ScreenLayout, StatusBar, StatusBarSegment, StyledText, Surface, TabBar, TabItem, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, FrameHitMap, FrameZone, InteractionState, Key, ListItem, ListView,
+    NamedKey, Reaction, Rect, ScreenLayout, StatusBar, StatusBarSegment, StyledText, Surface,
+    TabBar, TabItem, UiEvent, WidgetId,
 };
 
 pub struct HitMapRecoverDemo {
@@ -153,7 +153,7 @@ impl AppLogic for HitMapRecoverDemo {
         // an app would already be producing before adopting #425.
         backend.draw_tab_bar(tab_rect, &tab_bar, None);
         backend.draw_list(list_rect, &list);
-        backend.draw_status_bar(status_rect, &status, None, None);
+        backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
 
         // ── Hit-map recovery: zero additional backend calls. ────────
         // Push the *same* objects just painted above into a fresh

@@ -75,7 +75,10 @@ use crate::runner::{AppLogic, Reaction};
 use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, paint_frame, EventOutcome};
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent};
+use crate::{
+    ButtonMask, InteractionState, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta,
+    UiEvent,
+};
 
 /// `io::Write` sink that feeds every byte `CrosstermBackend` emits straight
 /// into a `vt100::Parser` — the "terminal" on the other end of the ANSI
@@ -489,7 +492,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 QRect::new(0.0, 0.0, 30.0, 1.0),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -502,8 +505,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &InteractionState::new(),
             );
         }
 

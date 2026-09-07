@@ -1327,13 +1327,13 @@ impl Backend for MacBackend {
         }
     }
 
-    fn draw_status_bar(
+    fn draw_status_bar_interactive(
         &mut self,
         rect: Rect,
         bar: &StatusBar,
-        hovered_id: Option<&WidgetId>,
-        pressed_id: Option<&WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> StatusBarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
         // each debug_assert their own `!ctx.is_null()` internally — see
         // `Self::surface_fill_rect` — so this method needs no separate
@@ -2193,13 +2193,13 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_toolbar(
+    fn draw_toolbar_interactive(
         &mut self,
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
-        hovered_id: Option<&crate::types::WidgetId>,
-        pressed_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::toolbar::ToolbarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -2271,13 +2271,14 @@ impl Backend for MacBackend {
         }
     }
 
-    fn draw_sidebar_panel(
+    fn draw_sidebar_panel_interactive(
         &mut self,
         rect: Rect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        hovered_toolbar_id: Option<&crate::types::WidgetId>,
-        pressed_toolbar_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let (hovered_toolbar_id, pressed_toolbar_id) =
+            (interaction.hovered(), interaction.pressed());
         debug_assert!(
             !self.current_cg().is_null(),
             "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
@@ -3689,7 +3690,7 @@ mod tests {
         b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |bk| {
-            let l = bk.draw_status_bar(
+            let l = bk.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("bg"),
@@ -3702,8 +3703,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -4417,7 +4417,7 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), sentinel);
-            b.draw_status_bar(
+            b.draw_status_bar_interactive(
                 Rect::new(10.0, 10.0, 0.0, 15.0),
                 &StatusBar {
                     id: WidgetId::new("test:status-bar"),
@@ -4430,8 +4430,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
         });
         backend.end_frame();

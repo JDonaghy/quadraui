@@ -31,8 +31,8 @@
 //! | Esc / h / ← | Return focus to editor |
 
 use quadraui::{
-    ActivityBar, ActivityBarEvent, ActivityItem, AppLogic, Backend, Color, Key, NamedKey, Reaction,
-    Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    ActivityBar, ActivityBarEvent, ActivityItem, AppLogic, Backend, Color, InteractionState, Key,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Item descriptor for the demo bar.
@@ -226,7 +226,7 @@ impl AppLogic for ActivityNavApp {
         } else {
             "  [ editor area has focus — press Tab to focus the bar ]"
         };
-        let _ = backend.draw_status_bar(
+        let _ = backend.draw_status_bar_interactive(
             editor_rect,
             &StatusBar {
                 id: WidgetId::new("demo:editor-area"),
@@ -239,13 +239,16 @@ impl AppLogic for ActivityNavApp {
                 }],
                 right_segments: vec![],
             },
-            None,
-            None,
+            &InteractionState::new(),
         );
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, vp.height - lh, vp.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

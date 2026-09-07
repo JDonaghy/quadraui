@@ -368,7 +368,16 @@ impl<'a> ScreenLayout<'a> {
                     hovered,
                     pressed,
                 } => {
-                    backend.draw_status_bar(*rect, bar, *hovered, *pressed);
+                    // #819: the trait's `WidgetId`-keyed hover/pressed
+                    // store. `Surface::StatusBar` still carries the two
+                    // borrowed ids because a `Surface` is a per-frame
+                    // *description*, not owned state — rebuild the
+                    // store at the call boundary.
+                    let interaction = crate::interaction::InteractionState::from_parts(
+                        hovered.cloned(),
+                        pressed.cloned(),
+                    );
+                    backend.draw_status_bar_interactive(*rect, bar, &interaction);
                 }
                 Surface::ActivityBar { rect, bar, hovered } => {
                     backend.draw_activity_bar(*rect, bar, *hovered);

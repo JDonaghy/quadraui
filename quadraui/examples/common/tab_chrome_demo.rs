@@ -20,8 +20,8 @@
 //! to confuse the click routing with.
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, TabBar,
-    TabChrome, TabFrame, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TabBar, TabChrome, TabFrame, TabItem, UiEvent, WidgetId,
 };
 
 /// Tab labels, index-stable across activation (only `is_active` /
@@ -110,11 +110,10 @@ impl AppLogic for TabChromeDemo {
             None,
             &self.chrome(),
         );
-        backend.draw_status_bar(
+        backend.draw_status_bar_interactive(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
             &self.hint_bar(),
-            None,
-            None,
+            &InteractionState::new(),
         );
     }
 

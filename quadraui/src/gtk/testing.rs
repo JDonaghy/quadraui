@@ -602,7 +602,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -615,8 +615,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
         }
 
@@ -764,11 +763,10 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &self.bar(),
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
         }
 
@@ -908,7 +906,7 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
-                backend.draw_status_bar(
+                backend.draw_status_bar_interactive(
                     Rect::new(0.0, i as f32 * STACKED_ROW_H, 200.0, STACKED_ROW_H),
                     &StatusBar {
                         id: WidgetId::new(format!("row-{i}")),
@@ -921,8 +919,7 @@ mod tests {
                         }],
                         right_segments: vec![],
                     },
-                    None,
-                    None,
+                    &crate::InteractionState::new(),
                 );
             }
         }

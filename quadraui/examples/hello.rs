@@ -45,7 +45,7 @@ impl AppLogic for Hello {
         let vp = backend.viewport();
         let bar_h = backend.measure().line_height.max(1.0) * 1.4;
         let rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
-        let _ = backend.draw_status_bar(rect, &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(rect, &bar, &quadraui::InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

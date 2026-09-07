@@ -43,9 +43,9 @@
 //! - q                        quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure, Key,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, ToolbarItemMeasure, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure,
+    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    ToolbarItemMeasure, UiEvent, WidgetId,
 };
 
 /// Id the dialog is registered under in the [`crate::ModalStack`]. The
@@ -192,7 +192,11 @@ impl ModalOcclusionDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar(Rect::new(0.0, y, width, lh), &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(
+            Rect::new(0.0, y, width, lh),
+            &bar,
+            &InteractionState::new(),
+        );
     }
 }
 
@@ -225,7 +229,11 @@ impl AppLogic for ModalOcclusionDemo {
         );
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
 
         // Modal paints last (highest z) — the ModalStack has no opinion
         // on draw order, only on hit-test precedence.

@@ -16,8 +16,8 @@
 
 use quadraui::{
     compute_find_replace_hit_regions, AppLogic, Backend, Color, FindReplaceClickTarget,
-    FindReplaceHit, FindReplacePanel, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId, FR_PANEL_WIDTH,
+    FindReplaceHit, FindReplacePanel, InteractionState, MouseButton, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId, FR_PANEL_WIDTH,
 };
 
 pub struct FindReplaceApp {
@@ -130,7 +130,11 @@ impl AppLogic for FindReplaceApp {
         backend.draw_find_replace(rect, &panel);
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

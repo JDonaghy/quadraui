@@ -27,9 +27,9 @@
 //! - q / Esc              quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Image, ImageFit, ImageHit, ImageSource, Key, MenuBar, MenuBarHit,
-    MenuBarItem, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, Image, ImageFit, ImageHit, ImageSource, InteractionState, Key,
+    MenuBar, MenuBarHit, MenuBarItem, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 const LOGO_PNG: &[u8] = include_bytes!("../assets/quadra_logo.png");
@@ -126,7 +126,11 @@ impl AppLogic for ImageApp {
         let _ = backend.draw_menu_bar(items_rect, &self.menu_bar);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

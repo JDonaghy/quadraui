@@ -29,9 +29,9 @@
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, Modifiers, MouseButton, NamedKey, PointerShape, Reaction, Rect,
-    ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar, StatusBarAction,
-    StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, InteractionState, Key, Modifiers, MouseButton, NamedKey, PointerShape,
+    Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
+    StatusBarAction, StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// `action_id`s for the CSD title-bar button row (#402). Namespaced per
@@ -122,7 +122,7 @@ impl FullChromeDemo {
             right_segments: vec![],
         };
         let rect = Rect::new(bounds.x, bounds.y, bounds.width, lh.min(bounds.height));
-        backend.draw_status_bar(rect, &bar, None, None);
+        backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
     }
 
     /// Build the title bar's `StatusBar`: the existing plain-text label on
@@ -211,11 +211,17 @@ impl ShellAppTrait for FullChromeDemo {
             let rect = Rect::new(tb.x, tb.y, tb.width, lh.min(tb.height));
             let bar =
                 Self::build_title_bar("TITLE BAR  |  File  Edit  View  Help", title_fg, title_bg);
-            let bar_layout = backend.draw_status_bar(
+            // #819: the rasteriser reads one `InteractionState`.
+            // `StatusBarInteraction` still owns the *state machine*
+            // (press/release/click resolution against a cached layout);
+            // this only adapts its two ids into the new call shape.
+            let bar_layout = backend.draw_status_bar_interactive(
                 rect,
                 &bar,
-                self.title_bar_interaction.hovered_id(),
-                self.title_bar_interaction.pressed_id(),
+                &InteractionState::from_parts(
+                    self.title_bar_interaction.hovered_id().cloned(),
+                    self.title_bar_interaction.pressed_id().cloned(),
+                ),
             );
             self.title_bar_interaction.set_layout(bar_layout);
         }

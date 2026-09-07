@@ -24,7 +24,7 @@ use quadraui::primitives::diff_view::{
 };
 use quadraui::runner::{AppLogic, Reaction};
 use quadraui::types::{Color, WidgetId};
-use quadraui::{StatusBar, StatusBarSegment};
+use quadraui::{InteractionState, StatusBar, StatusBarSegment};
 
 const LEFT: &str = "\
 fn add(a: i32, b: i32) -> i32 {
@@ -141,7 +141,11 @@ impl AppLogic for DiffViewApp {
         self.last_layout.set(layout);
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

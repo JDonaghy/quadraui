@@ -6,8 +6,8 @@
 //! scroll auto-clamp, and placeholder rendering.
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TextInput, TextInputHit, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, MouseButton, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 
 pub struct TextInputDemo {
@@ -181,7 +181,7 @@ impl AppLogic for TextInputDemo {
         let pad = lh;
 
         let status_rect = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
-        backend.draw_status_bar(status_rect, &self.status(), None, None);
+        backend.draw_status_bar_interactive(status_rect, &self.status(), &InteractionState::new());
 
         let input_rect = Rect::new(
             pad,

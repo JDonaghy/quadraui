@@ -17,8 +17,9 @@
 //! - q / Esc quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Tooltip,
-    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
+    UiEvent, WidgetId,
 };
 
 const ANCHOR_TEXT: &str = "hover target";
@@ -122,12 +123,20 @@ impl AppLogic for TooltipDemo {
 
         // Anchor bar at the top — the element the tooltip "describes".
         let anchor = Rect::new(0.0, 0.0, viewport.width, lh);
-        let _ = backend.draw_status_bar(anchor, &self.anchor_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            anchor,
+            &self.anchor_bar(),
+            &InteractionState::new(),
+        );
 
         // Status bar at the bottom shows the current border/title choice
         // plus the key hint.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
 
         // Tooltip renders between the two bars, below the anchor.
         let clamp = Rect::new(0.0, lh, viewport.width, viewport.height - 2.0 * lh);

@@ -102,7 +102,7 @@ mod tests {
     use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
     use crate::runner::{AppLogic, Reaction};
     use crate::types::{Color, WidgetId};
-    use crate::{Rect, UiEvent};
+    use crate::{InteractionState, Rect, UiEvent};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     const W: i32 = 200;
@@ -120,7 +120,7 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
-                backend.draw_status_bar(
+                backend.draw_status_bar_interactive(
                     Rect::new(0.0, i as f32 * ROW_H, W as f32, ROW_H),
                     &StatusBar {
                         id: WidgetId::new(format!("row-{i}")),
@@ -133,8 +133,7 @@ mod tests {
                         }],
                         right_segments: vec![],
                     },
-                    None,
-                    None,
+                    &InteractionState::new(),
                 );
             }
         }

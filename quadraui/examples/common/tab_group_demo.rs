@@ -23,8 +23,8 @@ use std::cell::RefCell;
 
 use quadraui::compose::tab_group::{GroupLayout, Pane, PaneTab, TabGroupController, TabGroupEvent};
 use quadraui::{
-    AppLogic, Backend, Color, Key, Modifiers, NamedKey, Reaction, Rect, SplitDirection, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect,
+    SplitDirection, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Minimum cursor movement (backend units: pixels for GTK, character cells for
@@ -57,7 +57,11 @@ impl quadraui::BackendWidget for LabelContent {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar(Rect::new(rect.x, rect.y, rect.width, lh), &bar, None, None);
+        backend.draw_status_bar_interactive(
+            Rect::new(rect.x, rect.y, rect.width, lh),
+            &bar,
+            &InteractionState::new(),
+        );
     }
 }
 
@@ -261,7 +265,7 @@ impl AppLogic for TabGroupDemo {
             }],
         };
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar(status_rect, &status, None, None);
+        backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

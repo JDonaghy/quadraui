@@ -13,8 +13,8 @@
 //! Click an icon (or press **1**/**2**/**3**) to activate it, **q** to quit.
 
 use quadraui::{
-    ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, Color, Key, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, Color, InteractionState, Key,
+    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Item labels, index-stable across activation (only `is_active` moves).
@@ -113,11 +113,10 @@ impl AppLogic for ActivityStyleDemo {
         let lh = backend.line_height();
         let bar_rect = self.bar_rect(backend);
         let _ = backend.draw_activity_bar_with_style(bar_rect, &self.bar(), None, &self.style());
-        let _ = backend.draw_status_bar(
+        let _ = backend.draw_status_bar_interactive(
             Rect::new(0.0, vp.height - lh, vp.width, lh),
             &self.hint_bar(),
-            None,
-            None,
+            &InteractionState::new(),
         );
     }
 

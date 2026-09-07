@@ -1176,13 +1176,13 @@ impl Backend for TuiBackend {
     // are now thin pass-throughs, mirroring the GTK impls in
     // `gtk/backend.rs`.
 
-    fn draw_status_bar(
+    fn draw_status_bar_interactive(
         &mut self,
         rect: QRect,
         bar: &StatusBar,
-        hovered_id: Option<&crate::types::WidgetId>,
-        pressed_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> crate::StatusBarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let layout = bar.layout(area.width as f32, 1.0, MIN_GAP_CELLS, |seg| {
@@ -2122,28 +2122,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_chart_layout(chart, area)
     }
 
-    fn draw_toolbar(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        hovered_id: Option<&crate::types::WidgetId>,
-        pressed_id: Option<&crate::types::WidgetId>,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_toolbar called outside enter_frame_scope");
-        crate::tui::draw_toolbar(
-            frame.buffer_mut(),
-            area,
-            bar,
-            &theme,
-            hovered_id,
-            pressed_id,
-        )
-    }
-
     fn draw_toolbar_interactive(
         &mut self,
         rect: QRect,
@@ -2174,13 +2152,14 @@ impl Backend for TuiBackend {
         crate::tui::tui_toolbar_layout(bar, area)
     }
 
-    fn draw_sidebar_panel(
+    fn draw_sidebar_panel_interactive(
         &mut self,
         rect: QRect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        hovered_toolbar_id: Option<&crate::types::WidgetId>,
-        pressed_toolbar_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let (hovered_toolbar_id, pressed_toolbar_id) =
+            (interaction.hovered(), interaction.pressed());
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let frame = self
@@ -2485,12 +2464,11 @@ mod tests {
             _active: bool,
         ) {
         }
-        fn draw_status_bar(
+        fn draw_status_bar_interactive(
             &mut self,
             _r: QRect,
             _b: &StatusBar,
-            _hovered_id: Option<&crate::types::WidgetId>,
-            _pressed_id: Option<&crate::types::WidgetId>,
+            _interaction: &crate::interaction::InteractionState,
         ) -> crate::StatusBarLayout {
             crate::StatusBarLayout {
                 bar_width: 0.0,
@@ -2934,12 +2912,11 @@ mod tests {
             )
         }
 
-        fn draw_toolbar(
+        fn draw_toolbar_interactive(
             &mut self,
             r: QRect,
             bar: &crate::primitives::toolbar::Toolbar,
-            _hovered_id: Option<&crate::types::WidgetId>,
-            _pressed_id: Option<&crate::types::WidgetId>,
+            _interaction: &crate::interaction::InteractionState,
         ) -> crate::primitives::toolbar::ToolbarLayout {
             bar.layout(r.x, r.y, r.width, r.height, |_| {
                 crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
@@ -2956,12 +2933,11 @@ mod tests {
             })
         }
 
-        fn draw_sidebar_panel(
+        fn draw_sidebar_panel_interactive(
             &mut self,
             r: QRect,
             panel: &crate::primitives::sidebar_panel::SidebarPanel,
-            _h: Option<&crate::types::WidgetId>,
-            _p: Option<&crate::types::WidgetId>,
+            _interaction: &crate::interaction::InteractionState,
         ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
             panel.layout(
                 r,

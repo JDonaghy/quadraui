@@ -15,8 +15,8 @@
 //! visible payoff is `cargo run --example macos_native_menu --features macos`.
 
 use quadraui::{
-    AppLogic, Backend, Color, ContextMenuItem, Key, MenuBar, MenuBarItem, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, ContextMenuItem, InteractionState, Key, MenuBar, MenuBarItem,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 use quadraui::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
@@ -181,7 +181,7 @@ impl AppLogic for NativeMenuApp {
         let viewport = backend.viewport();
         let row_h = 28.0_f32;
         let rect = Rect::new(0.0, viewport.height - row_h, viewport.width, row_h);
-        let _ = backend.draw_status_bar(rect, &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

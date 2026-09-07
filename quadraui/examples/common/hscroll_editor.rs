@@ -9,8 +9,8 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine,
-    EditorStyle, EditorStyledSpan, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    UiEvent, WidgetId,
+    EditorStyle, EditorStyledSpan, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 const LINE_LEN: usize = 500;
@@ -177,7 +177,7 @@ impl AppLogic for HScrollEditor {
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let vpc = self.viewport_cols(backend);
         let bar = self.status_bar(vpc);
-        let _ = backend.draw_status_bar(bar_rect, &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(bar_rect, &bar, &InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

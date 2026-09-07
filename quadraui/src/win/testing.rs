@@ -62,7 +62,9 @@ use crate::testing::driver_core::DriverCore;
 use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
 };
-use crate::{ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
+use crate::{
+    ButtonMask, Color, InteractionState, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent,
+};
 
 use super::backend::WinBackend;
 use super::run::{
@@ -773,7 +775,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn crate::Backend, _area: ()) {
-            backend.draw_status_bar(
+            backend.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, 200.0, 20.0),
                 &crate::StatusBar {
                     id: crate::WidgetId::new("status"),
@@ -786,8 +788,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &InteractionState::new(),
             );
         }
 

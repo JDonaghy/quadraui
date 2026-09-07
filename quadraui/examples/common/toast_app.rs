@@ -12,8 +12,9 @@
 //! - q / Esc    quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack,
+    UiEvent, WidgetId,
 };
 
 pub struct ToastApp {
@@ -102,7 +103,11 @@ impl AppLogic for ToastApp {
 
         // Status bar at bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
 
         // Toast stack overlays the viewport.
         let overlay_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);

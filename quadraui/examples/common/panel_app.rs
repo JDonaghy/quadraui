@@ -15,8 +15,9 @@
 //! - q / Esc                   quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Panel, PanelAction, PanelHit, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledSpan, StyledText, TextRegion, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Panel, PanelAction, PanelHit,
+    Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText, TextRegion, UiEvent,
+    WidgetId,
 };
 
 const CONTENT_LINES: &[&str] = &[
@@ -114,7 +115,7 @@ impl PanelApp {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar(row_rect, &bar, None, None);
+            let _ = backend.draw_status_bar_interactive(row_rect, &bar, &InteractionState::new());
             rendered_height = (i + 1) as f32 * lh;
         }
         Rect::new(bounds.x, bounds.y, bounds.width, rendered_height)
@@ -148,7 +149,11 @@ impl AppLogic for PanelApp {
         });
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

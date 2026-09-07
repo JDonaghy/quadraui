@@ -36,8 +36,8 @@
 
 use quadraui::terminal_engine::{default_shell, TerminalMouseKind, TerminalSession};
 use quadraui::{
-    AppLogic, Backend, ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Reaction, Rect,
-    ScrollDelta, StatusBar, StatusBarSegment, UiEvent, Viewport, WidgetId,
+    AppLogic, Backend, ButtonMask, Color, InteractionState, Key, Modifiers, MouseButton, NamedKey,
+    Reaction, Rect, ScrollDelta, StatusBar, StatusBarSegment, UiEvent, Viewport, WidgetId,
 };
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ impl TerminalApp {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar(footer_rect, &bar, None, None);
+        backend.draw_status_bar_interactive(footer_rect, &bar, &InteractionState::new());
     }
 
     // ── Scrollbar drag helper ─────────────────────────────────────────────────
@@ -255,7 +255,7 @@ impl AppLogic for TerminalApp {
             };
             let line_h = backend.line_height().max(1.0);
             let bar_rect = Rect::new(0.0, (rect.height - line_h).max(0.0), rect.width, line_h);
-            backend.draw_status_bar(bar_rect, &bar, None, None);
+            backend.draw_status_bar_interactive(bar_rect, &bar, &InteractionState::new());
         }
 
         self.render_footer(backend, vp);
