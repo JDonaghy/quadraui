@@ -18,8 +18,8 @@
 //! - q / Esc                     quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Toolbar,
-    ToolbarButton, ToolbarHit, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, UiEvent, WidgetId,
 };
 
 pub struct ToolbarApp {
@@ -29,13 +29,11 @@ pub struct ToolbarApp {
     running: bool,
     /// Last status line message (echoes the most recent click / keypress).
     last_message: String,
-    /// `WidgetId` of the toolbar action currently under the mouse, or
-    /// `None` when the cursor is outside. Drives the hover highlight —
-    /// rasterisers paint `theme.hover_bg` on the matching button.
-    hovered_id: Option<WidgetId>,
-    /// `WidgetId` of the action currently held down by the user (between
-    /// `MouseDown` and `MouseUp`). Drives the pressed highlight.
-    pressed_id: Option<WidgetId>,
+    /// Hovered/pressed toolbar button, keyed by `WidgetId` (issue #819).
+    /// Replaces what used to be two hand-rolled `Option<WidgetId>`
+    /// fields — `interaction.hovered()` / `interaction.pressed()` feed
+    /// the same positional slots `Backend::draw_toolbar` always took.
+    interaction: InteractionState,
     /// Index into `self.toolbar().buttons` of the keyboard-focused button,
     /// or `None` when the toolbar has no keyboard focus.
     ///
@@ -51,8 +49,7 @@ impl ToolbarApp {
             filter_active: false,
             running: true,
             last_message: "Click, Tab to focus, Enter to activate. q=quit".into(),
-            hovered_id: None,
-            pressed_id: None,
+            interaction: InteractionState::new(),
             focused_index: None,
         }
     }
@@ -290,8 +287,8 @@ impl AppLogic for ToolbarApp {
         let _ = backend.draw_toolbar(
             Self::toolbar_rect(backend),
             &self.toolbar(),
-            self.hovered_id.as_ref(),
-            self.pressed_id.as_ref(),
+            self.interaction.hovered(),
+            self.interaction.pressed(),
         );
 
         // Status bar at the bottom.
@@ -396,31 +393,41 @@ impl AppLogic for ToolbarApp {
             }
 
             // ── Mouse: hover / press / release ────────────────────────────
-            UiEvent::MouseMoved { position, .. } => {
+            // `self.interaction` (an `InteractionState`, issue #819) owns
+            // the bookkeeping; each arm only supplies the hit-test this
+            // toolbar's own layout can do and reads back `hovered()` /
+            // `pressed()` for `draw_toolbar` above.
+            UiEvent::MouseMoved { .. } => {
                 let rect = Self::toolbar_rect(backend);
                 let bar = self.toolbar();
                 let layout = backend.toolbar_layout(rect, &bar);
-                let new_hover = match layout.hit_test(position.x, position.y) {
-                    ToolbarHit::Button(id) => Some(id),
-                    ToolbarHit::Empty => None,
-                };
-                if new_hover != self.hovered_id {
-                    self.hovered_id = new_hover;
-                    return Reaction::Redraw;
+                let changed =
+                    self.interaction
+                        .handle_mouse(&event, |x, y| match layout.hit_test(x, y) {
+                            ToolbarHit::Button(id) => Some(id),
+                            ToolbarHit::Empty => None,
+                        });
+                if changed {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
-                Reaction::Continue
             }
 
-            UiEvent::MouseDown { position, .. } => {
+            UiEvent::MouseDown { .. } => {
                 let rect = Self::toolbar_rect(backend);
                 let bar = self.toolbar();
                 let layout = backend.toolbar_layout(rect, &bar);
-                match layout.hit_test(position.x, position.y) {
-                    ToolbarHit::Button(id) => {
-                        self.pressed_id = Some(id);
-                        Reaction::Redraw
-                    }
-                    ToolbarHit::Empty => Reaction::Continue,
+                let changed =
+                    self.interaction
+                        .handle_mouse(&event, |x, y| match layout.hit_test(x, y) {
+                            ToolbarHit::Button(id) => Some(id),
+                            ToolbarHit::Empty => None,
+                        });
+                if changed {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
             }
 
@@ -428,7 +435,8 @@ impl AppLogic for ToolbarApp {
                 let rect = Self::toolbar_rect(backend);
                 let bar = self.toolbar();
                 let layout = backend.toolbar_layout(rect, &bar);
-                let pressed = self.pressed_id.take();
+                let pressed = self.interaction.pressed().cloned();
+                self.interaction.handle_mouse(&event, |_, _| None);
                 if let (Some(pressed_id), ToolbarHit::Button(release_id)) =
                     (pressed, layout.hit_test(position.x, position.y))
                 {

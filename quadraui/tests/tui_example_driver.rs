@@ -1633,6 +1633,60 @@ fn toolbar_click_fires_action_without_focus() {
     );
 }
 
+/// #819 acceptance: hover state now flows through `InteractionState`
+/// (`ToolbarApp::interaction`, replacing the old hand-rolled
+/// `hovered_id`/`pressed_id` fields) — this asserts the *visual*
+/// consequence, not just that the field exists. Before wiring
+/// `InteractionState::handle_mouse` into `ToolbarApp::handle`, a
+/// regression that dropped the hover-changed signal (e.g. always
+/// returning `Reaction::Continue` from `MouseMoved`) would leave the
+/// button's background at its resting colour after the mouse moved over
+/// it — this test fails exactly that way if run against such a
+/// regression (verified red by temporarily hard-coding
+/// `InteractionState::handle_mouse`'s `MouseMoved` arm to `false`).
+#[test]
+fn toolbar_hover_paints_hover_background_at_the_cursor() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("Filter")
+        .unwrap_or_else(|| panic!("Filter button must be visible:\n{before}"));
+    let resting_bg = driver
+        .style_at(x as u16, y as u16)
+        .expect("Filter cell should be inside the screen")
+        .bg;
+
+    driver.mouse_move(x, y);
+
+    let hovered_bg = driver
+        .style_at(x as u16, y as u16)
+        .expect("Filter cell should be inside the screen")
+        .bg;
+
+    assert_ne!(
+        hovered_bg,
+        resting_bg,
+        "hovering the Filter button should paint theme.hover_bg, visibly \
+         changing its background:\n{}",
+        driver.screen()
+    );
+
+    // Moving off the button again should restore the resting background
+    // — `InteractionState` clears hover, not just sets it once.
+    driver.mouse_move(0.0, 0.0);
+    let after_bg = driver
+        .style_at(x as u16, y as u16)
+        .expect("Filter cell should be inside the screen")
+        .bg;
+    assert_eq!(
+        after_bg,
+        resting_bg,
+        "moving off the button should clear the hover background:\n{}",
+        driver.screen()
+    );
+}
+
 #[test]
 fn palette_dual_mode_tab_switches_to_input_mode() {
     // Pressing Tab should toggle from List mode to Input mode, which:
