@@ -27,24 +27,41 @@
 //!    twin of #3, set by `Backend::draw_activity_bar` each time an
 //!    `ActivityBar` declares `is_keyboard_focused = true`.
 //! 5. `TextInput.has_focus` — a per-widget bool primitives set on
-//!    themselves.
+//!    themselves. The *same* pattern (a plain `has_focus: bool` field
+//!    the app sets before handing the primitive to `render`) also
+//!    appears on `List`, `Tree`, `Form`, `DataTable`, `Palette`,
+//!    `Completions`, `RichTextPopup`, `TextDisplay`, and
+//!    `MultiSectionView` — this is not a `TextInput`-only quirk but a
+//!    crate-wide primitive convention.
 //! 6. [`crate::text_selection::TextSelectionState::track_focused_text_region`]
 //!    — the text-selection subsystem's own idea of "focus", scoped to
 //!    `TextRegion`s only (used to resolve the Ctrl-A target).
 //!
-//! Representations 3/4 (`ActivityBar`'s own keyboard-cursor flag) and 6
-//! (text-region focus for Ctrl-A) are **left as-is** by this issue: both
-//! are narrowly-scoped, already-shipped interaction modes with their own
+//! Representations 3/4 (`ActivityBar`'s own keyboard-cursor flag), 5
+//! (per-primitive `has_focus` bools) and 6 (text-region focus for
+//! Ctrl-A) are **left as-is** by this issue: all three are
+//! narrowly-scoped, already-shipped interaction modes with their own
 //! tests and driver coverage, and collapsing them into `FocusManager`
 //! is a distinct, separately-reviewable migration (each is a candidate
 //! for a future `crate::focus`-backed rewrite, not a batch of unrelated
 //! removals in one PR — see the repo's "one breaking change per PR"
-//! rule). What #830 actually delivers: the missing *owner* — a single
+//! rule). Representation 5 in particular spans nine-plus primitives
+//! whose rasterisers read the bool directly for cursor/border/highlight
+//! styling (`tui`/`gtk`/`macos`/`win`, each), so collapsing it is a
+//! wider, per-primitive migration that belongs in its own follow-up
+//! issue, not a `TextInput`-only carve-out inside #830 — the read path
+//! such a migration would converge on already exists today as
+//! [`FocusManager::is_focused`]; a primitive's `has_focus` field would
+//! become a value the app copies from
+//! `backend.focus_manager().is_focused(&widget.id)` each frame, once
+//! every primitive with the field is migrated together so no screen is
+//! left with some widgets honoring `FocusManager` and others not. What
+//! #830 actually delivers: the missing *owner* — a single
 //! `focused: Option<WidgetId>` plus geometry-derived tab order — so a
 //! new, opt-in Tab/Shift+Tab path exists that every future primitive
-//! (and, over time, #3/#4/#6 themselves) can converge onto, instead of
-//! a seventh ad-hoc representation being invented for the next widget
-//! that needs Tab support.
+//! (and, over time, #3/#4/#5/#6 themselves) can converge onto, instead
+//! of a seventh ad-hoc representation being invented for the next
+//! widget that needs Tab support.
 //!
 //! # Relationship to [`crate::compose::focus_ring::FocusRing`]
 //!
@@ -124,7 +141,7 @@ pub(crate) const FOCUS_RING_STROKE_WIDTH: f32 = 2.0;
 
 /// Single owner of keyboard focus (issue #830). See the module doc for
 /// the full rationale and the six representations this replaces (or, in
-/// two documented cases, deliberately leaves for a later migration).
+/// three documented cases, deliberately leaves for a later migration).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FocusManager {
     focused: Option<WidgetId>,

@@ -46,6 +46,16 @@ pub struct TextInput {
     pub scroll_col: usize,
     /// Whether the input has keyboard focus. Controls cursor visibility
     /// and border color (rasteriser-defined).
+    ///
+    /// This is set by the app, not derived automatically — see
+    /// [`crate::focus`]'s module doc ("representation 5") for why this
+    /// field (and the identical convention on several other primitives)
+    /// is left as-is rather than collapsed onto `FocusManager` in #830.
+    /// An app that *does* drive this `TextInput` through
+    /// [`crate::runner::AppLogic::tab_stops`] should set it from
+    /// `backend.focus_manager().is_focused(&input.id)` each frame —
+    /// [`crate::focus::FocusManager::is_focused`] is the read path such
+    /// a migration converges on.
     #[serde(default)]
     pub has_focus: bool,
 }
