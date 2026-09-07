@@ -92,10 +92,14 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this backend still
-// constructs it directly (per #504's audit: `win::tab_bar` has no
-// intermediate `TabBarLayout` to source native coordinates from), so the
-// import needs the same allow every use site below does.
+// `TabBarHits` is `#[deprecated]` (issue #823) — these six `Backend`
+// tab-bar methods still return it (this PR is the shim step only; the
+// six-method/four-backend signature swap to `TabBarLayout` is the
+// separate follow-up described on `TabBarHits`'s own doc), so the import
+// needs the same allow every use site below does. `win::tab_bar` does
+// compute a real `TabBarLayout` first and narrow it via
+// `backend::tab_bar_hits_from_layout` — unlike `macos::tab_bar`, which
+// builds the struct straight from Core Text metrics.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
