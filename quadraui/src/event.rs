@@ -284,7 +284,25 @@ impl UserPayload {
     pub fn downcast_ref<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
         self.0.downcast_ref::<T>()
     }
+}
 
+// The raw-`Arc` seam between `UserPayload` and `crate::runtime::UserEventQueue`.
+// Gated on exactly the same predicate as `mod runtime` in `lib.rs`, because
+// those are its only callers: `from_arc` from `UserEventQueue::drain_into`,
+// `into_arc` from each backend's `Backend::waker` closure (tui, gtk, macos,
+// win). A default-features build (no backend feature at all) compiles
+// `UserPayload` — `UiEvent::User` is unconditional — but not `runtime`, so
+// without this gate both methods are dead code and `-D warnings` fails the
+// `cargo package` verification build. Keep this cfg in lockstep with
+// `lib.rs`'s `mod runtime` gate; a backend added to one must be added to the
+// other.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    feature = "win"
+))]
+impl UserPayload {
     /// Crate-internal constructor for backends draining their own
     /// already-erased staging queue (`crate::runtime::UserEventQueue`)
     /// straight into a `UiEvent::User`.
