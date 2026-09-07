@@ -157,6 +157,17 @@ pub fn gdk_resize_to_uievent(width: i32, height: i32, scale: f32) -> UiEvent {
     crate::event::window_resized(width as f32, height as f32, scale)
 }
 
+/// Translate a `gtk::DropTarget`'s `drop` signal payload (already
+/// resolved from the dragged `gdk::FileList` into real filesystem paths
+/// — see `src/gtk/run.rs`'s `connect_drop` closure) into
+/// [`UiEvent::FilesDropped`] (issue #834). `x`/`y` are the signal's own
+/// coordinates, already in the same DIP space every other GTK pointer
+/// event uses — unlike Win's `WM_DROPFILES` translator, no
+/// `scale_factor()` division is needed here.
+pub fn gtk_drop_to_uievent(paths: Vec<std::path::PathBuf>, x: f64, y: f64) -> UiEvent {
+    crate::event::files_dropped(paths, x as f32, y as f32)
+}
+
 /// Translate `gdk::ModifierType` to `quadraui::Modifiers`. Maps the
 /// four standard modifiers — Ctrl, Shift, Alt, Super (Cmd on macOS;
 /// Win/Meta key on X11). The other GDK bits (Lock, Hyper, Mod1–5)
@@ -369,6 +380,31 @@ pub fn wire_da_events_with_scroll_direction<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #834: `gtk_drop_to_uievent` builds a `FilesDropped` with the
+    /// given paths and position untouched (GTK's drop coordinates are
+    /// already DIPs, no scale conversion). Before this issue no such
+    /// translator existed anywhere in the tree — `grep -rn
+    /// gtk_drop_to_uievent quadraui/src` had zero hits — so this test
+    /// (and the function it exercises) are new together.
+    #[test]
+    fn drop_to_uievent_carries_paths_and_position() {
+        let paths = vec![
+            std::path::PathBuf::from("/tmp/a.txt"),
+            std::path::PathBuf::from("/tmp/b.txt"),
+        ];
+        let ev = gtk_drop_to_uievent(paths.clone(), 12.0, 34.0);
+        match ev {
+            UiEvent::FilesDropped {
+                paths: got,
+                position,
+            } => {
+                assert_eq!(got, paths);
+                assert_eq!((position.x, position.y), (12.0, 34.0));
+            }
+            other => panic!("expected UiEvent::FilesDropped, got {other:?}"),
+        }
+    }
 
     #[test]
     fn modifiers_translate() {

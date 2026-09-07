@@ -32,6 +32,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -47,16 +48,19 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSEvent, NSGraphicsContext, NSView, NSViewFrameDidChangeNotification, NSWindow,
+    NSDragOperation, NSDraggingInfo, NSEvent, NSGraphicsContext, NSPasteboardTypeFileURL, NSView,
+    NSViewFrameDidChangeNotification, NSWindow, NSWindowDidChangeBackingPropertiesNotification,
     NSWindowStyleMask,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
+    NSPoint, NSRect, NSSize, NSString, NSTimer, NSURL,
 };
 
 use super::backend::MacBackend;
-use super::events::{ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll};
+use super::events::{
+    ns_files_dropped, ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll,
+};
 use super::text::make_font;
 use crate::backend::Backend;
 use crate::dispatch::DragTarget;
@@ -669,6 +673,80 @@ define_class!(
                 self.dispatch(UiEvent::WindowResized { viewport });
             }
         }
+
+        // ── HiDPI runtime change (issue #834) ───────────────────────
+        //
+        // Registered (in [`run`]) as the observer for
+        // `NSWindowDidChangeBackingPropertiesNotification`, which AppKit
+        // posts on the *window* whenever its `backingScaleFactor`
+        // changes — a monitor drag across a DPI boundary, or the
+        // system/external-display scaling setting changing live. Unlike
+        // `viewFrameDidChange:` this needs no debounce: a DPI change
+        // doesn't arrive as a rapid-fire burst the way a live resize
+        // drag does. `drawRect:` already re-reads `backingScaleFactor()`
+        // fresh on every paint (see its doc), so dispatching this and
+        // letting the shared `crate::runtime::preprocess_event` force a
+        // redraw (issue #834) is sufficient to re-measure — no separate
+        // cached-scale field to update here the way `WinBackend`/
+        // `GtkBackend` need.
+        #[unsafe(method(windowDidChangeBackingProperties:))]
+        fn window_did_change_backing_properties(&self, _note: &NSNotification) {
+            let scale = self
+                .window()
+                .map(|w| w.backingScaleFactor())
+                .unwrap_or(1.0);
+            self.dispatch(UiEvent::DpiChanged(scale as f32));
+        }
+
+        // ── OS file drop (issue #834) ────────────────────────────────
+        //
+        // `NSDraggingDestination`'s methods are informal/optional
+        // protocol overrides on `NSView` — AppKit dispatches them by
+        // selector once `registerForDraggedTypes:` (called in [`run`])
+        // opts this view in, the same way `mouseDown:`/`scrollWheel:`
+        // above are plain `NSResponder` overrides with no separate
+        // protocol `impl` block needed.
+
+        /// Accept a drag iff it carries at least one file-URL pasteboard
+        /// item — see [`Self::dropped_paths`].
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(
+            &self,
+            sender: &ProtocolObject<dyn NSDraggingInfo>,
+        ) -> NSDragOperation {
+            if self.dropped_paths(sender).is_empty() {
+                NSDragOperation::None
+            } else {
+                NSDragOperation::Copy
+            }
+        }
+
+        /// Same accept/reject answer as `draggingEntered:`, re-evaluated
+        /// as AppKit calls this continuously while the drag hovers.
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(
+            &self,
+            sender: &ProtocolObject<dyn NSDraggingInfo>,
+        ) -> NSDragOperation {
+            self.dragging_entered(sender)
+        }
+
+        /// The user released the mouse button over this view — decode
+        /// the dropped paths + drop location and dispatch
+        /// `UiEvent::FilesDropped`. Returns `false` (declining the
+        /// operation) if the drag turns out to carry no file paths after
+        /// all, mirroring `draggingEntered:`'s reject case.
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            let paths = self.dropped_paths(sender);
+            if paths.is_empty() {
+                return false;
+            }
+            let loc = sender.draggingLocation();
+            let view_pt = self.convertPoint_fromView(loc, None);
+            self.dispatch(ns_files_dropped(paths, view_pt.x, view_pt.y));
+            true
+        }
     }
 );
 
@@ -703,6 +781,31 @@ impl QuadraView {
         let view_pt = self.convertPoint_fromView(win_pt, None);
         let flags = event.modifierFlags().0;
         (view_pt.x, view_pt.y, flags)
+    }
+
+    /// Decode a drag's file-URL pasteboard items into filesystem paths
+    /// (issue #834). Empty (not an error) for a drag that carries no
+    /// `NSPasteboardTypeFileURL` item — e.g. a text or color drag —
+    /// which `draggingEntered:`/`performDragOperation:` both treat as
+    /// "reject this drag."
+    fn dropped_paths(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
+        let pasteboard = sender.draggingPasteboard();
+        let Some(items) = pasteboard.pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                // SAFETY: `NSPasteboardTypeFileURL` is a valid extern
+                // global AppKit initialises before any drag can reach
+                // this callback.
+                let file_url_type = unsafe { NSPasteboardTypeFileURL };
+                let url_string = item.stringForType(file_url_type)?;
+                let url = NSURL::URLWithString(&url_string)?;
+                let path = url.path()?;
+                Some(PathBuf::from(path.to_string()))
+            })
+            .collect()
     }
 
     /// Route a translated [`UiEvent`] through `AppLogic::handle` and
@@ -937,6 +1040,17 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     window.makeFirstResponder(Some(view.as_super()));
     window.makeKeyAndOrderFront(None);
 
+    // OS file drop (issue #834): opt the view into `NSDraggingDestination`
+    // for file-URL drags. Without this call `draggingEntered:`/
+    // `performDragOperation:` are simply never invoked — AppKit only
+    // considers a view a drop target for the pasteboard types it
+    // registered.
+    // SAFETY: `NSPasteboardTypeFileURL` is a valid extern global AppKit
+    // initialises before this runs.
+    let file_url_type = unsafe { NSPasteboardTypeFileURL };
+    let dragged_types: Retained<NSArray<NSString>> = NSArray::from_slice(&[file_url_type]);
+    view.registerForDraggedTypes(&dragged_types);
+
     // Issue #831: install the wake target `MacBackend::waker()` invokes
     // (via `dispatch2::DispatchQueue::main().exec_async`) when a
     // background thread delivers a `UiEvent::User` — schedule the same
@@ -976,6 +1090,24 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
             sel!(viewFrameDidChange:),
             Some(NSViewFrameDidChangeNotification),
             Some(view_obj),
+        );
+    }
+
+    // HiDPI runtime change (issue #834): unlike the frame-change
+    // notification above (which the *view* posts about itself), it's the
+    // *window* that posts `NSWindowDidChangeBackingPropertiesNotification`
+    // — the drag-to-a-different-DPI-monitor / live scaling-setting-change
+    // case `DpiChanged` exists for. `windowDidChangeBackingProperties:`
+    // is still handled on `view_obj` (the only object here with a
+    // `dispatch` method); this just tells `NSNotificationCenter` which
+    // object's notifications to route there.
+    let window_obj: &AnyObject = unsafe { &*(&*window as *const NSWindow as *const AnyObject) };
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            view_obj,
+            sel!(windowDidChangeBackingProperties:),
+            Some(NSWindowDidChangeBackingPropertiesNotification),
+            Some(window_obj),
         );
     }
 

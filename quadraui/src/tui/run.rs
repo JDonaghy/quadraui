@@ -649,6 +649,36 @@ mod tests {
         );
     }
 
+    /// `DpiChanged` forces a repaint even when the app's own `handle`
+    /// ignores it (issue #834). `SelectionRecorder`'s catch-all arm
+    /// returns `Reaction::Continue` for any event it doesn't recognise —
+    /// exactly the "app has no opinion on this event" shape most
+    /// existing examples have for a brand-new variant. Without
+    /// `crate::runtime::preprocess_event`'s dedicated force-redraw step
+    /// this would leave whatever pixels were on screen before the DPI
+    /// change untouched. This is a shared-runtime test (not a
+    /// GTK/macOS/Win-specific one) because `preprocess_event` is the one
+    /// piece of plumbing all four backends funnel `DpiChanged` through —
+    /// proving it here proves it for all three GUI runners at once.
+    #[test]
+    fn dpi_changed_forces_redraw_even_when_app_ignores_it() {
+        let mut driver = TuiDriver::new(SelectionRecorder::new(), 40, 10);
+
+        let reaction = driver.dispatch(UiEvent::DpiChanged(2.0));
+
+        assert_eq!(
+            reaction,
+            Reaction::Redraw,
+            "DpiChanged must force a redraw regardless of the app's own Reaction"
+        );
+        assert!(
+            driver.app().events.iter().any(
+                |e| matches!(e, UiEvent::DpiChanged(scale) if (*scale - 2.0).abs() < f32::EPSILON)
+            ),
+            "the app must still observe the DpiChanged event itself, not just the forced redraw"
+        );
+    }
+
     /// `Ctrl-A` selects the entire registered text region and subsequent
     /// `Ctrl-C` copies the full content.
     #[test]
