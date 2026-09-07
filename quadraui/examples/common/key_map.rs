@@ -14,10 +14,21 @@
 //! `docs/PRIMITIVE_RULES.md` rule 8 ("zero hits in both plus no
 //! in-tree use ⇒ remove it outright"), it came out of the crate rather
 //! than being frozen by the upcoming `v0.1.0` tag. It's kept here,
-//! working and fully tested, as a copy-paste recipe: if an app wants
-//! scope-aware key resolution, copy this file in directly. If a real
-//! consumer shows up, promote it back to `compose::key_map` — the
-//! design doesn't need to change, only its address.
+//! working, as a copy-paste recipe: if an app wants scope-aware key
+//! resolution, copy this file in directly. If a real consumer shows up,
+//! promote it back to `compose::key_map` — the design doesn't need to
+//! change, only its address.
+//!
+//! The 12 tests below moved with it, but an example's `#[cfg(test)]`
+//! block is inert under plain `cargo test --workspace` — `[[example]]`
+//! targets default to `test = false`, so this module is compiled and
+//! linked when pulled in via `mod common;` yet its tests never run that
+//! way. `tests/key_map_recipe.rs` is what actually keeps them "fully
+//! tested": a `[[test]]` target (default `test = true`) that
+//! `#[path]`-includes this file, the same trick
+//! `tests/tui_example_driver.rs` uses for every other `examples/common/`
+//! module. That is the file `cargo test --workspace` runs; this one, on
+//! its own, is not exercised by CI.
 //!
 //! [`Backend::register_accelerator`](quadraui::Backend::register_accelerator)
 //! only resolves `AcceleratorScope::Global` bindings — the backend doesn't
