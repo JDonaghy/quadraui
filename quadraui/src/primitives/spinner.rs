@@ -14,6 +14,13 @@
 //! animation ticker (~100 ms for braille, faster for arcs). The
 //! primitive has no built-in timer — it's a paint description only.
 //! Backends rasterise the current glyph + label.
+//!
+//! # Adoption status (#825)
+//!
+//! Kept public: [`crate::compose::chat_controller::ChatController`]
+//! already constructs and renders a real `Spinner` in its status strip
+//! (the "thinking" indicator) — not just an example. It's also the
+//! prerequisite shape for #788's timer work, per that issue.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};

@@ -39,6 +39,19 @@
 //! }
 //! ```
 //!
+//! # Adoption status (#825)
+//!
+//! No compose-layer consumer today — deliberately *not* folded into
+//! [`crate::compose::workspace::WorkspaceController`]; see that module's
+//! doc for why the two exist side by side rather than one replacing
+//! the other (#596/#469). Kept public: full TUI + GTK demo coverage
+//! across three example apps (`examples/common/{tab_group_demo,
+//! tab_chrome_demo,wide_tab_bar_demo}.rs`, run via `tui_tabgroup.rs` /
+//! `gtk_tabgroup.rs`) plus `TuiDriver` end-to-end tests in
+//! `tests/tui_example_driver.rs` — this is the editor-group split/tab
+//! shape `CLAUDE.md`'s vimcode reference table points at, not
+//! speculative API.
+//!
 //! # Building multi-pane layouts
 //!
 //! For simple cases, [`TabGroupController::add_pane_with_tab`] opens a new

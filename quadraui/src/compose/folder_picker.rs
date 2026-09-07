@@ -13,6 +13,16 @@
 //! vimcode removes the TUI-local code and rewires both TUI and GTK
 //! `OpenFolderDialog` through this controller.
 //!
+//! # Adoption status (#825)
+//!
+//! The vimcode migration above hasn't landed as of #825's audit — no
+//! confirmed external adopter yet. Kept public rather than demoted:
+//! full TUI + GTK demo coverage already exists
+//! (`examples/tui_folder_picker.rs`, `examples/gtk_folder_picker.rs`,
+//! `examples/common/folder_picker_app.rs`) plus a `TuiDriver` end-to-end
+//! test in `tests/tui_example_driver.rs`, and the extraction above is a
+//! concrete, named migration target, not a speculative one.
+//!
 //! # Usage pattern
 //!
 //! ```rust,ignore

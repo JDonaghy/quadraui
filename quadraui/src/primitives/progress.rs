@@ -11,6 +11,21 @@
 //! Optional cancel button: when `cancellable = true`, backends render
 //! a trailing cancel affordance; clicks resolve as
 //! [`ProgressBarHit::Cancel`].
+//!
+//! # Adoption status (#825)
+//!
+//! Kept public without a compose-layer consumer today (unlike
+//! [`Spinner`](super::spinner::Spinner), which
+//! [`crate::compose::chat_controller::ChatController`] already
+//! constructs). Demoting it would mean stripping `draw_progress` /
+//! `progress_layout` from `Backend` across all five implementations
+//! (win/gtk/tui/macos/testing) — deleting complete, working,
+//! cross-backend rasteriser parity that rule 1 of the portability
+//! commitment asks every primitive to have, for a type paired with an
+//! adopted sibling (same shape family, same `frame_idx` convention,
+//! same `examples/common/indicators_app.rs` demo across all four
+//! backends, same `conformance`/`ms-11` acceptance coverage). Recorded
+//! here, not silently ignored — see issue #825.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};

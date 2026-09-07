@@ -32,6 +32,13 @@
 //! [`crate::compose::sidebar_system`] / [`crate::compose::tab_group`]),
 //! where there's no natural `WidgetId` to key by and the count changes
 //! at runtime as sections/panes are added or removed.
+//!
+//! # Adoption status (#825)
+//!
+//! No compose-layer consumer today beyond `examples/common/form_groups.rs`
+//! (both backends). Kept public: this is the named prerequisite shape
+//! for #788's focus manager (per that issue) — check #788's status
+//! before demoting.
 
 use super::focus_group::FocusGroup;
 use crate::types::WidgetId;
